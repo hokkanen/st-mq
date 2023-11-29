@@ -1,0 +1,20 @@
+{
+  "name": "easee-query",
+  "version": "1.0.0",
+  "license": "MIT",
+  "scripts": {
+    "dev": "parcel chart/index.html",
+    "build": "parcel build chart/index.html"
+  },
+  "type": "module",
+  "devDependencies": {
+    "parcel": "^2.6.2"
+  },
+  "dependencies": {
+    "chart.js": "^4.0.0",
+    "node-fetch": "^3.3.2",
+    "node-schedule": "^2.1.1",
+    "papaparse": "^5.4.1",
+    "prompt-sync": "^4.2.0"
+  }
+}

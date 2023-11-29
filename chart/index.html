@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <title>Current flow from Easee API</title>
+</head>
+
+<body>
+  <!-- Create date selector -->
+  <input type="date" id="dateInput">
+  <input type="date" id="endDateInput" style="display: none;">
+  <input type="checkbox" id="rangeCheckbox"> Use date range
+  <button id="filterButton">Update Chart</button>
+  <!-- Create chart using js module -->
+  <div style="width: 1200px;"><canvas id="acquisitions"></canvas></div>
+  <script type="module" src="chart.js"></script>
+</body>
+
+</html>
