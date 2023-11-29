@@ -29,9 +29,9 @@ var labels = [], ch_curr1 = [], chart;
                 data: {
                     labels: labels,
                     datasets: [
-                        { label: 'Charger 1', data: ch_curr1, borderColor: 'red', backgroundColor: 'rgba(255, 0, 0, 0.5)', fill: 'origin' },
-                        { label: 'Charger 2', data: ch_curr2, borderColor: 'green', backgroundColor: 'rgba(0, 255, 0, 0.5)', fill: 'origin' },
-                        { label: 'Charger 3', data: ch_curr3, borderColor: 'blue', backgroundColor: 'rgba(0, 0, 255, 0.5)', fill: 'origin' },
+                        { label: 'Charger 1', data: ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 0, 0.5)', fill: 'origin' },
+                        { label: 'Charger 2', data: ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 0, 0.5)', fill: 'origin' },
+                        { label: 'Charger 3', data: ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(0, 0, 255, 0.5)', fill: 'origin' },
                         { label: 'Equalizer 1', data: eq_curr1, borderColor: 'red', fill: false },
                         { label: 'Equalizer 2', data: eq_curr2, borderColor: 'green', fill: false },
                         { label: 'Equalizer 3', data: eq_curr3, borderColor: 'blue', fill: false }
