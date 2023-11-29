@@ -1,0 +1,1 @@
+workspace/consumption.csv filter=git-crypt diff=git-crypt -text
