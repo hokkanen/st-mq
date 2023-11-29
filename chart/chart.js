@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
-import data from 'url:../workspace/consumption.csv'; // Parcel import?
+import data from 'url:../workspace/consumption.csv';
 
 var labels = [], ch_curr1 = [], chart;
 

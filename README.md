@@ -16,13 +16,13 @@ Run [easee-query.js](easee-query.js) in the current terminal instance by
 ```
 node easee-query.js
 ```
-to collect the data by querying Easee API. The user credentials are asked once and then stored folder in an `apikey` file in the [workspace](workspace) folder.
+to collect the data into `workspace/consumption.csv` by querying the Easee API. The user credentials are asked once and then stored into `workspace/apikey`.
 
 In Linux, starting with
 ```
 (nohup node easee-query.js&)
 ```
-allows the output to be directed to `nohup.out` file and the program to be kept running even if the terminal instance is closed. However, this cannot be used if user credentials are required.
+allows the output to be directed to `nohup.out` file and the program to be kept running even if the terminal instance is closed. However, this cannot be used if user credentials need be asked.
 
 ## Plotting the Easee API data with chart.js (frontend)
 
