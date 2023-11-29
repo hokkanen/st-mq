@@ -1,4 +1,4 @@
-# Easee equalizer current flow API query and html chart
+# Easee Equalizer current flow API query and html chart
 
 ## Installation
 Clone repo by
@@ -30,5 +30,5 @@ Run a local web server in the current terminal instance by
 ```
 npm run dev
 ```
-and access the chart with browser at `http://localhost:1234`.
+and access the chart with browser at [http://localhost:1234](http://localhost:1234).
 
