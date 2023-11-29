@@ -94,6 +94,12 @@ async function write_csv(data) {
 }
 
 async function easee_query() {
+
+	// Create workspace directory if it does not exist
+	const workdir = './workspace';
+	if (!fs.existsSync(workdir))
+		fs.mkdirSync(workdir, { recursive: true });
+
 	// Get Equalizer data
 	const id_eq = 'QPLSWZC4';
 	const data_eq = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, id_eq);
