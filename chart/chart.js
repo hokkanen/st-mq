@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
-import data from 'url:../workspace/consumption.csv';
+import data from 'url:../workspace/easee.csv';
 
 let labels = [], chart;
 let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], eq_curr3 = [];
@@ -23,7 +23,7 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
             });
 
             // Create the chart
-            var ctx = document.getElementById('acquisitions').getContext('2d');
+            const ctx = document.getElementById('acquisitions').getContext('2d');
             chart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -46,9 +46,9 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
                         },
                         tooltip: {
                             callbacks: {
-                                title: function(context) {
+                                title: function (context) {
                                     // Convert the Unix timestamp to a Date object and format the date
-                                    var date = new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
+                                    const date = new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
                                     return date;
                                 },
                             }
@@ -62,7 +62,7 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
                                 // Include a callback function that formats the label
                                 callback: function (value, index, values) {
                                     // Convert the Unix timestamp to a Date object
-                                    var date = new Date(value * 1000);
+                                    const date = new Date(value * 1000);
                                     // Format the date
                                     return date.toLocaleString('en-UK');
                                 }
@@ -81,11 +81,14 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
                     }
                 }
             });
+            // Filter the data for the current day when the chart is first opened
+            const today = new Date().toISOString().split('T')[0];
+            filterData(today, today);
         }
     });
 
     // Set the default date of the date inputs to today
-    var today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
     document.getElementById('dateInput').value = today;
     document.getElementById('endDateInput').value = today;
 
@@ -95,16 +98,12 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
         document.getElementById('endDateInput').style.display = this.checked ? 'inline' : 'none';
     });
 
-    // Add event listener to the filter button
-    document.getElementById('filterButton').addEventListener('click', function () {
-        // Get the selected date or date range
-        var startDate = new Date(document.getElementById('dateInput').value).toISOString().split('T')[0];
-        var endDate = document.getElementById('rangeCheckbox').checked ? new Date(document.getElementById('endDateInput').value).toISOString().split('T')[0] : startDate;
-        // Filter the data
-        var filteredLabels = [];
-        var filteredData1 = [], filteredData2 = [], filteredData3 = [], filteredData4 = [], filteredData5 = [], filteredData6 = [];
-        for (var i = 0; i < labels.length; i++) {
-            var date = new Date(labels[i] * 1000).toISOString().split('T')[0];
+    // Filter the data based on date range
+    function filterData(startDate, endDate) {
+        let filteredLabels = [];
+        let filteredData1 = [], filteredData2 = [], filteredData3 = [], filteredData4 = [], filteredData5 = [], filteredData6 = [];
+        for (let i = 0; i < labels.length; i++) {
+            let date = new Date(labels[i] * 1000).toISOString().split('T')[0];
             if (date >= startDate && date <= endDate) {
                 filteredLabels.push(labels[i]);
                 filteredData1.push(ch_curr1[i]);
@@ -123,6 +122,25 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
         chart.data.datasets[3].data = filteredData4;
         chart.data.datasets[4].data = filteredData5;
         chart.data.datasets[5].data = filteredData6;
+        chart.update();
+    }
+
+    // Get the selected date or date range
+    document.getElementById('filterButton').addEventListener('click', function () {
+        const startDate = new Date(document.getElementById('dateInput').value).toISOString().split('T')[0];
+        const endDate = document.getElementById('rangeCheckbox').checked ? new Date(document.getElementById('endDateInput').value).toISOString().split('T')[0] : startDate;
+        filterData(startDate, endDate);
+    });
+    
+    // Reset the chart data to the original data
+    document.getElementById('showAllButton').addEventListener('click', function () {
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = ch_curr1;
+        chart.data.datasets[1].data = ch_curr2;
+        chart.data.datasets[2].data = ch_curr3;
+        chart.data.datasets[3].data = eq_curr1;
+        chart.data.datasets[4].data = eq_curr2;
+        chart.data.datasets[5].data = eq_curr3;
         chart.update();
     });
 })();

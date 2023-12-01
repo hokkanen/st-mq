@@ -7,7 +7,7 @@ import schedule from 'node-schedule';
 const DEBUG = false;
 
 const apikey_path = './workspace/apikey';
-const csv_path = './workspace/consumption.csv';
+const csv_path = './workspace/easee.csv';
 
 function keys() {
 	let access_token = '';
@@ -110,7 +110,7 @@ async function easee_query() {
 
 	// Write csv
 	await write_csv(`${data_ch.inCurrentT3.toFixed(2)},${data_ch.inCurrentT4.toFixed(2)},${data_ch.inCurrentT5.toFixed(2)},${data_eq.currentL1.toFixed(2)},${data_eq.currentL2.toFixed(2)},${data_eq.currentL3.toFixed(2)}`);
-	
+
 	// Debug printouts
 	if (DEBUG) {
 		console.log(data_ch);
