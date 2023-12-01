@@ -109,8 +109,8 @@ async function easee_query() {
 	const data_ch = await fetch_data(`https://api.easee.com/api/chargers/{id}/state`, id_ch);
 
 	// Write csv
-	await write_csv(`${data_ch.inCurrentT3},${data_ch.inCurrentT4},${data_ch.inCurrentT5},${data_eq.currentL1},${data_eq.currentL2},${data_eq.currentL3}`);
-
+	await write_csv(`${data_ch.inCurrentT3.toFixed(2)},${data_ch.inCurrentT4.toFixed(2)},${data_ch.inCurrentT5.toFixed(2)},${data_eq.currentL1.toFixed(2)},${data_eq.currentL2.toFixed(2)},${data_eq.currentL3.toFixed(2)}`);
+	
 	// Debug printouts
 	if (DEBUG) {
 		console.log(data_ch);
