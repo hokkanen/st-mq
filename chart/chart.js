@@ -29,12 +29,12 @@ let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], e
                 data: {
                     labels: labels,
                     datasets: [
-                        { label: 'Charger 1', data: ch_curr1, borderColor: 'red', backgroundColor: 'rgba(255, 0, 0, 0.5)', fill: 'origin' },
-                        { label: 'Charger 2', data: ch_curr2, borderColor: 'green', backgroundColor: 'rgba(0, 255, 0, 0.5)', fill: 'origin' },
-                        { label: 'Charger 3', data: ch_curr3, borderColor: 'blue', backgroundColor: 'rgba(0, 0, 255, 0.5)', fill: 'origin' },
-                        { label: 'Equalizer 1', data: eq_curr1, borderColor: 'red', fill: false },
-                        { label: 'Equalizer 2', data: eq_curr2, borderColor: 'green', fill: false },
-                        { label: 'Equalizer 3', data: eq_curr3, borderColor: 'blue', fill: false }
+                        { label: 'Charger 1', data: ch_curr1, borderColor: 'cyan', backgroundColor: 'rgba(0, 255, 255, 0.5)', fill: 'origin' },
+                        { label: 'Charger 2', data: ch_curr2, borderColor: 'magenta', backgroundColor: 'rgba(255, 0, 255, 0.5)', fill: 'origin' },
+                        { label: 'Charger 3', data: ch_curr3, borderColor: 'yellow', backgroundColor: 'rgba(255, 255, 0, 0.5)', fill: 'origin' },
+                        { label: 'Equalizer 1', data: eq_curr1, borderColor: 'cyan', fill: false },
+                        { label: 'Equalizer 2', data: eq_curr2, borderColor: 'magenta', fill: false },
+                        { label: 'Equalizer 3', data: eq_curr3, borderColor: 'yellow', fill: false }
                     ]
                 },
                 options: {
