@@ -1,14 +1,31 @@
 import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
 import data from 'url:../workspace/easee.csv';
+
+// Import data for optional shading (comment out to disable)
 import data_ext from 'url:../../st-entsoe/workspace/heatoff.csv';
 
-let chart, labels = [], heatOffTimes = [];
+let chart, labels = [], max_y_val, hourly_shade = [];
 let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], eq_curr3 = [];
 
-let shadedAreaData;
-let maxYValue;
 (async function () {
+
+    // Parse the optional background shading data
+   try{
+        Papa.parse(data_ext, {
+            download: true,
+            header: true,
+            dynamicTyping: true,
+            complete: function (results) {
+                results.data.forEach(row => {
+                    hourly_shade.push(row['hourly_shading']);
+                });
+            }
+        });
+    } catch {
+        hourly_shade = [];
+    }
+
     // Parse the CSV file
     Papa.parse(data, {
         download: true,
@@ -25,89 +42,75 @@ let maxYValue;
                 eq_curr3.push(row['eq_curr3']);
             });
 
-            // Parse the heatoff.csv file
-            Papa.parse(data_ext, {
-                download: true,
-                header: true,
-                dynamicTyping: true,
-                complete: function (results) {
-                    results.data.forEach(row => {
-                        heatOffTimes.push(row['unix_time_heatoff']);
-                    });
-
-                    // Create the chart
-                    const ctx = document.getElementById('acquisitions').getContext('2d');
-                    chart = new Chart(ctx, {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [
-                                { label: 'Charger 1', data: ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 255, 0.5)', fill: 'origin' },
-                                { label: 'Charger 2', data: ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 255, 0.5)', fill: 'origin' },
-                                { label: 'Charger 3', data: ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(255, 255, 0, 0.5)', fill: 'origin' },
-                                { label: 'Equalizer 1', data: eq_curr1, borderColor: 'cyan', fill: false },
-                                { label: 'Equalizer 2', data: eq_curr2, borderColor: 'magenta', fill: false },
-                                { label: 'Equalizer 3', data: eq_curr3, borderColor: 'yellow', fill: false },
-                                { label: 'Shaded Area', data: shadedAreaData, fill: 'origin', backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', pointRadius: 0 }
-                            ]
+            // Create the chart
+            const ctx = document.getElementById('acquisitions').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Charger 1', data: ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 255, 0.5)', fill: 'origin' },
+                        { label: 'Charger 2', data: ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 255, 0.5)', fill: 'origin' },
+                        { label: 'Charger 3', data: ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(255, 255, 0, 0.5)', fill: 'origin' },
+                        { label: 'Equalizer 1', data: eq_curr1, borderColor: 'cyan', fill: false },
+                        { label: 'Equalizer 2', data: eq_curr2, borderColor: 'magenta', fill: false },
+                        { label: 'Equalizer 3', data: eq_curr3, borderColor: 'yellow', fill: false },
+                        { label: 'Heat Off', data: '', backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'origin',  pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Current flow by phase (A)'
                         },
-                        options: {
-                            responsive: true,
-                            plugins: {
+                        tooltip: {
+                            callbacks: {
+                                title: function (context) {
+                                    // Convert the Unix timestamp to a Date object and format the date
+                                    const date = new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
+                                    return date;
+                                },
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            beginAtZero: false,
+                            ticks: {
+                                // Include a callback function that formats the label
+                                callback: function (value, index, values) {
+                                    // Convert the Unix timestamp to a Date object
+                                    const date = new Date(value * 1000);
+                                    // Format the date
+                                    return date.toLocaleString('en-UK');
+                                }
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                // Include a title for the y-axis
                                 title: {
                                     display: true,
-                                    text: 'Current flow by phase (A)'
-                                },
-                                tooltip: {
-                                    callbacks: {
-                                        title: function (context) {
-                                            // Convert the Unix timestamp to a Date object and format the date
-                                            const date = new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
-                                            return date;
-                                        },
-                                    }
-                                }
-                            },
-                            scales: {
-                                x: {
-                                    type: 'linear',
-                                    beginAtZero: false,
-                                    ticks: {
-                                        // Include a callback function that formats the label
-                                        callback: function (value, index, values) {
-                                            // Convert the Unix timestamp to a Date object
-                                            const date = new Date(value * 1000);
-                                            // Format the date
-                                            return date.toLocaleString('en-UK');
-                                        }
-                                    }
-                                },
-                                y: {
-                                    beginAtZero: true,
-                                    ticks: {
-                                        // Include a title for the y-axis
-                                        title: {
-                                            display: true,
-                                            text: 'Ampere (A)'
-                                        }
-                                    }
+                                    text: 'Ampere (A)'
                                 }
                             }
                         }
-                    });
-                    // Update the chart to populate the scales object
-                    chart.update();
-
-                    // After the chart has been updated, get the y-axis of the chart
-                    let yAxis = chart.scales['y'];
-
-                    // Get the maximum value of the y-axis
-                    maxYValue = yAxis.max;
-                    // Filter the data for the current day when the chart is first opened
-                    const today = new Date().toISOString().split('T')[0];
-                    filterData(today, today, maxYValue);
+                    }
                 }
             });
+            // Update the chart to populate the scales object
+            chart.update();
+
+            // Get the maximum value of the y-axis
+            max_y_val = chart.scales['y'].max;
+            
+            // Filter the data for the current day when the chart is first opened
+            const today = new Date().toISOString().split('T')[0];
+            filterData(today, today, max_y_val);
         }
     });
 
@@ -126,7 +129,7 @@ let maxYValue;
         let filteredShadedAreaData = new Array(labels.length).fill(null);
 
         // Recalculate the start and end indices for the shaded area based on the filtered data
-        heatOffTimes.forEach(time => {
+        hourly_shade.forEach(time => {
             let timeStartOfHour = time - (time % 3600); // Round down to the start of the hour
             let timeStartOfNextHour = timeStartOfHour + 3600; // Start of the next hour
             let startIndex = labels.findIndex(label => label >= timeStartOfHour);
@@ -135,7 +138,7 @@ let maxYValue;
             endIndex = endIndex === -1 ? slicedLabels.length - 1 : endIndex;
             endIndex += startIndex; // Adjust endIndex relative to the original labels array
             if (startIndex !== -1 && endIndex !== -1) {
-                filteredShadedAreaData.fill(maxYValue, startIndex, endIndex); // Add 1 to endIndex
+                filteredShadedAreaData.fill(max_y_val, startIndex, endIndex); // Add 1 to endIndex
             }
         });
         return filteredShadedAreaData;
@@ -185,7 +188,7 @@ let maxYValue;
         chart.data.datasets[3].data = eq_curr1;
         chart.data.datasets[4].data = eq_curr2;
         chart.data.datasets[5].data = eq_curr3;
-        chart.data.datasets[6].data = updateShadedArea(filteredLabels);
+        chart.data.datasets[6].data = updateShadedArea(labels);
         chart.update();
     });
 })();
