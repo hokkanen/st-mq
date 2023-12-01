@@ -32,7 +32,7 @@ class ChartDrawer {
                 dynamicTyping: true,
                 complete: (results) => {
                     results.data.forEach(row => {
-                        this.hourly_shade.push(row['hourly_shading']);
+                        this.hourly_shade.push(row['unix_time']);
                     });
                 }
             });
