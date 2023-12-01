@@ -2,7 +2,8 @@ import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
 import data from 'url:../workspace/consumption.csv';
 
-var labels = [], ch_curr1 = [], chart;
+let labels = [], chart;
+let ch_curr1 = [], ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], eq_curr3 = [];
 
 (async function () {
     // Parse the CSV file
@@ -11,7 +12,6 @@ var labels = [], ch_curr1 = [], chart;
         header: true,
         dynamicTyping: true,
         complete: function (results) {
-            var ch_curr2 = [], ch_curr3 = [], eq_curr1 = [], eq_curr2 = [], eq_curr3 = [];
             results.data.forEach(row => {
                 labels.push(row['unix_time']);
                 ch_curr1.push(row['ch_curr1']);
@@ -29,9 +29,9 @@ var labels = [], ch_curr1 = [], chart;
                 data: {
                     labels: labels,
                     datasets: [
-                        { label: 'Charger 1', data: ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 0, 0.5)', fill: 'origin' },
-                        { label: 'Charger 2', data: ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 0, 0.5)', fill: 'origin' },
-                        { label: 'Charger 3', data: ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(0, 0, 255, 0.5)', fill: 'origin' },
+                        { label: 'Charger 1', data: ch_curr1, borderColor: 'red', backgroundColor: 'rgba(255, 0, 0, 0.5)', fill: 'origin' },
+                        { label: 'Charger 2', data: ch_curr2, borderColor: 'green', backgroundColor: 'rgba(0, 255, 0, 0.5)', fill: 'origin' },
+                        { label: 'Charger 3', data: ch_curr3, borderColor: 'blue', backgroundColor: 'rgba(0, 0, 255, 0.5)', fill: 'origin' },
                         { label: 'Equalizer 1', data: eq_curr1, borderColor: 'red', fill: false },
                         { label: 'Equalizer 2', data: eq_curr2, borderColor: 'green', fill: false },
                         { label: 'Equalizer 3', data: eq_curr3, borderColor: 'blue', fill: false }
@@ -43,6 +43,15 @@ var labels = [], ch_curr1 = [], chart;
                         title: {
                             display: true,
                             text: 'Current flow by phase (A)'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: function(context) {
+                                    // Convert the Unix timestamp to a Date object and format the date
+                                    var date = new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
+                                    return date;
+                                },
+                            }
                         }
                     },
                     scales: {
@@ -93,17 +102,27 @@ var labels = [], ch_curr1 = [], chart;
         var endDate = document.getElementById('rangeCheckbox').checked ? new Date(document.getElementById('endDateInput').value).toISOString().split('T')[0] : startDate;
         // Filter the data
         var filteredLabels = [];
-        var filteredData = [];
+        var filteredData1 = [], filteredData2 = [], filteredData3 = [], filteredData4 = [], filteredData5 = [], filteredData6 = [];
         for (var i = 0; i < labels.length; i++) {
             var date = new Date(labels[i] * 1000).toISOString().split('T')[0];
             if (date >= startDate && date <= endDate) {
                 filteredLabels.push(labels[i]);
-                filteredData.push(ch_curr1[i]); // Replace with the appropriate data array
+                filteredData1.push(ch_curr1[i]);
+                filteredData2.push(ch_curr2[i]);
+                filteredData3.push(ch_curr3[i]);
+                filteredData4.push(eq_curr1[i]);
+                filteredData5.push(eq_curr2[i]);
+                filteredData6.push(eq_curr3[i]);
             }
         }
         // Update the chart
         chart.data.labels = filteredLabels;
-        chart.data.datasets[0].data = filteredData;
+        chart.data.datasets[0].data = filteredData1;
+        chart.data.datasets[1].data = filteredData2;
+        chart.data.datasets[2].data = filteredData3;
+        chart.data.datasets[3].data = filteredData4;
+        chart.data.datasets[4].data = filteredData5;
+        chart.data.datasets[5].data = filteredData6;
         chart.update();
     });
 })();
