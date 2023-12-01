@@ -139,7 +139,7 @@ class ChartDrawer {
 
     updateShadedArea(labels) {
         let ShadedAreaData = new Array(labels.length).fill(null);
-
+    
         // Recalculate the start and end indices for the shaded area based on the filtered data
         this.hourly_shade.forEach(time => {
             let timeStartOfHour = time - (time % 3600); // Round down to the start of the hour
@@ -153,6 +153,15 @@ class ChartDrawer {
                 ShadedAreaData.fill(this.max_y_val, startIndex, endIndex); // Add 1 to endIndex
             }
         });
+    
+        // Extend the shading to the latest data point
+        if (this.hourly_shade.length > 0 && labels.length > 0) {
+            let lastShadingValue = this.hourly_shade[this.hourly_shade.length - 1];
+            let latestDataTimestamp = labels[labels.length - 1];
+            this.hourly_shade.push({unix_time: latestDataTimestamp, hourly_shading: lastShadingValue});
+            ShadedAreaData[labels.length - 1] = this.max_y_val;
+        }
+    
         return ShadedAreaData;
     }
 
