@@ -31,9 +31,16 @@ class ChartDrawer {
                 header: true,
                 dynamicTyping: true,
                 complete: (results) => {
+                    // Clear the existing shading data
+                    this.hourly_shade = [];
+
+                    // Add the new shading data
                     results.data.forEach(row => {
                         this.hourly_shade.push(row['unix_time']);
                     });
+                    // Update the chart
+                    if (this.chart) 
+                        this.chart.update();
                 }
             });
         } catch {
