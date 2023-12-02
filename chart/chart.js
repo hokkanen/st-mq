@@ -42,15 +42,15 @@ class ChartDrawer {
             type: 'line',
             data: {
                 datasets: [
-                    { label: 'Charger 1', data: this.ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 255, 0.5)', fill: 'origin' },
-                    { label: 'Charger 2', data: this.ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 255, 0.5)', fill: 'origin' },
-                    { label: 'Charger 3', data: this.ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(255, 255, 0, 0.5)', fill: 'origin' },
-                    { label: 'Equalizer 1', data: this.eq_curr1, borderColor: 'cyan', borderWidth: 1, fill: false },
-                    { label: 'Equalizer 2', data: this.eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false },
-                    { label: 'Equalizer 3', data: this.eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false },
-                    { label: 'Price', data: this.price, yAxisID: 'y2', borderColor: 'red', borderDash: [1, 3], borderWidth: 1, fill: false },
-                    { label: 'Temp In', data: this.temp_in, yAxisID: 'y2', borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false },
-                    { label: 'Temp Out', data: this.temp_out, yAxisID: 'y2', borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false },
+                    { label: 'Charger 1', data: this.ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 255, 0.5)', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+                    { label: 'Charger 2', data: this.ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 255, 0.5)', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+                    { label: 'Charger 3', data: this.ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(255, 255, 0, 0.5)', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+                    { label: 'Equalizer 1', data: this.eq_curr1, borderColor: 'cyan', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+                    { label: 'Equalizer 2', data: this.eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+                    { label: 'Equalizer 3', data: this.eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+                    { label: 'Price', data: this.price, yAxisID: 'y2', borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
+                    { label: 'Temp In', data: this.temp_in, yAxisID: 'y2', borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+                    { label: 'Temp Out', data: this.temp_out, yAxisID: 'y2', borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Heat Off', data: this.heat_on, yAxisID: 'y2', backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0 }
                 ]
             },
@@ -87,25 +87,35 @@ class ChartDrawer {
                     },
                     y: {
                         beginAtZero: true,
-                        title: {
-                            display: true,
-                            text: 'Electric current (A)'
-                        },
-                    },
-                    y2: {
-                        position: 'right',
                         grid: {
-                            color: 'rgba(255, 0, 0, 0.2)',  // Change grid color here
-                            tickLength: 10,  // Make grid lines 10 pixels long
+                            color: 'rgba(0, 128, 128, 0.2)',  // Change grid color here
+                            //tickLength: 10,  // Make grid lines 10 pixels long
                         },
                         ticks: {
-                            color: 'rgba(255, 0, 0, 1)',  // Change axis values color here
+                            color: 'rgba(0, 128, 128, 1)',  // Change axis values color here
                             // Include a title for the y-axis
 
                         },
                         title: {
                             display: true,
-                            color: 'rgba(255, 0, 0, 1)',  // Change axis values color here
+                            color: 'rgba(0, 128, 128, 1)',  // Change axis values color here
+                            text: 'Price (¢) / Temp (°C)'
+                        }
+                    },
+                    y2: {
+                        position: 'right',
+                        grid: {
+                            //color: 'rgba(255, 0, 0, 0.2)',  // Change grid color here
+                            //tickLength: 10,  // Make grid lines 10 pixels long
+                        },
+                        ticks: {
+                            //color: 'rgba(255, 0, 0, 1)',  // Change axis values color here
+                            // Include a title for the y-axis
+
+                        },
+                        title: {
+                            display: true,
+                            //color: 'rgba(255, 0, 0, 1)',  // Change axis values color here
                             text: 'Price (¢) / Temp (°C)'
                         }
                     }
