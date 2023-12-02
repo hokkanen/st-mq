@@ -100,7 +100,7 @@ class ChartDrawer {
                         title: {
                             display: true,
                             color: 'rgba(0, 128, 128, 1)',  // Change axis values color here
-                            text: 'Price (¢) / Temp (°C)'
+                            text: 'Electric Current (A)'
                         }
                     },
                     y2: {
@@ -160,13 +160,11 @@ class ChartDrawer {
             console.log(this.heat_on[i].y);
         }
         // Append a single value at the end of the array
-
-        const date = new Date(this.heat_on[lastNonNullXIndex].x * 1000);
-        date.setMinutes(0, 0, 0);
-        date.setHours(date.getHours() + 1);
-        const x_next_hour = date.getTime() / 1000;
-
         if (lastNonNullXIndex !== null && this.heat_on[lastNonNullXIndex].y === this.maxY) {
+            const date = new Date(this.heat_on[lastNonNullXIndex].x * 1000);
+            date.setMinutes(0, 0, 0);
+            date.setHours(date.getHours() + 1);
+            const x_next_hour = date.getTime() / 1000;
             if (lastNonNullXIndex === this.heat_on.length - 1) {
                 //const x_next_hour = this.heat_on[this.heat_on.length - 1].x + 3600;
                 this.heat_on.push({ x: x_next_hour, y: this.heat_on[this.heat_on.length - 1].y });
@@ -206,7 +204,6 @@ class ChartDrawer {
 
             this.maxY = this.chart.scales['y2'].max;
             this.minY = this.chart.scales['y2'].min;
-            console.log(this.maxY);
             this.updateHeatOnData();
 
             this.chart.update();
@@ -237,7 +234,7 @@ class ChartDrawer {
 (async function () {
 
     // Instantiate the class
-    const chart_drawer = new ChartDrawer(data, data_ext);
+    const chart_drawer = new ChartDrawer();
 
     // Set the default date of the date inputs to today
     const today = new Date().toISOString().split('T')[0];
@@ -266,7 +263,5 @@ class ChartDrawer {
     });
 
     // Generate the chart for the current day when the chart is first opened
-    const startDate = new Date(0).toISOString().split('T')[0]; // Unix time = 0
-    const endDate = new Date().toISOString().split('T')[0]; // Current time
-    await chart_drawer.generateChart(startDate, endDate);
+    await chart_drawer.generateChart(today, today);
 })();
