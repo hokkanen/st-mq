@@ -29,6 +29,7 @@ class ChartDrawer {
         this.temp_in = [];
         this.temp_out = [];
         this.maxY = null;
+        this.minY = null;
     }
 
     createChart() {
@@ -51,7 +52,7 @@ class ChartDrawer {
                     { label: 'Price', data: this.price, yAxisID: 'y2', borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
                     { label: 'Temp In', data: this.temp_in, yAxisID: 'y2', borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Out', data: this.temp_out, yAxisID: 'y2', borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Heat Off', data: this.heat_on, yAxisID: 'y2', backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0 }
+                    { label: 'Heat Off', data: this.heat_on, yAxisID: 'y2', backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' }
                 ]
             },
             options: {
@@ -133,7 +134,7 @@ class ChartDrawer {
                 step: (results) => {
                     const row = results.data;
                     const timestamp = row['unix_time'];
-    
+
                     // Only add the row to the datasets if it's within the desired time range
                     if (timestamp >= startTimestamp && timestamp <= endTimestamp) {
                         callback(row, timestamp);
@@ -146,9 +147,32 @@ class ChartDrawer {
     }
 
     updateHeatOnData() {
+        let lastNonNullXIndex = null;
+
         for (let i = 0; i < this.heat_on.length; i++) {
-            if (this.heat_on[i].y === 10) {
+            if (this.heat_on[i].y === 1)
                 this.heat_on[i].y = this.maxY;
+            else
+                this.heat_on[i].y = this.minY;
+
+            if (this.heat_on[i].x !== null)
+                lastNonNullXIndex = i;
+            console.log(this.heat_on[i].y);
+        }
+        // Append a single value at the end of the array
+
+        const date = new Date(this.heat_on[lastNonNullXIndex].x * 1000);
+        date.setMinutes(0, 0, 0);
+        date.setHours(date.getHours() + 1);
+        const x_next_hour = date.getTime() / 1000;
+
+        if (lastNonNullXIndex !== null && this.heat_on[lastNonNullXIndex].y === this.maxY) {
+            if (lastNonNullXIndex === this.heat_on.length - 1) {
+                //const x_next_hour = this.heat_on[this.heat_on.length - 1].x + 3600;
+                this.heat_on.push({ x: x_next_hour, y: this.heat_on[this.heat_on.length - 1].y });
+            } else {
+                //const x_next_hour = this.heat_on[lastNonNullXIndex].x + 3600;
+                this.heat_on[lastNonNullXIndex + 1] = { x: x_next_hour, y: this.heat_on[lastNonNullXIndex].y };
             }
         }
     }
@@ -170,20 +194,21 @@ class ChartDrawer {
                 this.eq_curr3.push({ x: timestamp, y: row['eq_curr3'] });
             });
 
-            
+
             await this.parseData(data_ext, startTimestamp, endTimestamp, (row, timestamp) => {
                 this.price.push({ x: row['unix_time'], y: row['price'] });
-                this.heat_on.push({ x: row['unix_time'], y: row['heat_on'] === '0' ? null : 10 });
+                this.heat_on.push({ x: row['unix_time'], y: row['heat_on'] === 0 ? 1 : 0 });
                 this.temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
                 this.temp_out.push({ x: row['unix_time'], y: row['temp_out'] });
             });
-            
+
             this.createChart();
-            
-                            this.maxY = this.chart.scales['y2'].max;
-                            console.log(this.maxY);
-                            this.updateHeatOnData();
-    
+
+            this.maxY = this.chart.scales['y2'].max;
+            this.minY = this.chart.scales['y2'].min;
+            console.log(this.maxY);
+            this.updateHeatOnData();
+
             this.chart.update();
         }
 
