@@ -227,7 +227,7 @@ class ChartDrawer {
     async generateChart(start_date, end_date) {
 
         // Destroy any existing charts and initialize all vars
-        this.#initialize_values();
+        await this.#initialize_values();
 
         // Convert the start and end dates to Unix timestamps
         const start_time_unix = new Date(start_date).getTime() / 1000;
