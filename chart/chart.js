@@ -8,14 +8,14 @@ import data from 'url:../workspace/easee.csv';
 import data_ext from 'url:../workspace/st-entsoe.csv';
 
 // Aux function to get the beginning and end of the day
-const date_lims = (start_date, end_date) => {
+function date_lims (start_date, end_date) {
     let bod = new Date(start_date);
     bod.setHours(0, 0, 0, 0);
     let eod = new Date(end_date);
     eod.setDate(eod.getDate() + 1); // Add one day
     eod.setHours(0, 0, 0, 0);
     return { bod, eod };
-};
+}
 
 // ChartDrawer class
 class ChartDrawer {
