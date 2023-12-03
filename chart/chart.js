@@ -98,7 +98,7 @@ class ChartDrawer {
                     decimation: {
                         enabled: true,
                         algorithm: 'min-max', // or 'lttb'
-                        samples: 10
+                        samples: 288 // For 5 min data, 288 samples = 24 hours
                     },
                     title: {
                         display: true,
