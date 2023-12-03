@@ -7,33 +7,75 @@ import data from 'url:../workspace/easee.csv';
 // Import data for optional shading (comment out to disable)
 import data_ext from 'url:../workspace/st-entsoe.csv';
 
+// Aux function to get the beginning and end of the day
+const date_lims = (start_date, end_date) => {
+    let bod = new Date(start_date);
+    bod.setHours(0, 0, 0, 0);
+    let eod = new Date(end_date);
+    eod.setDate(eod.getDate() + 1); // Add one day
+    eod.setHours(0, 0, 0, 0);
+    return { bod, eod };
+};
+
 // ChartDrawer class
 class ChartDrawer {
 
     // Chart vars
-    #chart = null;
+    #chart;
+    #max_time;
+    #min_time;
 
     // Dataset 1 (data) vars
-    #ch_curr1 = [];
-    #ch_curr2 = [];
-    #ch_curr3 = [];
-    #eq_curr1 = [];
-    #eq_curr2 = [];
-    #eq_curr3 = [];
+    #ch_curr1;
+    #ch_curr2;
+    #ch_curr3;
+    #eq_curr1;
+    #eq_curr2;
+    #eq_curr3;
 
     // Dataset 2 (data_ext) vars
-    #price = [];
-    #heat_on = [];
-    #temp_in = [];
-    #temp_out = [];
+    #price;
+    #heat_on;
+    #temp_in;
+    #temp_out;
 
-    // Setup the chart
-    async #setup_chart(start_time_unix, end_time_unix) {
-
+    async #initialize_values() {
+        // Destroy the chart if it already exists
         if (this.#chart)
             this.#chart.destroy();
 
-            const ctx = document.getElementById('acquisitions').getContext('2d');
+        // Initialize all values
+        this.#chart = null;
+        this.#max_time = -Infinity;
+        this.#min_time = Infinity;
+
+        // Dataset 2 (data) vars
+        this.#ch_curr1 = [];
+        this.#ch_curr2 = [];
+        this.#ch_curr3 = [];
+        this.#eq_curr1 = [];
+        this.#eq_curr2 = [];
+        this.#eq_curr3 = [];
+
+        // Dataset 2 (data_ext) vars
+        this.#price = [];
+        this.#heat_on = [];
+        this.#temp_in = [];
+        this.#temp_out = [];
+    }
+
+    // Setup the chart
+    async #setup_chart() {
+
+        // Use the date_lims function to get the beginning and end of the day
+        const time_limits = date_lims(new Date(this.#min_time * 1000), new Date(this.#max_time * 1000));
+
+        // Convert the time limits to Unix timestamps
+        const time_min_unix = Math.floor(time_limits.bod.getTime() / 1000);
+        const time_max_unix = Math.floor(time_limits.eod.getTime() / 1000);
+
+        // Create new chart
+        const ctx = document.getElementById('acquisitions').getContext('2d');
         this.#chart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -53,6 +95,11 @@ class ChartDrawer {
             options: {
                 responsive: true,
                 plugins: {
+                    decimation: {
+                        enabled: true,
+                        algorithm: 'min-max', // or 'lttb'
+                        samples: 10
+                    },
                     title: {
                         display: true,
                         text: 'Home Monitor'
@@ -71,12 +118,12 @@ class ChartDrawer {
                     x: {
                         type: 'linear',
                         beginAtZero: false,
-                        min: start_time_unix,
-                        max: end_time_unix,
+                        min: time_min_unix,
+                        max: time_max_unix,
                         ticks: {
                             source: 'data',
                             autoSkip: true,
-                            maxTicksLimit: 24,
+                            stepSize: (time_max_unix - time_min_unix) / 24,
                             callback: function (value, index, values) {
                                 // Convert the Unix timestamp to a Date object
                                 const date = new Date(value * 1000);
@@ -122,8 +169,14 @@ class ChartDrawer {
                     const row = results.data;
 
                     // Only add the row to the datasets if it's within the desired time range
-                    if (row['unix_time'] >= start_time_unix && row['unix_time'] <= end_time_unix) {
+                    if (row['unix_time'] >= start_time_unix && row['unix_time'] < end_time_unix) {
+                        // Parse data from the callback
                         callback(row);
+                        // Update min_time and max_time
+                        if (row['unix_time'] !== null) {
+                            this.#min_time = Math.min(this.#min_time, row['unix_time']);
+                            this.#max_time = Math.max(this.#max_time, row['unix_time']);
+                        }
                     }
                 },
                 complete: (results) => {
@@ -173,21 +226,8 @@ class ChartDrawer {
     // Generate the chart
     async generateChart(start_date, end_date) {
 
-        // Initialize all the datasets to empty arrays
-
-        // Dataset 2 (data) vars
-        this.#ch_curr1 = [];
-        this.#ch_curr2 = [];
-        this.#ch_curr3 = [];
-        this.#eq_curr1 = [];
-        this.#eq_curr2 = [];
-        this.#eq_curr3 = [];
-
-        // Dataset 2 (data_ext) vars
-        this.#price = [];
-        this.#heat_on = [];
-        this.#temp_in = [];
-        this.#temp_out = [];
+        // Destroy any existing charts and initialize all vars
+        this.#initialize_values();
 
         // Convert the start and end dates to Unix timestamps
         const start_time_unix = new Date(start_date).getTime() / 1000;
@@ -215,7 +255,7 @@ class ChartDrawer {
         }
 
         // Setup the chart
-        await this.#setup_chart(start_time_unix,end_time_unix);
+        await this.#setup_chart();
 
         //Update the heat_on dataset to show correctly
         await this.#update_heat_on_data();
@@ -227,16 +267,6 @@ class ChartDrawer {
 
 // Begin execution here
 (async function () {
-
-    // Aux function to get the beginning and end of the day
-    const date_lims = (start_date, end_date) => {
-        let bof = new Date(start_date);
-        bof.setHours(0, 0, 0, 0);
-        let eod = new Date(end_date);
-        eod.setDate(eod.getDate() + 1); // Add one day
-        eod.setHours(0, 0, 0, 0);
-        return { bof, eod };
-    };
 
     // Instantiate the class
     const chart_drawer = new ChartDrawer();
@@ -258,16 +288,16 @@ class ChartDrawer {
         let end_date = document.getElementById('rangeCheckbox').checked
             ? new Date(document.getElementById('endDateInput').value) : new Date(start_date.getTime());
         limits = date_lims(start_date, end_date);
-        chart_drawer.generateChart(limits.bof, limits.eod);
+        chart_drawer.generateChart(limits.bod, limits.eod);
     });
 
     // Reset the chart data to the whole original data
     document.getElementById('showAllButton').addEventListener('click', function () {
         limits = date_lims(new Date(0), new Date());
-        chart_drawer.generateChart(limits.bof, limits.eod);
+        chart_drawer.generateChart(limits.bod, limits.eod);
     });
 
     // Generate the chart for the current day when the chart is first opened
     limits = date_lims(new Date(), new Date());
-    chart_drawer.generateChart(limits.bof, limits.eod);
+    chart_drawer.generateChart(limits.bod, limits.eod);
 })();
