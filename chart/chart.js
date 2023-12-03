@@ -6,9 +6,6 @@ import data from 'url:../workspace/easee.csv';
 
 // Import data for optional shading (comment out to disable)
 import data_ext from 'url:../workspace/st-entsoe.csv';
-function sleep(seconds) {
-    return new Promise(resolve => setTimeout(resolve, seconds * 1000));
-}
 
 // ChartDrawer class
 class ChartDrawer {
@@ -30,13 +27,13 @@ class ChartDrawer {
     #temp_in = [];
     #temp_out = [];
 
-    async #createChart(startTimestamp, endTimestamp) {
+    // Setup the chart
+    async #setup_chart(start_time_unix, end_time_unix) {
 
         if (this.#chart)
             this.#chart.destroy();
 
-        // Create the chart
-        const ctx = document.getElementById('acquisitions').getContext('2d');
+            const ctx = document.getElementById('acquisitions').getContext('2d');
         this.#chart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -58,7 +55,7 @@ class ChartDrawer {
                 plugins: {
                     title: {
                         display: true,
-                        text: 'Energy and temperature data'
+                        text: 'Home Monitor'
                     },
                     tooltip: {
                         callbacks: {
@@ -74,10 +71,9 @@ class ChartDrawer {
                     x: {
                         type: 'linear',
                         beginAtZero: false,
-                        min: startTimestamp,
-                        max: endTimestamp,
+                        min: start_time_unix,
+                        max: end_time_unix,
                         ticks: {
-                            // Generate a tick for each hour
                             source: 'data',
                             autoSkip: true,
                             maxTicksLimit: 24,
@@ -92,34 +88,21 @@ class ChartDrawer {
                     y: {
                         beginAtZero: true,
                         grid: {
-                            color: 'rgba(0, 128, 128, 0.2)',  // Change grid color here
-                            //tickLength: 10,  // Make grid lines 10 pixels long
+                            color: 'rgba(0, 128, 128, 0.2)',
                         },
                         ticks: {
-                            color: 'rgba(0, 128, 128, 1)',  // Change axis values color here
-                            // Include a title for the y-axis
-
+                            color: 'rgba(0, 128, 128, 1)',
                         },
                         title: {
                             display: true,
-                            color: 'rgba(0, 128, 128, 1)',  // Change axis values color here
+                            color: 'rgba(0, 128, 128, 1)',
                             text: 'Electric Current (A)'
                         }
                     },
                     y2: {
                         position: 'right',
-                        grid: {
-                            //color: 'rgba(255, 0, 0, 0.2)',  // Change grid color here
-                            //tickLength: 10,  // Make grid lines 10 pixels long
-                        },
-                        ticks: {
-                            //color: 'rgba(255, 0, 0, 1)',  // Change axis values color here
-                            // Include a title for the y-axis
-
-                        },
                         title: {
                             display: true,
-                            //color: 'rgba(255, 0, 0, 1)',  // Change axis values color here
                             text: 'Price (¢) / Temp (°C)'
                         }
                     }
@@ -128,9 +111,10 @@ class ChartDrawer {
         });
     }
 
-    async #parseData(data_, startTimestamp, endTimestamp, callback) {
+    // Parse data using PapaParse
+    async #parse_data(data, start_time_unix, end_time_unix, callback) {
         return new Promise((resolve, reject) => {
-            Papa.parse(data_, {
+            Papa.parse(data, {
                 download: true,
                 header: true,
                 dynamicTyping: true,
@@ -138,17 +122,15 @@ class ChartDrawer {
                     const row = results.data;
 
                     // Only add the row to the datasets if it's within the desired time range
-                    if (row['unix_time'] >= startTimestamp && row['unix_time'] <= endTimestamp) {
+                    if (row['unix_time'] >= start_time_unix && row['unix_time'] <= end_time_unix) {
                         callback(row);
                     }
                 },
                 complete: (results) => {
-                    if (results.errors.length > 0) {
+                    if (results.errors.length > 0)
                         reject(results.errors);
-
-                    } else {
+                    else
                         resolve();
-                    }
                 },
                 error: (error) => {
                     reject(error);
@@ -157,37 +139,39 @@ class ChartDrawer {
         });
     }
 
-    async #updateHeatOnData() {
-        let lastNonNullXIndex = null;
-        let maxY = this.#chart.scales['y2'].max;
-        let minY = this.#chart.scales['y2'].min;
+    // Update the heat_on dataset based on max and min values of the y2 axis
+    async #update_heat_on_data() {
+        let last_non_null_index = null;
+        let max_y = this.#chart.scales['y2'].max;
+        let min_y = this.#chart.scales['y2'].min;
 
         for (let i = 0; i < this.#heat_on.length; i++) {
             if (this.#heat_on[i].y === 0)
-                this.#heat_on[i].y = maxY;
+                this.#heat_on[i].y = max_y;
             else
-                this.#heat_on[i].y = minY;
+                this.#heat_on[i].y = min_y;
 
             if (this.#heat_on[i].x !== null)
-                lastNonNullXIndex = i;
+                last_non_null_index = i;
         }
         // Append a single value at the end of the array
-        if (lastNonNullXIndex !== null && this.#heat_on[lastNonNullXIndex].y === maxY) {
-            const date = new Date(this.#heat_on[lastNonNullXIndex].x * 1000);
+        if (last_non_null_index !== null && this.#heat_on[last_non_null_index].y === max_y) {
+            const date = new Date(this.#heat_on[last_non_null_index].x * 1000);
             date.setMinutes(0, 0, 0);
             date.setHours(date.getHours() + 1);
             const x_next_hour = date.getTime() / 1000;
-            if (lastNonNullXIndex === this.#heat_on.length - 1) {
+            if (last_non_null_index === this.#heat_on.length - 1) {
                 //const x_next_hour = this.#heat_on[this.#heat_on.length - 1].x + 3600;
                 this.#heat_on.push({ x: x_next_hour, y: this.#heat_on[this.#heat_on.length - 1].y });
             } else {
-                //const x_next_hour = this.#heat_on[lastNonNullXIndex].x + 3600;
-                this.#heat_on[lastNonNullXIndex + 1] = { x: x_next_hour, y: this.#heat_on[lastNonNullXIndex].y };
+                //const x_next_hour = this.#heat_on[last_non_null_index].x + 3600;
+                this.#heat_on[last_non_null_index + 1] = { x: x_next_hour, y: this.#heat_on[last_non_null_index].y };
             }
         }
     }
 
-    async generateChart(startDate, endDate) {
+    // Generate the chart
+    async generateChart(start_date, end_date) {
 
         // Initialize all the datasets to empty arrays
 
@@ -206,11 +190,12 @@ class ChartDrawer {
         this.#temp_out = [];
 
         // Convert the start and end dates to Unix timestamps
-        const startTimestamp = new Date(startDate).getTime() / 1000;
-        const endTimestamp = new Date(endDate).getTime() / 1000;
+        const start_time_unix = new Date(start_date).getTime() / 1000;
+        const end_time_unix = new Date(end_date).getTime() / 1000;
 
+        // Parse data and update the datasets
         try {
-            await this.#parseData(data, startTimestamp, endTimestamp, (row) => {
+            await this.#parse_data(data, start_time_unix, end_time_unix, (row) => {
                 this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
                 this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
                 this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
@@ -219,7 +204,7 @@ class ChartDrawer {
                 this.#eq_curr3.push({ x: row['unix_time'], y: row['eq_curr3'] });
             }).catch((error) => console.log(error));
 
-            await this.#parseData(data_ext, startTimestamp, endTimestamp, (row) => {
+            await this.#parse_data(data_ext, start_time_unix, end_time_unix, (row) => {
                 this.#price.push({ x: row['unix_time'], y: row['price'] });
                 this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
                 this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
@@ -229,9 +214,13 @@ class ChartDrawer {
             console.log(error);
         }
 
-        await this.#createChart(startTimestamp,endTimestamp);
-        await this.#updateHeatOnData();
+        // Setup the chart
+        await this.#setup_chart(start_time_unix,end_time_unix);
 
+        //Update the heat_on dataset to show correctly
+        await this.#update_heat_on_data();
+
+        // Update the chart to show heat_on correctly
         this.#chart.update();
     }
 }
@@ -240,10 +229,10 @@ class ChartDrawer {
 (async function () {
 
     // Aux function to get the beginning and end of the day
-    const date_lims = (startDate, endDate) => {
-        let bof = new Date(startDate);
+    const date_lims = (start_date, end_date) => {
+        let bof = new Date(start_date);
         bof.setHours(0, 0, 0, 0);
-        let eod = new Date(endDate);
+        let eod = new Date(end_date);
         eod.setDate(eod.getDate() + 1); // Add one day
         eod.setHours(0, 0, 0, 0);
         return { bof, eod };
@@ -265,10 +254,10 @@ class ChartDrawer {
 
     // Get the selected date or date range
     document.getElementById('filterButton').addEventListener('click', function () {
-        let startDate = new Date(document.getElementById('dateInput').value);
-        let endDate = document.getElementById('rangeCheckbox').checked
-            ? new Date(document.getElementById('endDateInput').value) : new Date(startDate.getTime());
-        limits = date_lims(startDate, endDate);
+        let start_date = new Date(document.getElementById('dateInput').value);
+        let end_date = document.getElementById('rangeCheckbox').checked
+            ? new Date(document.getElementById('endDateInput').value) : new Date(start_date.getTime());
+        limits = date_lims(start_date, end_date);
         chart_drawer.generateChart(limits.bof, limits.eod);
     });
 
