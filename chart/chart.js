@@ -98,12 +98,15 @@ class ChartDrawer {
                 ]
             },
             options: {
-                responsive: true,
+                normalized: false, // If true, data must be unique, sorted, and consistent across datasets (improved performance)
+                parsing: false, // If false, data must be sorted and match the internal data format (required if decimation enabled)
+                responsive: true, // Automatically resize the chart canvas with its container
                 plugins: {
                     decimation: {
                         enabled: true,
-                        algorithm: 'min-max', // or 'lttb'
-                        samples: 288 // For 5 min data, 288 samples = 24 hours
+                        algorithm: 'lttb', // 'min-max' or 'lttb'
+                        samples: 576, // For 5 min data, 576 samples = 48 hours
+                        threshold: 576 // Decimation activation threshold (samples)
                     },
                     title: {
                         display: true,
