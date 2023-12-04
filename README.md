@@ -16,13 +16,13 @@ Run [easee-query.js](easee-query.js) in the current terminal instance by
 ```
 node easee-query.js
 ```
-to collect the data into `workspace/consumption.csv` by querying the Easee API. The user credentials are asked once and then stored into `workspace/apikey`.
+to collect the data into `workspace/easee.csv` by querying the Easee API. The user credentials are asked once and then stored into `workspace/apikey`.
 
-In Linux, starting with
+To run with `pm2` process manager, use
 ```
-(nohup node easee-query.js&)
+pm2 start easee-query.js
 ```
-allows the output to be directed to `nohup.out` file and the program to be kept running even if the terminal instance is closed. However, this cannot be used if user credentials need be asked.
+However, this can be used only after the API keys are already stored.
 
 ## Plotting the Easee API data with chart.js (frontend)
 
@@ -30,5 +30,9 @@ Run a local web server in the current terminal instance by
 ```
 npm run dev
 ```
-and access the chart with browser at [http://localhost:1234](http://localhost:1234).
+Set server to restart 1 minute past every even hour using `pm2`:
+```
+pm2 start --cron-restart="1 */1 * * *" npm -- run dev
+```
+Access the chart with browser at [http://localhost:1234](http://localhost:1234).
 

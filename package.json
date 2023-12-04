@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "license": "MIT",
   "scripts": {
-    "dev": "parcel chart/index.html",
-    "build": "parcel build chart/index.html"
+    "dev": "parcel chart/index.html --no-cache",
+    "build": "parcel build chart/index.html --no-cache"
   },
   "type": "module",
   "devDependencies": {
