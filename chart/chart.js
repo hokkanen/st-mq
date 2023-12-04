@@ -63,14 +63,12 @@ class ChartDrawer {
 
     // Get the beginning and end of the day
     #date_lims(start_date, end_date) {
-        let bod_date = new Date(start_date);
         // Set the beginning of the current day
+        let bod_date = new Date(start_date);
         bod_date.setHours(0, 0, 0, 0);
+        // Add 24 hours + 1min to include the first point of the next day
         let eod_date = new Date(end_date);
-        // Set the beginning of the next day
-        eod_date.setDate(eod_date.getDate() + 1);
-        // Add extra 1min to include the first point of the next day
-        eod_date.setHours(0, 1, 0, 0);
+        eod_date.setHours(24, 1, 0, 0);
         // Return the Unix timestamps
         const bod = Math.floor(new Date(bod_date.getTime()) / 1000);
         const eod = Math.floor(new Date(eod_date.getTime()) / 1000);
@@ -93,9 +91,9 @@ class ChartDrawer {
                     { label: 'Equalizer 2 (A)', yAxisID: 'y_left', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
                     { label: 'Equalizer 3 (A)', yAxisID: 'y_left', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
                     { label: 'Equalizer Total (kW)', yAxisID: 'y_left', data: this.#eq_total, borderColor: 'rgba(255, 0, 0, 1)', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Price', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
-                    { label: 'Temp In', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Temp Out', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+                    { label: 'Price (¢)', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
+                    { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+                    { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Heat Off', yAxisID: 'y_right', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' }
                 ]
             },
@@ -147,7 +145,7 @@ class ChartDrawer {
                         title: {
                             display: true,
                             color: 'rgba(255, 0, 0, 1)',
-                            text: 'Current (A) / Power (kW)'
+                            text: 'Power (kW) / Current (A)'
                         }
                     },
                     y_right: {
@@ -197,7 +195,7 @@ class ChartDrawer {
 
                         // Convert the time limits to Unix timestamps and check if global min and max time values need updating
                         this.#min_time_unix = Math.min(this.#min_time_unix, time_limits.bod);
-                        this.#max_time_unix = Math.max(this.#max_time_unix, time_limits.eod);
+                        this.#max_time_unix = Math.max(this.#max_time_unix, time_limits.eod - 60); // Remove the extra 60 secs from eod
 
                         // Resolve promise
                         resolve();
@@ -286,45 +284,36 @@ class ChartDrawer {
         //Update the heat_on dataset to show correctly
         await this.#update_heat_on_data();
 
-        // Update the chart to show heat_on correctly
-        this.#chart.update();
+        // Use the second action layout as default (also updates chart)
+        await this.apply_action(this.get_actions()[0]);
     }
 
     // Choose between individual phases and total power layouts
     get_actions() {
         return [
             {
-                name: 'Individual phases (A)',
+                name: 'Total power (kW)',
                 handler() {
-                    this.#chart.data.datasets[0].hidden = false;
-                    this.#chart.data.datasets[1].hidden = false;
-                    this.#chart.data.datasets[2].hidden = false;
-                    this.#chart.data.datasets[3].hidden = true;
-                    this.#chart.data.datasets[4].hidden = false;
-                    this.#chart.data.datasets[5].hidden = false;
-                    this.#chart.data.datasets[6].hidden = false;
-                    this.#chart.data.datasets[7].hidden = true;
+                    this.#chart.data.datasets = this.#chart.data.datasets.map((dataset, i) =>
+                        i < 8 ? { ...dataset, hidden: ![3, 7].includes(i) } : dataset
+                    );
                     this.#chart.update();
                 }
             },
             {
-                name: 'Total power (kW)',
+                name: 'Individual phases (A)',
                 handler() {
-                    this.#chart.data.datasets[0].hidden = true;
-                    this.#chart.data.datasets[1].hidden = true;
-                    this.#chart.data.datasets[2].hidden = true;
-                    this.#chart.data.datasets[3].hidden = false;
-                    this.#chart.data.datasets[4].hidden = true;
-                    this.#chart.data.datasets[5].hidden = true;
-                    this.#chart.data.datasets[6].hidden = true
-                    this.#chart.data.datasets[7].hidden = false
+                    this.#chart.data.datasets = this.#chart.data.datasets.map((dataset, i) =>
+                        i < 8 ? { ...dataset, hidden: [3, 7].includes(i) } : dataset
+                    );
                     this.#chart.update();
                 }
             },
         ];
     }
+
     // Apply the action
-    apply_action(action) {
+    async apply_action(action) {
         action.handler.call(this);
     }
 }
