@@ -10,10 +10,13 @@ import data_ext from 'url:../workspace/st-entsoe.csv';
 // Aux function to get the beginning and end of the day
 function date_lims (start_date, end_date) {
     let bod = new Date(start_date);
+    // Set the beginning of the current day
     bod.setHours(0, 0, 0, 0);
     let eod = new Date(end_date);
-    eod.setDate(eod.getDate() + 1); // Add one day
-    eod.setHours(0, 0, 0, 0);
+    // Set the beginning of the next day
+    eod.setDate(eod.getDate() + 1); 
+    // Add extra 1min to include the first point of the next day
+    eod.setHours(0, 1, 0, 0);
     return { bod, eod };
 }
 
@@ -67,8 +70,8 @@ class ChartDrawer {
     // Setup the chart
     async #setup_chart() {
 
-        // Use the date_lims function to get the beginning and end of the day
-        const time_limits = date_lims(new Date(this.#min_time * 1000), new Date(this.#max_time * 1000));
+        // Use the date_lims function to get the beginning and end of the day (remove the extra 60 secs from eod)
+        const time_limits = date_lims(new Date(this.#min_time * 1000), new Date((this.#max_time - 60) * 1000));
 
         // Convert the time limits to Unix timestamps
         const time_min_unix = Math.floor(time_limits.bod.getTime() / 1000);
