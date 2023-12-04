@@ -1,20 +1,20 @@
 import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
 
-// Import data for the chart
-import data from 'url:../workspace/easee.csv';
+// Import easee consumption data for the chart (can be commented out)
+import data_easee from 'url:../workspace/easee.csv';
 
-// Import data for optional shading (comment out to disable)
-import data_ext from 'url:../workspace/st-entsoe.csv';
+// Import st-entsoe data for the chart (can be commented out)
+import data_st from 'url:../workspace/st-entsoe.csv';
 
 // Aux function to get the beginning and end of the day
-function date_lims (start_date, end_date) {
+function date_lims(start_date, end_date) {
     let bod = new Date(start_date);
     // Set the beginning of the current day
     bod.setHours(0, 0, 0, 0);
     let eod = new Date(end_date);
     // Set the beginning of the next day
-    eod.setDate(eod.getDate() + 1); 
+    eod.setDate(eod.getDate() + 1);
     // Add extra 1min to include the first point of the next day
     eod.setHours(0, 1, 0, 0);
     return { bod, eod };
@@ -28,7 +28,7 @@ class ChartDrawer {
     #max_time;
     #min_time;
 
-    // Dataset 1 (data) vars
+    // Dataset 1 (data_easee) vars
     #ch_curr1;
     #ch_curr2;
     #ch_curr3;
@@ -36,7 +36,7 @@ class ChartDrawer {
     #eq_curr2;
     #eq_curr3;
 
-    // Dataset 2 (data_ext) vars
+    // Dataset 2 (data_st) vars
     #price;
     #heat_on;
     #temp_in;
@@ -52,7 +52,7 @@ class ChartDrawer {
         this.#max_time = -Infinity;
         this.#min_time = Infinity;
 
-        // Dataset 2 (data) vars
+        // Dataset 2 (data_easee) vars
         this.#ch_curr1 = [];
         this.#ch_curr2 = [];
         this.#ch_curr3 = [];
@@ -60,7 +60,7 @@ class ChartDrawer {
         this.#eq_curr2 = [];
         this.#eq_curr3 = [];
 
-        // Dataset 2 (data_ext) vars
+        // Dataset 2 (data_st) vars
         this.#price = [];
         this.#heat_on = [];
         this.#temp_in = [];
@@ -83,16 +83,16 @@ class ChartDrawer {
             type: 'line',
             data: {
                 datasets: [
-                    { label: 'Charger 1', data: this.#ch_curr1, borderColor: 'transparent', backgroundColor: 'rgba(0, 255, 255, 0.5)', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Charger 2', data: this.#ch_curr2, borderColor: 'transparent', backgroundColor: 'rgba(255, 0, 255, 0.5)', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Charger 3', data: this.#ch_curr3, borderColor: 'transparent', backgroundColor: 'rgba(255, 255, 0, 0.5)', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer 1', data: this.#eq_curr1, borderColor: 'cyan', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer 2', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer 3', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Price', data: this.#price, yAxisID: 'y2', borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
-                    { label: 'Temp In', data: this.#temp_in, yAxisID: 'y2', borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Temp Out', data: this.#temp_out, yAxisID: 'y2', borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Heat Off', data: this.#heat_on, yAxisID: 'y2', backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' }
+                    { label: 'Charger 1', yAxisID: 'y_left', data: this.#ch_curr1, backgroundColor: 'rgba(0, 255, 255, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+                    { label: 'Charger 2', yAxisID: 'y_left', data: this.#ch_curr2, backgroundColor: 'rgba(255, 0, 255, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+                    { label: 'Charger 3', yAxisID: 'y_left', data: this.#ch_curr3, backgroundColor: 'rgba(255, 255, 0, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+                    { label: 'Equalizer 1', yAxisID: 'y_left', data: this.#eq_curr1, borderColor: 'cyan', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+                    { label: 'Equalizer 2', yAxisID: 'y_left', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+                    { label: 'Equalizer 3', yAxisID: 'y_left', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+                    { label: 'Price', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
+                    { label: 'Temp In', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+                    { label: 'Temp Out', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+                    { label: 'Heat Off', yAxisID: 'y_right', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' }
                 ]
             },
             options: {
@@ -135,7 +135,7 @@ class ChartDrawer {
                             }
                         }
                     },
-                    y: {
+                    y_left: {
                         beginAtZero: true,
                         grid: {
                             color: 'rgba(0, 128, 128, 0.2)',
@@ -149,7 +149,7 @@ class ChartDrawer {
                             text: 'Electric Current (A)'
                         }
                     },
-                    y2: {
+                    y_right: {
                         position: 'right',
                         title: {
                             display: true,
@@ -195,11 +195,11 @@ class ChartDrawer {
         });
     }
 
-    // Update the heat_on dataset based on max and min values of the y2 axis
+    // Update the heat_on dataset based on max and min values of the y_right axis
     async #update_heat_on_data() {
         let last_non_null_index = null;
-        let max_y = this.#chart.scales['y2'].max;
-        let min_y = this.#chart.scales['y2'].min;
+        let max_y = this.#chart.scales['y_right'].max;
+        let min_y = this.#chart.scales['y_right'].min;
 
         for (let i = 0; i < this.#heat_on.length; i++) {
             if (this.#heat_on[i].y === 0)
@@ -236,9 +236,9 @@ class ChartDrawer {
         const start_time_unix = new Date(start_date).getTime() / 1000;
         const end_time_unix = new Date(end_date).getTime() / 1000;
 
-        // Parse data and update the datasets
+        // Parse data_easee and populate the dataset
         try {
-            await this.#parse_data(data, start_time_unix, end_time_unix, (row) => {
+            await this.#parse_data(data_easee, start_time_unix, end_time_unix, (row) => {
                 this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
                 this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
                 this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
@@ -246,8 +246,13 @@ class ChartDrawer {
                 this.#eq_curr2.push({ x: row['unix_time'], y: row['eq_curr2'] });
                 this.#eq_curr3.push({ x: row['unix_time'], y: row['eq_curr3'] });
             }).catch((error) => console.log(error));
+        } catch (error) {
+            console.log(error);
+        }
 
-            await this.#parse_data(data_ext, start_time_unix, end_time_unix, (row) => {
+        // Parse data_st and populate the dataset
+        try {
+            await this.#parse_data(data_st, start_time_unix, end_time_unix, (row) => {
                 this.#price.push({ x: row['unix_time'], y: row['price'] });
                 this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
                 this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
