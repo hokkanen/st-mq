@@ -7,10 +7,15 @@
     #chartActions button {
       margin-right: 10px;
     }
+
     .chart-container {
       width: 1200px;
       margin: 0 auto;
       text-align: center;
+    }
+
+    .chart-container input {
+      vertical-align: middle;
     }
   </style>
 </head>
@@ -28,6 +33,7 @@
     <button id="showAllButton">All History</button>
     <!-- Create chart using js module -->
     <canvas id="acquisitions"></canvas>
+    <!-- Add chart actions using js module -->
     <div id="chartActions"></div>
   </div>
   <script type="module" src="chart.js"></script>
