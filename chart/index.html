@@ -2,25 +2,31 @@
 <html lang="en">
 
 <head>
-  <title>Current flow from Easee API</title>
+  <title>Home Monitor</title>
   <style>
     #chartActions button {
       margin-right: 10px;
+    }
+    .chart-container {
+      width: 1200px;
+      margin: 0 auto;
+      text-align: center;
     }
   </style>
 </head>
 
 <body>
-  <!-- Create date selector -->
-  <input type="date" id="dateInput">
-  <input type="date" id="endDateInput" style="display: none;">
-  <input type="checkbox" id="rangeCheckbox"> Use date range
-  <!-- Create 'Update Dates' button -->
-  <button id="filterButton">Update Dates</button>
-  <!-- Create 'All History' button -->
-  <button id="showAllButton">All History</button>
-  <!-- Create chart using js module -->
-  <div style="width: 1200px;">
+  <!-- Wrap everything in a div with class 'chart-container' -->
+  <div class="chart-container">
+    <!-- Create date selector -->
+    <input type="date" id="dateInput">
+    <input type="date" id="endDateInput" style="display: none;">
+    <input type="checkbox" id="rangeCheckbox"> Use date range
+    <!-- Create 'Update Dates' button -->
+    <button id="filterButton">Update Dates</button>
+    <!-- Create 'All History' button -->
+    <button id="showAllButton">All History</button>
+    <!-- Create chart using js module -->
     <canvas id="acquisitions"></canvas>
     <div id="chartActions"></div>
   </div>

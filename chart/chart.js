@@ -34,6 +34,7 @@ class ChartDrawer {
     #temp_in;
     #temp_out;
 
+    // Initialize chart vars
     #initialize_chart() {
         // Destroy the chart if it already exists
         if (this.#chart)
@@ -91,7 +92,7 @@ class ChartDrawer {
                     { label: 'Equalizer 2 (A)', yAxisID: 'y_left', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
                     { label: 'Equalizer 3 (A)', yAxisID: 'y_left', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
                     { label: 'Equalizer Total (kW)', yAxisID: 'y_left', data: this.#eq_total, borderColor: 'rgba(255, 0, 0, 1)', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Price (¢)', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
+                    { label: 'Price (¢/kWh)', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
                     { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Heat Off', yAxisID: 'y_right', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' }
@@ -110,7 +111,7 @@ class ChartDrawer {
                     },
                     title: {
                         display: true,
-                        text: 'Home Monitor'
+                        text: 'Home Monitor Chart'
                     },
                     tooltip: {
                         callbacks: {
@@ -132,8 +133,16 @@ class ChartDrawer {
                             autoSkip: true,
                             stepSize: (this.#max_time_unix - this.#min_time_unix) / 24,
                             callback: function (value, index, values) {
-                                // Convert the Unix timestamp to a Date object and format the date
-                                return new Date(value * 1000).toLocaleString('en-UK');
+                                // Convert the Unix timestamp to a Date object
+                                const date = new Date(value * 1000);
+                                // Get the date and time parts of the date
+                                const date_string = date.toLocaleDateString('en-UK');
+                                const time_string = date.toLocaleTimeString('en-UK', { hour: '2-digit', minute: '2-digit' });
+                                // Check if the time is '00:00'
+                                if (time_string === '00:00')
+                                    return date_string + ' ' + time_string; // Return date and time
+                                else
+                                    return time_string; // Return time only
                             }
                         }
                     },
@@ -155,7 +164,7 @@ class ChartDrawer {
                         position: 'right',
                         title: {
                             display: true,
-                            text: 'Price (¢) / Temp (°C)'
+                            text: 'Price (¢/kWh) / Temp (°C)'
                         }
                     }
                 }
@@ -287,7 +296,7 @@ class ChartDrawer {
         //Update the heat_on dataset to show correctly
         await this.#update_heat_on_data();
 
-        // Use the second action layout as default (also updates chart)
+        // Use the first action layout as default (also updates chart)
         await this.apply_action(this.get_actions()[0]);
     }
 
