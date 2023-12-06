@@ -36,3 +36,14 @@ pm2 start --cron-restart="1 */1 * * *" npm -- run dev
 ```
 Access the chart with browser at [http://localhost:1234](http://localhost:1234).
 
+## Create persistent app list
+Make `pm2` restart automatically after reboot by
+```
+pm2 startup
+```
+and following the instructions. After all desired apps have been started, save the app list by
+
+```
+pm2 save
+```
+so the apps will respawn after reboot. After a `nodejs` upgrade the startup script should be updated by running `pm2 unstartup` and `pm2 startup`.
