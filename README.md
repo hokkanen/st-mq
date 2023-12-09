@@ -26,18 +26,21 @@ sudo apt install -y mosquitto nodejs npm pm2
 
 Clone this repo by
 ```
-git clone https://github.com/hokkanen/easee-query.git
+git clone https://github.com/hokkanen/st-mq.git
 ```
 
 Install npm dependencies locally in the project folder by
 ```
-cd easee-query
+cd st-mq
 npm i
 ```
 
 ## Setup
+
+### SmartThings
 In SmartThigns, install the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, and set the correct IP for the device where the MQTT broker is running.
 
+### Api keys
 The [work directory](workspace) should contain an [API key file](workspace/apikey) with the user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys, which can be obtained freely by registering to these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries fail), the inside and outside temperatures are simply set to `0` degrees Celsius. However, inside temperature is only used for csv logging, and does not impact the heat adjustment algorithm. The [API key file](workspace/apikey) uses the json format and has the following structure:
 
 ```
@@ -59,6 +62,8 @@ The [work directory](workspace) should contain an [API key file](workspace/apike
 ```
 The easee keys are populated automatically when the user runs [easee-query.js](easee-query.js) and provides their login credentials.
 
+
+### Mosquitto MQTT broker
 Set up Mosquitto user name and password by creating a password file with
 ```
 sudo mosquitto_passwd -c /etc/mosquitto/passwd <username>
