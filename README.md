@@ -107,7 +107,7 @@ to collect the Easee Charger and Equalizer data into [workspace/easee.csv](works
 
 To run with `pm2` process manager, use
 ```
-pm2 start easee-query.js
+pm2 start scripts/easee-query.js
 ```
 However, this can be used only after the user credentials have been provided by first successfully running [easee-query.js](easee-query.js) at least once on an interactive session (which then stores the API keys for any subsequent execution).
 
