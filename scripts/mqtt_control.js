@@ -101,18 +101,27 @@ class MqttHandler {
     }
 }
 
-// Get API keys from the file "apikey"
+// Get keys from the apikey file
 function keys() {
-    if (fs.existsSync(apikey_path)) {
-        const keydata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
-
-        const json = {
-            "entsoe_token": keydata.entsoe.token,
-            "weather_token": keydata.openweathermap.token,
-            "st_token": keydata.smartthings.token
-        };
-        return json;
-    }
+	// Initialize tokens
+	let keydata = {
+        "entsoe_token": '',
+        "weather_token": '',
+        "st_token": ''
+	};
+	// Try to get the keys from the apikey file
+	if (fs.existsSync(apikey_path)) {
+		try {
+			const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
+            keydata.entsoe_token = filedata.entsoe.token;
+            keydata.weather_token = filedata.openweathermap.token;
+            keydata.st_token = filedata.smartthings.token;
+		} catch (error) {
+			console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${apikey_path}`);
+			console.error(error);
+		}
+	}
+	return keydata;
 }
 
 // Check the fetch response status
