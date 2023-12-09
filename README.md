@@ -52,6 +52,10 @@ The [work directory](workspace) should contain an [API key file](workspace/apike
     "entsoe": {
         "token": "<key>"
     },
+    "mqtt": {
+        "user": "<user>",
+        "pw": "<pw>"
+    },
     "openweathermap": {
         "token": "<key>"
     },
