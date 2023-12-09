@@ -18,7 +18,7 @@ unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3
 ```
 
 ## Installation
-Install `mosquitto` MQTT broker, `npm`, `nodejs`, and `pm2` process managed (optional) if not already installed:
+Install `mosquitto` MQTT broker, `npm`, `nodejs`, and `pm2` process manager (optional) if not already installed:
 ```
 sudo apt update
 sudo apt install -y mosquitto nodejs npm pm2
@@ -78,8 +78,15 @@ sudo micro /etc/mosquitto/conf.d/myconfig.conf
 ```
 with the following contents:
 ```
+# Allow connections from anywhere
+listener 1883
+
+# Require credentials for connections
 allow_anonymous false
 password_file /etc/mosquitto/passwd
+
+# Logging level
+log_type all
 ```
 Restart Mosquitto to apply the changes:
 ```

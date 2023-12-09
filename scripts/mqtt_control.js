@@ -80,26 +80,26 @@ class MqttHandler {
     }
 
     // Log messages on the given topic
-    async log_topic(topic) {
+    async log_topic(topic, qos = 2) {
         this.#logged_topics.push(topic);
 
-        this.#client.subscribe(topic, (err) => {
+        this.#client.subscribe(topic, { qos }, (err) => {
             if (err) {
                 console.error(`[ERROR ${date_string()}] MQTT: failed to subscribe to ${topic}: ${err.toString()}`);
             } else {
-                console.log(`[${date_string()}] MQTT: subscribed to topic ${topic}.`);
+                console.log(`[${date_string()}] MQTT: subscribed to topic ${topic} with QoS ${qos}.`);
             }
         });
     }
 
     // Publish a message on the given topic
-    async post_trigger(topic, msg) {
-        this.#client.publish(topic, msg, function (error) {
+    async post_trigger(topic, msg, qos = 1) {
+        this.#client.publish(topic, msg, { qos }, function (error) {
             if (error) {
                 console.log(`[ERROR ${date_string()}] MQTT: failed to publish ${topic}:'${msg}'`);
                 console.log(error);
             } else {
-                console.log(`[${date_string()}] MQTT: published ${topic}:'${msg}' message successfully!`);
+                console.log(`[${date_string()}] MQTT: published ${topic}:'${msg}' message with QoS ${qos} successfully!`);
             }
         });
     }
@@ -107,29 +107,29 @@ class MqttHandler {
 
 // Get keys from the apikey file
 function keys() {
-	// Initialize tokens
-	let keydata = {
+    // Initialize tokens
+    let keydata = {
         "entsoe_token": '',
         'mqtt_user': '',
         'mqtt_pw': '',
         "weather_token": '',
         "st_token": ''
-	};
-	// Try to get the keys from the apikey file
-	if (fs.existsSync(apikey_path)) {
-		try {
-			const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
+    };
+    // Try to get the keys from the apikey file
+    if (fs.existsSync(apikey_path)) {
+        try {
+            const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
             keydata.entsoe_token = filedata.entsoe.token;
             keydata.mqtt_user = filedata.mqtt.user;
             keydata.mqtt_pw = filedata.mqtt.pw;
             keydata.weather_token = filedata.openweathermap.token;
             keydata.st_token = filedata.smartthings.token;
-		} catch (error) {
-			console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${apikey_path}`);
-			console.error(error);
-		}
-	}
-	return keydata;
+        } catch (error) {
+            console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${apikey_path}`);
+            console.error(error);
+        }
+    }
+    return keydata;
 }
 
 // Check the fetch response status
