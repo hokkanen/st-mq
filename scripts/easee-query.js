@@ -9,25 +9,68 @@ const DEBUG = false;
 const apikey_path = './workspace/apikey';
 const csv_path = './workspace/easee.csv';
 
-function keys() {
-    if (fs.existsSync(apikey_path)) {
-        const keydata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
+// Aux function for formatting a time string
+function date_string() {
+    const now = new Date();
+    const time = `${now.getUTCHours().toString().padStart(2, '0')}:${now.getUTCMinutes().toString().padStart(2, '0')}:${now.getUTCSeconds().toString().padStart(2, '0')}`;
+    const date = `${now.getUTCDate().toString().padStart(2, '0')}-${(now.getUTCMonth() + 1).toString().padStart(2, '0')}-${now.getUTCFullYear()}`;
+    return `${time} ${date} UTC`;
+}
 
-        const json = {
-            "access_token": keydata.easee.access_token,
-            "refresh_token": keydata.easee.refresh_token
-        };
-        return json;
-    }
+// Get keys from the apikey file
+function keys() {
+	// Initialize tokens
+	let keydata = {
+		'access_token': '',
+		'refresh_token': ''
+	};
+	// Try to get the keys from the apikey file
+	if (fs.existsSync(apikey_path)) {
+		try {
+			const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
+			keydata.access_token = filedata.easee.access_token;
+			keydata.refresh_token = filedata.easee.refresh_token;
+		} catch (error) {
+			console.error(`Cannot obtain tokens from ${apikey_path} (${date_string()})`);
+			console.error(error);
+		}
+	}
+	return keydata;
+}
+
+// Update apikey file
+function update_keys(access_token, refresh_token) {
+	// Create new apikey file structure
+	let keydata = {
+		'easee': {
+			'access_token': '',
+			'refresh_token': ''
+		}
+	};
+	// Use existing apikey file structure if the file exists
+	if (fs.existsSync(apikey_path)) {
+		try {
+			keydata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
+		} catch (error) {
+			console.error(`Cannot parse keydata from ${apikey_path} (${date_string()})`);
+			console.error(error);
+			console.error(`Creating new ${apikey_path} file! (${date_string()})`);
+		}
+	}
+	// Add tokens
+	keydata.easee.access_token = access_token;
+	keydata.easee.refresh_token = refresh_token;
+	// Write to file
+	fs.writeFileSync(apikey_path, JSON.stringify(keydata, null, 4), { encoding: 'utf8', flag: 'w' });
 }
 
 async function check_response(response, type) {
 	if (response.status === 200) {
-		console.log(`${type} query successful (${new Date().toISOString().replace(/[T]/g, ' ').slice(0, 19) + " UTC"})`);
+		console.log(`${type} query successful (${date_string()})`);
 		console.log(` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
 	else {
-		console.log(`${type} query failed (${new Date().toISOString().replace(/[T]/g, ' ').slice(0, 19) + " UTC"})`)
+		console.log(`${type} query failed (${date_string()})`)
 		console.log(` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
 	return response.status;
@@ -57,7 +100,7 @@ async function update_tokens() {
 	if (await check_response(response, 'Refresh token') !== 200)
 		response = await use_credentials();
 	const data = await response.json();
-	fs.writeFileSync(apikey_path, `${data.accessToken}\n${data.refreshToken}\n`, { encoding: 'utf8', flag: 'w' });
+	update_keys(data.accessToken, data.refreshToken);
 }
 
 async function fetch_data(url, id) {
