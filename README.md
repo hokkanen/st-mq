@@ -98,7 +98,7 @@ Run [mqtt_control.js](scripts/mqtt_control.js) in the current terminal instance 
 ```
 node scripts/mqtt_control.js
 ```
-to publish 'ON' and 'OFF' messages to MQTT 'st/heat' topic depending on the hourly electricity spot price. The outputted hourly data is automatically stored in [workspace/mqtt.csv](workspace/mqtt.csv).
+to publish on/off messages to MQTT 'st/heat' topic depending on the hourly electricity spot price. The outputted hourly data is automatically stored in [workspace/mqtt.csv](workspace/mqtt.csv).
 
 To run with `pm2` process manager, use
 ```
