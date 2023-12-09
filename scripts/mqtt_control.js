@@ -330,10 +330,10 @@ async function adjust_heat(mq) {
 
     // Publish HeatOff request if price higher than threshold and the hourly price is over 4cnt/kWh, else HeatOn
     if (prices[index] > threshold_price && prices[index] > 40) {
-        await mq.post_trigger("st/heat", "OFF");
+        await mq.post_trigger("st/heat", "heatoff");
         await write_csv(prices[index] / 10.0, 0, inside_temp, outside_temp);
     } else {
-        await mq.post_trigger("st/heat", "ON");
+        await mq.post_trigger("st/heat", "heaton");
         await write_csv(prices[index] / 10.0, 1, inside_temp, outside_temp);
     }
 
