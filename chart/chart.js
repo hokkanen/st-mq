@@ -5,7 +5,7 @@ import Papa from 'papaparse';
 import data_easee from 'url:../workspace/easee.csv';
 
 // Import st-entsoe data for the chart (can be commented out)
-import data_st from 'url:../workspace/st-entsoe.csv';
+import data_st from 'url:../workspace/mqtt.csv';
 
 // The local electric grid voltage for all phases
 const VOLTAGE = 230;
