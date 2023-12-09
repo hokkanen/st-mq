@@ -48,9 +48,13 @@ class MqttHandler {
     #logged_topics = [];
 
     // Create a new mqtt client and connect to the broker
-    constructor(broker_address) {
+    constructor(broker_address, username, password) {
         this.#broker_address = broker_address;
-        this.#client = mqtt.connect(this.#broker_address);
+        const options = {
+            username: username,
+            password: password
+        };
+        this.#client = mqtt.connect(this.#broker_address, options);
 
         this.#client.on('error', (error) => {
             console.error(`[ERROR ${date_string()}] MQTT: client encountered error: ${error.toString()}`);
@@ -106,6 +110,8 @@ function keys() {
 	// Initialize tokens
 	let keydata = {
         "entsoe_token": '',
+        'mqtt_user': '',
+        'mqtt_pw': '',
         "weather_token": '',
         "st_token": ''
 	};
@@ -114,6 +120,8 @@ function keys() {
 		try {
 			const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
             keydata.entsoe_token = filedata.entsoe.token;
+            keydata.mqtt_user = filedata.mqtt.user;
+            keydata.mqtt_pw = filedata.mqtt.pw;
             keydata.weather_token = filedata.openweathermap.token;
             keydata.st_token = filedata.smartthings.token;
 		} catch (error) {
@@ -338,7 +346,7 @@ async function adjust_heat(mq) {
 // Begin execution here
 (async () => {
     // Create mqtt client and log messages on topic "st/receipt"
-    const mq = new MqttHandler(mqtt_broker);
+    const mq = new MqttHandler(mqtt_broker, keys().mqtt_user, keys().mqtt_pw);
     mq.log_topic('st/receipt');
 
     // Run once and then control heating with set schedule
