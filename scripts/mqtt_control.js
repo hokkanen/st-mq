@@ -74,7 +74,7 @@ class MqttHandler {
 
         this.#client.on('message', (topic, message) => {
             if (this.#logged_topics.includes(topic)) {
-                console.log(`[${date_string()}] MQTT: receipt on topic ${topic}: '${message}'`);
+                console.log(`[${date_string()}] MQTT: received confirmation ${topic}:${message}`);
             }
         });
     }
@@ -96,10 +96,10 @@ class MqttHandler {
     async post_trigger(topic, msg, qos = 1) {
         this.#client.publish(topic, msg, { qos }, function (error) {
             if (error) {
-                console.log(`[ERROR ${date_string()}] MQTT: failed to publish ${topic}:'${msg}'`);
+                console.log(`[ERROR ${date_string()}] MQTT: failed to publish ${topic}:${msg}`);
                 console.log(error);
             } else {
-                console.log(`[${date_string()}] MQTT: published ${topic}:'${msg}' message with QoS ${qos} successfully!`);
+                console.log(`[${date_string()}] MQTT: published ${topic}:${msg} with QoS ${qos} successfully!`);
             }
         });
     }
