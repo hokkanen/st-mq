@@ -53,24 +53,24 @@ class MqttHandler {
         this.#client = mqtt.connect(this.#broker_address);
 
         this.#client.on('error', (error) => {
-            console.error(`[ERROR ${date_string()}] MQTT client encountered error: ${error.toString()}`);
+            console.error(`[ERROR ${date_string()}] MQTT: client encountered error: ${error.toString()}`);
         });
 
         this.#client.on('connect', () => {
-            console.log(`[${date_string()}] MQTT client connected.`);
+            console.log(`[${date_string()}] MQTT: client connected.`);
         });
 
         this.#client.on('offline', () => {
-            console.log(`[${date_string()}] MQTT client is offline!`);
+            console.log(`[${date_string()}] MQTT: client is offline!`);
         });
 
         this.#client.on('reconnect', () => {
-            console.log(`[${date_string()}] MQTT client is reconnecting.`);
+            console.log(`[${date_string()}] MQTT: client is reconnecting.`);
         });
 
         this.#client.on('message', (topic, message) => {
             if (this.#logged_topics.includes(topic)) {
-                console.log(`[${date_string()}] MQTT receipt on topic ${topic}: '${message}'`);
+                console.log(`[${date_string()}] MQTT: receipt on topic ${topic}: '${message}'`);
             }
         });
     }
@@ -81,9 +81,9 @@ class MqttHandler {
 
         this.#client.subscribe(topic, (err) => {
             if (err) {
-                console.error(`[ERROR ${date_string()}] MQTT failed to subscribe to ${topic}: ${err.toString()}`);
+                console.error(`[ERROR ${date_string()}] MQTT: failed to subscribe to ${topic}: ${err.toString()}`);
             } else {
-                console.log(`[${date_string()}] MQTT subscribed to topic ${topic}.`);
+                console.log(`[${date_string()}] MQTT: subscribed to topic ${topic}.`);
             }
         });
     }
@@ -92,10 +92,10 @@ class MqttHandler {
     async post_trigger(topic, msg) {
         this.#client.publish(topic, msg, function (error) {
             if (error) {
-                console.log(`[ERROR ${date_string()}] MQTT failed to publish ${topic}:'${msg}'`);
+                console.log(`[ERROR ${date_string()}] MQTT: failed to publish ${topic}:'${msg}'`);
                 console.log(error);
             } else {
-                console.log(`[${date_string()}] MQTT published ${topic}:'${msg}' message successfully!`);
+                console.log(`[${date_string()}] MQTT: published ${topic}:'${msg}' message successfully!`);
             }
         });
     }
@@ -103,23 +103,16 @@ class MqttHandler {
 
 // Get API keys from the file "apikey"
 function keys() {
-    let entsoe_token = '';
-    let weather_token = '';
-    let st_token = '';
-
     if (fs.existsSync(apikey_path)) {
-        const keydata = fs.readFileSync(apikey_path, 'utf8').split('\n');
-        entsoe_token = keydata[0] ? keydata[0].trim() : entsoe_token;
-        weather_token = keydata[1] ? keydata[1].trim() : weather_token;
-        st_token = keydata[2] ? keydata[2].trim() : st_token;
-    }
+        const keydata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
 
-    const json = {
-        "entsoe_token": entsoe_token,
-        "weather_token": weather_token,
-        "st_token": st_token
-    };
-    return json;
+        const json = {
+            "entsoe_token": keydata.entsoe.token,
+            "weather_token": keydata.openweathermap.token,
+            "st_token": keydata.smartthings.token
+        };
+        return json;
+    }
 }
 
 // Check the fetch response status

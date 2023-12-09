@@ -10,20 +10,15 @@ const apikey_path = './workspace/apikey';
 const csv_path = './workspace/easee.csv';
 
 function keys() {
-	let access_token = '';
-	let refresh_token = '';
+    if (fs.existsSync(apikey_path)) {
+        const keydata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
 
-	if (fs.existsSync(apikey_path)) {
-		const keydata = fs.readFileSync(apikey_path, 'utf8').split('\n');
-		access_token = keydata[0] ? keydata[0].trim() : access_token;
-		refresh_token = keydata[1] ? keydata[1].trim() : refresh_token;
-	}
-
-	const json = {
-		"access_token": access_token,
-		"refresh_token": refresh_token
-	};
-	return json;
+        const json = {
+            "access_token": keydata.easee.access_token,
+            "refresh_token": keydata.easee.refresh_token
+        };
+        return json;
+    }
 }
 
 async function check_response(response, type) {
