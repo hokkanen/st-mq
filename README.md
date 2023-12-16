@@ -2,13 +2,13 @@
 # SmartThings tools with MQTT
 
 ## Nordpool electricity price control for SmartThings
-The [mqtt_control.js](scripts/mqtt_control.js) nodejs script obtains Finnish electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) (backup), and published an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [workspace/mqtt.csv](workspace/mqtt.csv) which can be plotted with the [html chart tool](chart/index.html). The file [workspace/mqtt.csv](workspace/mqtt.csv) has the following format:
+The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Finnish electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) (backup), and published an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [workspace/mqtt.csv](workspace/mqtt.csv) which can be plotted with the [html chart tool](chart/index.html). The file [workspace/mqtt.csv](workspace/mqtt.csv) has the following format:
 
 ```
 unix_time,price,heat_on,temp_in,temp_out
 ```
 
-NOTE! The device running [mqtt_control.js](scripts/mqtt_control.js) should be connected to the same local area network as the SmartThings hub.
+NOTE! The device running [mqtt-control.js](scripts/mqtt-control.js) should be connected to the same local area network as the SmartThings hub.
 
 ## Easee API query script
 The Easee API query script ([easee-query.js](scripts/easee-query.js)) asks for user credentials and then stores the respective user's Easee Charger and Easee Equalizer data into [workspace/easee.csv](workspace/easee.csv). The stored data contains electric current for three phases for Easee Charger (charger consumption) and Easee Equalizer (total home consumption). This data can also be plotted with the [html chart tool](chart/index.html). The [workspace/easee.csv](workspace/easee.csv) has the following format:
@@ -94,15 +94,15 @@ sudo systemctl restart mosquitto
 ```
 
 ## Running nordpool electricity price control for SmartThings
-Run [mqtt_control.js](scripts/mqtt_control.js) in the current terminal instance by
+Run [mqtt-control.js](scripts/mqtt-control.js) in the current terminal instance by
 ```
-node scripts/mqtt_control.js
+node scripts/mqtt-control.js
 ```
 to publish on/off messages to MQTT 'st/heat' topic depending on the hourly electricity spot price. The outputted hourly data is automatically stored in [workspace/mqtt.csv](workspace/mqtt.csv).
 
 To run with `pm2` process manager, use
 ```
-pm2 start scripts/mqtt_control.js
+pm2 start scripts/mqtt-control.js
 ```
 
 ## Running Easee API query script
