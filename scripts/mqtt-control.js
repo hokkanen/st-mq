@@ -16,7 +16,7 @@ const country_code = 'fi';
 const postal_code = '06150';
 
 // MQTT broker address
-const mqtt_broker = 'mqtt://localhost';
+const mqtt_broker = 'mqtt://192.168.1.31';
 
 // SmartThings device for inside temperature (optional, only for csv logging)
 const st_device_id = 'a9a99271-4d4b-4344-9c08-e30f38fc3d41';
@@ -74,7 +74,7 @@ class MqttHandler {
 
         this.#client.on('message', (topic, message) => {
             if (this.#logged_topics.includes(topic)) {
-                console.log(`[${date_string()}] MQTT: received confirmation ${topic}:${message}`);
+                console.log(`[${date_string()}] MQTT: received receipt ${topic}:${message}`);
             }
         });
     }
@@ -294,7 +294,7 @@ async function write_csv(price, heaton, temp_in, temp_out) {
 
     // If the file does not exists, create file and add first line
     if (!csv_append)
-        fs.writeFileSync(csv_path, 'unix_time,price,heat_on,temp_in,temp_out,\n');
+        fs.writeFileSync(csv_path, 'unix_time,price,heat_on,temp_in,temp_out\n');
 
     // Append data to the file
     const unix_time = Math.floor(Date.now() / 1000);
@@ -330,10 +330,10 @@ async function adjust_heat(mq) {
 
     // Publish HeatOff request if price higher than threshold and the hourly price is over 4cnt/kWh, else HeatOn
     if (prices[index] > threshold_price && prices[index] > 40) {
-        await mq.post_trigger("st/heat", "heatoff");
+        await mq.post_trigger("to_st/heat/action", "heatoff");
         await write_csv(prices[index] / 10.0, 0, inside_temp, outside_temp);
     } else {
-        await mq.post_trigger("st/heat", "heaton");
+        await mq.post_trigger("to_st/heat/action", "heaton");
         await write_csv(prices[index] / 10.0, 1, inside_temp, outside_temp);
     }
 
@@ -347,7 +347,7 @@ async function adjust_heat(mq) {
 (async () => {
     // Create mqtt client and log messages on topic "st/receipt"
     const mq = new MqttHandler(mqtt_broker, keys().mqtt_user, keys().mqtt_pw);
-    mq.log_topic('st/receipt');
+    mq.log_topic('from_st/heat/receipt');
 
     // Run once and then control heating with set schedule
     adjust_heat(mq);
