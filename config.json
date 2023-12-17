@@ -1,15 +1,65 @@
 {
-    "name": "SmartThings tools with MQTT",
-    "version": "0.1",
+    "name": "ST-MQ",
+    "version": "0.0.1",
     "slug": "st-mq",
-    "description": "Description of my add-on",
+    "description": "SmartThings tools with MQTT",
     "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
     "startup": "services",
     "boot": "auto",
-    "options": {},
-    "schema": {},
-    "ports": {
-      "1234/tcp": 1234
+    "options": {
+        "easee": {
+            "user": "null",
+            "pw": "null"
+        },
+        "entsoe": {
+            "token": "null"
+        },
+        "geoloc": {
+            "country_code": "fi",
+            "postal_code": "06150"
+        },
+        "mqtt": {
+            "address": "mqtt://localhost:1883",
+            "user": "null",
+            "pw": "null"
+        },
+        "openweathermap": {
+            "token": "null"
+        },
+        "smartthings": {
+            "dev_id": "null",
+            "token": "null"
+        }
     },
-    "map": ["./workspace:rw"]
-  }
+    "schema": {
+        "easee": {
+            "user": "str?",
+            "pw": "str?",
+            "access_token": "str?",
+            "refresh_token": "str?"
+        },
+        "entsoe": {
+            "token": "str?"
+        },
+        "geoloc": {
+            "country_code": "str",
+            "postal_code": "str"
+        },
+        "mqtt": {
+            "address": "str?",
+            "user": "str?",
+            "pw": "str?"
+        },
+        "openweathermap": {
+            "token": "str?"
+        },
+        "smartthings": {
+            "dev_id": "str?",
+            "token": "str?"
+        }
+    },
+    "ports": {
+        "1234/tcp": 1234
+    },
+    "map": ["share:rw"]
+}

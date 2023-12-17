@@ -2,8 +2,11 @@
 ARG BUILD_FROM
 FROM $BUILD_FROM
 
-# Set the working directory
-#WORKDIR /usr/src/app
+# Set environment variables
+ENV LANG C.UTF-8
+
+# Install Node.js and npm
+RUN apk add --no-cache nodejs npm
 
 # Copy package.json and package-lock.json
 COPY package*.json ./
@@ -12,10 +15,15 @@ COPY package*.json ./
 RUN npm install
 
 # Copy other files separately to enable caching
-COPY . .
+COPY chart/ /chart/
+COPY scripts/ /scripts/
+COPY run.sh /
+
+# Make run.sh executable
+RUN chmod a+x /run.sh
 
 # Expose port
 EXPOSE 1234
 
-# Run the app and scripts
-CMD node ./scripts/easee-query.js & node ./scripts/mwtt-control.js & npm run dev
+# Execute run.sh
+CMD [ "/run.sh" ]
