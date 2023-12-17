@@ -1,0 +1,15 @@
+{
+    "name": "SmartThings tools with MQTT",
+    "version": "0.1",
+    "slug": "st-mq",
+    "description": "Description of my add-on",
+    "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
+    "startup": "services",
+    "boot": "auto",
+    "options": {},
+    "schema": {},
+    "ports": {
+      "1234/tcp": 1234
+    },
+    "map": ["./workspace:rw"]
+  }
