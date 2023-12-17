@@ -1,20 +1,20 @@
 configuration:
   easee:
-    name: Easee
-    description: Configuration for the Easee API.
+    name: Easee API Authentication (optional)
+    description: Provide Easee API "access_token" and "refresh_token". Alternatively, giving Easee login credentials directly works as well, ie, "access_token" = "username" and "refresh_token" = "pw". If authentication details are not provided, Easee features are disabled.
   entsoe:
-    name: ENTSO-E
-    description: Configuration for the ENTSO-E API.
-geoloc:
-    name: Geolocation
-    description: Configuration for the current geolocation.
+    name: Entso-E API Authentication (optional)
+    description: Provide Entso-E API token. If not provided, the Elering backup API will be queried. However, if Elering goes down, there is no further fallback.
+  geoloc:
+    name: Geolocation details
+    description: Give the country code and postal code of your location. These are used for Elering price query and OpenWeatherMap temperature query.
   mqtt:
-    name: MQTT
-    description: Configuration for the MQTT service.
+    name: MQTT settings
+    description: Provide MQTT address, username, and password. MQTT is used to communicate with the local SmartThings hub.
   openweathermap:
-    name: OpenWeatherMap
-    description: Configuration for the OpenWeatherMap API.
+    name: OpenWeatherMap API Authentication (optional)
+    description: Provide OpenWeatherMap API token. If not provided, and SmartThings API does not provide outside temperature, the outside temperature is assumed to be 0 degrees Celsius.
   smartthings:
-    name: SmartThings
-    description: Configuration for the SmartThings API.
+    name: SmartThings API Authentication (optional)
+    description: Provide SmartThings API token. If not provided, inside and outside temperatures are not queried through SmartThings API. Inside temperature is set to 0C outside temperature is queried from OpenWeatherMap.
     
