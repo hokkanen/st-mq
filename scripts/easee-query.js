@@ -1,11 +1,12 @@
 import fetch from 'node-fetch';
 import fs from 'fs';
+import promptSync from 'prompt-sync';
 import schedule from 'node-schedule';
 
 // Set debugging settings and prints
 const DEBUG = false;
 
-const apikey_path = './options.json';
+const apikey_path = './workspace/apikey';
 const csv_path = './workspace/easee.csv';
 
 // Aux function for formatting a time string
@@ -27,8 +28,8 @@ function keys() {
 	if (fs.existsSync(apikey_path)) {
 		try {
 			const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
-			keydata.access_token = filedata.easee.user;
-			keydata.refresh_token = filedata.easee.pw;
+			keydata.access_token = filedata.easee.access_token;
+			keydata.refresh_token = filedata.easee.refresh_token;
 		} catch (error) {
 			console.error(`Cannot obtain tokens from ${apikey_path} (${date_string()})`);
 			console.error(error);
@@ -76,8 +77,8 @@ async function check_response(response, type) {
 }
 
 async function use_credentials() {
-	const user = keys().access_token;
-	const pw = keys().refresh_token;
+	const user = promptSync()('Username:');
+	const pw = promptSync()('Password:', { echo: '*' });
 	const options = {
 		method: 'POST',
 		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: 'null' },
