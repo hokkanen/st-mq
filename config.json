@@ -1,15 +1,20 @@
 {
     "name": "ST-MQ",
+    "description": "SmartThings tools with MQTT",
     "version": "0.0.1",
     "slug": "st-mq",
-    "description": "SmartThings tools with MQTT",
     "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
     "startup": "services",
     "boot": "auto",
+    "init": "false",
+    "ports": {
+        "1234/tcp": 1234
+    },
+    "map": ["share:rw"],
     "options": {
         "easee": {
-            "user": "null",
-            "pw": "null"
+            "access_token": "null",
+            "refresh_token": "null"
         },
         "entsoe": {
             "token": "null"
@@ -33,8 +38,6 @@
     },
     "schema": {
         "easee": {
-            "user": "str?",
-            "pw": "str?",
             "access_token": "str?",
             "refresh_token": "str?"
         },
@@ -57,9 +60,5 @@
             "dev_id": "str?",
             "token": "str?"
         }
-    },
-    "ports": {
-        "1234/tcp": 1234
-    },
-    "map": ["share:rw"]
+    }
 }
