@@ -1,5 +1,4 @@
 import { dirname } from 'path';
-import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import mqtt from 'mqtt';
@@ -294,7 +293,7 @@ async function get_outside_temp() {
 
 async function write_csv(price, heaton, temp_in, temp_out) {
     // Create the csv directory if it does not exist
-    const csv_dir = dirname(fileURLToPath(csv_path));
+    const csv_dir = dirname(csv_path);
     if (!fs.existsSync(csv_dir)) {
         fs.mkdirSync(csv_dir, { recursive: true });
     }
