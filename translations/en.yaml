@@ -17,4 +17,6 @@ configuration:
   smartthings:
     name: SmartThings API Authentication (optional)
     description: Provide SmartThings API token. If not provided, inside and outside temperatures are not queried through SmartThings API. Inside temperature is set to 0C outside temperature is queried from OpenWeatherMap.
-    
+  temp_to_hours:
+    name: Temperature to heating hours mapping
+    description: Mapping between outside temperature and daily heating hours. Linear interpolation is used in between points. If the temperature goes outside the given range, end point values are used (no extrapolation).

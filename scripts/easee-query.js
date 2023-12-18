@@ -26,7 +26,7 @@ function date_string() {
 // Get keys from the apikey file
 function config() {
 	// Initialize tokens
-	let keydata = {
+	let configdata = {
 		'access_token': '',
 		'refresh_token': '',
 		'charger_id': '',
@@ -37,10 +37,10 @@ function config() {
 	if (fs.existsSync(config_path)) {
 		try {
 			const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
-			keydata.access_token = filedata.easee.access_token;
-			keydata.refresh_token = filedata.easee.refresh_token;
-			keydata.charger_id = filedata.easee.charger_id;
-			keydata.equalizer_id = filedata.easee.equalizer_id;
+			configdata.access_token = filedata.easee.access_token;
+			configdata.refresh_token = filedata.easee.refresh_token;
+			configdata.charger_id = filedata.easee.charger_id;
+			configdata.equalizer_id = filedata.easee.equalizer_id;
 		} catch (error) {
 			console.error(`Cannot obtain tokens from ${config_path} (${date_string()})`);
 			console.error(error);
@@ -48,13 +48,13 @@ function config() {
 	} else {
 		console.error(`Cannot find config file in ${config_path} (${date_string()})`);
 	}
-	return keydata;
+	return configdata;
 }
 
 // Update apikey file
 function update_config(access_token, refresh_token) {
 	// Create new apikey file structure
-	let keydata = {
+	let configdata = {
 		'easee': {
 			'access_token': '',
 			'refresh_token': '',
@@ -65,18 +65,18 @@ function update_config(access_token, refresh_token) {
 	// Use existing apikey file structure if the file exists
 	if (fs.existsSync(config_path)) {
 		try {
-			keydata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+			configdata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
 		} catch (error) {
-			console.error(`Cannot parse keydata from ${config_path} (${date_string()})`);
+			console.error(`Cannot parse configdata from ${config_path} (${date_string()})`);
 			console.error(error);
 			console.error(`Creating new ${config_path} file! (${date_string()})`);
 		}
 	}
 	// Add tokens
-	keydata.easee.access_token = access_token;
-	keydata.easee.refresh_token = refresh_token;
+	configdata.easee.access_token = access_token;
+	configdata.easee.refresh_token = refresh_token;
 	// Write to file
-	fs.writeFileSync(config_path, JSON.stringify(keydata, null, 4), { encoding: 'utf8', flag: 'w' });
+	fs.writeFileSync(config_path, JSON.stringify(configdata, null, 4), { encoding: 'utf8', flag: 'w' });
 }
 
 // Check the API response status
