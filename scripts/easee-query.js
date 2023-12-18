@@ -1,3 +1,5 @@
+import { dirname } from 'path';
+import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import schedule from 'node-schedule';
@@ -5,64 +7,79 @@ import schedule from 'node-schedule';
 // Set debugging settings and prints
 const DEBUG = false;
 
-const apikey_path = './options.json';
-const csv_path = './workspace/easee.csv';
+// Check if a config file is found
+let config_path = './config.json'; // default path
+if (fs.existsSync('./data/options.json'))
+	config_path = './data/options.json'; // HASS path
+
+// Set csv output file path
+const csv_path = './share/st-mq/easee.csv';
 
 // Aux function for formatting a time string
 function date_string() {
-    const now = new Date();
-    const time = `${now.getUTCHours().toString().padStart(2, '0')}:${now.getUTCMinutes().toString().padStart(2, '0')}:${now.getUTCSeconds().toString().padStart(2, '0')}`;
-    const date = `${now.getUTCDate().toString().padStart(2, '0')}-${(now.getUTCMonth() + 1).toString().padStart(2, '0')}-${now.getUTCFullYear()}`;
-    return `${time} ${date} UTC`;
+	const now = new Date();
+	const time = `${now.getUTCHours().toString().padStart(2, '0')}:${now.getUTCMinutes().toString().padStart(2, '0')}:${now.getUTCSeconds().toString().padStart(2, '0')}`;
+	const date = `${now.getUTCDate().toString().padStart(2, '0')}-${(now.getUTCMonth() + 1).toString().padStart(2, '0')}-${now.getUTCFullYear()}`;
+	return `${time} ${date} UTC`;
 }
 
 // Get keys from the apikey file
-function keys() {
+function config() {
 	// Initialize tokens
 	let keydata = {
 		'access_token': '',
-		'refresh_token': ''
+		'refresh_token': '',
+		'charger_id': '',
+		'equalizer_id': ''
 	};
-	// Try to get the keys from the apikey file
-	if (fs.existsSync(apikey_path)) {
+
+	// Try to get the keys from the config file
+	if (fs.existsSync(config_path)) {
 		try {
-			const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
-			keydata.access_token = filedata.easee.user;
-			keydata.refresh_token = filedata.easee.pw;
+			const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+			keydata.access_token = filedata.easee.access_token;
+			keydata.refresh_token = filedata.easee.refresh_token;
+			keydata.charger_id = filedata.easee.charger_id;
+			keydata.equalizer_id = filedata.easee.equalizer_id;
 		} catch (error) {
-			console.error(`Cannot obtain tokens from ${apikey_path} (${date_string()})`);
+			console.error(`Cannot obtain tokens from ${config_path} (${date_string()})`);
 			console.error(error);
 		}
+	} else {
+		console.error(`Cannot find config file in ${config_path} (${date_string()})`);
 	}
 	return keydata;
 }
 
 // Update apikey file
-function update_keys(access_token, refresh_token) {
+function update_config(access_token, refresh_token) {
 	// Create new apikey file structure
 	let keydata = {
 		'easee': {
 			'access_token': '',
-			'refresh_token': ''
+			'refresh_token': '',
+			'charger_id': '',
+			'equalizer_id': ''
 		}
 	};
 	// Use existing apikey file structure if the file exists
-	if (fs.existsSync(apikey_path)) {
+	if (fs.existsSync(config_path)) {
 		try {
-			keydata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
+			keydata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
 		} catch (error) {
-			console.error(`Cannot parse keydata from ${apikey_path} (${date_string()})`);
+			console.error(`Cannot parse keydata from ${config_path} (${date_string()})`);
 			console.error(error);
-			console.error(`Creating new ${apikey_path} file! (${date_string()})`);
+			console.error(`Creating new ${config_path} file! (${date_string()})`);
 		}
 	}
 	// Add tokens
 	keydata.easee.access_token = access_token;
 	keydata.easee.refresh_token = refresh_token;
 	// Write to file
-	fs.writeFileSync(apikey_path, JSON.stringify(keydata, null, 4), { encoding: 'utf8', flag: 'w' });
+	fs.writeFileSync(config_path, JSON.stringify(keydata, null, 4), { encoding: 'utf8', flag: 'w' });
 }
 
+// Check the API response status
 async function check_response(response, type) {
 	if (response.status === 200) {
 		console.log(`${type} query successful (${date_string()})`);
@@ -75,49 +92,67 @@ async function check_response(response, type) {
 	return response.status;
 }
 
+// Use credentials for authentication
 async function use_credentials() {
-	const user = keys().access_token;
-	const pw = keys().refresh_token;
+	const user = config().access_token;
+	const pw = config().refresh_token;
 	const options = {
 		method: 'POST',
 		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: 'null' },
 		body: `{"userName":"${user}","password":"${pw}"}`
 	};
-	let response = await fetch('https://api.easee.com/api/accounts/login', options).catch(err => console.error(err));
-	if (await check_response(response, 'Authorization') !== 200)
-		response = await use_credentials();
-	return response;
+	// Try a few times before giving up
+	let i = 0;
+	for (i = 0; i < 5; i++) {
+		let response = await fetch('https://api.easee.com/api/accounts/login', options).catch(err => console.error(err));
+		if (await check_response(response, 'Authorization') === 200) {
+			return response;
+		}
+		await new Promise(resolve => setTimeout(resolve, 1000));
+	}
+	throw new Error(`Authorization attempt failed ${i + 1} times.\nExiting now... (${date_string()})`);
 }
 
+// Update Easee tokens
 async function update_tokens() {
 	const options = {
 		method: 'POST',
-		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: `Bearer ${keys().access_token}` },
-		body: `{"accessToken":"${keys().access_token}","refreshToken":"${keys().refresh_token}"}`
+		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: `Bearer ${config().access_token}` },
+		body: `{"accessToken":"${config().access_token}","refreshToken":"${config().refresh_token}"}`
 	};
 	let response = await fetch('https://api.easee.com/api/accounts/refresh_token', options).catch(err => console.error(err));
 	if (await check_response(response, 'Refresh token') !== 200)
 		response = await use_credentials();
 	const data = await response.json();
-	update_keys(data.accessToken, data.refreshToken);
+	update_config(data.accessToken, data.refreshToken);
 }
 
+// Fetch data from Easee API
 async function fetch_data(url, id) {
 	url = url.replace('{id}', id);
 	const options = {
 		method: 'GET',
-		headers: { accept: 'application/json', Authorization: `Bearer ${keys().access_token}` }
+		headers: { accept: 'application/json', Authorization: `Bearer ${config().access_token}` }
 	};
 	let response = await fetch(url, options).catch(err => console.error(err));
-	let data = await response.json();
 	if (await check_response(response, id) !== 200) {
 		await update_tokens();
-		data = await fetch_data(url, id);
+		response = await fetch(url, options).catch(err => console.error(err));
+		if (await check_response(response, id) !== 200)
+			throw new Error(`Fetch attempt failed even after the token update.\nExiting now... (${date_string()})`);
 	}
+	let data = await response.json();
 	return data;
 }
 
+// Write data to csv file
 async function write_csv(data) {
+	// Create the csv directory if it does not exist
+	const csv_dir = dirname(fileURLToPath(csv_path));
+	if (!fs.existsSync(csv_dir)) {
+		fs.mkdirSync(csv_dir, { recursive: true });
+	}
+
 	// Check if the file already exists and is not empty
 	const csv_append = fs.existsSync(csv_path) && !(fs.statSync(csv_path).size === 0);
 
@@ -130,20 +165,13 @@ async function write_csv(data) {
 	fs.appendFileSync(csv_path, `${unix_time},${data}\n`);
 }
 
+// Run the Easee query
 async function easee_query() {
-
-	// Create workspace directory if it does not exist
-	const workdir = './workspace';
-	if (!fs.existsSync(workdir))
-		fs.mkdirSync(workdir, { recursive: true });
-
 	// Get Equalizer data
-	const id_eq = 'QPLSWZC4';
-	const data_eq = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, id_eq);
+	const data_eq = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, config().equalizer_id);
 
 	// Get charger data
-	const id_ch = 'EHWZBUUV';
-	const data_ch = await fetch_data(`https://api.easee.com/api/chargers/{id}/state`, id_ch);
+	const data_ch = await fetch_data(`https://api.easee.com/api/chargers/{id}/state`, config().charger_id);
 
 	// Write csv
 	await write_csv(`${data_ch.inCurrentT3.toFixed(2)},${data_ch.inCurrentT4.toFixed(2)},${data_ch.inCurrentT5.toFixed(2)},${data_eq.currentL1.toFixed(2)},${data_eq.currentL2.toFixed(2)},${data_eq.currentL3.toFixed(2)}`);

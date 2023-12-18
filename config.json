@@ -14,7 +14,9 @@
     "options": {
         "easee": {
             "access_token": "null",
-            "refresh_token": "null"
+            "refresh_token": "null",
+            "charger_id": "null",
+            "equalizer_id": "null"
         },
         "entsoe": {
             "token": "null"
