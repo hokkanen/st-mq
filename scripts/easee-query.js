@@ -2,9 +2,17 @@ import { dirname } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import schedule from 'node-schedule';
+import { log } from 'console';
 
 // Set debugging settings and prints
 const DEBUG = false;
+
+// Set console colors
+export const RESET = '\x1b[0m';
+export const BLUE = '\x1b[34m';
+export const GREEN = '\x1b[32m';
+export const RED = '\x1b[31m';
+export const YELLOW = '\x1b[33m';
 
 // Check if a config file is found
 let config_path = './config.json'; // default path
@@ -48,11 +56,11 @@ function config() {
 			configdata.charger_id = options.easee.charger_id;
 			configdata.equalizer_id = options.easee.equalizer_id;
 		} catch (error) {
-			console.error(`Cannot obtain tokens from ${config_path} (${date_string()})`);
-			console.error(error);
+			console.error(`${BLUE}%s${RESET}`, `Cannot obtain tokens from ${config_path} (${date_string()})`);
+			console.error(`${BLUE}%s${RESET}`, error);
 		}
 	} else {
-		console.error(`Cannot find config file in ${config_path} (${date_string()})`);
+		console.error(`${BLUE}%s${RESET}`, `Cannot find config file in ${config_path} (${date_string()})`);
 	}
 	return configdata;
 }
@@ -73,9 +81,9 @@ function update_config(access_token, refresh_token) {
 		try {
 			configdata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
 		} catch (error) {
-			console.error(`Cannot parse configdata from ${config_path} (${date_string()})`);
-			console.error(error);
-			console.error(`Creating new ${config_path} file! (${date_string()})`);
+			console.error(`${BLUE}%s${RESET}`, `Cannot parse configdata from ${config_path} (${date_string()})`);
+			console.error(`${BLUE}%s${RESET}`, error);
+			console.error(`${BLUE}%s${RESET}`, `Creating new ${config_path} file! (${date_string()})`);
 		}
 	}
 	// Add tokens depending on the config file type
@@ -92,14 +100,14 @@ function update_config(access_token, refresh_token) {
 }
 
 // Check the API response status
-async function check_response(response, type) {
-	if (response.status === 200) {
-		console.log(`${type} query successful (${date_string()})`);
-		console.log(` API Status: ${response.status}\n API response: ${response.statusText}`);
+async function check_response(response, type, log_success) {
+	if (response.status === 200 && log_success) {
+		console.log(`${GREEN}%s${RESET}`, `${type} query successful (${date_string()})`);
+		console.log(`${GREEN}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
 	else {
-		console.log(`${type} query failed (${date_string()})`)
-		console.log(` API Status: ${response.status}\n API response: ${response.statusText}`);
+		console.log(`${GREEN}%s${RESET}`, `${type} query failed (${date_string()})`);
+		console.log(`${GREEN}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
 	return response.status;
 }
@@ -116,13 +124,13 @@ async function use_credentials() {
 	// Try a few times before giving up
 	let i = 0;
 	for (i = 0; i < 5; i++) {
-		let response = await fetch('https://api.easee.com/api/accounts/login', options).catch(err => console.error(err));
-		if (await check_response(response, 'Authorization') === 200) {
+		let response = await fetch('https://api.easee.com/api/accounts/login', options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
+		if (await check_response(response, 'Authorization', true) === 200) {
 			return response;
 		}
 		await new Promise(resolve => setTimeout(resolve, 1000));
 	}
-	throw new Error(`Authorization attempt failed ${i + 1} times.\nExiting now... (${date_string()})`);
+	throw new Error(`Authorization attempt failed ${i} times.\nExiting now... (${date_string()})`);
 }
 
 // Update Easee tokens
@@ -132,8 +140,8 @@ async function update_tokens() {
 		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: `Bearer ${config().access_token}` },
 		body: `{"accessToken":"${config().access_token}","refreshToken":"${config().refresh_token}"}`
 	};
-	let response = await fetch('https://api.easee.com/api/accounts/refresh_token', options).catch(err => console.error(err));
-	if (await check_response(response, 'Refresh token') !== 200)
+	let response = await fetch('https://api.easee.com/api/accounts/refresh_token', options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
+	if (await check_response(response, 'Refresh token', true) !== 200)
 		response = await use_credentials();
 	const data = await response.json();
 	update_config(data.accessToken, data.refreshToken);
@@ -147,14 +155,14 @@ async function fetch_data(url, id) {
 		headers: { accept: 'application/json', Authorization: `Bearer ${config().access_token}` }
 	};
 	// Fetch data and check response
-	let response = await fetch(url, options).catch(err => console.error(err));
+	let response = await fetch(url, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
 	
 	// If no success, update tokens and try again
-	if (await check_response(response, id) !== 200) {
+	if (await check_response(response, id, false) !== 200) {
 		await update_tokens();
 		options.headers.Authorization = `Bearer ${config().access_token}`;
-		response = await fetch(url, options).catch(err => console.error(err));
-		if (await check_response(response, id) !== 200)
+		response = await fetch(url, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
+		if (await check_response(response, id, false) !== 200)
 			throw new Error(`Fetch attempt failed for device id: ${id}\nExiting now... (${date_string()})`);
 	}
 	let data = await response.json();
@@ -188,7 +196,7 @@ async function write_csv(data) {
 }
 
 // Run the Easee query
-async function easee_query() {
+async function query_device_data() {
 	// Get Equalizer data
 	const data_eq = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, config().equalizer_id);
 
@@ -200,8 +208,8 @@ async function easee_query() {
 
 	// Debug printouts
 	if (DEBUG) {
-		console.log(data_ch);
-		console.log(data_eq)
+		console.log(`${GREEN}%s${RESET}`, data_ch);
+		console.log(`${GREEN}%s${RESET}`, data_eq)
 	}
 }
 
@@ -210,7 +218,7 @@ async function easee_query() {
     // Check the csv file status and create one if necessary
     await check_csv();
 
-	// Run easee query with set schedule
-	easee_query();
-	schedule.scheduleJob('*/5 * * * *', easee_query);
+    // Run query with set schedule
+    query_device_data();
+    schedule.scheduleJob('*/5 * * * *', query_device_data);
 })();

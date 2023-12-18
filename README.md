@@ -72,41 +72,16 @@ Restart Mosquitto to apply the changes:
 sudo systemctl restart mosquitto
 ```
 
-## Running Nordpool kWh spot price control for SmartThings (standalone)
-Run [mqtt-control.js](scripts/mqtt-control.js) in the current terminal instance by
+## Running (standalone)
+To start all required services, ie, a web server for [chart/index.html](chart/index.html), [easee-query.js](easee-query.js) and [mqtt-control.js](scripts/mqtt-control.js) scripts, run [scheduler.js](scheduler.js) in the current terminal instance by
 ```
-node scripts/mqtt-control.js
-```
-to publish on/off messages to MQTT 'to_st/heat/action' topic depending on the hourly electricity spot price. The outputted hourly data is automatically stored in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv).
-
-To run with `pm2` process manager, use
-```
-pm2 start scripts/mqtt-control.js
-```
-
-## Running Easee API query script (standalone)
-Run [easee-query.js](easee-query.js) in the current terminal instance by
-```
-node scripts/easee-query.js
-```
-to collect the Easee Charger and Equalizer data into [share/st-mq/easee.csv](share/st-mq/easee.csv).
-
-To run with `pm2` process manager, use
-```
-pm2 start scripts/easee-query.js
-```
-
-## Plotting the csv data with chart.js (standalone)
-
-Run a local web server in the current terminal instance by
-```
-npm run dev
+node scheduler.js
 ```
 To run with `pm2` process manager, use
 ```
-pm2 start npm -- run dev
+pm2 start scheduler.js
 ```
-Access the chart with browser at [http://localhost:1234](http://localhost:1234). If there is an error, try to run `node scripts/easee-query.js` (no easee config required) once so that it initializes an empty easee.csv file for the chart.js.
+Access the [chart](chart/index.html) with browser at [http://localhost:1234](http://localhost:1234).
 
 ## Create persistent app list (standalone)
 Make `pm2` restart automatically after reboot by
