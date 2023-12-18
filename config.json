@@ -1,7 +1,7 @@
 {
     "name": "ST-MQ",
-    "description": "SmartThings tools with MQTT",
-    "version": "0.0.1",
+    "description": "SmartThings MQTT Tools",
+    "version": "0.1.0",
     "slug": "st-mq",
     "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
     "startup": "services",
@@ -13,54 +13,69 @@
     "map": ["share:rw"],
     "options": {
         "easee": {
-            "access_token": "null",
-            "refresh_token": "null",
-            "charger_id": "null",
-            "equalizer_id": "null"
+            "access_token": "",
+            "refresh_token": "",
+            "charger_id": "",
+            "equalizer_id": ""
         },
         "entsoe": {
-            "token": "null"
+            "token": ""
         },
         "geoloc": {
             "country_code": "fi",
             "postal_code": "06150"
         },
         "mqtt": {
-            "address": "mqtt://localhost:1883",
-            "user": "null",
-            "pw": "null"
+            "address": "mqtt://core-mosquitto",
+            "user": "",
+            "pw": ""
         },
         "openweathermap": {
-            "token": "null"
+            "token": ""
         },
         "smartthings": {
-            "dev_id": "null",
-            "token": "null"
-        }
+            "dev_id": "",
+            "token": ""
+        },
+        "temp_to_hours": [
+            { "temp": 30, "hours": 1 },
+            { "temp": 20, "hours": 2 },
+            { "temp": 10, "hours": 10 },
+            { "temp": 0, "hours": 14 },
+            { "temp": -10, "hours": 18 },
+            { "temp": -20, "hours": 22 },
+            { "temp": -30, "hours": 24 }
+        ]
     },
     "schema": {
         "easee": {
-            "access_token": "str?",
-            "refresh_token": "str?"
+            "access_token": "password?",
+            "refresh_token": "password?"
         },
         "entsoe": {
-            "token": "str?"
+            "token": "password?"
         },
         "geoloc": {
             "country_code": "str",
             "postal_code": "str"
         },
         "mqtt": {
-            "address": "str?",
-            "user": "str?",
-            "pw": "str?"
+            "address": "str",
+            "user": "str",
+            "pw": "password"
         },
         "openweathermap": {
             "token": "str?"
         },
         "smartthings": {
             "dev_id": "str?",
-            "token": "str?"
-        }
+            "token": "password?"
+        },
+        "temp_to_hours": [
+            {
+                "temp": "int",
+                "hours": "int"
+            }
+        ]
     }
 }
