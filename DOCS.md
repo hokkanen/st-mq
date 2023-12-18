@@ -1,4 +1,4 @@
-# SmartThings MQTT tools with kWh spot price query
+# SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
 
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]

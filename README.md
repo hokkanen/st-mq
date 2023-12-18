@@ -1,10 +1,10 @@
 
-# SmartThings MQTT tools with kWh spot price query
+# SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
 
 This tool can be run as a standalone app (see below) or as a [Home Assistant Add-On](DOCS.md).
 
 ## Nordpool kWh spot price control for SmartThings
-The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Finnish electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) (backup), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) which can be plotted with the [html chart tool](chart/index.html). The file [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) has the following format:
+The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Nordic and Baltic electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) backup API (works only for fi, ee, lt, lv country codes), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) which can be plotted with the [html chart tool](chart/index.html). The file [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) has the following format:
 
 ```
 unix_time,price,heat_on,temp_in,temp_out
