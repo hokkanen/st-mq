@@ -3,20 +3,28 @@
     "description": "SmartThings MQTT Tools",
     "version": "0.1.0",
     "slug": "st-mq",
-    "arch": ["armhf", "armv7", "aarch64", "amd64", "i386"],
+    "arch": [
+        "armhf",
+        "armv7",
+        "aarch64",
+        "amd64",
+        "i386"
+    ],
     "startup": "services",
     "boot": "auto",
     "init": "false",
     "ports": {
         "1234/tcp": 1234
     },
-    "map": ["share:rw"],
+    "map": [
+        "share:rw"
+    ],
     "options": {
         "easee": {
             "access_token": "",
             "refresh_token": "",
-            "charger_id": "",
-            "equalizer_id": ""
+            "charger_id": "EHXXXXXX",
+            "equalizer_id": "QPXXXXXX"
         },
         "entsoe": {
             "token": ""
@@ -38,19 +46,42 @@
             "token": ""
         },
         "temp_to_hours": [
-            { "temp": 30, "hours": 1 },
-            { "temp": 20, "hours": 2 },
-            { "temp": 10, "hours": 10 },
-            { "temp": 0, "hours": 14 },
-            { "temp": -10, "hours": 18 },
-            { "temp": -20, "hours": 22 },
-            { "temp": -30, "hours": 24 }
+            {
+                "temp": 30,
+                "hours": 1
+            },
+            {
+                "temp": 20,
+                "hours": 2
+            },
+            {
+                "temp": 10,
+                "hours": 10
+            },
+            {
+                "temp": 0,
+                "hours": 14
+            },
+            {
+                "temp": -10,
+                "hours": 18
+            },
+            {
+                "temp": -20,
+                "hours": 22
+            },
+            {
+                "temp": -30,
+                "hours": 24
+            }
         ]
     },
     "schema": {
         "easee": {
             "access_token": "password?",
-            "refresh_token": "password?"
+            "refresh_token": "password?",
+            "charger_id": "str",
+            "equalizer_id": "str"
         },
         "entsoe": {
             "token": "password?"
