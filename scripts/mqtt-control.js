@@ -8,6 +8,13 @@ import { XMLParser, XMLBuilder, XMLValidator } from "fast-xml-parser";
 // Set debugging settings and prints
 const DEBUG = false;
 
+// Set console colors
+export const RESET = '\x1b[0m';
+export const BLUE = '\x1b[34m';
+export const GREEN = '\x1b[32m';
+export const RED = '\x1b[31m';
+export const YELLOW = '\x1b[33m';
+
 // Check if a config file is found
 let config_path = './config.json'; // default path
 if (fs.existsSync('./data/options.json'))
@@ -41,24 +48,24 @@ class MqttHandler {
         this.#client = mqtt.connect(this.#broker_address, options);
 
         this.#client.on('error', (error) => {
-            console.error(`[ERROR ${date_string()}] MQTT: client encountered error: ${error.toString()}`);
+            console.error(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] MQTT: client encountered error: ${error.toString()}`);
         });
 
         this.#client.on('connect', () => {
-            console.log(`[${date_string()}] MQTT: client connected.`);
+            console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: client connected.`);
         });
 
         this.#client.on('offline', () => {
-            console.log(`[${date_string()}] MQTT: client is offline!`);
+            console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: client is offline!`);
         });
 
         this.#client.on('reconnect', () => {
-            console.log(`[${date_string()}] MQTT: client is reconnecting.`);
+            console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: client is reconnecting.`);
         });
 
         this.#client.on('message', (topic, message) => {
             if (this.#logged_topics.includes(topic)) {
-                console.log(`[${date_string()}] MQTT: received receipt ${topic}:${message}`);
+                console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: received receipt ${topic}:${message}`);
             }
         });
     }
@@ -69,9 +76,9 @@ class MqttHandler {
 
         this.#client.subscribe(topic, { qos }, (err) => {
             if (err) {
-                console.error(`[ERROR ${date_string()}] MQTT: failed to subscribe to ${topic}: ${err.toString()}`);
+                console.error(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] MQTT: failed to subscribe to ${topic}: ${err.toString()}`);
             } else {
-                console.log(`[${date_string()}] MQTT: subscribed to topic ${topic} with QoS ${qos}.`);
+                console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: subscribed to topic ${topic} with QoS ${qos}.`);
             }
         });
     }
@@ -80,10 +87,10 @@ class MqttHandler {
     async post_trigger(topic, msg, qos = 1) {
         this.#client.publish(topic, msg, { qos }, function (error) {
             if (error) {
-                console.log(`[ERROR ${date_string()}] MQTT: failed to publish ${topic}:${msg}`);
-                console.log(error);
+                console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] MQTT: failed to publish ${topic}:${msg}`);
+                console.log(`${BLUE}%s${RESET}`, error);
             } else {
-                console.log(`[${date_string()}] MQTT: published ${topic}:${msg} with QoS ${qos} successfully!`);
+                console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: published ${topic}:${msg} with QoS ${qos} successfully!`);
             }
         });
     }
@@ -127,8 +134,8 @@ function config() {
             configdata.temp_to_hours = options.temp_to_hours;
             configdata.weather_token = options.openweathermap.token;
         } catch (error) {
-            console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${config_path}`);
-            console.error(error);
+            console.error(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse API tokens from ${config_path}`);
+            console.error(`${BLUE}%s${RESET}`, error);
         }
     }
     return configdata;
@@ -137,11 +144,11 @@ function config() {
 // Check the fetch response status
 async function check_response(response, type) {
     if (response.status === 200) {
-        console.log(`[${date_string()}] ${type} query successful!`);
+        console.log(`${BLUE}%s${RESET}`, `[${date_string()}] ${type} query successful!`);
     }
     else {
-        console.log(`[ERROR ${date_string()}] ${type} query failed!`)
-        console.log(` API Status: ${response.status}\n API response: ${response.statusText}`);
+        console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] ${type} query failed!`)
+        console.log(`${BLUE}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
     }
     return response.status;
 }
@@ -164,7 +171,7 @@ async function query_entsoe_prices(start_date, end_date) {
     // Send API get request to Entso-E
     const request = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}&documentType=${document_type}&processType=${process_type}` +
         `&in_Domain=${location_id}&out_Domain=${location_id}&periodStart=${period_start}&periodEnd=${period_end}`
-    const response = await fetch(request).catch(error => console.log(error));
+    const response = await fetch(request).catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Get prices (if query fails, empty array is returned)
     let prices = [];
@@ -177,11 +184,11 @@ async function query_entsoe_prices(start_date, end_date) {
                 prices.push(parseFloat(entry['price.amount']));
             });
         } catch {
-            console.log(`[ERROR ${date_string()}] Cannot parse prices from the Entsoe-E API response!`)
+            console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse prices from the Entsoe-E API response!`)
             try {
-                console.log(` Code: ${json_data.Acknowledgement_MarketDocument.Reason.code}\n Message: ${json_data.Acknowledgement_MarketDocument.Reason.text}`);
+                console.log(`${BLUE}%s${RESET}`, ` Code: ${json_data.Acknowledgement_MarketDocument.Reason.code}\n Message: ${json_data.Acknowledgement_MarketDocument.Reason.text}`);
             } catch {
-                console.log(` Cannot find error code or message!`);
+                console.log(`${BLUE}%s${RESET}`, ` Cannot find error code or message!`);
             }
         }
     }
@@ -202,7 +209,7 @@ async function query_elering_prices(start_date, end_date) {
 
     // Send API get request to Elering
     const response = await fetch(`https://dashboard.elering.ee/api/nps/price?start=${encoded_period_start}&end=${encoded_period_end}`)
-        .catch(error => console.log(error));
+        .catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Get prices (if query fails, empty array is returned)
     let prices = [];
@@ -213,7 +220,7 @@ async function query_elering_prices(start_date, end_date) {
                 prices.push(parseFloat(entry['price']));
             });
         } catch {
-            console.log(`[ERROR ${date_string()}] Cannot parse prices from the Elering API response!`);
+            console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse prices from the Elering API response!`);
         }
 
     return prices;
@@ -265,7 +272,7 @@ async function get_inside_temp() {
     };
 
     // Send API get request
-    const response = await fetch(`https://api.smartthings.com/v1/devices/${config().st_dev_id}/status`, options).catch(err => console.error(err));
+    const response = await fetch(`https://api.smartthings.com/v1/devices/${config().st_dev_id}/status`, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
 
     // Return 0C if the query failed, else return true inside temperature
     if (await check_response(response, 'SmartThings') !== 200)
@@ -282,7 +289,7 @@ async function get_outside_temp() {
     // Send API get request
     const response = await fetch(
         `http://api.openweathermap.org/data/2.5/weather?zip=${config().postal_code},${config().country_code}&appid=${api_key}&units=metric`)
-        .catch(error => console.log(error));
+        .catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Return 0C if the query failed, else return true outside temperature
     if (await check_response(response, 'OpenWeatherMap') !== 200)
@@ -340,7 +347,7 @@ async function adjust_heat(mq) {
     const index = parseInt(new Date(new Date().setTime(new Date().getTime() + (60 * 60 * 1000))).getUTCHours());
 
     // Status print
-    console.log(`[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index - 1}]: ${prices[index]}, threshold_price: ${threshold_price}`);
+    console.log(`${BLUE}%s${RESET}`, `[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index - 1}]: ${prices[index]}, threshold_price: ${threshold_price}`);
 
     // Publish HeatOff request if price higher than threshold and the hourly price is over 4cnt/kWh, else HeatOn
     if (prices[index] > threshold_price && prices[index] > 40) {
@@ -353,7 +360,7 @@ async function adjust_heat(mq) {
 
     // Debugging prints
     if (DEBUG) {
-        console.log(prices);
+        console.log(`${BLUE}%s${RESET}`, prices);
     }
 }
 
