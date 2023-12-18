@@ -1,6 +1,6 @@
 {
     "name": "ST-MQ",
-    "description": "SmartThings MQTT Tools",
+    "description": "SmartThings MQTT tools with kWh spot price query",
     "version": "0.1.0",
     "slug": "st-mq",
     "arch": [
