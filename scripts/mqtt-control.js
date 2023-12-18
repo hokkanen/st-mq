@@ -166,11 +166,21 @@ async function query_entsoe_prices(start_date, end_date) {
     // Set additional compulsory strings for the API call
     const document_type = `A44`;
     const process_type = `A01`;
-    const location_id = `10YFI-1--------U`;
+    const location_codes = {
+        'fi': '10YFI-1--------U',
+        'se': '10YSE-1--------K',
+        'no': '10YNO-0--------C',
+        'dk': '10Y1001A1001A65H',
+        'is': 'IS',
+        'ee': '10Y1001A1001A39I',
+        'lt': '10YLT-1001A0008Q',
+        'lv': '10YLV-1001A00074'
+    };
 
     // Send API get request to Entso-E
-    const request = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}&documentType=${document_type}&processType=${process_type}` +
-        `&in_Domain=${location_id}&out_Domain=${location_id}&periodStart=${period_start}&periodEnd=${period_end}`
+    const request = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}`+
+        `&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}` + 
+        `&out_Domain=${location_codes[config().country_code]}&periodStart=${period_start}&periodEnd=${period_end}`
     const response = await fetch(request).catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Get prices (if query fails, empty array is returned)
