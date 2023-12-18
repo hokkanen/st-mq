@@ -2,10 +2,10 @@ import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
 
 // Import easee consumption data for the chart (can be commented out)
-import data_easee from 'url:../share/st-mq/easee.csv';
+import data_easee from 'url:/share/st-mq/easee.csv';
 
 // Import st-entsoe data for the chart (can be commented out)
-import data_st from 'url:../share/st-mq/mqtt.csv';
+import data_st from 'url:/share/st-mq/st-mq.csv';
 
 // The local electric grid voltage for all phases
 const VOLTAGE = 230;

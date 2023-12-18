@@ -108,13 +108,13 @@ function config() {
     if (fs.existsSync(config_path)) {
         try {
             const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
-            
+
             // When using options.json (HASS), filedata is the whole object
             let options = filedata;
             // When using config.json (standalone), options is a separate object
             if (filedata.hasOwnProperty('options'))
                 options = filedata.options;
-            
+
             // Parse the received json into the configdata object
             configdata.country_code = options.geoloc.country_code;
             configdata.entsoe_token = options.entsoe.token;
@@ -291,7 +291,7 @@ async function get_outside_temp() {
         return (await response.json()).main.temp;
 }
 
-async function write_csv(price, heaton, temp_in, temp_out) {
+async function check_csv() {
     // Create the csv directory if it does not exist
     const csv_dir = dirname(csv_path);
     if (!fs.existsSync(csv_dir)) {
@@ -304,6 +304,11 @@ async function write_csv(price, heaton, temp_in, temp_out) {
     // If the file does not exists, create file and add first line
     if (!csv_append)
         fs.writeFileSync(csv_path, 'unix_time,price,heat_on,temp_in,temp_out\n');
+}
+
+async function write_csv(price, heaton, temp_in, temp_out) {
+    // Check the csv file status and create one if necessary
+    await check_csv();
 
     // Append data to the file
     const unix_time = Math.floor(Date.now() / 1000);
@@ -354,6 +359,9 @@ async function adjust_heat(mq) {
 
 // Begin execution here
 (async () => {
+    // Check the csv file status and create one if necessary
+    await check_csv();
+
     // Create mqtt client and log messages on topic "st/receipt"
     const mq = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
     mq.log_topic('from_st/heat/receipt');

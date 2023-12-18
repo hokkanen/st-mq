@@ -82,7 +82,7 @@ function update_config(access_token, refresh_token) {
 	if (configdata.hasOwnProperty('options')) {
 		configdata.options.easee.access_token = access_token;
 		configdata.options.easee.refresh_token = refresh_token;
-	}else{
+	} else {
 		configdata.easee.access_token = access_token;
 		configdata.easee.refresh_token = refresh_token;
 	}
@@ -142,13 +142,17 @@ async function update_tokens() {
 // Fetch data from Easee API
 async function fetch_data(url, id) {
 	url = url.replace('{id}', id);
-	const options = {
+	let options = {
 		method: 'GET',
 		headers: { accept: 'application/json', Authorization: `Bearer ${config().access_token}` }
 	};
+	// Fetch data and check response
 	let response = await fetch(url, options).catch(err => console.error(err));
+	
+	// If no success, update tokens and try again
 	if (await check_response(response, id) !== 200) {
 		await update_tokens();
+		options.headers.Authorization = `Bearer ${config().access_token}`;
 		response = await fetch(url, options).catch(err => console.error(err));
 		if (await check_response(response, id) !== 200)
 			throw new Error(`Fetch attempt failed for device id: ${id}\nExiting now... (${date_string()})`);
@@ -157,8 +161,8 @@ async function fetch_data(url, id) {
 	return data;
 }
 
-// Write data to csv file
-async function write_csv(data) {
+// Check the csv file status and create one if necessary
+async function check_csv() {
 	// Create the csv directory if it does not exist
 	const csv_dir = dirname(csv_path);
 	if (!fs.existsSync(csv_dir)) {
@@ -171,6 +175,12 @@ async function write_csv(data) {
 	// If the file does not exists, create file and add first line
 	if (!csv_append)
 		fs.writeFileSync(csv_path, 'unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n');
+}
+
+// Write data to csv file
+async function write_csv(data) {
+    // Check the csv file status and create one if necessary
+    await check_csv();
 
 	// Append data to the file
 	const unix_time = Math.floor(Date.now() / 1000);
@@ -197,6 +207,9 @@ async function easee_query() {
 
 // Begin execution here
 (async () => {
+    // Check the csv file status and create one if necessary
+    await check_csv();
+
 	// Run easee query with set schedule
 	easee_query();
 	schedule.scheduleJob('*/5 * * * *', easee_query);
