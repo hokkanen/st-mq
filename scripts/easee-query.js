@@ -1,5 +1,4 @@
 import { dirname } from 'path';
-import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import schedule from 'node-schedule';
@@ -37,10 +36,17 @@ function config() {
 	if (fs.existsSync(config_path)) {
 		try {
 			const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
-			configdata.access_token = filedata.easee.access_token;
-			configdata.refresh_token = filedata.easee.refresh_token;
-			configdata.charger_id = filedata.easee.charger_id;
-			configdata.equalizer_id = filedata.easee.equalizer_id;
+			// When using options.json (HASS), filedata is the whole object
+			let options = filedata;
+			// When using config.json (standalone), options is a separate object
+			if (filedata.hasOwnProperty('options'))
+				options = filedata.options;
+
+			// Parse the received json into the configdata object
+			configdata.access_token = options.easee.access_token;
+			configdata.refresh_token = options.easee.refresh_token;
+			configdata.charger_id = options.easee.charger_id;
+			configdata.equalizer_id = options.easee.equalizer_id;
 		} catch (error) {
 			console.error(`Cannot obtain tokens from ${config_path} (${date_string()})`);
 			console.error(error);
@@ -72,9 +78,15 @@ function update_config(access_token, refresh_token) {
 			console.error(`Creating new ${config_path} file! (${date_string()})`);
 		}
 	}
-	// Add tokens
-	configdata.easee.access_token = access_token;
-	configdata.easee.refresh_token = refresh_token;
+	// Add tokens depending on the config file type
+	if (configdata.hasOwnProperty('options')) {
+		configdata.options.easee.access_token = access_token;
+		configdata.options.easee.refresh_token = refresh_token;
+	}else{
+		configdata.easee.access_token = access_token;
+		configdata.easee.refresh_token = refresh_token;
+	}
+
 	// Write to file
 	fs.writeFileSync(config_path, JSON.stringify(configdata, null, 4), { encoding: 'utf8', flag: 'w' });
 }
@@ -139,7 +151,7 @@ async function fetch_data(url, id) {
 		await update_tokens();
 		response = await fetch(url, options).catch(err => console.error(err));
 		if (await check_response(response, id) !== 200)
-			throw new Error(`Fetch attempt failed even after the token update.\nExiting now... (${date_string()})`);
+			throw new Error(`Fetch attempt failed for device id: ${id}\nExiting now... (${date_string()})`);
 	}
 	let data = await response.json();
 	return data;
@@ -148,7 +160,7 @@ async function fetch_data(url, id) {
 // Write data to csv file
 async function write_csv(data) {
 	// Create the csv directory if it does not exist
-	const csv_dir = dirname(fileURLToPath(csv_path));
+	const csv_dir = dirname(csv_path);
 	if (!fs.existsSync(csv_dir)) {
 		fs.mkdirSync(csv_dir, { recursive: true });
 	}
