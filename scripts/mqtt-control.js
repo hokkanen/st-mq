@@ -109,6 +109,14 @@ function config() {
     if (fs.existsSync(config_path)) {
         try {
             const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+            
+            // When using options.json (HASS), filedata is the whole object
+            let options = filedata;
+            // When using config.json (standalone), options is a separate object
+            if (filedata.hasOwnProperty('options'))
+                options = filedata.options;
+            
+            // Parse the received json into the configdata object
             configdata.country_code = filedata.geoloc.country_code;
             configdata.entsoe_token = filedata.entsoe.token;
             configdata.mqtt_address = filedata.mqtt.address;
