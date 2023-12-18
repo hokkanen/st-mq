@@ -1,23 +1,25 @@
 
-# SmartThings tools with MQTT
+# SmartThings MQTT tools with kWh spot price query
 
-## Nordpool electricity price control for SmartThings
-The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Finnish electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) (backup), and published an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [workspace/mqtt.csv](workspace/mqtt.csv) which can be plotted with the [html chart tool](chart/index.html). The file [workspace/mqtt.csv](workspace/mqtt.csv) has the following format:
+This tool can be run as a standalone app (see below) or as a [Home Assistant Add-On](DOCS.md).
+
+## Nordpool kWh spot price control for SmartThings
+The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Finnish electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) (backup), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) which can be plotted with the [html chart tool](chart/index.html). The file [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) has the following format:
 
 ```
 unix_time,price,heat_on,temp_in,temp_out
 ```
 
-NOTE! The device running [mqtt-control.js](scripts/mqtt-control.js) should be connected to the same local area network as the SmartThings hub.
+NOTE! The device running [mqtt-control.js](scripts/mqtt-control.js) should be connected to the same local area network as the MQTT broker and the SmartThings hub.
 
 ## Easee API query script
-The Easee API query script ([easee-query.js](scripts/easee-query.js)) asks for user credentials and then stores the respective user's Easee Charger and Easee Equalizer data into [workspace/easee.csv](workspace/easee.csv). The stored data contains electric current for three phases for Easee Charger (charger consumption) and Easee Equalizer (total home consumption). This data can also be plotted with the [html chart tool](chart/index.html). The [workspace/easee.csv](workspace/easee.csv) has the following format:
+The Easee API query script stores the respective user's Easee Charger and Easee Equalizer data into [share/st-mq/easee.csv](share/st-mq/easee.csv). The stored data contains electric current for three phases for Easee Charger (charger consumption) and Easee Equalizer (total home consumption). This data can also be plotted with the [html chart tool](chart/index.html). The [share/st-mq/easee.csv](share/st-mq/easee.csv) has the following format:
 
 ```
 unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3
 ```
 
-## Installation
+## Installation (standalone)
 Install `mosquitto` MQTT broker, `npm`, `nodejs`, and `pm2` process manager (optional) if not already installed:
 ```
 sudo apt update
@@ -35,37 +37,17 @@ cd st-mq
 npm i
 ```
 
-## Setup
+## Setup (standalone)
 
 ### SmartThings
 In SmartThigns, install the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, and set the correct IP for the device where the MQTT broker is running.
 
-### Api keys
-The [work directory](workspace) should contain an [API key file](workspace/apikey) with the user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys, which can be obtained freely by registering to these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries fail), the inside and outside temperatures are simply set to `0` degrees Celsius. However, inside temperature is only used for csv logging, and does not impact the heat adjustment algorithm. The [API key file](workspace/apikey) uses the json format and has the following structure:
+### Config
+The root directory contains [config.json](config.json) file which needs to be modified. In the config, fill in MQTT broker details, geolocation information, the required API keys, SmartThings device ID for the inside temperature sensor, and the temperature-to-heating-hours mapping array. For more information, check the HASS translations [file](translations/en.yaml).
 
-```
-{
-    "easee": {
-        "access_token": "<key>",
-        "refresh_token": "<key>"
-    },
-    "entsoe": {
-        "token": "<key>"
-    },
-    "mqtt": {
-        "user": "<user>",
-        "pw": "<pw>"
-    },
-    "openweathermap": {
-        "token": "<key>"
-    },
-    "smartthings": {
-        "token": "<key>"
-    }
-}
-```
-The easee keys are populated automatically when the user runs [easee-query.js](easee-query.js) and provides their login credentials.
+To collect consumption data from local Easee devices, Easee authentication and device information is required as well. Giving Easee login credentials in place of the actual tokens works also, ie, "access_token" = "username" and "refresh_token" = "pw". If these authentication details are not provided, Easee features are disabled.
 
+The user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys can be obtained freely by registering to these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries fail), the inside and outside temperatures are simply set to `0` degrees Celsius. However, inside temperature is only used for csv logging, and does not impact the heat adjustment algorithm. 
 
 ### Mosquitto MQTT broker
 Set up Mosquitto user name and password by creating a password file with
@@ -84,41 +66,37 @@ listener 1883
 # Require credentials for connections
 allow_anonymous false
 password_file /etc/mosquitto/passwd
-
-# Logging level
-log_type all
 ```
 Restart Mosquitto to apply the changes:
 ```
 sudo systemctl restart mosquitto
 ```
 
-## Running nordpool electricity price control for SmartThings
+## Running Nordpool kWh spot price control for SmartThings (standalone)
 Run [mqtt-control.js](scripts/mqtt-control.js) in the current terminal instance by
 ```
 node scripts/mqtt-control.js
 ```
-to publish on/off messages to MQTT 'st/heat' topic depending on the hourly electricity spot price. The outputted hourly data is automatically stored in [workspace/mqtt.csv](workspace/mqtt.csv).
+to publish on/off messages to MQTT 'to_st/heat/action' topic depending on the hourly electricity spot price. The outputted hourly data is automatically stored in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv).
 
 To run with `pm2` process manager, use
 ```
 pm2 start scripts/mqtt-control.js
 ```
 
-## Running Easee API query script
+## Running Easee API query script (standalone)
 Run [easee-query.js](easee-query.js) in the current terminal instance by
 ```
 node scripts/easee-query.js
 ```
-to collect the Easee Charger and Equalizer data into [workspace/easee.csv](workspace/easee.csv). The user credentials are asked once and then stored into [workspace/apikey](workspace/apikey).
+to collect the Easee Charger and Equalizer data into [share/st-mq/easee.csv](share/st-mq/easee.csv).
 
 To run with `pm2` process manager, use
 ```
 pm2 start scripts/easee-query.js
 ```
-However, this can be used only after the user credentials have been provided by first successfully running [easee-query.js](easee-query.js) at least once on an interactive session (which then stores the API keys for any subsequent execution).
 
-## Plotting the csv data with chart.js
+## Plotting the csv data with chart.js (standalone)
 
 Run a local web server in the current terminal instance by
 ```
@@ -128,9 +106,9 @@ To run with `pm2` process manager, use
 ```
 pm2 start npm -- run dev
 ```
-Access the chart with browser at [http://localhost:1234](http://localhost:1234).
+Access the chart with browser at [http://localhost:1234](http://localhost:1234). If there is an error, try to run `node scripts/easee-query.js` (no easee config required) once so that it initializes an empty easee.csv file for the chart.js.
 
-## Create persistent app list
+## Create persistent app list (standalone)
 Make `pm2` restart automatically after reboot by
 ```
 pm2 startup
