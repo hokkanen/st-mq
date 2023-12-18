@@ -101,12 +101,12 @@ function update_config(access_token, refresh_token) {
 
 // Check the API response status
 async function check_response(response, type, log_success) {
-	if (response.status === 200 && log_success) {
-		console.log(`${GREEN}%s${RESET}`, `${type} query successful (${date_string()})`);
+	if (response.status !== 200) {
+		console.log(`${GREEN}%s${RESET}`, `${type} query failed (${date_string()})`);
 		console.log(`${GREEN}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
-	else {
-		console.log(`${GREEN}%s${RESET}`, `${type} query failed (${date_string()})`);
+	else if (log_success) {
+		console.log(`${GREEN}%s${RESET}`, `${type} query successful (${date_string()})`);
 		console.log(`${GREEN}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
 	return response.status;
@@ -156,7 +156,7 @@ async function fetch_data(url, id) {
 	};
 	// Fetch data and check response
 	let response = await fetch(url, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
-	
+
 	// If no success, update tokens and try again
 	if (await check_response(response, id, false) !== 200) {
 		await update_tokens();
@@ -187,8 +187,8 @@ async function check_csv() {
 
 // Write data to csv file
 async function write_csv(data) {
-    // Check the csv file status and create one if necessary
-    await check_csv();
+	// Check the csv file status and create one if necessary
+	await check_csv();
 
 	// Append data to the file
 	const unix_time = Math.floor(Date.now() / 1000);
@@ -215,10 +215,10 @@ async function query_device_data() {
 
 // Begin execution here
 (async () => {
-    // Check the csv file status and create one if necessary
-    await check_csv();
+	// Check the csv file status and create one if necessary
+	await check_csv();
 
-    // Run query with set schedule
-    query_device_data();
-    schedule.scheduleJob('*/5 * * * *', query_device_data);
+	// Run query with set schedule
+	query_device_data();
+	schedule.scheduleJob('*/5 * * * *', query_device_data);
 })();
