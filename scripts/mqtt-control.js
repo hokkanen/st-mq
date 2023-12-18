@@ -117,16 +117,16 @@ function config() {
                 options = filedata.options;
             
             // Parse the received json into the configdata object
-            configdata.country_code = filedata.geoloc.country_code;
-            configdata.entsoe_token = filedata.entsoe.token;
-            configdata.mqtt_address = filedata.mqtt.address;
-            configdata.mqtt_user = filedata.mqtt.user;
-            configdata.mqtt_pw = filedata.mqtt.pw;
-            configdata.postal_code = filedata.geoloc.postal_code;
-            configdata.st_dev_id = filedata.smartthings.dev_id;
-            configdata.st_token = filedata.smartthings.token;
-            configdata.temp_to_hours = filedata.temp_to_hours;
-            configdata.weather_token = filedata.openweathermap.token;
+            configdata.country_code = options.geoloc.country_code;
+            configdata.entsoe_token = options.entsoe.token;
+            configdata.mqtt_address = options.mqtt.address;
+            configdata.mqtt_user = options.mqtt.user;
+            configdata.mqtt_pw = options.mqtt.pw;
+            configdata.postal_code = options.geoloc.postal_code;
+            configdata.st_dev_id = options.smartthings.dev_id;
+            configdata.st_token = options.smartthings.token;
+            configdata.temp_to_hours = options.temp_to_hours;
+            configdata.weather_token = options.openweathermap.token;
         } catch (error) {
             console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${config_path}`);
             console.error(error);
