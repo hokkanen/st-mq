@@ -1,3 +1,4 @@
+import { dirname } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import mqtt from 'mqtt';
@@ -7,30 +8,13 @@ import { XMLParser, XMLBuilder, XMLValidator } from "fast-xml-parser";
 // Set debugging settings and prints
 const DEBUG = false;
 
-// Set path to apikey file and output csv
-const apikey_path = './workspace/apikey';
-const csv_path = './workspace/mqtt.csv';
+// Check if a config file is found
+let config_path = './config.json'; // default path
+if (fs.existsSync('./data/options.json'))
+    config_path = './data/options.json'; // HASS path
 
-// Set geographical location for weather API
-const country_code = 'fi';
-const postal_code = '06150';
-
-// MQTT broker address
-const mqtt_broker = 'mqtt://192.168.1.31';
-
-// SmartThings device for inside temperature (optional, only for csv logging)
-const st_device_id = 'a9a99271-4d4b-4344-9c08-e30f38fc3d41';
-
-// Mapping between temperature and heating hours (uses linear interpolation in between points)
-const temp_to_hours = [
-    { temp: 30, hours: 1 },
-    { temp: 20, hours: 2 },
-    { temp: 10, hours: 10 },
-    { temp: 0, hours: 14 },
-    { temp: -10, hours: 18 },
-    { temp: -20, hours: 22 },
-    { temp: -30, hours: 24 }
-];
+// Set csv output file path
+const csv_path = './share/st-mq/st-mq.csv';
 
 // Aux function for formatting a time string
 function date_string() {
@@ -106,30 +90,48 @@ class MqttHandler {
 }
 
 // Get keys from the apikey file
-function keys() {
+function config() {
     // Initialize tokens
-    let keydata = {
-        "entsoe_token": '',
+    let configdata = {
+        'country_code': '',
+        'entsoe_token': '',
+        'mqtt_address': '',
         'mqtt_user': '',
         'mqtt_pw': '',
-        "weather_token": '',
-        "st_token": ''
+        'postal_code': '',
+        'st_dev_id': '',
+        'st_token': '',
+        'temp_to_hours': [],
+        'weather_token': ''
     };
     // Try to get the keys from the apikey file
-    if (fs.existsSync(apikey_path)) {
+    if (fs.existsSync(config_path)) {
         try {
-            const filedata = JSON.parse(fs.readFileSync(apikey_path, 'utf8'));
-            keydata.entsoe_token = filedata.entsoe.token;
-            keydata.mqtt_user = filedata.mqtt.user;
-            keydata.mqtt_pw = filedata.mqtt.pw;
-            keydata.weather_token = filedata.openweathermap.token;
-            keydata.st_token = filedata.smartthings.token;
+            const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+
+            // When using options.json (HASS), filedata is the whole object
+            let options = filedata;
+            // When using config.json (standalone), options is a separate object
+            if (filedata.hasOwnProperty('options'))
+                options = filedata.options;
+
+            // Parse the received json into the configdata object
+            configdata.country_code = options.geoloc.country_code;
+            configdata.entsoe_token = options.entsoe.token;
+            configdata.mqtt_address = options.mqtt.address;
+            configdata.mqtt_user = options.mqtt.user;
+            configdata.mqtt_pw = options.mqtt.pw;
+            configdata.postal_code = options.geoloc.postal_code;
+            configdata.st_dev_id = options.smartthings.dev_id;
+            configdata.st_token = options.smartthings.token;
+            configdata.temp_to_hours = options.temp_to_hours;
+            configdata.weather_token = options.openweathermap.token;
         } catch (error) {
-            console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${apikey_path}`);
+            console.error(`[ERROR ${date_string()}] Cannot parse API tokens from ${config_path}`);
             console.error(error);
         }
     }
-    return keydata;
+    return configdata;
 }
 
 // Check the fetch response status
@@ -148,7 +150,7 @@ async function check_response(response, type) {
 async function query_entsoe_prices(start_date, end_date) {
 
     // Get Entso-E API key
-    const api_key = keys().entsoe_token;
+    const api_key = config().entsoe_token;
 
     // Format the dates into the required string format at 23:00 UTC
     const period_start = `${start_date.toISOString().replace(/[-:T.]/g, '').slice(0, 8)}` + `2300`;
@@ -206,9 +208,8 @@ async function query_elering_prices(start_date, end_date) {
     let prices = [];
     if (await check_response(response, 'Elering') === 200)
         try {
-            // Elering API returns only the current price for now, so use that for all hours (only the current hour is used anyway)
             let json_data = await response.json();
-            json_data.data[country_code].forEach(function (entry) {
+            json_data.data[config().country_code].forEach(function (entry) {
                 prices.push(parseFloat(entry['price']));
             });
         } catch {
@@ -237,6 +238,8 @@ async function get_prices() {
 }
 
 async function get_heating_hours(temp) {
+    // Get the temperature to hours mapping
+    const temp_to_hours = config().temp_to_hours;
     // If the temperature is above the highest point or below the lowest point, return the corresponding hours
     if (temp >= temp_to_hours[0].temp) return temp_to_hours[0].hours;
     if (temp <= temp_to_hours[temp_to_hours.length - 1].temp) return temp_to_hours[temp_to_hours.length - 1].hours;
@@ -258,11 +261,11 @@ async function get_inside_temp() {
     // Set API request options
     const options = {
         method: 'GET',
-        headers: { Authorization: `Bearer ${keys().st_token}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' },
     };
 
     // Send API get request
-    const response = await fetch(`https://api.smartthings.com/v1/devices/${st_device_id}/status`, options).catch(err => console.error(err));
+    const response = await fetch(`https://api.smartthings.com/v1/devices/${config().st_dev_id}/status`, options).catch(err => console.error(err));
 
     // Return 0C if the query failed, else return true inside temperature
     if (await check_response(response, 'SmartThings') !== 200)
@@ -274,11 +277,11 @@ async function get_inside_temp() {
 async function get_outside_temp() {
 
     // Get OpenWeatherMap API key
-    const api_key = keys().weather_token;
+    const api_key = config().weather_token;
 
     // Send API get request
     const response = await fetch(
-        `http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${api_key}&units=metric`)
+        `http://api.openweathermap.org/data/2.5/weather?zip=${config().postal_code},${config().country_code}&appid=${api_key}&units=metric`)
         .catch(error => console.log(error));
 
     // Return 0C if the query failed, else return true outside temperature
@@ -288,13 +291,24 @@ async function get_outside_temp() {
         return (await response.json()).main.temp;
 }
 
-async function write_csv(price, heaton, temp_in, temp_out) {
+async function check_csv() {
+    // Create the csv directory if it does not exist
+    const csv_dir = dirname(csv_path);
+    if (!fs.existsSync(csv_dir)) {
+        fs.mkdirSync(csv_dir, { recursive: true });
+    }
+
     // Check if the file already exists and is not empty
     const csv_append = fs.existsSync(csv_path) && !(fs.statSync(csv_path).size === 0);
 
     // If the file does not exists, create file and add first line
     if (!csv_append)
         fs.writeFileSync(csv_path, 'unix_time,price,heat_on,temp_in,temp_out\n');
+}
+
+async function write_csv(price, heaton, temp_in, temp_out) {
+    // Check the csv file status and create one if necessary
+    await check_csv();
 
     // Append data to the file
     const unix_time = Math.floor(Date.now() / 1000);
@@ -345,8 +359,11 @@ async function adjust_heat(mq) {
 
 // Begin execution here
 (async () => {
+    // Check the csv file status and create one if necessary
+    await check_csv();
+
     // Create mqtt client and log messages on topic "st/receipt"
-    const mq = new MqttHandler(mqtt_broker, keys().mqtt_user, keys().mqtt_pw);
+    const mq = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
     mq.log_topic('from_st/heat/receipt');
 
     // Run once and then control heating with set schedule
