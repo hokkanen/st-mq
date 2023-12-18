@@ -281,7 +281,7 @@ async function get_outside_temp() {
 
     // Send API get request
     const response = await fetch(
-        `http://api.openweathermap.org/data/2.5/weather?zip=${config().postal_code_code},${config().country_code}&appid=${api_key}&units=metric`)
+        `http://api.openweathermap.org/data/2.5/weather?zip=${config().postal_code},${config().country_code}&appid=${api_key}&units=metric`)
         .catch(error => console.log(error));
 
     // Return 0C if the query failed, else return true outside temperature
