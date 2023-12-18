@@ -1,6 +1,6 @@
 {
     "name": "ST-MQ",
-    "description": "SmartThings MQTT tools with kWh spot price query",
+    "description": "SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)",
     "version": "0.1.0",
     "url": "https://github.com/hokkanen/st-mq",
     "slug": "st-mq",

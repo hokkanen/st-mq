@@ -1,0 +1,3 @@
+name: SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
+url: 'https://github.com/hokkanen/st-mq'
+maintainer: Jaro Hokkanen <jaro.hokkanen@gmail.com>
