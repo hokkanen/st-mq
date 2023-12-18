@@ -1,6 +1,6 @@
 {
-  "name": "home-tools",
-  "version": "1.0.1",
+  "name": "ST-MQ",
+  "version": "0.1.0",
   "license": "MIT",
   "scripts": {
     "dev": "parcel chart/index.html --no-cache",
@@ -16,7 +16,6 @@
     "mqtt": "^5.3.3",
     "node-fetch": "^3.3.2",
     "node-schedule": "^2.1.1",
-    "papaparse": "^5.4.1",
-    "prompt-sync": "^4.2.0"
+    "papaparse": "^5.4.1"
   }
 }
