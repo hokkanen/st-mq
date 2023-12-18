@@ -24,13 +24,10 @@ RUN npm install
 # Copy other files separately to enable caching
 COPY chart/ ./chart/
 COPY scripts/ ./scripts/
-COPY run.sh ./
-
-# Make run.sh executable
-RUN chmod a+x ./run.sh
+COPY scheduler.js ./
 
 # Expose port
 EXPOSE 1234
 
-# Execute run.sh
-CMD [ "./run.sh" ]
+# Run scheduler.js
+CMD [ "node", "scheduler.js" ]
