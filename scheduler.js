@@ -30,7 +30,7 @@ import { spawn } from 'child_process';
     spawn_process('npm', ['run', 'dev']);
 
     // Schedule chart.js server restart at 15 seconds past every 5th minute
-    schedule.scheduleJob('15 */5 * * * *', () => {
-        spawn_process('npm', ['run', 'dev'], { stdio: 'ignore' });
-    });
+    //schedule.scheduleJob('15 */5 * * * *', () => {
+    //    spawn_process('npm', ['run', 'dev'], { stdio: 'ignore' });
+    //});
 })();
