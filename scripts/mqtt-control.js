@@ -106,7 +106,8 @@ function config() {
         'mqtt_user': '',
         'mqtt_pw': '',
         'postal_code': '',
-        'st_dev_id': '',
+        'st_temp_in_id': '',
+        'st_temp_out_id': '',
         'st_token': '',
         'temp_to_hours': [],
         'weather_token': ''
@@ -129,7 +130,8 @@ function config() {
             configdata.mqtt_user = options.mqtt.user;
             configdata.mqtt_pw = options.mqtt.pw;
             configdata.postal_code = options.geoloc.postal_code;
-            configdata.st_dev_id = options.smartthings.dev_id;
+            configdata.st_temp_in_id = options.smartthings.inside_temp_dev_id;
+            configdata.st_temp_out_id = options.smartthings.outside_temp_dev_id;
             configdata.st_token = options.smartthings.token;
             configdata.temp_to_hours = options.temp_to_hours;
             configdata.weather_token = options.openweathermap.token;
@@ -178,14 +180,14 @@ async function query_entsoe_prices(start_date, end_date) {
     };
 
     // Send API get request to Entso-E
-    const request = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}`+
-        `&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}` + 
+    const request = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}` +
+        `&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}` +
         `&out_Domain=${location_codes[config().country_code]}&periodStart=${period_start}&periodEnd=${period_end}`
     const response = await fetch(request).catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Get prices (if query fails, empty array is returned)
     let prices = [];
-    if (await check_response(response, 'Entsoe-E') === 200) {
+    if (await check_response(response, `Entsoe-E (${config().country_code})`) === 200) {
         // Parse the received xml into json and store price information into the returned prices array
         let json_data;
         try {
@@ -273,42 +275,36 @@ async function get_heating_hours(temp) {
     return Math.round(hours);;
 }
 
-async function get_inside_temp() {
-
-    // Set API request options
-    const options = {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' },
-    };
-
-    // Send API get request
-    const response = await fetch(`https://api.smartthings.com/v1/devices/${config().st_dev_id}/status`, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
-
-    // Return 0C if the query failed, else return true inside temperature
-    if (await check_response(response, 'SmartThings') !== 200)
-        return 0.0;
-    else
-        return (await response.json()).components.main.temperatureMeasurement.temperature.value;
-}
-
-async function get_outside_temp() {
-
-    // Get OpenWeatherMap API key
-    const api_key = config().weather_token;
-
+async function get_owm_temp(country_code, postal_code) {
     // Send API get request
     const response = await fetch(
-        `http://api.openweathermap.org/data/2.5/weather?zip=${config().postal_code},${config().country_code}&appid=${api_key}&units=metric`)
+        `http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${config().weather_token}&units=metric`)
         .catch(error => console.log(`${BLUE}%s${RESET}`, error));
-
     // Return 0C if the query failed, else return true outside temperature
-    if (await check_response(response, 'OpenWeatherMap') !== 200)
+    if (await check_response(response, `OpenWeatherMap (${country_code}-${postal_code})`) !== 200)
         return 0.0;
     else
         return (await response.json()).main.temp;
 }
 
-async function check_csv() {
+async function get_st_temp(st_dev_id, country_code = '', postal_code = '') {
+    // Set API request options
+    const options = {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' },
+    };
+    // Send API get request
+    const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
+    // Return temperature (use OpenWeatherMap as backup if geolocation info is provided)
+    if (await check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200)
+        return (await response.json()).components.main.temperatureMeasurement.temperature.value;
+    else if (country_code !== '' && postal_code !== '')
+        return await get_owm_temp(country_code, postal_code);
+    else
+        return 0.0;
+}
+
+async function init_csv() {
     // Create the csv directory if it does not exist
     const csv_dir = dirname(csv_path);
     if (!fs.existsSync(csv_dir)) {
@@ -324,8 +320,8 @@ async function check_csv() {
 }
 
 async function write_csv(price, heaton, temp_in, temp_out) {
-    // Check the csv file status and create one if necessary
-    await check_csv();
+    // Initialize the csv directory and file if necessary
+    await init_csv();
 
     // Append data to the file
     const unix_time = Math.floor(Date.now() / 1000);
@@ -339,10 +335,10 @@ async function adjust_heat(mq) {
     const prices = await get_prices();
 
     // Get the current inside temperature
-    const inside_temp = await get_inside_temp();
+    const inside_temp = await get_st_temp(config().st_temp_in_id);
 
     // Get the current outside temperature
-    const outside_temp = await get_outside_temp();
+    const outside_temp = await get_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
 
     // Calculate the number of heating hours based on the outside temperature
     const heating_hours = await get_heating_hours(outside_temp);
@@ -376,8 +372,8 @@ async function adjust_heat(mq) {
 
 // Begin execution here
 (async () => {
-    // Check the csv file status and create one if necessary
-    await check_csv();
+    // Initialize the csv directory and file if necessary
+    await init_csv();
 
     // Create mqtt client and log messages on topic "st/receipt"
     const mq = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);

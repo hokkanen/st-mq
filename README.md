@@ -1,10 +1,10 @@
 
 # SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
 
-This tool can be run as a standalone app (see below) or as a [Home Assistant Add-On](DOCS.md).
+This tool can be run as a standalone app (see below) or as a [Home Assistant add-on](DOCS.md).
 
 ## Nordpool kWh spot price control for SmartThings
-The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Nordic and Baltic electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) backup API (works only for fi, ee, lt, lv country codes), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) which can be plotted with the [html chart tool](chart/index.html). The file [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) has the following format:
+The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Nordic and Baltic electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) backup API (works only for fi, ee, lt, and lv country codes), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) which can be plotted with the [html chart tool](chart/index.html). The file [share/st-mq/st-mq.csv](share/st-mq/st-mq.csv) has the following format:
 
 ```
 unix_time,price,heat_on,temp_in,temp_out
@@ -40,12 +40,12 @@ npm i
 ## Setup (standalone)
 
 ### SmartThings
-In SmartThigns, install the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, and set the correct IP for the device where the MQTT broker is running.
+In SmartThigns, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `to_st/heat/action` topic and listen for `heaton`/`heatoff` messages.
 
 ### Config
-The root directory contains [config.json](config.json) file which needs to be modified. In the config, fill in MQTT broker details, geolocation information, the required API keys, SmartThings device ID for the inside temperature sensor, and the temperature-to-heating-hours mapping array. For more information, check the HASS translations [file](translations/en.yaml).
+The root directory contains [config.json](config.json) file which needs to be modified. In the config, fill in geolocation information, temperature-to-heating-hours mapping array, MQTT broker details, and the required API keys and SmartThings device IDs for the temperature sensors. For more information, check the HASS translations [file](translations/en.yaml).
 
-To collect consumption data from local Easee devices, Easee authentication and device information is required as well. Giving Easee login credentials in place of the actual tokens works also, ie, "access_token" = "username" and "refresh_token" = "pw". If these authentication details are not provided, Easee features are disabled.
+To collect consumption data from local Easee devices, Easee authentication and device information is required as well. Giving Easee login credentials in place of the actual tokens works also, ie, "access_token" = "username" and "refresh_token" = "pw". If these authentication details are not provided, Easee consumption data is not collected.
 
 The user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys can be obtained freely by registering to these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries fail), the inside and outside temperatures are simply set to `0` degrees Celsius. However, inside temperature is only used for csv logging, and does not impact the heat adjustment algorithm. 
 
@@ -73,15 +73,17 @@ sudo systemctl restart mosquitto
 ```
 
 ## Running (standalone)
-To start all required services, ie, a web server for [chart/index.html](chart/index.html), [easee-query.js](easee-query.js) and [mqtt-control.js](scripts/mqtt-control.js) scripts, run [scheduler.js](scheduler.js) in the current terminal instance by
+To start all required services, ie, [easee-query.js](scripts/easee-query.js) and [mqtt-control.js](scripts/mqtt-control.js) scripts, and a web server for [chart/index.html](chart/index.html), run [scheduler.js](scheduler.js) in the current terminal instance by
 ```
 node scheduler.js
 ```
-To run with `pm2` process manager, use
+To run with `pm2` process manager without using the [scheduler.js](scheduler.js) script, use the following ([easee-query.js](scripts/easee-query.js) does not have an internal scheduler):
 ```
-pm2 start scheduler.js
+pm2 start ./scripts/mqtt_control.js
+pm2 start ./scripts/easee-query.js --cron-restart="*/5 * * * *"
+pm2 start npm -- run dev
 ```
-Access the [chart](chart/index.html) with browser at [http://localhost:1234](http://localhost:1234).
+The console output uses blue color for [mqtt-control.js](scripts/mqtt-control.js) and green color for [easee-query.js](easee-query.js) (the [chart](chart/index.html) server log is stored in [share/st-mq/chart-server.log](share/st-mq/chart-server.log)). The [chart](chart/index.html) itself can be accessed with browser at [http://localhost:1234](http://localhost:1234).
 
 ## Create persistent app list (standalone)
 Make `pm2` restart automatically after reboot by
