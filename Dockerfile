@@ -26,8 +26,5 @@ COPY chart/ ./chart/
 COPY scripts/ ./scripts/
 COPY scheduler.js ./
 
-# Expose port
-EXPOSE 1234
-
 # Run scheduler.js
 CMD [ "node", "scheduler.js" ]

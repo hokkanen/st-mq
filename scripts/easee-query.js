@@ -1,8 +1,6 @@
 import { dirname } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
-import schedule from 'node-schedule';
-import { log } from 'console';
 
 // Set debugging settings and prints
 const DEBUG = false;
@@ -56,11 +54,11 @@ function config() {
 			configdata.charger_id = options.easee.charger_id;
 			configdata.equalizer_id = options.easee.equalizer_id;
 		} catch (error) {
-			console.error(`${BLUE}%s${RESET}`, `Cannot obtain tokens from ${config_path} (${date_string()})`);
-			console.error(`${BLUE}%s${RESET}`, error);
+			console.error(`${GREEN}%s${RESET}`, `Cannot obtain tokens from ${config_path} (${date_string()})`);
+			console.error(`${GREEN}%s${RESET}`, error);
 		}
 	} else {
-		console.error(`${BLUE}%s${RESET}`, `Cannot find config file in ${config_path} (${date_string()})`);
+		console.error(`${GREEN}%s${RESET}`, `Cannot find config file in ${config_path} (${date_string()})`);
 	}
 	return configdata;
 }
@@ -81,9 +79,9 @@ function update_config(access_token, refresh_token) {
 		try {
 			configdata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
 		} catch (error) {
-			console.error(`${BLUE}%s${RESET}`, `Cannot parse configdata from ${config_path} (${date_string()})`);
-			console.error(`${BLUE}%s${RESET}`, error);
-			console.error(`${BLUE}%s${RESET}`, `Creating new ${config_path} file! (${date_string()})`);
+			console.error(`${GREEN}%s${RESET}`, `Cannot parse config data from ${config_path} (${date_string()})`);
+			console.error(`${GREEN}%s${RESET}`, error);
+			console.log(`${GREEN}%s${RESET}`, `Creating new ${config_path} file! (${date_string()})`);
 		}
 	}
 	// Add tokens depending on the config file type
@@ -121,16 +119,8 @@ async function use_credentials() {
 		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: 'null' },
 		body: `{"userName":"${user}","password":"${pw}"}`
 	};
-	// Try a few times before giving up
-	let i = 0;
-	for (i = 0; i < 5; i++) {
-		let response = await fetch('https://api.easee.com/api/accounts/login', options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
-		if (await check_response(response, 'Authorization', true) === 200) {
-			return response;
-		}
-		await new Promise(resolve => setTimeout(resolve, 1000));
-	}
-	throw new Error(`Authorization attempt failed ${i} times.\nExiting now... (${date_string()})`);
+	let response = await fetch('https://api.easee.com/api/accounts/login', options).catch(err => console.error(`${GREEN}%s${RESET}`, err));
+	return response;
 }
 
 // Update Easee tokens
@@ -140,11 +130,26 @@ async function update_tokens() {
 		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: `Bearer ${config().access_token}` },
 		body: `{"accessToken":"${config().access_token}","refreshToken":"${config().refresh_token}"}`
 	};
-	let response = await fetch('https://api.easee.com/api/accounts/refresh_token', options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
-	if (await check_response(response, 'Refresh token', true) !== 200)
-		response = await use_credentials();
-	const data = await response.json();
-	update_config(data.accessToken, data.refreshToken);
+	let response = await fetch('https://api.easee.com/api/accounts/refresh_token', options).catch(err => console.error(`${GREEN}%s${RESET}`, err));
+
+	// If refresh token fails, try to use credentials for authentication a few times
+	if (await check_response(response, 'Refresh token', true) === 200) {
+		const data = await response.json();
+		update_config(data.accessToken, data.refreshToken);
+	} else {
+		let attempts;
+		for (attempts = 0; attempts < 3; attempts++) {
+			response = await use_credentials();
+			if (await check_response(response, 'Authorization', true) === 200) {
+				const data = await response.json();
+				update_config(data.accessToken, data.refreshToken);
+				return;
+			}
+			await new Promise(resolve => setTimeout(resolve, 1000));
+		}
+		console.error(`${GREEN}%s${RESET}`, `Authorization attempt failed ${attempts} times (${date_string()})`);
+		console.error(`${GREEN}%s${RESET}`, `Unable to update authentication tokens! (${date_string()})`);
+	}
 }
 
 // Fetch data from Easee API
@@ -155,22 +160,24 @@ async function fetch_data(url, id) {
 		headers: { accept: 'application/json', Authorization: `Bearer ${config().access_token}` }
 	};
 	// Fetch data and check response
-	let response = await fetch(url, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
+	let response = await fetch(url, options).catch(err => console.error(`${GREEN}%s${RESET}`, err));
 
 	// If no success, update tokens and try again
 	if (await check_response(response, id, false) !== 200) {
 		await update_tokens();
 		options.headers.Authorization = `Bearer ${config().access_token}`;
-		response = await fetch(url, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
-		if (await check_response(response, id, false) !== 200)
-			throw new Error(`Fetch attempt failed for device id: ${id}\nExiting now... (${date_string()})`);
+		response = await fetch(url, options).catch(err => console.error(`${GREEN}%s${RESET}`, err));
+		if (await check_response(response, id, false) !== 200) {
+			console.error(`${GREEN}%s${RESET}`, `Fetch attempt failed for device: ${id} (${date_string()})`);
+			// If fetch fails, return empty object
+			return {};
+		}
 	}
-	let data = await response.json();
-	return data;
+	return await response.json();
 }
 
-// Check the csv file status and create one if necessary
-async function check_csv() {
+// Initialize the csv file if necessary
+async function init_csv() {
 	// Create the csv directory if it does not exist
 	const csv_dir = dirname(csv_path);
 	if (!fs.existsSync(csv_dir)) {
@@ -188,7 +195,7 @@ async function check_csv() {
 // Write data to csv file
 async function write_csv(data) {
 	// Check the csv file status and create one if necessary
-	await check_csv();
+	await init_csv();
 
 	// Append data to the file
 	const unix_time = Math.floor(Date.now() / 1000);
@@ -198,13 +205,38 @@ async function write_csv(data) {
 // Run the Easee query
 async function query_device_data() {
 	// Get Equalizer data
-	const data_eq = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, config().equalizer_id);
+	let data_eq = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, config().equalizer_id);
 
 	// Get charger data
-	const data_ch = await fetch_data(`https://api.easee.com/api/chargers/{id}/state`, config().charger_id);
+	let data_ch = await fetch_data(`https://api.easee.com/api/chargers/{id}/state`, config().charger_id);
 
-	// Write csv
-	await write_csv(`${data_ch.inCurrentT3.toFixed(2)},${data_ch.inCurrentT4.toFixed(2)},${data_ch.inCurrentT5.toFixed(2)},${data_eq.currentL1.toFixed(2)},${data_eq.currentL2.toFixed(2)},${data_eq.currentL3.toFixed(2)}`);
+	// Check if the data contains required keys
+	const required_keys_eq = ['currentL1', 'currentL2', 'currentL3'];
+	const required_keys_ch = ['inCurrentT3', 'inCurrentT4', 'inCurrentT5'];
+
+	const is_valid_eq = required_keys_eq.every(key => key in data_eq);
+	const is_valid_ch = required_keys_ch.every(key => key in data_ch);
+
+	// Write to csv if equalizer or charger data is valid
+	if (is_valid_eq || is_valid_ch) {
+		// Fill missing equalizer data with zeros
+		if (!is_valid_eq) {
+			console.error(`${GREEN}%s${RESET}`, `No data found for '${config().equalizer_id}'! (${date_string()})`);
+			console.log(`${GREEN}%s${RESET}`, `Writing '${config().charger_id}' data only (${date_string()})`);
+			data_eq = { ...data_eq, currentL1: 0, currentL2: 0, currentL3: 0 };
+		}
+		// Fill missing charger data with zeros	
+		if (!is_valid_ch) {
+			console.error(`${GREEN}%s${RESET}`, `No data found for '${config().charger_id}'! (${date_string()})`);
+			console.log(`${GREEN}%s${RESET}`, `Writing '${config().equalizer_id}' data only (${date_string()})`);
+			data_ch = { ...data_ch, inCurrentT3: 0, inCurrentT4: 0, inCurrentT5: 0 };
+		}
+		// Write data to csv
+		await write_csv(`${data_ch.inCurrentT3.toFixed(2)},${data_ch.inCurrentT4.toFixed(2)},${data_ch.inCurrentT5.toFixed(2)},${data_eq.currentL1.toFixed(2)},${data_eq.currentL2.toFixed(2)},${data_eq.currentL3.toFixed(2)}`);
+	} else {
+		console.error(`${GREEN}%s${RESET}`, `No data found for any device! (${date_string()})`);
+		console.log(`${GREEN}%s${RESET}`, `The csv file is not updated (${date_string()})`);
+	}
 
 	// Debug printouts
 	if (DEBUG) {
@@ -216,9 +248,8 @@ async function query_device_data() {
 // Begin execution here
 (async () => {
 	// Check the csv file status and create one if necessary
-	await check_csv();
+	await init_csv();
 
-	// Run query with set schedule
+	// Run Easee query and write to csv file
 	query_device_data();
-	schedule.scheduleJob('*/5 * * * *', query_device_data);
 })();

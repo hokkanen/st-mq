@@ -21,30 +21,9 @@
         "share:rw"
     ],
     "options": {
-        "easee": {
-            "access_token": "",
-            "refresh_token": "",
-            "charger_id": "EHXXXXXX",
-            "equalizer_id": "QPXXXXXX"
-        },
-        "entsoe": {
-            "token": ""
-        },
         "geoloc": {
             "country_code": "fi",
-            "postal_code": "06150"
-        },
-        "mqtt": {
-            "address": "mqtt://core-mosquitto",
-            "user": "",
-            "pw": ""
-        },
-        "openweathermap": {
-            "token": ""
-        },
-        "smartthings": {
-            "dev_id": "",
-            "token": ""
+            "postal_code": "00000"
         },
         "temp_to_hours": [
             {
@@ -75,39 +54,62 @@
                 "temp": -30,
                 "hours": 24
             }
-        ]
-    },
-    "schema": {
-        "easee": {
-            "access_token": "password?",
-            "refresh_token": "password?",
-            "charger_id": "str",
-            "equalizer_id": "str"
+        ],
+        "mqtt": {
+            "address": "mqtt://core-mosquitto",
+            "user": "",
+            "pw": ""
         },
         "entsoe": {
-            "token": "password?"
+            "token": ""
         },
+        "smartthings": {
+            "token": "",
+            "inside_temp_dev_id": "",
+            "outside_temp_dev_id": ""
+        },
+        "openweathermap": {
+            "token": ""
+        },
+        "easee": {
+            "access_token": "",
+            "refresh_token": "",
+            "charger_id": "EHXXXXXX",
+            "equalizer_id": "QPXXXXXX"
+        }
+    },
+    "schema": {
         "geoloc": {
             "country_code": "str",
             "postal_code": "str"
-        },
-        "mqtt": {
-            "address": "str",
-            "user": "str",
-            "pw": "password"
-        },
-        "openweathermap": {
-            "token": "str?"
-        },
-        "smartthings": {
-            "dev_id": "str?",
-            "token": "password?"
         },
         "temp_to_hours": [
             {
                 "temp": "int",
                 "hours": "int"
             }
-        ]
+        ],
+        "mqtt": {
+            "address": "str",
+            "user": "str",
+            "pw": "password"
+        },
+        "entsoe": {
+            "token": "password?"
+        },
+        "smartthings": {
+            "token": "password?",
+            "inside_temp_dev_id": "str?",
+            "outside_temp_dev_id": "str?"
+        },
+        "openweathermap": {
+            "token": "str?"
+        },
+        "easee": {
+            "access_token": "password?",
+            "refresh_token": "password?",
+            "charger_id": "str",
+            "equalizer_id": "str"
+        }
     }
 }

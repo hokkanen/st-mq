@@ -1,22 +1,22 @@
 configuration:
-  easee:
-    name: Easee settings (optional)
-    description: Provide Easee authentication and device information to collect consumption data. Giving Easee login credentials in place of the actual tokens works as well, ie, "access_token" = "username" and "refresh_token" = "pw". If authentication details are not provided, Easee features are disabled.
-  entsoe:
-    name: Entso-E API authentication (optional)
-    description: Provide Entso-E API token. If not provided, the Elering backup API will be queried. However, if Elering goes down, there is no further fallback.
   geoloc:
-    name: Geolocation details
-    description: Give the country code and postal code of your location. These are used for Elering price query and OpenWeatherMap temperature query.
+    name: Geolocation details (required)
+    description: Provide the country code and postal code of your location. These are used for Entso-E and Elering price queries (country code) and OpenWeatherMap temperature query (country code and postal code).
+  temp_to_hours:
+    name: Temperature-to-heating-hours mapping (required)
+    description: Mapping between the outside temperature and daily heating hours. Linear interpolation is used in between points. If the temperature goes outside the given range, the end point values are used (no extrapolation).
   mqtt:
-    name: MQTT settings
+    name: MQTT settings (required)
     description: Provide MQTT broker address, username, and password. MQTT is used to communicate with the local SmartThings hub.
+  entsoe:
+    name: Entso-E API authentication (recommended)
+    description: Provide Entso-E API token. If not provided, the Elering backup API will be queried, but it only supports fi, ee, lt, and lv country codes. Also, if Elering goes down, there is no further fallback.
+  smartthings:
+    name: SmartThings API authentication (recommended)
+    description: Provide SmartThings API token and the SmartThings device IDs for the devices providing inside and outside temperatures. These can be found from 'my.smarthings.com'. If not provided, inside and outside temperatures cannot be obtained through SmartThings API; inside temperature is set to 0C and outside temperature is queried from OpenWeatherMap.
   openweathermap:
     name: OpenWeatherMap API authentication (optional)
     description: Provide OpenWeatherMap API token. If not provided, and SmartThings API does not provide outside temperature, the outside temperature is assumed to be 0 degrees Celsius.
-  smartthings:
-    name: SmartThings API authentication (optional)
-    description: Provide SmartThings API token. If not provided, inside and outside temperatures are not queried through SmartThings API. Inside temperature is set to 0C outside temperature is queried from OpenWeatherMap.
-  temp_to_hours:
-    name: Temperature to heating hours mapping
-    description: Mapping between outside temperature and daily heating hours. Linear interpolation is used in between points. If the temperature goes outside the given range, the end point values are used (no extrapolation).
+  easee:
+    name: Easee settings (optional)
+    description: Provide Easee authentication and device information to collect consumption data. Giving Easee login credentials in place of the actual tokens works as well, ie, "access_token" = "username" and "refresh_token" = "pw". If authentication details are not provided, Easee consumption data is not collected.
