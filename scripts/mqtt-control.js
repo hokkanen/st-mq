@@ -357,10 +357,10 @@ async function adjust_heat(mq) {
 
     // Publish HeatOff request if price higher than threshold and the hourly price is over 4cnt/kWh, else HeatOn
     if (prices[index] > threshold_price && prices[index] > 40) {
-        await mq.post_trigger("to_st/heat/action", "heatoff");
+        await mq.post_trigger("from_stmq/heat/action", "heatoff");
         await write_csv(prices[index] / 10.0, 0, inside_temp, outside_temp);
     } else {
-        await mq.post_trigger("to_st/heat/action", "heaton");
+        await mq.post_trigger("from_stmq/heat/action", "heaton");
         await write_csv(prices[index] / 10.0, 1, inside_temp, outside_temp);
     }
 
@@ -377,7 +377,7 @@ async function adjust_heat(mq) {
 
     // Create mqtt client and log messages on topic "st/receipt"
     const mq = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
-    mq.log_topic('from_st/heat/receipt');
+    mq.log_topic('to_stmq/heat/receipt');
 
     // Run once and then control heating with set schedule
     adjust_heat(mq);
