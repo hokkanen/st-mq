@@ -103,7 +103,7 @@
             "outside_temp_dev_id": "str?"
         },
         "openweathermap": {
-            "token": "str?"
+            "token": "password?"
         },
         "easee": {
             "access_token": "password?",
