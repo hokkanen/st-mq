@@ -79,7 +79,7 @@ node scheduler.js
 ```
 To run with `pm2` process manager without using the [scheduler.js](scheduler.js) script, use the following ([easee-query.js](scripts/easee-query.js) does not have an internal scheduler):
 ```
-pm2 start ./scripts/mqtt_control.js
+pm2 start ./scripts/mqtt-control.js
 pm2 start ./scripts/easee-query.js --cron-restart="*/5 * * * *"
 pm2 start npm -- run dev
 ```
