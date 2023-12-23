@@ -40,7 +40,7 @@ npm i
 ## Setup (standalone)
 
 ### SmartThings
-In SmartThigns, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton`/`heatoff` messages.
+In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton`/`heatoff` messages.
 
 ### Config
 The root directory contains [config.json](config.json) file in which the `options` section needs to be updated. In the config, fill in geolocation information, temperature-to-heating-hours mapping array, MQTT broker details, and the required API keys and SmartThings device IDs for the temperature sensors. For more information, check the [HASS translations file](translations/en.yaml).
