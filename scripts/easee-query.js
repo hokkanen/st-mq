@@ -101,12 +101,12 @@ function update_config(access_token, refresh_token) {
 async function check_response(response, type, log_success) {
 	if (response.status !== 200) {
 		console.log(`${GREEN}%s${RESET}`, `${type} query failed (${date_string()})`);
-		console.log(`${GREEN}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
 	else if (log_success) {
 		console.log(`${GREEN}%s${RESET}`, `${type} query successful (${date_string()})`);
-		console.log(`${GREEN}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
 	}
+	console.log(`${GREEN}%s${RESET}`, ` API status: ${response.status}`);
+	console.log(`${GREEN}%s${RESET}`, ` API response: ${response.statusText}`);
 	return response.status;
 }
 

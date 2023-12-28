@@ -150,7 +150,8 @@ async function check_response(response, type) {
     }
     else {
         console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] ${type} query failed!`)
-        console.log(`${BLUE}%s${RESET}`, ` API Status: ${response.status}\n API response: ${response.statusText}`);
+        console.log(`${BLUE}%s${RESET}`, ` API status: ${response.status}`);
+        console.log(`${BLUE}%s${RESET}`, ` API response: ${response.statusText}`);
     }
     return response.status;
 }
