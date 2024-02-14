@@ -251,6 +251,83 @@ class ChartDrawer {
         }
     }
 
+    // Compare realized cost (€) vs reference cost (daily average) for the current period
+    async #perform_cost_analysis() {
+        // Initialize returned values
+        let realized_cost_ch = 0; // accummulated realized total cost for charger
+        let realized_cost_eq = 0; // accummulated realized total cost for equalizer
+        let reference_cost_ch = 0; // accummulated reference total cost for charger
+        let reference_cost_eq = 0; // accummulated reference total cost for equalizer
+        // Make sure that enough price data is available (at least 2 data points)
+        if(this.#price.length > 1){
+            // Initialize auxialiry values
+            let day = Math.floor((this.#price[0].x + 3600) / 86400); // int representing the current day
+            let average_kwh_price_24h = 0; // reference price during the current day
+            let reference_kwh_ch_24h = 0; // reference kwh during the current day for charger
+            let reference_kwh_eq_24h = 0; // reference kwh during the current day for equalizer
+            let total_hours = 0; // hours between consecutive days' first price data points
+            // Evaluate loop over price datapoints
+            let j = 0; // index for the inner loop (consumption dataset)
+            for (let i = 0; i < this.#price.length - 1; i++) {
+                let ch_kw = 0; // charger consumption
+                let eq_kw = 0; // equalized consumption
+                let n_kw_datapoints = 0; // the number of consumption datapoints
+                // Evaluate the loop over consumption dataset
+                while(j < this.#eq_total.length && this.#eq_total[j].x < this.#price[i + 1].x){
+                    // If the consumption datapoint is within the current hourly price window
+                    if (this.#eq_total[j].x > this.#price[i].x){
+                        ch_kw += this.#ch_total[j].y;
+                        eq_kw += this.#eq_total[j].y;
+                        n_kw_datapoints += 1;
+                    }
+                    j++;
+                }
+                // The time in hours between price data points
+                const hour_weight = (this.#price[i + 1].x - this.#price[i].x) / 3600;
+                // Total hours between day's price data points (around 24 hours)
+                total_hours += hour_weight;
+                // The average kWh used during the time between price data points
+                const hourly_kwh_ch = n_kw_datapoints === 0 ? 0 : ch_kw * hour_weight / n_kw_datapoints;
+                const hourly_kwh_eq = n_kw_datapoints === 0 ? 0 : eq_kw * hour_weight / n_kw_datapoints;
+                // Accummulate the sum of the kWh used during the day
+                reference_kwh_ch_24h += hourly_kwh_ch;
+                reference_kwh_eq_24h += hourly_kwh_eq;
+                // Calculate the reference daily price (€) and the number of price datapoints
+                average_kwh_price_24h += this.#price[i].y / 100 * hour_weight;
+                // If the last price period of the day, update reference price and reset values
+                if(Math.floor((this.#price[i + 1].x + 3600) / 86400) !== day || i === this.#price.length - 2){
+                    // Add the reference cost of the day (assuming average consumption)
+                    average_kwh_price_24h /= total_hours;
+                    reference_cost_ch += average_kwh_price_24h * reference_kwh_ch_24h;
+                    reference_cost_eq += average_kwh_price_24h * reference_kwh_eq_24h;
+                    // Reset the accummulated daily values
+                    average_kwh_price_24h = 0;
+                    reference_kwh_ch_24h = 0;
+                    reference_kwh_eq_24h = 0;
+                    total_hours = 0;
+                    // Set the new day value
+                    day = Math.floor((this.#price[i + 1].x + 3600) / 86400); // the next day
+                }
+                // Accummulate the actual realized price (€)
+                realized_cost_ch += hourly_kwh_ch * this.#price[i].y / 100;
+                realized_cost_eq += hourly_kwh_eq * this.#price[i].y / 100;
+            }
+        }
+        // Create an object for realized and reference costs for charger and equalizer
+        const costs = {
+            realized_cost_ch: realized_cost_ch, 
+            realized_cost_eq: realized_cost_eq,
+            reference_cost_ch: reference_cost_ch,
+            reference_cost_eq: reference_cost_eq,
+            savings_without_ch: (reference_cost_eq - reference_cost_ch) 
+                                - (realized_cost_eq - realized_cost_ch)
+        };
+        // Print costs array into console (temporary hack to get it working)
+        console.log(costs);
+        // Return costs array
+        return costs;
+    }
+
     // Generate the chart
     async generate_chart(start_date, end_date) {
 
@@ -293,8 +370,11 @@ class ChartDrawer {
         // Setup the chart
         await this.#setup_chart();
 
-        //Update the heat_on dataset to show correctly
+        // Update the heat_on dataset to show correctly
         await this.#update_heat_on_data();
+
+        // Perform cost analysis between realized cost and reference cost estimate in €
+        this.#perform_cost_analysis();
 
         // Use the first action layout as default (also updates chart)
         await this.apply_action(this.get_actions()[0]);
