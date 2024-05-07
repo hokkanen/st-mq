@@ -1,6 +1,7 @@
 import { dirname } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
+import moment from 'moment-timezone';
 
 // Set debugging settings and prints
 const DEBUG = false;
@@ -22,10 +23,7 @@ const csv_path = './share/st-mq/easee.csv';
 
 // Aux function for formatting a time string
 function date_string() {
-	const now = new Date();
-	const time = `${now.getUTCHours().toString().padStart(2, '0')}:${now.getUTCMinutes().toString().padStart(2, '0')}:${now.getUTCSeconds().toString().padStart(2, '0')}`;
-	const date = `${now.getUTCDate().toString().padStart(2, '0')}-${(now.getUTCMonth() + 1).toString().padStart(2, '0')}-${now.getUTCFullYear()}`;
-	return `${time} ${date} UTC`;
+	return moment.utc().format('HH:mm:ss DD-MM-YYYY') + ' UTC';
 }
 
 // Get keys from the apikey file
@@ -200,7 +198,7 @@ async function write_csv(data) {
 	await init_csv();
 
 	// Append data to the file
-	const unix_time = Math.floor(Date.now() / 1000);
+	const unix_time = moment().unix();
 	fs.appendFileSync(csv_path, `${unix_time},${data}\n`);
 }
 
