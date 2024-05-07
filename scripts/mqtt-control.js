@@ -1,6 +1,7 @@
 import { dirname } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
+import moment from 'moment-timezone';
 import mqtt from 'mqtt';
 import schedule from 'node-schedule';
 import { XMLParser, XMLBuilder, XMLValidator } from "fast-xml-parser";
@@ -25,10 +26,7 @@ const csv_path = './share/st-mq/st-mq.csv';
 
 // Aux function for formatting a time string
 function date_string() {
-    const now = new Date();
-    const time = `${now.getUTCHours().toString().padStart(2, '0')}:${now.getUTCMinutes().toString().padStart(2, '0')}:${now.getUTCSeconds().toString().padStart(2, '0')}`;
-    const date = `${now.getUTCDate().toString().padStart(2, '0')}-${(now.getUTCMonth() + 1).toString().padStart(2, '0')}-${now.getUTCFullYear()}`;
-    return `${time} ${date} UTC`;
+    return moment.utc().format('HH:mm:ss DD-MM-YYYY') + ' UTC';
 }
 
 // Mqtt handler
@@ -156,6 +154,20 @@ async function check_response(response, type) {
     return response.status;
 }
 
+// Electricity prices follow the 'Europe/Berlin' time zone
+async function get_day_time_bounds_in_utc() {
+    // Beginning of the day in 'Europe/Berlin' time zone
+    const start_date = moment.tz('Europe/Berlin').startOf('day');
+    // Beginning of the next day in 'Europe/Berlin' time zone
+    const end_date = moment.tz('Europe/Berlin').add(1, 'days').startOf('day');
+
+    // Convert to UTC time string
+    const start_date_utc = start_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]');
+    const end_date_utc = end_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]');
+
+    return { start_date_utc, end_date_utc };
+}
+
 // Query Ensto-E API directly to get the daily spot prices
 async function query_entsoe_prices(start_date, end_date) {
 
@@ -163,8 +175,8 @@ async function query_entsoe_prices(start_date, end_date) {
     const api_key = config().entsoe_token;
 
     // Format the dates into the required string format at 23:00 UTC
-    const period_start = `${start_date.toISOString().replace(/[-:T.]/g, '').slice(0, 8)}` + `2300`;
-    const period_end = `${end_date.toISOString().replace(/[-:T.]/g, '').slice(0, 8)}` + `2300`;
+    const period_start = `${start_date.replace(/[-:T.]/g, '').slice(0, 12)}`;
+    const period_end = `${end_date.replace(/[-:T.]/g, '').slice(0, 12)}`;
 
     // Set additional compulsory strings for the API call
     const document_type = `A44`;
@@ -210,11 +222,7 @@ async function query_entsoe_prices(start_date, end_date) {
 }
 
 // Query Elering API directly to get the daily spot prices
-async function query_elering_prices(start_date, end_date) {
-
-    // Format the dates into ISO 8601 string format at 23:00 UTC
-    const period_start = `${start_date.toISOString().slice(0, 11)}23:00:00.000Z`;
-    const period_end = `${end_date.toISOString().slice(0, 11)}23:00:00.000Z`;
+async function query_elering_prices(period_start, period_end) {
 
     // Encode the ISO strings for the API call
     const encoded_period_start = encodeURIComponent(period_start);
@@ -242,17 +250,15 @@ async function query_elering_prices(start_date, end_date) {
 
 // Get daily sport prices from Entso-E API or Elering API (backup)
 async function get_prices() {
-
-    // The date is determined from the UTC+1 time because the 24-hour API price period is from 23:00 yesterday to 23:00 today
-    const start_date = new Date(new Date().setTime(new Date().getTime() - (23 * 60 * 60 * 1000)));
-    const end_date = new Date(new Date().setTime(new Date().getTime() + (60 * 60 * 1000)));
+    // Get the bounds of the day in 'Europe/Berlin' time zone in UTC format
+    const date_bounds = await get_day_time_bounds_in_utc();
 
     // Query Entso-E API for the daily sport prices
-    let prices = await query_entsoe_prices(start_date, end_date);
+    let prices = await query_entsoe_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
 
     // If Entso-E API fails, use Elering API as a backup
     if (prices.length === 0)
-        prices = await query_elering_prices(start_date, end_date);
+        prices = await query_elering_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
 
     return prices;
 }
@@ -325,7 +331,7 @@ async function write_csv(price, heaton, temp_in, temp_out) {
     await init_csv();
 
     // Append data to the file
-    const unix_time = Math.floor(Date.now() / 1000);
+    const unix_time = moment().unix();
     fs.appendFileSync(csv_path, `${unix_time},${price.toFixed(3)},${heaton},${temp_in.toFixed(1)},${temp_out.toFixed(1)}\n`);
 }
 
@@ -350,8 +356,8 @@ async function adjust_heat(mq) {
     // Get the price of the threshold heating hour (most expensive hour with heating on)
     const threshold_price = sorted_prices[heating_hours - 1];
 
-    // The index maps to the ceiling of the current UTC hour (0 for 23-00, 1 for 00-01, 2 for 01-02)
-    const index = parseInt(new Date(new Date().setTime(new Date().getTime() + (60 * 60 * 1000))).getUTCHours());
+    // Index is the current hour in 'Europe/Berlin' time zone
+    const index = parseInt(moment().tz('Europe/Berlin').hours());
 
     // Status print
     console.log(`${BLUE}%s${RESET}`, `[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index - 1}]: ${prices[index]}, threshold_price: ${threshold_price}`);
