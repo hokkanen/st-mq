@@ -360,7 +360,7 @@ async function adjust_heat(mq) {
     const index = parseInt(moment().tz('Europe/Berlin').hours());
 
     // Status print
-    console.log(`${BLUE}%s${RESET}`, `[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index - 1}]: ${prices[index]}, threshold_price: ${threshold_price}`);
+    console.log(`${BLUE}%s${RESET}`, `[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index}]: ${prices[index]}, threshold_price: ${threshold_price}`);
 
     // Publish HeatOff request if price higher than threshold and the hourly price is over 4cnt/kWh, else HeatOn
     if (prices[index] > threshold_price && prices[index] > 40) {
