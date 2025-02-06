@@ -30,6 +30,8 @@ function date_string() {
 function config() {
 	// Initialize tokens
 	let configdata = {
+		'user': '',
+		'pw': '',
 		'access_token': '',
 		'refresh_token': '',
 		'charger_id': '',
@@ -47,6 +49,8 @@ function config() {
 				options = filedata.options;
 
 			// Parse the received json into the configdata object
+			configdata.user = options.easee.user;
+			configdata.pw = options.easee.pw;
 			configdata.access_token = options.easee.access_token;
 			configdata.refresh_token = options.easee.refresh_token;
 			configdata.charger_id = options.easee.charger_id;
@@ -66,6 +70,8 @@ function update_config(access_token, refresh_token) {
 	// Create new apikey file structure
 	let configdata = {
 		'easee': {
+			'user': '',
+			'pw': '',
 			'access_token': '',
 			'refresh_token': '',
 			'charger_id': '',
@@ -84,9 +90,13 @@ function update_config(access_token, refresh_token) {
 	}
 	// Add tokens depending on the config file type
 	if (configdata.hasOwnProperty('options')) {
+		configdata.options.easee.user = 'null';
+		configdata.options.easee.pw = 'null';
 		configdata.options.easee.access_token = access_token;
 		configdata.options.easee.refresh_token = refresh_token;
 	} else {
+		configdata.easee.user = 'null';
+		configdata.easee.pw = 'null';
 		configdata.easee.access_token = access_token;
 		configdata.easee.refresh_token = refresh_token;
 	}
@@ -112,8 +122,8 @@ async function check_response(response, type, log_success) {
 
 // Use credentials for authentication
 async function use_credentials() {
-	const user = config().access_token;
-	const pw = config().refresh_token;
+	const user = config().user;
+	const pw = config().pw;
 	const options = {
 		method: 'POST',
 		headers: { accept: 'application/json', 'content-type': 'application/*+json', Authorization: 'null' },
