@@ -90,13 +90,9 @@ function update_config(access_token, refresh_token) {
 	}
 	// Add tokens depending on the config file type
 	if (configdata.hasOwnProperty('options')) {
-		configdata.options.easee.user = 'null';
-		configdata.options.easee.pw = 'null';
 		configdata.options.easee.access_token = access_token;
 		configdata.options.easee.refresh_token = refresh_token;
 	} else {
-		configdata.easee.user = 'null';
-		configdata.easee.pw = 'null';
 		configdata.easee.access_token = access_token;
 		configdata.easee.refresh_token = refresh_token;
 	}
