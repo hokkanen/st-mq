@@ -1,6 +1,6 @@
 {
   "name": "ST-MQ",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "license": "MIT",
   "scripts": {
     "dev": "parcel chart/index.html --no-cache",

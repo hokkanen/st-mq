@@ -19,4 +19,4 @@ configuration:
     description: Provide OpenWeatherMap API token. If not provided, and SmartThings API does not provide outside temperature, the outside temperature is assumed to be 0 degrees Celsius.
   easee:
     name: Easee settings (optional)
-    description: Provide Easee authentication and device information to collect consumption data. Giving Easee login credentials in place of the actual tokens works as well, ie, "access_token" = "username" and "refresh_token" = "pw". If authentication details are not provided, Easee consumption data is not collected.
+    description: Provide Easee authentication and device information to collect consumption data. Giving either "user" and "pw" or "access_token" and "refresh_token" is enough (see README.md file for more details). If authentication details are not provided, Easee consumption data is not collected.
