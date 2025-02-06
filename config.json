@@ -1,7 +1,7 @@
 {
     "name": "ST-MQ",
     "description": "SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "url": "https://github.com/hokkanen/st-mq",
     "slug": "st-mq",
     "arch": [
@@ -28,19 +28,19 @@
         "temp_to_hours": [
             {
                 "temp": 30,
-                "hours": 1
-            },
-            {
-                "temp": 20,
                 "hours": 2
             },
             {
+                "temp": 20,
+                "hours": 12
+            },
+            {
                 "temp": 10,
-                "hours": 10
+                "hours": 14
             },
             {
                 "temp": 0,
-                "hours": 14
+                "hours": 16
             },
             {
                 "temp": -10,
@@ -48,7 +48,7 @@
             },
             {
                 "temp": -20,
-                "hours": 22
+                "hours": 20
             },
             {
                 "temp": -30,
@@ -72,6 +72,8 @@
             "token": ""
         },
         "easee": {
+            "user": "",
+            "pw": "",
             "access_token": "",
             "refresh_token": "",
             "charger_id": "EHXXXXXX",
