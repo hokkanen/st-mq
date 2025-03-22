@@ -199,14 +199,20 @@ async function query_entsoe_prices(start_date, end_date) {
     const response = await fetch(request).catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Get prices (if query fails, empty array is returned)
-    let prices = [];
+    let prices = new Array(24);
     if (await check_response(response, `Entsoe-E (${config().country_code})`) === 200) {
         // Parse the received xml into json and store price information into the returned prices array
         let json_data;
         try {
             json_data = new XMLParser().parse(await response.text());
-            json_data.Publication_MarketDocument.TimeSeries.Period.Point.forEach(function (entry) {
-                prices.push(parseFloat(entry['price.amount']));
+            let points = json_data.Publication_MarketDocument.TimeSeries.Period.Point;
+            points.forEach(function (entry) {
+                let position = parseInt(entry.position) - 1; // 0-based index
+                let price = parseFloat(entry['price.amount']);
+                // Fill all higher positions to include potential duplicates omitted from the dataset
+                for (let i = position; i < 24; i++) {
+                    prices[i] = price;
+                }
             });
         } catch {
             console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse prices from the Entsoe-E API response!`)
@@ -255,7 +261,6 @@ async function get_prices() {
 
     // Query Entso-E API for the daily sport prices
     let prices = await query_entsoe_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
-
     // If Entso-E API fails, use Elering API as a backup
     if (prices.length === 0)
         prices = await query_elering_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
