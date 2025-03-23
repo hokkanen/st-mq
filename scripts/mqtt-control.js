@@ -204,13 +204,15 @@ async function query_entsoe_prices(start_date, end_date) {
         // Parse the received xml into json and store price information into the returned prices array
         let json_data;
         try {
+            // Hours in day may differ from 23 to 25 due to DST changes
+            const hours_in_day = moment().tz('Europe/Berlin').startOf('day').add(1, 'day').diff(moment().tz('Europe/Berlin').startOf('day'), 'hours');
+            prices = Array(hours_in_day); 
             json_data = new XMLParser().parse(await response.text());
             let points = json_data.Publication_MarketDocument.TimeSeries.Period.Point;
-            prices = Array(25); // 25th position reserved for the autumn DST change day
             points.forEach(function (entry) {
                 let position = parseInt(entry.position) - 1; // 0-based index
                 let price = parseFloat(entry['price.amount']);
-                // Fill all higher positions to include potential duplicates omitted from the dataset
+                // Fill all upcoming positions to include potential duplicates omitted from the dataset
                 for (let i = position; i < prices.length; i++) {
                     prices[i] = price;
                 }
@@ -363,8 +365,8 @@ async function adjust_heat(mq) {
     // Get the price of the threshold heating hour (most expensive hour with heating on)
     const threshold_price = sorted_prices[heating_hours - 1];
 
-    // Index is the current hour in 'Europe/Berlin' time zone
-    const index = parseInt(moment().tz('Europe/Berlin').hours());
+    // Index is the current ongoing hour (n-th hour of the day) in 'Europe/Berlin' time zone accounting for DST
+    const index = moment().tz('Europe/Berlin').diff(moment().tz('Europe/Berlin').startOf('day'), 'hours');
 
     // Status print
     console.log(`${BLUE}%s${RESET}`, `[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index}]: ${prices[index]}, threshold_price: ${threshold_price}`);
