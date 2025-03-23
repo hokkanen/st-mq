@@ -156,10 +156,10 @@ async function check_response(response, type) {
 
 // Electricity prices follow the 'Europe/Berlin' time zone
 async function get_day_time_bounds_in_utc() {
-    // Beginning of the day in 'Europe/Berlin' time zone
+    // First second of the current day (00:00:00) in 'Europe/Berlin' timezone
     const start_date = moment.tz('Europe/Berlin').startOf('day');
-    // Beginning of the next day in 'Europe/Berlin' time zone
-    const end_date = moment.tz('Europe/Berlin').add(1, 'days').startOf('day');
+    // Last second of the current day (23:59:59) in 'Europe/Berlin' timezone
+    const end_date = moment.tz('Europe/Berlin').endOf('day');
 
     // Convert to UTC time string
     const start_date_utc = start_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]');
@@ -199,18 +199,19 @@ async function query_entsoe_prices(start_date, end_date) {
     const response = await fetch(request).catch(error => console.log(`${BLUE}%s${RESET}`, error));
 
     // Get prices (if query fails, empty array is returned)
-    let prices = new Array(24);
+    let prices = [];
     if (await check_response(response, `Entsoe-E (${config().country_code})`) === 200) {
         // Parse the received xml into json and store price information into the returned prices array
         let json_data;
         try {
             json_data = new XMLParser().parse(await response.text());
             let points = json_data.Publication_MarketDocument.TimeSeries.Period.Point;
+            prices = Array(25); // 25th position reserved for the autumn DST change day
             points.forEach(function (entry) {
                 let position = parseInt(entry.position) - 1; // 0-based index
                 let price = parseFloat(entry['price.amount']);
                 // Fill all higher positions to include potential duplicates omitted from the dataset
-                for (let i = position; i < 24; i++) {
+                for (let i = position; i < prices.length; i++) {
                     prices[i] = price;
                 }
             });
@@ -261,6 +262,7 @@ async function get_prices() {
 
     // Query Entso-E API for the daily sport prices
     let prices = await query_entsoe_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
+
     // If Entso-E API fails, use Elering API as a backup
     if (prices.length === 0)
         prices = await query_elering_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
