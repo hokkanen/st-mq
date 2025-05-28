@@ -143,6 +143,12 @@ function config() {
 
 // Check the fetch response status
 async function check_response(response, type) {
+    if (!response) {
+        console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] ${type} query failed!`)
+        console.log(`${BLUE}%s${RESET}`, ` API status: null`);
+        console.log(`${BLUE}%s${RESET}`, ` API response: No response received`);
+        return null; 
+    }
     if (response.status === 200) {
         console.log(`${BLUE}%s${RESET}`, `[${date_string()}] ${type} query successful!`);
     }
