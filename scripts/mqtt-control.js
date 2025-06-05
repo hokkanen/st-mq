@@ -7,7 +7,7 @@ import schedule from 'node-schedule';
 import { XMLParser } from 'fast-xml-parser';
 
 // Debugging settings and console colors
-const debug = false;
+const debug = true;
 const reset = '\x1b[0m';
 const blue = '\x1b[34m';
 const green = '\x1b[32m';
@@ -146,122 +146,155 @@ async check_response(response, type) {
 }
 
     // Query Entso-E prices
-async query_entsoe_prices(start_date, end_date) {
-    const api_key = config().entsoe_token;
-    const period_start = moment(start_date).utc().format('YYYYMMDDHHmm');
-    const period_end = moment(end_date).utc().format('YYYYMMDDHHmm');
-    const document_type = 'A44';
-    const process_type = 'A01';
-    const location_codes = {
-        'fi': '10YFI-1--------U',
-        'ee': '10Y1001A1001A39I',
-        'se': '10YSE-1--------K',
-        'no': '10YNO-0--------C',
-        'dk': '10Y1001A1001A65H',
-        'is': 'IS',
-        'lt': '10YLT-1001A0008Q',
-        'lv': '10YLV-1001A00074'
-    };
-    const url = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}&out_Domain=${location_codes[config().country_code]}&periodStart=${period_start}&periodEnd=${period_end}`;
-
-    try {
-        const response = await fetch(url);
-        if (await this.check_response(response, `Entsoe-E (${config().country_code})`) !== 200) {
-            return { prices: [], resolution: null };
-        }
-
-        const json_data = new XMLParser().parse(await response.text());
-
-        // Debug: Print JSON data
-        if (debug) {
-            console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E JSON data:`, JSON.stringify(json_data, null, 2));
-        }
-
-        // Check for error response
-        if (json_data.Acknowledgement_MarketDocument) {
-            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E API error: ${json_data.Acknowledgement_MarketDocument.Reason?.text || 'Unknown error'}`);
-            return { prices: [], resolution: null };
-        }
-
-        // Get TimeSeries array, handling single object or missing data
-        const time_series = Array.isArray(json_data?.Publication_MarketDocument?.TimeSeries)
-            ? json_data.Publication_MarketDocument.TimeSeries
-            : json_data?.Publication_MarketDocument?.TimeSeries
-                ? [json_data.Publication_MarketDocument.TimeSeries]
-                : [];
-
-        if (time_series.length === 0) {
-            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: No TimeSeries found`);
-            return { prices: [], resolution: null };
-        }
-
-        // Initialize variables
-        const hours_in_period = moment(end_date).diff(moment(start_date), 'hours');
-        let full_prices = Array(hours_in_period).fill(null); // Initialize with nulls
-        let resolution = null;
-        let current_hour_offset = 0; // Track the starting index for each TimeSeries
-
-        // Loop over TimeSeries
-        time_series.forEach((ts, index) => {
-            const ts_resolution = ts?.Period?.resolution || null;
-
-            // Store and check resolution
-            if (index === 0) {
-                resolution = ts_resolution;
-                if (debug) {
-                    console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E Resolution (TimeSeries[${index}]): ${resolution || 'None'}`);
+    async query_entsoe_prices(start_date, end_date) {
+        const api_key = config().entsoe_token;
+        const period_start = moment(start_date).utc().format('YYYYMMDDHHmm');
+        const period_end = moment(end_date).utc().format('YYYYMMDDHHmm');
+        const document_type = 'A44';
+        const process_type = 'A01';
+        const location_codes = {
+            'fi': '10YFI-1--------U',
+            'ee': '10Y1001A1001A39I',
+            'se': '10YSE-1--------K',
+            'no': '10YNO-0--------C',
+            'dk': '10Y1001A1001A65H',
+            'is': 'IS',
+            'lt': '10YLT-1001A0008Q',
+            'lv': '10YLV-1001A00074'
+        };
+        const url = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}&out_Domain=${location_codes[config().country_code]}&periodStart=${period_start}&periodEnd=${period_end}`;
+    
+        try {
+            const response = await fetch(url);
+            if (await this.check_response(response, `Entsoe-E (${config().country_code})`) !== 200) {
+                return { prices: [], resolution: null };
+            }
+    
+            const json_data = new XMLParser().parse(await response.text());
+    
+            // Debug: Print JSON data
+            if (debug) {
+                console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E JSON data:`, JSON.stringify(json_data, null, 2));
+            }
+    
+            // Check for error response
+            if (json_data.Acknowledgement_MarketDocument) {
+                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E API error: ${json_data.Acknowledgement_MarketDocument.Reason?.text || 'Unknown error'}`);
+                return { prices: [], resolution: null };
+            }
+    
+            // Get document-level time interval
+            const doc_time_interval = json_data?.Publication_MarketDocument?.['period.timeInterval'];
+            if (!doc_time_interval?.start || !doc_time_interval?.end) {
+                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: Invalid or missing period.timeInterval`);
+                return { prices: [], resolution: null };
+            }
+    
+            // Calculate total period
+            const doc_start = moment(doc_time_interval.start);
+            const doc_end = moment(doc_time_interval.end);
+            const duration_minutes = doc_end.diff(doc_start, 'minutes', true);
+    
+            // Get TimeSeries array
+            const time_series = Array.isArray(json_data?.Publication_MarketDocument?.TimeSeries)
+                ? json_data.Publication_MarketDocument.TimeSeries
+                : json_data?.Publication_MarketDocument?.TimeSeries
+                    ? [json_data.Publication_MarketDocument.TimeSeries]
+                    : [];
+    
+            if (time_series.length === 0) {
+                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: No TimeSeries found`);
+                return { prices: [], resolution: null };
+            }
+    
+            // Initialize variables
+            let resolution = null;
+            let full_prices = [];
+            let current_slot_offset = 0;
+    
+            // Process each TimeSeries
+            time_series.forEach((ts, index) => {
+                const ts_resolution = ts?.Period?.resolution || null;
+    
+                // Set resolution for first TimeSeries
+                if (index === 0) {
+                    resolution = ts_resolution;
+                    if (!resolution) {
+                        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: No resolution in TimeSeries[${index}]`);
+                        return;
+                    }
+                    if (debug) {
+                        console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E Resolution: ${resolution}`);
+                    }
+                } else if (ts_resolution !== resolution) {
+                    console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: Resolution mismatch in TimeSeries[${index}]: expected ${resolution}, got ${ts_resolution}`);
                 }
-            } else if (ts_resolution !== resolution) {
-                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: Resolution mismatch in TimeSeries[${index}]: expected ${resolution}, got ${ts_resolution}`);
-            }
-
-            // Calculate hours in this TimeSeries (handles DST)
-            const hours_in_day = ts?.Period?.timeInterval
-                ? moment(ts.Period.timeInterval.end).diff(moment(ts.Period.timeInterval.start), 'hours')
-                : 24; // Default to 24 if timeInterval is missing
-            if (debug) {
-                console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E TimeSeries[${index}] Hours: ${hours_in_day}`);
-            }
-
-            // Inner loop: Process Points
-            const points = ts?.Period?.Point || [];
-            if (debug) {
-                console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E TimeSeries[${index}] Points:`, JSON.stringify(points, null, 2));
-            }
-            points.forEach(entry => {
-                const position = parseInt(entry.position) - 1; // 1-based to 0-based
-                const price = parseFloat(entry['price.amount']);
-                if (!isNaN(price) && position >= 0 && position < hours_in_day) {
-                    const global_position = current_hour_offset + position;
-                    if (global_position < full_prices.length) {
-                        full_prices[global_position] = price; // Set price at specific index
+    
+                // Get TimeSeries time interval
+                const time_interval = ts?.Period?.timeInterval;
+                if (!time_interval?.start || !time_interval?.end) {
+                    console.warn(`${blue}%s${reset}`, `[WARN ${date_string()}] Entsoe-E: No timeInterval in TimeSeries[${index}], skipping`);
+                    return;
+                }
+    
+                const ts_start = moment(time_interval.start);
+                const ts_end = moment(time_interval.end);
+                const ts_duration_minutes = ts_end.diff(ts_start, 'minutes', true);
+                const slots_per_hour = resolution === 'PT15M' ? 4 : 1;
+                const ts_slots = Math.floor(ts_duration_minutes / (resolution === 'PT15M' ? 15 : 60));
+    
+                if (debug) {
+                    console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E TimeSeries[${index}] Duration: ${ts_duration_minutes} minutes, Slots: ${ts_slots}`);
+                }
+    
+                // Initialize prices for this TimeSeries
+                let ts_prices = Array(ts_slots).fill(null);
+    
+                // Process Points
+                const points = Array.isArray(ts?.Period?.Point) ? ts.Period.Point : ts?.Period?.Point ? [ts.Period.Point] : [];
+                if (debug) {
+                    console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E TimeSeries[${index}] Points:`, JSON.stringify(points, null, 2));
+                }
+                points.forEach(entry => {
+                    const position = parseInt(entry.position) - 1; // 1-based to 0-based
+                    const price = parseFloat(entry['price.amount']);
+                    if (!isNaN(price) && position >= 0 && position < ts_slots) {
+                        ts_prices[position] = price;
+                    }
+                });
+    
+                // Fill omitted entries within TimeSeries
+                for (let i = 1; i < ts_prices.length; i++) {
+                    if (ts_prices[i] === null && ts_prices[i - 1] !== null) {
+                        ts_prices[i] = ts_prices[i - 1];
                     }
                 }
+    
+                // Append to full prices
+                full_prices = full_prices.concat(ts_prices);
+                current_slot_offset += ts_slots;
             });
-
-            // Update offset for the next TimeSeries
-            current_hour_offset += hours_in_day;
-        });
-
-        // Optional: Fill gaps with the last known price
-        for (let i = 1; i < full_prices.length; i++) {
-            if (full_prices[i] === null && full_prices[i - 1] !== null) {
-                full_prices[i] = full_prices[i - 1];
+    
+            // Validate resolution
+            if (!resolution) {
+                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: No valid resolution`);
+                return { prices: [], resolution: null };
             }
+    
+            // Trim prices to document-level period
+            const total_slots = Math.floor(duration_minutes / (resolution === 'PT15M' ? 15 : 60));
+            full_prices = full_prices.slice(0, total_slots);
+    
+            if (debug) {
+                console.log(`${blue}%s${reset}`, `[${date_string()}] Entso-E Prices:`, full_prices, `Resolution: ${resolution}`);
+            }
+    
+            return { prices: full_prices, resolution };
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E query failed: ${error.toString()}`);
+            return { prices: [], resolution: null };
         }
-
-        // Filter out null values and return
-        const valid_prices = full_prices.filter(price => price !== null);
-        if (debug) {
-            console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E Combined Prices:`, JSON.stringify(valid_prices, null, 2));
-        }
-
-        return { prices: valid_prices, resolution };
-    } catch (error) {
-        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E query failed: ${error.toString()}`);
-        return { prices: [], resolution: null };
     }
-}
 
 // Query Elering prices
 async query_elering_prices(period_start, period_end) {
@@ -295,62 +328,60 @@ async query_elering_prices(period_start, period_end) {
             return { prices: [], resolution: null };
         }
 
-        // Initialize variables
-        const start_moment = moment(period_start);
-        const end_moment = moment(period_end);
-        const hours_in_period = end_moment.diff(start_moment, 'hours', true); // Precise hours, including fractional
-
         // Calculate resolution
-        let resolution = 'PT15M'; // Default to 15min
+        let resolution = 'PT60M'; // Default to hourly
         if (entries.length >= 2) {
             const time_diff = entries[1].timestamp - entries[0].timestamp; // In seconds
             if (time_diff === 900) {
-                resolution = 'PT15M';
+                resolution = 'PT15M'; // 15 minutes
             } else if (time_diff === 3600) {
-                resolution = 'PT60M';
+                resolution = 'PT60M'; // 1 hour
             } else {
-                console.warn(`${blue}%s${reset}`, `[WARN ${date_string()}] Elering: Unexpected timestamp difference ${time_diff}s, assuming PT15M`);
+                console.warn(`${blue}%s${reset}`, `[WARN ${date_string()}] Elering: Unexpected timestamp difference ${time_diff}s, assuming PT60M`);
             }
         }
         if (debug) {
             console.log(`${blue}%s${reset}`, `[${date_string()}] Elering Resolution: ${resolution}`);
         }
 
-        // Determine number of price slots based on resolution
+        // Determine time period covered by API data
+        const first_timestamp = moment.unix(entries[0].timestamp);
+        const last_timestamp = moment.unix(entries[entries.length - 1].timestamp);
+        const duration_minutes = last_timestamp.diff(first_timestamp, 'minutes', true);
         const slots_per_hour = resolution === 'PT15M' ? 4 : 1;
-        const total_slots = Math.ceil(hours_in_period * slots_per_hour); // Round up for partial slots
-        let full_prices = Array(total_slots).fill(null); // Initialize with nulls
+        const total_slots = Math.floor(duration_minutes / (resolution === 'PT15M' ? 15 : 60)) + 1; // Include last slot
 
-        // Map prices to the correct positions
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Elering: Duration ${duration_minutes} minutes, Total Slots: ${total_slots}`);
+        }
+
+        // Initialize prices array
+        let full_prices = Array(total_slots).fill(null);
+
+        // Map prices to slots
         entries.forEach(entry => {
-            const timestamp = moment.unix(entry.timestamp); // Convert Unix timestamp to moment
-            let position;
-            if (resolution === 'PT15M') {
-                position = Math.floor(timestamp.diff(start_moment, 'minutes', true) / 15); // 15-minute slots
-            } else {
-                position = Math.floor(timestamp.diff(start_moment, 'hours', true)); // Hourly slots
-            }
+            const timestamp = moment.unix(entry.timestamp);
+            const position = resolution === 'PT15M'
+                ? Math.floor(timestamp.diff(first_timestamp, 'minutes', true) / 15)
+                : Math.floor(timestamp.diff(first_timestamp, 'hours', true));
             const price = parseFloat(entry.price);
-            if (!isNaN(price) && position >= 0 && position < full_prices.length) {
+            if (!isNaN(price) && position >= 0 && position < total_slots) {
                 full_prices[position] = price;
             }
         });
 
-        // Fill gaps with last known price
+        // Fill gaps within the data period (for missing data)
         for (let i = 1; i < full_prices.length; i++) {
             if (full_prices[i] === null && full_prices[i - 1] !== null) {
                 full_prices[i] = full_prices[i - 1];
             }
         }
 
-        // Filter out remaining nulls
-        const valid_prices = full_prices.filter(price => price !== null);
-
         if (debug) {
-            console.log(`${blue}%s${reset}`, `[${date_string()}] Elering Combined Prices:`, JSON.stringify(valid_prices, null, 2));
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Elering Prices:`, full_prices, `Resolution: ${this.price_resolution}`);
         }
 
-        return { prices: valid_prices, resolution };
+        return { prices: full_prices, resolution };
     } catch (error) {
         console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Elering query failed: ${error.toString()}`);
         return { prices: [], resolution: null };
@@ -390,38 +421,50 @@ async query_st_temp(st_dev_id, country_code = '', postal_code = '') {
     }
 }
 
-    async fetch_prices() {
-        try {
-            const start_of_period = moment.tz('Europe/Berlin').startOf('day');
-            const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
-            const { prices, resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
-    
-            let full_prices = prices;
-            console.log(`${blue}%s${reset}`, full_prices, resolution);
+async fetch_prices() {
+    try {
+        // Define period (2 days starting at midnight Europe/Berlin)
+        const start_of_period = moment.tz('Europe/Berlin').startOf('day');
+        const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
 
-            this.price_resolution = resolution;
-           // if (full_prices.length === 0) {
-                const start_iso = start_of_period.toISOString();
-                const end_iso = end_of_period.toISOString();
-                const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
-                full_prices = elering_result.prices;
-                this.price_resolution = elering_result.resolution;
-            console.log(`${blue}%s${reset}`, full_prices, this.price_resolution);
+        // Query Entso-E
+        let { prices, resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
+        let full_prices = prices;
+        this.price_resolution = resolution;
 
-            //}
-    
-            const current_hour_index = moment().startOf('hour').diff(start_of_period, 'hours');
-            this.prices = current_hour_index < full_prices.length 
-                ? full_prices.slice(current_hour_index) 
-                : [];
-        } catch (error) {
-            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}`);
-            this.prices = [];
-            this.price_resolution = null;
+        // Fallback to Elering if Entso-E returns no prices
+        //if (full_prices.length === 0) {
+            const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
+            full_prices = elering_result.prices;
+            this.price_resolution = elering_result.resolution;
+        //}
+
+        // Calculate current index based on resolution
+        let current_index;
+        if (this.price_resolution === 'PT15M') {
+            // Align to nearest 15-minute interval
+            const current_time = moment().startOf('minute').subtract(moment().minute() % 15, 'minutes');
+            current_index = Math.floor(current_time.diff(start_of_period, 'minutes', true) / 15);
+        } else {
+            // PT60M or default: Align to start of hour
+            const current_time = moment().startOf('hour');
+            current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
         }
-        console.log(`${blue}%s${reset}`, this.prices, this.price_resolution);
 
+        // Slice prices from current index
+        this.prices = current_index >= 0 && current_index < full_prices.length
+            ? full_prices.slice(current_index)
+            : [];
+
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Sliced Prices:`, this.prices, `Current Index: ${current_index}`);
+        }
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}`);
+        this.prices = [];
+        this.price_resolution = null;
     }
+}
 
     async fetch_temperatures() {
         try {
@@ -555,8 +598,8 @@ async write_csv(price, heat_on, temp_in, temp_ga, temp_out) {
             fetch_data_instance.shift_prices();
 
             if (debug) {
-                console.log(`${blue}%s${reset}`, `[${date_string()}] prices: ${fetch_data_instance.prices}`);
-                console.log(`${blue}%s${reset}`, `[${date_string()}] heating: action=${action}, price=${current_price}, threshold=${threshold_price}`);
+                console.log(`${blue}%s${reset}`, `[${date_string()}] heat_adjust = ${action}, price = ${current_price}, threshold = ${threshold_price}`);
+                console.log(`${blue}%s${reset}`, `[${date_string()}] Remaining price slots: `, fetch_data_instance.prices);
             }
         } catch (error) {
             console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] heat_adjust.adjust failed: ${error.toString()}`);
