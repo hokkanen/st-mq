@@ -8,7 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = false;
+const DEBUG = true;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -141,12 +141,36 @@ class MqttHandler {
 
 // Fetches electricity prices and temperatures from various APIs
 class FetchData {
+    // Private fields
+    #price_resolution = null;
+    #prices = [];
+    #inside_temp = null;
+    #garage_temp = null;
+    #outside_temp = null;
+
     constructor() {
-        this.price_resolution = null;
-        this.prices = [];
-        this.inside_temp = null;
-        this.garage_temp = null;
-        this.outside_temp = null;
+        // No need to initialize private fields here since they are declared above
+    }
+
+    // Public getters
+    get price_resolution() {
+        return this.#price_resolution;
+    }
+
+    get prices() {
+        return this.#prices;
+    }
+
+    get inside_temp() {
+        return this.#inside_temp;
+    }
+
+    get garage_temp() {
+        return this.#garage_temp;
+    }
+
+    get outside_temp() {
+        return this.#outside_temp;
     }
 
     // Compares two price arrays for equality
@@ -163,9 +187,8 @@ class FetchData {
         }
         if (response.status === 200) {
             console.log(`${BLUE}[${date_string()}] ${type} query successful!${RESET}`);
-        }
-        else {
-            console.log(`${BLUE}[ERROR ${date_string()}] ${type} query failed!${RESET}`)
+        } else {
+            console.log(`${BLUE}[ERROR ${date_string()}] ${type} query failed!${RESET}`);
             console.log(`${BLUE} API status: ${response.status}${RESET}`);
             console.log(`${BLUE} API response: ${response.statusText}${RESET}`);
         }
@@ -445,62 +468,60 @@ class FetchData {
             }
 
             // Update prices only if they differ or resolution changes
-            if (full_prices.length > 0 && (!this.are_prices_equal(full_prices, this.prices) || this.price_resolution !== new_resolution)) {
-                this.prices = full_prices;
-                this.price_resolution = new_resolution;
+            if (full_prices.length > 0 && (!this.are_prices_equal(full_prices, this.#prices) || this.#price_resolution !== new_resolution)) {
+                this.#prices = full_prices;
+                this.#price_resolution = new_resolution;
+                if (DEBUG) {
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Updated Prices: ${JSON.stringify(this.#prices)}, Resolution: ${new_resolution}${RESET}`);
+                }
             } else {
                 if (DEBUG) {
                     console.log(`${YELLOW}[DEBUG ${date_string()}] Prices unchanged or empty, retaining old prices${RESET}`);
                 }
             }
-
-            let current_index;
-            if (this.price_resolution === 'PT15M') {
-                const current_time = moment().startOf('minute').subtract(moment().minute() % 15, 'minutes');
-                current_index = Math.floor(current_time.diff(start_of_period, 'minutes', true) / 15);
-            } else {
-                const current_time = moment().startOf('hour');
-                current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
-            }
-
-            this.prices = current_index >= 0 && current_index < this.prices.length
-                ? this.prices.slice(current_index)
-                : [];
-
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: ${JSON.stringify(this.prices)}, Current Index: ${current_index}${RESET}`);
-            }
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}, retaining old prices${RESET}`);
-            // Old prices are retained automatically as this.prices and this.price_resolution are not updated
+            // Old prices are retained automatically as this.#prices and this.#price_resolution are not updated
         }
     }
 
     // Fetches current temperatures from SmartThings devices
     async fetch_temperatures() {
         try {
-            this.inside_temp = await this.query_st_temp(config().st_temp_in_id);
-            this.garage_temp = await this.query_st_temp(config().st_temp_ga_id);
-            this.outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+            this.#inside_temp = await this.query_st_temp(config().st_temp_in_id);
+            this.#garage_temp = await this.query_st_temp(config().st_temp_ga_id);
+            this.#outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}${RESET}`);
-            this.inside_temp = null;
-            this.garage_temp = null;
-            this.outside_temp = null;
+            this.#inside_temp = null;
+            this.#garage_temp = null;
+            this.#outside_temp = null;
         }
     }
-
-    // Removes the first price from the prices array
-    shift_prices() {
-        if (this.prices.length > 0) {
-            this.prices.shift();
+    
+    // Return the prices sliced from the current time to the end of the period
+    sliced_prices() {
+        const start_of_period = moment.tz('Europe/Berlin').startOf('day');
+        let current_index;
+        if (this.#price_resolution === 'PT15M') {
+            const current_time = moment().startOf('minute').subtract(moment().minute() % 15, 'minutes');
+            current_index = Math.floor(current_time.diff(start_of_period, 'minutes', true) / 15);
+        } else {
+            const current_time = moment().startOf('hour');
+            current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
         }
+        const sliced_prices = current_index >= 0 && current_index < this.#prices.length
+            ? this.#prices.slice(current_index)
+            : [];
+        if (DEBUG) {
+            console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: ${JSON.stringify(sliced_prices)}, Current Index: ${current_index}, Full Prices Length: ${this.#prices.length}${RESET}`);
+        }
+        return sliced_prices;
     }
 }
 
 // ### Heating Adjustment Class ###
 
-// Controls heating based on electricity prices and temperatures
 class HeatAdjustment {
     constructor() {
         this.last_heaton60_time = null; // Tracks the last time heaton60 was triggered
@@ -539,7 +560,7 @@ class HeatAdjustment {
         const threshold_index = Math.max(0, Math.min(target_elements - 1, sorted_prices.length - 1));
         const threshold_price = sorted_prices[threshold_index] || Infinity;
 
-        console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetPeriods=${target_elements}/${prices.length} (${resolution}), Threshold=${threshold_price}${RESET}`);
+        console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetPeriods=${target_elements}/${prices.length} (${resolution}), Price=${(prices[0] / 10.0).toFixed(3)}, Threshold=${(threshold_price / 10.0).toFixed(3)}${RESET}`);
 
         return threshold_price;
     }
@@ -575,49 +596,47 @@ class HeatAdjustment {
     }
 
     // Adjusts heating based on current prices and temperatures
-    async adjust(mqtt_client, fetch_data_instance) {
+    async adjust(mqtt_client, fetch_data_instance, write_out_csv = true) {
         try {
             await fetch_data_instance.fetch_prices();
             await fetch_data_instance.fetch_temperatures();
 
-            const current_price = fetch_data_instance.prices[0] ?? null;
+            const sliced_prices = fetch_data_instance.sliced_prices();
+            const current_price = sliced_prices[0] ?? null;
             const inside_temp = fetch_data_instance.inside_temp;
             const garage_temp = fetch_data_instance.garage_temp;
             const outside_temp = fetch_data_instance.outside_temp;
-            const threshold_price = await this.calc_threshold_price(outside_temp, fetch_data_instance.prices, fetch_data_instance.price_resolution);
+            const threshold_price = await this.calc_threshold_price(outside_temp, sliced_prices, fetch_data_instance.price_resolution);
 
-            let action;
             let heaton_value;
             const now = moment();
             const heat_on = current_price === null || current_price <= threshold_price || current_price <= 30;
 
             if (heat_on) {
                 if (!this.last_heaton60_time || now.diff(this.last_heaton60_time, 'hours', true) >= 1) {
-                    action = 'heaton60';
-                    heaton_value = 60;
+                    await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton60');
+                    await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton15');
                     this.last_heaton60_time = now;
+                    heaton_value = 60;
                 } else {
-                    action = 'heaton15';
+                    await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton15');
                     heaton_value = 15;
                 }
             } else {
-                action = 'heatoff';
+                await mqtt_client.post_trigger('from_stmq/heat/action', 'heatoff');
                 heaton_value = 0;
             }
-
-            await mqtt_client.post_trigger('from_stmq/heat/action', action);
 
             const price_for_csv = current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN';
             const temp_in_for_csv = inside_temp !== null ? inside_temp.toFixed(1) : 'NaN';
             const temp_ga_for_csv = garage_temp !== null ? garage_temp.toFixed(1) : 'NaN';
             const temp_out_for_csv = outside_temp !== null ? outside_temp.toFixed(1) : 'NaN';
-            await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
-            fetch_data_instance.shift_prices();
+            if (write_out_csv)
+                await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Action = ${action}, Price = ${current_price}, Threshold = ${threshold_price}${RESET}`);
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining price slots: ${JSON.stringify(fetch_data_instance.prices)}${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Values: price = ${(current_price / 10.0).toFixed(3)}, threshold_price = ${(threshold_price / 10.0).toFixed(3)}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
             }
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] HeatAdjustment.adjust failed: ${error.toString()}${RESET}`);
@@ -634,12 +653,11 @@ class HeatAdjustment {
         const heat_adjust_instance = new HeatAdjustment();
 
         await mqtt_client.log_topic('to_stmq/heat/receipt');
-        await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance);
+        await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance, false);
 
         // Schedule heat adjustment and logging to occur every 15 minutes of an hour
         schedule.scheduleJob('*/15 * * * *', async () => {
-            await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance);
-            console.log(`${BLUE}[${date_string()}] Scheduled heat_adjust executed${RESET}`);
+            await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance, true);
         });
     } catch (error) {
         console.log(`${BLUE}[ERROR ${date_string()}] Main execution failed: ${error.toString()}${RESET}`);
