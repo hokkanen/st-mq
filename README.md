@@ -1,7 +1,7 @@
 
 # SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
 
-This tool can be run as a standalone app (see below) or as a [Home Assistant add-on](DOCS.md). The tool uses MQTT communication, so it can be used with any home automation system that can receive MQTT messages, not just SmartThings. However, the setup instructions are provided only for SmartThings. 
+This tool can be run as a standalone app (see below) or as a [Home Assistant add-on](DOCS.md). The tool uses MQTT communication, so it can be used with any home automation system that can receive MQTT messages, not just SmartThings. However, the setup instructions are provided only for SmartThings. The tool evaluates the current kWh spot price and signals whether the energy consumption is economical considering the user defined configuration parameters.
 
 ## Nordpool kWh spot price control for SmartThings
 The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Nordic and Baltic electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) backup API (Elering API works only for fi, ee, lt, and lv country codes), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in `./share/st-mq/st-mq.csv` which can be plotted with the [html chart tool](chart/index.html). The file `./share/st-mq/st-mq.csv` has the following format:
@@ -40,7 +40,7 @@ npm i
 ## Setup (standalone)
 
 ### SmartThings
-In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages, which indicate whether the kWh spot price is favourable for energy consumption. The difference between `heaton15` and `heaton60` messages is that if the conditions for `heatoff` are not satisfied, a `heaton60` message is published if no prior `heaton60` message has been published within the past 60 minutes, otherwise `heaton15` message is published.
+In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages, which indicate whether the kWh spot price is favourable for energy consumption. If the conditions for `heatoff` are not satisfied, a `heaton15` is published. Additionally, `heaton60` message is published together with `heaton15` if no prior `heaton60` messages have been published within the past 60 minutes.
 
 ### Config
 The root directory contains [config.json](config.json) file in which the `options` section needs to be updated. In the config, fill in geolocation information, temperature-to-heating-hours mapping array, MQTT broker details, and the required API keys and SmartThings device IDs for the temperature sensors. For more information, check the [HASS translations file](translations/en.yaml).
