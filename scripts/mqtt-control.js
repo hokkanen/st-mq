@@ -511,12 +511,12 @@ class HeatAdjustment {
         const temp_to_hours = config().temp_to_hours;
 
         let hours;
-        if (!outside_temp || !temp_to_hours?.length) {
+        if (!temp_to_hours?.length) {
             hours = 24; // Default to 24 hours if data is invalid
+        } else if (!outside_temp || outside_temp <= temp_to_hours[temp_to_hours.length - 1].temp) {
+            hours = temp_to_hours[temp_to_hours.length - 1].hours;
         } else if (outside_temp >= temp_to_hours[0].temp) {
             hours = temp_to_hours[0].hours;
-        } else if (outside_temp <= temp_to_hours[temp_to_hours.length - 1].temp) {
-            hours = temp_to_hours[temp_to_hours.length - 1].hours;
         } else {
             let i = 0;
             while (outside_temp < temp_to_hours[i].temp) i++;
