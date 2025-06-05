@@ -40,14 +40,14 @@ npm i
 ## Setup (standalone)
 
 ### SmartThings
-In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton`/`heatoff` messages.
+In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages, which indicate whether the kWh spot price is favourable for energy consumption. The difference between `heaton15` and `heaton60` messages is that if the conditions for `heatoff` are not satisfied, a `heaton60` message is published if no prior `heaton60` message has been published within the past 60 minutes, otherwise `heaton15` message is published.
 
 ### Config
 The root directory contains [config.json](config.json) file in which the `options` section needs to be updated. In the config, fill in geolocation information, temperature-to-heating-hours mapping array, MQTT broker details, and the required API keys and SmartThings device IDs for the temperature sensors. For more information, check the [HASS translations file](translations/en.yaml).
 
 To collect consumption data from local Easee devices, Easee authentication and device information are required as well. Giving either a username and password, or an access token and refresh token, is required. Providing tokens only should be a theoretically safer option since they provide limited access to Easee account. However, giving a username and password has turned out to be a more stable option, since the refresh token update procedure may in rare occasions fail (maybe a few times a year when running the tool 24/7). If neither of these authentication methods are provided, Easee consumption data is not collected.
 
-The user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys can be obtained freely by registering to these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries fail), the inside and outside temperatures are simply set to `0` degrees Celsius. However, inside temperature is only used for csv logging, and does not impact the heat adjustment algorithm. 
+The user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys can be obtained freely by registering to these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries fail), the inside, garage, and and outside temperatures are not logged. However, inside and garage temperatures are only used for csv logging, and do not impact the heat adjustment algorithm. If no outside temperature is obtained, the algorithm assumes the last specified `temp_to_hours` entry specified in the [config.json](config.json).
 
 ### Mosquitto MQTT broker
 Set up Mosquitto user name and password by creating a password file with
@@ -83,7 +83,7 @@ pm2 start ./scripts/mqtt-control.js
 pm2 start ./scripts/easee-query.js --cron-restart="*/5 * * * *" --no-autorestart
 pm2 start npm -- run dev
 ```
-The console output uses blue color for [mqtt-control.js](scripts/mqtt-control.js) and green color for [easee-query.js](easee-query.js) (the [chart](chart/index.html) server log is stored in `./share/st-mq/chart-server.log`). The [chart](chart/index.html) itself can be accessed with browser at [http://localhost:1234](http://localhost:1234).
+The console output uses blue color for [mqtt-control.js](scripts/mqtt-control.js) and green color for [easee-query.js](scripts/easee-query.js) (the [chart](chart/index.html) server log is stored in `./share/st-mq/chart-server.log`). The [chart](chart/index.html) itself can be accessed with browser at [http://localhost:1234](http://localhost:1234).
 
 ## Create persistent app list (standalone)
 Make `pm2` restart automatically after reboot by
