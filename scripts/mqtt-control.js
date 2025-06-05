@@ -8,7 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = true;
+const DEBUG = false;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -16,9 +16,9 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 
 // Configuration and CSV paths
-let CONFIG_PATH = './config.json';
+let CONFIG_PATH = './config.json'; // default path
 if (fs.existsSync('./data/options.json')) {
-    CONFIG_PATH = './data/options.json';
+    CONFIG_PATH = './data/options.json'; // HASS path
 }
 const CSV_FILE_PATH = './share/st-mq/st-mq.csv';
 
@@ -149,13 +149,26 @@ class FetchData {
         this.outside_temp = null;
     }
 
+    // Compares two price arrays for equality
+    are_prices_equal(prices1, prices2) {
+        if (!prices1 || !prices2 || prices1.length !== prices2.length) return false;
+        return prices1.every((price, index) => price === prices2[index]);
+    }
+
     // Checks the status of an API response and logs the result
     async check_response(response, type) {
         if (!response) {
             console.log(`${BLUE}[ERROR ${date_string()}] ${type} query failed: No response${RESET}`);
             return null;
         }
-        console.log(`${BLUE}[${date_string()}] ${type} query status: ${response.status}${RESET}`);
+        if (response.status === 200) {
+            console.log(`${BLUE}[${date_string()}] ${type} query successful!${RESET}`);
+        }
+        else {
+            console.log(`${BLUE}[ERROR ${date_string()}] ${type} query failed!${RESET}`)
+            console.log(`${BLUE} API status: ${response.status}${RESET}`);
+            console.log(`${BLUE} API response: ${response.statusText}${RESET}`);
+        }
         return response.status;
     }
 
@@ -416,20 +429,29 @@ class FetchData {
         }
     }
 
-    // Fetches electricity prices for the next 48 hours
+    // Fetches electricity prices for the next 48 hours, updating only if prices or resolution change
     async fetch_prices() {
         try {
             const start_of_period = moment.tz('Europe/Berlin').startOf('day');
             const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
 
-            let { prices, resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
-            let full_prices = prices;
-            this.price_resolution = resolution;
+            let { prices: new_prices, resolution: new_resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
+            let full_prices = new_prices;
 
             if (full_prices.length === 0) {
                 const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
                 full_prices = elering_result.prices;
-                this.price_resolution = elering_result.resolution;
+                new_resolution = elering_result.resolution;
+            }
+
+            // Update prices only if they differ or resolution changes
+            if (full_prices.length > 0 && (!this.are_prices_equal(full_prices, this.prices) || this.price_resolution !== new_resolution)) {
+                this.prices = full_prices;
+                this.price_resolution = new_resolution;
+            } else {
+                if (DEBUG) {
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Prices unchanged or empty, retaining old prices${RESET}`);
+                }
             }
 
             let current_index;
@@ -441,17 +463,16 @@ class FetchData {
                 current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
             }
 
-            this.prices = current_index >= 0 && current_index < full_prices.length
-                ? full_prices.slice(current_index)
+            this.prices = current_index >= 0 && current_index < this.prices.length
+                ? this.prices.slice(current_index)
                 : [];
 
             if (DEBUG) {
                 console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: ${JSON.stringify(this.prices)}, Current Index: ${current_index}${RESET}`);
             }
         } catch (error) {
-            console.log(`${BLUE}[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}${RESET}`);
-            this.prices = [];
-            this.price_resolution = null;
+            console.log(`${BLUE}[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}, retaining old prices${RESET}`);
+            // Old prices are retained automatically as this.prices and this.price_resolution are not updated
         }
     }
 
@@ -459,7 +480,7 @@ class FetchData {
     async fetch_temperatures() {
         try {
             this.inside_temp = await this.query_st_temp(config().st_temp_in_id);
-            this.garage_temp = await this.query_st_temp(config().st_temp_ga_id); // Fixed: was incorrectly using st_temp_in_id
+            this.garage_temp = await this.query_st_temp(config().st_temp_ga_id);
             this.outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}${RESET}`);
@@ -480,13 +501,13 @@ class FetchData {
 // ### Heating Adjustment Class ###
 
 // Controls heating based on electricity prices and temperatures
-class HeatAdjust {
+class HeatAdjustment {
     constructor() {
-        this.last_heaton2_time = null; // Tracks the last time heaton2 was triggered
+        this.last_heaton60_time = null; // Tracks the last time heaton60 was triggered
     }
 
     // Calculates the threshold price below which heating should be activated
-    async calc_threshold_price(outside_temp, prices) {
+    async calc_threshold_price(outside_temp, prices, resolution) {
         const temp_to_hours = config().temp_to_hours;
 
         let hours;
@@ -515,12 +536,10 @@ class HeatAdjust {
 
         const target_elements = Math.round((heating_percentage / 100) * prices.length);
         const sorted_prices = [...prices].sort((a, b) => a - b);
-        const threshold_index = Math.min(target_elements, sorted_prices.length - 1);
+        const threshold_index = Math.max(0, Math.min(target_elements - 1, sorted_prices.length - 1));
         const threshold_price = sorted_prices[threshold_index] || Infinity;
 
-        if (DEBUG) {
-            console.log(`${YELLOW}[DEBUG ${date_string()}] calc_threshold_price: Temp=${outside_temp}, Hours=${hours.toFixed(2)}, Percentage=${heating_percentage.toFixed(1)}%, PricesLength=${prices.length}, TargetElements=${target_elements}, Threshold=${threshold_price}${RESET}`);
-        }
+        console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetPeriods=${target_elements}/${prices.length} (${resolution}), Threshold=${threshold_price}${RESET}`);
 
         return threshold_price;
     }
@@ -565,21 +584,21 @@ class HeatAdjust {
             const inside_temp = fetch_data_instance.inside_temp;
             const garage_temp = fetch_data_instance.garage_temp;
             const outside_temp = fetch_data_instance.outside_temp;
-            const threshold_price = await this.calc_threshold_price(outside_temp, fetch_data_instance.prices);
+            const threshold_price = await this.calc_threshold_price(outside_temp, fetch_data_instance.prices, fetch_data_instance.price_resolution);
 
             let action;
             let heaton_value;
             const now = moment();
-            const heat_on = current_price === null || current_price <= threshold_price || current_price <= 40;
+            const heat_on = current_price === null || current_price <= threshold_price || current_price <= 30;
 
             if (heat_on) {
-                if (!this.last_heaton2_time || now.diff(this.last_heaton2_time, 'hours', true) >= 1) {
-                    action = 'heaton2';
-                    heaton_value = 2;
-                    this.last_heaton2_time = now;
+                if (!this.last_heaton60_time || now.diff(this.last_heaton60_time, 'hours', true) >= 1) {
+                    action = 'heaton60';
+                    heaton_value = 60;
+                    this.last_heaton60_time = now;
                 } else {
-                    action = 'heaton1';
-                    heaton_value = 1;
+                    action = 'heaton15';
+                    heaton_value = 15;
                 }
             } else {
                 action = 'heatoff';
@@ -597,11 +616,11 @@ class HeatAdjust {
             fetch_data_instance.shift_prices();
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] heat_adjust = ${action}, price = ${current_price}, threshold = ${threshold_price}${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Action = ${action}, Price = ${current_price}, Threshold = ${threshold_price}${RESET}`);
                 console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining price slots: ${JSON.stringify(fetch_data_instance.prices)}${RESET}`);
             }
         } catch (error) {
-            console.log(`${BLUE}[ERROR ${date_string()}] heat_adjust.adjust failed: ${error.toString()}${RESET}`);
+            console.log(`${BLUE}[ERROR ${date_string()}] HeatAdjustment.adjust failed: ${error.toString()}${RESET}`);
         }
     }
 }
@@ -612,11 +631,12 @@ class HeatAdjust {
     try {
         const mqtt_client = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
         const fetch_data_instance = new FetchData();
-        const heat_adjust_instance = new HeatAdjust();
+        const heat_adjust_instance = new HeatAdjustment();
 
         await mqtt_client.log_topic('to_stmq/heat/receipt');
         await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance);
 
+        // Schedule heat adjustment and logging to occur every 15 minutes of an hour
         schedule.scheduleJob('*/15 * * * *', async () => {
             await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance);
             console.log(`${BLUE}[${date_string()}] Scheduled heat_adjust executed${RESET}`);
