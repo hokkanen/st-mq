@@ -8,7 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = true;
+const DEBUG = false;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -79,40 +79,59 @@ function config() {
 
 // Manages MQTT connections, subscriptions, and publications
 class MqttHandler {
+    #broker_address;
+    #logged_topics = [];
+    #client;
+
     constructor(broker_address, username, password) {
-        this.broker_address = broker_address;
-        this.logged_topics = [];
-        const options = { username, password };
-        this.client = mqtt.connect(this.broker_address, options);
+        this.#broker_address = broker_address;
+        // Enable auto-reconnect every 1 second if connection is lost
+        const options = { username, password, reconnectPeriod: 1000 };
+        this.#client = mqtt.connect(this.#broker_address, options);
 
         // Handle MQTT client events
-        this.client.on('error', (error) => {
+        this.#client.on('error', (error) => {
             console.log(`${BLUE}[ERROR ${date_string()}] MQTT client error: ${error.toString()}${RESET}`);
         });
 
-        this.client.on('connect', () => {
+        this.#client.on('connect', () => {
             console.log(`${BLUE}[${date_string()}] MQTT client connected${RESET}`);
         });
 
-        this.client.on('offline', () => {
+        this.#client.on('offline', () => {
             console.log(`${BLUE}[${date_string()}] MQTT client offline${RESET}`);
         });
 
-        this.client.on('reconnect', () => {
+        this.#client.on('reconnect', () => {
             console.log(`${BLUE}[${date_string()}] MQTT client reconnecting${RESET}`);
         });
 
-        this.client.on('message', (topic, message) => {
-            if (this.logged_topics.includes(topic)) {
+        this.#client.on('message', (topic, message) => {
+            if (this.#logged_topics.includes(topic)) {
                 console.log(`${BLUE}[${date_string()}] MQTT received ${topic}:${message}${RESET}`);
             }
         });
     }
 
+    // Getter for broker_address (for potential external access)
+    get broker_address() {
+        return this.#broker_address;
+    }
+
+    // Getter for logged_topics (returns a copy to prevent modification)
+    get logged_topics() {
+        return [...this.#logged_topics];
+    }
+
     // Subscribes to an MQTT topic with specified QoS
     async log_topic(topic, qos = 2) {
-        this.logged_topics.push(topic);
-        this.client.subscribe(topic, { qos }, (err) => {
+        // Check if client is connected before subscribing
+        if (!this.#client.connected) {
+            console.log(`${BLUE}[ERROR ${date_string()}] MQTT client not connected, cannot subscribe to ${topic}${RESET}`);
+            return;
+        }
+        this.#logged_topics.push(topic);
+        this.#client.subscribe(topic, { qos }, (err) => {
             if (err) {
                 console.log(`${BLUE}[ERROR ${date_string()}] MQTT failed to subscribe to ${topic}: ${err.toString()}${RESET}`);
             } else {
@@ -124,7 +143,13 @@ class MqttHandler {
     // Publishes a message to an MQTT topic with specified QoS
     async post_trigger(topic, msg, qos = 1) {
         return new Promise((resolve, reject) => {
-            this.client.publish(topic, msg, { qos }, (error) => {
+            // Check if client is connected before publishing
+            if (!this.#client.connected) {
+                console.log(`${BLUE}[ERROR ${date_string()}] MQTT client not connected, cannot publish ${topic}:${msg}${RESET}`);
+                reject(new Error('MQTT client not connected'));
+                return;
+            }
+            this.#client.publish(topic, msg, { qos }, (error) => {
                 if (error) {
                     console.log(`${BLUE}[ERROR ${date_string()}] MQTT failed to publish ${topic}:${msg}: ${error.toString()}${RESET}`);
                     reject(error);
@@ -147,6 +172,12 @@ class FetchData {
     #inside_temp = null;
     #garage_temp = null;
     #outside_temp = null;
+    // Store last known temperatures for fallback
+    #last_inside_temp = null;
+    #last_garage_temp = null;
+    #last_outside_temp = null;
+    // Track last price fetch time to avoid unnecessary API calls
+    #last_price_fetch = null;
 
     constructor() {
         // No need to initialize private fields here since they are declared above
@@ -155,10 +186,6 @@ class FetchData {
     // Public getters
     get price_resolution() {
         return this.#price_resolution;
-    }
-
-    get prices() {
-        return this.#prices;
     }
 
     get inside_temp() {
@@ -171,6 +198,26 @@ class FetchData {
 
     get outside_temp() {
         return this.#outside_temp;
+    }
+
+    // Return the prices sliced from the current time to the end of the period
+    get sliced_prices() {
+        const start_of_period = moment.tz('Europe/Berlin').startOf('day');
+        let current_index;
+        if (this.#price_resolution === 'PT15M') {
+            const current_time = moment().startOf('minute').subtract(moment().minute() % 15, 'minutes');
+            current_index = Math.floor(current_time.diff(start_of_period, 'minutes', true) / 15);
+        } else {
+            const current_time = moment().startOf('hour');
+            current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
+        }
+        const sliced_prices = current_index >= 0 && current_index < this.#prices.length
+            ? this.#prices.slice(current_index)
+            : [];
+        if (DEBUG) {
+            console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: ${JSON.stringify(sliced_prices)}, Current Index: ${current_index}, Full Prices Length: ${this.#prices.length}${RESET}`);
+        }
+        return sliced_prices;
     }
 
     // Compares two price arrays for equality
@@ -455,8 +502,17 @@ class FetchData {
     // Fetches electricity prices for the next 48 hours, updating only if prices or resolution change
     async fetch_prices() {
         try {
-            const start_of_period = moment.tz('Europe/Berlin').startOf('day');
+            const now = moment.tz('Europe/Berlin');
+            const start_of_period = now.clone().startOf('day');
             const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
+
+            // Skip fetching if done within 6 hours and prices are still valid
+            if (this.#last_price_fetch && now.diff(this.#last_price_fetch, 'hours') < 6 && this.#prices.length > 0) {
+                if (DEBUG) {
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch, using cached prices${RESET}`);
+                }
+                return;
+            }
 
             let { prices: new_prices, resolution: new_resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
             let full_prices = new_prices;
@@ -471,6 +527,7 @@ class FetchData {
             if (full_prices.length > 0 && (!this.are_prices_equal(full_prices, this.#prices) || this.#price_resolution !== new_resolution)) {
                 this.#prices = full_prices;
                 this.#price_resolution = new_resolution;
+                this.#last_price_fetch = now;
                 if (DEBUG) {
                     console.log(`${YELLOW}[DEBUG ${date_string()}] Updated Prices: ${JSON.stringify(this.#prices)}, Resolution: ${new_resolution}${RESET}`);
                 }
@@ -488,43 +545,38 @@ class FetchData {
     // Fetches current temperatures from SmartThings devices
     async fetch_temperatures() {
         try {
-            this.#inside_temp = await this.query_st_temp(config().st_temp_in_id);
-            this.#garage_temp = await this.query_st_temp(config().st_temp_ga_id);
-            this.#outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+            const new_inside_temp = await this.query_st_temp(config().st_temp_in_id);
+            const new_garage_temp = await this.query_st_temp(config().st_temp_ga_id);
+            const new_outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+
+            // Update only if new values are valid, otherwise use last known temperatures
+            this.#inside_temp = new_inside_temp !== null ? new_inside_temp : this.#last_inside_temp;
+            this.#garage_temp = new_garage_temp !== null ? new_garage_temp : this.#last_garage_temp;
+            this.#outside_temp = new_outside_temp !== null ? new_outside_temp : this.#last_outside_temp;
+
+            // Store last known valid temperatures for fallback
+            if (new_inside_temp !== null) this.#last_inside_temp = new_inside_temp;
+            if (new_garage_temp !== null) this.#last_garage_temp = new_garage_temp;
+            if (new_outside_temp !== null) this.#last_outside_temp = new_outside_temp;
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}${RESET}`);
-            this.#inside_temp = null;
-            this.#garage_temp = null;
-            this.#outside_temp = null;
+            // Fallback to last known temperatures
+            this.#inside_temp = this.#last_inside_temp;
+            this.#garage_temp = this.#last_garage_temp;
+            this.#outside_temp = this.#last_outside_temp;
         }
-    }
-    
-    // Return the prices sliced from the current time to the end of the period
-    sliced_prices() {
-        const start_of_period = moment.tz('Europe/Berlin').startOf('day');
-        let current_index;
-        if (this.#price_resolution === 'PT15M') {
-            const current_time = moment().startOf('minute').subtract(moment().minute() % 15, 'minutes');
-            current_index = Math.floor(current_time.diff(start_of_period, 'minutes', true) / 15);
-        } else {
-            const current_time = moment().startOf('hour');
-            current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
-        }
-        const sliced_prices = current_index >= 0 && current_index < this.#prices.length
-            ? this.#prices.slice(current_index)
-            : [];
-        if (DEBUG) {
-            console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: ${JSON.stringify(sliced_prices)}, Current Index: ${current_index}, Full Prices Length: ${this.#prices.length}${RESET}`);
-        }
-        return sliced_prices;
     }
 }
 
 // ### Heating Adjustment Class ###
 
+// Controls heating based on electricity prices and temperatures
 class HeatAdjustment {
+    // Tracks the last time heaton60 was triggered (private, no getter needed as only used internally)
+    #last_heaton60_time = null;
+
     constructor() {
-        this.last_heaton60_time = null; // Tracks the last time heaton60 was triggered
+        // No need to initialize private fields here since they are declared above
     }
 
     // Calculates the threshold price below which heating should be activated
@@ -601,7 +653,7 @@ class HeatAdjustment {
             await fetch_data_instance.fetch_prices();
             await fetch_data_instance.fetch_temperatures();
 
-            const sliced_prices = fetch_data_instance.sliced_prices();
+            const sliced_prices = fetch_data_instance.sliced_prices;
             const current_price = sliced_prices[0] ?? null;
             const inside_temp = fetch_data_instance.inside_temp;
             const garage_temp = fetch_data_instance.garage_temp;
@@ -613,10 +665,10 @@ class HeatAdjustment {
             const heat_on = current_price === null || current_price <= threshold_price || current_price <= 30;
 
             if (heat_on) {
-                if (!this.last_heaton60_time || now.diff(this.last_heaton60_time, 'hours', true) >= 1) {
+                if (!this.#last_heaton60_time || now.diff(this.#last_heaton60_time, 'hours', true) >= 1) {
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton60');
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton15');
-                    this.last_heaton60_time = now;
+                    this.#last_heaton60_time = now;
                     heaton_value = 60;
                 } else {
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton15');
@@ -636,7 +688,7 @@ class HeatAdjustment {
                 await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Values: price = ${(current_price / 10.0).toFixed(3)}, threshold_price = ${(threshold_price / 10.0).toFixed(3)}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Values: price = ${current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN'}, threshold_price = ${threshold_price !== null ? (threshold_price / 10.0).toFixed(3) : 'NaN'}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
             }
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] HeatAdjustment.adjust failed: ${error.toString()}${RESET}`);
@@ -648,7 +700,15 @@ class HeatAdjustment {
 
 (async () => {
     try {
-        const mqtt_client = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
+        // Validate required configuration fields before proceeding
+        const cfg = config();
+        const requiredFields = ['country_code', 'postal_code', 'mqtt_address', 'mqtt_user', 'mqtt_pw'];
+        const missingFields = requiredFields.filter(field => !cfg[field]);
+        if (missingFields.length > 0 || !Array.isArray(cfg.temp_to_hours) || cfg.temp_to_hours.length === 0) {
+            throw new Error(`Missing required configuration fields: ${missingFields.concat(cfg.temp_to_hours.length === 0 ? ['temp_to_hours'] : []).join(', ')}`);
+        }
+
+        const mqtt_client = new MqttHandler(cfg.mqtt_address, cfg.mqtt_user, cfg.mqtt_pw);
         const fetch_data_instance = new FetchData();
         const heat_adjust_instance = new HeatAdjustment();
 
@@ -661,5 +721,6 @@ class HeatAdjustment {
         });
     } catch (error) {
         console.log(`${BLUE}[ERROR ${date_string()}] Main execution failed: ${error.toString()}${RESET}`);
+        process.exit(1); // Exit with error code
     }
 })();
