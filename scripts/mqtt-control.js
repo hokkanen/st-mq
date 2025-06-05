@@ -298,15 +298,16 @@ async query_elering_prices(period_start, period_end) {
         // Initialize variables
         const start_moment = moment(period_start);
         const end_moment = moment(period_end);
-        const hours_in_period = end_moment.diff(start_moment, 'hours');
-        let full_prices = Array(hours_in_period).fill(null); // Initialize with nulls
+        const hours_in_period = end_moment.diff(start_moment, 'hours', true); // Precise hours, including fractional
 
         // Calculate resolution
-        let resolution = 'PT15M';
+        let resolution = 'PT15M'; // Default to 15min
         if (entries.length >= 2) {
             const time_diff = entries[1].timestamp - entries[0].timestamp; // In seconds
-            if (time_diff === 3600) {
-                resolution = 'PT60M'; // 1 hour
+            if (time_diff === 900) {
+                resolution = 'PT15M';
+            } else if (time_diff === 3600) {
+                resolution = 'PT60M';
             } else {
                 console.warn(`${blue}%s${reset}`, `[WARN ${date_string()}] Elering: Unexpected timestamp difference ${time_diff}s, assuming PT15M`);
             }
@@ -315,17 +316,41 @@ async query_elering_prices(period_start, period_end) {
             console.log(`${blue}%s${reset}`, `[${date_string()}] Elering Resolution: ${resolution}`);
         }
 
+        // Determine number of price slots based on resolution
+        const slots_per_hour = resolution === 'PT15M' ? 4 : 1;
+        const total_slots = Math.ceil(hours_in_period * slots_per_hour); // Round up for partial slots
+        let full_prices = Array(total_slots).fill(null); // Initialize with nulls
+
         // Map prices to the correct positions
         entries.forEach(entry => {
             const timestamp = moment.unix(entry.timestamp); // Convert Unix timestamp to moment
-            const position = timestamp.diff(start_moment, 'hours'); // 0-based index
+            let position;
+            if (resolution === 'PT15M') {
+                position = Math.floor(timestamp.diff(start_moment, 'minutes', true) / 15); // 15-minute slots
+            } else {
+                position = Math.floor(timestamp.diff(start_moment, 'hours', true)); // Hourly slots
+            }
             const price = parseFloat(entry.price);
             if (!isNaN(price) && position >= 0 && position < full_prices.length) {
                 full_prices[position] = price;
             }
         });
 
-        return { prices: full_prices, resolution };
+        // Fill gaps with last known price
+        for (let i = 1; i < full_prices.length; i++) {
+            if (full_prices[i] === null && full_prices[i - 1] !== null) {
+                full_prices[i] = full_prices[i - 1];
+            }
+        }
+
+        // Filter out remaining nulls
+        const valid_prices = full_prices.filter(price => price !== null);
+
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Elering Combined Prices:`, JSON.stringify(valid_prices, null, 2));
+        }
+
+        return { prices: valid_prices, resolution };
     } catch (error) {
         console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Elering query failed: ${error.toString()}`);
         return { prices: [], resolution: null };
