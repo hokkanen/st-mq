@@ -13,10 +13,10 @@ configuration:
     description: Provide Entso-E API token. If not provided, the Elering backup API will be queried, but it only supports fi, ee, lt, and lv country codes. Also, if Elering goes down, there is no further fallback.
   smartthings:
     name: SmartThings API authentication (recommended)
-    description: Provide SmartThings API token and the SmartThings device IDs for the devices providing inside and outside temperatures. These can be found from 'my.smarthings.com'. If not provided, inside and outside temperatures cannot be obtained through SmartThings API; inside temperature is set to 0C and outside temperature is queried from OpenWeatherMap.
+    description: Provide SmartThings API token and the SmartThings device IDs for the devices providing inside, garage and outside temperatures. These can be found from 'my.smarthings.com'. If not provided, the temperatures cannot be obtained through SmartThings API; inside and garage temperatures are not logged and outside temperature is queried from OpenWeatherMap.
   openweathermap:
     name: OpenWeatherMap API authentication (optional)
-    description: Provide OpenWeatherMap API token. If not provided, and SmartThings API does not provide outside temperature, the outside temperature is assumed to be 0 degrees Celsius.
+    description: Provide OpenWeatherMap API token. If not provided, and SmartThings API does not provide outside temperature, the outside temperature is not logged and the heatoff message is never triggered.
   easee:
     name: Easee settings (optional)
     description: Provide Easee authentication and device information to collect consumption data. Giving either "user" and "pw" or "access_token" and "refresh_token" is enough (see README.md file for more details). If authentication details are not provided, Easee consumption data is not collected.
