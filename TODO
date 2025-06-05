@@ -1,3 +1,3 @@
 -Chart savings indicator with and without car charging! Shown only in console for now with 0% VAT. Maybe add into html interface with VAT selection option?
--Implement support for local mqtt-based temperature receives (eg, from shelly); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
 -The mqtt temps could also come from hass, eg, from Meteorologisk institute that is there integrated already
+-Implement support for local mqtt-based temperature receives (eg, from shelly); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)

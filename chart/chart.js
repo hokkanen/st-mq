@@ -90,8 +90,8 @@ class ChartDrawer {
                     { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Garage (°C)', yAxisID: 'y_right', data: this.#temp_ga, borderColor: 'orange', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Heat Off', yAxisID: 'y_right', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' },
-                    { label: 'Warm Water Pump', yAxisID: 'y_right', data: this.#warm_water_pump, backgroundColor: 'rgba(255, 165, 0, 0.2)', borderColor: 'rgba(255, 165, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before' }
+                    { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true },
+                    { label: 'Warm Water Pump', yAxisID: 'y_shading', data: this.#warm_water_pump, backgroundColor: 'rgba(255, 165, 0, 0.15)', borderColor: 'rgba(255, 165, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true }
                 ]
             },
             options: {
@@ -144,18 +144,21 @@ class ChartDrawer {
                     y_right: {
                         position: 'right',
                         title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
+                    },
+                    y_shading: {
+                        display: false // Hidden axis for shading datasets
                     }
                 }
             }
         });
     }
 
-    // Update the heat_on and warm_water_pump datasets based on y_right axis
+    // Update the heat_on and warm_water_pump datasets
     async #update_shading_data() {
-        let max_y = this.#chart.scales['y_right'].max;
-        let min_y = this.#chart.scales['y_right'].min;
+        const max_y = this.#chart.scales['y_right'].max;
+        const min_y = this.#chart.scales['y_right'].min;
 
-        // Process heat_on for Heat Off shading (heat_on = 0)
+        // Update Heat Off shading
         let last_non_null_index_heat = null;
         for (let i = 0; i < this.#heat_on.length; i++) {
             if (this.#heat_on[i].y === 0) {
@@ -179,31 +182,18 @@ class ChartDrawer {
             }
         }
 
-        // Process warm_water_pump for Warm Water Pump shading (15 minutes after heat_on = 60)
-        let last_non_null_index_warm = null;
+        // Update Warm Water Pump shading
         for (let i = 0; i < this.#warm_water_pump.length; i++) {
             if (this.#warm_water_pump[i].y === 60) {
                 this.#warm_water_pump[i].y = max_y;
-                // Add a point 15 minutes later to end the shading
-                const end_time = this.#warm_water_pump[i].x + 15 * 60;
-                if (i === this.#warm_water_pump.length - 1) {
-                    this.#warm_water_pump.push({ x: end_time, y: min_y });
-                } else {
+                const end_time = this.#warm_water_pump[i].x + 15 * 60; // 15 minutes later
+                if (i + 1 < this.#warm_water_pump.length) {
                     this.#warm_water_pump[i + 1] = { x: end_time, y: min_y };
+                } else {
+                    this.#warm_water_pump.push({ x: end_time, y: min_y });
                 }
             } else {
                 this.#warm_water_pump[i].y = min_y;
-            }
-            if (this.#warm_water_pump[i].x !== null) {
-                last_non_null_index_warm = i;
-            }
-        }
-        if (last_non_null_index_warm !== null && this.#warm_water_pump[last_non_null_index_warm].y === max_y) {
-            const end_time = this.#warm_water_pump[last_non_null_index_warm].x + 15 * 60;
-            if (last_non_null_index_warm === this.#warm_water_pump.length - 1) {
-                this.#warm_water_pump.push({ x: end_time, y: min_y });
-            } else {
-                this.#warm_water_pump[last_non_null_index_warm + 1] = { x: end_time, y: min_y };
             }
         }
     }
@@ -330,12 +320,7 @@ class ChartDrawer {
                 if (!isNaN(row['price'])) this.#price.push({ x: row['unix_time'], y: row['price'] });
                 if (!isNaN(row['heat_on'])) {
                     this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
-                    // For Warm Water Pump, create a point only if heat_on = 60
-                    if (row['heat_on'] === 60) {
-                        this.#warm_water_pump.push({ x: row['unix_time'], y: 60 });
-                    } else {
-                        this.#warm_water_pump.push({ x: row['unix_time'], y: 0 });
-                    }
+                    this.#warm_water_pump.push({ x: row['unix_time'], y: row['heat_on'] });
                 }
                 if (!isNaN(row['temp_in'])) this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
                 if (!isNaN(row['temp_ga'])) this.#temp_ga.push({ x: row['unix_time'], y: row['temp_ga'] });
