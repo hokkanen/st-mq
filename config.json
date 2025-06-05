@@ -66,6 +66,7 @@
         "smartthings": {
             "token": "",
             "inside_temp_dev_id": "",
+            "garage_temp_dev_id": "",
             "outside_temp_dev_id": ""
         },
         "openweathermap": {
@@ -102,6 +103,7 @@
         "smartthings": {
             "token": "password?",
             "inside_temp_dev_id": "str?",
+            "garage_temp_dev_id": "str?",
             "outside_temp_dev_id": "str?"
         },
         "openweathermap": {

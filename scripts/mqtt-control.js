@@ -4,404 +4,537 @@ import fs from 'fs';
 import moment from 'moment-timezone';
 import mqtt from 'mqtt';
 import schedule from 'node-schedule';
-import { XMLParser, XMLBuilder, XMLValidator } from "fast-xml-parser";
+import { XMLParser } from 'fast-xml-parser';
 
-// Set debugging settings and prints
-const DEBUG = false;
+// Debugging settings and console colors
+const debug = false;
+const reset = '\x1b[0m';
+const blue = '\x1b[34m';
+const green = '\x1b[32m';
+const red = '\x1b[31m';
+const yellow = '\x1b[33m';
 
-// Set console colors
-export const RESET = '\x1b[0m';
-export const BLUE = '\x1b[34m';
-export const GREEN = '\x1b[32m';
-export const RED = '\x1b[31m';
-export const YELLOW = '\x1b[33m';
+// Configuration and CSV paths
+let config_path = './config.json';
+if (fs.existsSync('./data/options.json')) {
+    config_path = './data/options.json';
+}
+const csv_file_path = './share/st-mq/st-mq.csv';
 
-// Check if a config file is found
-let config_path = './config.json'; // default path
-if (fs.existsSync('./data/options.json'))
-    config_path = './data/options.json'; // HASS path
-
-// Set csv output file path
-const csv_path = './share/st-mq/st-mq.csv';
-
-// Aux function for formatting a time string
+// Utility function for formatting time strings
 function date_string() {
     return moment.utc().format('HH:mm:ss DD-MM-YYYY') + ' UTC';
 }
 
-// Mqtt handler
-class MqttHandler {
-
-    #broker_address = null;
-    #client = null;
-    #logged_topics = [];
-
-    // Create a new mqtt client and connect to the broker
+// MQTT handler class
+class mqtt_handler {
     constructor(broker_address, username, password) {
-        this.#broker_address = broker_address;
-        const options = {
-            username: username,
-            password: password
-        };
-        this.#client = mqtt.connect(this.#broker_address, options);
+        this.broker_address = broker_address;
+        this.logged_topics = [];
+        const options = { username, password };
+        this.client = mqtt.connect(this.broker_address, options);
 
-        this.#client.on('error', (error) => {
-            console.error(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] MQTT: client encountered error: ${error.toString()}`);
+        this.client.on('error', (error) => {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] MQTT: client error: ${error.toString()}`);
         });
 
-        this.#client.on('connect', () => {
-            console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: client connected.`);
+        this.client.on('connect', () => {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] MQTT: client connected.`);
         });
 
-        this.#client.on('offline', () => {
-            console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: client is offline!`);
+        this.client.on('offline', () => {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] MQTT: client offline!`);
         });
 
-        this.#client.on('reconnect', () => {
-            console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: client is reconnecting.`);
+        this.client.on('reconnect', () => {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] MQTT: client reconnecting.`);
         });
 
-        this.#client.on('message', (topic, message) => {
-            if (this.#logged_topics.includes(topic)) {
-                console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: received receipt ${topic}:${message}`);
+        this.client.on('message', (topic, message) => {
+            if (this.logged_topics.includes(topic)) {
+                console.log(`${blue}%s${reset}`, `[${date_string()}] MQTT: received ${topic}:${message}`);
             }
         });
     }
 
-    // Log messages on the given topic
     async log_topic(topic, qos = 2) {
-        this.#logged_topics.push(topic);
-
-        this.#client.subscribe(topic, { qos }, (err) => {
+        this.logged_topics.push(topic);
+        this.client.subscribe(topic, { qos }, (err) => {
             if (err) {
-                console.error(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] MQTT: failed to subscribe to ${topic}: ${err.toString()}`);
+                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] MQTT: failed to subscribe to ${topic}: ${err.toString()}`);
             } else {
-                console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: subscribed to topic ${topic} with QoS ${qos}.`);
+                console.log(`${blue}%s${reset}`, `[${date_string()}] MQTT: subscribed to ${topic} with QoS ${qos}.`);
             }
         });
     }
 
-    // Publish a message on the given topic
     async post_trigger(topic, msg, qos = 1) {
-        this.#client.publish(topic, msg, { qos }, function (error) {
-            if (error) {
-                console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] MQTT: failed to publish ${topic}:${msg}`);
-                console.log(`${BLUE}%s${RESET}`, error);
-            } else {
-                console.log(`${BLUE}%s${RESET}`, `[${date_string()}] MQTT: published ${topic}:${msg} with QoS ${qos} successfully!`);
-            }
+        return new Promise((resolve, reject) => {
+            this.client.publish(topic, msg, { qos }, (error) => {
+                if (error) {
+                    console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] MQTT: failed to publish ${topic}:${msg}`);
+                    console.error(`${blue}%s${reset}`, error.toString());
+                    reject(error);
+                } else {
+                    console.log(`${blue}%s${reset}`, `[${date_string()}] MQTT: published ${topic}:${msg} with QoS ${qos}.`);
+                    resolve();
+                }
+            });
         });
     }
 }
 
-// Get keys from the apikey file
-function config() {
-    // Initialize tokens
-    let configdata = {
-        'country_code': '',
-        'entsoe_token': '',
-        'mqtt_address': '',
-        'mqtt_user': '',
-        'mqtt_pw': '',
-        'postal_code': '',
-        'st_temp_in_id': '',
-        'st_temp_out_id': '',
-        'st_token': '',
-        'temp_to_hours': [],
-        'weather_token': ''
-    };
-    // Try to get the keys from the apikey file
-    if (fs.existsSync(config_path)) {
+// Data fetching class
+class fetch_data {
+    constructor() {
+        this.price_resolution = null;
+        this.prices = [];
+        this.inside_temp = null;
+        this.garage_temp = null;
+        this.outside_temp = null;
+    }
+
+    async fetch_prices() {
         try {
-            const filedata = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+            const start_of_period = moment.tz('Europe/Berlin').startOf('day');
+            const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
+            const { prices, resolution } = await query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
+    
+            let full_prices = prices;
+            console.log(`${blue}%s${reset}`, full_prices, resolution);
 
-            // When using options.json (HASS), filedata is the whole object
-            let options = filedata;
-            // When using config.json (standalone), options is a separate object
-            if (filedata.hasOwnProperty('options'))
-                options = filedata.options;
+            this.price_resolution = resolution;
+           // if (full_prices.length === 0) {
+                const start_iso = start_of_period.toISOString();
+                const end_iso = end_of_period.toISOString();
+                const elering_result = await query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
+                full_prices = elering_result.prices;
+                this.price_resolution = elering_result.resolution;
+            console.log(`${blue}%s${reset}`, full_prices, this.price_resolution);
 
-            // Parse the received json into the configdata object
-            configdata.country_code = options.geoloc.country_code;
-            configdata.entsoe_token = options.entsoe.token;
-            configdata.mqtt_address = options.mqtt.address;
-            configdata.mqtt_user = options.mqtt.user;
-            configdata.mqtt_pw = options.mqtt.pw;
-            configdata.postal_code = options.geoloc.postal_code;
-            configdata.st_temp_in_id = options.smartthings.inside_temp_dev_id;
-            configdata.st_temp_out_id = options.smartthings.outside_temp_dev_id;
-            configdata.st_token = options.smartthings.token;
-            configdata.temp_to_hours = options.temp_to_hours;
-            configdata.weather_token = options.openweathermap.token;
+            //}
+    
+            const current_hour_index = moment().startOf('hour').diff(start_of_period, 'hours');
+            this.prices = current_hour_index < full_prices.length 
+                ? full_prices.slice(current_hour_index) 
+                : [];
         } catch (error) {
-            console.error(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse API tokens from ${config_path}`);
-            console.error(`${BLUE}%s${RESET}`, error);
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}`);
+            this.prices = [];
+            this.price_resolution = null;
+        }
+        console.log(`${blue}%s${reset}`, this.prices, this.price_resolution);
+
+    }
+
+    async fetch_temperatures() {
+        try {
+            this.inside_temp = await get_st_temp(config().st_temp_in_id);
+            this.garage_temp = await get_st_temp(config().st_temp_in_id);
+            this.outside_temp = await get_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}`);
         }
     }
-    return configdata;
+
+    shift_prices() {
+        if (this.prices.length > 0) {
+            this.prices.shift();
+        }
+    }
 }
 
-// Check the fetch response status
+// Configuration loader
+function config() {
+    let config_data = {
+        country_code: '',
+        entsoe_token: '',
+        mqtt_address: '',
+        mqtt_user: '',
+        mqtt_pw: '',
+        postal_code: '',
+        st_temp_in_id: '',
+        st_temp_ga_id: '',
+        st_temp_out_id: '',
+        st_token: '',
+        temp_to_hours: [],
+        weather_token: ''
+    };
+    if (fs.existsSync(config_path)) {
+        try {
+            const file_data = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+            const options = file_data.options || file_data;
+            Object.assign(config_data, {
+                country_code: options.geoloc.country_code,
+                entsoe_token: options.entsoe.token,
+                mqtt_address: options.mqtt.address,
+                mqtt_user: options.mqtt.user,
+                mqtt_pw: options.mqtt.pw,
+                postal_code: options.geoloc.postal_code,
+                st_temp_in_id: options.smartthings.inside_temp_dev_id,
+                st_temp_ga_id: options.smartthings.garage_temp_dev_id,
+                st_temp_out_id: options.smartthings.outside_temp_dev_id,
+                st_token: options.smartthings.token,
+                temp_to_hours: options.temp_to_hours,
+                weather_token: options.openweathermap.token
+            });
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Failed to parse ${config_path}: ${error.toString()}`);
+        }
+    }
+    return config_data;
+}
+
+// Check API response
 async function check_response(response, type) {
     if (!response) {
-        console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] ${type} query failed!`)
-        console.log(`${BLUE}%s${RESET}`, ` API status: null`);
-        console.log(`${BLUE}%s${RESET}`, ` API response: No response received`);
-        return null; 
+        console.log(`${blue}%s${reset}`, `[ERROR ${date_string()}] ${type} query failed: No response`);
+        return null;
     }
-    if (response.status === 200) {
-        console.log(`${BLUE}%s${RESET}`, `[${date_string()}] ${type} query successful!`);
-    }
-    else {
-        console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] ${type} query failed!`)
-        console.log(`${BLUE}%s${RESET}`, ` API status: ${response.status}`);
-        console.log(`${BLUE}%s${RESET}`, ` API response: ${response.statusText}`);
-    }
+    console.log(`${blue}%s${reset}`, `[${date_string()}] ${type} query status: ${response.status}`);
     return response.status;
 }
 
-// Electricity prices follow the 'Europe/Berlin' time zone
+// Get day time bounds in UTC
 async function get_day_time_bounds_in_utc() {
-    // First second of the current day (00:00:00) in 'Europe/Berlin' timezone
     const start_date = moment.tz('Europe/Berlin').startOf('day');
-    // Last second of the current day (23:59:59) in 'Europe/Berlin' timezone
     const end_date = moment.tz('Europe/Berlin').endOf('day');
-
-    // Convert to UTC time string
-    const start_date_utc = start_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]');
-    const end_date_utc = end_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]');
-
-    return { start_date_utc, end_date_utc };
+    return {
+        start_date_utc: start_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]'),
+        end_date_utc: end_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]')
+    };
 }
 
-// Query Ensto-E API directly to get the daily spot prices
+// Query Entso-E prices
 async function query_entsoe_prices(start_date, end_date) {
-
-    // Get Entso-E API key
     const api_key = config().entsoe_token;
-
-    // Format the dates into the required string format at 23:00 UTC
-    const period_start = `${start_date.replace(/[-:T.]/g, '').slice(0, 12)}`;
-    const period_end = `${end_date.replace(/[-:T.]/g, '').slice(0, 12)}`;
-
-    // Set additional compulsory strings for the API call
-    const document_type = `A44`;
-    const process_type = `A01`;
+    const period_start = moment(start_date).utc().format('YYYYMMDDHHmm');
+    const period_end = moment(end_date).utc().format('YYYYMMDDHHmm');
+    const document_type = 'A44';
+    const process_type = 'A01';
     const location_codes = {
         'fi': '10YFI-1--------U',
+        'ee': '10Y1001A1001A39I',
         'se': '10YSE-1--------K',
         'no': '10YNO-0--------C',
         'dk': '10Y1001A1001A65H',
         'is': 'IS',
-        'ee': '10Y1001A1001A39I',
         'lt': '10YLT-1001A0008Q',
         'lv': '10YLV-1001A00074'
     };
+    const url = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}&out_Domain=${location_codes[config().country_code]}&periodStart=${period_start}&periodEnd=${period_end}`;
 
-    // Send API get request to Entso-E
-    const request = `https://web-api.tp.entsoe.eu/api?securityToken=${api_key}` +
-        `&documentType=${document_type}&processType=${process_type}&in_Domain=${location_codes[config().country_code]}` +
-        `&out_Domain=${location_codes[config().country_code]}&periodStart=${period_start}&periodEnd=${period_end}`
-    const response = await fetch(request).catch(error => console.log(`${BLUE}%s${RESET}`, error));
+    try {
+        const response = await fetch(url);
+        if (await check_response(response, `Entsoe-E (${config().country_code})`) !== 200) {
+            return { prices: [], resolution: null };
+        }
 
-    // Get prices (if query fails, empty array is returned)
-    let prices = [];
-    if (await check_response(response, `Entsoe-E (${config().country_code})`) === 200) {
-        // Parse the received xml into json and store price information into the returned prices array
-        let json_data;
-        try {
-            // Hours in day may differ from 23 to 25 due to DST changes
-            const hours_in_day = moment().tz('Europe/Berlin').startOf('day').add(1, 'day').diff(moment().tz('Europe/Berlin').startOf('day'), 'hours');
-            prices = Array(hours_in_day); 
-            json_data = new XMLParser().parse(await response.text());
-            let points = json_data.Publication_MarketDocument.TimeSeries.Period.Point;
-            points.forEach(function (entry) {
-                let position = parseInt(entry.position) - 1; // 0-based index
-                let price = parseFloat(entry['price.amount']);
-                // Fill all upcoming positions to include potential duplicates omitted from the dataset
-                for (let i = position; i < prices.length; i++) {
-                    prices[i] = price;
+        const json_data = new XMLParser().parse(await response.text());
+
+        // Debug: Print JSON data
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E JSON data:`, JSON.stringify(json_data, null, 2));
+        }
+
+        // Check for error response
+        if (json_data.Acknowledgement_MarketDocument) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E API error: ${json_data.Acknowledgement_MarketDocument.Reason?.text || 'Unknown error'}`);
+            return { prices: [], resolution: null };
+        }
+
+        // Get TimeSeries array, handling single object or missing data
+        const time_series = Array.isArray(json_data?.Publication_MarketDocument?.TimeSeries)
+            ? json_data.Publication_MarketDocument.TimeSeries
+            : json_data?.Publication_MarketDocument?.TimeSeries
+                ? [json_data.Publication_MarketDocument.TimeSeries]
+                : [];
+
+        if (time_series.length === 0) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: No TimeSeries found`);
+            return { prices: [], resolution: null };
+        }
+
+        // Initialize variables
+        const hours_in_period = moment(end_date).diff(moment(start_date), 'hours');
+        let full_prices = Array(hours_in_period).fill(null); // Initialize with nulls
+        let resolution = null;
+        let current_hour_offset = 0; // Track the starting index for each TimeSeries
+
+        // Loop over TimeSeries
+        time_series.forEach((ts, index) => {
+            const ts_resolution = ts?.Period?.resolution || null;
+
+            // Store and check resolution
+            if (index === 0) {
+                resolution = ts_resolution;
+                if (debug) {
+                    console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E Resolution (TimeSeries[${index}]): ${resolution || 'None'}`);
+                }
+            } else if (ts_resolution !== resolution) {
+                console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E: Resolution mismatch in TimeSeries[${index}]: expected ${resolution}, got ${ts_resolution}`);
+            }
+
+            // Calculate hours in this TimeSeries (handles DST)
+            const hours_in_day = ts?.Period?.timeInterval
+                ? moment(ts.Period.timeInterval.end).diff(moment(ts.Period.timeInterval.start), 'hours')
+                : 24; // Default to 24 if timeInterval is missing
+            if (debug) {
+                console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E TimeSeries[${index}] Hours: ${hours_in_day}`);
+            }
+
+            // Inner loop: Process Points
+            const points = ts?.Period?.Point || [];
+            if (debug) {
+                console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E TimeSeries[${index}] Points:`, JSON.stringify(points, null, 2));
+            }
+            points.forEach(entry => {
+                const position = parseInt(entry.position) - 1; // 1-based to 0-based
+                const price = parseFloat(entry['price.amount']);
+                if (!isNaN(price) && position >= 0 && position < hours_in_day) {
+                    const global_position = current_hour_offset + position;
+                    if (global_position < full_prices.length) {
+                        full_prices[global_position] = price; // Set price at specific index
+                    }
                 }
             });
-        } catch {
-            console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse prices from the Entsoe-E API response!`)
-            try {
-                console.log(`${BLUE}%s${RESET}`, ` Code: ${json_data.Acknowledgement_MarketDocument.Reason.code}\n Message: ${json_data.Acknowledgement_MarketDocument.Reason.text}`);
-            } catch {
-                console.log(`${BLUE}%s${RESET}`, ` Cannot find error code or message!`);
+
+            // Update offset for the next TimeSeries
+            current_hour_offset += hours_in_day;
+        });
+
+        // Optional: Fill gaps with the last known price
+        for (let i = 1; i < full_prices.length; i++) {
+            if (full_prices[i] === null && full_prices[i - 1] !== null) {
+                full_prices[i] = full_prices[i - 1];
             }
         }
-    }
 
-    return prices;
-}
-
-// Query Elering API directly to get the daily spot prices
-async function query_elering_prices(period_start, period_end) {
-
-    // Encode the ISO strings for the API call
-    const encoded_period_start = encodeURIComponent(period_start);
-    const encoded_period_end = encodeURIComponent(period_end);
-
-    // Send API get request to Elering
-    const response = await fetch(`https://dashboard.elering.ee/api/nps/price?start=${encoded_period_start}&end=${encoded_period_end}`)
-        .catch(error => console.log(`${BLUE}%s${RESET}`, error));
-
-    // Get prices (if query fails, empty array is returned)
-    let prices = [];
-    if (await check_response(response, 'Elering') === 200)
-        try {
-            let json_data = await response.json();
-            json_data.data[config().country_code].forEach(function (entry) {
-                prices.push(parseFloat(entry['price']));
-            });
-        } catch {
-            console.log(`${BLUE}%s${RESET}`, `[ERROR ${date_string()}] Cannot parse prices from the Elering API response!`);
+        // Filter out null values and return
+        const valid_prices = full_prices.filter(price => price !== null);
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Entsoe-E Combined Prices:`, JSON.stringify(valid_prices, null, 2));
         }
 
-    return prices;
+        return { prices: valid_prices, resolution };
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Entsoe-E query failed: ${error.toString()}`);
+        return { prices: [], resolution: null };
+    }
 }
 
+// Query Elering prices
+async function query_elering_prices(period_start, period_end) {
+    const encoded_start = encodeURIComponent(period_start);
+    const encoded_end = encodeURIComponent(period_end);
+    const url = `https://dashboard.elering.ee/api/nps/price?start=${encoded_start}&end=${encoded_end}`;
 
-// Get daily sport prices from Entso-E API or Elering API (backup)
-async function get_prices() {
-    // Get the bounds of the day in 'Europe/Berlin' time zone in UTC format
-    const date_bounds = await get_day_time_bounds_in_utc();
+    try {
+        const response = await fetch(url);
+        if (await check_response(response, 'Elering') !== 200) {
+            return { prices: [], resolution: null };
+        }
 
-    // Query Entso-E API for the daily sport prices
-    let prices = await query_entsoe_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
+        const json_data = await response.json();
 
-    // If Entso-E API fails, use Elering API as a backup
-    if (prices.length === 0)
-        prices = await query_elering_prices(date_bounds.start_date_utc, date_bounds.end_date_utc);
+        // Debug: Print JSON data
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Elering JSON data:`, JSON.stringify(json_data, null, 2));
+        }
 
-    return prices;
+        // Check for error response
+        if (!json_data.success || !json_data.data || !json_data.data[config().country_code]) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Elering API error: No valid data for country code ${config().country_code}`);
+            return { prices: [], resolution: null };
+        }
+
+        // Get price entries
+        const entries = json_data.data[config().country_code] || [];
+        if (entries.length === 0) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Elering: No price data found for ${config().country_code}`);
+            return { prices: [], resolution: null };
+        }
+
+        // Initialize variables
+        const start_moment = moment(period_start);
+        const end_moment = moment(period_end);
+        const hours_in_period = end_moment.diff(start_moment, 'hours');
+        let full_prices = Array(hours_in_period).fill(null); // Initialize with nulls
+
+        // Calculate resolution
+        let resolution = 'PT15M';
+        if (entries.length >= 2) {
+            const time_diff = entries[1].timestamp - entries[0].timestamp; // In seconds
+            if (time_diff === 3600) {
+                resolution = 'PT60M'; // 1 hour
+            } else {
+                console.warn(`${blue}%s${reset}`, `[WARN ${date_string()}] Elering: Unexpected timestamp difference ${time_diff}s, assuming PT15M`);
+            }
+        }
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Elering Resolution: ${resolution}`);
+        }
+
+        // Map prices to the correct positions
+        entries.forEach(entry => {
+            const timestamp = moment.unix(entry.timestamp); // Convert Unix timestamp to moment
+            const position = timestamp.diff(start_moment, 'hours'); // 0-based index
+            const price = parseFloat(entry.price);
+            if (!isNaN(price) && position >= 0 && position < full_prices.length) {
+                full_prices[position] = price;
+            }
+        });
+
+        return { prices: full_prices, resolution };
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Elering query failed: ${error.toString()}`);
+        return { prices: [], resolution: null };
+    }
 }
 
-async function get_heating_hours(temp) {
-    // Get the temperature to hours mapping
+// Calculate threshold price for heating
+async function calc_threshold_price(outside_temp, prices) {
     const temp_to_hours = config().temp_to_hours;
-    // If the temperature is above the highest point or below the lowest point, return the corresponding hours
-    if (temp >= temp_to_hours[0].temp) return temp_to_hours[0].hours;
-    if (temp <= temp_to_hours[temp_to_hours.length - 1].temp) return temp_to_hours[temp_to_hours.length - 1].hours;
 
-    // Find the two points between which the temperature falls
-    let i = 0;
-    while (temp < temp_to_hours[i].temp) i++;
+    // Step 1: Calculate heating hours (no rounding)
+    let hours;
+    if (!outside_temp || !temp_to_hours?.length) {
+        hours = 24; // Default to 24 hours (100%) if no valid data
+    } else if (outside_temp >= temp_to_hours[0].temp) {
+        hours = temp_to_hours[0].hours;
+    } else if (outside_temp <= temp_to_hours[temp_to_hours.length - 1].temp) {
+        hours = temp_to_hours[temp_to_hours.length - 1].hours;
+    } else {
+        let i = 0;
+        while (outside_temp < temp_to_hours[i].temp) i++;
+        const x1 = temp_to_hours[i - 1].temp, y1 = temp_to_hours[i - 1].hours;
+        const x2 = temp_to_hours[i].temp, y2 = temp_to_hours[i].hours;
+        hours = y1 + ((y2 - y1) / (x2 - x1)) * (outside_temp - x1);
+    }
 
-    // Perform linear interpolation between the two points
-    const x1 = temp_to_hours[i - 1].temp, y1 = temp_to_hours[i - 1].hours;
-    const x2 = temp_to_hours[i].temp, y2 = temp_to_hours[i].hours;
-    const hours = y1 + ((y2 - y1) / (x2 - x1)) * (temp - x1);
+    // Step 2: Convert hours to percentage
+    const heating_percentage = (hours / 24) * 100;
 
-    return Math.round(hours);;
+    // Step 3: Handle prices array
+    if (!Array.isArray(prices) || prices.length === 0) {
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] calc_threshold_price: Empty or invalid prices array, returning Infinity`);
+        }
+        return Infinity;
+    }
+
+    // Step 4: Calculate target number of prices to be below threshold
+    const target_elements = Math.round((heating_percentage / 100) * prices.length);
+
+    // Step 5: Sort prices and find threshold
+    const sorted_prices = [...prices].sort((a, b) => a - b);
+    const threshold_index = Math.min(target_elements, sorted_prices.length - 1);
+    const threshold_price = sorted_prices[threshold_index] || Infinity;
+
+    if (debug) {
+        console.log(`${blue}%s${reset}`, `[${date_string()}] calc_threshold_price: Temp=${outside_temp}, Hours=${hours.toFixed(2)}, Percentage=${heating_percentage.toFixed(1)}%, PricesLength=${prices.length}, TargetElements=${target_elements}, Threshold=${threshold_price}`);
+    }
+
+    return threshold_price;
 }
 
+// Get OpenWeatherMap temperature
 async function get_owm_temp(country_code, postal_code) {
-    // Send API get request
-    const response = await fetch(
-        `http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${config().weather_token}&units=metric`)
-        .catch(error => console.log(`${BLUE}%s${RESET}`, error));
-    // Return 0C if the query failed, else return true outside temperature
-    if (await check_response(response, `OpenWeatherMap (${country_code}-${postal_code})`) !== 200)
-        return 0.0;
-    else
+    try {
+        const response = await fetch(`http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${config().weather_token}&units=metric`);
+        if (await check_response(response, `OpenWeatherMap (${country_code}-${postal_code})`) !== 200) return null;
         return (await response.json()).main.temp;
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] OpenWeatherMap failed: ${error.toString()}`);
+        return null;
+    }
 }
 
+// Get SmartThings temperature
 async function get_st_temp(st_dev_id, country_code = '', postal_code = '') {
-    // Set API request options
     const options = {
         method: 'GET',
-        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
     };
-    // Send API get request
-    const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, options).catch(err => console.error(`${BLUE}%s${RESET}`, err));
-    // Return temperature (use OpenWeatherMap as backup if geolocation info is provided)
-    if (await check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200)
-        return (await response.json()).components.main.temperatureMeasurement.temperature.value;
-    else if (country_code !== '' && postal_code !== '')
-        return await get_owm_temp(country_code, postal_code);
-    else
-        return 0.0;
+    try {
+        const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, options);
+        if (await check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200) {
+            return (await response.json()).components.main.temperatureMeasurement.temperature.value;
+        }
+        if (country_code && postal_code) return await get_owm_temp(country_code, postal_code);
+        return null;
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] SmartThings failed: ${error.toString()}`);
+        return null;
+    }
 }
 
+// Initialize CSV file
 async function init_csv() {
-    // Create the csv directory if it does not exist
-    const csv_dir = dirname(csv_path);
-    if (!fs.existsSync(csv_dir)) {
-        fs.mkdirSync(csv_dir, { recursive: true });
+    const csv_dir = dirname(csv_file_path);
+    if (!fs.existsSync(csv_dir)) fs.mkdirSync(csv_dir, { recursive: true });
+    if (!fs.existsSync(csv_file_path) || fs.statSync(csv_file_path).size === 0) {
+        fs.writeFileSync(csv_file_path, 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n');
     }
-
-    // Check if the file already exists and is not empty
-    const csv_append = fs.existsSync(csv_path) && !(fs.statSync(csv_path).size === 0);
-
-    // If the file does not exists, create file and add first line
-    if (!csv_append)
-        fs.writeFileSync(csv_path, 'unix_time,price,heat_on,temp_in,temp_out\n');
 }
 
-async function write_csv(price, heaton, temp_in, temp_out) {
-    // Initialize the csv directory and file if necessary
+// Write to CSV
+async function write_csv(price, heat_on, temp_in, temp_ga, temp_out) {
     await init_csv();
-
-    // Append data to the file
     const unix_time = moment().unix();
-    fs.appendFileSync(csv_path, `${unix_time},${price.toFixed(3)},${heaton},${temp_in.toFixed(1)},${temp_out.toFixed(1)}\n`);
+    const price_str = typeof price === 'string' ? price : price.toFixed(3);
+    const temp_in_str = typeof temp_in === 'string' ? temp_in : temp_in.toFixed(1);
+    const temp_ga_str = typeof temp_ga === 'string' ? temp_ga : temp_ga.toFixed(1);
+    const temp_out_str = typeof temp_out === 'string' ? temp_out : temp_out.toFixed(1);
+    fs.appendFileSync(csv_file_path, `${unix_time},${price_str},${heat_on},${temp_in_str},${temp_ga_str},${temp_out_str}\n`);
 }
 
-// Control heating by publishing a message through MQTT
-async function adjust_heat(mq) {
+// Heat adjustment function
+async function heat_adjust(mqtt_client, fetch_data_instance) {
+    try {
+        await fetch_data_instance.fetch_prices();
+        await fetch_data_instance.fetch_temperatures();
 
-    // Get daily spot prices
-    const prices = await get_prices();
+        const current_price = fetch_data_instance.prices[0];
+        const threshold_price = await calc_threshold_price(outside_temp, fetch_data_instance.prices);
 
-    // Get the current inside temperature
-    const inside_temp = await get_st_temp(config().st_temp_in_id);
+        const heat_on = current_price === null || current_price <= threshold_price || current_price <= 40;
+        const action = heat_on ? 'heaton' : 'heatoff';
+        await mqtt_client.post_trigger('from_stmq/heat/action', action);
 
-    // Get the current outside temperature
-    const outside_temp = await get_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+        const inside_temp = fetch_data_instance.inside_temp;
+        const garage_temp = fetch_data_instance.garage_temp;
+        const outside_temp = fetch_data_instance.outside_temp;
 
-    // Calculate the number of heating hours based on the outside temperature
-    const heating_hours = await get_heating_hours(outside_temp);
+        const price_for_csv = current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN';
+        const temp_in_for_csv = inside_temp !== null ? inside_temp.toFixed(1) : 'NaN';
+        const temp_ga_for_csv = garage_temp !== null ? garage_temp.toFixed(1) : 'NaN';
+        const temp_out_for_csv = outside_temp !== null ? outside_temp.toFixed(1) : 'NaN';
+        await write_csv(price_for_csv, heat_on ? 1 : 0, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
-    // Sort the prices array
-    const sorted_prices = [...prices].sort((a, b) => a - b);
+        fetch_data_instance.shift_prices();
 
-    // Get the price of the threshold heating hour (most expensive hour with heating on)
-    const threshold_price = sorted_prices[heating_hours - 1];
-
-    // Index is the current ongoing hour (n-th hour of the day) in 'Europe/Berlin' time zone accounting for DST
-    const index = moment().tz('Europe/Berlin').diff(moment().tz('Europe/Berlin').startOf('day'), 'hours');
-
-    // Status print
-    console.log(`${BLUE}%s${RESET}`, `[${date_string()}] heating_hours: ${heating_hours} (${outside_temp}C), price[${index}]: ${prices[index]}, threshold_price: ${threshold_price}`);
-
-    // Publish HeatOff request if price higher than threshold and the hourly price is over 4cnt/kWh, else HeatOn
-    if (prices[index] > threshold_price && prices[index] > 40) {
-        await mq.post_trigger("from_stmq/heat/action", "heatoff");
-        await write_csv(prices[index] / 10.0, 0, inside_temp, outside_temp);
-    } else {
-        await mq.post_trigger("from_stmq/heat/action", "heaton");
-        await write_csv(prices[index] / 10.0, 1, inside_temp, outside_temp);
-    }
-
-    // Debugging prints
-    if (DEBUG) {
-        console.log(`${BLUE}%s${RESET}`, prices);
+        if (debug) {
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Prices: ${fetch_data_instance.prices}`);
+            console.log(`${blue}%s${reset}`, `[${date_string()}] Heating: ${heating_hours}h, Price: ${current_price}, Threshold: ${threshold_price}`);
+        }
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] heat_adjust failed: ${error.toString()}`);
     }
 }
 
-// Begin execution here
+// Main execution
 (async () => {
-    // Initialize the csv directory and file if necessary
     await init_csv();
 
-    // Create mqtt client and log messages on topic "st/receipt"
-    const mq = new MqttHandler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
-    mq.log_topic('to_stmq/heat/receipt');
+    const mqtt_client = new mqtt_handler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
+    await mqtt_client.log_topic('to_stmq/heat/receipt');
 
-    // Run once and then control heating with set schedule
-    adjust_heat(mq);
-    schedule.scheduleJob('0 * * * *', () => adjust_heat(mq));
+    const fetch_data_instance = new fetch_data();
+    await heat_adjust(mqtt_client, fetch_data_instance);
+
+    schedule.scheduleJob('*/15 * * * *', async () => {
+        await heat_adjust(mqtt_client, fetch_data_instance);
+        console.log(`${blue}%s${reset}`, `[${date_string()}] Scheduled heat_adjust executed.`);
+    });
 })();
