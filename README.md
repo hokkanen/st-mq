@@ -7,7 +7,7 @@ This tool can be run as a standalone app (see below) or as a [Home Assistant add
 The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Nordic and Baltic electricity prices from [Entso-E Transparency platform API](https://transparency.entsoe.eu/) or [Elering API](https://dashboard.elering.ee/assets/api-doc.html) backup API (Elering API works only for fi, ee, lt, and lv country codes), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in `./share/st-mq/st-mq.csv` which can be plotted with the [html chart tool](chart/index.html). The file `./share/st-mq/st-mq.csv` has the following format:
 
 ```
-unix_time,price,heat_on,temp_in,temp_out
+unix_time,price,heat_on,temp_in,temp_ga,temp_out
 ```
 
 NOTE! The device running [mqtt-control.js](scripts/mqtt-control.js) should be connected to the same local area network as the MQTT broker and the SmartThings hub.
