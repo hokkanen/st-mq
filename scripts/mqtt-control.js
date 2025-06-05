@@ -26,6 +26,47 @@ function date_string() {
     return moment.utc().format('HH:mm:ss DD-MM-YYYY') + ' UTC';
 }
 
+// Configuration loader
+function config() {
+    let config_data = {
+        country_code: '',
+        entsoe_token: '',
+        mqtt_address: '',
+        mqtt_user: '',
+        mqtt_pw: '',
+        postal_code: '',
+        st_temp_in_id: '',
+        st_temp_ga_id: '',
+        st_temp_out_id: '',
+        st_token: '',
+        temp_to_hours: [],
+        weather_token: ''
+    };
+    if (fs.existsSync(config_path)) {
+        try {
+            const file_data = JSON.parse(fs.readFileSync(config_path, 'utf8'));
+            const options = file_data.options || file_data;
+            Object.assign(config_data, {
+                country_code: options.geoloc.country_code,
+                entsoe_token: options.entsoe.token,
+                mqtt_address: options.mqtt.address,
+                mqtt_user: options.mqtt.user,
+                mqtt_pw: options.mqtt.pw,
+                postal_code: options.geoloc.postal_code,
+                st_temp_in_id: options.smartthings.inside_temp_dev_id,
+                st_temp_ga_id: options.smartthings.garage_temp_dev_id,
+                st_temp_out_id: options.smartthings.outside_temp_dev_id,
+                st_token: options.smartthings.token,
+                temp_to_hours: options.temp_to_hours,
+                weather_token: options.openweathermap.token
+            });
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Failed to parse ${config_path}: ${error.toString()}`);
+        }
+    }
+    return config_data;
+}
+
 // MQTT handler class
 class mqtt_handler {
     constructor(broker_address, username, password) {
@@ -94,99 +135,8 @@ class fetch_data {
         this.outside_temp = null;
     }
 
-    async fetch_prices() {
-        try {
-            const start_of_period = moment.tz('Europe/Berlin').startOf('day');
-            const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
-            const { prices, resolution } = await query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
-    
-            let full_prices = prices;
-            console.log(`${blue}%s${reset}`, full_prices, resolution);
-
-            this.price_resolution = resolution;
-           // if (full_prices.length === 0) {
-                const start_iso = start_of_period.toISOString();
-                const end_iso = end_of_period.toISOString();
-                const elering_result = await query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
-                full_prices = elering_result.prices;
-                this.price_resolution = elering_result.resolution;
-            console.log(`${blue}%s${reset}`, full_prices, this.price_resolution);
-
-            //}
-    
-            const current_hour_index = moment().startOf('hour').diff(start_of_period, 'hours');
-            this.prices = current_hour_index < full_prices.length 
-                ? full_prices.slice(current_hour_index) 
-                : [];
-        } catch (error) {
-            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}`);
-            this.prices = [];
-            this.price_resolution = null;
-        }
-        console.log(`${blue}%s${reset}`, this.prices, this.price_resolution);
-
-    }
-
-    async fetch_temperatures() {
-        try {
-            this.inside_temp = await get_st_temp(config().st_temp_in_id);
-            this.garage_temp = await get_st_temp(config().st_temp_in_id);
-            this.outside_temp = await get_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
-        } catch (error) {
-            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}`);
-        }
-    }
-
-    shift_prices() {
-        if (this.prices.length > 0) {
-            this.prices.shift();
-        }
-    }
-}
-
-// Configuration loader
-function config() {
-    let config_data = {
-        country_code: '',
-        entsoe_token: '',
-        mqtt_address: '',
-        mqtt_user: '',
-        mqtt_pw: '',
-        postal_code: '',
-        st_temp_in_id: '',
-        st_temp_ga_id: '',
-        st_temp_out_id: '',
-        st_token: '',
-        temp_to_hours: [],
-        weather_token: ''
-    };
-    if (fs.existsSync(config_path)) {
-        try {
-            const file_data = JSON.parse(fs.readFileSync(config_path, 'utf8'));
-            const options = file_data.options || file_data;
-            Object.assign(config_data, {
-                country_code: options.geoloc.country_code,
-                entsoe_token: options.entsoe.token,
-                mqtt_address: options.mqtt.address,
-                mqtt_user: options.mqtt.user,
-                mqtt_pw: options.mqtt.pw,
-                postal_code: options.geoloc.postal_code,
-                st_temp_in_id: options.smartthings.inside_temp_dev_id,
-                st_temp_ga_id: options.smartthings.garage_temp_dev_id,
-                st_temp_out_id: options.smartthings.outside_temp_dev_id,
-                st_token: options.smartthings.token,
-                temp_to_hours: options.temp_to_hours,
-                weather_token: options.openweathermap.token
-            });
-        } catch (error) {
-            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] Failed to parse ${config_path}: ${error.toString()}`);
-        }
-    }
-    return config_data;
-}
-
-// Check API response
-async function check_response(response, type) {
+    // Check API response
+async check_response(response, type) {
     if (!response) {
         console.log(`${blue}%s${reset}`, `[ERROR ${date_string()}] ${type} query failed: No response`);
         return null;
@@ -195,18 +145,8 @@ async function check_response(response, type) {
     return response.status;
 }
 
-// Get day time bounds in UTC
-async function get_day_time_bounds_in_utc() {
-    const start_date = moment.tz('Europe/Berlin').startOf('day');
-    const end_date = moment.tz('Europe/Berlin').endOf('day');
-    return {
-        start_date_utc: start_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]'),
-        end_date_utc: end_date.clone().utc().format('YYYY-MM-DDTHH:mm:ss.SSS[Z]')
-    };
-}
-
-// Query Entso-E prices
-async function query_entsoe_prices(start_date, end_date) {
+    // Query Entso-E prices
+async query_entsoe_prices(start_date, end_date) {
     const api_key = config().entsoe_token;
     const period_start = moment(start_date).utc().format('YYYYMMDDHHmm');
     const period_end = moment(end_date).utc().format('YYYYMMDDHHmm');
@@ -226,7 +166,7 @@ async function query_entsoe_prices(start_date, end_date) {
 
     try {
         const response = await fetch(url);
-        if (await check_response(response, `Entsoe-E (${config().country_code})`) !== 200) {
+        if (await this.check_response(response, `Entsoe-E (${config().country_code})`) !== 200) {
             return { prices: [], resolution: null };
         }
 
@@ -324,14 +264,14 @@ async function query_entsoe_prices(start_date, end_date) {
 }
 
 // Query Elering prices
-async function query_elering_prices(period_start, period_end) {
+async query_elering_prices(period_start, period_end) {
     const encoded_start = encodeURIComponent(period_start);
     const encoded_end = encodeURIComponent(period_end);
     const url = `https://dashboard.elering.ee/api/nps/price?start=${encoded_start}&end=${encoded_end}`;
 
     try {
         const response = await fetch(url);
-        if (await check_response(response, 'Elering') !== 200) {
+        if (await this.check_response(response, 'Elering') !== 200) {
             return { prices: [], resolution: null };
         }
 
@@ -392,8 +332,96 @@ async function query_elering_prices(period_start, period_end) {
     }
 }
 
-// Calculate threshold price for heating
-async function calc_threshold_price(outside_temp, prices) {
+
+
+// Get OpenWeatherMap temperature
+async query_owm_temp(country_code, postal_code) {
+    try {
+        const response = await fetch(`http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${config().weather_token}&units=metric`);
+        if (await this.check_response(response, `OpenWeatherMap (${country_code}-${postal_code})`) !== 200) return null;
+        return (await response.json()).main.temp;
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] OpenWeatherMap failed: ${error.toString()}`);
+        return null;
+    }
+}
+
+// Get SmartThings temperature
+async query_st_temp(st_dev_id, country_code = '', postal_code = '') {
+    const options = {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
+    };
+    try {
+        const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, options);
+        if (await this.check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200) {
+            return (await response.json()).components.main.temperatureMeasurement.temperature.value;
+        }
+        if (country_code && postal_code) return await this.query_owm_temp(country_code, postal_code);
+        return null;
+    } catch (error) {
+        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] SmartThings failed: ${error.toString()}`);
+        return null;
+    }
+}
+
+    async fetch_prices() {
+        try {
+            const start_of_period = moment.tz('Europe/Berlin').startOf('day');
+            const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
+            const { prices, resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
+    
+            let full_prices = prices;
+            console.log(`${blue}%s${reset}`, full_prices, resolution);
+
+            this.price_resolution = resolution;
+           // if (full_prices.length === 0) {
+                const start_iso = start_of_period.toISOString();
+                const end_iso = end_of_period.toISOString();
+                const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
+                full_prices = elering_result.prices;
+                this.price_resolution = elering_result.resolution;
+            console.log(`${blue}%s${reset}`, full_prices, this.price_resolution);
+
+            //}
+    
+            const current_hour_index = moment().startOf('hour').diff(start_of_period, 'hours');
+            this.prices = current_hour_index < full_prices.length 
+                ? full_prices.slice(current_hour_index) 
+                : [];
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}`);
+            this.prices = [];
+            this.price_resolution = null;
+        }
+        console.log(`${blue}%s${reset}`, this.prices, this.price_resolution);
+
+    }
+
+    async fetch_temperatures() {
+        try {
+            this.inside_temp = await this.query_st_temp(config().st_temp_in_id);
+            this.garage_temp = await this.query_st_temp(config().st_temp_in_id);
+            this.outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}`);
+        }
+    }
+
+    shift_prices() {
+        if (this.prices.length > 0) {
+            this.prices.shift();
+        }
+    }
+}
+
+class heat_adjust {
+    constructor() {
+        this.last_heaton2_time = null; // Store timestamp of last heaton2
+    }
+
+    // Calculate threshold price for heating
+async calc_threshold_price(outside_temp, prices) {
     const temp_to_hours = config().temp_to_hours;
 
     // Step 1: Calculate heating hours (no rounding)
@@ -438,39 +466,8 @@ async function calc_threshold_price(outside_temp, prices) {
     return threshold_price;
 }
 
-// Get OpenWeatherMap temperature
-async function get_owm_temp(country_code, postal_code) {
-    try {
-        const response = await fetch(`http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${config().weather_token}&units=metric`);
-        if (await check_response(response, `OpenWeatherMap (${country_code}-${postal_code})`) !== 200) return null;
-        return (await response.json()).main.temp;
-    } catch (error) {
-        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] OpenWeatherMap failed: ${error.toString()}`);
-        return null;
-    }
-}
-
-// Get SmartThings temperature
-async function get_st_temp(st_dev_id, country_code = '', postal_code = '') {
-    const options = {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
-    };
-    try {
-        const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, options);
-        if (await check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200) {
-            return (await response.json()).components.main.temperatureMeasurement.temperature.value;
-        }
-        if (country_code && postal_code) return await get_owm_temp(country_code, postal_code);
-        return null;
-    } catch (error) {
-        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] SmartThings failed: ${error.toString()}`);
-        return null;
-    }
-}
-
 // Initialize CSV file
-async function init_csv() {
+async init_csv() {
     const csv_dir = dirname(csv_file_path);
     if (!fs.existsSync(csv_dir)) fs.mkdirSync(csv_dir, { recursive: true });
     if (!fs.existsSync(csv_file_path) || fs.statSync(csv_file_path).size === 0) {
@@ -479,8 +476,8 @@ async function init_csv() {
 }
 
 // Write to CSV
-async function write_csv(price, heat_on, temp_in, temp_ga, temp_out) {
-    await init_csv();
+async write_csv(price, heat_on, temp_in, temp_ga, temp_out) {
+    await this.init_csv();
     const unix_time = moment().unix();
     const price_str = typeof price === 'string' ? price : price.toFixed(3);
     const temp_in_str = typeof temp_in === 'string' ? temp_in : temp_in.toFixed(1);
@@ -489,52 +486,69 @@ async function write_csv(price, heat_on, temp_in, temp_ga, temp_out) {
     fs.appendFileSync(csv_file_path, `${unix_time},${price_str},${heat_on},${temp_in_str},${temp_ga_str},${temp_out_str}\n`);
 }
 
-// Heat adjustment function
-async function heat_adjust(mqtt_client, fetch_data_instance) {
-    try {
-        await fetch_data_instance.fetch_prices();
-        await fetch_data_instance.fetch_temperatures();
+    async adjust(mqtt_client, fetch_data_instance) {
+        try {
+            await fetch_data_instance.fetch_prices();
+            await fetch_data_instance.fetch_temperatures();
 
-        const current_price = fetch_data_instance.prices[0];
-        const threshold_price = await calc_threshold_price(outside_temp, fetch_data_instance.prices);
+            // get fetched data
+            const current_price = fetch_data_instance.prices[0];
+            const inside_temp = fetch_data_instance.inside_temp;
+            const garage_temp = fetch_data_instance.garage_temp;
+            const outside_temp = fetch_data_instance.outside_temp;
+            const threshold_price = await this.calc_threshold_price(outside_temp, fetch_data_instance.prices);
 
-        const heat_on = current_price === null || current_price <= threshold_price || current_price <= 40;
-        const action = heat_on ? 'heaton' : 'heatoff';
-        await mqtt_client.post_trigger('from_stmq/heat/action', action);
+            // Determine heating action
+            let action;
+            let heaton_value; // For CSV: 0 (heatoff), 1 (heaton1), 2 (heaton2)
+            const now = moment();
+            const heat_on = current_price === null || current_price <= threshold_price || current_price <= 40;
 
-        const inside_temp = fetch_data_instance.inside_temp;
-        const garage_temp = fetch_data_instance.garage_temp;
-        const outside_temp = fetch_data_instance.outside_temp;
+            if (heat_on) {
+                // Check if last heaton2 was more than 1 hour ago or never set
+                if (!this.last_heaton2_time || now.diff(this.last_heaton2_time, 'hours', true) >= 1) {
+                    action = 'heaton2';
+                    heaton_value = 2;
+                    this.last_heaton2_time = now; // Update last heaton2 time
+                } else {
+                    action = 'heaton1';
+                    heaton_value = 1;
+                }
+            } else {
+                action = 'heatoff';
+                heaton_value = 0;
+            }
 
-        const price_for_csv = current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN';
-        const temp_in_for_csv = inside_temp !== null ? inside_temp.toFixed(1) : 'NaN';
-        const temp_ga_for_csv = garage_temp !== null ? garage_temp.toFixed(1) : 'NaN';
-        const temp_out_for_csv = outside_temp !== null ? outside_temp.toFixed(1) : 'NaN';
-        await write_csv(price_for_csv, heat_on ? 1 : 0, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
+            await mqtt_client.post_trigger('from_stmq/heat/action', action);
 
-        fetch_data_instance.shift_prices();
+            const price_for_csv = current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN';
+            const temp_in_for_csv = inside_temp !== null ? inside_temp.toFixed(1) : 'NaN';
+            const temp_ga_for_csv = garage_temp !== null ? garage_temp.toFixed(1) : 'NaN';
+            const temp_out_for_csv = outside_temp !== null ? outside_temp.toFixed(1) : 'NaN';
+            await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
-        if (debug) {
-            console.log(`${blue}%s${reset}`, `[${date_string()}] Prices: ${fetch_data_instance.prices}`);
-            console.log(`${blue}%s${reset}`, `[${date_string()}] Heating: ${heating_hours}h, Price: ${current_price}, Threshold: ${threshold_price}`);
+            fetch_data_instance.shift_prices();
+
+            if (debug) {
+                console.log(`${blue}%s${reset}`, `[${date_string()}] prices: ${fetch_data_instance.prices}`);
+                console.log(`${blue}%s${reset}`, `[${date_string()}] heating: action=${action}, price=${current_price}, threshold=${threshold_price}`);
+            }
+        } catch (error) {
+            console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] heat_adjust.adjust failed: ${error.toString()}`);
         }
-    } catch (error) {
-        console.error(`${blue}%s${reset}`, `[ERROR ${date_string()}] heat_adjust failed: ${error.toString()}`);
     }
 }
 
 // Main execution
 (async () => {
-    await init_csv();
-
     const mqtt_client = new mqtt_handler(config().mqtt_address, config().mqtt_user, config().mqtt_pw);
-    await mqtt_client.log_topic('to_stmq/heat/receipt');
-
     const fetch_data_instance = new fetch_data();
-    await heat_adjust(mqtt_client, fetch_data_instance);
-
+    const heat_adjust_instance = new heat_adjust();
+    
+    await mqtt_client.log_topic('to_stmq/heat/receipt');
+    await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance);
     schedule.scheduleJob('*/15 * * * *', async () => {
-        await heat_adjust(mqtt_client, fetch_data_instance);
-        console.log(`${blue}%s${reset}`, `[${date_string()}] Scheduled heat_adjust executed.`);
+        await heat_adjust_instance.adjust(mqtt_client, fetch_data_instance);
+        console.log(`${blue}%s${reset}`, `[${date_string()}] scheduled heat_adjust executed.`);
     });
 })();
