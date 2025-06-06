@@ -1,4 +1,3 @@
 -Polish and error check chart.js with AI, adding also error handling
--Maybe add to chart.js also VAT25.5 savings into chart console?
 -Polish and error check easee.js with AI, adding also error handling, and unify style with stmq.js
 -Implement support for local mqtt-based temperature receives (eg, from shelly or HASS through Meteorologisk Institute); just store last received temp values and time stamps (maybe in storage class, see below) when received (and accept if received within 1h)
