@@ -2,6 +2,7 @@
 <html lang="en">
 
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home Monitor</title>
   <style>
     #chartActions button {
@@ -17,23 +18,32 @@
     .chart-container input {
       vertical-align: middle;
     }
+
+    #loadingIndicator {
+      font-size: 1.2em;
+      margin-bottom: 10px;
+    }
+
+    #errorMessage {
+      color: red;
+      margin-bottom: 10px;
+    }
   </style>
 </head>
 
 <body>
-  <!-- Wrap everything in a div with class 'chart-container' -->
   <div class="chart-container">
-    <!-- Create date selector -->
+    <div id="loadingIndicator" style="display: none;">Loading...</div>
+    <div id="errorMessage"></div>
+    <label for="dateInput">Start Date:</label>
     <input type="date" id="dateInput">
+    <label for="endDateInput">End Date:</label>
     <input type="date" id="endDateInput" style="display: none;">
-    <input type="checkbox" id="rangeCheckbox"> Use date range
-    <!-- Create 'Update Dates' button -->
+    <input type="checkbox" id="rangeCheckbox">
+    <label for="rangeCheckbox">Use date range</label>
     <button id="filterButton">Update Dates</button>
-    <!-- Create 'All History' button -->
     <button id="showAllButton">All History</button>
-    <!-- Create chart using js module -->
     <canvas id="acquisitions"></canvas>
-    <!-- Add chart actions using js module -->
     <div id="chartActions"></div>
   </div>
   <script type="module" src="chart.js"></script>
