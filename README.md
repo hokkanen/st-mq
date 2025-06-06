@@ -40,7 +40,7 @@ npm i
 ## Setup (standalone)
 
 ### SmartThings
-In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages, which indicate whether the kWh spot price is favourable for energy consumption. If the conditions are not favourable, `heatoff` is published; otherwise, `heaton15` is published. Additionally, when the conditions are favourable, `heaton60` message is published together with `heaton15` message if no prior `heaton60` messages have been published within the past hour.
+In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages, which indicate whether the kWh spot price is favourable for energy consumption. If the conditions are not favourable, `heatoff` is published; otherwise, `heaton15` is published. Additionally, when the conditions are favourable, `heaton60` message is published together with `heaton15` message during the daytime (4:45 - 18:45 Europe/Berlin time) if no prior `heaton60` messages have been published within the past hour.
 
 ### Config
 The root directory contains [config.json](config.json) file in which the `options` section needs to be updated. In the config, fill in geolocation information, temperature-to-heating-hours mapping array, MQTT broker details, and the required API keys and SmartThings device IDs for the temperature sensors. For more information, check the [HASS translations file](translations/en.yaml).

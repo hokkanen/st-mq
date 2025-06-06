@@ -716,7 +716,12 @@ class HeatAdjustment {
             const heat_on = current_price === null || current_price <= threshold_price || current_price <= 30;
 
             if (heat_on) {
-                if (!this.#last_heaton60_time || now.diff(this.#last_heaton60_time, 'hours', true) >= 1) {
+                const heaton60_day_begin = moment.tz('Europe/Berlin').startOf('day').add({ hours: 4, minutes: 45 });
+                const heaton60_day_end = moment.tz('Europe/Berlin').startOf('day').add({ hours: 18, minutes: 45 });
+                if (
+                    (!this.#last_heaton60_time || now.diff(this.#last_heaton60_time, 'minutes', true) >= 52.5) &&
+                    now.isBetween(heaton60_day_begin, heaton60_day_end, null, '[]') // 'heaton60' may be published only during daytime
+                ) {
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton60');
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton15');
                     this.#last_heaton60_time = now;
