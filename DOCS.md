@@ -11,7 +11,7 @@
 
 1. Install ST-MQ using the above button
 2. Install MQTT broker (Mosquitto HASS add-on address is preconfigured in config, but can be changed)
-3. In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton`/`heatoff` messages
+3. In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages
 4. Set up ST-MQ configuration on the add-on's configuration tab
 5. Start the ST-MQ add-on
 6. Access html chart at http://homeassistant.local:1234 (default port)
