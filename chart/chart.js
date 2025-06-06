@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 // Import easee consumption data for the chart (can be commented out)
 import data_easee from 'url:/share/st-mq/easee.csv';
 
-// Import st-entsoe data for the chart (can be commented out)
+// Import st-mq data for the chart (can be commented out)
 import data_st from 'url:/share/st-mq/st-mq.csv';
 
 // The local electric grid voltage for all phases
@@ -74,6 +74,10 @@ class ChartDrawer {
     // Setup the chart
     async #setup_chart() {
         const ctx = document.getElementById('acquisitions').getContext('2d');
+        if (!ctx) {
+            document.getElementById('errorMessage').innerText = 'Error: Chart canvas not found.';
+            return;
+        }
         this.#chart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -259,13 +263,17 @@ class ChartDrawer {
                 }
                 const hour_weight = (this.#price[i + 1].x - this.#price[i].x) / 3600;
                 total_hours += hour_weight;
-                const hourly_kwh_ch = n_kw_datapoints === 0 ? 0 : ch_kw * hour_weight / n_kw_datapoints;
-                const hourly_kwh_eq = n_kw_datapoints === 0 ? 0 : eq_kw * hour_weight / n_kw_datapoints;
+                const hourly_kwh_ch = n_kw_datapoints > 0 ? (ch_kw / n_kw_datapoints) * hour_weight : 0;
+                const hourly_kwh_eq = n_kw_datapoints > 0 ? (eq_kw / n_kw_datapoints) * hour_weight : 0;
                 reference_kwh_ch_24h += hourly_kwh_ch;
                 reference_kwh_eq_24h += hourly_kwh_eq;
                 average_kwh_price_24h += this.#price[i].y / 100 * hour_weight;
                 if (Math.floor((this.#price[i + 1].x + 3600) / 86400) !== day || i === this.#price.length - 2) {
-                    average_kwh_price_24h /= total_hours;
+                    if (total_hours > 0) {
+                        average_kwh_price_24h /= total_hours;
+                    } else {
+                        average_kwh_price_24h = 0;
+                    }
                     reference_cost_ch += average_kwh_price_24h * reference_kwh_ch_24h;
                     reference_cost_eq += average_kwh_price_24h * reference_kwh_eq_24h;
                     average_kwh_price_24h = 0;
@@ -298,13 +306,22 @@ class ChartDrawer {
 
     // Generate the chart
     async generate_chart(start_date, end_date) {
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const errorMessage = document.getElementById('errorMessage');
+        if (!loadingIndicator || !errorMessage) {
+            console.error('Error: Loading indicator or error message element not found in DOM.');
+            return;
+        }
+
+        loadingIndicator.style.display = 'block';
+        errorMessage.innerText = '';
         this.#initialize_chart();
         const limits = this.#date_lims(start_date, end_date);
         const start_time_unix = limits.bod;
         const end_time_unix = limits.eod;
 
-        try {
-            await this.#parse_data(data_easee, start_time_unix, end_time_unix, (row) => {
+        const [easee_result, st_result] = await Promise.allSettled([
+            this.#parse_data(data_easee, start_time_unix, end_time_unix, (row) => {
                 if (!isNaN(row['ch_curr1'])) this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
                 if (!isNaN(row['ch_curr2'])) this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
                 if (!isNaN(row['ch_curr3'])) this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
@@ -317,13 +334,8 @@ class ChartDrawer {
                 if (!isNaN(row['eq_curr1']) && !isNaN(row['eq_curr2']) && !isNaN(row['eq_curr3'])) {
                     this.#eq_total.push({ x: row['unix_time'], y: VOLTAGE * (row['eq_curr1'] + row['eq_curr2'] + row['eq_curr3']) / 1000 });
                 }
-            });
-        } catch (error) {
-            console.log(error);
-        }
-
-        try {
-            await this.#parse_data(data_st, start_time_unix, end_time_unix, (row) => {
+            }),
+            this.#parse_data(data_st, start_time_unix, end_time_unix, (row) => {
                 if (!isNaN(row['price'])) this.#price.push({ x: row['unix_time'], y: row['price'] });
                 if (!isNaN(row['heat_on'])) {
                     this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
@@ -332,15 +344,44 @@ class ChartDrawer {
                 if (!isNaN(row['temp_in'])) this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
                 if (!isNaN(row['temp_ga'])) this.#temp_ga.push({ x: row['unix_time'], y: row['temp_ga'] });
                 if (!isNaN(row['temp_out'])) this.#temp_out.push({ x: row['unix_time'], y: row['temp_out'] });
-            });
-        } catch (error) {
-            console.log(error);
+            })
+        ]);
+
+        if (easee_result.status === 'rejected') {
+            console.log('Error parsing Easee data:', easee_result.reason);
+            errorMessage.innerText += 'Error loading Easee data: ' + easee_result.reason.message + '\n';
+        }
+
+        if (st_result.status === 'rejected') {
+            console.log('Error parsing ST data:', st_result.reason);
+            errorMessage.innerText += 'Error loading ST data: ' + st_result.reason.message + '\n';
+        }
+
+        if (
+            this.#ch_curr1.length === 0 &&
+            this.#ch_curr2.length === 0 &&
+            this.#ch_curr3.length === 0 &&
+            this.#eq_curr1.length === 0 &&
+            this.#eq_curr2.length === 0 &&
+            this.#eq_curr3.length === 0 &&
+            this.#price.length === 0 &&
+            this.#heat_on.length === 0 &&
+            this.#temp_in.length === 0 &&
+            this.#temp_ga.length === 0 &&
+            this.#temp_out.length === 0
+        ) {
+            errorMessage.innerText = 'No data available for the selected period.';
+            loadingIndicator.style.display = 'none';
+            return;
         }
 
         await this.#setup_chart();
-        await this.#update_shading_data();
-        this.#perform_cost_analysis();
-        await this.apply_action(this.get_actions()[0]);
+        if (this.#chart) {
+            await this.#update_shading_data();
+            await this.#perform_cost_analysis();
+            await this.apply_action(this.get_actions()[0]);
+        }
+        loadingIndicator.style.display = 'none';
     }
 
     // Choose between individual phases and total power layouts
