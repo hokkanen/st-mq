@@ -278,15 +278,22 @@ class ChartDrawer {
                 realized_cost_eq += hourly_kwh_eq * this.#price[i].y / 100;
             }
         }
-        const costs = {
+        const costs_vat0 = {
             realized_cost_ch,
             realized_cost_eq,
             reference_cost_ch,
             reference_cost_eq,
             savings_without_ch: (reference_cost_eq - reference_cost_ch) - (realized_cost_eq - realized_cost_ch)
         };
-        console.log(costs);
-        return costs;
+        const costs_vat25_5 = Object.fromEntries(
+            Object.entries(costs_vat0).map(([key, value]) => [
+                key === 'savings_without_ch' ? key : key.replace('cost', 'vat25_5'),
+                value * 1.255
+            ])
+        );
+        console.log(costs_vat0);
+        console.log(costs_vat25_5);
+        return costs_vat0;
     }
 
     // Generate the chart
