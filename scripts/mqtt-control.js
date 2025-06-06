@@ -8,7 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = false;
+const DEBUG = true;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -24,9 +24,10 @@ const CSV_FILE_PATH = './share/st-mq/st-mq.csv';
 
 // ### Utility Functions ###
 
-// Formats the current UTC time as a string for logging
-function date_string() {
-    return moment.utc().format('HH:mm:ss DD-MM-YYYY') + ' UTC';
+// Formats the current or given time into a UTC time string for logging
+function date_string(date = null) {
+    const momentDate = date ? moment(date).utc() : moment.utc();
+    return momentDate.format('HH:mm:ss DD-MM-YYYY') + ' UTC';
 }
 
 // Loads configuration from a JSON file, falling back to defaults if the file is missing or invalid
@@ -169,15 +170,11 @@ class FetchData {
     // Private fields
     #price_resolution = null;
     #prices = [];
+    #price_start_time = null;
+    #price_end_time = null;
     #inside_temp = null;
     #garage_temp = null;
     #outside_temp = null;
-    // Store last known temperatures for fallback
-    #last_inside_temp = null;
-    #last_garage_temp = null;
-    #last_outside_temp = null;
-    // Track last price fetch time to avoid unnecessary API calls
-    #last_price_fetch = null;
 
     constructor() {
         // No need to initialize private fields here since they are declared above
@@ -200,24 +197,54 @@ class FetchData {
         return this.#outside_temp;
     }
 
-    // Return the prices sliced from the current time to the end of the period
-    get sliced_prices() {
-        const start_of_period = moment.tz('Europe/Berlin').startOf('day');
-        let current_index;
-        if (this.#price_resolution === 'PT15M') {
-            const current_time = moment().startOf('minute').subtract(moment().minute() % 15, 'minutes');
-            current_index = Math.floor(current_time.diff(start_of_period, 'minutes', true) / 15);
-        } else {
-            const current_time = moment().startOf('hour');
-            current_index = Math.floor(current_time.diff(start_of_period, 'hours', true));
+    // Returns prices sliced from the current time, handling outdated data without modifying internal state
+    get slice_prices() {
+        if (!this.#price_start_time || !this.#price_end_time || this.#prices.length === 0 || !this.#price_resolution) {
+            if (DEBUG) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (no valid prices or time data)${RESET}`);
+            }
+            return [];
         }
-        const sliced_prices = current_index >= 0 && current_index < this.#prices.length
-            ? this.#prices.slice(current_index)
-            : [];
+
+        const now = moment.tz('Europe/Berlin');
+        const current_day = now.clone().startOf('day');
+        const price_day = this.#price_start_time.clone().startOf('day');
+        const interval_minutes = this.#price_resolution === 'PT15M' ? 15 : 60;
+
+        let past_day_prices_sliced = 0;
+
+        // If price data starts on a past day, skip all past days
+        if (price_day.isBefore(current_day, 'day')) {
+            // Calculate the number of sliced slots needed to reach the beginning of the current day
+            past_day_prices_sliced = Math.floor(current_day.diff(this.#price_start_time, 'minutes', true) / interval_minutes);
+            if (past_day_prices_sliced >= this.#prices.length) {
+                if (DEBUG) {
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (all prices are before current day, past_day_prices_sliced=${past_day_prices_sliced}, length=${this.#prices.length})${RESET}`);
+                }
+                return [];
+            }
+        }
+
+        // Further slice to the current time within the current day
+        const total_prices_sliced = Math.floor(now.diff(this.#price_start_time, 'minutes', true) / interval_minutes);
+        if (total_prices_sliced < past_day_prices_sliced) {
+            if (DEBUG) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (total_prices_sliced ${total_prices_sliced} before past_day_prices_sliced ${past_day_prices_sliced})${RESET}`);
+            }
+            return [];
+        }
+        if (total_prices_sliced >= this.#prices.length) {
+            if (DEBUG) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (total_prices_sliced ${total_prices_sliced} exceeds length ${this.#prices.length})${RESET}`);
+            }
+            return [];
+        }
+
+        const remaining_prices = this.#prices.slice(total_prices_sliced);
         if (DEBUG) {
-            console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: ${JSON.stringify(sliced_prices)}, Current Index: ${current_index}, Full Prices Length: ${this.#prices.length}${RESET}`);
+            console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices (${remaining_prices.length}/${this.#prices.length}): ${JSON.stringify(remaining_prices)}, Total prices sliced: ${total_prices_sliced}, Past-day-prices sliced: ${past_day_prices_sliced}${RESET}`);
         }
-        return sliced_prices;
+        return remaining_prices;
     }
 
     // Compares two price arrays for equality
@@ -264,24 +291,24 @@ class FetchData {
         try {
             const response = await fetch(url);
             if (await this.check_response(response, `Entso-E (${config().country_code})`) !== 200) {
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             const json_data = new XMLParser().parse(await response.text());
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E JSON data: ${JSON.stringify(json_data, null, 2)}${RESET}`);
+                //console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E JSON data:\n${JSON.stringify(json_data, null, 2)}\n${RESET}`);
             }
 
             if (json_data.Acknowledgement_MarketDocument) {
                 console.log(`${BLUE}[ERROR ${date_string()}] Entso-E API error: ${json_data.Acknowledgement_MarketDocument.Reason?.text || 'Unknown error'}${RESET}`);
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             const doc_time_interval = json_data?.Publication_MarketDocument?.['period.timeInterval'];
             if (!doc_time_interval?.start || !doc_time_interval?.end) {
                 console.log(`${BLUE}[ERROR ${date_string()}] Entso-E: Invalid or missing period.timeInterval${RESET}`);
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             const doc_start = moment(doc_time_interval.start);
@@ -296,7 +323,7 @@ class FetchData {
 
             if (time_series.length === 0) {
                 console.log(`${BLUE}[ERROR ${date_string()}] Entso-E: No TimeSeries found${RESET}`);
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             let resolution = null;
@@ -309,7 +336,7 @@ class FetchData {
                     resolution = ts_resolution;
                     if (!resolution) {
                         console.log(`${BLUE}[ERROR ${date_string()}] Entso-E: No resolution in TimeSeries[${index}]${RESET}`);
-                        return { prices: [], resolution: null };
+                        return { prices: [], resolution: null, start_time: null, end_time: null };
                     }
                     if (DEBUG) {
                         console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Resolution: ${resolution}${RESET}`);
@@ -338,7 +365,7 @@ class FetchData {
                 const points = Array.isArray(ts?.Period?.Point) ? ts.Period.Point : ts?.Period?.Point ? [ts.Period.Point] : [];
 
                 if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E TimeSeries[${index}] Points: ${JSON.stringify(points, null, 2)}${RESET}`);
+                    //console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E TimeSeries[${index}] Points:\n${JSON.stringify(points, null, 2)}\n${RESET}`);
                 }
 
                 points.forEach(entry => {
@@ -360,20 +387,20 @@ class FetchData {
 
             if (!resolution) {
                 console.log(`${BLUE}[ERROR ${date_string()}] Entso-E: No valid resolution${RESET}`);
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             const total_slots = Math.floor(duration_minutes / (resolution === 'PT15M' ? 15 : 60));
             full_prices = full_prices.slice(0, total_slots);
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Prices: ${JSON.stringify(full_prices)}, Resolution: ${resolution}${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Prices:\n${JSON.stringify(full_prices)}\nResolution: ${resolution}, Start: ${date_string(doc_start)}, End: ${date_string(doc_end)}${RESET}`);
             }
 
-            return { prices: full_prices, resolution };
+            return { prices: full_prices, resolution, start_time: doc_start, end_time: doc_end };
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] Entso-E query failed: ${error.toString()}${RESET}`);
-            return { prices: [], resolution: null };
+            return { prices: [], resolution: null, start_time: null, end_time: null };
         }
     }
 
@@ -386,26 +413,28 @@ class FetchData {
         try {
             const response = await fetch(url);
             if (await this.check_response(response, 'Elering') !== 200) {
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             const json_data = await response.json();
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Elering JSON data: ${JSON.stringify(json_data, null, 2)}${RESET}`);
+                //console.log(`${YELLOW}[DEBUG ${date_string()}] Elering JSON data:\n${JSON.stringify(json_data, null, 2)}\n${RESET}`);
             }
 
             if (!json_data.success || !json_data.data || !json_data.data[config().country_code]) {
                 console.log(`${BLUE}[ERROR ${date_string()}] Elering API error: No valid data for country code ${config().country_code}${RESET}`);
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
             const entries = json_data.data[config().country_code] || [];
             if (entries.length === 0) {
                 console.log(`${BLUE}[ERROR ${date_string()}] Elering: No price data found for ${config().country_code}${RESET}`);
-                return { prices: [], resolution: null };
+                return { prices: [], resolution: null, start_time: null, end_time: null };
             }
 
+            const first_timestamp = moment.unix(entries[0].timestamp);
+            const last_timestamp = moment.unix(entries[entries.length - 1].timestamp);
             let resolution = 'PT60M';
             if (entries.length >= 2) {
                 const time_diff = entries[1].timestamp - entries[0].timestamp;
@@ -422,11 +451,12 @@ class FetchData {
                 console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Resolution: ${resolution}${RESET}`);
             }
 
-            const first_timestamp = moment.unix(entries[0].timestamp);
-            const last_timestamp = moment.unix(entries[entries.length - 1].timestamp);
-            const duration_minutes = last_timestamp.diff(first_timestamp, 'minutes', true);
+            // Calculate duration including the full last slot
+            const interval_minutes = resolution === 'PT15M' ? 15 : 60;
+            const end_of_last_slot = last_timestamp.clone().add(interval_minutes, 'minutes');
+            const duration_minutes = end_of_last_slot.diff(first_timestamp, 'minutes', true);
             const slots_per_hour = resolution === 'PT15M' ? 4 : 1;
-            const total_slots = Math.floor(duration_minutes / (resolution === 'PT15M' ? 15 : 60)) + 1;
+            const total_slots = Math.floor(duration_minutes / interval_minutes);
 
             if (DEBUG) {
                 console.log(`${YELLOW}[DEBUG ${date_string()}] Elering: Duration ${duration_minutes} minutes, Total Slots: ${total_slots}${RESET}`);
@@ -451,14 +481,17 @@ class FetchData {
                 }
             }
 
+            // Adjust end time to include the full last interval
+            const end_time = last_timestamp.clone().add(interval_minutes, 'minutes');
+
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Prices: ${JSON.stringify(full_prices)}, Resolution: ${resolution}${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Prices:\n${JSON.stringify(full_prices)}\nResolution: ${resolution}, Start: ${date_string(first_timestamp)}, End: ${date_string(end_time)}${RESET}`);
             }
 
-            return { prices: full_prices, resolution };
+            return { prices: full_prices, resolution, start_time: first_timestamp, end_time };
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] Elering query failed: ${error.toString()}${RESET}`);
-            return { prices: [], resolution: null };
+            return { prices: [], resolution: null, start_time: null, end_time: null };
         }
     }
 
@@ -499,46 +532,63 @@ class FetchData {
         }
     }
 
-    // Fetches electricity prices for the next 48 hours, updating only if prices or resolution change
+    // Fetches electricity prices for the next 48 hours, updating only if fewer than 12 hours remain
     async fetch_prices() {
         try {
             const now = moment.tz('Europe/Berlin');
             const start_of_period = now.clone().startOf('day');
             const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
 
-            // Skip fetching if done within 6 hours and prices are still valid
-            if (this.#last_price_fetch && now.diff(this.#last_price_fetch, 'hours') < 6 && this.#prices.length > 0) {
-                if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch, using cached prices${RESET}`);
+            // Check if sufficient prices remain using slice_prices
+            let should_fetch = true;
+            if (this.#price_start_time && this.#price_end_time && this.#prices.length > 0 && this.#price_resolution) {
+                const remaining_slots = this.slice_prices.length;
+                const slots_per_hour = this.#price_resolution === 'PT15M' ? 4 : 1;
+                const remaining_hours = remaining_slots / slots_per_hour;
+
+                if (remaining_hours >= 12) {
+                    should_fetch = false;
+                    if (DEBUG) {
+                        console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (>= 12, ${remaining_slots} slots)${RESET}`);
+                    }
+                } else {
+                    if (DEBUG) {
+                        console.log(`${YELLOW}[DEBUG ${date_string()}] Fetching prices: ${remaining_hours.toFixed(2)} hours remain (< 12, ${remaining_slots} slots)${RESET}`);
+                    }
                 }
+            }
+
+            if (!should_fetch) {
                 return;
             }
 
-            let { prices: new_prices, resolution: new_resolution } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
+            let { prices: new_prices, resolution: new_resolution, start_time, end_time } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
             let full_prices = new_prices;
 
             if (full_prices.length === 0) {
                 const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
                 full_prices = elering_result.prices;
                 new_resolution = elering_result.resolution;
+                start_time = elering_result.start_time;
+                end_time = elering_result.end_time;
             }
 
-            // Update prices only if they differ or resolution changes
-            if (full_prices.length > 0 && (!this.are_prices_equal(full_prices, this.#prices) || this.#price_resolution !== new_resolution)) {
+            // Update prices only if they differ or resolution/period changes
+            if (full_prices.length > 0 && (!this.are_prices_equal(full_prices, this.#prices) || this.#price_resolution !== new_resolution || !this.#price_start_time || !this.#price_start_time.isSame(start_time))) {
                 this.#prices = full_prices;
                 this.#price_resolution = new_resolution;
-                this.#last_price_fetch = now;
+                this.#price_start_time = start_time;
+                this.#price_end_time = end_time;
                 if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Updated Prices: ${JSON.stringify(this.#prices)}, Resolution: ${new_resolution}${RESET}`);
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Updated Prices:\n${JSON.stringify(this.#prices)}\nResolution: ${new_resolution}, Start: ${date_string(start_time)}, End: ${date_string(end_time)}${RESET}`);
                 }
-            } else {
+            } else if (full_prices.length === 0) {
                 if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Prices unchanged or empty, retaining old prices${RESET}`);
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Both API calls failed, retaining existing prices${RESET}`);
                 }
             }
         } catch (error) {
-            console.log(`${BLUE}[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}, retaining old prices${RESET}`);
-            // Old prices are retained automatically as this.#prices and this.#price_resolution are not updated
+            console.log(`${BLUE}[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}, retaining existing prices${RESET}`);
         }
     }
 
@@ -549,21 +599,22 @@ class FetchData {
             const new_garage_temp = await this.query_st_temp(config().st_temp_ga_id);
             const new_outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
 
-            // Update only if new values are valid, otherwise use last known temperatures
-            this.#inside_temp = new_inside_temp !== null ? new_inside_temp : this.#last_inside_temp;
-            this.#garage_temp = new_garage_temp !== null ? new_garage_temp : this.#last_garage_temp;
-            this.#outside_temp = new_outside_temp !== null ? new_outside_temp : this.#last_outside_temp;
+            // Update only if new values are valid and different
+            if (new_inside_temp !== null && new_inside_temp !== this.#inside_temp) {
+                this.#inside_temp = new_inside_temp;
+            }
+            if (new_garage_temp !== null && new_garage_temp !== this.#garage_temp) {
+                this.#garage_temp = new_garage_temp;
+            }
+            if (new_outside_temp !== null && new_outside_temp !== this.#outside_temp) {
+                this.#outside_temp = new_outside_temp;
+            }
 
-            // Store last known valid temperatures for fallback
-            if (new_inside_temp !== null) this.#last_inside_temp = new_inside_temp;
-            if (new_garage_temp !== null) this.#last_garage_temp = new_garage_temp;
-            if (new_outside_temp !== null) this.#last_outside_temp = new_outside_temp;
+            if (DEBUG) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Temperatures: inside=${this.#inside_temp}, garage=${this.#garage_temp}, outside=${this.#outside_temp}${RESET}`);
+            }
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}${RESET}`);
-            // Fallback to last known temperatures
-            this.#inside_temp = this.#last_inside_temp;
-            this.#garage_temp = this.#last_garage_temp;
-            this.#outside_temp = this.#last_outside_temp;
         }
     }
 }
@@ -653,12 +704,12 @@ class HeatAdjustment {
             await fetch_data_instance.fetch_prices();
             await fetch_data_instance.fetch_temperatures();
 
-            const sliced_prices = fetch_data_instance.sliced_prices;
-            const current_price = sliced_prices[0] ?? null;
+            const remaining_prices = fetch_data_instance.slice_prices;
+            const current_price = remaining_prices[0] ?? null;
             const inside_temp = fetch_data_instance.inside_temp;
             const garage_temp = fetch_data_instance.garage_temp;
             const outside_temp = fetch_data_instance.outside_temp;
-            const threshold_price = await this.calc_threshold_price(outside_temp, sliced_prices, fetch_data_instance.price_resolution);
+            const threshold_price = await this.calc_threshold_price(outside_temp, remaining_prices, fetch_data_instance.price_resolution);
 
             let heaton_value;
             const now = moment();
@@ -688,7 +739,7 @@ class HeatAdjustment {
                 await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Values: price = ${current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN'}, threshold_price = ${threshold_price !== null ? (threshold_price / 10.0).toFixed(3) : 'NaN'}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Used vals: price = ${current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN'}, threshold_price = ${threshold_price !== null ? (threshold_price / 10.0).toFixed(3) : 'NaN'}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
             }
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] HeatAdjustment.adjust failed: ${error.toString()}${RESET}`);
