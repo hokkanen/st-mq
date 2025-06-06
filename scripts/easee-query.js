@@ -5,7 +5,7 @@ import moment from 'moment-timezone';
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = true;
+const DEBUG = false;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -308,12 +308,21 @@ async function query_device_data() {
 (async () => {
     try {
         // Validate required configuration fields before proceeding
-        const cfg = config();
-        const requiredFields = ['user', 'pw', 'charger_id', 'equalizer_id'];
-        const missingFields = requiredFields.filter(field => !cfg[field]);
-        if (missingFields.length > 0) {
-            throw new Error(`Missing required configuration fields: ${missingFields.join(', ')}`);
-        }
+		const cfg = config();
+		const errors = [];
+		
+		if (!cfg.charger_id) {
+			errors.push("Missing 'charger_id'");
+		}
+		if (!cfg.equalizer_id) {
+			errors.push("Missing 'equalizer_id'");
+		}
+		if (!((cfg.user && cfg.pw) || (cfg.access_token && cfg.refresh_token))) {
+			errors.push("Either 'user' and 'pw' or 'access_token' and 'refresh_token' are required");
+		}
+		if (errors.length > 0) {
+			throw new Error(errors.join('; '));
+		}
 
         // Check the csv file status and create one if necessary
         await init_csv();
