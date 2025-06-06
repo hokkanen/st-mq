@@ -201,7 +201,7 @@ class FetchData {
     get slice_prices() {
         if (!this.#price_start_time || !this.#price_end_time || this.#prices.length === 0 || !this.#price_resolution) {
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (no valid prices or time data)${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (no valid prices or time data)${RESET}`);
             }
             return [];
         }
@@ -215,11 +215,11 @@ class FetchData {
 
         // If price data starts on a past day, skip all past days
         if (price_day.isBefore(current_day, 'day')) {
-            // Calculate the number of sliced slots needed to reach the beginning of the current day
+            // Calculate the number of sliced prices needed to reach the beginning of the current day
             past_day_prices_sliced = Math.floor(current_day.diff(this.#price_start_time, 'minutes', true) / interval_minutes);
             if (past_day_prices_sliced >= this.#prices.length) {
                 if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (all prices are before current day, past_day_prices_sliced=${past_day_prices_sliced}, length=${this.#prices.length})${RESET}`);
+                    console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (all prices are before current day, past_day_prices_sliced=${past_day_prices_sliced}, length=${this.#prices.length})${RESET}`);
                 }
                 return [];
             }
@@ -229,13 +229,13 @@ class FetchData {
         const total_prices_sliced = Math.floor(now.diff(this.#price_start_time, 'minutes', true) / interval_minutes);
         if (total_prices_sliced < past_day_prices_sliced) {
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (total_prices_sliced ${total_prices_sliced} before past_day_prices_sliced ${past_day_prices_sliced})${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (total_prices_sliced ${total_prices_sliced} less than past_day_prices_sliced ${past_day_prices_sliced})${RESET}`);
             }
             return [];
         }
         if (total_prices_sliced >= this.#prices.length) {
             if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Sliced Prices: Empty (total_prices_sliced ${total_prices_sliced} exceeds length ${this.#prices.length})${RESET}`);
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (total_prices_sliced ${total_prices_sliced} exceeds length ${this.#prices.length})${RESET}`);
             }
             return [];
         }
@@ -532,7 +532,7 @@ class FetchData {
         }
     }
 
-    // Fetches electricity prices for the next 48 hours, updating only if fewer than 12 hours remain
+    // Fetches electricity prices for the next 48 hours, updating only if 12 or fewer hours remain
     async fetch_prices() {
         try {
             const now = moment.tz('Europe/Berlin');
@@ -546,7 +546,7 @@ class FetchData {
                 const slots_per_hour = this.#price_resolution === 'PT15M' ? 4 : 1;
                 const remaining_hours = remaining_slots / slots_per_hour;
 
-                if (remaining_hours >= 12) {
+                if (remaining_hours > 12) {
                     should_fetch = false;
                     if (DEBUG) {
                         console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (>= 12, ${remaining_slots} slots)${RESET}`);
