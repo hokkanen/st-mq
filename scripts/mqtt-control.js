@@ -549,11 +549,11 @@ class FetchData {
                 if (remaining_hours > 12) {
                     should_fetch = false;
                     if (DEBUG) {
-                        console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (>= 12, ${remaining_slots} slots)${RESET}`);
+                        console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (> 12, ${remaining_slots} slots)${RESET}`);
                     }
                 } else {
                     if (DEBUG) {
-                        console.log(`${YELLOW}[DEBUG ${date_string()}] Fetching prices: ${remaining_hours.toFixed(2)} hours remain (< 12, ${remaining_slots} slots)${RESET}`);
+                        console.log(`${YELLOW}[DEBUG ${date_string()}] Fetching prices: ${remaining_hours.toFixed(2)} hours remain (<= 12, ${remaining_slots} slots)${RESET}`);
                     }
                 }
             }
