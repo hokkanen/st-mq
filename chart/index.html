@@ -1,43 +1,36 @@
 <!doctype html>
 <html lang="en">
-
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home Monitor</title>
   <style>
     #chartActions button {
       margin-right: 10px;
     }
-
     .chart-container {
-      width: 1200px;
+      width: 1200px; /* Revert to original fixed width */
       margin: 0 auto;
       text-align: center;
     }
-
     .chart-container input {
       vertical-align: middle;
     }
-
     #loadingIndicator {
       font-size: 1.2em;
       margin-bottom: 10px;
     }
-
     #errorMessage {
       color: red;
       margin-bottom: 10px;
     }
   </style>
 </head>
-
 <body>
   <div class="chart-container">
     <div id="loadingIndicator" style="display: none;">Loading...</div>
     <div id="errorMessage"></div>
     <label for="dateInput">Start Date:</label>
     <input type="date" id="dateInput">
-    <label for="endDateInput">End Date:</label>
+    <label for="endDateInput" id="endDateLabel" style="display: none;">End Date:</label>
     <input type="date" id="endDateInput" style="display: none;">
     <input type="checkbox" id="rangeCheckbox">
     <label for="rangeCheckbox">Use date range</label>
@@ -48,5 +41,4 @@
   </div>
   <script type="module" src="chart.js"></script>
 </body>
-
 </html>

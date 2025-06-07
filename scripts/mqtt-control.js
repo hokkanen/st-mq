@@ -8,7 +8,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = true;
+const DEBUG = false;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -661,7 +661,7 @@ class HeatAdjustment {
         const target_elements = Math.round((heating_percentage / 100) * prices.length);
         const sorted_prices = [...prices].sort((a, b) => a - b);
         const threshold_index = Math.max(0, Math.min(target_elements - 1, sorted_prices.length - 1));
-        const threshold_price = sorted_prices[threshold_index] || Infinity;
+        const threshold_price = sorted_prices[threshold_index] !== undefined ? sorted_prices[threshold_index] : Infinity;
 
         console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetPeriods=${target_elements}/${prices.length} (${resolution}), Price=${(prices[0] / 10.0).toFixed(3)}, Threshold=${(threshold_price / 10.0).toFixed(3)}${RESET}`);
 
