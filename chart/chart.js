@@ -150,7 +150,7 @@ class ChartDrawer {
                         title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
                     },
                     y_shading: {
-                        display: false // Hidden axis for shading datasets
+                        display: false
                     }
                 }
             }
@@ -416,27 +416,38 @@ class ChartDrawer {
 
 // Begin execution
 (async function () {
+    // Initialize chart drawer
     const chart_drawer = new ChartDrawer();
+
+    // Set default dates to today
     const today = new Date().toISOString().split('T')[0];
-    document.getElementById('dateInput').value = today;
-    document.getElementById('endDateInput').value = today;
+    const dateInput = document.getElementById('dateInput');
+    const endDateInput = document.getElementById('endDateInput');
+    dateInput.value = endDateInput.value = today;
 
-    document.getElementById('rangeCheckbox').addEventListener('change', function () {
-        document.getElementById('endDateInput').style.display = this.checked ? 'inline' : 'none';
-    });
+    // Toggle end date input and label visibility
+    const rangeCheckbox = document.getElementById('rangeCheckbox');
+    const endDateLabel = document.getElementById('endDateLabel');
+    const toggleEndDate = () => {
+        const displayStyle = rangeCheckbox.checked ? 'inline' : 'none'; // Revert to original 'inline'
+        endDateInput.style.display = endDateLabel.style.display = displayStyle;
+    };
+    rangeCheckbox.addEventListener('change', toggleEndDate);
+    toggleEndDate(); // Apply initial state
 
-    document.getElementById('filterButton').addEventListener('click', function () {
-        let start_date = new Date(document.getElementById('dateInput').value);
-        let end_date = document.getElementById('rangeCheckbox').checked
-            ? new Date(document.getElementById('endDateInput').value)
-            : new Date(start_date.getTime());
+    // Update chart with selected date range
+    document.getElementById('filterButton').addEventListener('click', () => {
+        const start_date = new Date(dateInput.value);
+        const end_date = rangeCheckbox.checked ? new Date(endDateInput.value) : new Date(start_date);
         chart_drawer.generate_chart(start_date, end_date);
     });
 
-    document.getElementById('showAllButton').addEventListener('click', function () {
+    // Show all historical data
+    document.getElementById('showAllButton').addEventListener('click', () => {
         chart_drawer.generate_chart(new Date(0), new Date());
     });
 
+    // Create chart action buttons
     const chartActions = document.getElementById('chartActions');
     chart_drawer.get_actions().forEach(action => {
         const button = document.createElement('button');
@@ -445,5 +456,6 @@ class ChartDrawer {
         chartActions.appendChild(button);
     });
 
+    // Generate chart for current day
     chart_drawer.generate_chart(new Date(), new Date());
 })();
