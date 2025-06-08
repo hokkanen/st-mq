@@ -658,12 +658,12 @@ class HeatAdjustment {
             return Infinity;
         }
 
-        const target_elements = Math.round((heating_percentage / 100) * prices.length);
+        const target_slots = Math.round((heating_percentage / 100) * prices.length);
         const sorted_prices = [...prices].sort((a, b) => a - b);
-        const threshold_index = Math.max(0, Math.min(target_elements - 1, sorted_prices.length - 1));
+        const threshold_index = Math.max(0, Math.min(target_slots - 1, sorted_prices.length - 1));
         const threshold_price = sorted_prices[threshold_index] !== undefined ? sorted_prices[threshold_index] : Infinity;
 
-        console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetSlots=${target_elements}/${prices.length} (${resolution}), Price=${(prices[0] / 10.0).toFixed(3)}, Threshold=${(threshold_price / 10.0).toFixed(3)}${RESET}`);
+        console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetSlots=${target_slots}/${prices.length} (${resolution}), Price=${(prices[0] / 10.0).toFixed(3)}, Threshold=${(threshold_price / 10.0).toFixed(3)}${RESET}`);
 
         return threshold_price;
     }
