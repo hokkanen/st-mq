@@ -147,14 +147,12 @@ class ChartDrawer {
                     },
                     y_right: {
                         position: 'right',
-                        title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' },
-                        min: 0,
-                        max: 50
+                        title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
                     },
                     y_shading: {
                         display: false,
                         min: 0,
-                        max: 50
+                        max: 1
                     }
                 }
             }
