@@ -7,7 +7,7 @@
       margin-right: 10px;
     }
     .chart-container {
-      width: 1200px; /* Revert to original fixed width */
+      width: 1200px;
       margin: 0 auto;
       text-align: center;
     }
@@ -28,7 +28,7 @@
   <div class="chart-container">
     <div id="loadingIndicator" style="display: none;">Loading...</div>
     <div id="errorMessage"></div>
-    <label for="dateInput">Start Date:</label>
+    <label for="dateInput" id="dateLabel">Start Date:</label>
     <input type="date" id="dateInput">
     <label for="endDateInput" id="endDateLabel" style="display: none;">End Date:</label>
     <input type="date" id="endDateInput" style="display: none;">
