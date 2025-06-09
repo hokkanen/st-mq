@@ -94,7 +94,7 @@ class ChartDrawer {
                     { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Garage (°C)', yAxisID: 'y_right', data: this.#temp_ga, borderColor: 'orange', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: false, pointRadius: 0, stepped: 'before', skipNull: true },
+                    { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true },
                     { label: 'Warm Water Pump', yAxisID: 'y_shading', data: this.#warm_water_pump, backgroundColor: 'rgba(255, 165, 0, 0.15)', borderColor: 'rgba(255, 165, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true }
                 ]
             },
