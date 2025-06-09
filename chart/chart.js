@@ -94,7 +94,7 @@ class ChartDrawer {
                     { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Garage (°C)', yAxisID: 'y_right', data: this.#temp_ga, borderColor: 'orange', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
                     { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true },
+                    { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: false, pointRadius: 0, stepped: 'before', skipNull: true },
                     { label: 'Warm Water Pump', yAxisID: 'y_shading', data: this.#warm_water_pump, backgroundColor: 'rgba(255, 165, 0, 0.15)', borderColor: 'rgba(255, 165, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true }
                 ]
             },
@@ -147,10 +147,14 @@ class ChartDrawer {
                     },
                     y_right: {
                         position: 'right',
-                        title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
+                        title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' },
+                        min: 0,
+                        max: 50
                     },
                     y_shading: {
-                        display: false
+                        display: false,
+                        min: 0,
+                        max: 50
                     }
                 }
             }
@@ -163,28 +167,18 @@ class ChartDrawer {
         const min_y = this.#chart.scales['y_right'].min;
 
         // Update Heat Off shading
-        let last_non_null_index_heat = null;
+        let has_heat_off = false;
         for (let i = 0; i < this.#heat_on.length; i++) {
             if (this.#heat_on[i].y === 0) {
                 this.#heat_on[i].y = max_y;
+                has_heat_off = true;
             } else {
                 this.#heat_on[i].y = min_y;
             }
-            if (this.#heat_on[i].x !== null) {
-                last_non_null_index_heat = i;
-            }
         }
-        if (last_non_null_index_heat !== null && this.#heat_on[last_non_null_index_heat].y === max_y) {
-            const date = new Date(this.#heat_on[last_non_null_index_heat].x * 1000);
-            date.setMinutes(0, 0, 0);
-            date.setHours(date.getHours() + 1);
-            const x_next_hour = date.getTime() / 1000;
-            if (last_non_null_index_heat === this.#heat_on.length - 1) {
-                this.#heat_on.push({ x: x_next_hour, y: max_y });
-            } else {
-                this.#heat_on[last_non_null_index_heat + 1] = { x: x_next_hour, y: max_y };
-            }
-        }
+
+        // Hide Heat Off dataset if no heat_off state
+        this.#chart.data.datasets[12].hidden = !has_heat_off;
 
         // Update Warm Water Pump shading
         for (let i = 0; i < this.#warm_water_pump.length; i++) {
@@ -200,6 +194,8 @@ class ChartDrawer {
                 this.#warm_water_pump[i].y = min_y;
             }
         }
+
+        this.#chart.update();
     }
 
     // Parse data using PapaParse
@@ -242,6 +238,7 @@ class ChartDrawer {
         let realized_cost_eq = 0;
         let reference_cost_ch = 0;
         let reference_cost_eq = 0;
+
         if (this.#price.length > 1) {
             let day = Math.floor((this.#price[0].x + 3600) / 86400);
             let average_kwh_price_24h = 0;
@@ -249,10 +246,12 @@ class ChartDrawer {
             let reference_kwh_eq_24h = 0;
             let total_hours = 0;
             let j = 0;
+
             for (let i = 0; i < this.#price.length - 1; i++) {
                 let ch_kw = 0;
                 let eq_kw = 0;
                 let n_kw_datapoints = 0;
+
                 while (j < this.#eq_total.length && this.#eq_total[j].x < this.#price[i + 1].x) {
                     if (this.#eq_total[j].x > this.#price[i].x) {
                         ch_kw += this.#ch_total[j].y;
@@ -261,31 +260,38 @@ class ChartDrawer {
                     }
                     j++;
                 }
+
                 const hour_weight = (this.#price[i + 1].x - this.#price[i].x) / 3600;
                 total_hours += hour_weight;
                 const hourly_kwh_ch = n_kw_datapoints > 0 ? (ch_kw / n_kw_datapoints) * hour_weight : 0;
                 const hourly_kwh_eq = n_kw_datapoints > 0 ? (eq_kw / n_kw_datapoints) * hour_weight : 0;
+
                 reference_kwh_ch_24h += hourly_kwh_ch;
                 reference_kwh_eq_24h += hourly_kwh_eq;
                 average_kwh_price_24h += this.#price[i].y / 100 * hour_weight;
+
                 if (Math.floor((this.#price[i + 1].x + 3600) / 86400) !== day || i === this.#price.length - 2) {
                     if (total_hours > 0) {
                         average_kwh_price_24h /= total_hours;
                     } else {
                         average_kwh_price_24h = 0;
                     }
+
                     reference_cost_ch += average_kwh_price_24h * reference_kwh_ch_24h;
                     reference_cost_eq += average_kwh_price_24h * reference_kwh_eq_24h;
+
                     average_kwh_price_24h = 0;
                     reference_kwh_ch_24h = 0;
                     reference_kwh_eq_24h = 0;
                     total_hours = 0;
                     day = Math.floor((this.#price[i + 1].x + 3600) / 86400);
                 }
+
                 realized_cost_ch += hourly_kwh_ch * this.#price[i].y / 100;
                 realized_cost_eq += hourly_kwh_eq * this.#price[i].y / 100;
             }
         }
+
         const costs_vat0 = {
             realized_cost_ch,
             realized_cost_eq,
@@ -293,14 +299,19 @@ class ChartDrawer {
             reference_cost_eq,
             savings_without_ch: (reference_cost_eq - reference_cost_ch) - (realized_cost_eq - realized_cost_ch)
         };
+
         const costs_vat25_5 = Object.fromEntries(
             Object.entries(costs_vat0).map(([key, value]) => [
                 key === 'savings_without_ch' ? key : key.replace('cost', 'vat25_5'),
                 value * 1.255
             ])
         );
-        console.log(costs_vat0);
-        console.log(costs_vat25_5);
+
+        console.log(`Cost Analysis finished at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })}`);
+
+        console.log('Cost Analysis Results (VAT 0%):', costs_vat0);
+        console.log('Cost Analysis Results (VAT 25.5%):', costs_vat25_5);
+
         return costs_vat0;
     }
 
@@ -313,6 +324,7 @@ class ChartDrawer {
             return;
         }
 
+        const startTime = Date.now();
         loadingIndicator.style.display = 'block';
         errorMessage.innerText = '';
         this.#initialize_chart();
@@ -372,16 +384,24 @@ class ChartDrawer {
         ) {
             errorMessage.innerText = 'No data available for the selected period.';
             loadingIndicator.style.display = 'none';
+            console.log('Chart rendering aborted: No data');
             return;
         }
 
         await this.#setup_chart();
         if (this.#chart) {
             await this.#update_shading_data();
-            await this.#perform_cost_analysis();
             await this.apply_action(this.get_actions()[0]);
+            loadingIndicator.style.display = 'none';
+            const endTime = Date.now();
+            const renderingTime = (endTime - startTime).toFixed(3);
+            console.log(`Chart rendered at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })} in ${renderingTime} ms`);
+            requestAnimationFrame(() => {
+                this.#perform_cost_analysis().catch((error) => {
+                    console.error('Error in background cost analysis:', error);
+                });
+            });
         }
-        loadingIndicator.style.display = 'none';
     }
 
     // Choose between individual phases and total power layouts
@@ -420,17 +440,19 @@ class ChartDrawer {
     const chart_drawer = new ChartDrawer();
 
     // Set default dates to today
-    const today = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().slice(0, 10);
     const dateInput = document.getElementById('dateInput');
     const endDateInput = document.getElementById('endDateInput');
     dateInput.value = endDateInput.value = today;
 
-    // Toggle end date input and label visibility
+    // Toggle end date input, label visibility, and update start date label
     const rangeCheckbox = document.getElementById('rangeCheckbox');
+    const dateLabel = document.getElementById('dateLabel');
     const endDateLabel = document.getElementById('endDateLabel');
     const toggleEndDate = () => {
-        const displayStyle = rangeCheckbox.checked ? 'inline' : 'none'; // Revert to original 'inline'
-        endDateInput.style.display = endDateLabel.style.display = displayStyle;
+        const isChecked = rangeCheckbox.checked;
+        endDateInput.style.display = endDateLabel.style.display = isChecked ? 'inline' : 'none';
+        dateLabel.innerText = isChecked ? 'Start date:' : 'Date:';
     };
     rangeCheckbox.addEventListener('change', toggleEndDate);
     toggleEndDate(); // Apply initial state
