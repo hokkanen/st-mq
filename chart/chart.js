@@ -161,9 +161,8 @@ class ChartDrawer {
 
     // Update the heat_on and warm_water_pump datasets
     async #update_shading_data() {
-        const max_y = this.#chart.scales['y_right'].max;
-        const min_y = this.#chart.scales['y_right'].min;
-
+        const max_y = this.#chart.scales['y_shading'].max;
+        const min_y = this.#chart.scales['y_shading'].min;
         // Update Heat Off shading
         let has_heat_off = false;
         for (let i = 0; i < this.#heat_on.length; i++) {
@@ -174,10 +173,8 @@ class ChartDrawer {
                 this.#heat_on[i].y = min_y;
             }
         }
-
         // Hide Heat Off dataset if no heat_off state
         this.#chart.data.datasets[12].hidden = !has_heat_off;
-
         // Update Warm Water Pump shading
         for (let i = 0; i < this.#warm_water_pump.length; i++) {
             if (this.#warm_water_pump[i].y === 60) {
@@ -192,7 +189,6 @@ class ChartDrawer {
                 this.#warm_water_pump[i].y = min_y;
             }
         }
-
         this.#chart.update();
     }
 
