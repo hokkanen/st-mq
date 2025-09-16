@@ -1,11 +1,21 @@
 import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
 
-// Import easee consumption data for the chart (can be commented out)
-import data_easee from 'url:/share/st-mq/easee.csv';
+// Parcel-resolved URLs for CSV assets (use fetch to load at runtime)
+const EASEE_CSV_URL = new URL('../share/st-mq/easee.csv', import.meta.url).toString();
+const ST_CSV_URL = new URL('../share/st-mq/st-mq.csv', import.meta.url).toString();
 
-// Import st-mq data for the chart (can be commented out)
-import data_st from 'url:/share/st-mq/st-mq.csv';
+// Small helper to fetch CSV text and detect HTML fallbacks
+async function fetchCsv(url) {
+    const res = await fetch(url, { cache: 'no-store' });
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!res.ok) throw new Error(`${url} fetch failed: ${res.status} ${res.statusText}`);
+    if (ct.includes('text/html')) {
+        const snippet = await res.text().then(t => t.slice(0, 1024));
+        throw new Error(`Expected CSV but received HTML for ${url}. Snippet:\n${snippet}`);
+    }
+    return await res.text();
+}
 
 // The local electric grid voltage for all phases
 const VOLTAGE = 230;
@@ -199,7 +209,6 @@ class ChartDrawer {
             let min_time = Infinity;
 
             Papa.parse(data, {
-                download: true,
                 header: true,
                 dynamicTyping: true,
                 step: (results) => {
@@ -326,8 +335,18 @@ class ChartDrawer {
         const start_time_unix = limits.bod;
         const end_time_unix = limits.eod;
 
+        // Fetch CSV data
+        let easee_csv, st_csv;
+        try {
+            [easee_csv, st_csv] = await Promise.all([fetchCsv(EASEE_CSV_URL), fetchCsv(ST_CSV_URL)]);
+        } catch (error) {
+            errorMessage.innerText = 'Error loading CSV data: ' + error.message;
+            loadingIndicator.style.display = 'none';
+            return;
+        }
+
         const [easee_result, st_result] = await Promise.allSettled([
-            this.#parse_data(data_easee, start_time_unix, end_time_unix, (row) => {
+            this.#parse_data(easee_csv, start_time_unix, end_time_unix, (row) => {
                 if (!isNaN(row['ch_curr1'])) this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
                 if (!isNaN(row['ch_curr2'])) this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
                 if (!isNaN(row['ch_curr3'])) this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
@@ -341,7 +360,7 @@ class ChartDrawer {
                     this.#eq_total.push({ x: row['unix_time'], y: VOLTAGE * (row['eq_curr1'] + row['eq_curr2'] + row['eq_curr3']) / 1000 });
                 }
             }),
-            this.#parse_data(data_st, start_time_unix, end_time_unix, (row) => {
+            this.#parse_data(st_csv, start_time_unix, end_time_unix, (row) => {
                 if (!isNaN(row['price'])) this.#price.push({ x: row['unix_time'], y: row['price'] });
                 if (!isNaN(row['heat_on'])) {
                     this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
@@ -398,26 +417,32 @@ class ChartDrawer {
         }
     }
 
+    // Show total kW datasets and hide per-phase datasets
+    showTotal() {
+        if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+        const ds = this.#chart.data.datasets;
+        for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = ![3, 7].includes(i);
+        this.#chart.update();
+    }
+
+    // Show individual phase datasets and hide total kW datasets
+    showPhases() {
+        if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+        const ds = this.#chart.data.datasets;
+        for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = [3, 7].includes(i);
+        this.#chart.update();
+    }
+
     // Choose between individual phases and total power layouts
     get_actions() {
         return [
             {
                 name: 'Total power (kW)',
-                handler() {
-                    this.#chart.data.datasets = this.#chart.data.datasets.map((dataset, i) =>
-                        i < 8 ? { ...dataset, hidden: ![3, 7].includes(i) } : dataset
-                    );
-                    this.#chart.update();
-                }
+                handler: () => this.showTotal()
             },
             {
                 name: 'Individual phases (A)',
-                handler() {
-                    this.#chart.data.datasets = this.#chart.data.datasets.map((dataset, i) =>
-                        i < 8 ? { ...dataset, hidden: [3, 7].includes(i) } : dataset
-                    );
-                    this.#chart.update();
-                }
+                handler: () => this.showPhases()
             }
         ];
     }
