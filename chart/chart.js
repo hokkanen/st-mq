@@ -1,502 +1,514 @@
 import Chart from 'chart.js/auto';
 import Papa from 'papaparse';
-
+// The local electric grid voltage for all phases
+const VOLTAGE = 230;
 // Parcel-resolved URLs for CSV assets (use fetch to load at runtime)
 const EASEE_CSV_URL = new URL('../share/st-mq/easee.csv', import.meta.url).toString();
 const ST_CSV_URL = new URL('../share/st-mq/st-mq.csv', import.meta.url).toString();
-
 // Small helper to fetch CSV text and detect HTML fallbacks
 async function fetchCsv(url) {
-    const res = await fetch(url, { cache: 'no-store' });
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (!res.ok) throw new Error(`${url} fetch failed: ${res.status} ${res.statusText}`);
-    if (ct.includes('text/html')) {
-        const snippet = await res.text().then(t => t.slice(0, 1024));
-        throw new Error(`Expected CSV but received HTML for ${url}. Snippet:\n${snippet}`);
-    }
-    return await res.text();
+  const res = await fetch(url, { cache: 'no-store' });
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (!res.ok) throw new Error(`${url} fetch failed: ${res.status} ${res.statusText}`);
+  if (ct.includes('text/html')) {
+    const snippet = await res.text().then(t => t.slice(0, 1024));
+    throw new Error(`Expected CSV but received HTML for ${url}. Snippet:\n${snippet}`);
+  }
+  return await res.text();
 }
-
-// The local electric grid voltage for all phases
-const VOLTAGE = 230;
-
+// Helper to fetch partial CSV (header + last N bytes)
+async function fetchPartialCsv(url, tailBytes = 50000) {
+  // Fetch prefix for header
+  const prefixRes = await fetch(url, { headers: { 'Range': 'bytes=0-1023' }, cache: 'no-store' });
+  const prefixCt = (prefixRes.headers.get('content-type') || '').toLowerCase();
+  if (!prefixRes.ok) throw new Error(`${url} prefix fetch failed: ${prefixRes.status} ${prefixRes.statusText}`);
+  if (prefixCt.includes('text/html')) {
+    const snippet = await prefixRes.text().then(t => t.slice(0, 1024));
+    throw new Error(`Expected CSV but received HTML for ${url} prefix. Snippet:\n${snippet}`);
+  }
+  const prefixText = await prefixRes.text();
+  // Extract header row
+  const newlineIdx = prefixText.indexOf('\n');
+  if (newlineIdx === -1) throw new Error('No header found in CSV prefix');
+  const header = prefixText.slice(0, newlineIdx).trim();
+  // Fetch tail
+  const tailRes = await fetch(url, { headers: { 'Range': `bytes=-${tailBytes}` }, cache: 'no-store' });
+  const tailCt = (tailRes.headers.get('content-type') || '').toLowerCase();
+  if (!tailRes.ok) throw new Error(`${url} tail fetch failed: ${tailRes.status} ${tailRes.statusText}`);
+  if (tailCt.includes('text/html')) {
+    const snippet = await tailRes.text().then(t => t.slice(0, 1024));
+    throw new Error(`Expected CSV but received HTML for ${url} tail. Snippet:\n${snippet}`);
+  }
+  let tailText = await tailRes.text();
+  // Discard partial row at the start of tail
+  const firstNewline = tailText.indexOf('\n');
+  if (firstNewline !== -1) {
+    tailText = tailText.slice(firstNewline + 1);
+  } else {
+    tailText = '';
+  }
+  // Combine header and tail
+  return header + '\n' + tailText;
+}
+async function fetchCsvForRange(url, start_time_unix) {
+  try {
+    const partial = await fetchPartialCsv(url);
+    let min_time = Infinity;
+    await new Promise((resolve, reject) => {
+      Papa.parse(partial, {
+        header: true,
+        dynamicTyping: true,
+        step: (results) => {
+          const row = results.data;
+          if (row['unix_time'] !== null && !isNaN(row['unix_time'])) {
+            min_time = Math.min(min_time, row['unix_time']);
+          }
+        },
+        complete: resolve,
+        error: reject
+      });
+    });
+    if (min_time <= start_time_unix) {
+      return partial;
+    } else {
+      return await fetchCsv(url);
+    }
+  } catch (error) {
+    throw error;
+  }
+}
 // ChartDrawer class
 class ChartDrawer {
-    // Chart vars
-    #chart;
-    #max_time_unix;
-    #min_time_unix;
-
-    // Dataset 1 (data_easee) vars
-    #ch_curr1;
-    #ch_curr2;
-    #ch_curr3;
-    #ch_total;
-    #eq_curr1;
-    #eq_curr2;
-    #eq_curr3;
-    #eq_total;
-
-    // Dataset 2 (data_st) vars
-    #price;
-    #heat_on;
-    #warm_water_pump;
-    #temp_in;
-    #temp_ga;
-    #temp_out;
-
-    // Initialize chart vars
-    #initialize_chart() {
-        if (this.#chart) this.#chart.destroy();
-
-        this.#chart = null;
-        this.#max_time_unix = -Infinity;
-        this.#min_time_unix = Infinity;
-
-        this.#ch_curr1 = [];
-        this.#ch_curr2 = [];
-        this.#ch_curr3 = [];
-        this.#ch_total = [];
-        this.#eq_curr1 = [];
-        this.#eq_curr2 = [];
-        this.#eq_curr3 = [];
-        this.#eq_total = [];
-
-        this.#price = [];
-        this.#heat_on = [];
-        this.#warm_water_pump = [];
-        this.#temp_in = [];
-        this.#temp_ga = [];
-        this.#temp_out = [];
+  // Chart vars
+  #chart;
+  #max_time_unix;
+  #min_time_unix;
+  // Dataset 1 (data_easee) vars
+  #ch_curr1;
+  #ch_curr2;
+  #ch_curr3;
+  #ch_total;
+  #eq_curr1;
+  #eq_curr2;
+  #eq_curr3;
+  #eq_total;
+  // Dataset 2 (data_st) vars
+  #price;
+  #heat_on;
+  #warm_water_pump;
+  #temp_in;
+  #temp_ga;
+  #temp_out;
+  // Initialize chart vars
+  #initialize_chart() {
+    if (this.#chart) this.#chart.destroy();
+    this.#chart = null;
+    this.#max_time_unix = -Infinity;
+    this.#min_time_unix = Infinity;
+    this.#ch_curr1 = [];
+    this.#ch_curr2 = [];
+    this.#ch_curr3 = [];
+    this.#ch_total = [];
+    this.#eq_curr1 = [];
+    this.#eq_curr2 = [];
+    this.#eq_curr3 = [];
+    this.#eq_total = [];
+    this.#price = [];
+    this.#heat_on = [];
+    this.#warm_water_pump = [];
+    this.#temp_in = [];
+    this.#temp_ga = [];
+    this.#temp_out = [];
+  }
+  // Get the beginning and end of the day
+  #date_lims(start_date, end_date) {
+    let bod_date = new Date(start_date);
+    bod_date.setHours(0, 0, 0, 0);
+    let eod_date = new Date(end_date);
+    eod_date.setHours(24, 1, 0, 0);
+    const bod = Math.floor(bod_date.getTime() / 1000);
+    const eod = Math.floor(eod_date.getTime() / 1000);
+    return { bod, eod };
+  }
+  // Setup the chart
+  async #setup_chart() {
+    const ctx = document.getElementById('acquisitions').getContext('2d');
+    if (!ctx) {
+      document.getElementById('errorMessage').innerText = 'Error: Chart canvas not found.';
+      return;
     }
-
-    // Get the beginning and end of the day
-    #date_lims(start_date, end_date) {
-        let bod_date = new Date(start_date);
-        bod_date.setHours(0, 0, 0, 0);
-        let eod_date = new Date(end_date);
-        eod_date.setHours(24, 1, 0, 0);
-        const bod = Math.floor(bod_date.getTime() / 1000);
-        const eod = Math.floor(eod_date.getTime() / 1000);
-        return { bod, eod };
-    }
-
-    // Setup the chart
-    async #setup_chart() {
-        const ctx = document.getElementById('acquisitions').getContext('2d');
-        if (!ctx) {
-            document.getElementById('errorMessage').innerText = 'Error: Chart canvas not found.';
-            return;
-        }
-        this.#chart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                datasets: [
-                    { label: 'Charger 1 (A)', yAxisID: 'y_left', data: this.#ch_curr1, backgroundColor: 'rgba(0, 255, 255, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Charger 2 (A)', yAxisID: 'y_left', data: this.#ch_curr2, backgroundColor: 'rgba(255, 0, 255, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Charger 3 (A)', yAxisID: 'y_left', data: this.#ch_curr3, backgroundColor: 'rgba(255, 255, 0, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Charger Total (kW)', yAxisID: 'y_left', data: this.#ch_total, backgroundColor: 'rgba(255, 0, 0, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer 1 (A)', yAxisID: 'y_left', data: this.#eq_curr1, borderColor: 'cyan', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer 2 (A)', yAxisID: 'y_left', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer 3 (A)', yAxisID: 'y_left', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Equalizer Total (kW)', yAxisID: 'y_left', data: this.#eq_total, borderColor: 'rgba(255, 0, 0, 1)', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-                    { label: 'Price (¢/kWh)', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
-                    { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Temp Garage (°C)', yAxisID: 'y_right', data: this.#temp_ga, borderColor: 'orange', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
-                    { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true },
-                    { label: 'Warm Water Pump', yAxisID: 'y_shading', data: this.#warm_water_pump, backgroundColor: 'rgba(255, 165, 0, 0.15)', borderColor: 'rgba(255, 165, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true }
-                ]
-            },
-            options: {
-                normalized: false,
-                parsing: false,
-                responsive: true,
-                plugins: {
-                    decimation: {
-                        enabled: true,
-                        algorithm: 'lttb',
-                        samples: 576,
-                        threshold: 576
-                    },
-                    title: {
-                        display: true,
-                        text: 'Home Monitor Chart'
-                    },
-                    tooltip: {
-                        callbacks: {
-                            title: function (context) {
-                                return new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        type: 'linear',
-                        beginAtZero: false,
-                        min: this.#min_time_unix,
-                        max: this.#max_time_unix,
-                        ticks: {
-                            source: 'data',
-                            autoSkip: true,
-                            stepSize: (this.#max_time_unix - this.#min_time_unix) / 24,
-                            callback: function (value) {
-                                const date = new Date(value * 1000);
-                                const date_string = date.toLocaleDateString('en-UK');
-                                const time_string = date.toLocaleTimeString('en-UK', { hour: '2-digit', minute: '2-digit' });
-                                return time_string === '00:00' ? `${date_string} ${time_string}` : time_string;
-                            }
-                        }
-                    },
-                    y_left: {
-                        beginAtZero: true,
-                        grid: { color: 'rgba(255, 0, 0, 0.2)' },
-                        ticks: { color: 'rgba(255, 0, 0, 1)' },
-                        title: { display: true, color: 'rgba(255, 0, 0, 1)', text: 'Power (kW) / Current (A)' }
-                    },
-                    y_right: {
-                        position: 'right',
-                        title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
-                    },
-                    y_shading: {
-                        display: false,
-                        min: 0,
-                        max: 1
-                    }
-                }
+    this.#chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [
+          { label: 'Charger 1 (A)', yAxisID: 'y_left', data: this.#ch_curr1, backgroundColor: 'rgba(0, 255, 255, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+          { label: 'Charger 2 (A)', yAxisID: 'y_left', data: this.#ch_curr2, backgroundColor: 'rgba(255, 0, 255, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+          { label: 'Charger 3 (A)', yAxisID: 'y_left', data: this.#ch_curr3, backgroundColor: 'rgba(255, 255, 0, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+          { label: 'Charger Total (kW)', yAxisID: 'y_left', data: this.#ch_total, backgroundColor: 'rgba(255, 0, 0, 0.5)', borderColor: 'transparent', fill: 'origin', pointRadius: 0, stepped: 'middle' },
+          { label: 'Equalizer 1 (A)', yAxisID: 'y_left', data: this.#eq_curr1, borderColor: 'cyan', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+          { label: 'Equalizer 2 (A)', yAxisID: 'y_left', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+          { label: 'Equalizer 3 (A)', yAxisID: 'y_left', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+          { label: 'Equalizer Total (kW)', yAxisID: 'y_left', data: this.#eq_total, borderColor: 'rgba(255, 0, 0, 1)', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
+          { label: 'Price (¢/kWh)', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
+          { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+          { label: 'Temp Garage (°C)', yAxisID: 'y_right', data: this.#temp_ga, borderColor: 'orange', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+          { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
+          { label: 'Heat Off', yAxisID: 'y_shading', data: this.#heat_on, backgroundColor: 'rgba(0, 255, 0, 0.1)', borderColor: 'rgba(0, 255, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true },
+          { label: 'Warm Water Pump', yAxisID: 'y_shading', data: this.#warm_water_pump, backgroundColor: 'rgba(255, 165, 0, 0.15)', borderColor: 'rgba(255, 165, 0, 0)', fill: 'start', pointRadius: 0, stepped: 'before', skipNull: true }
+        ]
+      },
+      options: {
+        normalized: false,
+        parsing: false,
+        responsive: true,
+        plugins: {
+          decimation: {
+            enabled: true,
+            algorithm: 'lttb',
+            samples: 576,
+            threshold: 576
+          },
+          title: {
+            display: true,
+            text: 'Home Monitor Chart'
+          },
+          tooltip: {
+            callbacks: {
+              title: function (context) {
+                return new Date(context[0].parsed.x * 1000).toLocaleString('en-UK');
+              }
             }
+          }
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            beginAtZero: false,
+            min: this.#min_time_unix,
+            max: this.#max_time_unix,
+            ticks: {
+              source: 'data',
+              autoSkip: true,
+              stepSize: (this.#max_time_unix - this.#min_time_unix) / 24,
+              callback: function (value) {
+                const date = new Date(value * 1000);
+                const date_string = date.toLocaleDateString('en-UK');
+                const time_string = date.toLocaleTimeString('en-UK', { hour: '2-digit', minute: '2-digit' });
+                return time_string === '00:00' ? `${date_string} ${time_string}` : time_string;
+              }
+            }
+          },
+          y_left: {
+            beginAtZero: true,
+            grid: { color: 'rgba(255, 0, 0, 0.2)' },
+            ticks: { color: 'rgba(255, 0, 0, 1)' },
+            title: { display: true, color: 'rgba(255, 0, 0, 1)', text: 'Power (kW) / Current (A)' }
+          },
+          y_right: {
+            position: 'right',
+            title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
+          },
+          y_shading: {
+            display: false,
+            min: 0,
+            max: 1
+          }
+        }
+      }
+    });
+  }
+  // Update the heat_on and warm_water_pump datasets
+  async #update_shading_data() {
+    const max_y = this.#chart.scales['y_shading'].max;
+    const min_y = this.#chart.scales['y_shading'].min;
+    // Update Heat Off shading
+    let has_heat_off = false;
+    for (let i = 0; i < this.#heat_on.length; i++) {
+      if (this.#heat_on[i].y === 0) {
+        this.#heat_on[i].y = max_y;
+        has_heat_off = true;
+      } else {
+        this.#heat_on[i].y = min_y;
+      }
+    }
+    // Hide Heat Off dataset if no heat_off state
+    this.#chart.data.datasets[12].hidden = !has_heat_off;
+    // Update Warm Water Pump shading
+    for (let i = 0; i < this.#warm_water_pump.length; i++) {
+      if (this.#warm_water_pump[i].y === 60) {
+        this.#warm_water_pump[i].y = max_y;
+        const end_time = this.#warm_water_pump[i].x + 15 * 60; // 15 minutes later
+        if (i + 1 < this.#warm_water_pump.length) {
+          this.#warm_water_pump[i + 1] = { x: end_time, y: min_y };
+        } else {
+          this.#warm_water_pump.push({ x: end_time, y: min_y });
+        }
+      } else {
+        this.#warm_water_pump[i].y = min_y;
+      }
+    }
+    this.#chart.update();
+  }
+  // Parse data using PapaParse
+  async #parse_data(data, start_time_unix, end_time_unix, callback) {
+    return new Promise((resolve, reject) => {
+      let max_time = -Infinity;
+      let min_time = Infinity;
+      Papa.parse(data, {
+        header: true,
+        dynamicTyping: true,
+        step: (results) => {
+          const row = results.data;
+          if (row['unix_time'] >= start_time_unix && row['unix_time'] < end_time_unix) {
+            callback(row);
+            if (row['unix_time'] !== null) {
+              min_time = Math.min(min_time, row['unix_time']);
+              max_time = Math.max(max_time, row['unix_time']);
+            }
+          }
+        },
+        complete: (results) => {
+          if (results.errors.length > 0) reject(results.errors);
+          else {
+            const time_limits = this.#date_lims(new Date(min_time * 1000), new Date((max_time - 60) * 1000));
+            this.#min_time_unix = Math.min(this.#min_time_unix, time_limits.bod);
+            this.#max_time_unix = Math.max(this.#max_time_unix, time_limits.eod - 60);
+            resolve();
+          }
+        },
+        error: (error) => reject(error)
+      });
+    });
+  }
+  // Compare realized cost (€) vs reference cost (daily average)
+  async #perform_cost_analysis() {
+    let realized_cost_ch = 0;
+    let realized_cost_eq = 0;
+    let reference_cost_ch = 0;
+    let reference_cost_eq = 0;
+    if (this.#price.length > 1) {
+      let day = Math.floor((this.#price[0].x + 3600) / 86400);
+      let average_kwh_price_24h = 0;
+      let reference_kwh_ch_24h = 0;
+      let reference_kwh_eq_24h = 0;
+      let total_hours = 0;
+      let j = 0;
+      for (let i = 0; i < this.#price.length - 1; i++) {
+        let ch_kw = 0;
+        let eq_kw = 0;
+        let n_kw_datapoints = 0;
+        while (j < this.#eq_total.length && this.#eq_total[j].x < this.#price[i + 1].x) {
+          if (this.#eq_total[j].x > this.#price[i].x) {
+            ch_kw += this.#ch_total[j].y;
+            eq_kw += this.#eq_total[j].y;
+            n_kw_datapoints += 1;
+          }
+          j++;
+        }
+        const hour_weight = (this.#price[i + 1].x - this.#price[i].x) / 3600;
+        total_hours += hour_weight;
+        const hourly_kwh_ch = n_kw_datapoints > 0 ? (ch_kw / n_kw_datapoints) * hour_weight : 0;
+        const hourly_kwh_eq = n_kw_datapoints > 0 ? (eq_kw / n_kw_datapoints) * hour_weight : 0;
+        reference_kwh_ch_24h += hourly_kwh_ch;
+        reference_kwh_eq_24h += hourly_kwh_eq;
+        average_kwh_price_24h += this.#price[i].y / 100 * hour_weight;
+        if (Math.floor((this.#price[i + 1].x + 3600) / 86400) !== day || i === this.#price.length - 2) {
+          if (total_hours > 0) {
+            average_kwh_price_24h /= total_hours;
+          } else {
+            average_kwh_price_24h = 0;
+          }
+          reference_cost_ch += average_kwh_price_24h * reference_kwh_ch_24h;
+          reference_cost_eq += average_kwh_price_24h * reference_kwh_eq_24h;
+          average_kwh_price_24h = 0;
+          reference_kwh_ch_24h = 0;
+          reference_kwh_eq_24h = 0;
+          total_hours = 0;
+          day = Math.floor((this.#price[i + 1].x + 3600) / 86400);
+        }
+        realized_cost_ch += hourly_kwh_ch * this.#price[i].y / 100;
+        realized_cost_eq += hourly_kwh_eq * this.#price[i].y / 100;
+      }
+    }
+    const costs_vat0 = {
+      realized_cost_ch,
+      realized_cost_eq,
+      reference_cost_ch,
+      reference_cost_eq,
+      savings_without_ch: (reference_cost_eq - reference_cost_ch) - (realized_cost_eq - realized_cost_ch)
+    };
+    const costs_vat25_5 = Object.fromEntries(
+      Object.entries(costs_vat0).map(([key, value]) => [
+        key === 'savings_without_ch' ? key : key.replace('cost', 'vat25_5'),
+        value * 1.255
+      ])
+    );
+    console.log(`Cost Analysis finished at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })}`);
+    console.log('Cost Analysis Results (VAT 0%):', costs_vat0);
+    console.log('Cost Analysis Results (VAT 25.5%):', costs_vat25_5);
+    return costs_vat0;
+  }
+  // Generate the chart
+  async generate_chart(start_date, end_date) {
+    const loadingIndicator = document.getElementById('loadingIndicator');
+    const errorMessage = document.getElementById('errorMessage');
+    if (!loadingIndicator || !errorMessage) {
+      console.error('Error: Loading indicator or error message element not found in DOM.');
+      return;
+    }
+    const startTime = Date.now();
+    loadingIndicator.style.display = 'block';
+    errorMessage.innerText = '';
+    this.#initialize_chart();
+    const limits = this.#date_lims(start_date, end_date);
+    const start_time_unix = limits.bod;
+    const end_time_unix = limits.eod;
+    // Fetch CSV data
+    let easee_csv, st_csv;
+    try {
+      [easee_csv, st_csv] = await Promise.all([fetchCsvForRange(EASEE_CSV_URL, start_time_unix), fetchCsvForRange(ST_CSV_URL, start_time_unix)]);
+    } catch (error) {
+      errorMessage.innerText = 'Error loading CSV data: ' + error.message;
+      loadingIndicator.style.display = 'none';
+      return;
+    }
+    const [easee_result, st_result] = await Promise.allSettled([
+      this.#parse_data(easee_csv, start_time_unix, end_time_unix, (row) => {
+        if (!isNaN(row['ch_curr1'])) this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
+        if (!isNaN(row['ch_curr2'])) this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
+        if (!isNaN(row['ch_curr3'])) this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
+        if (!isNaN(row['ch_curr1']) && !isNaN(row['ch_curr2']) && !isNaN(row['ch_curr3'])) {
+          this.#ch_total.push({ x: row['unix_time'], y: VOLTAGE * (row['ch_curr1'] + row['ch_curr2'] + row['ch_curr3']) / 1000 });
+        }
+        if (!isNaN(row['eq_curr1'])) this.#eq_curr1.push({ x: row['unix_time'], y: row['eq_curr1'] });
+        if (!isNaN(row['eq_curr2'])) this.#eq_curr2.push({ x: row['unix_time'], y: row['eq_curr2'] });
+        if (!isNaN(row['eq_curr3'])) this.#eq_curr3.push({ x: row['unix_time'], y: row['eq_curr3'] });
+        if (!isNaN(row['eq_curr1']) && !isNaN(row['eq_curr2']) && !isNaN(row['eq_curr3'])) {
+          this.#eq_total.push({ x: row['unix_time'], y: VOLTAGE * (row['eq_curr1'] + row['eq_curr2'] + row['eq_curr3']) / 1000 });
+        }
+      }),
+      this.#parse_data(st_csv, start_time_unix, end_time_unix, (row) => {
+        if (!isNaN(row['price'])) this.#price.push({ x: row['unix_time'], y: row['price'] });
+        if (!isNaN(row['heat_on'])) {
+          this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
+          this.#warm_water_pump.push({ x: row['unix_time'], y: row['heat_on'] });
+        }
+        if (!isNaN(row['temp_in'])) this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
+        if (!isNaN(row['temp_ga'])) this.#temp_ga.push({ x: row['unix_time'], y: row['temp_ga'] });
+        if (!isNaN(row['temp_out'])) this.#temp_out.push({ x: row['unix_time'], y: row['temp_out'] });
+      })
+    ]);
+    if (easee_result.status === 'rejected') {
+      console.log('Error parsing Easee data:', easee_result.reason);
+      errorMessage.innerText += 'Error loading Easee data: ' + easee_result.reason.message + '\n';
+    }
+    if (st_result.status === 'rejected') {
+      console.log('Error parsing ST data:', st_result.reason);
+      errorMessage.innerText += 'Error loading ST data: ' + st_result.reason.message + '\n';
+    }
+    if (
+      this.#ch_curr1.length === 0 &&
+      this.#ch_curr2.length === 0 &&
+      this.#ch_curr3.length === 0 &&
+      this.#eq_curr1.length === 0 &&
+      this.#eq_curr2.length === 0 &&
+      this.#eq_curr3.length === 0 &&
+      this.#price.length === 0 &&
+      this.#heat_on.length === 0 &&
+      this.#temp_in.length === 0 &&
+      this.#temp_ga.length === 0 &&
+      this.#temp_out.length === 0
+    ) {
+      errorMessage.innerText = 'No data available for the selected period.';
+      loadingIndicator.style.display = 'none';
+      console.log('Chart rendering aborted: No data');
+      return;
+    }
+    await this.#setup_chart();
+    if (this.#chart) {
+      await this.#update_shading_data();
+      await this.apply_action(this.get_actions()[0]);
+      loadingIndicator.style.display = 'none';
+      const endTime = Date.now();
+      const renderingTime = (endTime - startTime).toFixed(3);
+      console.log(`Chart rendered at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })} in ${renderingTime} ms`);
+      requestAnimationFrame(() => {
+        this.#perform_cost_analysis().catch((error) => {
+          console.error('Error in background cost analysis:', error);
         });
+      });
     }
-
-    // Update the heat_on and warm_water_pump datasets
-    async #update_shading_data() {
-        const max_y = this.#chart.scales['y_shading'].max;
-        const min_y = this.#chart.scales['y_shading'].min;
-        // Update Heat Off shading
-        let has_heat_off = false;
-        for (let i = 0; i < this.#heat_on.length; i++) {
-            if (this.#heat_on[i].y === 0) {
-                this.#heat_on[i].y = max_y;
-                has_heat_off = true;
-            } else {
-                this.#heat_on[i].y = min_y;
-            }
-        }
-        // Hide Heat Off dataset if no heat_off state
-        this.#chart.data.datasets[12].hidden = !has_heat_off;
-        // Update Warm Water Pump shading
-        for (let i = 0; i < this.#warm_water_pump.length; i++) {
-            if (this.#warm_water_pump[i].y === 60) {
-                this.#warm_water_pump[i].y = max_y;
-                const end_time = this.#warm_water_pump[i].x + 15 * 60; // 15 minutes later
-                if (i + 1 < this.#warm_water_pump.length) {
-                    this.#warm_water_pump[i + 1] = { x: end_time, y: min_y };
-                } else {
-                    this.#warm_water_pump.push({ x: end_time, y: min_y });
-                }
-            } else {
-                this.#warm_water_pump[i].y = min_y;
-            }
-        }
-        this.#chart.update();
-    }
-
-    // Parse data using PapaParse
-    async #parse_data(data, start_time_unix, end_time_unix, callback) {
-        return new Promise((resolve, reject) => {
-            let max_time = -Infinity;
-            let min_time = Infinity;
-
-            Papa.parse(data, {
-                header: true,
-                dynamicTyping: true,
-                step: (results) => {
-                    const row = results.data;
-                    if (row['unix_time'] >= start_time_unix && row['unix_time'] < end_time_unix) {
-                        callback(row);
-                        if (row['unix_time'] !== null) {
-                            min_time = Math.min(min_time, row['unix_time']);
-                            max_time = Math.max(max_time, row['unix_time']);
-                        }
-                    }
-                },
-                complete: (results) => {
-                    if (results.errors.length > 0) reject(results.errors);
-                    else {
-                        const time_limits = this.#date_lims(new Date(min_time * 1000), new Date((max_time - 60) * 1000));
-                        this.#min_time_unix = Math.min(this.#min_time_unix, time_limits.bod);
-                        this.#max_time_unix = Math.max(this.#max_time_unix, time_limits.eod - 60);
-                        resolve();
-                    }
-                },
-                error: (error) => reject(error)
-            });
-        });
-    }
-
-    // Compare realized cost (€) vs reference cost (daily average)
-    async #perform_cost_analysis() {
-        let realized_cost_ch = 0;
-        let realized_cost_eq = 0;
-        let reference_cost_ch = 0;
-        let reference_cost_eq = 0;
-
-        if (this.#price.length > 1) {
-            let day = Math.floor((this.#price[0].x + 3600) / 86400);
-            let average_kwh_price_24h = 0;
-            let reference_kwh_ch_24h = 0;
-            let reference_kwh_eq_24h = 0;
-            let total_hours = 0;
-            let j = 0;
-
-            for (let i = 0; i < this.#price.length - 1; i++) {
-                let ch_kw = 0;
-                let eq_kw = 0;
-                let n_kw_datapoints = 0;
-
-                while (j < this.#eq_total.length && this.#eq_total[j].x < this.#price[i + 1].x) {
-                    if (this.#eq_total[j].x > this.#price[i].x) {
-                        ch_kw += this.#ch_total[j].y;
-                        eq_kw += this.#eq_total[j].y;
-                        n_kw_datapoints += 1;
-                    }
-                    j++;
-                }
-
-                const hour_weight = (this.#price[i + 1].x - this.#price[i].x) / 3600;
-                total_hours += hour_weight;
-                const hourly_kwh_ch = n_kw_datapoints > 0 ? (ch_kw / n_kw_datapoints) * hour_weight : 0;
-                const hourly_kwh_eq = n_kw_datapoints > 0 ? (eq_kw / n_kw_datapoints) * hour_weight : 0;
-
-                reference_kwh_ch_24h += hourly_kwh_ch;
-                reference_kwh_eq_24h += hourly_kwh_eq;
-                average_kwh_price_24h += this.#price[i].y / 100 * hour_weight;
-
-                if (Math.floor((this.#price[i + 1].x + 3600) / 86400) !== day || i === this.#price.length - 2) {
-                    if (total_hours > 0) {
-                        average_kwh_price_24h /= total_hours;
-                    } else {
-                        average_kwh_price_24h = 0;
-                    }
-
-                    reference_cost_ch += average_kwh_price_24h * reference_kwh_ch_24h;
-                    reference_cost_eq += average_kwh_price_24h * reference_kwh_eq_24h;
-
-                    average_kwh_price_24h = 0;
-                    reference_kwh_ch_24h = 0;
-                    reference_kwh_eq_24h = 0;
-                    total_hours = 0;
-                    day = Math.floor((this.#price[i + 1].x + 3600) / 86400);
-                }
-
-                realized_cost_ch += hourly_kwh_ch * this.#price[i].y / 100;
-                realized_cost_eq += hourly_kwh_eq * this.#price[i].y / 100;
-            }
-        }
-
-        const costs_vat0 = {
-            realized_cost_ch,
-            realized_cost_eq,
-            reference_cost_ch,
-            reference_cost_eq,
-            savings_without_ch: (reference_cost_eq - reference_cost_ch) - (realized_cost_eq - realized_cost_ch)
-        };
-
-        const costs_vat25_5 = Object.fromEntries(
-            Object.entries(costs_vat0).map(([key, value]) => [
-                key === 'savings_without_ch' ? key : key.replace('cost', 'vat25_5'),
-                value * 1.255
-            ])
-        );
-
-        console.log(`Cost Analysis finished at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })}`);
-
-        console.log('Cost Analysis Results (VAT 0%):', costs_vat0);
-        console.log('Cost Analysis Results (VAT 25.5%):', costs_vat25_5);
-
-        return costs_vat0;
-    }
-
-    // Generate the chart
-    async generate_chart(start_date, end_date) {
-        const loadingIndicator = document.getElementById('loadingIndicator');
-        const errorMessage = document.getElementById('errorMessage');
-        if (!loadingIndicator || !errorMessage) {
-            console.error('Error: Loading indicator or error message element not found in DOM.');
-            return;
-        }
-
-        const startTime = Date.now();
-        loadingIndicator.style.display = 'block';
-        errorMessage.innerText = '';
-        this.#initialize_chart();
-        const limits = this.#date_lims(start_date, end_date);
-        const start_time_unix = limits.bod;
-        const end_time_unix = limits.eod;
-
-        // Fetch CSV data
-        let easee_csv, st_csv;
-        try {
-            [easee_csv, st_csv] = await Promise.all([fetchCsv(EASEE_CSV_URL), fetchCsv(ST_CSV_URL)]);
-        } catch (error) {
-            errorMessage.innerText = 'Error loading CSV data: ' + error.message;
-            loadingIndicator.style.display = 'none';
-            return;
-        }
-
-        const [easee_result, st_result] = await Promise.allSettled([
-            this.#parse_data(easee_csv, start_time_unix, end_time_unix, (row) => {
-                if (!isNaN(row['ch_curr1'])) this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
-                if (!isNaN(row['ch_curr2'])) this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
-                if (!isNaN(row['ch_curr3'])) this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
-                if (!isNaN(row['ch_curr1']) && !isNaN(row['ch_curr2']) && !isNaN(row['ch_curr3'])) {
-                    this.#ch_total.push({ x: row['unix_time'], y: VOLTAGE * (row['ch_curr1'] + row['ch_curr2'] + row['ch_curr3']) / 1000 });
-                }
-                if (!isNaN(row['eq_curr1'])) this.#eq_curr1.push({ x: row['unix_time'], y: row['eq_curr1'] });
-                if (!isNaN(row['eq_curr2'])) this.#eq_curr2.push({ x: row['unix_time'], y: row['eq_curr2'] });
-                if (!isNaN(row['eq_curr3'])) this.#eq_curr3.push({ x: row['unix_time'], y: row['eq_curr3'] });
-                if (!isNaN(row['eq_curr1']) && !isNaN(row['eq_curr2']) && !isNaN(row['eq_curr3'])) {
-                    this.#eq_total.push({ x: row['unix_time'], y: VOLTAGE * (row['eq_curr1'] + row['eq_curr2'] + row['eq_curr3']) / 1000 });
-                }
-            }),
-            this.#parse_data(st_csv, start_time_unix, end_time_unix, (row) => {
-                if (!isNaN(row['price'])) this.#price.push({ x: row['unix_time'], y: row['price'] });
-                if (!isNaN(row['heat_on'])) {
-                    this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
-                    this.#warm_water_pump.push({ x: row['unix_time'], y: row['heat_on'] });
-                }
-                if (!isNaN(row['temp_in'])) this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
-                if (!isNaN(row['temp_ga'])) this.#temp_ga.push({ x: row['unix_time'], y: row['temp_ga'] });
-                if (!isNaN(row['temp_out'])) this.#temp_out.push({ x: row['unix_time'], y: row['temp_out'] });
-            })
-        ]);
-
-        if (easee_result.status === 'rejected') {
-            console.log('Error parsing Easee data:', easee_result.reason);
-            errorMessage.innerText += 'Error loading Easee data: ' + easee_result.reason.message + '\n';
-        }
-
-        if (st_result.status === 'rejected') {
-            console.log('Error parsing ST data:', st_result.reason);
-            errorMessage.innerText += 'Error loading ST data: ' + st_result.reason.message + '\n';
-        }
-
-        if (
-            this.#ch_curr1.length === 0 &&
-            this.#ch_curr2.length === 0 &&
-            this.#ch_curr3.length === 0 &&
-            this.#eq_curr1.length === 0 &&
-            this.#eq_curr2.length === 0 &&
-            this.#eq_curr3.length === 0 &&
-            this.#price.length === 0 &&
-            this.#heat_on.length === 0 &&
-            this.#temp_in.length === 0 &&
-            this.#temp_ga.length === 0 &&
-            this.#temp_out.length === 0
-        ) {
-            errorMessage.innerText = 'No data available for the selected period.';
-            loadingIndicator.style.display = 'none';
-            console.log('Chart rendering aborted: No data');
-            return;
-        }
-
-        await this.#setup_chart();
-        if (this.#chart) {
-            await this.#update_shading_data();
-            await this.apply_action(this.get_actions()[0]);
-            loadingIndicator.style.display = 'none';
-            const endTime = Date.now();
-            const renderingTime = (endTime - startTime).toFixed(3);
-            console.log(`Chart rendered at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })} in ${renderingTime} ms`);
-            requestAnimationFrame(() => {
-                this.#perform_cost_analysis().catch((error) => {
-                    console.error('Error in background cost analysis:', error);
-                });
-            });
-        }
-    }
-
-    // Show total kW datasets and hide per-phase datasets
-    showTotal() {
-        if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
-        const ds = this.#chart.data.datasets;
-        for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = ![3, 7].includes(i);
-        this.#chart.update();
-    }
-
-    // Show individual phase datasets and hide total kW datasets
-    showPhases() {
-        if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
-        const ds = this.#chart.data.datasets;
-        for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = [3, 7].includes(i);
-        this.#chart.update();
-    }
-
-    // Choose between individual phases and total power layouts
-    get_actions() {
-        return [
-            {
-                name: 'Total power (kW)',
-                handler: () => this.showTotal()
-            },
-            {
-                name: 'Individual phases (A)',
-                handler: () => this.showPhases()
-            }
-        ];
-    }
-
-    // Apply the action
-    async apply_action(action) {
-        action.handler.call(this);
-    }
+  }
+  // Show total kW datasets and hide per-phase datasets
+  showTotal() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = ![3, 7].includes(i);
+    this.#chart.update();
+  }
+  // Show individual phase datasets and hide total kW datasets
+  showPhases() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = [3, 7].includes(i);
+    this.#chart.update();
+  }
+  // Choose between individual phases and total power layouts
+  get_actions() {
+    return [
+      {
+        name: 'Total power (kW)',
+        handler: () => this.showTotal()
+      },
+      {
+        name: 'Individual phases (A)',
+        handler: () => this.showPhases()
+      }
+    ];
+  }
+  // Apply the action
+  async apply_action(action) {
+    action.handler.call(this);
+  }
 }
-
 // Begin execution
 (async function () {
-    // Initialize chart drawer
-    const chart_drawer = new ChartDrawer();
-
-    // Set default dates to today
-    const today = new Date().toISOString().slice(0, 10);
-    const dateInput = document.getElementById('dateInput');
-    const endDateInput = document.getElementById('endDateInput');
-    dateInput.value = endDateInput.value = today;
-
-    // Toggle end date input, label visibility, and update start date label
-    const rangeCheckbox = document.getElementById('rangeCheckbox');
-    const dateLabel = document.getElementById('dateLabel');
-    const endDateLabel = document.getElementById('endDateLabel');
-    const toggleEndDate = () => {
-        const isChecked = rangeCheckbox.checked;
-        endDateInput.style.display = endDateLabel.style.display = isChecked ? 'inline' : 'none';
-        dateLabel.innerText = isChecked ? 'Start date:' : 'Date:';
-    };
-    rangeCheckbox.addEventListener('change', toggleEndDate);
-    toggleEndDate(); // Apply initial state
-
-    // Update chart with selected date range
-    document.getElementById('filterButton').addEventListener('click', () => {
-        const start_date = new Date(dateInput.value);
-        const end_date = rangeCheckbox.checked ? new Date(endDateInput.value) : new Date(start_date);
-        chart_drawer.generate_chart(start_date, end_date);
-    });
-
-    // Show all historical data
-    document.getElementById('showAllButton').addEventListener('click', () => {
-        chart_drawer.generate_chart(new Date(0), new Date());
-    });
-
-    // Create chart action buttons
-    const chartActions = document.getElementById('chartActions');
-    chart_drawer.get_actions().forEach(action => {
-        const button = document.createElement('button');
-        button.innerText = action.name;
-        button.addEventListener('click', () => chart_drawer.apply_action(action));
-        chartActions.appendChild(button);
-    });
-
-    // Generate chart for current day
-    chart_drawer.generate_chart(new Date(), new Date());
+  // Initialize chart drawer
+  const chart_drawer = new ChartDrawer();
+  // Set default dates to today
+  const today = new Date().toISOString().slice(0, 10);
+  const dateInput = document.getElementById('dateInput');
+  const endDateInput = document.getElementById('endDateInput');
+  dateInput.value = endDateInput.value = today;
+  // Toggle end date input, label visibility, and update start date label
+  const rangeCheckbox = document.getElementById('rangeCheckbox');
+  const dateLabel = document.getElementById('dateLabel');
+  const endDateLabel = document.getElementById('endDateLabel');
+  const toggleEndDate = () => {
+    const isChecked = rangeCheckbox.checked;
+    endDateInput.style.display = endDateLabel.style.display = isChecked ? 'inline' : 'none';
+    dateLabel.innerText = isChecked ? 'Start date:' : 'Date:';
+  };
+  rangeCheckbox.addEventListener('change', toggleEndDate);
+  toggleEndDate(); // Apply initial state
+  // Update chart with selected date range
+  document.getElementById('filterButton').addEventListener('click', () => {
+    const start_date = new Date(dateInput.value);
+    const end_date = rangeCheckbox.checked ? new Date(endDateInput.value) : new Date(start_date);
+    chart_drawer.generate_chart(start_date, end_date);
+  });
+  // Show all historical data
+  document.getElementById('showAllButton').addEventListener('click', () => {
+    chart_drawer.generate_chart(new Date(0), new Date());
+  });
+  // Create chart action buttons
+  const chartActions = document.getElementById('chartActions');
+  chart_drawer.get_actions().forEach(action => {
+    const button = document.createElement('button');
+    button.innerText = action.name;
+    button.addEventListener('click', () => chart_drawer.apply_action(action));
+    chartActions.appendChild(button);
+  });
+  // Generate chart for current day
+  chart_drawer.generate_chart(new Date(), new Date());
 })();
