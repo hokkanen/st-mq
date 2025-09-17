@@ -1,82 +1,6 @@
+// chart.js
 import Chart from 'chart.js/auto';
-import Papa from 'papaparse';
-// The local electric grid voltage for all phases
-const VOLTAGE = 230;
-// Parcel-resolved URLs for CSV assets (use fetch to load at runtime)
-const EASEE_CSV_URL = new URL('../share/st-mq/easee.csv', import.meta.url).toString();
-const ST_CSV_URL = new URL('../share/st-mq/st-mq.csv', import.meta.url).toString();
-// Small helper to fetch CSV text and detect HTML fallbacks
-async function fetchCsv(url) {
-  const res = await fetch(url, { cache: 'no-store' });
-  const ct = (res.headers.get('content-type') || '').toLowerCase();
-  if (!res.ok) throw new Error(`${url} fetch failed: ${res.status} ${res.statusText}`);
-  if (ct.includes('text/html')) {
-    const snippet = await res.text().then(t => t.slice(0, 1024));
-    throw new Error(`Expected CSV but received HTML for ${url}. Snippet:\n${snippet}`);
-  }
-  return await res.text();
-}
-// Helper to fetch partial CSV (header + last N bytes)
-async function fetchPartialCsv(url, tailBytes = 50000) {
-  // Fetch prefix for header
-  const prefixRes = await fetch(url, { headers: { 'Range': 'bytes=0-1023' }, cache: 'no-store' });
-  const prefixCt = (prefixRes.headers.get('content-type') || '').toLowerCase();
-  if (!prefixRes.ok) throw new Error(`${url} prefix fetch failed: ${prefixRes.status} ${prefixRes.statusText}`);
-  if (prefixCt.includes('text/html')) {
-    const snippet = await prefixRes.text().then(t => t.slice(0, 1024));
-    throw new Error(`Expected CSV but received HTML for ${url} prefix. Snippet:\n${snippet}`);
-  }
-  const prefixText = await prefixRes.text();
-  // Extract header row
-  const newlineIdx = prefixText.indexOf('\n');
-  if (newlineIdx === -1) throw new Error('No header found in CSV prefix');
-  const header = prefixText.slice(0, newlineIdx).trim();
-  // Fetch tail
-  const tailRes = await fetch(url, { headers: { 'Range': `bytes=-${tailBytes}` }, cache: 'no-store' });
-  const tailCt = (tailRes.headers.get('content-type') || '').toLowerCase();
-  if (!tailRes.ok) throw new Error(`${url} tail fetch failed: ${tailRes.status} ${tailRes.statusText}`);
-  if (tailCt.includes('text/html')) {
-    const snippet = await tailRes.text().then(t => t.slice(0, 1024));
-    throw new Error(`Expected CSV but received HTML for ${url} tail. Snippet:\n${snippet}`);
-  }
-  let tailText = await tailRes.text();
-  // Discard partial row at the start of tail
-  const firstNewline = tailText.indexOf('\n');
-  if (firstNewline !== -1) {
-    tailText = tailText.slice(firstNewline + 1);
-  } else {
-    tailText = '';
-  }
-  // Combine header and tail
-  return header + '\n' + tailText;
-}
-async function fetchCsvForRange(url, start_time_unix) {
-  try {
-    const partial = await fetchPartialCsv(url);
-    let min_time = Infinity;
-    await new Promise((resolve, reject) => {
-      Papa.parse(partial, {
-        header: true,
-        dynamicTyping: true,
-        step: (results) => {
-          const row = results.data;
-          if (row['unix_time'] !== null && !isNaN(row['unix_time'])) {
-            min_time = Math.min(min_time, row['unix_time']);
-          }
-        },
-        complete: resolve,
-        error: reject
-      });
-    });
-    if (min_time <= start_time_unix) {
-      return partial;
-    } else {
-      return await fetchCsv(url);
-    }
-  } catch (error) {
-    throw error;
-  }
-}
+import { loadEaseeData, loadStData } from './data-processor.js';
 // ChartDrawer class
 class ChartDrawer {
   // Chart vars
@@ -249,37 +173,6 @@ class ChartDrawer {
     }
     this.#chart.update();
   }
-  // Parse data using PapaParse
-  async #parse_data(data, start_time_unix, end_time_unix, callback) {
-    return new Promise((resolve, reject) => {
-      let max_time = -Infinity;
-      let min_time = Infinity;
-      Papa.parse(data, {
-        header: true,
-        dynamicTyping: true,
-        step: (results) => {
-          const row = results.data;
-          if (row['unix_time'] >= start_time_unix && row['unix_time'] < end_time_unix) {
-            callback(row);
-            if (row['unix_time'] !== null) {
-              min_time = Math.min(min_time, row['unix_time']);
-              max_time = Math.max(max_time, row['unix_time']);
-            }
-          }
-        },
-        complete: (results) => {
-          if (results.errors.length > 0) reject(results.errors);
-          else {
-            const time_limits = this.#date_lims(new Date(min_time * 1000), new Date((max_time - 60) * 1000));
-            this.#min_time_unix = Math.min(this.#min_time_unix, time_limits.bod);
-            this.#max_time_unix = Math.max(this.#max_time_unix, time_limits.eod - 60);
-            resolve();
-          }
-        },
-        error: (error) => reject(error)
-      });
-    });
-  }
   // Compare realized cost (€) vs reference cost (daily average)
   async #perform_cost_analysis() {
     let realized_cost_ch = 0;
@@ -363,48 +256,73 @@ class ChartDrawer {
     const limits = this.#date_lims(start_date, end_date);
     const start_time_unix = limits.bod;
     const end_time_unix = limits.eod;
-    // Fetch CSV data
-    let easee_csv, st_csv;
-    try {
-      [easee_csv, st_csv] = await Promise.all([fetchCsvForRange(EASEE_CSV_URL, start_time_unix), fetchCsvForRange(ST_CSV_URL, start_time_unix)]);
-    } catch (error) {
-      errorMessage.innerText = 'Error loading CSV data: ' + error.message;
-      loadingIndicator.style.display = 'none';
-      return;
-    }
-    const [easee_result, st_result] = await Promise.allSettled([
-      this.#parse_data(easee_csv, start_time_unix, end_time_unix, (row) => {
-        if (!isNaN(row['ch_curr1'])) this.#ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
-        if (!isNaN(row['ch_curr2'])) this.#ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
-        if (!isNaN(row['ch_curr3'])) this.#ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
-        if (!isNaN(row['ch_curr1']) && !isNaN(row['ch_curr2']) && !isNaN(row['ch_curr3'])) {
-          this.#ch_total.push({ x: row['unix_time'], y: VOLTAGE * (row['ch_curr1'] + row['ch_curr2'] + row['ch_curr3']) / 1000 });
-        }
-        if (!isNaN(row['eq_curr1'])) this.#eq_curr1.push({ x: row['unix_time'], y: row['eq_curr1'] });
-        if (!isNaN(row['eq_curr2'])) this.#eq_curr2.push({ x: row['unix_time'], y: row['eq_curr2'] });
-        if (!isNaN(row['eq_curr3'])) this.#eq_curr3.push({ x: row['unix_time'], y: row['eq_curr3'] });
-        if (!isNaN(row['eq_curr1']) && !isNaN(row['eq_curr2']) && !isNaN(row['eq_curr3'])) {
-          this.#eq_total.push({ x: row['unix_time'], y: VOLTAGE * (row['eq_curr1'] + row['eq_curr2'] + row['eq_curr3']) / 1000 });
-        }
-      }),
-      this.#parse_data(st_csv, start_time_unix, end_time_unix, (row) => {
-        if (!isNaN(row['price'])) this.#price.push({ x: row['unix_time'], y: row['price'] });
-        if (!isNaN(row['heat_on'])) {
-          this.#heat_on.push({ x: row['unix_time'], y: row['heat_on'] });
-          this.#warm_water_pump.push({ x: row['unix_time'], y: row['heat_on'] });
-        }
-        if (!isNaN(row['temp_in'])) this.#temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
-        if (!isNaN(row['temp_ga'])) this.#temp_ga.push({ x: row['unix_time'], y: row['temp_ga'] });
-        if (!isNaN(row['temp_out'])) this.#temp_out.push({ x: row['unix_time'], y: row['temp_out'] });
-      })
+    // Load data from processor
+    const [easee_promise, st_promise] = await Promise.allSettled([
+      loadEaseeData(start_time_unix, end_time_unix),
+      loadStData(start_time_unix, end_time_unix)
     ]);
-    if (easee_result.status === 'rejected') {
-      console.log('Error parsing Easee data:', easee_result.reason);
-      errorMessage.innerText += 'Error loading Easee data: ' + easee_result.reason.message + '\n';
+    let easee_result = {
+      data: {
+        ch_curr1: [],
+        ch_curr2: [],
+        ch_curr3: [],
+        ch_total: [],
+        eq_curr1: [],
+        eq_curr2: [],
+        eq_curr3: [],
+        eq_total: []
+      },
+      min_time_unix: null,
+      max_time_unix: null
+    };
+    let st_result = {
+      data: {
+        price: [],
+        heat_on_raw: [],
+        temp_in: [],
+        temp_ga: [],
+        temp_out: []
+      },
+      min_time_unix: null,
+      max_time_unix: null
+    };
+    if (easee_promise.status === 'fulfilled') {
+      easee_result = easee_promise.value;
+    } else {
+      console.log('Error loading Easee data:', easee_promise.reason);
+      errorMessage.innerText += 'Error loading Easee data: ' + easee_promise.reason.message + '\n';
     }
-    if (st_result.status === 'rejected') {
-      console.log('Error parsing ST data:', st_result.reason);
-      errorMessage.innerText += 'Error loading ST data: ' + st_result.reason.message + '\n';
+    if (st_promise.status === 'fulfilled') {
+      st_result = st_promise.value;
+    } else {
+      console.log('Error loading ST data:', st_promise.reason);
+      errorMessage.innerText += 'Error loading ST data: ' + st_promise.reason.message + '\n';
+    }
+    this.#ch_curr1 = easee_result.data.ch_curr1;
+    this.#ch_curr2 = easee_result.data.ch_curr2;
+    this.#ch_curr3 = easee_result.data.ch_curr3;
+    this.#ch_total = easee_result.data.ch_total;
+    this.#eq_curr1 = easee_result.data.eq_curr1;
+    this.#eq_curr2 = easee_result.data.eq_curr2;
+    this.#eq_curr3 = easee_result.data.eq_curr3;
+    this.#eq_total = easee_result.data.eq_total;
+    this.#price = st_result.data.price;
+    // Deep copy for heat_on to ensure independent objects
+    this.#heat_on = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
+    // Deep copy for warm_water_pump to ensure independent objects
+    this.#warm_water_pump = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
+    this.#temp_in = st_result.data.temp_in;
+    this.#temp_ga = st_result.data.temp_ga;
+    this.#temp_out = st_result.data.temp_out;
+    this.#min_time_unix = Infinity;
+    this.#max_time_unix = -Infinity;
+    if (easee_result.min_time_unix !== null) {
+      this.#min_time_unix = Math.min(this.#min_time_unix, easee_result.min_time_unix);
+      this.#max_time_unix = Math.max(this.#max_time_unix, easee_result.max_time_unix);
+    }
+    if (st_result.min_time_unix !== null) {
+      this.#min_time_unix = Math.min(this.#min_time_unix, st_result.min_time_unix);
+      this.#max_time_unix = Math.max(this.#max_time_unix, st_result.max_time_unix);
     }
     if (
       this.#ch_curr1.length === 0 &&
