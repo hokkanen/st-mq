@@ -1,4 +1,3 @@
-// dataProcessor.js
 import Papa from 'papaparse';
 
 // The local electric grid voltage for all phases
@@ -6,6 +5,8 @@ const VOLTAGE = 230;
 // Parcel-resolved URLs for CSV assets (use fetch to load at runtime)
 const EASEE_CSV_URL = new URL('../share/st-mq/easee.csv', import.meta.url).toString();
 const ST_CSV_URL = new URL('../share/st-mq/st-mq.csv', import.meta.url).toString();
+const EASEE_CACHE_KEY = 'easee';
+const ST_CACHE_KEY = 'st-mq';
 // Small helper to fetch CSV text and detect HTML fallbacks
 async function fetchCsv(url) {
   const res = await fetch(url, { cache: 'no-store' });
@@ -51,32 +52,88 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
   // Combine header and tail
   return header + '\n' + tailText;
 }
-async function fetchCsvForRange(url, start_time_unix) {
-  try {
-    const partial = await fetchPartialCsv(url);
-    let min_time = Infinity;
-    await new Promise((resolve, reject) => {
-      Papa.parse(partial, {
-        header: true,
-        dynamicTyping: true,
-        step: (results) => {
-          const row = results.data;
-          if (row['unix_time'] !== null && !isNaN(row['unix_time'])) {
-            min_time = Math.min(min_time, row['unix_time']);
-          }
-        },
-        complete: resolve,
-        error: reject
-      });
-    });
-    if (min_time <= start_time_unix) {
-      return partial;
+// Cache management
+const caches = new Map();
+function getCache(key) {
+  return caches.get(key);
+}
+function setCache(key, data) {
+  caches.set(key, data);
+}
+// Binary search for lower bound (first index where key(row) >= target)
+function binarySearch(arr, target, key) {
+  let left = 0;
+  let right = arr.length;
+  while (left < right) {
+    const mid = left + Math.floor((right - left) / 2);
+    if (key(arr[mid]) < target) {
+      left = mid + 1;
     } else {
-      return await fetchCsv(url);
+      right = mid;
     }
-  } catch (error) {
-    throw error;
   }
+  return left;
+}
+// Parse text to rows using step
+async function parseToRows(text, url) {
+  const rows = [];
+  await new Promise((resolve, reject) => {
+    Papa.parse(text, {
+      header: true,
+      dynamicTyping: true,
+      step: (results) => {
+        const row = results.data;
+        if (row.unix_time !== null && !isNaN(row.unix_time)) {
+          rows.push(row);
+        }
+      },
+      complete: (results) => {
+        if (results.errors.length > 0) {
+          reject(new Error(`Parse errors in ${url}: ${JSON.stringify(results.errors.slice(0, 5))}`)); // Limit to first 5 errors
+        } else {
+          resolve();
+        }
+      },
+      error: reject
+    });
+  });
+  // Ensure sorted by unix_time
+  rows.sort((a, b) => a.unix_time - b.unix_time);
+  return rows;
+}
+// Get rows for the range, using cache, partial, or full fetch
+async function getRowsForRange(url, start_time_unix, cacheKey, tailBytes = 50000) {
+  let cache = getCache(cacheKey);
+  if (cache?.rows?.length > 0) {
+    if (cache.isFull || cache.rows[0].unix_time <= start_time_unix) {
+      const type = cache.isFull ? 'full' : 'partial';
+      console.log(`Using ${type} cache for ${cacheKey}`);
+      return cache.rows;
+    } else if (!cache.isFull) {
+      // Partial cache exists but insufficient, fetch full
+      const fullText = await fetchCsv(url);
+      const fullRows = await parseToRows(fullText, url);
+      setCache(cacheKey, { rows: fullRows, isFull: true });
+      console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
+      return fullRows;
+    }
+  }
+  // Fetch partial
+  const partialText = await fetchPartialCsv(url, tailBytes);
+  const kbSize = (partialText.length / 1024).toFixed(0);
+  const partialRows = await parseToRows(partialText, url);
+  if (partialRows.length > 0 && partialRows[0].unix_time <= start_time_unix) {
+    console.log(`Fetched partial data (${kbSize}kb) for ${cacheKey} and cached ${partialRows.length} rows for ${url}`);
+    setCache(cacheKey, { rows: partialRows, isFull: false });
+    return partialRows;
+  }
+  // Fetch and parse full CSV
+  const fullText = await fetchCsv(url);
+  const fullRows = await parseToRows(fullText, url);
+  // Cache the full rows
+  setCache(cacheKey, { rows: fullRows, isFull: true });
+  console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
+  return fullRows;
 }
 // Get the beginning and end of the day
 function dateLims(start_date, end_date) {
@@ -89,7 +146,13 @@ function dateLims(start_date, end_date) {
   return { bod, eod };
 }
 export async function loadEaseeData(start_time_unix, end_time_unix) {
-  const csv = await fetchCsvForRange(EASEE_CSV_URL, start_time_unix);
+  const rows = await getRowsForRange(EASEE_CSV_URL, start_time_unix, EASEE_CACHE_KEY);
+  const startIdx = binarySearch(rows, start_time_unix, row => row.unix_time);
+  let endIdx = startIdx;
+  while (endIdx < rows.length && rows[endIdx].unix_time < end_time_unix) {
+    endIdx++;
+  }
+  const periodRows = rows.slice(startIdx, endIdx);
   const data = {
     ch_curr1: [],
     ch_curr2: [],
@@ -102,41 +165,23 @@ export async function loadEaseeData(start_time_unix, end_time_unix) {
   };
   let min_time = Infinity;
   let max_time = -Infinity;
-  await new Promise((resolve, reject) => {
-    Papa.parse(csv, {
-      header: true,
-      dynamicTyping: true,
-      step: (results) => {
-        const row = results.data;
-        if (row['unix_time'] >= start_time_unix && row['unix_time'] < end_time_unix) {
-          if (!isNaN(row['ch_curr1'])) data.ch_curr1.push({ x: row['unix_time'], y: row['ch_curr1'] });
-          if (!isNaN(row['ch_curr2'])) data.ch_curr2.push({ x: row['unix_time'], y: row['ch_curr2'] });
-          if (!isNaN(row['ch_curr3'])) data.ch_curr3.push({ x: row['unix_time'], y: row['ch_curr3'] });
-          if (!isNaN(row['ch_curr1']) && !isNaN(row['ch_curr2']) && !isNaN(row['ch_curr3'])) {
-            data.ch_total.push({ x: row['unix_time'], y: VOLTAGE * (row['ch_curr1'] + row['ch_curr2'] + row['ch_curr3']) / 1000 });
-          }
-          if (!isNaN(row['eq_curr1'])) data.eq_curr1.push({ x: row['unix_time'], y: row['eq_curr1'] });
-          if (!isNaN(row['eq_curr2'])) data.eq_curr2.push({ x: row['unix_time'], y: row['eq_curr2'] });
-          if (!isNaN(row['eq_curr3'])) data.eq_curr3.push({ x: row['unix_time'], y: row['eq_curr3'] });
-          if (!isNaN(row['eq_curr1']) && !isNaN(row['eq_curr2']) && !isNaN(row['eq_curr3'])) {
-            data.eq_total.push({ x: row['unix_time'], y: VOLTAGE * (row['eq_curr1'] + row['eq_curr2'] + row['eq_curr3']) / 1000 });
-          }
-          if (row['unix_time'] !== null && !isNaN(row['unix_time'])) {
-            min_time = Math.min(min_time, row['unix_time']);
-            max_time = Math.max(max_time, row['unix_time']);
-          }
-        }
-      },
-      complete: (results) => {
-        if (results.errors.length > 0) {
-          reject(results.errors);
-        } else {
-          resolve();
-        }
-      },
-      error: reject
-    });
-  });
+  for (const row of periodRows) {
+    const ut = row.unix_time;
+    if (!isNaN(row.ch_curr1)) data.ch_curr1.push({ x: ut, y: row.ch_curr1 });
+    if (!isNaN(row.ch_curr2)) data.ch_curr2.push({ x: ut, y: row.ch_curr2 });
+    if (!isNaN(row.ch_curr3)) data.ch_curr3.push({ x: ut, y: row.ch_curr3 });
+    if (!isNaN(row.ch_curr1) && !isNaN(row.ch_curr2) && !isNaN(row.ch_curr3)) {
+      data.ch_total.push({ x: ut, y: VOLTAGE * (row.ch_curr1 + row.ch_curr2 + row.ch_curr3) / 1000 });
+    }
+    if (!isNaN(row.eq_curr1)) data.eq_curr1.push({ x: ut, y: row.eq_curr1 });
+    if (!isNaN(row.eq_curr2)) data.eq_curr2.push({ x: ut, y: row.eq_curr2 });
+    if (!isNaN(row.eq_curr3)) data.eq_curr3.push({ x: ut, y: row.eq_curr3 });
+    if (!isNaN(row.eq_curr1) && !isNaN(row.eq_curr2) && !isNaN(row.eq_curr3)) {
+      data.eq_total.push({ x: ut, y: VOLTAGE * (row.eq_curr1 + row.eq_curr2 + row.eq_curr3) / 1000 });
+    }
+    min_time = Math.min(min_time, ut);
+    max_time = Math.max(max_time, ut);
+  }
   let min_time_unix = null;
   let max_time_unix = null;
   if (min_time !== Infinity) {
@@ -147,7 +192,13 @@ export async function loadEaseeData(start_time_unix, end_time_unix) {
   return { data, min_time_unix, max_time_unix };
 }
 export async function loadStData(start_time_unix, end_time_unix) {
-  const csv = await fetchCsvForRange(ST_CSV_URL, start_time_unix);
+  const rows = await getRowsForRange(ST_CSV_URL, start_time_unix, ST_CACHE_KEY);
+  const startIdx = binarySearch(rows, start_time_unix, row => row.unix_time);
+  let endIdx = startIdx;
+  while (endIdx < rows.length && rows[endIdx].unix_time < end_time_unix) {
+    endIdx++;
+  }
+  const periodRows = rows.slice(startIdx, endIdx);
   const data = {
     price: [],
     heat_on_raw: [],
@@ -157,34 +208,16 @@ export async function loadStData(start_time_unix, end_time_unix) {
   };
   let min_time = Infinity;
   let max_time = -Infinity;
-  await new Promise((resolve, reject) => {
-    Papa.parse(csv, {
-      header: true,
-      dynamicTyping: true,
-      step: (results) => {
-        const row = results.data;
-        if (row['unix_time'] >= start_time_unix && row['unix_time'] < end_time_unix) {
-          if (!isNaN(row['price'])) data.price.push({ x: row['unix_time'], y: row['price'] });
-          if (!isNaN(row['heat_on'])) data.heat_on_raw.push({ x: row['unix_time'], y: row['heat_on'] });
-          if (!isNaN(row['temp_in'])) data.temp_in.push({ x: row['unix_time'], y: row['temp_in'] });
-          if (!isNaN(row['temp_ga'])) data.temp_ga.push({ x: row['unix_time'], y: row['temp_ga'] });
-          if (!isNaN(row['temp_out'])) data.temp_out.push({ x: row['unix_time'], y: row['temp_out'] });
-          if (row['unix_time'] !== null && !isNaN(row['unix_time'])) {
-            min_time = Math.min(min_time, row['unix_time']);
-            max_time = Math.max(max_time, row['unix_time']);
-          }
-        }
-      },
-      complete: (results) => {
-        if (results.errors.length > 0) {
-          reject(results.errors);
-        } else {
-          resolve();
-        }
-      },
-      error: reject
-    });
-  });
+  for (const row of periodRows) {
+    const ut = row.unix_time;
+    if (!isNaN(row.price)) data.price.push({ x: ut, y: row.price });
+    if (!isNaN(row.heat_on)) data.heat_on_raw.push({ x: ut, y: row.heat_on });
+    if (!isNaN(row.temp_in)) data.temp_in.push({ x: ut, y: row.temp_in });
+    if (!isNaN(row.temp_ga)) data.temp_ga.push({ x: ut, y: row.temp_ga });
+    if (!isNaN(row.temp_out)) data.temp_out.push({ x: ut, y: row.temp_out });
+    min_time = Math.min(min_time, ut);
+    max_time = Math.max(max_time, ut);
+  }
   let min_time_unix = null;
   let max_time_unix = null;
   if (min_time !== Infinity) {

@@ -1,4 +1,3 @@
-// chart.js
 import Chart from 'chart.js/auto';
 import { loadEaseeData, loadStData } from './data-processor.js';
 // ChartDrawer class
@@ -289,14 +288,14 @@ class ChartDrawer {
     if (easee_promise.status === 'fulfilled') {
       easee_result = easee_promise.value;
     } else {
-      console.log('Error loading Easee data:', easee_promise.reason);
-      errorMessage.innerText += 'Error loading Easee data: ' + easee_promise.reason.message + '\n';
+      console.error('Error loading Easee data:', easee_promise.reason);
+      errorMessage.innerText += `Error loading Easee data: ${easee_promise.reason.message || easee_promise.reason || 'Unknown error'}\n`;
     }
     if (st_promise.status === 'fulfilled') {
       st_result = st_promise.value;
     } else {
-      console.log('Error loading ST data:', st_promise.reason);
-      errorMessage.innerText += 'Error loading ST data: ' + st_promise.reason.message + '\n';
+      console.error('Error loading ST data:', st_promise.reason);
+      errorMessage.innerText += `Error loading ST data: ${st_promise.reason.message || st_promise.reason || 'Unknown error'}\n`;
     }
     this.#ch_curr1 = easee_result.data.ch_curr1;
     this.#ch_curr2 = easee_result.data.ch_curr2;
