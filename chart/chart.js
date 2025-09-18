@@ -1,5 +1,5 @@
 import Chart from 'chart.js/auto';
-import { loadEaseeData, loadStData } from './data-processor.js';
+import { loadEaseeData, loadStData, prefetchFullData } from './data-processor.js';
 // ChartDrawer class
 class ChartDrawer {
   // Chart vars
@@ -75,10 +75,6 @@ class ChartDrawer {
   // Setup the chart
   async #setup_chart() {
     const ctx = document.getElementById('acquisitions').getContext('2d');
-    if (!ctx) {
-      document.getElementById('errorMessage').innerText = 'Error: Chart canvas not found.';
-      return;
-    }
     const isDark = document.body.classList.contains('dark');
     const xGridColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
     const xTicksColor = isDark ? '#e0e0e0' : '#666666';
@@ -278,20 +274,30 @@ class ChartDrawer {
   // Generate the chart
   async generate_chart(start_date, end_date) {
     const loadingIndicator = document.getElementById('loadingIndicator');
-    const errorMessage = document.getElementById('errorMessage');
     const chartWrapper = document.querySelector('.chart-wrapper');
-    if (!loadingIndicator || !errorMessage || !chartWrapper) {
+    if (!loadingIndicator || !chartWrapper) {
       console.error('Error: Required elements not found in DOM.');
       return;
     }
     const startTime = Date.now();
     loadingIndicator.style.display = 'block';
-    errorMessage.innerText = '';
+    loadingIndicator.innerText = 'Loading...';
+    loadingIndicator.style.color = 'var(--text-color)';
     chartWrapper.style.position = 'relative';
     this.#initialize_chart();
     const limits = this.#date_lims(start_date, end_date);
     const start_time_unix = limits.bod;
     const end_time_unix = limits.eod;
+    let errors = '';
+    const ctxElement = document.getElementById('acquisitions');
+    if (!ctxElement || !ctxElement.getContext('2d')) {
+      errors += 'Error: Chart canvas not found.\n';
+    }
+    if (errors) {
+      loadingIndicator.innerText = errors.trim();
+      loadingIndicator.style.color = 'var(--error-color)';
+      return;
+    }
     // Load data from processor
     const [easee_promise, st_promise] = await Promise.allSettled([
       loadEaseeData(start_time_unix, end_time_unix),
@@ -326,13 +332,13 @@ class ChartDrawer {
       easee_result = easee_promise.value;
     } else {
       console.error('Error loading Easee data:', easee_promise.reason);
-      errorMessage.innerText += `Error loading Easee data: ${easee_promise.reason.message || easee_promise.reason || 'Unknown error'}\n`;
+      errors += `Error loading Easee data: ${easee_promise.reason.message || easee_promise.reason || 'Unknown error'}\n`;
     }
     if (st_promise.status === 'fulfilled') {
       st_result = st_promise.value;
     } else {
       console.error('Error loading ST data:', st_promise.reason);
-      errorMessage.innerText += `Error loading ST data: ${st_promise.reason.message || st_promise.reason || 'Unknown error'}\n`;
+      errors += `Error loading ST data: ${st_promise.reason.message || st_promise.reason || 'Unknown error'}\n`;
     }
     this.#ch_curr1 = easee_result.data.ch_curr1;
     this.#ch_curr2 = easee_result.data.ch_curr2;
@@ -373,9 +379,12 @@ class ChartDrawer {
       this.#temp_ga.length === 0 &&
       this.#temp_out.length === 0
     ) {
-      errorMessage.innerText = 'No data available for the selected period.';
-      loadingIndicator.style.display = 'none';
-      console.log('Chart rendering aborted: No data');
+      errors += 'No data available for the selected period.\n';
+    }
+    if (errors) {
+      loadingIndicator.innerText = errors.trim();
+      loadingIndicator.style.color = 'var(--error-color)';
+      console.log('Chart rendering aborted: Errors');
       return;
     }
     await this.#setup_chart();
@@ -465,6 +474,17 @@ class ChartDrawer {
       chart_drawer.updateTheme(newDark);
     });
   }
+  // Predictive fetch setup
+  const predictiveCheckbox = document.getElementById('predictiveCheckbox');
+  const prefetchIfEnabled = () => {
+    if (predictiveCheckbox.checked) {
+      prefetchFullData().catch(error => {
+        console.error('Error in predictive fetch:', error);
+      });
+    }
+  };
+  dateInput.addEventListener('focus', prefetchIfEnabled);
+  endDateInput.addEventListener('focus', prefetchIfEnabled);
   // Update chart with selected date range
   document.getElementById('filterButton').addEventListener('click', () => {
     const start_date = new Date(dateInput.value);

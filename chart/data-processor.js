@@ -145,6 +145,10 @@ function dateLims(start_date, end_date) {
   const eod = Math.floor(eod_date.getTime() / 1000);
   return { bod, eod };
 }
+export async function prefetchFullData() {
+  await getRowsForRange(EASEE_CSV_URL, 0, EASEE_CACHE_KEY);
+  await getRowsForRange(ST_CSV_URL, 0, ST_CACHE_KEY);
+}
 export async function loadEaseeData(start_time_unix, end_time_unix) {
   const rows = await getRowsForRange(EASEE_CSV_URL, start_time_unix, EASEE_CACHE_KEY);
   const startIdx = binarySearch(rows, start_time_unix, row => row.unix_time);

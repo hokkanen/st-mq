@@ -73,11 +73,6 @@
       box-shadow: var(--shadow);
     }
 
-    #errorMessage {
-      color: var(--error-color);
-      margin-bottom: 10px;
-    }
-
     .chart-setup {
       position: relative;
       display: flex;
@@ -354,7 +349,6 @@
 
 <body class="dark">
   <div class="chart-container">
-    <div id="errorMessage"></div>
     <div class="chart-setup">
       <h2 class="setup-title">Home Monitor Setup</h2>
       <div class="setup-row">
@@ -365,7 +359,7 @@
         </div>
         <div class="checkbox-group predictive">
           <input type="checkbox" id="predictiveCheckbox" checked>
-          <label for="predictiveCheckbox">Predictive fetch</label>
+          <label for="predictiveCheckbox" title="Start fetching full data immediately when a date selector is opened.">Predictive fetch</label>
         </div>
         <button id="filterButton" class="update-btn">Update</button>
         <button id="showAllButton" class="all-btn">All dates</button>
@@ -389,12 +383,6 @@
       <div id="chartActions"></div>
     </div>
   </div>
-  <script src="https://cdn.jsdelivr.net/npm/eruda@latest/eruda.min.js"></script>
-  <script>
-    console.log('Eruda script loaded, initiating...');
-    eruda.init({ theme: 'dark' }); // Match your dark mode
-    console.log('Eruda panels count:', document.querySelectorAll('.eruda-panel').length);
-  </script>
   <script type="module" src="chart.js"></script>
 </body>
 
