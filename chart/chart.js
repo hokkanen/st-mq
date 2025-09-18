@@ -275,7 +275,8 @@ class ChartDrawer {
   async generate_chart(start_date, end_date) {
     const loadingIndicator = document.getElementById('loadingIndicator');
     const chartWrapper = document.querySelector('.chart-wrapper');
-    if (!loadingIndicator || !chartWrapper) {
+    const chartTitle = document.getElementById('chartTitle');
+    if (!loadingIndicator || !chartWrapper || !chartTitle) {
       console.error('Error: Required elements not found in DOM.');
       return;
     }
@@ -284,19 +285,16 @@ class ChartDrawer {
     loadingIndicator.innerText = 'Loading...';
     loadingIndicator.style.color = 'var(--text-color)';
     chartWrapper.style.position = 'relative';
+    chartWrapper.style.borderColor = 'var(--border-color)';
     this.#initialize_chart();
     const limits = this.#date_lims(start_date, end_date);
     const start_time_unix = limits.bod;
     const end_time_unix = limits.eod;
-    let errors = '';
+    let criticalErrors = [];
+    let partialErrors = [];
     const ctxElement = document.getElementById('acquisitions');
     if (!ctxElement || !ctxElement.getContext('2d')) {
-      errors += 'Error: Chart canvas not found.\n';
-    }
-    if (errors) {
-      loadingIndicator.innerText = errors.trim();
-      loadingIndicator.style.color = 'var(--error-color)';
-      return;
+      criticalErrors.push('Chart canvas not found.');
     }
     // Load data from processor
     const [easee_promise, st_promise] = await Promise.allSettled([
@@ -332,13 +330,13 @@ class ChartDrawer {
       easee_result = easee_promise.value;
     } else {
       console.error('Error loading Easee data:', easee_promise.reason);
-      errors += `Error loading Easee data: ${easee_promise.reason.message || easee_promise.reason || 'Unknown error'}\n`;
+      partialErrors.push('Error loading Easee data');
     }
     if (st_promise.status === 'fulfilled') {
       st_result = st_promise.value;
     } else {
-      console.error('Error loading ST data:', st_promise.reason);
-      errors += `Error loading ST data: ${st_promise.reason.message || st_promise.reason || 'Unknown error'}\n`;
+      console.error('Error loading ST-MQ data:', st_promise.reason);
+      partialErrors.push('Error loading ST-MQ data');
     }
     this.#ch_curr1 = easee_result.data.ch_curr1;
     this.#ch_curr2 = easee_result.data.ch_curr2;
@@ -379,13 +377,22 @@ class ChartDrawer {
       this.#temp_ga.length === 0 &&
       this.#temp_out.length === 0
     ) {
-      errors += 'No data available for the selected period.\n';
+      criticalErrors.push('No data available for the selected period.');
     }
-    if (errors) {
-      loadingIndicator.innerText = errors.trim();
-      loadingIndicator.style.color = 'var(--error-color)';
-      console.log('Chart rendering aborted: Errors');
-      return;
+    const allErrors = [...criticalErrors, ...partialErrors];
+    const hasCritical = criticalErrors.length > 0;
+    if (allErrors.length > 0) {
+      chartTitle.innerText = allErrors.join('; ');
+      chartTitle.style.color = 'var(--error-color)';
+      chartWrapper.style.borderColor = 'var(--error-color)';
+      loadingIndicator.style.display = 'none';
+      if (hasCritical) {
+        console.log('Chart rendering aborted: Critical Errors');
+        return;
+      }
+    } else {
+      chartTitle.innerText = 'Home Monitor Chart';
+      chartTitle.style.color = 'var(--text-color)';
     }
     await this.#setup_chart();
     if (this.#chart) {
