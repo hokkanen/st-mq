@@ -22,6 +22,10 @@ class ChartDrawer {
   #temp_in;
   #temp_ga;
   #temp_out;
+  // Button refs
+  #totalBtn;
+  #phasesBtn;
+  #allStBtn;
   // Update chart theme based on dark mode
   updateTheme(isDark) {
     if (!this.#chart) return;
@@ -120,6 +124,12 @@ class ChartDrawer {
           title: {
             display: false
           },
+          legend: {
+            onClick: (e, legendItem, legend) => {
+              Chart.defaults.plugins.legend.onClick.call(legend.chart, e, legendItem, legend);
+              this.updateButtonStates();
+            }
+          },
           tooltip: {
             callbacks: {
               title: function (context) {
@@ -203,6 +213,98 @@ class ChartDrawer {
     }
     this.#chart.update();
   }
+  // Show total kW datasets and hide per-phase datasets
+  showTotal() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    for (let i = 0; i < 8; i++) ds[i].hidden = ![3, 7].includes(i);
+    this.#chart.update();
+  }
+  // Show individual phase datasets and hide total kW datasets
+  showPhases() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    for (let i = 0; i < 8; i++) ds[i].hidden = [3, 7].includes(i);
+    this.#chart.update();
+  }
+  // Toggle total power datasets
+  toggleTotal() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    const totalIndices = [3, 7];
+    const phasesIndices = [0, 1, 2, 4, 5, 6];
+    const allVisible = totalIndices.every(i => !ds[i].hidden);
+    if (allVisible) {
+      totalIndices.forEach(i => ds[i].hidden = true);
+    } else {
+      totalIndices.forEach(i => ds[i].hidden = false);
+      phasesIndices.forEach(i => ds[i].hidden = true);
+    }
+    this.#chart.update();
+    this.updateButtonStates();
+  }
+  // Toggle individual phases datasets
+  togglePhases() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    const phasesIndices = [0, 1, 2, 4, 5, 6];
+    const totalIndices = [3, 7];
+    const allVisible = phasesIndices.every(i => !ds[i].hidden);
+    if (allVisible) {
+      phasesIndices.forEach(i => ds[i].hidden = true);
+    } else {
+      phasesIndices.forEach(i => ds[i].hidden = false);
+      totalIndices.forEach(i => ds[i].hidden = true);
+    }
+    this.#chart.update();
+    this.updateButtonStates();
+  }
+  // Toggle all ST-MQ datasets
+  toggleAllSt() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    const stIndices = [8, 9, 10, 11, 12, 13];
+    const allVisible = stIndices.every(i => !ds[i].hidden);
+    stIndices.forEach(i => ds[i].hidden = allVisible);
+    this.#chart.update();
+    this.updateButtonStates();
+  }
+  // Update button states based on dataset visibility
+  updateButtonStates() {
+    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
+    const ds = this.#chart.data.datasets;
+    // Total power
+    const allTotal = [3, 7].every(i => !ds[i].hidden);
+    this.#totalBtn.style.textDecoration = allTotal ? 'none' : 'line-through';
+    // Individual phases
+    const allPhases = [0, 1, 2, 4, 5, 6].every(i => !ds[i].hidden);
+    this.#phasesBtn.style.textDecoration = allPhases ? 'none' : 'line-through';
+    // All ST-MQ
+    const allSt = [8, 9, 10, 11, 12, 13].every(i => !ds[i].hidden);
+    this.#allStBtn.style.textDecoration = allSt ? 'none' : 'line-through';
+  }
+  // Create Easee buttons
+  createEaseeButtons(container) {
+    const totalBtn = document.createElement('button');
+    totalBtn.innerText = 'Total power (kW)';
+    totalBtn.addEventListener('click', () => this.toggleTotal());
+    this.#totalBtn = totalBtn;
+    container.appendChild(totalBtn);
+
+    const phasesBtn = document.createElement('button');
+    phasesBtn.innerText = 'Individual phases (A)';
+    phasesBtn.addEventListener('click', () => this.togglePhases());
+    this.#phasesBtn = phasesBtn;
+    container.appendChild(phasesBtn);
+  }
+  // Create ST-MQ button
+  createStmqButton(container) {
+    const allStBtn = document.createElement('button');
+    allStBtn.innerText = 'All datasets';
+    allStBtn.addEventListener('click', () => this.toggleAllSt());
+    this.#allStBtn = allStBtn;
+    container.appendChild(allStBtn);
+  }
   // Compare realized cost (€) vs reference cost (daily average)
   async #perform_cost_analysis() {
     let realized_cost_ch = 0;
@@ -285,7 +387,6 @@ class ChartDrawer {
     loadingIndicator.innerText = 'Loading...';
     loadingIndicator.style.color = 'var(--text-color)';
     chartWrapper.style.position = 'relative';
-    chartWrapper.style.borderColor = 'var(--border-color)';
     this.#initialize_chart();
     const limits = this.#date_lims(start_date, end_date);
     const start_time_unix = limits.bod;
@@ -335,8 +436,8 @@ class ChartDrawer {
     if (st_promise.status === 'fulfilled') {
       st_result = st_promise.value;
     } else {
-      console.error('Error loading ST-MQ data:', st_promise.reason);
-      partialErrors.push('Error loading ST-MQ data');
+      console.error('Error loading ST data:', st_promise.reason);
+      partialErrors.push('Error loading ST data');
     }
     this.#ch_curr1 = easee_result.data.ch_curr1;
     this.#ch_curr2 = easee_result.data.ch_curr2;
@@ -381,11 +482,10 @@ class ChartDrawer {
     }
     const allErrors = [...criticalErrors, ...partialErrors];
     const hasCritical = criticalErrors.length > 0;
+    loadingIndicator.style.display = 'none';
     if (allErrors.length > 0) {
       chartTitle.innerText = allErrors.join('; ');
       chartTitle.style.color = 'var(--error-color)';
-      chartWrapper.style.borderColor = 'var(--error-color)';
-      loadingIndicator.style.display = 'none';
       if (hasCritical) {
         console.log('Chart rendering aborted: Critical Errors');
         return;
@@ -397,8 +497,8 @@ class ChartDrawer {
     await this.#setup_chart();
     if (this.#chart) {
       await this.#update_shading_data();
-      await this.apply_action(this.get_actions()[0]);
-      loadingIndicator.style.display = 'none';
+      this.showTotal();
+      this.updateButtonStates();
       const endTime = Date.now();
       const renderingTime = (endTime - startTime).toFixed(3);
       console.log(`Chart rendered at: ${new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 })} in ${renderingTime} ms`);
@@ -408,37 +508,6 @@ class ChartDrawer {
         });
       });
     }
-  }
-  // Show total kW datasets and hide per-phase datasets
-  showTotal() {
-    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
-    const ds = this.#chart.data.datasets;
-    for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = ![3, 7].includes(i);
-    this.#chart.update();
-  }
-  // Show individual phase datasets and hide total kW datasets
-  showPhases() {
-    if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
-    const ds = this.#chart.data.datasets;
-    for (let i = 0; i < ds.length && i < 8; i++) ds[i].hidden = [3, 7].includes(i);
-    this.#chart.update();
-  }
-  // Choose between individual phases and total power layouts
-  get_actions() {
-    return [
-      {
-        name: 'Total power (kW)',
-        handler: () => this.showTotal()
-      },
-      {
-        name: 'Individual phases (A)',
-        handler: () => this.showPhases()
-      }
-    ];
-  }
-  // Apply the action
-  async apply_action(action) {
-    action.handler.call(this);
   }
 }
 // Begin execution
@@ -503,13 +572,10 @@ class ChartDrawer {
     chart_drawer.generate_chart(new Date(0), new Date());
   });
   // Create chart action buttons
-  const chartActions = document.getElementById('chartActions');
-  chart_drawer.get_actions().forEach(action => {
-    const button = document.createElement('button');
-    button.innerText = action.name;
-    button.addEventListener('click', () => chart_drawer.apply_action(action));
-    chartActions.appendChild(button);
-  });
+  const easeeActions = document.getElementById('easeeActions');
+  const stmqActions = document.getElementById('stmqActions');
+  chart_drawer.createEaseeButtons(easeeActions);
+  chart_drawer.createStmqButton(stmqActions);
   // Generate chart for current day
   chart_drawer.generate_chart(new Date(), new Date());
 })();

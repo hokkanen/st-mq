@@ -251,20 +251,28 @@
       transform: translateY(-1px);
     }
 
+    .chart-area {
+      background-color: var(--bg-color);
+      margin-bottom: 20px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+    }
+
     .chart-wrapper {
       position: relative;
       border: 1px solid var(--border-color);
       border-radius: 8px;
       padding: 20px 15px 15px;
       background-color: var(--bg-color);
-      margin-bottom: 20px;
-      box-shadow: var(--shadow);
-      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
-      box-sizing: border-box;
+      margin: 0 0 20px 0;
       height: 500px;
       display: flex;
       align-items: center;
       justify-content: center;
+      box-shadow: var(--shadow);
+      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+      box-sizing: border-box;
     }
 
     .chart-title {
@@ -292,19 +300,35 @@
     .chart-controls {
       position: relative;
       display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 10px;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      padding: 20px 15px 15px;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px;
+      border: none;
+      border-radius: 0;
+      padding: 0;
       background-color: var(--bg-color);
-      box-shadow: var(--shadow);
-      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+      box-shadow: none;
+      transition: none;
       box-sizing: border-box;
+      margin: 0;
     }
 
-    .controls-title {
+    .easee-section,
+    .stmq-section {
+      flex: 1;
+      position: relative;
+      padding: 20px 15px 15px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .easee-title,
+    .stmq-title {
       position: absolute;
       top: -12px;
       left: 50%;
@@ -318,14 +342,16 @@
       white-space: nowrap;
     }
 
-    #chartActions {
+    #easeeActions,
+    #stmqActions {
       display: flex;
       justify-content: center;
       flex-wrap: wrap;
       gap: 10px;
     }
 
-    #chartActions button {
+    #easeeActions button,
+    #stmqActions button {
       padding: 16px 32px;
       border: none;
       border-radius: 6px;
@@ -339,7 +365,8 @@
       min-height: 52px;
     }
 
-    #chartActions button:hover {
+    #easeeActions button:hover,
+    #stmqActions button:hover {
       background-color: var(--button-hover-bg);
       box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
       transform: translateY(-1px);
@@ -373,14 +400,22 @@
         </div>
       </div>
     </div>
-    <div class="chart-wrapper">
-      <h2 class="chart-title" id="chartTitle">Home Monitor Chart</h2>
-      <div id="loadingIndicator" style="display: none;">Loading...</div>
-      <canvas id="acquisitions"></canvas>
-    </div>
-    <div class="chart-controls">
-      <h2 class="controls-title">Chart Controls</h2>
-      <div id="chartActions"></div>
+    <div class="chart-area">
+      <div class="chart-wrapper">
+        <h2 class="chart-title" id="chartTitle">Home Monitor Chart</h2>
+        <div id="loadingIndicator" style="display: none;">Loading...</div>
+        <canvas id="acquisitions"></canvas>
+      </div>
+      <div class="chart-controls">
+        <div class="easee-section">
+          <h2 class="easee-title">Easee dataset controls</h2>
+          <div id="easeeActions"></div>
+        </div>
+        <div class="stmq-section">
+          <h2 class="stmq-title">ST-MQ dataset controls</h2>
+          <div id="stmqActions"></div>
+        </div>
+      </div>
     </div>
   </div>
   <script type="module" src="chart.js"></script>
