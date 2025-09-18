@@ -1,353 +1,401 @@
 <!doctype html>
 
-<html lang="en">  
-<head>  
-  <title>Home Monitor</title>  
-  <style>  
-    :root {  
-      --bg-color: #ffffff;  
-      --text-color: #000000;  
-      --border-color: #cccccc;  
-      --input-bg: #ffffff;  
-      --input-border: #dddddd;  
-      --button-bg: #6c757d;  
-      --button-hover-bg: #545b62;  
-      --button-color: #ffffff;  
-      --checkbox-color: #6c757d;  
-      --shadow: 0 2px 4px rgba(0, 0, 0, 0.1);  
-      --error-color: #dc3545;  
-    }  
-    body.dark {  
-      --bg-color: #121212;  
-      --text-color: #ffffff;  
-      --border-color: #333333;  
-      --input-bg: #333333;  
-      --input-border: #555555;  
-      --button-bg: #495057;  
-      --button-hover-bg: #3d4449;  
-      --button-color: #ffffff;  
-      --checkbox-color: #adb5bd;  
-      --shadow: 0 2px 4px rgba(0, 0, 0, 0.3);  
-      --error-color: #ff6b6b;  
-    }  
-    body {  
-      background-color: var(--bg-color);  
-      color: var(--text-color);  
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;  
-      margin: 0;  
-      padding: 20px;  
-      transition: background-color 0.3s ease, color 0.3s ease;  
-    }  
-    body.dark {  
-      background-color: var(--bg-color);  
-    }  
-    .chart-container {  
-      max-width: 1200px;  
-      width: 100%;  
-      margin: 0 auto;  
-      text-align: center;  
-      box-sizing: border-box;  
-    }  
-    .chart-container input {  
-      vertical-align: middle;  
-      box-sizing: border-box;  
-    }  
-    #loadingIndicator {  
-      font-size: 1.2em;  
-      color: var(--text-color);  
-      position: absolute;  
-      top: 50%;  
-      left: 50%;  
-      transform: translate(-50%, -50%);  
-      z-index: 10;  
-      background-color: var(--bg-color);  
-      padding: 20px;  
-      border-radius: 8px;  
-      box-shadow: var(--shadow);  
-    }  
-    #errorMessage {  
-      color: var(--error-color);  
-      margin-bottom: 10px;  
-    }  
-    .chart-setup {  
-      position: relative;  
-      display: flex;  
-      flex-direction: column;  
-      align-items: center;  
-      justify-content: center;  
-      gap: 10px;  
-      border: 1px solid var(--border-color);  
-      border-radius: 8px;  
-      padding: 20px 10px 10px;  
-      background-color: var(--bg-color);  
-      margin-bottom: 20px;  
-      box-shadow: var(--shadow);  
-      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;  
-      box-sizing: border-box;  
-    }  
-    .setup-row {  
-      display: grid;  
-      grid-template-columns: 60px 235px 176px 120px 120px;  
-      grid-template-rows: auto auto;  
-      gap: 0 10px;  
-      align-items: center;  
-      justify-content: center;  
-      width: auto;  
-    }  
-    .setup-title {  
-      position: absolute;  
-      top: -12px;  
-      left: 50%;  
-      transform: translateX(-50%);  
-      background-color: var(--bg-color);  
-      padding: 0 15px;  
-      margin: 0;  
-      font-size: 1.1em;  
-      font-weight: 600;  
-      color: var(--text-color);  
-      white-space: nowrap;  
-    }  
-    .dark-mode-toggle {  
-      grid-area: 1 / 1 / 3 / 2;  
-      align-self: center;  
-      width: 60px;  
-      height: 60px;  
-      border-radius: 50%;  
-      background-color: var(--button-bg);  
-      color: var(--button-color);  
-      border: none;  
-      cursor: pointer;  
-      display: flex;  
-      align-items: center;  
-      justify-content: center;  
-      font-size: 24px;  
-      box-shadow: var(--shadow);  
-      transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;  
-    }  
-    .dark-mode-toggle:hover {  
-      background-color: var(--button-hover-bg);  
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);  
-      transform: scale(1.05);  
-    }  
-    .date-group {  
-      grid-area: 1 / 2 / 2 / 3;  
-      display: flex;  
-      flex-direction: row;  
-      align-items: center;  
-      gap: 5px;  
-    }  
-    .end-date-group {  
-      grid-area: 2 / 2 / 3 / 3;  
-      display: flex;  
-      flex-direction: row;  
-      align-items: center;  
-      gap: 5px;  
-    }  
-    .date-group label, .end-date-group label {  
-      font-size: 0.9em;  
-      font-weight: 500;  
-      color: var(--text-color);  
-      white-space: nowrap;  
-      min-width: 80px;  
-    }  
-    .date-group input, .end-date-group input {  
-      padding: 8px;  
-      border: 1px solid var(--input-border);  
-      border-radius: 4px;  
-      background-color: var(--input-bg);  
-      color: var(--text-color);  
-      font-size: 1em;  
-      transition: border-color 0.3s ease, background-color 0.3s ease, opacity 0.3s ease;  
-      flex: 1;  
-      max-width: 150px;  
-      box-sizing: border-box;  
-    }  
-    .end-date-group {  
-      opacity: 0.5;  
-      pointer-events: none;  
-      transition: opacity 0.3s ease, pointer-events 0.3s ease;  
-    }  
-    .end-date-group.enabled {  
-      opacity: 1;  
-      pointer-events: auto;  
-    }  
-    .checkbox-group {  
-      display: flex;  
-      align-items: center;  
-      gap: 8px;  
-      margin: 0;  
-    }  
-    .checkbox-group.predictive {  
-      grid-area: 1 / 3 / 2 / 4;  
-    }  
-    .checkbox-group.range {  
-      grid-area: 2 / 3 / 3 / 4;  
-    }  
-    .checkbox-group input[type="checkbox"] {  
-      width: 18px;  
-      height: 18px;  
-      accent-color: var(--checkbox-color);  
-      cursor: pointer;  
-    }  
-    .checkbox-group label {  
-      font-size: 0.9em;  
-      color: var(--text-color);  
-      cursor: pointer;  
-      user-select: none;  
-    }  
-    .update-btn, .all-btn {  
-      padding: 12px 20px;  
-      font-size: 1em;  
-      font-weight: 500;  
-      border: none;  
-      border-radius: 6px;  
-      background-color: var(--button-bg);  
-      color: var(--button-color);  
-      cursor: pointer;  
-      box-shadow: var(--shadow);  
-      transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;  
-      min-height: 96px;  
-      max-width: 120px;  
-      box-sizing: border-box;  
-    }  
-    .update-btn {  
-      grid-area: 1 / 4 / 3 / 5;  
-      align-self: center;  
-    }  
-    .all-btn {  
-      grid-area: 1 / 5 / 3 / 6;  
-      align-self: center;  
-    }  
-    .update-btn:hover, .all-btn:hover {  
-      background-color: var(--button-hover-bg);  
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);  
-      transform: translateY(-1px);  
-    }  
-    .chart-wrapper {  
-      position: relative;  
-      border: 1px solid var(--border-color);  
-      border-radius: 8px;  
-      padding: 20px 15px 15px;  
-      background-color: var(--bg-color);  
-      margin-bottom: 20px;  
-      box-shadow: var(--shadow);  
-      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;  
-      box-sizing: border-box;  
-      height: 500px;  
-      display: flex;  
-      align-items: center;  
-      justify-content: center;  
-    }  
-    .chart-title {  
-      position: absolute;  
-      top: -12px;  
-      left: 50%;  
-      transform: translateX(-50%);  
-      background-color: var(--bg-color);  
-      padding: 0 15px;  
-      margin: 0;  
-      font-size: 1.1em;  
-      font-weight: 600;  
-      color: var(--text-color);  
-      white-space: nowrap;  
-    }  
-    canvas {  
-      background-color: var(--bg-color) !important;  
-      border-radius: 4px;  
-      max-width: 100%;  
-      width: 100% !important;  
-      height: 100% !important;  
-    }  
-    .chart-controls {  
-      position: relative;  
-      display: flex;  
-      justify-content: center;  
-      align-items: center;  
-      gap: 10px;  
-      border: 1px solid var(--border-color);  
-      border-radius: 8px;  
-      padding: 20px 15px 15px;  
-      background-color: var(--bg-color);  
-      box-shadow: var(--shadow);  
-      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;  
-      box-sizing: border-box;  
-    }  
-    .controls-title {  
-      position: absolute;  
-      top: -12px;  
-      left: 50%;  
-      transform: translateX(-50%);  
-      background-color: var(--bg-color);  
-      padding: 0 15px;  
-      margin: 0;  
-      font-size: 1.1em;  
-      font-weight: 600;  
-      color: var(--text-color);  
-      white-space: nowrap;  
-    }  
-    #chartActions {  
-      display: flex;  
-      justify-content: center;  
-      flex-wrap: wrap;  
-      gap: 10px;  
-    }  
-    #chartActions button {  
-      padding: 16px 32px;  
-      border: none;  
-      border-radius: 6px;  
-      background-color: var(--button-bg);  
-      color: var(--button-color);  
-      cursor: pointer;  
-      box-shadow: var(--shadow);  
-      transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;  
-      font-size: 0.9em;  
-      font-weight: 500;  
-      min-height: 52px;  
-    }  
-    #chartActions button:hover {  
-      background-color: var(--button-hover-bg);  
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);  
-      transform: translateY(-1px);  
-    }  
-  </style>  
-</head>  
-<body class="dark">  
-  <div class="chart-container">  
-    <div id="errorMessage"></div>  
-    <div class="chart-setup">  
-      <h2 class="setup-title">Home Monitor Setup</h2>  
-      <div class="setup-row">  
-        <button class="dark-mode-toggle" title="Toggle dark mode">☀️</button>  
-        <div class="date-group">  
-          <label for="dateInput" id="dateLabel">Date:</label>  
-          <input type="date" id="dateInput">  
-        </div>  
-        <div class="checkbox-group predictive">  
-          <input type="checkbox" id="predictiveCheckbox" checked>  
-          <label for="predictiveCheckbox">Predictive fetch</label>  
-        </div>  
-        <button id="filterButton" class="update-btn">Update</button>  
-        <button id="showAllButton" class="all-btn">All dates</button>  
-        <div class="end-date-group">  
-          <label for="endDateInput" id="endDateLabel">End date:</label>  
-          <input type="date" id="endDateInput" disabled>  
-        </div>  
-        <div class="checkbox-group range">  
-          <input type="checkbox" id="useEndDateCheckbox">  
-          <label for="useEndDateCheckbox">Use date range</label>  
-        </div>  
-      </div>  
-    </div>  
-    <div class="chart-wrapper">  
-      <h2 class="chart-title">Home Monitor Chart</h2>  
-      <div id="loadingIndicator" style="display: none;">Loading...</div>  
-      <canvas id="acquisitions"></canvas>  
-    </div>  
-    <div class="chart-controls">  
-      <h2 class="controls-title">Chart Controls</h2>  
-      <div id="chartActions"></div>  
-    </div>  
-  </div>  
-  <script type="module" src="chart.js"></script>  
-</body>  
+<html lang="en">
+
+<head>
+  <title>Home Monitor</title>
+  <style>
+    :root {
+      --bg-color: #ffffff;
+      --text-color: #000000;
+      --border-color: #cccccc;
+      --input-bg: #ffffff;
+      --input-border: #dddddd;
+      --button-bg: #6c757d;
+      --button-hover-bg: #545b62;
+      --button-color: #ffffff;
+      --checkbox-color: #6c757d;
+      --shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      --error-color: #dc3545;
+    }
+
+    body.dark {
+      --bg-color: #121212;
+      --text-color: #ffffff;
+      --border-color: #333333;
+      --input-bg: #333333;
+      --input-border: #555555;
+      --button-bg: #495057;
+      --button-hover-bg: #3d4449;
+      --button-color: #ffffff;
+      --checkbox-color: #adb5bd;
+      --shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+      --error-color: #ff6b6b;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 20px;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    body.dark {
+      background-color: var(--bg-color);
+    }
+
+    .chart-container {
+      max-width: 1200px;
+      width: 100%;
+      margin: 0 auto;
+      text-align: center;
+      box-sizing: border-box;
+    }
+
+    .chart-container input {
+      vertical-align: middle;
+      box-sizing: border-box;
+    }
+
+    #loadingIndicator {
+      font-size: 1.2em;
+      color: var(--text-color);
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      background-color: var(--bg-color);
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    #errorMessage {
+      color: var(--error-color);
+      margin-bottom: 10px;
+    }
+
+    .chart-setup {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 20px 10px 10px;
+      background-color: var(--bg-color);
+      margin-bottom: 20px;
+      box-shadow: var(--shadow);
+      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+      box-sizing: border-box;
+    }
+
+    .setup-row {
+      display: grid;
+      grid-template-columns: 60px 235px 176px 120px 120px;
+      grid-template-rows: auto auto;
+      gap: 0 10px;
+      align-items: center;
+      justify-content: center;
+      width: auto;
+    }
+
+    .setup-title {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: var(--bg-color);
+      padding: 0 15px;
+      margin: 0;
+      font-size: 1.1em;
+      font-weight: 600;
+      color: var(--text-color);
+      white-space: nowrap;
+    }
+
+    .dark-mode-toggle {
+      grid-area: 1 / 1 / 3 / 2;
+      align-self: center;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background-color: var(--button-bg);
+      color: var(--button-color);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      box-shadow: var(--shadow);
+      transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;
+    }
+
+    .dark-mode-toggle:hover {
+      background-color: var(--button-hover-bg);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+      transform: scale(1.05);
+    }
+
+    .date-group {
+      grid-area: 1 / 2 / 2 / 3;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .end-date-group {
+      grid-area: 2 / 2 / 3 / 3;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .date-group label,
+    .end-date-group label {
+      font-size: 0.9em;
+      font-weight: 500;
+      color: var(--text-color);
+      white-space: nowrap;
+      min-width: 80px;
+    }
+
+    .date-group input,
+    .end-date-group input {
+      padding: 8px;
+      border: 1px solid var(--input-border);
+      border-radius: 4px;
+      background-color: var(--input-bg);
+      color: var(--text-color);
+      font-size: 1em;
+      transition: border-color 0.3s ease, background-color 0.3s ease, opacity 0.3s ease;
+      flex: 1;
+      max-width: 150px;
+      box-sizing: border-box;
+    }
+
+    .end-date-group {
+      opacity: 0.5;
+      pointer-events: none;
+      transition: opacity 0.3s ease, pointer-events 0.3s ease;
+    }
+
+    .end-date-group.enabled {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+    }
+
+    .checkbox-group.predictive {
+      grid-area: 1 / 3 / 2 / 4;
+    }
+
+    .checkbox-group.range {
+      grid-area: 2 / 3 / 3 / 4;
+    }
+
+    .checkbox-group input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--checkbox-color);
+      cursor: pointer;
+    }
+
+    .checkbox-group label {
+      font-size: 0.9em;
+      color: var(--text-color);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .update-btn,
+    .all-btn {
+      padding: 12px 20px;
+      font-size: 1em;
+      font-weight: 500;
+      border: none;
+      border-radius: 6px;
+      background-color: var(--button-bg);
+      color: var(--button-color);
+      cursor: pointer;
+      box-shadow: var(--shadow);
+      transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;
+      min-height: 96px;
+      max-width: 120px;
+      box-sizing: border-box;
+    }
+
+    .update-btn {
+      grid-area: 1 / 4 / 3 / 5;
+      align-self: center;
+    }
+
+    .all-btn {
+      grid-area: 1 / 5 / 3 / 6;
+      align-self: center;
+    }
+
+    .update-btn:hover,
+    .all-btn:hover {
+      background-color: var(--button-hover-bg);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+      transform: translateY(-1px);
+    }
+
+    .chart-wrapper {
+      position: relative;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 20px 15px 15px;
+      background-color: var(--bg-color);
+      margin-bottom: 20px;
+      box-shadow: var(--shadow);
+      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+      box-sizing: border-box;
+      height: 500px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .chart-title {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: var(--bg-color);
+      padding: 0 15px;
+      margin: 0;
+      font-size: 1.1em;
+      font-weight: 600;
+      color: var(--text-color);
+      white-space: nowrap;
+    }
+
+    canvas {
+      background-color: var(--bg-color) !important;
+      border-radius: 4px;
+      max-width: 100%;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    .chart-controls {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 20px 15px 15px;
+      background-color: var(--bg-color);
+      box-shadow: var(--shadow);
+      transition: border-color 0.3s ease, background-color 0.3s ease, box-shadow 0.3s ease;
+      box-sizing: border-box;
+    }
+
+    .controls-title {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: var(--bg-color);
+      padding: 0 15px;
+      margin: 0;
+      font-size: 1.1em;
+      font-weight: 600;
+      color: var(--text-color);
+      white-space: nowrap;
+    }
+
+    #chartActions {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    #chartActions button {
+      padding: 16px 32px;
+      border: none;
+      border-radius: 6px;
+      background-color: var(--button-bg);
+      color: var(--button-color);
+      cursor: pointer;
+      box-shadow: var(--shadow);
+      transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.1s ease;
+      font-size: 0.9em;
+      font-weight: 500;
+      min-height: 52px;
+    }
+
+    #chartActions button:hover {
+      background-color: var(--button-hover-bg);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+
+<body class="dark">
+  <div class="chart-container">
+    <div id="errorMessage"></div>
+    <div class="chart-setup">
+      <h2 class="setup-title">Home Monitor Setup</h2>
+      <div class="setup-row">
+        <button class="dark-mode-toggle" title="Toggle dark mode">☀️</button>
+        <div class="date-group">
+          <label for="dateInput" id="dateLabel">Date:</label>
+          <input type="date" id="dateInput">
+        </div>
+        <div class="checkbox-group predictive">
+          <input type="checkbox" id="predictiveCheckbox" checked>
+          <label for="predictiveCheckbox">Predictive fetch</label>
+        </div>
+        <button id="filterButton" class="update-btn">Update</button>
+        <button id="showAllButton" class="all-btn">All dates</button>
+        <div class="end-date-group">
+          <label for="endDateInput" id="endDateLabel">End date:</label>
+          <input type="date" id="endDateInput" disabled>
+        </div>
+        <div class="checkbox-group range">
+          <input type="checkbox" id="useEndDateCheckbox">
+          <label for="useEndDateCheckbox">Use date range</label>
+        </div>
+      </div>
+    </div>
+    <div class="chart-wrapper">
+      <h2 class="chart-title">Home Monitor Chart</h2>
+      <div id="loadingIndicator" style="display: none;">Loading...</div>
+      <canvas id="acquisitions"></canvas>
+    </div>
+    <div class="chart-controls">
+      <h2 class="controls-title">Chart Controls</h2>
+      <div id="chartActions"></div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/eruda@latest/eruda.min.js"></script>
+  <script>
+    console.log('Eruda script loaded, initiating...');
+    eruda.init({ theme: 'dark' }); // Match your dark mode
+    console.log('Eruda panels count:', document.querySelectorAll('.eruda-panel').length);
+  </script>
+  <script type="module" src="chart.js"></script>
+</body>
+
 </html>
