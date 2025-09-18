@@ -22,6 +22,25 @@ class ChartDrawer {
   #temp_in;
   #temp_ga;
   #temp_out;
+  // Update chart theme based on dark mode
+  updateTheme(isDark) {
+    if (!this.#chart) return;
+    const opts = this.#chart.options.scales;
+    opts.x.grid.color = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    opts.x.ticks.color = isDark ? '#e0e0e0' : '#666666';
+    opts.y_left.grid.color = isDark ? 'rgba(255, 0, 0, 0.1)' : 'rgba(255, 0, 0, 0.2)';
+    opts.y_left.ticks.color = isDark ? 'rgba(255, 0, 0, 0.9)' : 'rgba(255, 0, 0, 1)';
+    opts.y_left.title.color = isDark ? 'rgba(255, 0, 0, 0.9)' : 'rgba(255, 0, 0, 1)';
+    opts.y_right.grid.color = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    opts.y_right.ticks.color = isDark ? '#e0e0e0' : '#666666';
+    opts.y_right.title.color = isDark ? '#e0e0e0' : '#666666';
+    const priceDataset = this.#chart.data.datasets[8];
+    const priceColor = isDark ? 'white' : 'black';
+    priceDataset.borderColor = priceColor;
+    priceDataset.pointBackgroundColor = priceColor;
+    priceDataset.pointBorderColor = priceColor;
+    this.#chart.update();
+  }
   // Initialize chart vars
   #initialize_chart() {
     if (this.#chart) this.#chart.destroy();
@@ -60,6 +79,16 @@ class ChartDrawer {
       document.getElementById('errorMessage').innerText = 'Error: Chart canvas not found.';
       return;
     }
+    const isDark = document.body.classList.contains('dark');
+    const xGridColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const xTicksColor = isDark ? '#e0e0e0' : '#666666';
+    const yLeftGridColor = isDark ? 'rgba(255, 0, 0, 0.1)' : 'rgba(255, 0, 0, 0.2)';
+    const yLeftTicksColor = isDark ? 'rgba(255, 0, 0, 0.9)' : 'rgba(255, 0, 0, 1)';
+    const yLeftTitleColor = isDark ? 'rgba(255, 0, 0, 0.9)' : 'rgba(255, 0, 0, 1)';
+    const yRightGridColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+    const yRightTicksColor = isDark ? '#e0e0e0' : '#666666';
+    const yRightTitleColor = isDark ? '#e0e0e0' : '#666666';
+    const priceColor = isDark ? 'white' : 'black';
     this.#chart = new Chart(ctx, {
       type: 'line',
       data: {
@@ -72,7 +101,7 @@ class ChartDrawer {
           { label: 'Equalizer 2 (A)', yAxisID: 'y_left', data: this.#eq_curr2, borderColor: 'magenta', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
           { label: 'Equalizer 3 (A)', yAxisID: 'y_left', data: this.#eq_curr3, borderColor: 'yellow', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
           { label: 'Equalizer Total (kW)', yAxisID: 'y_left', data: this.#eq_total, borderColor: 'rgba(255, 0, 0, 1)', borderWidth: 1, fill: false, pointRadius: 0, stepped: 'middle' },
-          { label: 'Price (¢/kWh)', yAxisID: 'y_right', data: this.#price, borderColor: 'black', borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
+          { label: 'Price (¢/kWh)', yAxisID: 'y_right', data: this.#price, borderColor: priceColor, pointBackgroundColor: priceColor, pointBorderColor: priceColor, borderDash: [1, 3], borderWidth: 1, fill: false, pointRadius: 1, stepped: 'before' },
           { label: 'Temp In (°C)', yAxisID: 'y_right', data: this.#temp_in, borderColor: 'green', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
           { label: 'Temp Garage (°C)', yAxisID: 'y_right', data: this.#temp_ga, borderColor: 'orange', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
           { label: 'Temp Out (°C)', yAxisID: 'y_right', data: this.#temp_out, borderColor: 'blue', borderDash: [4, 4], borderWidth: 1, fill: false, pointRadius: 1, tension: 0.4 },
@@ -84,6 +113,7 @@ class ChartDrawer {
         normalized: false,
         parsing: false,
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           decimation: {
             enabled: true,
@@ -92,8 +122,7 @@ class ChartDrawer {
             threshold: 576
           },
           title: {
-            display: true,
-            text: 'Home Monitor Chart'
+            display: false
           },
           tooltip: {
             callbacks: {
@@ -109,10 +138,14 @@ class ChartDrawer {
             beginAtZero: false,
             min: this.#min_time_unix,
             max: this.#max_time_unix,
+            grid: {
+              color: xGridColor
+            },
             ticks: {
               source: 'data',
               autoSkip: true,
               stepSize: (this.#max_time_unix - this.#min_time_unix) / 24,
+              color: xTicksColor,
               callback: function (value) {
                 const date = new Date(value * 1000);
                 const date_string = date.toLocaleDateString('en-UK');
@@ -123,13 +156,15 @@ class ChartDrawer {
           },
           y_left: {
             beginAtZero: true,
-            grid: { color: 'rgba(255, 0, 0, 0.2)' },
-            ticks: { color: 'rgba(255, 0, 0, 1)' },
-            title: { display: true, color: 'rgba(255, 0, 0, 1)', text: 'Power (kW) / Current (A)' }
+            grid: { color: yLeftGridColor },
+            ticks: { color: yLeftTicksColor },
+            title: { display: true, color: yLeftTitleColor, text: 'Power (kW) / Current (A)' }
           },
           y_right: {
             position: 'right',
-            title: { display: true, text: 'Price (¢/kWh) / Temp (°C)' }
+            grid: { color: yRightGridColor },
+            ticks: { color: yRightTicksColor },
+            title: { display: true, color: yRightTitleColor, text: 'Price (¢/kWh) / Temp (°C)' }
           },
           y_shading: {
             display: false,
@@ -244,13 +279,15 @@ class ChartDrawer {
   async generate_chart(start_date, end_date) {
     const loadingIndicator = document.getElementById('loadingIndicator');
     const errorMessage = document.getElementById('errorMessage');
-    if (!loadingIndicator || !errorMessage) {
-      console.error('Error: Loading indicator or error message element not found in DOM.');
+    const chartWrapper = document.querySelector('.chart-wrapper');
+    if (!loadingIndicator || !errorMessage || !chartWrapper) {
+      console.error('Error: Required elements not found in DOM.');
       return;
     }
     const startTime = Date.now();
     loadingIndicator.style.display = 'block';
     errorMessage.innerText = '';
+    chartWrapper.style.position = 'relative';
     this.#initialize_chart();
     const limits = this.#date_lims(start_date, end_date);
     const start_time_unix = limits.bod;
@@ -398,20 +435,40 @@ class ChartDrawer {
   const endDateInput = document.getElementById('endDateInput');
   dateInput.value = endDateInput.value = today;
   // Toggle end date input, label visibility, and update start date label
-  const rangeCheckbox = document.getElementById('rangeCheckbox');
+  const useEndDateCheckbox = document.getElementById('useEndDateCheckbox');
   const dateLabel = document.getElementById('dateLabel');
-  const endDateLabel = document.getElementById('endDateLabel');
+  const endDateGroup = document.querySelector('.end-date-group');
   const toggleEndDate = () => {
-    const isChecked = rangeCheckbox.checked;
-    endDateInput.style.display = endDateLabel.style.display = isChecked ? 'inline' : 'none';
-    dateLabel.innerText = isChecked ? 'Start date:' : 'Date:';
+    const isChecked = useEndDateCheckbox.checked;
+    const endDateInput = document.getElementById('endDateInput');
+    endDateInput.disabled = !isChecked;
+    endDateGroup.classList.toggle('enabled', isChecked);
+    dateLabel.innerText = isChecked ? 'Begin date:' : 'Date:';
   };
-  rangeCheckbox.addEventListener('change', toggleEndDate);
+  useEndDateCheckbox.addEventListener('change', toggleEndDate);
   toggleEndDate(); // Apply initial state
+  // Dark mode toggle
+  const darkToggle = document.querySelector('.dark-mode-toggle');
+  if (darkToggle) {
+    const isDark = document.body.classList.contains('dark');
+    darkToggle.innerHTML = isDark ? '☀️' : '🌙';
+    darkToggle.addEventListener('click', () => {
+      document.body.classList.toggle('dark');
+      const newDark = document.body.classList.contains('dark');
+      darkToggle.innerHTML = newDark ? '☀️' : '🌙';
+      // Update canvas background
+      const canvas = document.getElementById('acquisitions');
+      if (canvas) {
+        canvas.style.backgroundColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-color').trim();
+      }
+      // Update chart theme
+      chart_drawer.updateTheme(newDark);
+    });
+  }
   // Update chart with selected date range
   document.getElementById('filterButton').addEventListener('click', () => {
     const start_date = new Date(dateInput.value);
-    const end_date = rangeCheckbox.checked ? new Date(endDateInput.value) : new Date(start_date);
+    const end_date = useEndDateCheckbox.checked ? new Date(endDateInput.value) : new Date(start_date);
     chart_drawer.generate_chart(start_date, end_date);
   });
   // Show all historical data
