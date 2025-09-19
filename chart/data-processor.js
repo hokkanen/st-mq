@@ -5,6 +5,8 @@ const VOLTAGE = 230;
 // Parcel-resolved URLs for CSV assets (use fetch to load at runtime)
 const EASEE_CSV_URL = new URL('../share/st-mq/easee.csv', import.meta.url).toString();
 const ST_CSV_URL = new URL('../share/st-mq/st-mq.csv', import.meta.url).toString();
+const EASEE_PATH = './share/st-mq/easee.csv';
+const ST_PATH = './share/st-mq/st-mq.csv';
 const EASEE_CACHE_KEY = 'easee';
 const ST_CACHE_KEY = 'st-mq';
 // Small helper to fetch CSV text and detect HTML fallbacks
@@ -150,7 +152,25 @@ export async function prefetchFullData() {
   await getRowsForRange(ST_CSV_URL, 0, ST_CACHE_KEY);
 }
 export async function loadEaseeData(start_time_unix, end_time_unix) {
-  const rows = await getRowsForRange(EASEE_CSV_URL, start_time_unix, EASEE_CACHE_KEY);
+  let rows;
+  try {
+    rows = await getRowsForRange(EASEE_CSV_URL, start_time_unix, EASEE_CACHE_KEY);
+    if (rows.length === 0) {
+      return { error: { type: 'garbage', message: `Error loading data from ${EASEE_PATH}` } };
+    }
+  } catch (e) {
+    console.error('Error loading Easee data:', e);
+    let type;
+    let msg;
+    if (e.message.includes('Expected CSV but received HTML') || e.message.match(/fetch failed:.*404/)) {
+      type = 'missing';
+      msg = `No easee.csv found at ${EASEE_PATH}`;
+    } else {
+      type = 'garbage';
+      msg = `Error loading data from ${EASEE_PATH}`;
+    }
+    return { error: { type, message: msg } };
+  }
   const startIdx = binarySearch(rows, start_time_unix, row => row.unix_time);
   let endIdx = startIdx;
   while (endIdx < rows.length && rows[endIdx].unix_time < end_time_unix) {
@@ -196,7 +216,25 @@ export async function loadEaseeData(start_time_unix, end_time_unix) {
   return { data, min_time_unix, max_time_unix };
 }
 export async function loadStData(start_time_unix, end_time_unix) {
-  const rows = await getRowsForRange(ST_CSV_URL, start_time_unix, ST_CACHE_KEY);
+  let rows;
+  try {
+    rows = await getRowsForRange(ST_CSV_URL, start_time_unix, ST_CACHE_KEY);
+    if (rows.length === 0) {
+      return { error: { type: 'garbage', message: `Error loading data from ${ST_PATH}` } };
+    }
+  } catch (e) {
+    console.error('Error loading ST data:', e);
+    let type;
+    let msg;
+    if (e.message.includes('Expected CSV but received HTML') || e.message.match(/fetch failed:.*404/)) {
+      type = 'missing';
+      msg = `No st-mq.csv found at ${ST_PATH}`;
+    } else {
+      type = 'garbage';
+      msg = `Error loading data from ${ST_PATH}`;
+    }
+    return { error: { type, message: msg } };
+  }
   const startIdx = binarySearch(rows, start_time_unix, row => row.unix_time);
   let endIdx = startIdx;
   while (endIdx < rows.length && rows[endIdx].unix_time < end_time_unix) {
