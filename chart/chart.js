@@ -398,94 +398,89 @@ class ChartDrawer {
       criticalErrors.push('Chart canvas not found.');
     }
     // Load data from processor
-    const [easee_promise, st_promise] = await Promise.allSettled([
+    const [easee_result, st_result] = await Promise.all([
       loadEaseeData(start_time_unix, end_time_unix),
       loadStData(start_time_unix, end_time_unix)
     ]);
-    let easee_result = {
-      data: {
-        ch_curr1: [],
-        ch_curr2: [],
-        ch_curr3: [],
-        ch_total: [],
-        eq_curr1: [],
-        eq_curr2: [],
-        eq_curr3: [],
-        eq_total: []
-      },
-      min_time_unix: null,
-      max_time_unix: null
-    };
-    let st_result = {
-      data: {
-        price: [],
-        heat_on_raw: [],
-        temp_in: [],
-        temp_ga: [],
-        temp_out: []
-      },
-      min_time_unix: null,
-      max_time_unix: null
-    };
-    if (easee_promise.status === 'fulfilled') {
-      easee_result = easee_promise.value;
-    } else {
-      console.error('Error loading Easee data:', easee_promise.reason);
-      partialErrors.push('Error loading Easee data');
+    if (easee_result.error?.type === 'garbage') partialErrors.push('Error loading Easee data');
+    if (st_result.error?.type === 'garbage') partialErrors.push('Error loading ST data');
+    if (!easee_result.error) {
+      this.#ch_curr1 = easee_result.data.ch_curr1;
+      this.#ch_curr2 = easee_result.data.ch_curr2;
+      this.#ch_curr3 = easee_result.data.ch_curr3;
+      this.#ch_total = easee_result.data.ch_total;
+      this.#eq_curr1 = easee_result.data.eq_curr1;
+      this.#eq_curr2 = easee_result.data.eq_curr2;
+      this.#eq_curr3 = easee_result.data.eq_curr3;
+      this.#eq_total = easee_result.data.eq_total;
     }
-    if (st_promise.status === 'fulfilled') {
-      st_result = st_promise.value;
-    } else {
-      console.error('Error loading ST data:', st_promise.reason);
-      partialErrors.push('Error loading ST data');
+    if (!st_result.error) {
+      this.#price = st_result.data.price;
+      // Deep copy for heat_on to ensure independent objects
+      this.#heat_on = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
+      // Deep copy for warm_water_pump to ensure independent objects
+      this.#warm_water_pump = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
+      this.#temp_in = st_result.data.temp_in;
+      this.#temp_ga = st_result.data.temp_ga;
+      this.#temp_out = st_result.data.temp_out;
     }
-    this.#ch_curr1 = easee_result.data.ch_curr1;
-    this.#ch_curr2 = easee_result.data.ch_curr2;
-    this.#ch_curr3 = easee_result.data.ch_curr3;
-    this.#ch_total = easee_result.data.ch_total;
-    this.#eq_curr1 = easee_result.data.eq_curr1;
-    this.#eq_curr2 = easee_result.data.eq_curr2;
-    this.#eq_curr3 = easee_result.data.eq_curr3;
-    this.#eq_total = easee_result.data.eq_total;
-    this.#price = st_result.data.price;
-    // Deep copy for heat_on to ensure independent objects
-    this.#heat_on = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
-    // Deep copy for warm_water_pump to ensure independent objects
-    this.#warm_water_pump = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
-    this.#temp_in = st_result.data.temp_in;
-    this.#temp_ga = st_result.data.temp_ga;
-    this.#temp_out = st_result.data.temp_out;
     this.#min_time_unix = Infinity;
     this.#max_time_unix = -Infinity;
-    if (easee_result.min_time_unix !== null) {
+    if (!easee_result.error && easee_result.min_time_unix !== null) {
       this.#min_time_unix = Math.min(this.#min_time_unix, easee_result.min_time_unix);
       this.#max_time_unix = Math.max(this.#max_time_unix, easee_result.max_time_unix);
     }
-    if (st_result.min_time_unix !== null) {
+    if (!st_result.error && st_result.min_time_unix !== null) {
       this.#min_time_unix = Math.min(this.#min_time_unix, st_result.min_time_unix);
       this.#max_time_unix = Math.max(this.#max_time_unix, st_result.max_time_unix);
     }
-    if (
-      this.#ch_curr1.length === 0 &&
-      this.#ch_curr2.length === 0 &&
-      this.#ch_curr3.length === 0 &&
-      this.#eq_curr1.length === 0 &&
-      this.#eq_curr2.length === 0 &&
-      this.#eq_curr3.length === 0 &&
-      this.#price.length === 0 &&
-      this.#heat_on.length === 0 &&
-      this.#temp_in.length === 0 &&
-      this.#temp_ga.length === 0 &&
-      this.#temp_out.length === 0
-    ) {
+    if (this.#min_time_unix === Infinity) {
+      this.#min_time_unix = start_time_unix;
+      this.#max_time_unix = end_time_unix - 60;
+    }
+    // Set up dataset controls
+    const easeeActions = document.getElementById('easeeActions');
+    const stmqActions = document.getElementById('stmqActions');
+    easeeActions.innerHTML = '';
+    stmqActions.innerHTML = '';
+    const easeeSection = document.querySelector('.easee-section');
+    const stmqSection = document.querySelector('.stmq-section');
+    easeeSection.classList.remove('error');
+    stmqSection.classList.remove('error');
+    if (easee_result.error) {
+      const msgP = document.createElement('p');
+      msgP.className = 'dataset-message';
+      msgP.innerText = easee_result.error.message;
+      if (easee_result.error.type === 'garbage') {
+        msgP.classList.add('error');
+        easeeSection.classList.add('error');
+      }
+      easeeActions.appendChild(msgP);
+    } else {
+      this.createEaseeButtons(easeeActions);
+    }
+    if (st_result.error) {
+      const msgP = document.createElement('p');
+      msgP.className = 'dataset-message';
+      msgP.innerText = st_result.error.message;
+      if (st_result.error.type === 'garbage') {
+        msgP.classList.add('error');
+        stmqSection.classList.add('error');
+      }
+      stmqActions.appendChild(msgP);
+    } else {
+      this.createStmqButton(stmqActions);
+    }
+    if (easee_result.error && st_result.error) {
       criticalErrors.push('No data available for the selected period.');
     }
-    const allErrors = [...criticalErrors, ...partialErrors];
+    const allErrors = [...partialErrors, ...criticalErrors];
     const hasCritical = criticalErrors.length > 0;
     loadingIndicator.style.display = 'none';
     if (allErrors.length > 0) {
       chartTitle.innerText = allErrors.join('; ');
       chartTitle.style.color = 'var(--error-color)';
+      chartWrapper.style.borderColor = hasCritical ? 'var(--error-color)' : 'var(--border-color)';
       if (hasCritical) {
         console.log('Chart rendering aborted: Critical Errors');
         return;
@@ -493,6 +488,7 @@ class ChartDrawer {
     } else {
       chartTitle.innerText = 'Home Monitor Chart';
       chartTitle.style.color = 'var(--text-color)';
+      chartWrapper.style.borderColor = 'var(--border-color)';
     }
     await this.#setup_chart();
     if (this.#chart) {
@@ -571,11 +567,6 @@ class ChartDrawer {
   document.getElementById('showAllButton').addEventListener('click', () => {
     chart_drawer.generate_chart(new Date(0), new Date());
   });
-  // Create chart action buttons
-  const easeeActions = document.getElementById('easeeActions');
-  const stmqActions = document.getElementById('stmqActions');
-  chart_drawer.createEaseeButtons(easeeActions);
-  chart_drawer.createStmqButton(stmqActions);
   // Generate chart for current day
   chart_drawer.generate_chart(new Date(), new Date());
 })();
