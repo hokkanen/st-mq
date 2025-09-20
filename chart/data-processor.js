@@ -26,7 +26,7 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
   const headRes = await fetch(url, { method: 'HEAD', cache: 'no-store' });
   if (!headRes.ok) throw new Error(`${url} HEAD fetch failed: ${headRes.status} ${headRes.statusText}`);
   const contentLength = headRes.headers.get('content-length');
-  if (!contentLength) throw new Error('Content-Length not available for partial fetch');
+  if (!contentLength) throw new Error('Content-Length header not available');
   const fileSize = parseInt(contentLength, 10);
   if (isNaN(fileSize)) throw new Error('Invalid Content-Length');
   const startByte = Math.max(0, fileSize - tailBytes);
@@ -136,22 +136,31 @@ async function getRowsForRange(url, start_time_unix, cacheKey, tailBytes = 50000
       return fullRows;
     }
   }
-  // Fetch partial
-  const partialText = await fetchPartialCsv(url, tailBytes);
-  const kbSize = (partialText.length / 1024).toFixed(0);
-  const partialRows = await parseToRows(partialText, url);
-  if (partialRows.length > 0 && partialRows[0].unix_time <= start_time_unix) {
-    console.log(`Fetched partial data (${kbSize}kb) for ${cacheKey} and cached ${partialRows.length} rows for ${url}`);
-    setCache(cacheKey, { rows: partialRows, isFull: false });
-    return partialRows;
+  let rows;
+  try {
+    const partialText = await fetchPartialCsv(url, tailBytes);
+    const kbSize = (partialText.length / 1024).toFixed(0);
+    const partialRows = await parseToRows(partialText, url);
+    if (partialRows.length > 0 && partialRows[0].unix_time <= start_time_unix) {
+      console.log(`Fetched partial data (${kbSize}kb) for ${cacheKey} and cached ${partialRows.length} rows for ${url}`);
+      setCache(cacheKey, { rows: partialRows, isFull: false });
+      rows = partialRows;
+    } else {
+      const fullText = await fetchCsv(url);
+      const fullRows = await parseToRows(fullText, url);
+      setCache(cacheKey, { rows: fullRows, isFull: true });
+      console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
+      rows = fullRows;
+    }
+  } catch (e) {
+    console.warn(`Partial fetch failed for ${cacheKey}, falling back to full: ${e.message}`);
+    const fullText = await fetchCsv(url);
+    const fullRows = await parseToRows(fullText, url);
+    setCache(cacheKey, { rows: fullRows, isFull: true });
+    console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
+    rows = fullRows;
   }
-  // Fetch and parse full CSV
-  const fullText = await fetchCsv(url);
-  const fullRows = await parseToRows(fullText, url);
-  // Cache the full rows
-  setCache(cacheKey, { rows: fullRows, isFull: true });
-  console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
-  return fullRows;
+  return rows;
 }
 // Get the beginning and end of the day
 function dateLims(start_date, end_date) {
@@ -172,18 +181,18 @@ export async function loadEaseeData(start_time_unix, end_time_unix) {
   try {
     rows = await getRowsForRange(EASEE_CSV_URL, start_time_unix, EASEE_CACHE_KEY);
     if (rows.length === 0) {
-      return { error: { type: 'garbage', message: `Error loading data from ${EASEE_PATH}` } };
+      return { error: { type: 'hasNoValidData', message: `Cannot find valid data in ${EASEE_PATH}` } };
     }
   } catch (e) {
     console.error('Error loading Easee data:', e);
     let type;
     let msg;
     if (e.message.includes('Expected CSV but received HTML') || e.message.match(/fetch failed:.*404/)) {
-      type = 'missing';
-      msg = `No easee.csv found at ${EASEE_PATH}`;
+      type = 'isMissing';
+      msg = `Cannot access ${EASEE_PATH}`;
     } else {
-      type = 'garbage';
-      msg = `Error loading data from ${EASEE_PATH}`;
+      type = 'hasNoValidData';
+      msg = `Cannot find valid data in ${EASEE_PATH}`;
     }
     return { error: { type, message: msg } };
   }
@@ -236,18 +245,18 @@ export async function loadStData(start_time_unix, end_time_unix) {
   try {
     rows = await getRowsForRange(ST_CSV_URL, start_time_unix, ST_CACHE_KEY);
     if (rows.length === 0) {
-      return { error: { type: 'garbage', message: `Error loading data from ${ST_PATH}` } };
+      return { error: { type: 'hasNoValidData', message: `Cannot find valid data in ${ST_PATH}` } };
     }
   } catch (e) {
     console.error('Error loading ST data:', e);
     let type;
     let msg;
     if (e.message.includes('Expected CSV but received HTML') || e.message.match(/fetch failed:.*404/)) {
-      type = 'missing';
-      msg = `No st-mq.csv found at ${ST_PATH}`;
+      type = 'isMissing';
+      msg = `Cannot access ${ST_PATH}`;
     } else {
-      type = 'garbage';
-      msg = `Error loading data from ${ST_PATH}`;
+      type = 'hasNoValidData';
+      msg = `Cannot find valid data in ${ST_PATH}`;
     }
     return { error: { type, message: msg } };
   }
