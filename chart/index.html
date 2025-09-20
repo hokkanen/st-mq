@@ -17,6 +17,7 @@
       --checkbox-color: #6c757d;
       --shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       --error-color: #dc3545;
+      --warning-color: #ffc107;
     }
 
     body.dark {
@@ -31,6 +32,7 @@
       --checkbox-color: #adb5bd;
       --shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
       --error-color: #ff6b6b;
+      --warning-color: #ffc107;
     }
 
     body {
@@ -374,16 +376,6 @@
       transform: translateY(-1px);
     }
 
-    .easee-section.error,
-    .stmq-section.error {
-      border-color: var(--error-color);
-    }
-
-    .easee-section.error .easee-title,
-    .stmq-section.error .stmq-title {
-      color: var(--error-color);
-    }
-
     .dataset-message {
       font-size: 0.9em;
       font-weight: 500;
@@ -393,10 +385,6 @@
       margin: 0;
       white-space: normal;
       color: var(--text-color);
-    }
-
-    .dataset-message.error {
-      color: var(--error-color);
     }
   </style>
 </head>

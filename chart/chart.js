@@ -391,20 +391,21 @@ class ChartDrawer {
     const limits = this.#date_lims(start_date, end_date);
     const start_time_unix = limits.bod;
     const end_time_unix = limits.eod;
-    let criticalErrors = [];
-    let partialErrors = [];
+    let otherCriticalErrors = [];
     const ctxElement = document.getElementById('acquisitions');
     if (!ctxElement || !ctxElement.getContext('2d')) {
-      criticalErrors.push('Chart canvas not found.');
+      otherCriticalErrors.push('Chart canvas not found.');
     }
     // Load data from processor
     const [easee_result, st_result] = await Promise.all([
       loadEaseeData(start_time_unix, end_time_unix),
       loadStData(start_time_unix, end_time_unix)
     ]);
-    if (easee_result.error?.type === 'garbage') partialErrors.push('Error loading Easee data');
-    if (st_result.error?.type === 'garbage') partialErrors.push('Error loading ST data');
-    if (!easee_result.error) {
+    const easeeErrorType = easee_result.error?.type || null;
+    const stErrorType = st_result.error?.type || null;
+    const hasEaseeData = !easee_result.error;
+    const hasStData = !st_result.error;
+    if (hasEaseeData) {
       this.#ch_curr1 = easee_result.data.ch_curr1;
       this.#ch_curr2 = easee_result.data.ch_curr2;
       this.#ch_curr3 = easee_result.data.ch_curr3;
@@ -414,7 +415,7 @@ class ChartDrawer {
       this.#eq_curr3 = easee_result.data.eq_curr3;
       this.#eq_total = easee_result.data.eq_total;
     }
-    if (!st_result.error) {
+    if (hasStData) {
       this.#price = st_result.data.price;
       // Deep copy for heat_on to ensure independent objects
       this.#heat_on = st_result.data.heat_on_raw.map(point => ({ x: point.x, y: point.y }));
@@ -426,11 +427,11 @@ class ChartDrawer {
     }
     this.#min_time_unix = Infinity;
     this.#max_time_unix = -Infinity;
-    if (!easee_result.error && easee_result.min_time_unix !== null) {
+    if (hasEaseeData && easee_result.min_time_unix !== null) {
       this.#min_time_unix = Math.min(this.#min_time_unix, easee_result.min_time_unix);
       this.#max_time_unix = Math.max(this.#max_time_unix, easee_result.max_time_unix);
     }
-    if (!st_result.error && st_result.min_time_unix !== null) {
+    if (hasStData && st_result.min_time_unix !== null) {
       this.#min_time_unix = Math.min(this.#min_time_unix, st_result.min_time_unix);
       this.#max_time_unix = Math.max(this.#max_time_unix, st_result.max_time_unix);
     }
@@ -441,47 +442,80 @@ class ChartDrawer {
     // Set up dataset controls
     const easeeActions = document.getElementById('easeeActions');
     const stmqActions = document.getElementById('stmqActions');
-    easeeActions.innerHTML = '';
-    stmqActions.innerHTML = '';
     const easeeSection = document.querySelector('.easee-section');
     const stmqSection = document.querySelector('.stmq-section');
-    easeeSection.classList.remove('error');
-    stmqSection.classList.remove('error');
+    const easeeTitle = document.querySelector('.easee-title');
+    const stmqTitle = document.querySelector('.stmq-title');
+    easeeActions.innerHTML = '';
+    stmqActions.innerHTML = '';
     if (easee_result.error) {
       const msgP = document.createElement('p');
       msgP.className = 'dataset-message';
       msgP.innerText = easee_result.error.message;
-      if (easee_result.error.type === 'garbage') {
-        msgP.classList.add('error');
-        easeeSection.classList.add('error');
-      }
       easeeActions.appendChild(msgP);
+      if (easeeErrorType === 'hasNoValidData') {
+        const otherUnavailable = !!st_result.error;
+        const color = otherUnavailable ? 'error' : 'warning';
+        easeeSection.style.borderColor = `var(--${color}-color)`;
+        msgP.style.color = `var(--${color}-color)`;
+        easeeTitle.style.color = `var(--${color}-color)`;
+      } else {
+        easeeSection.style.borderColor = 'var(--border-color)';
+        msgP.style.color = 'var(--text-color)';
+        easeeTitle.style.color = 'var(--text-color)';
+      }
     } else {
       this.createEaseeButtons(easeeActions);
+      easeeSection.style.borderColor = 'var(--border-color)';
+      easeeTitle.style.color = 'var(--text-color)';
     }
     if (st_result.error) {
       const msgP = document.createElement('p');
       msgP.className = 'dataset-message';
       msgP.innerText = st_result.error.message;
-      if (st_result.error.type === 'garbage') {
-        msgP.classList.add('error');
-        stmqSection.classList.add('error');
-      }
       stmqActions.appendChild(msgP);
+      if (stErrorType === 'hasNoValidData') {
+        const otherUnavailable = !!easee_result.error;
+        const color = otherUnavailable ? 'error' : 'warning';
+        stmqSection.style.borderColor = `var(--${color}-color)`;
+        msgP.style.color = `var(--${color}-color)`;
+        stmqTitle.style.color = `var(--${color}-color)`;
+      } else {
+        stmqSection.style.borderColor = 'var(--border-color)';
+        msgP.style.color = 'var(--text-color)';
+        stmqTitle.style.color = 'var(--text-color)';
+      }
     } else {
       this.createStmqButton(stmqActions);
+      stmqSection.style.borderColor = 'var(--border-color)';
+      stmqTitle.style.color = 'var(--text-color)';
     }
-    if (easee_result.error && st_result.error) {
-      criticalErrors.push('No data available for the selected period.');
+    // Chart messages and colors
+    let chartMessages = [];
+    if (easeeErrorType === 'hasNoValidData') {
+      chartMessages.push('Cannot load data from Easee file');
     }
-    const allErrors = [...partialErrors, ...criticalErrors];
-    const hasCritical = criticalErrors.length > 0;
+    if (stErrorType === 'hasNoValidData') {
+      chartMessages.push('Cannot load data from ST-MQ file');
+    }
+    if (!hasEaseeData && !hasStData) {
+      chartMessages.push('No data available for the selected period');
+    }
+    const numInvalid = (easeeErrorType === 'hasNoValidData' ? 1 : 0) + (stErrorType === 'hasNoValidData' ? 1 : 0);
+    const allMessages = [...chartMessages, ...otherCriticalErrors];
     loadingIndicator.style.display = 'none';
-    if (allErrors.length > 0) {
-      chartTitle.innerText = allErrors.join('; ');
-      chartTitle.style.color = 'var(--error-color)';
-      chartWrapper.style.borderColor = hasCritical ? 'var(--error-color)' : 'var(--border-color)';
-      if (hasCritical) {
+    if (allMessages.length > 0) {
+      chartTitle.innerText = allMessages.join('; ');
+      if (otherCriticalErrors.length > 0) {
+        chartTitle.style.color = 'var(--error-color)';
+        chartWrapper.style.borderColor = 'var(--error-color)';
+      } else {
+        const colorKey = numInvalid > 0 ? (numInvalid === 2 ? 'error' : 'warning') : 'text';
+        const borderKey = numInvalid > 0 ? (numInvalid === 2 ? 'error' : 'warning') : 'border';
+        chartTitle.style.color = `var(--${colorKey}-color)`;
+        chartWrapper.style.borderColor = `var(--${borderKey}-color)`;
+      }
+      if (otherCriticalErrors.length > 0 || (!hasEaseeData && !hasStData)) {
         console.log('Chart rendering aborted: Critical Errors');
         return;
       }
