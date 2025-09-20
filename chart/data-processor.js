@@ -15,8 +15,8 @@ async function fetchCsv(url) {
   const ct = (res.headers.get('content-type') || '').toLowerCase();
   if (!res.ok) throw new Error(`${url} fetch failed: ${res.status} ${res.statusText}`);
   if (ct.includes('text/html')) {
-    const snippet = await res.text().then(t => t.slice(0, 1024));
-    throw new Error(`Expected CSV but received HTML for ${url}. Snippet:\n${snippet}`);
+    await res.text();
+    throw new Error(`Expected CSV but received HTML for ${url}`);
   }
   return await res.text();
 }
@@ -36,8 +36,8 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
   const prefixCt = (prefixRes.headers.get('content-type') || '').toLowerCase();
   if (!prefixRes.ok) throw new Error(`${url} prefix fetch failed: ${prefixRes.status} ${prefixRes.statusText}`);
   if (prefixCt.includes('text/html')) {
-    const snippet = await prefixRes.text().then(t => t.slice(0, 1024));
-    throw new Error(`Expected CSV but received HTML for ${url} prefix. Snippet:\n${snippet}`);
+    await prefixRes.text();
+    throw new Error(`Expected CSV but received HTML for ${url} prefix`);
   }
   const prefixText = await prefixRes.text();
   // Extract header row
@@ -49,8 +49,8 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
   const tailCt = (tailRes.headers.get('content-type') || '').toLowerCase();
   if (!tailRes.ok) throw new Error(`${url} tail fetch failed: ${tailRes.status} ${tailRes.statusText}`);
   if (tailCt.includes('text/html')) {
-    const snippet = await tailRes.text().then(t => t.slice(0, 1024));
-    throw new Error(`Expected CSV but received HTML for ${url} tail. Snippet:\n${snippet}`);
+    await tailRes.text();
+    throw new Error(`Expected CSV but received HTML for ${url} tail`);
   }
   let tailText = await tailRes.text();
   // Handle tail: discard partial row at the start if present
@@ -184,12 +184,12 @@ export async function loadEaseeData(start_time_unix, end_time_unix) {
       return { error: { type: 'hasNoValidData', message: `Cannot find valid data in ${EASEE_PATH}` } };
     }
   } catch (e) {
-    console.error('Error loading Easee data:', e);
+    console.error(`Error loading ${EASEE_CACHE_KEY} data: ${e.message}`);
     let type;
     let msg;
-    if (e.message.includes('Expected CSV but received HTML') || e.message.match(/fetch failed:.*404/)) {
+    if (e.message.includes('Expected CSV but received HTML') || e.message.includes('fetch failed:')) {
       type = 'isMissing';
-      msg = `Cannot access ${EASEE_PATH}`;
+      msg = `Cannot fetch ${EASEE_PATH}`;
     } else {
       type = 'hasNoValidData';
       msg = `Cannot find valid data in ${EASEE_PATH}`;
@@ -248,12 +248,12 @@ export async function loadStData(start_time_unix, end_time_unix) {
       return { error: { type: 'hasNoValidData', message: `Cannot find valid data in ${ST_PATH}` } };
     }
   } catch (e) {
-    console.error('Error loading ST data:', e);
+    console.error(`Error loading ${ST_CACHE_KEY} data: ${e.message}`);
     let type;
     let msg;
-    if (e.message.includes('Expected CSV but received HTML') || e.message.match(/fetch failed:.*404/)) {
+    if (e.message.includes('Expected CSV but received HTML') || e.message.includes('fetch failed:')) {
       type = 'isMissing';
-      msg = `Cannot access ${ST_PATH}`;
+      msg = `Cannot fetch ${ST_PATH}`;
     } else {
       type = 'hasNoValidData';
       msg = `Cannot find valid data in ${ST_PATH}`;

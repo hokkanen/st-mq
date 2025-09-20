@@ -3,7 +3,7 @@
   "version": "0.6.6",
   "license": "MIT",
   "scripts": {
-    "dev": "vite chart --host 0.0.0.0 --port 1234",
+    "srv": "vite chart --host 0.0.0.0 --port 1234",
     "build": "vite build chart",
     "preview": "vite preview --host 0.0.0.0 --port 12345"
   },
