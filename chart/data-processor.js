@@ -22,6 +22,15 @@ async function fetchCsv(url) {
 }
 // Helper to fetch partial CSV (header + last N bytes)
 async function fetchPartialCsv(url, tailBytes = 50000) {
+  // Get file size via HEAD
+  const headRes = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+  if (!headRes.ok) throw new Error(`${url} HEAD fetch failed: ${headRes.status} ${headRes.statusText}`);
+  const contentLength = headRes.headers.get('content-length');
+  if (!contentLength) throw new Error('Content-Length not available for partial fetch');
+  const fileSize = parseInt(contentLength, 10);
+  if (isNaN(fileSize)) throw new Error('Invalid Content-Length');
+  const startByte = Math.max(0, fileSize - tailBytes);
+  const tailRange = `bytes=${startByte}-${fileSize - 1}`;
   // Fetch prefix for header
   const prefixRes = await fetch(url, { headers: { 'Range': 'bytes=0-1023' }, cache: 'no-store' });
   const prefixCt = (prefixRes.headers.get('content-type') || '').toLowerCase();
@@ -36,7 +45,7 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
   if (newlineIdx === -1) throw new Error('No header found in CSV prefix');
   const header = prefixText.slice(0, newlineIdx).trim();
   // Fetch tail
-  const tailRes = await fetch(url, { headers: { 'Range': `bytes=-${tailBytes}` }, cache: 'no-store' });
+  const tailRes = await fetch(url, { headers: { 'Range': tailRange }, cache: 'no-store' });
   const tailCt = (tailRes.headers.get('content-type') || '').toLowerCase();
   if (!tailRes.ok) throw new Error(`${url} tail fetch failed: ${tailRes.status} ${tailRes.statusText}`);
   if (tailCt.includes('text/html')) {
@@ -44,12 +53,19 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
     throw new Error(`Expected CSV but received HTML for ${url} tail. Snippet:\n${snippet}`);
   }
   let tailText = await tailRes.text();
-  // Discard partial row at the start of tail
-  const firstNewline = tailText.indexOf('\n');
-  if (firstNewline !== -1) {
-    tailText = tailText.slice(firstNewline + 1);
-  } else {
+  // Handle tail: discard partial row at the start if present
+  const firstNewlineIdx = tailText.indexOf('\n');
+  if (firstNewlineIdx === -1) {
     tailText = '';
+  } else {
+    const firstLine = tailText.slice(0, firstNewlineIdx);
+    const parsedFirst = Papa.parse(firstLine, { header: false, dynamicTyping: true }).data[0] || [];
+    const headerFields = Papa.parse(header, { header: false, dynamicTyping: true }).data[0] || [];
+    const expectedCols = headerFields.length;
+    const isValidRow = parsedFirst.length === expectedCols && typeof parsedFirst[0] === 'number' && !isNaN(parsedFirst[0]);
+    if (!isValidRow) {
+      tailText = tailText.slice(firstNewlineIdx + 1);
+    }
   }
   // Combine header and tail
   return header + '\n' + tailText;
