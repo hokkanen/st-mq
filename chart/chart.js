@@ -275,13 +275,13 @@ class ChartDrawer {
     const ds = this.#chart.data.datasets;
     // Total power
     const allTotal = [3, 7].every(i => !ds[i].hidden);
-    this.#totalBtn.style.textDecoration = allTotal ? 'none' : 'line-through';
+    if (this.#totalBtn) this.#totalBtn.style.textDecoration = allTotal ? 'none' : 'line-through';
     // Individual phases
     const allPhases = [0, 1, 2, 4, 5, 6].every(i => !ds[i].hidden);
-    this.#phasesBtn.style.textDecoration = allPhases ? 'none' : 'line-through';
+    if (this.#phasesBtn) this.#phasesBtn.style.textDecoration = allPhases ? 'none' : 'line-through';
     // All ST-MQ
     const allSt = [8, 9, 10, 11, 12, 13].every(i => !ds[i].hidden);
-    this.#allStBtn.style.textDecoration = allSt ? 'none' : 'line-through';
+    if (this.#allStBtn) this.#allStBtn.style.textDecoration = allSt ? 'none' : 'line-through';
   }
   // Create Easee buttons
   createEaseeButtons(container) {
@@ -493,15 +493,15 @@ class ChartDrawer {
     // Chart messages and colors
     let chartMessages = [];
     if (easeeErrorType === 'hasNoValidData') {
-      chartMessages.push('Cannot load data from Easee file');
+      chartMessages.push('No Easee data');
     }
     if (stErrorType === 'hasNoValidData') {
-      chartMessages.push('Cannot load data from ST-MQ file');
+      chartMessages.push('No ST-MQ data');
     }
     if (!hasEaseeData && !hasStData) {
       chartMessages.push('No data available for the selected period');
     }
-    const numInvalid = (easeeErrorType === 'hasNoValidData' ? 1 : 0) + (stErrorType === 'hasNoValidData' ? 1 : 0);
+    const numErrors = (easee_result.error ? 1 : 0) + (st_result.error ? 1 : 0);
     const allMessages = [...chartMessages, ...otherCriticalErrors];
     loadingIndicator.style.display = 'none';
     if (allMessages.length > 0) {
@@ -510,8 +510,8 @@ class ChartDrawer {
         chartTitle.style.color = 'var(--error-color)';
         chartWrapper.style.borderColor = 'var(--error-color)';
       } else {
-        const colorKey = numInvalid > 0 ? (numInvalid === 2 ? 'error' : 'warning') : 'text';
-        const borderKey = numInvalid > 0 ? (numInvalid === 2 ? 'error' : 'warning') : 'border';
+        const colorKey = numErrors > 0 ? (numErrors === 2 ? 'error' : 'warning') : 'text';
+        const borderKey = numErrors > 0 ? (numErrors === 2 ? 'error' : 'warning') : 'border';
         chartTitle.style.color = `var(--${colorKey}-color)`;
         chartWrapper.style.borderColor = `var(--${borderKey}-color)`;
       }

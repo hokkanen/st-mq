@@ -77,11 +77,16 @@ To start all required services, ie, [easee-query.js](scripts/easee-query.js) and
 ```
 node scheduler.js
 ```
+or just run chart web server by
+```
+npm run srv
+```
+
 To run with `pm2` process manager without using the [scheduler.js](scheduler.js) script, use the following ([easee-query.js](scripts/easee-query.js) does not have an internal scheduler):
 ```
 pm2 start ./scripts/mqtt-control.js
 pm2 start ./scripts/easee-query.js --cron-restart="*/5 * * * *" --no-autorestart
-pm2 start npm -- run dev
+pm2 start npm -- run srv
 ```
 The console output uses blue color for [mqtt-control.js](scripts/mqtt-control.js) and green color for [easee-query.js](scripts/easee-query.js) (the [chart](chart/index.html) server log is stored in `./share/st-mq/chart-server.log`). The [chart](chart/index.html) itself can be accessed with a browser at [http://localhost:1234](http://localhost:1234).
 
