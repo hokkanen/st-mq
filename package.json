@@ -3,9 +3,9 @@
   "version": "0.6.6",
   "license": "MIT",
   "scripts": {
-    "srv": "vite chart --host 0.0.0.0 --port 1234",
-    "build": "vite build chart",
-    "preview": "vite preview --host 0.0.0.0 --port 12345"
+    "srv": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "type": "module",
   "devDependencies": {
