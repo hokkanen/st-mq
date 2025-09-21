@@ -233,8 +233,8 @@ class ChartDrawer {
     const ds = this.#chart.data.datasets;
     const totalIndices = [3, 7];
     const phasesIndices = [0, 1, 2, 4, 5, 6];
-    const allVisible = totalIndices.every(i => !ds[i].hidden);
-    if (allVisible) {
+    const anyVisible = totalIndices.some(i => !ds[i].hidden);
+    if (anyVisible) {
       totalIndices.forEach(i => ds[i].hidden = true);
     } else {
       totalIndices.forEach(i => ds[i].hidden = false);
@@ -249,8 +249,8 @@ class ChartDrawer {
     const ds = this.#chart.data.datasets;
     const phasesIndices = [0, 1, 2, 4, 5, 6];
     const totalIndices = [3, 7];
-    const allVisible = phasesIndices.every(i => !ds[i].hidden);
-    if (allVisible) {
+    const anyVisible = phasesIndices.some(i => !ds[i].hidden);
+    if (anyVisible) {
       phasesIndices.forEach(i => ds[i].hidden = true);
     } else {
       phasesIndices.forEach(i => ds[i].hidden = false);
@@ -264,8 +264,8 @@ class ChartDrawer {
     if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
     const ds = this.#chart.data.datasets;
     const stIndices = [8, 9, 10, 11, 12, 13];
-    const allVisible = stIndices.every(i => !ds[i].hidden);
-    stIndices.forEach(i => ds[i].hidden = allVisible);
+    const anyVisible = stIndices.some(i => !ds[i].hidden);
+    stIndices.forEach(i => ds[i].hidden = anyVisible);
     this.#chart.update();
     this.updateButtonStates();
   }
@@ -274,14 +274,14 @@ class ChartDrawer {
     if (!this.#chart || !this.#chart.data || !this.#chart.data.datasets) return;
     const ds = this.#chart.data.datasets;
     // Total power
-    const allTotal = [3, 7].every(i => !ds[i].hidden);
-    if (this.#totalBtn) this.#totalBtn.style.textDecoration = allTotal ? 'none' : 'line-through';
+    const anyTotal = [3, 7].some(i => !ds[i].hidden);
+    if (this.#totalBtn) this.#totalBtn.style.textDecoration = anyTotal ? 'none' : 'line-through';
     // Individual phases
-    const allPhases = [0, 1, 2, 4, 5, 6].every(i => !ds[i].hidden);
-    if (this.#phasesBtn) this.#phasesBtn.style.textDecoration = allPhases ? 'none' : 'line-through';
+    const anyPhases = [0, 1, 2, 4, 5, 6].some(i => !ds[i].hidden);
+    if (this.#phasesBtn) this.#phasesBtn.style.textDecoration = anyPhases ? 'none' : 'line-through';
     // All ST-MQ
-    const allSt = [8, 9, 10, 11, 12, 13].every(i => !ds[i].hidden);
-    if (this.#allStBtn) this.#allStBtn.style.textDecoration = allSt ? 'none' : 'line-through';
+    const anySt = [8, 9, 10, 11, 12, 13].some(i => !ds[i].hidden);
+    if (this.#allStBtn) this.#allStBtn.style.textDecoration = anySt ? 'none' : 'line-through';
   }
   // Create Easee buttons
   createEaseeButtons(container) {
