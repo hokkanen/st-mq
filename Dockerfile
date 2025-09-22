@@ -25,6 +25,7 @@ RUN npm install
 COPY chart/ ./chart/
 COPY scripts/ ./scripts/
 COPY scheduler.js ./
+COPY vite.config.js ./
 
 # Run scheduler.js
 CMD [ "node", "scheduler.js" ]

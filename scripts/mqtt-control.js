@@ -1,10 +1,14 @@
 import { dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { join } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import moment from 'moment-timezone';
 import mqtt from 'mqtt';
 import schedule from 'node-schedule';
 import { XMLParser } from 'fast-xml-parser';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ### Global Variables ###
 // Debugging settings and console colors
@@ -16,11 +20,11 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 
 // Configuration and CSV paths
-let CONFIG_PATH = './config.json'; // default path
-if (fs.existsSync('./data/options.json')) {
-    CONFIG_PATH = './data/options.json'; // HASS path
+let CONFIG_PATH = join(__dirname, '..', 'config.json'); // default path
+if (fs.existsSync(join(__dirname, '..', 'data', 'options.json'))) {
+  CONFIG_PATH = join(__dirname, '..', 'data', 'options.json'); // HASS path
 }
-const CSV_FILE_PATH = './share/st-mq/st-mq.csv';
+const CSV_FILE_PATH = join(__dirname, '..', 'share', 'st-mq', 'st-mq.csv');
 
 // ### Utility Functions ###
 

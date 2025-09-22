@@ -18,13 +18,16 @@ async function fetchCsv(url) {
     await res.text();
     throw new Error(`Expected CSV but received HTML for ${url}`);
   }
-  return await res.text();
+  const lm = res.headers.get('Last-Modified');
+  const text = await res.text();
+  return { text, lm };
 }
 // Helper to fetch partial CSV (header + last N bytes)
 async function fetchPartialCsv(url, tailBytes = 50000) {
   // Get file size via HEAD
   const headRes = await fetch(url, { method: 'HEAD', cache: 'no-store' });
   if (!headRes.ok) throw new Error(`${url} HEAD fetch failed: ${headRes.status} ${headRes.statusText}`);
+  const lm = headRes.headers.get('Last-Modified');
   const contentLength = headRes.headers.get('content-length');
   if (!contentLength) throw new Error('Content-Length header not available');
   const fileSize = parseInt(contentLength, 10);
@@ -68,7 +71,8 @@ async function fetchPartialCsv(url, tailBytes = 50000) {
     }
   }
   // Combine header and tail
-  return header + '\n' + tailText;
+  const text = header + '\n' + tailText;
+  return { text, lm };
 }
 // Cache management
 const caches = new Map();
@@ -122,41 +126,51 @@ async function parseToRows(text, url) {
 // Get rows for the range, using cache, partial, or full fetch
 async function getRowsForRange(url, start_time_unix, cacheKey, tailBytes = 50000) {
   let cache = getCache(cacheKey);
-  if (cache?.rows?.length > 0) {
-    if (cache.isFull || cache.rows[0].unix_time <= start_time_unix) {
-      const type = cache.isFull ? 'full' : 'partial';
-      console.log(`Using ${type} cache for ${cacheKey}`);
+  let isUpToDate = false;
+  let currentLM = null;
+  if (cache) {
+    const headRes = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    if (!headRes.ok) throw new Error(`${url} HEAD fetch failed: ${headRes.status} ${headRes.statusText}`);
+    currentLM = headRes.headers.get('Last-Modified');
+    if (currentLM && cache.lastModified === currentLM) {
+      isUpToDate = true;
+      // console.log(`Cache up-to-date for ${cacheKey}`);
+    }
+  }
+  if (isUpToDate) {
+    if (cache.isFull || (cache.rows.length > 0 && cache.rows[0].unix_time <= start_time_unix)) {
       return cache.rows;
-    } else if (!cache.isFull) {
-      // Partial cache exists but insufficient, fetch full
-      const fullText = await fetchCsv(url);
+    } else {
+      // Up-to-date but insufficient coverage, fetch full
+      const { text: fullText, lm: newLm } = await fetchCsv(url);
       const fullRows = await parseToRows(fullText, url);
-      setCache(cacheKey, { rows: fullRows, isFull: true });
-      console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
+      setCache(cacheKey, { rows: fullRows, isFull: true, lastModified: newLm });
+      console.log(`Fetched full data (coverage extension) for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
       return fullRows;
     }
   }
+  // Cache invalid, outdated, or missing: fetch partial or full
   let rows;
   try {
-    const partialText = await fetchPartialCsv(url, tailBytes);
+    const { text: partialText, lm } = await fetchPartialCsv(url, tailBytes);
     const kbSize = (partialText.length / 1024).toFixed(0);
     const partialRows = await parseToRows(partialText, url);
     if (partialRows.length > 0 && partialRows[0].unix_time <= start_time_unix) {
       console.log(`Fetched partial data (${kbSize}kb) for ${cacheKey} and cached ${partialRows.length} rows for ${url}`);
-      setCache(cacheKey, { rows: partialRows, isFull: false });
+      setCache(cacheKey, { rows: partialRows, isFull: false, lastModified: lm });
       rows = partialRows;
     } else {
-      const fullText = await fetchCsv(url);
+      const { text: fullText, lm: fullLm } = await fetchCsv(url);
       const fullRows = await parseToRows(fullText, url);
-      setCache(cacheKey, { rows: fullRows, isFull: true });
+      setCache(cacheKey, { rows: fullRows, isFull: true, lastModified: fullLm });
       console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
       rows = fullRows;
     }
   } catch (e) {
     console.warn(`Partial fetch failed for ${cacheKey}, falling back to full: ${e.message}`);
-    const fullText = await fetchCsv(url);
+    const { text: fullText, lm: fullLm } = await fetchCsv(url);
     const fullRows = await parseToRows(fullText, url);
-    setCache(cacheKey, { rows: fullRows, isFull: true });
+    setCache(cacheKey, { rows: fullRows, isFull: true, lastModified: fullLm });
     console.log(`Fetched full data for ${cacheKey} and cached ${fullRows.length} rows for ${url}`);
     rows = fullRows;
   }
@@ -173,8 +187,14 @@ function dateLims(start_date, end_date) {
   return { bod, eod };
 }
 export async function prefetchFullData() {
-  await getRowsForRange(EASEE_CSV_URL, 0, EASEE_CACHE_KEY);
-  await getRowsForRange(ST_CSV_URL, 0, ST_CACHE_KEY);
+  await Promise.all([
+    getRowsForRange(EASEE_CSV_URL, 0, EASEE_CACHE_KEY).catch(error => {
+      console.error(`Prefetch failed for ${EASEE_CACHE_KEY}:`, error);
+    }),
+    getRowsForRange(ST_CSV_URL, 0, ST_CACHE_KEY).catch(error => {
+      console.error(`Prefetch failed for ${ST_CACHE_KEY}:`, error);
+    })
+  ]);
 }
 export async function loadEaseeData(start_time_unix, end_time_unix) {
   let rows;

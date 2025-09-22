@@ -1,7 +1,11 @@
 import { dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { join } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import moment from 'moment-timezone';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ### Global Variables ###
 // Debugging settings and console colors
@@ -13,11 +17,11 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 
 // Configuration and CSV paths
-let CONFIG_PATH = './config.json'; // default path
-if (fs.existsSync('./data/options.json')) {
-    CONFIG_PATH = './data/options.json'; // HASS path
+let CONFIG_PATH = join(__dirname, '..', 'config.json'); // default path
+if (fs.existsSync(join(__dirname, '..', 'data', 'options.json'))) {
+  CONFIG_PATH = join(__dirname, '..', 'data', 'options.json'); // HASS path
 }
-const CSV_FILE_PATH = './share/st-mq/easee.csv';
+const CSV_FILE_PATH = join(__dirname, '..', 'share', 'st-mq', 'easee.csv');
 
 // ### Utility Functions ###
 
@@ -308,21 +312,21 @@ async function query_device_data() {
 (async () => {
     try {
         // Validate required configuration fields before proceeding
-		const cfg = config();
-		const errors = [];
-		
-		if (!cfg.charger_id) {
-			errors.push("Missing 'charger_id'");
-		}
-		if (!cfg.equalizer_id) {
-			errors.push("Missing 'equalizer_id'");
-		}
-		if (!((cfg.user && cfg.pw) || (cfg.access_token && cfg.refresh_token))) {
-			errors.push("Either 'user' and 'pw' or 'access_token' and 'refresh_token' are required");
-		}
-		if (errors.length > 0) {
-			throw new Error(errors.join('; '));
-		}
+        const cfg = config();
+        const errors = [];
+
+        if (!cfg.charger_id) {
+            errors.push("Missing 'charger_id'");
+        }
+        if (!cfg.equalizer_id) {
+            errors.push("Missing 'equalizer_id'");
+        }
+        if (!((cfg.user && cfg.pw) || (cfg.access_token && cfg.refresh_token))) {
+            errors.push("Either 'user' and 'pw' or 'access_token' and 'refresh_token' are required");
+        }
+        if (errors.length > 0) {
+            throw new Error(errors.join('; '));
+        }
 
         // Check the csv file status and create one if necessary
         await init_csv();
