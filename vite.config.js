@@ -1,17 +1,48 @@
-export default {
-  root: 'chart', // Sets the project root to the 'chart' directory
+import { defineConfig } from 'vite';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'node:fs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig({
+  root: resolve(__dirname, 'chart'), // Absolute path to the root dir
   server: {
-    host: '0.0.0.0', // Equivalent to --host 0.0.0.0
-    port: 1234, // Equivalent to --port 1234 for dev server
-    allowedHosts: true, // Disables host checking to allow custom domain names
+    host: '0.0.0.0', // Allow LAN access
+    port: 1212,
+    allowedHosts: true, // Allow access through custom host names
+    fs: {
+      allow: (() => { // Redefine accessible folders due to HASSIO symlink to outside dir
+        const allow = [
+          resolve(__dirname, 'chart'), // Root path (needed because this list overwrites defaults)
+        ];
+        const sharePath = resolve(__dirname, 'share');
+        if (fs.existsSync(sharePath) && fs.lstatSync(sharePath).isSymbolicLink()) {
+          allow.push(resolve(__dirname, '..', 'share', 'st-mq')); // HASSIO path behind symlink to outside dir
+        } else {
+          allow.push(resolve(__dirname, 'share', 'st-mq')); // Standard path (needed because this list overwrites defaults)
+        }
+        return allow;
+      })(),
+    },
   },
   preview: {
-    host: '0.0.0.0', // Equivalent to --host 0.0.0.0 for preview
-    port: 12345, // Equivalent to --port 12345 for preview
-    allowedHosts: true, // Disables host checking to allow custom domain names
+    host: '0.0.0.0', // Allow LAN access
+    port: 1234,
+    allowedHosts: true, // Allow access through custom host names
   },
   build: {
-    outDir: '../dist', // Outputs build to the parent directory's dist folder (relative to root)
-    emptyOutDir: true, // Clears the output directory before building
+    outDir: resolve(__dirname, 'dist'), // Set build directory
+    emptyOutDir: true, // Clean build directory before building
+    watch: {
+      buildDelay: 5000, // Wait 5s before updating build files when file change detected
+    },
+    rollupOptions: {
+      output: { // Disable file name hashing to prevent breaking update fetches
+        entryFileNames: '[name].js',
+        chunkFileNames: '[name].js',
+        assetFileNames: '[name].[ext]',
+      },
+    },
   },
-};
+});

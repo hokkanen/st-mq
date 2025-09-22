@@ -1,19 +1,28 @@
+import { fileURLToPath } from 'url';
 import fs from 'fs';
 import schedule from 'node-schedule';
 import { spawn } from 'child_process';
-import path from 'path';
+import path, { dirname } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Set console colors
 export const RESET = '\x1b[0m';
 export const RED = '\x1b[31m';
 
 // Function to spawn a process with error handling
-function spawn_process(command, args = [], options = { stdio: 'inherit' }) {
+function spawn_process(command, args = [], options = { stdio: 'inherit', cwd: __dirname }) {
     // Spawn the process
     const proc = spawn(command, args, options);
     // Check for launch errors
     proc.on('error', (error) => {
         console.error(`${RED}%s${RESET}`, `ERROR: Could not spawn '${command} ${args.join(' ')}': ${error}`);
+    });
+    // Log exit for debugging
+    proc.on('exit', (code) => {
+        if (code !== 0) {
+            console.log(`${RED}Process '${command} ${args.join(' ')}' exited with code ${code}${RESET}`);
+        }
     });
     return proc;
 }
@@ -21,52 +30,56 @@ function spawn_process(command, args = [], options = { stdio: 'inherit' }) {
 // Begin execution here
 (async () => {
     // Create the csv directory if it does not exist
-    const csv_dir = './share/st-mq/';
+    const csv_dir = path.join(__dirname, 'share', 'st-mq');
     if (!fs.existsSync(csv_dir)) {
         fs.mkdirSync(csv_dir, { recursive: true });
     }
 
-    // Spawn mqtt-control.js and schedule restart every 55th minute if exited
+    // Spawn mqtt-control.js and schedule restart every 15 minutes at specified times if exited
     const schedule_mqtt_control = () => {
-        let mqtt_control = spawn_process('node', ['./scripts/mqtt-control.js']);
-        schedule.scheduleJob('55 * * * *', async () => {
+        let mqtt_control = spawn_process('node', [path.join(__dirname, 'scripts', 'mqtt-control.js')]);
+        schedule.scheduleJob('14,29,44,59 * * * *', async () => {
             if (mqtt_control.exitCode !== null) {
-                mqtt_control = spawn_process('node', ['./scripts/mqtt-control.js']);
+                mqtt_control = spawn_process('node', [path.join(__dirname, 'scripts', 'mqtt-control.js')]);
             }
         });
     };
 
     // Spawn and schedule easee-query.js every 5th minute
     const schedule_easee_query = () => {
-        spawn_process('node', ['./scripts/easee-query.js']);
+        spawn_process('node', [path.join(__dirname, 'scripts', 'easee-query.js')]);
         schedule.scheduleJob('*/5 * * * *', async () => {
-            spawn_process('node', ['./scripts/easee-query.js']);
+            spawn_process('node', [path.join(__dirname, 'scripts', 'easee-query.js')]);
         });
     };
 
-    // Spawn and schedule chart.js server restart at 15 seconds past every 5th minute
+    // Spawn chart builder process
+    const schedule_chart_builder = () => {
+        let log_stream_builder;
+        try {
+            log_stream_builder = fs.openSync(path.join(csv_dir, 'chart-builder.log'), 'w');
+        } catch (err) {
+            return console.error(`${RED}%s${RESET}`, `ERROR: Could not open chart-builder.log: ${err}`);
+        }
+        const options = { stdio: ['inherit', log_stream_builder, log_stream_builder], cwd: __dirname };
+        spawn_process('npm', ['run', 'build'], options);
+    };
+
+    // Spawn chart server process
     const schedule_chart_server = () => {
-        fs.lstat(path.dirname(csv_dir), (err, stats) => {
-            if (err) return console.error(`${RED}%s${RESET}`, err);
-            // Create a log stream with a flag ('a' = append, 'w' = overwrite)
-            const log_stream = fs.openSync(csv_dir + 'chart-server.log', 'w');
-            // Spawn the process in detached mode if the csv directory is behind symlink (no parcel reload)
-            let chart_server = spawn_process('npm', ['run', 'dev'], { stdio: ['inherit', log_stream, log_stream], detached: stats.isSymbolicLink()});
-            // Schedule restart if the csv directory is behind symlink (no parcel reload)
-            if (stats.isSymbolicLink()) {
-                schedule.scheduleJob('15 */5 * * * *', async () => {
-                    if (chart_server.exitCode === null) {
-                        process.kill(-chart_server.pid, 'SIGKILL');
-                        await new Promise(resolve => chart_server.on('exit', resolve));
-                    }
-                    chart_server = spawn_process('npm', ['run', 'dev'], { stdio: ['inherit', log_stream, log_stream], detached: true });
-                });
-            }
-        });
+        let log_stream_server;
+        try {
+            log_stream_server = fs.openSync(path.join(csv_dir, 'chart-server.log'), 'w');
+        } catch (err) {
+            return console.error(`${RED}%s${RESET}`, `ERROR: Could not open chart-server.log: ${err}`);
+        }
+        const options = { stdio: ['inherit', log_stream_server, log_stream_server], cwd: __dirname };
+        spawn_process('npm', ['run', 'preview'], options);
     };
 
     // Spawn the processes
     schedule_mqtt_control();
     schedule_easee_query();
+    schedule_chart_builder();
     schedule_chart_server();
 })();
