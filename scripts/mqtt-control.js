@@ -12,7 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = false;
+const DEBUG = true;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -39,10 +39,11 @@ function config() {
     const default_config = {
         country_code: '',
         entsoe_token: '',
+        lat: '',
+        lon: '',
         mqtt_address: '',
         mqtt_user: '',
         mqtt_pw: '',
-        postal_code: '',
         st_temp_in_id: '',
         st_temp_ga_id: '',
         st_temp_out_id: '',
@@ -63,10 +64,11 @@ function config() {
             ...default_config,
             country_code: options.geoloc?.country_code || '',
             entsoe_token: options.entsoe?.token || '',
+            lat: options.geoloc?.latitude || '',
+            lon: options.geoloc?.longitude || '',
             mqtt_address: options.mqtt?.address || '',
             mqtt_user: options.mqtt?.user || '',
             mqtt_pw: options.mqtt?.pw || '',
-            postal_code: options.geoloc?.postal_code || '',
             st_temp_in_id: options.smartthings?.inside_temp_dev_id || '',
             st_temp_ga_id: options.smartthings?.garage_temp_dev_id || '',
             st_temp_out_id: options.smartthings?.outside_temp_dev_id || '',
@@ -78,6 +80,19 @@ function config() {
         console.log(`${BLUE}[ERROR ${date_string()}] Failed to parse ${CONFIG_PATH}: ${error.toString()}${RESET}`);
         return default_config;
     }
+}
+
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const toRadians = (deg) => deg * (Math.PI / 180);
+  const R = 6371; // Radius of the earth in km
+  const dLat = toRadians(lat2 - lat1);
+  const dLon = toRadians(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 // ### MQTT Handler Class ###
@@ -500,22 +515,148 @@ class FetchData {
     }
 
     // Fetches temperature from OpenWeatherMap API
-    async query_owm_temp(country_code, postal_code) {
+    async query_owm_temp(lat, lon) {
         try {
-            const response = await fetch(`http://api.openweathermap.org/data/2.5/weather?zip=${postal_code},${country_code}&appid=${config().weather_token}&units=metric`);
-            if (await this.check_response(response, `OpenWeatherMap (${country_code}-${postal_code})`) !== 200) {
+            const response = await fetch(`http://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${config().weather_token}&units=metric`);
+            if (await this.check_response(response, `OpenWeatherMap (${lat},${lon})`) !== 200) {
                 return null;
             }
             const data = await response.json();
-            return data.main?.temp ?? null;
+            const temp = data.main?.temp ?? null;
+            if (DEBUG && temp !== null) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] OpenWeatherMap Temperature: ${temp.toFixed(1)}°C${RESET}`);
+            } else if (DEBUG && temp === null) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] OpenWeatherMap: No valid temperature data${RESET}`);
+            }
+            return temp;
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] OpenWeatherMap failed: ${error.toString()}${RESET}`);
             return null;
         }
     }
 
-    // Fetches temperature from SmartThings API, falling back to OpenWeatherMap if specified
-    async query_st_temp(st_dev_id, country_code = '', postal_code = '') {
+    // Fetches temperature from FMI API
+    async query_fmi_temp(lat, lon) {
+        const num_lat = parseFloat(lat);
+        const num_lon = parseFloat(lon);
+        const stations_url = `https://opendata.fmi.fi/wfs?request=GetFeature&storedquery_id=fmi::ef::stations&latlon=${num_lat},${num_lon}&maxlocations=50&type=weather`;
+        try {
+            const response = await fetch(stations_url);
+            if (await this.check_response(response, `FMI stations (${lat},${lon})`) !== 200) {
+                return null;
+            }
+            const text = await response.text();
+            const parser = new XMLParser();
+            const json_data = parser.parse(text);
+            let members = json_data['wfs:FeatureCollection']?.['wfs:member'];
+            if (!members) {
+                console.log(`${BLUE}[ERROR ${date_string()}] FMI stations: No member data in response${RESET}`);
+                return null;
+            }
+            if (!Array.isArray(members)) {
+                members = [members];
+            }
+            const stations = [];
+            members.forEach(member => {
+                const facility = member['ef:EnvironmentalMonitoringFacility'];
+                if (facility) {
+                    const identifier = facility['ef:identifier'];
+                    let fmisid;
+                    if (identifier && identifier['@codeSpace'] === 'http://xml.fmi.fi/namespace/stationcode/fmisid') {
+                        fmisid = identifier['#text'];
+                    }
+                    const pos_str = facility['ef:geometry']?.['gml:Point']?.['gml:pos'];
+                    if (pos_str && fmisid) {
+                        const [station_lat, station_lon] = pos_str.split(' ').map(parseFloat);
+                        const distance = haversineDistance(num_lat, num_lon, station_lat, station_lon);
+                        if (distance <= 20) {
+                            stations.push({ fmisid, lat: station_lat, lon: station_lon, distance });
+                        }
+                    }
+                }
+            });
+            if (stations.length === 0) {
+                console.log(`${BLUE}[ERROR ${date_string()}] FMI: No stations found within 20km${RESET}`);
+                return null;
+            }
+            // Sort by distance
+            stations.sort((a, b) => a.distance - b.distance);
+            // Now fetch observations for these stations
+            const fmisids = stations.map(s => s.fmisid).join(',');
+            const now_utc = moment.utc();
+            const starttime = now_utc.clone().subtract(2, 'hours').format('YYYY-MM-DDTHH:mm:ss') + 'Z';
+            const endtime = now_utc.format('YYYY-MM-DDTHH:mm:ss') + 'Z';
+            const obs_url = `https://opendata.fmi.fi/wfs?request=getFeature&storedquery_id=fmi::observations::weather::timevaluepair&fmisid=${fmisids}&parameters=t2m&starttime=${starttime}&endtime=${endtime}&timestep=1`;
+            const obs_response = await fetch(obs_url);
+            if (await this.check_response(obs_response, `FMI observations`) !== 200) {
+                return null;
+            }
+            const obs_text = await obs_response.text();
+            const obs_json = parser.parse(obs_text);
+            let obs_members = obs_json['wfs:FeatureCollection']?.['wfs:member'];
+            if (!obs_members) {
+                console.log(`${BLUE}[ERROR ${date_string()}] FMI observations: No member data${RESET}`);
+                return null;
+            }
+            if (!Array.isArray(obs_members)) {
+                obs_members = [obs_members];
+            }
+            const station_temps = {};
+            obs_members.forEach(member => {
+                const result = member['omso:PointTimeSeriesObservation']?.['om:result']?.['wml2:MeasurementTimeseries']?.['wml2:point'];
+                const target = member['omso:PointTimeSeriesObservation']?.['om:observedProperty']?.['xlink:href'];
+                if (target && target.includes('t2m')) {
+                    let points = result;
+                    if (!Array.isArray(points)) {
+                        points = [points];
+                    }
+                    points.forEach(point => {
+                        const timeStr = point['wml2:MeasurementTVP']?.['wml2:time'];
+                        const value = parseFloat(point['wml2:MeasurementTVP']?.['wml2:value']);
+                        if (!isNaN(value) && timeStr) {
+                            const fmisid = member['omso:PointTimeSeriesObservation']?.['om:featureOfInterest']?.['sams:SF_SpatialSamplingFeature']?.['sams:sampledFeature']?.['xlink:href']?.split('fmisid=')[1];
+                            if (fmisid) {
+                                const time = moment.utc(timeStr);
+                                if (!station_temps[fmisid] || time.isAfter(station_temps[fmisid].time)) {
+                                    station_temps[fmisid] = { temp: value, time };
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+            // Now, for each station, get the latest temp if available
+            const valid_stations = stations.filter(s => station_temps[s.fmisid]);
+            if (valid_stations.length === 0) {
+                console.log(`${BLUE}[ERROR ${date_string()}] FMI: No temperature data from stations${RESET}`);
+                return null;
+            }
+            // Sort by distance
+            valid_stations.sort((a, b) => a.distance - b.distance);
+            // Take the closest
+            const closest = valid_stations[0];
+            const temp = station_temps[closest.fmisid].temp;
+            const obs_time = station_temps[closest.fmisid].time;
+            // For debug print all
+            if (DEBUG) {
+                const station_strings = valid_stations.map(s => {
+                    const st_temp = station_temps[s.fmisid].temp.toFixed(1);
+                    const mins_ago = Math.round(now_utc.diff(station_temps[s.fmisid].time, 'minutes', true));
+                    const coord = `(${s.lat.toFixed(4)},${s.lon.toFixed(4)})`;
+                    const dist = s.distance.toFixed(1);
+                    return `${st_temp}°C ${mins_ago}mins ago at ${coord} (${dist}km away)`;
+                }).join(', ');
+                console.log(`${YELLOW}[DEBUG ${date_string()}] FMI Stations: ${station_strings}${RESET}`);
+            }
+            return temp;
+        } catch (error) {
+            console.log(`${BLUE}[ERROR ${date_string()}] FMI failed: ${error.toString()}${RESET}`);
+            return null;
+        }
+    }
+
+    // Fetches temperature from SmartThings API, falling back to FMI, then OpenWeatherMap if lat/lon provided
+    async query_st_temp(st_dev_id, lat = null, lon = null) {
         const options = {
             method: 'GET',
             headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
@@ -525,14 +666,28 @@ class FetchData {
             if (await this.check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200) {
                 const data = await response.json();
                 return data.components?.main?.temperatureMeasurement?.temperature?.value ?? null;
+            } else {
+                if (lat === null || lon === null) {
+                    return null;
+                }
+                let fallback_temp = null;
+                if (config().country_code === 'fi') {
+                    fallback_temp = await this.query_fmi_temp(lat, lon);
+                    if (fallback_temp !== null) return fallback_temp;
+                }
+                return await this.query_owm_temp(lat, lon);
             }
-            if (country_code && postal_code) {
-                return await this.query_owm_temp(country_code, postal_code);
-            }
-            return null;
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] SmartThings failed: ${error.toString()}${RESET}`);
-            return country_code && postal_code ? await this.query_owm_temp(country_code, postal_code) : null;
+            if (lat === null || lon === null) {
+                return null;
+            }
+            let fallback_temp = null;
+            if (config().country_code === 'fi') {
+                fallback_temp = await this.query_fmi_temp(lat, lon);
+                if (fallback_temp !== null) return fallback_temp;
+            }
+            return await this.query_owm_temp(lat, lon);
         }
     }
 
@@ -601,7 +756,7 @@ class FetchData {
         try {
             const new_inside_temp = await this.query_st_temp(config().st_temp_in_id);
             const new_garage_temp = await this.query_st_temp(config().st_temp_ga_id);
-            const new_outside_temp = await this.query_st_temp(config().st_temp_out_id, config().country_code, config().postal_code);
+            const new_outside_temp = await this.query_st_temp(config().st_temp_out_id, config().lat, config().lon);
 
             // Update only if new values are valid and different
             if (new_inside_temp !== null && new_inside_temp !== this.#inside_temp) {
@@ -637,7 +792,7 @@ class HeatAdjustment {
     // Calculates the threshold price below which heating should be activated
     async calc_threshold_price(outside_temp, prices, resolution) {
         const temp_to_hours = config().temp_to_hours;
-
+        
         let hours;
         if (!temp_to_hours?.length) {
             hours = 24; // Default to 24 hours if data is invalid
@@ -762,7 +917,7 @@ class HeatAdjustment {
     try {
         // Validate required configuration fields before proceeding
         const cfg = config();
-        const requiredFields = ['country_code', 'postal_code', 'mqtt_address', 'mqtt_user', 'mqtt_pw'];
+        const requiredFields = ['country_code', 'mqtt_address', 'mqtt_user', 'mqtt_pw'];
         const missingFields = requiredFields.filter(field => !cfg[field]);
         if (missingFields.length > 0 || !Array.isArray(cfg.temp_to_hours) || cfg.temp_to_hours.length === 0) {
             throw new Error(`Missing required configuration fields: ${missingFields.concat(cfg.temp_to_hours.length === 0 ? ['temp_to_hours'] : []).join(', ')}`);
