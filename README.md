@@ -77,7 +77,7 @@ To start all required services, ie, [easee-query.js](scripts/easee-query.js) and
 ```
 node scheduler.js
 ```
-Or just web server by
+or just web server by
 ```
 npm run build
 npm run preview
@@ -88,8 +88,8 @@ To run with `pm2` process manager without using the [scheduler.js](scheduler.js)
 ```
 pm2 start ./scripts/mqtt-control.js
 pm2 start ./scripts/easee-query.js --cron-restart="*/5 * * * *" --no-autorestart
-pm2 start npm -- run build
-pm2 start npm -- run preview
+pm2 start npm --name "chart-builder" -- run build
+pm2 start npm --name "chart-server" -- run preview
 ```
 The console output uses blue color for [mqtt-control.js](scripts/mqtt-control.js) and green color for [easee-query.js](scripts/easee-query.js) (the [chart](chart/index.html) builder and server logs are in `./share/st-mq/chart-builder.log` and `./share/st-mq/chart-server.log`, respectively). The [chart](chart/index.html) itself can be accessed with a browser at [http://localhost:1234](http://localhost:1234).
 
