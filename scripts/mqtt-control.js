@@ -60,7 +60,7 @@ function config() {
     try {
         const file_data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
         const options = file_data.options || file_data;
-        return {
+        const conf = {
             ...default_config,
             country_code: options.geoloc?.country_code || '',
             entsoe_token: options.entsoe?.token || '',
@@ -82,19 +82,6 @@ function config() {
     }
 }
 
-function haversineDistance(lat1, lon1, lat2, lon2) {
-  const toRadians = (deg) => deg * (Math.PI / 180);
-  const R = 6371; // Radius of the earth in km
-  const dLat = toRadians(lat2 - lat1);
-  const dLon = toRadians(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 // ### MQTT Handler Class ###
 
 // Manages MQTT connections, subscriptions, and publications
@@ -105,11 +92,9 @@ class MqttHandler {
 
     constructor(broker_address, username, password) {
         this.#broker_address = broker_address;
-        // Enable auto-reconnect every 1 second if connection is lost
         const options = { username, password, reconnectPeriod: 1000 };
         this.#client = mqtt.connect(this.#broker_address, options);
 
-        // Handle MQTT client events
         this.#client.on('error', (error) => {
             console.log(`${BLUE}[ERROR ${date_string()}] MQTT client error: ${error.toString()}${RESET}`);
         });
@@ -133,19 +118,15 @@ class MqttHandler {
         });
     }
 
-    // Getter for broker_address (for potential external access)
     get broker_address() {
         return this.#broker_address;
     }
 
-    // Getter for logged_topics (returns a copy to prevent modification)
     get logged_topics() {
         return [...this.#logged_topics];
     }
 
-    // Subscribes to an MQTT topic with specified QoS
     async log_topic(topic, qos = 2) {
-        // Check if client is connected before subscribing
         if (!this.#client.connected) {
             console.log(`${BLUE}[ERROR ${date_string()}] MQTT client not connected, cannot subscribe to ${topic}${RESET}`);
             return;
@@ -160,10 +141,8 @@ class MqttHandler {
         });
     }
 
-    // Publishes a message to an MQTT topic with specified QoS
     async post_trigger(topic, msg, qos = 1) {
         return new Promise((resolve, reject) => {
-            // Check if client is connected before publishing
             if (!this.#client.connected) {
                 console.log(`${BLUE}[ERROR ${date_string()}] MQTT client not connected, cannot publish ${topic}:${msg}${RESET}`);
                 reject(new Error('MQTT client not connected'));
@@ -186,7 +165,6 @@ class MqttHandler {
 
 // Fetches electricity prices and temperatures from various APIs
 class FetchData {
-    // Private fields
     #price_resolution = null;
     #prices = [];
     #price_start_time = null;
@@ -195,11 +173,8 @@ class FetchData {
     #garage_temp = null;
     #outside_temp = null;
 
-    constructor() {
-        // No need to initialize private fields here since they are declared above
-    }
+    constructor() { }
 
-    // Public getters
     get price_resolution() {
         return this.#price_resolution;
     }
@@ -219,9 +194,7 @@ class FetchData {
     // Returns prices sliced from the current time, handling outdated data without modifying internal state
     get slice_prices() {
         if (!this.#price_start_time || !this.#price_end_time || this.#prices.length === 0 || !this.#price_resolution) {
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (no valid prices or time data)${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (no valid prices or time data)${RESET}`);
             return [];
         }
 
@@ -237,9 +210,7 @@ class FetchData {
             // Calculate the number of sliced prices needed to reach the beginning of the current day
             past_day_prices_sliced = Math.floor(current_day.diff(this.#price_start_time, 'minutes', true) / interval_minutes);
             if (past_day_prices_sliced >= this.#prices.length) {
-                if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (all prices are before current day, past_day_prices_sliced=${past_day_prices_sliced}, length=${this.#prices.length})${RESET}`);
-                }
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (all prices are before current day, past_day_prices_sliced=${past_day_prices_sliced}, length=${this.#prices.length})${RESET}`);
                 return [];
             }
         }
@@ -247,22 +218,16 @@ class FetchData {
         // Further slice to the current time within the current day
         const total_prices_sliced = Math.floor(now.diff(this.#price_start_time, 'minutes', true) / interval_minutes);
         if (total_prices_sliced < past_day_prices_sliced) {
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (total_prices_sliced ${total_prices_sliced} less than past_day_prices_sliced ${past_day_prices_sliced})${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (total_prices_sliced ${total_prices_sliced} less than past_day_prices_sliced ${past_day_prices_sliced})${RESET}`);
             return [];
         }
         if (total_prices_sliced >= this.#prices.length) {
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (total_prices_sliced ${total_prices_sliced} exceeds length ${this.#prices.length})${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices: Empty (total_prices_sliced ${total_prices_sliced} exceeds length ${this.#prices.length})${RESET}`);
             return [];
         }
 
         const remaining_prices = this.#prices.slice(total_prices_sliced);
-        if (DEBUG) {
-            console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices (${remaining_prices.length}/${this.#prices.length}): ${JSON.stringify(remaining_prices)}, Total prices sliced: ${total_prices_sliced}, Past-day-prices sliced: ${past_day_prices_sliced}${RESET}`);
-        }
+        if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Remaining prices (${remaining_prices.length}/${this.#prices.length}): ${JSON.stringify(remaining_prices)}, Total prices sliced: ${total_prices_sliced}, Past-day-prices sliced: ${past_day_prices_sliced}${RESET}`);
         return remaining_prices;
     }
 
@@ -279,7 +244,7 @@ class FetchData {
             return null;
         }
         if (response.status === 200) {
-            console.log(`${BLUE}[${date_string()}] ${type} query successful!${RESET}`);
+            console.log(`${YELLOW}[DEBUG ${date_string()}] ${type} query successful!${RESET}`);
         } else {
             console.log(`${BLUE}[ERROR ${date_string()}] ${type} query failed!${RESET}`);
             console.log(`${BLUE} API status: ${response.status}${RESET}`);
@@ -309,9 +274,7 @@ class FetchData {
 
         try {
             const response = await fetch(url);
-            if (await this.check_response(response, `Entso-E (${config().country_code})`) !== 200) {
-                return { prices: [], resolution: null, start_time: null, end_time: null };
-            }
+            if (await this.check_response(response, `Entso-E (${config().country_code})`) !== 200) return { prices: [], resolution: null, start_time: null, end_time: null };
 
             const json_data = new XMLParser().parse(await response.text());
 
@@ -357,9 +320,7 @@ class FetchData {
                         console.log(`${BLUE}[ERROR ${date_string()}] Entso-E: No resolution in TimeSeries[${index}]${RESET}`);
                         return { prices: [], resolution: null, start_time: null, end_time: null };
                     }
-                    if (DEBUG) {
-                        console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Resolution: ${resolution}${RESET}`);
-                    }
+                    if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Resolution: ${resolution}${RESET}`);
                 } else if (ts_resolution !== resolution) {
                     console.log(`${BLUE}[ERROR ${date_string()}] Entso-E: Resolution mismatch in TimeSeries[${index}]: expected ${resolution}, got ${ts_resolution}${RESET}`);
                 }
@@ -373,12 +334,9 @@ class FetchData {
                 const ts_start = moment(time_interval.start);
                 const ts_end = moment(time_interval.end);
                 const ts_duration_minutes = ts_end.diff(ts_start, 'minutes', true);
-                const slots_per_hour = resolution === 'PT15M' ? 4 : 1;
                 const ts_slots = Math.floor(ts_duration_minutes / (resolution === 'PT15M' ? 15 : 60));
 
-                if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E TimeSeries[${index}] Duration: ${ts_duration_minutes} minutes, Slots: ${ts_slots}${RESET}`);
-                }
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E TimeSeries[${index}] Duration: ${ts_duration_minutes} minutes, Slots: ${ts_slots}${RESET}`);
 
                 let ts_prices = Array(ts_slots).fill(null);
                 const points = Array.isArray(ts?.Period?.Point) ? ts.Period.Point : ts?.Period?.Point ? [ts.Period.Point] : [];
@@ -388,17 +346,13 @@ class FetchData {
                 }
 
                 points.forEach(entry => {
-                    const position = parseInt(entry.position) - 1; // 1-based to 0-based
+                    const position = parseInt(entry.position) - 1;
                     const price = parseFloat(entry['price.amount']);
-                    if (!isNaN(price) && position >= 0 && position < ts_slots) {
-                        ts_prices[position] = price;
-                    }
+                    if (!isNaN(price) && position >= 0 && position < ts_slots) ts_prices[position] = price;
                 });
 
                 for (let i = 1; i < ts_prices.length; i++) {
-                    if (ts_prices[i] === null && ts_prices[i - 1] !== null) {
-                        ts_prices[i] = ts_prices[i - 1];
-                    }
+                    if (ts_prices[i] === null && ts_prices[i - 1] !== null) ts_prices[i] = ts_prices[i - 1];
                 }
 
                 full_prices = full_prices.concat(ts_prices);
@@ -412,9 +366,7 @@ class FetchData {
             const total_slots = Math.floor(duration_minutes / (resolution === 'PT15M' ? 15 : 60));
             full_prices = full_prices.slice(0, total_slots);
 
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Prices:\n${JSON.stringify(full_prices)}\nResolution: ${resolution}, Start: ${date_string(doc_start)}, End: ${date_string(doc_end)}${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E Prices:\n   ${JSON.stringify(full_prices)}\n   Resolution: ${resolution}, Start: ${date_string(doc_start)}, End: ${date_string(doc_end)}${RESET}`);
 
             return { prices: full_prices, resolution, start_time: doc_start, end_time: doc_end };
         } catch (error) {
@@ -423,7 +375,6 @@ class FetchData {
         }
     }
 
-    // Queries electricity prices from Elering API
     async query_elering_prices(period_start, period_end) {
         const encoded_start = encodeURIComponent(period_start);
         const encoded_end = encodeURIComponent(period_end);
@@ -431,9 +382,7 @@ class FetchData {
 
         try {
             const response = await fetch(url);
-            if (await this.check_response(response, 'Elering') !== 200) {
-                return { prices: [], resolution: null, start_time: null, end_time: null };
-            }
+            if (await this.check_response(response, 'Elering') !== 200) return { prices: [], resolution: null, start_time: null, end_time: null };
 
             const json_data = await response.json();
 
@@ -457,29 +406,20 @@ class FetchData {
             let resolution = 'PT60M';
             if (entries.length >= 2) {
                 const time_diff = entries[1].timestamp - entries[0].timestamp;
-                if (time_diff === 900) {
-                    resolution = 'PT15M';
-                } else if (time_diff === 3600) {
-                    resolution = 'PT60M';
-                } else {
-                    console.log(`${BLUE}[${date_string()}] Elering: Unexpected timestamp difference ${time_diff}s, assuming PT60M${RESET}`);
-                }
+                if (time_diff === 900) resolution = 'PT15M';
+                else if (time_diff === 3600) resolution = 'PT60M';
+                else console.log(`${BLUE}[${date_string()}] Elering: Unexpected timestamp difference ${time_diff}s, assuming PT60M${RESET}`);
             }
 
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Resolution: ${resolution}${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Resolution: ${resolution}${RESET}`);
 
             // Calculate duration including the full last slot
             const interval_minutes = resolution === 'PT15M' ? 15 : 60;
             const end_of_last_slot = last_timestamp.clone().add(interval_minutes, 'minutes');
             const duration_minutes = end_of_last_slot.diff(first_timestamp, 'minutes', true);
-            const slots_per_hour = resolution === 'PT15M' ? 4 : 1;
             const total_slots = Math.floor(duration_minutes / interval_minutes);
 
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Elering: Duration ${duration_minutes} minutes, Total Slots: ${total_slots}${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Elering: Duration ${duration_minutes} minutes, Total Slots: ${total_slots}${RESET}`);
 
             let full_prices = Array(total_slots).fill(null);
 
@@ -489,23 +429,17 @@ class FetchData {
                     ? Math.floor(timestamp.diff(first_timestamp, 'minutes', true) / 15)
                     : Math.floor(timestamp.diff(first_timestamp, 'hours', true));
                 const price = parseFloat(entry.price);
-                if (!isNaN(price) && position >= 0 && position < total_slots) {
-                    full_prices[position] = price;
-                }
+                if (!isNaN(price) && position >= 0 && position < total_slots) full_prices[position] = price;
             });
 
             for (let i = 1; i < full_prices.length; i++) {
-                if (full_prices[i] === null && full_prices[i - 1] !== null) {
-                    full_prices[i] = full_prices[i - 1];
-                }
+                if (full_prices[i] === null && full_prices[i - 1] !== null) full_prices[i] = full_prices[i - 1];
             }
 
             // Adjust end time to include the full last interval
             const end_time = last_timestamp.clone().add(interval_minutes, 'minutes');
 
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Prices:\n${JSON.stringify(full_prices)}\nResolution: ${resolution}, Start: ${date_string(first_timestamp)}, End: ${date_string(end_time)}${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Elering Prices:\n   ${JSON.stringify(full_prices)}\n   Resolution: ${resolution}, Start: ${date_string(first_timestamp)}, End: ${date_string(end_time)}${RESET}`);
 
             return { prices: full_prices, resolution, start_time: first_timestamp, end_time };
         } catch (error) {
@@ -514,20 +448,83 @@ class FetchData {
         }
     }
 
+    // Fetches temperature from FMI API
+    async query_fmi_temp(lat, lon) {
+        const num_lat = parseFloat(lat), num_lon = parseFloat(lon);
+        const delta = 20 / 111, bbox = `${num_lon - delta},${num_lat - delta},${num_lon + delta},${num_lat + delta}`;
+        const query_window_minutes = 30;
+        const starttime = moment.utc().subtract(query_window_minutes, 'minutes').format('YYYY-MM-DDTHH:mm:ss') + 'Z';
+        const endtime = moment.utc().format('YYYY-MM-DDTHH:mm:ss') + 'Z';
+        const url = `https://opendata.fmi.fi/wfs?request=getFeature&storedquery_id=fmi::observations::weather::simple&bbox=${bbox}&parameters=t2m&starttime=${starttime}&endtime=${endtime}&timestep=10`;
+
+        try {
+            const response = await fetch(url);
+            if (await this.check_response(response, `FMI (${lat},${lon})`) !== 200) {
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] FMI full URL: ${url}${RESET}`);
+                return null;
+            }
+            const json_data = new XMLParser().parse(await response.text());
+            let members = json_data['wfs:FeatureCollection']?.['wfs:member'] || [];
+            if (!Array.isArray(members)) members = [members];
+
+            const stationMap = new Map();
+            members.forEach(member => {
+                const element = member['BsWfs:BsWfsElement'];
+                if (element?.['BsWfs:ParameterName'] === 't2m') {
+                    const [stationLat, stationLon] = (element['BsWfs:Location']?.['gml:Point']?.['gml:pos'] || '').split(' ').map(parseFloat);
+                    const time = moment(element['BsWfs:Time']);
+                    const value = parseFloat(element['BsWfs:ParameterValue']);
+                    if (stationLat && time && !isNaN(value)) {
+                        // Calculates the haversine distance between two coordinates in kilometers
+                        const R = 6371, dLat = (stationLat - num_lat) * Math.PI / 180, dLon = (stationLon - num_lon) * Math.PI / 180;
+                        const a = Math.sin(dLat / 2) ** 2 + Math.cos(num_lat * Math.PI / 180) * Math.cos(stationLat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+                        const distance = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+                        if (distance <= 20) {
+                            const coords = `${stationLat.toFixed(5)},${stationLon.toFixed(5)}`;
+                            if (!stationMap.has(coords)) stationMap.set(coords, { coords, distance, measurements: [] });
+                            stationMap.get(coords).measurements.push({ temp: value, time, minutesAgo: moment().diff(time, 'minutes') });
+                        }
+                    }
+                }
+            });
+
+            const stations = Array.from(stationMap.values()).sort((a, b) => a.distance - b.distance);
+
+            if (DEBUG && stations.length > 0) {
+                const stationLines = stations.map((s, index) => {
+                    const measurements = s.measurements.sort((a, b) => b.time - a.time)
+                        .map(m => `${m.temp.toFixed(1)}°C ${m.minutesAgo}mins ago`).join('; ');
+                    return `   Station ${index + 1} at ${s.coords} (${s.distance.toFixed(1)}km away): ${measurements}`;
+                }).join('\n');
+                console.log(`${YELLOW}[DEBUG ${date_string()}] Found ${stations.length} FMI stations (data for ${query_window_minutes} min query window):\n${stationLines}${RESET}`);
+            }
+
+            const closestStation = stations[0];
+            const fmiTemp = closestStation?.measurements.sort((a, b) => b.time - a.time)[0]?.temp ?? null;
+
+            if (fmiTemp === null) {
+                console.log(`${BLUE}[ERROR ${date_string()}] FMI: No valid t2m temperature data found within 20km${RESET}`);
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] FMI full URL: ${url}${RESET}`);
+            } else if (DEBUG) {
+                console.log(`${YELLOW}[DEBUG ${date_string()}] FMI Temperature: ${fmiTemp.toFixed(1)}°C${RESET}`);
+            }
+            return fmiTemp;
+        } catch (error) {
+            console.log(`${BLUE}[ERROR ${date_string()}] FMI failed: ${error.toString()}${RESET}`);
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] FMI full URL: ${url}${RESET}`);
+            return null;
+        }
+    }
+
     // Fetches temperature from OpenWeatherMap API
     async query_owm_temp(lat, lon) {
         try {
-            const response = await fetch(`http://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${config().weather_token}&units=metric`);
-            if (await this.check_response(response, `OpenWeatherMap (${lat},${lon})`) !== 200) {
-                return null;
-            }
-            const data = await response.json();
-            const temp = data.main?.temp ?? null;
-            if (DEBUG && temp !== null) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] OpenWeatherMap Temperature: ${temp.toFixed(1)}°C${RESET}`);
-            } else if (DEBUG && temp === null) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] OpenWeatherMap: No valid temperature data${RESET}`);
-            }
+            const url = `http://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${config().weather_token}&units=metric`;
+            const response = await fetch(url);
+            if (await this.check_response(response, `OpenWeatherMap (${lat},${lon})`) !== 200) return null;
+            const temp = (await response.json()).main?.temp ?? null;
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] OpenWeatherMap Temperature: ${temp?.toFixed(1) ?? 'No valid data'}°C${RESET}`);
             return temp;
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] OpenWeatherMap failed: ${error.toString()}${RESET}`);
@@ -535,159 +532,23 @@ class FetchData {
         }
     }
 
-    // Fetches temperature from FMI API
-    async query_fmi_temp(lat, lon) {
-        const num_lat = parseFloat(lat);
-        const num_lon = parseFloat(lon);
-        const stations_url = `https://opendata.fmi.fi/wfs?request=GetFeature&storedquery_id=fmi::ef::stations&latlon=${num_lat},${num_lon}&maxlocations=50&type=weather`;
-        try {
-            const response = await fetch(stations_url);
-            if (await this.check_response(response, `FMI stations (${lat},${lon})`) !== 200) {
-                return null;
-            }
-            const text = await response.text();
-            const parser = new XMLParser();
-            const json_data = parser.parse(text);
-            let members = json_data['wfs:FeatureCollection']?.['wfs:member'];
-            if (!members) {
-                console.log(`${BLUE}[ERROR ${date_string()}] FMI stations: No member data in response${RESET}`);
-                return null;
-            }
-            if (!Array.isArray(members)) {
-                members = [members];
-            }
-            const stations = [];
-            members.forEach(member => {
-                const facility = member['ef:EnvironmentalMonitoringFacility'];
-                if (facility) {
-                    const identifier = facility['ef:identifier'];
-                    let fmisid;
-                    if (identifier && identifier['@codeSpace'] === 'http://xml.fmi.fi/namespace/stationcode/fmisid') {
-                        fmisid = identifier['#text'];
-                    }
-                    const pos_str = facility['ef:geometry']?.['gml:Point']?.['gml:pos'];
-                    if (pos_str && fmisid) {
-                        const [station_lat, station_lon] = pos_str.split(' ').map(parseFloat);
-                        const distance = haversineDistance(num_lat, num_lon, station_lat, station_lon);
-                        if (distance <= 20) {
-                            stations.push({ fmisid, lat: station_lat, lon: station_lon, distance });
-                        }
-                    }
-                }
-            });
-            if (stations.length === 0) {
-                console.log(`${BLUE}[ERROR ${date_string()}] FMI: No stations found within 20km${RESET}`);
-                return null;
-            }
-            // Sort by distance
-            stations.sort((a, b) => a.distance - b.distance);
-            // Now fetch observations for these stations
-            const fmisids = stations.map(s => s.fmisid).join(',');
-            const now_utc = moment.utc();
-            const starttime = now_utc.clone().subtract(2, 'hours').format('YYYY-MM-DDTHH:mm:ss') + 'Z';
-            const endtime = now_utc.format('YYYY-MM-DDTHH:mm:ss') + 'Z';
-            const obs_url = `https://opendata.fmi.fi/wfs?request=getFeature&storedquery_id=fmi::observations::weather::timevaluepair&fmisid=${fmisids}&parameters=t2m&starttime=${starttime}&endtime=${endtime}&timestep=1`;
-            const obs_response = await fetch(obs_url);
-            if (await this.check_response(obs_response, `FMI observations`) !== 200) {
-                return null;
-            }
-            const obs_text = await obs_response.text();
-            const obs_json = parser.parse(obs_text);
-            let obs_members = obs_json['wfs:FeatureCollection']?.['wfs:member'];
-            if (!obs_members) {
-                console.log(`${BLUE}[ERROR ${date_string()}] FMI observations: No member data${RESET}`);
-                return null;
-            }
-            if (!Array.isArray(obs_members)) {
-                obs_members = [obs_members];
-            }
-            const station_temps = {};
-            obs_members.forEach(member => {
-                const result = member['omso:PointTimeSeriesObservation']?.['om:result']?.['wml2:MeasurementTimeseries']?.['wml2:point'];
-                const target = member['omso:PointTimeSeriesObservation']?.['om:observedProperty']?.['xlink:href'];
-                if (target && target.includes('t2m')) {
-                    let points = result;
-                    if (!Array.isArray(points)) {
-                        points = [points];
-                    }
-                    points.forEach(point => {
-                        const timeStr = point['wml2:MeasurementTVP']?.['wml2:time'];
-                        const value = parseFloat(point['wml2:MeasurementTVP']?.['wml2:value']);
-                        if (!isNaN(value) && timeStr) {
-                            const fmisid = member['omso:PointTimeSeriesObservation']?.['om:featureOfInterest']?.['sams:SF_SpatialSamplingFeature']?.['sams:sampledFeature']?.['xlink:href']?.split('fmisid=')[1];
-                            if (fmisid) {
-                                const time = moment.utc(timeStr);
-                                if (!station_temps[fmisid] || time.isAfter(station_temps[fmisid].time)) {
-                                    station_temps[fmisid] = { temp: value, time };
-                                }
-                            }
-                        }
-                    });
-                }
-            });
-            // Now, for each station, get the latest temp if available
-            const valid_stations = stations.filter(s => station_temps[s.fmisid]);
-            if (valid_stations.length === 0) {
-                console.log(`${BLUE}[ERROR ${date_string()}] FMI: No temperature data from stations${RESET}`);
-                return null;
-            }
-            // Sort by distance
-            valid_stations.sort((a, b) => a.distance - b.distance);
-            // Take the closest
-            const closest = valid_stations[0];
-            const temp = station_temps[closest.fmisid].temp;
-            const obs_time = station_temps[closest.fmisid].time;
-            // For debug print all
-            if (DEBUG) {
-                const station_strings = valid_stations.map(s => {
-                    const st_temp = station_temps[s.fmisid].temp.toFixed(1);
-                    const mins_ago = Math.round(now_utc.diff(station_temps[s.fmisid].time, 'minutes', true));
-                    const coord = `(${s.lat.toFixed(4)},${s.lon.toFixed(4)})`;
-                    const dist = s.distance.toFixed(1);
-                    return `${st_temp}°C ${mins_ago}mins ago at ${coord} (${dist}km away)`;
-                }).join(', ');
-                console.log(`${YELLOW}[DEBUG ${date_string()}] FMI Stations: ${station_strings}${RESET}`);
-            }
-            return temp;
-        } catch (error) {
-            console.log(`${BLUE}[ERROR ${date_string()}] FMI failed: ${error.toString()}${RESET}`);
+    // Fetches temperature from SmartThings API
+    async query_st_temp(st_dev_id) {
+        if (!st_dev_id || st_dev_id.trim() === "" || typeof st_dev_id !== 'string') {
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] query_st_temp skipped: invalid st_dev_id="${st_dev_id}" (type: ${typeof st_dev_id})${RESET}`);
             return null;
         }
-    }
-
-    // Fetches temperature from SmartThings API, falling back to FMI, then OpenWeatherMap if lat/lon provided
-    async query_st_temp(st_dev_id, lat = null, lon = null) {
-        const options = {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
-        };
         try {
-            const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, options);
-            if (await this.check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) === 200) {
-                const data = await response.json();
-                return data.components?.main?.temperatureMeasurement?.temperature?.value ?? null;
-            } else {
-                if (lat === null || lon === null) {
-                    return null;
-                }
-                let fallback_temp = null;
-                if (config().country_code === 'fi') {
-                    fallback_temp = await this.query_fmi_temp(lat, lon);
-                    if (fallback_temp !== null) return fallback_temp;
-                }
-                return await this.query_owm_temp(lat, lon);
-            }
+            const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, {
+                method: 'GET', headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
+            });
+            if (await this.check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) !== 200) return null;
+            const temp = (await response.json()).components?.main?.temperatureMeasurement?.temperature?.value ?? null;
+            if (DEBUG && temp !== null) console.log(`${YELLOW}[DEBUG ${date_string()}] SmartThings Temperature: ${temp.toFixed(1)}°C${RESET}`);
+            return temp;
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] SmartThings failed: ${error.toString()}${RESET}`);
-            if (lat === null || lon === null) {
-                return null;
-            }
-            let fallback_temp = null;
-            if (config().country_code === 'fi') {
-                fallback_temp = await this.query_fmi_temp(lat, lon);
-                if (fallback_temp !== null) return fallback_temp;
-            }
-            return await this.query_owm_temp(lat, lon);
+            return null;
         }
     }
 
@@ -707,29 +568,23 @@ class FetchData {
 
                 if (remaining_hours > 12) {
                     should_fetch = false;
-                    if (DEBUG) {
-                        console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (> 12, ${remaining_slots} slots)${RESET}`);
-                    }
+                    if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (> 12, ${remaining_slots} slots)${RESET}`);
                 } else {
-                    if (DEBUG) {
-                        console.log(`${YELLOW}[DEBUG ${date_string()}] Fetching prices: ${remaining_hours.toFixed(2)} hours remain (<= 12, ${remaining_slots} slots)${RESET}`);
-                    }
+                    if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Fetching prices: ${remaining_hours.toFixed(2)} hours remain (<= 12, ${remaining_slots} slots)${RESET}`);
                 }
             }
 
-            if (!should_fetch) {
-                return;
-            }
+            if (!should_fetch) return;
 
             let { prices: new_prices, resolution: new_resolution, start_time, end_time } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
             let full_prices = new_prices;
 
             if (full_prices.length === 0) {
-                const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
-                full_prices = elering_result.prices;
-                new_resolution = elering_result.resolution;
-                start_time = elering_result.start_time;
-                end_time = elering_result.end_time;
+            const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
+            full_prices = elering_result.prices;
+            new_resolution = elering_result.resolution;
+            start_time = elering_result.start_time;
+            end_time = elering_result.end_time;
             }
 
             // Update prices only if they differ or resolution/period changes
@@ -738,40 +593,44 @@ class FetchData {
                 this.#price_resolution = new_resolution;
                 this.#price_start_time = start_time;
                 this.#price_end_time = end_time;
-                if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Updated Prices:\n${JSON.stringify(this.#prices)}\nResolution: ${new_resolution}, Start: ${date_string(start_time)}, End: ${date_string(end_time)}${RESET}`);
-                }
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Updated Prices:\n   ${JSON.stringify(this.#prices)}\n   Resolution: ${new_resolution}, Start: ${date_string(start_time)}, End: ${date_string(end_time)}${RESET}`);
             } else if (full_prices.length === 0) {
-                if (DEBUG) {
-                    console.log(`${YELLOW}[DEBUG ${date_string()}] Both API calls failed, retaining existing prices${RESET}`);
-                }
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Both API calls failed, retaining existing prices${RESET}`);
             }
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_prices failed: ${error.toString()}, retaining existing prices${RESET}`);
         }
     }
 
-    // Fetches current temperatures from SmartThings devices
     async fetch_temperatures() {
         try {
-            const new_inside_temp = await this.query_st_temp(config().st_temp_in_id);
-            const new_garage_temp = await this.query_st_temp(config().st_temp_ga_id);
-            const new_outside_temp = await this.query_st_temp(config().st_temp_out_id, config().lat, config().lon);
+            const cfg = config();
+            const new_inside_temp = await this.query_st_temp(cfg.st_temp_in_id);
+            const new_garage_temp = await this.query_st_temp(cfg.st_temp_ga_id);
+            let new_outside_temp = await this.query_st_temp(cfg.st_temp_out_id);
+            let outside_source = new_outside_temp !== null ? 'local' : 'No data';
 
-            // Update only if new values are valid and different
-            if (new_inside_temp !== null && new_inside_temp !== this.#inside_temp) {
-                this.#inside_temp = new_inside_temp;
-            }
-            if (new_garage_temp !== null && new_garage_temp !== this.#garage_temp) {
-                this.#garage_temp = new_garage_temp;
-            }
-            if (new_outside_temp !== null && new_outside_temp !== this.#outside_temp) {
-                this.#outside_temp = new_outside_temp;
+            if (new_outside_temp === null) {
+                let fmi_temp = null;
+                let owm_temp = null;
+                if (cfg.country_code === 'fi') fmi_temp = await this.query_fmi_temp(cfg.lat, cfg.lon);
+                if (cfg.weather_token) owm_temp = await this.query_owm_temp(cfg.lat, cfg.lon);
+                new_outside_temp = fmi_temp ?? owm_temp ?? null;
+                if (new_outside_temp !== null) {
+                    outside_source = fmi_temp !== null ? 'FMI' : 'OWM';
+                    if (fmi_temp !== null && owm_temp !== null) outside_source = `FMI, OWM gives ${owm_temp.toFixed(1)}°C`;
+                }
             }
 
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Temperatures: inside=${this.#inside_temp}, garage=${this.#garage_temp}, outside=${this.#outside_temp}${RESET}`);
-            }
+            if (new_inside_temp !== null && new_inside_temp !== this.#inside_temp) this.#inside_temp = new_inside_temp;
+            if (new_garage_temp !== null && new_garage_temp !== this.#garage_temp) this.#garage_temp = new_garage_temp;
+            if (new_outside_temp !== null && new_outside_temp !== this.#outside_temp) this.#outside_temp = new_outside_temp;
+
+            // Always print temperatures in the specified format
+            const inside_str = this.#inside_temp !== null ? `${this.#inside_temp.toFixed(1)}°C (local)` : 'NaN (local)';
+            const garage_str = this.#garage_temp !== null ? `${this.#garage_temp.toFixed(1)}°C (local)` : 'NaN (local)';
+            const outside_str = this.#outside_temp !== null ? `${this.#outside_temp.toFixed(1)}°C (${outside_source})` : 'NaN (No data)';
+            console.log(`${BLUE}[${date_string()}] Temperatures: In=${inside_str}, Garage=${garage_str}, Out=${outside_str}`);
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] fetch_temperatures failed: ${error.toString()}${RESET}`);
         }
@@ -785,42 +644,37 @@ class HeatAdjustment {
     // Tracks the last time heaton60 was triggered (private, no getter needed as only used internally)
     #last_heaton60_time = null;
 
-    constructor() {
-        // No need to initialize private fields here since they are declared above
-    }
+    constructor() { }
 
     // Calculates the threshold price below which heating should be activated
     async calc_threshold_price(outside_temp, prices, resolution) {
         const temp_to_hours = config().temp_to_hours;
-        
-        let hours;
-        if (!temp_to_hours?.length) {
-            hours = 24; // Default to 24 hours if data is invalid
-        } else if (!outside_temp || outside_temp <= temp_to_hours[temp_to_hours.length - 1].temp) {
-            hours = temp_to_hours[temp_to_hours.length - 1].hours;
-        } else if (outside_temp >= temp_to_hours[0].temp) {
-            hours = temp_to_hours[0].hours;
-        } else {
-            let i = 0;
-            while (outside_temp < temp_to_hours[i].temp) i++;
-            const x1 = temp_to_hours[i - 1].temp, y1 = temp_to_hours[i - 1].hours;
-            const x2 = temp_to_hours[i].temp, y2 = temp_to_hours[i].hours;
-            hours = y1 + ((y2 - y1) / (x2 - x1)) * (outside_temp - x1);
+        let hours = 24;
+        if (temp_to_hours?.length) {
+            if (!outside_temp || outside_temp <= temp_to_hours[temp_to_hours.length - 1].temp) {
+                hours = temp_to_hours[temp_to_hours.length - 1].hours;
+            } else if (outside_temp >= temp_to_hours[0].temp) {
+                hours = temp_to_hours[0].hours;
+            } else {
+                let i = 0;
+                while (outside_temp < temp_to_hours[i].temp) i++;
+                const x1 = temp_to_hours[i - 1].temp, y1 = temp_to_hours[i - 1].hours;
+                const x2 = temp_to_hours[i].temp, y2 = temp_to_hours[i].hours;
+                hours = y1 + ((y2 - y1) / (x2 - x1)) * (outside_temp - x1);
+            }
         }
 
         const heating_percentage = (hours / 24) * 100;
 
         if (!Array.isArray(prices) || prices.length === 0) {
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] calc_threshold_price: Empty or invalid prices array, returning Infinity${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] calc_threshold_price: Empty or invalid prices array, returning Infinity${RESET}`);
             return Infinity;
         }
 
         const target_slots = Math.round((heating_percentage / 100) * prices.length);
         const sorted_prices = [...prices].sort((a, b) => a - b);
         const threshold_index = Math.max(0, Math.min(target_slots - 1, sorted_prices.length - 1));
-        const threshold_price = sorted_prices[threshold_index] !== undefined ? sorted_prices[threshold_index] : Infinity;
+        const threshold_price = sorted_prices[threshold_index] ?? Infinity;
 
         console.log(`${BLUE}[${date_string()}] HeatedHours=${hours.toFixed(2)}/24 (${heating_percentage.toFixed(1)}%) @ ${outside_temp}C, TargetSlots=${target_slots}/${prices.length} (${resolution}), Price=${(prices[0] / 10.0).toFixed(3)}, Threshold=${(threshold_price / 10.0).toFixed(3)}${RESET}`);
 
@@ -831,9 +685,7 @@ class HeatAdjustment {
     async init_csv() {
         const csv_dir = dirname(CSV_FILE_PATH);
         try {
-            if (!fs.existsSync(csv_dir)) {
-                fs.mkdirSync(csv_dir, { recursive: true });
-            }
+            if (!fs.existsSync(csv_dir)) fs.mkdirSync(csv_dir, { recursive: true });
             if (!fs.existsSync(CSV_FILE_PATH) || fs.statSync(CSV_FILE_PATH).size === 0) {
                 fs.writeFileSync(CSV_FILE_PATH, 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n');
             }
@@ -865,10 +717,10 @@ class HeatAdjustment {
 
             const remaining_prices = fetch_data_instance.slice_prices;
             const current_price = remaining_prices[0] ?? null;
-            const inside_temp = fetch_data_instance.inside_temp;
-            const garage_temp = fetch_data_instance.garage_temp;
-            const outside_temp = fetch_data_instance.outside_temp;
-            const threshold_price = await this.calc_threshold_price(outside_temp, remaining_prices, fetch_data_instance.price_resolution);
+            const inside_temp = fetch_data_instance.inside_temp ?? 'NaN';
+            const garage_temp = fetch_data_instance.garage_temp ?? 'NaN';
+            const outside_temp = fetch_data_instance.outside_temp ?? 'NaN';
+            const threshold_price = await this.calc_threshold_price(outside_temp !== 'NaN' ? outside_temp : null, remaining_prices, fetch_data_instance.price_resolution);
 
             let heaton_value;
             const now = moment();
@@ -878,9 +730,8 @@ class HeatAdjustment {
                 const heaton60_day_begin = moment.tz('Europe/Berlin').startOf('day').add({ hours: 4, minutes: 45 });
                 const heaton60_day_end = moment.tz('Europe/Berlin').startOf('day').add({ hours: 18, minutes: 45 });
                 if (
-                    (!this.#last_heaton60_time || now.diff(this.#last_heaton60_time, 'minutes', true) >= 52.5) &&
-                    now.isBetween(heaton60_day_begin, heaton60_day_end, null, '[]') // 'heaton60' may be published only during daytime
-                ) {
+                    (!this.#last_heaton60_time || now.diff(this.#last_heaton60_time, 'minutes', true) >= 52.5) && now.isBetween(heaton60_day_begin, heaton60_day_end, null, '[]') // 'heaton60' may be published only during daytime
+                ) {  
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton60');
                     await mqtt_client.post_trigger('from_stmq/heat/action', 'heaton15');
                     this.#last_heaton60_time = now;
@@ -899,12 +750,9 @@ class HeatAdjustment {
             const temp_ga_for_csv = garage_temp !== null ? garage_temp.toFixed(1) : 'NaN';
             const temp_out_for_csv = outside_temp !== null ? outside_temp.toFixed(1) : 'NaN';
 
-            if (write_out_csv)
-                await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
+            if (write_out_csv) await this.write_csv(price_for_csv, heaton_value, temp_in_for_csv, temp_ga_for_csv, temp_out_for_csv);
 
-            if (DEBUG) {
-                console.log(`${YELLOW}[DEBUG ${date_string()}] Used vals: price = ${current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN'}, threshold_price = ${threshold_price !== null ? (threshold_price / 10.0).toFixed(3) : 'NaN'}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
-            }
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Used vals: price = ${current_price !== null ? (current_price / 10.0).toFixed(3) : 'NaN'}, threshold_price = ${threshold_price !== null ? (threshold_price / 10.0).toFixed(3) : 'NaN'}, heaton_value = ${heaton_value}, temp_in = ${temp_in_for_csv}, temp_ga = ${temp_ga_for_csv}, temp_out = ${temp_out_for_csv}${RESET}`);
         } catch (error) {
             console.log(`${BLUE}[ERROR ${date_string()}] HeatAdjustment.adjust failed: ${error.toString()}${RESET}`);
         }
@@ -936,6 +784,6 @@ class HeatAdjustment {
         });
     } catch (error) {
         console.log(`${BLUE}[ERROR ${date_string()}] Main execution failed: ${error.toString()}${RESET}`);
-        process.exit(1); // Exit with error code
+        process.exit(1);
     }
 })();
