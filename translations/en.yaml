@@ -1,7 +1,7 @@
 configuration:
   geoloc:
-    name: Geolocation details (required)
-    description: Provide the country code and postal code of your location. These are used for the Entso-E and Elering price queries (country code) and OpenWeatherMap temperature query (country code and postal code).
+    name: Geolocation (country code required; coordinates recommended)
+    description: Provide the country code and coordinates of your location. These are used for the Entso-E and Elering price queries (country code), and Finnish Meteorological Institute (FMI) and OpenWeatherMap (OWM) temperature queries (coordinates).
   temp_to_hours:
     name: Temperature-to-heating-hours mapping (required)
     description: Mapping between the outside temperature and daily heating hours. Linear interpolation is used in-between points. If the temperature goes outside the given range, the endpoint values are used (no extrapolation).
@@ -13,10 +13,10 @@ configuration:
     description: Provide Entso-E API token. If not provided, the Elering backup API will be queried, but it only supports fi, ee, lt, and lv country codes. Also, if Elering goes down, there is no further fallback.
   smartthings:
     name: SmartThings API authentication (recommended)
-    description: Provide SmartThings API token and the SmartThings device IDs for the devices providing inside, garage, and outside temperatures. These can be found from 'my.smarthings.com'. If not provided, the temperatures cannot be obtained through SmartThings API; inside and garage temperatures are not logged and outside temperature is queried from OpenWeatherMap.
+    description: Provide SmartThings API token and the SmartThings device IDs for the devices providing inside, garage, and outside temperatures. These can be found from 'my.smarthings.com'. If not provided, the temperatures cannot be obtained through SmartThings API; inside and garage temperatures are not logged and outside temperature is queried from FMI or OWM.
   openweathermap:
     name: OpenWeatherMap API authentication (optional)
-    description: Provide OpenWeatherMap API token. If not provided, and SmartThings API does not provide outside temperature, the outside temperature is not logged and the algorithm follows the last specified "temp_to_hours" entry in the configuration.
+    description: Provide OpenWeatherMap API token. If not provided, and outside temperature cannot be obtained through SmartThings or FMI APIs, the outside temperature is not logged and the algorithm follows the last specified "temp_to_hours" entry in the configuration.
   easee:
     name: Easee settings (optional)
     description: Provide Easee authentication and device information to collect consumption data. Giving either "user" and "pw" or "access_token" and "refresh_token" is enough (see README.md file for more details). If authentication details are not provided, Easee consumption data is not collected.
