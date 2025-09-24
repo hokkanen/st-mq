@@ -12,7 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ### Global Variables ###
 // Debugging settings and console colors
-const DEBUG = true;
+const DEBUG = false;
 const RESET = '\x1b[0m';
 const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
@@ -59,8 +59,10 @@ function config() {
 
     try {
         const file_data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        // When using options.json (HASS), file_data is the whole object
+        // When using config.json (standalone), options is a separate object
         const options = file_data.options || file_data;
-        const conf = {
+        return {
             ...default_config,
             country_code: options.geoloc?.country_code || '',
             entsoe_token: options.entsoe?.token || '',
@@ -244,7 +246,7 @@ class FetchData {
             return null;
         }
         if (response.status === 200) {
-            console.log(`${YELLOW}[DEBUG ${date_string()}] ${type} query successful!${RESET}`);
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] ${type} query successful!${RESET}`);
         } else {
             console.log(`${BLUE}[ERROR ${date_string()}] ${type} query failed!${RESET}`);
             console.log(`${BLUE} API status: ${response.status}${RESET}`);
@@ -535,7 +537,7 @@ class FetchData {
     // Fetches temperature from SmartThings API
     async query_st_temp(st_dev_id) {
         if (!st_dev_id || st_dev_id.trim() === "" || typeof st_dev_id !== 'string') {
-            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] query_st_temp skipped: invalid st_dev_id="${st_dev_id}" (type: ${typeof st_dev_id})${RESET}`);
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Skipped query_st_temp: invalid st_dev_id="${st_dev_id}" (type: ${typeof st_dev_id})${RESET}`);
             return null;
         }
         try {
