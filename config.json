@@ -1,7 +1,7 @@
 {
     "name": "ST-MQ",
     "description": "SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)",
-    "version": "0.7.2",
+    "version": "0.7.1",
     "url": "https://github.com/hokkanen/st-mq",
     "slug": "st-mq",
     "arch": [
@@ -85,7 +85,8 @@
     "schema": {
         "geoloc": {
             "country_code": "str",
-            "postal_code": "str"
+            "latitude": "str?",
+            "longitude": "str?"
         },
         "temp_to_hours": [
             {

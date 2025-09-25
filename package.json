@@ -1,6 +1,6 @@
 {
   "name": "ST-MQ",
-  "version": "0.7.2",
+  "version": "0.7.1",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
