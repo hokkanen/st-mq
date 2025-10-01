@@ -554,29 +554,12 @@ class FetchData {
         }
     }
 
-    // Fetches electricity prices for the next 48 hours, updating only if 12 or fewer hours remain
+    // Fetches electricity prices for the next 48 hours
     async fetch_prices() {
         try {
             const now = moment.tz('Europe/Berlin');
             const start_of_period = now.clone().startOf('day');
             const end_of_period = start_of_period.clone().add(2, 'days').startOf('day');
-
-            // Check if sufficient prices remain using slice_prices
-            let should_fetch = true;
-            if (this.#price_start_time && this.#price_end_time && this.#prices.length > 0 && this.#price_resolution) {
-                const remaining_slots = this.slice_prices.length;
-                const slots_per_hour = this.#price_resolution === 'PT15M' ? 4 : 1;
-                const remaining_hours = remaining_slots / slots_per_hour;
-
-                if (remaining_hours > 12) {
-                    should_fetch = false;
-                    if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Skipping price fetch: ${remaining_hours.toFixed(2)} hours remain (> 12, ${remaining_slots} slots)${RESET}`);
-                } else {
-                    if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Fetching prices: ${remaining_hours.toFixed(2)} hours remain (<= 12, ${remaining_slots} slots)${RESET}`);
-                }
-            }
-
-            if (!should_fetch) return;
 
             let { prices: new_prices, resolution: new_resolution, start_time, end_time } = await this.query_entsoe_prices(start_of_period.toISOString(), end_of_period.toISOString());
             let full_prices = new_prices;
