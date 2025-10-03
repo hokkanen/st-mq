@@ -575,7 +575,7 @@ class FetchData {
     // Fetches temperature from OpenWeatherMap API
     async query_owm_temp(lat, lon) {
         try {
-            const url = `http://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${config().weather_token}&units=metric`;
+            const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${config().weather_token}&units=metric`;
             const response = await fetch(url);
             if (this.check_response(response, `OpenWeatherMap (${lat},${lon})`) !== 200) return null;
             const temp = (await response.json()).main?.temp ?? null;
