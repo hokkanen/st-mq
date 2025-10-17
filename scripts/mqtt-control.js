@@ -633,10 +633,12 @@ class FetchData {
 
             if (new_prices.length === 0 || DEBUG) {
                 const elering_result = await this.query_elering_prices(start_of_period.toISOString(), end_of_period.toISOString());
-                new_prices = elering_result.prices;
-                new_price_slots = elering_result.price_slots;
-                start_time = elering_result.start_time;
-                end_time = elering_result.end_time;
+                if (new_prices.length === 0) {
+                    new_prices = elering_result.prices;
+                    new_price_slots = elering_result.price_slots;
+                    start_time = elering_result.start_time;
+                    end_time = elering_result.end_time;
+                }
             }
 
             // Update prices only if they differ or resolution/period changes
