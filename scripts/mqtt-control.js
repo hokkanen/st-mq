@@ -381,7 +381,6 @@ class FetchData {
                 const hours = ts_duration_minutes / 60;
                 const ts_start_local = ts_start.format('DD-MM-YYYY');
 
-
                 const resolution = ts?.Period?.resolution;
                 if (!resolution) {
                     console.log(`${BLUE}[${date_string()}] Entso-E: No resolution in TimeSeries[${index}], skipping${RESET}`);
@@ -402,19 +401,26 @@ class FetchData {
                 }
 
                 const ts_slots = ts_duration_minutes / interval;
-
                 const points = Array.isArray(ts?.Period?.Point) ? ts.Period.Point : ts?.Period?.Point ? [ts.Period.Point] : [];
                 if (points.length === 0) continue;
 
                 let ts_prices = Array(ts_slots).fill(null);
 
                 points.forEach(entry => {
-                    const position = parseInt(entry.position) - 1;
+                    const position = parseInt(entry.position, 10) - 1;
                     const price = parseFloat(entry['price.amount']);
-                    if (isNaN(price) || position < 0 || position >= ts_slots) {
-                        if (position < 0 || position >= ts_slots) {
-                            console.log(`${BLUE}[${date_string()}] Entso-E: Invalid position ${position + 1} (out of 1-${ts_slots}) in TimeSeries[${index}], skipping point${RESET}`);
+                    if (isNaN(position) || position < 0 || position >= ts_slots || isNaN(price)) {
+                        let logMsg = `${BLUE}[${date_string()}] Entso-E: `;
+                        if (isNaN(position)) {
+                            logMsg += `Invalid position value "${entry.position || 'missing'}" (parsed as NaN)`;
                         }
+                        else if (position < 0 || position >= ts_slots) {
+                            logMsg += `Out-of-bounds position ${position + 1} (expected from 1 to ${ts_slots})`;
+                        }
+                        else {
+                            logMsg += `Invalid price value "${entry['price.amount'] || 'missing'}" (parsed as NaN) at position ${position + 1}`;
+                        }
+                        console.log(`${logMsg} in TimeSeries[${index}], skipping point${RESET}`);
                         return;
                     }
                     ts_prices[position] = price;
