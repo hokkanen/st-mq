@@ -381,25 +381,51 @@ class FetchData {
                 const hours = ts_duration_minutes / 60;
                 const ts_start_local = ts_start.format('DD-MM-YYYY');
 
+
+                const resolution = ts?.Period?.resolution;
+                if (!resolution) {
+                    console.log(`${BLUE}[${date_string()}] Entso-E: No resolution in TimeSeries[${index}], skipping${RESET}`);
+                    continue;
+                }
+
+                let interval;
+                if (resolution === 'PT60M') interval = 60;
+                else if (resolution === 'PT15M') interval = 15;
+                else {
+                    console.log(`${BLUE}[${date_string()}] Entso-E: Unsupported resolution ${resolution} in TimeSeries[${index}], skipping${RESET}`);
+                    continue;
+                }
+
+                if (ts_duration_minutes % interval !== 0) {
+                    console.log(`${BLUE}[${date_string()}] Entso-E: Duration ${ts_duration_minutes} not divisible by interval ${interval} in TimeSeries[${index}], skipping${RESET}`);
+                    continue;
+                }
+
+                const ts_slots = ts_duration_minutes / interval;
+
                 const points = Array.isArray(ts?.Period?.Point) ? ts.Period.Point : ts?.Period?.Point ? [ts.Period.Point] : [];
                 if (points.length === 0) continue;
 
-                const ts_slots = Math.max(...points.map(entry => parseInt(entry.position)));
                 let ts_prices = Array(ts_slots).fill(null);
 
                 points.forEach(entry => {
                     const position = parseInt(entry.position) - 1;
                     const price = parseFloat(entry['price.amount']);
-                    if (!isNaN(price) && position >= 0 && position < ts_slots) ts_prices[position] = price;
+                    if (isNaN(price) || position < 0 || position >= ts_slots) {
+                        if (position < 0 || position >= ts_slots) {
+                            console.log(`${BLUE}[${date_string()}] Entso-E: Invalid position ${position + 1} (out of 1-${ts_slots}) in TimeSeries[${index}], skipping point${RESET}`);
+                        }
+                        return;
+                    }
+                    ts_prices[position] = price;
                 });
 
                 for (let i = 1; i < ts_prices.length; i++) {
                     if (ts_prices[i] === null && ts_prices[i - 1] !== null) ts_prices[i] = ts_prices[i - 1];
                 }
 
-                const inferred = this.infer_resolution(ts_slots);
-                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E TimeSeries[${index}] for ${ts_start_local} (Europe/Berlin time); Duration: ${ts_duration_minutes} minutes (${hours} hours); Slots: ${ts_slots} (${inferred})${RESET}`);
-                local_res_list.push(`${inferred} for ${ts_start_local} (${hours}-hour-data)`);
+                if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Entso-E TimeSeries[${index}] for ${ts_start_local} (Europe/Berlin time); Duration: ${ts_duration_minutes} minutes (${hours} hours); Slots: ${ts_slots} (${resolution})${RESET}`);
+                local_res_list.push(`${resolution} for ${ts_start_local} (${hours}-hour-data)`);
 
                 full_prices = full_prices.concat(ts_prices);
                 price_slots.push(ts_slots);
