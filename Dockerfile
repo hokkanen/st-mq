@@ -1,6 +1,5 @@
 # Set base image
-ARG BUILD_FROM
-FROM $BUILD_FROM
+FROM ghcr.io/home-assistant/base:latest
 
 # Set environment variables
 ENV LANG C.UTF-8
