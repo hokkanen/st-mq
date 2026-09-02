@@ -4,9 +4,7 @@ import { join } from 'path';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import moment from 'moment-timezone';
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
 // ### Global Variables ###
 // Debugging settings and console colors
 const DEBUG = false;
@@ -15,22 +13,18 @@ const BLUE = '\x1b[34m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
-
 // Configuration and CSV paths
 let CONFIG_PATH = join(__dirname, '..', 'config.json'); // default path
 if (fs.existsSync(join(__dirname, '..', 'data', 'options.json'))) {
   CONFIG_PATH = join(__dirname, '..', 'data', 'options.json'); // HASS path
 }
 const CSV_FILE_PATH = join(__dirname, '..', 'share', 'st-mq', 'easee.csv');
-
 // ### Utility Functions ###
-
 // Formats the current or given time into a UTC time string for logging
 function date_string(date = null) {
     const momentDate = date ? moment(date).utc() : moment.utc();
     return momentDate.format('HH:mm:ss DD-MM-YYYY') + ' UTC';
 }
-
 // Loads configuration from a JSON file, providing defaults if the file is missing or invalid
 function config() {
     // Initialize tokens with default empty values
@@ -42,13 +36,11 @@ function config() {
         charger_id: '',
         equalizer_id: ''
     };
-
     // Check if a config file is found
     if (!fs.existsSync(CONFIG_PATH)) {
         console.log(`${GREEN}[ERROR ${date_string()}] Config file not found at ${CONFIG_PATH}${RESET}`);
         return default_config;
     }
-
     try {
         const file_data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
         // When using options.json (HASS), file_data is the whole object
@@ -68,7 +60,6 @@ function config() {
         return default_config;
     }
 }
-
 // Updates the configuration file with new access and refresh tokens
 function update_config(access_token, refresh_token) {
     // Create new apikey file structure
@@ -82,7 +73,6 @@ function update_config(access_token, refresh_token) {
             equalizer_id: ''
         }
     };
-
     // Use existing apikey file structure if the file exists
     if (fs.existsSync(CONFIG_PATH)) {
         try {
@@ -92,7 +82,6 @@ function update_config(access_token, refresh_token) {
             console.log(`${GREEN}[${date_string()}] Creating new config file${RESET}`);
         }
     }
-
     // Add tokens depending on the config file type
     if (config_data.hasOwnProperty('options')) {
         config_data.options.easee.access_token = access_token;
@@ -101,7 +90,6 @@ function update_config(access_token, refresh_token) {
         config_data.easee.access_token = access_token;
         config_data.easee.refresh_token = refresh_token;
     }
-
     // Write to file with error handling
     try {
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(config_data, null, 4), { encoding: 'utf8', flag: 'w' });
@@ -109,7 +97,6 @@ function update_config(access_token, refresh_token) {
         console.log(`${GREEN}[ERROR ${date_string()}] Failed to write to config file: ${error.toString()}${RESET}`);
     }
 }
-
 // Checks the status of an API response and logs the result
 async function check_response(response, type, log_success = false) {
     if (!response) {
@@ -125,7 +112,6 @@ async function check_response(response, type, log_success = false) {
     }
     return response.status;
 }
-
 // Authenticates using username and password to obtain new tokens
 async function use_credentials() {
     const user = config().user;
@@ -144,7 +130,6 @@ async function use_credentials() {
     }
     return response;
 }
-
 // Updates tokens using refresh token or falls back to credentials with retries
 async function update_tokens() {
     const options = {
@@ -159,7 +144,6 @@ async function update_tokens() {
         console.log(`${GREEN}[ERROR ${date_string()}] Fetch failed in update_tokens: ${error.toString()}${RESET}`);
         response = null;
     }
-
     if (response && await check_response(response, 'Refresh token', true) === 200) {
         try {
             const data = await response.json();
@@ -187,10 +171,13 @@ async function update_tokens() {
         console.log(`${GREEN}[ERROR ${date_string()}] Unable to update authentication tokens!${RESET}`);
     }
 }
-
 // Fetches data for a device, updating tokens if necessary
-async function fetch_data(url, id) {
-    url = url.replace('{id}', id);
+async function fetch_data(url, id, observation_ids = null, observation_keys = null) {
+    if (observation_ids) {
+        url = `https://api.easee.com/state/${id}/observations?ids=${observation_ids.join(',')}`;
+    } else {
+        url = url.replace('{id}', id);
+    }
     let options = {
         method: 'GET',
         headers: { accept: 'application/json', Authorization: `Bearer ${config().access_token}` }
@@ -202,7 +189,6 @@ async function fetch_data(url, id) {
         console.log(`${GREEN}[ERROR ${date_string()}] Fetch failed in fetch_data: ${error.toString()}${RESET}`);
         response = null;
     }
-
     if (!response || await check_response(response, id, false) !== 200) {
         await update_tokens();
         options.headers.Authorization = `Bearer ${config().access_token}`;
@@ -218,15 +204,25 @@ async function fetch_data(url, id) {
             return {};
         }
     }
-
     try {
-        return await response.json();
+        const data = await response.json();
+        if (observation_ids && observation_keys) {
+            const observations = Array.isArray(data) ? data : (data.observations || []);
+            const result = {};
+            observations.forEach(observation => {
+                const key = observation_keys[observation.id];
+                if (key && observation.value !== undefined && observation.value !== null) {
+                    result[key] = observation.value;
+                }
+            });
+            return result;
+        }
+        return data;
     } catch (error) {
         console.log(`${GREEN}[ERROR ${date_string()}] JSON parsing failed in fetch_data: ${error.toString()}${RESET}`);
         return {};
     }
 }
-
 // Initializes the CSV file with headers if it doesn't exist or is empty
 async function init_csv() {
     // Create the csv directory if it does not exist
@@ -235,10 +231,8 @@ async function init_csv() {
         if (!fs.existsSync(csv_dir)) {
             fs.mkdirSync(csv_dir, { recursive: true });
         }
-
         // Check if the file already exists and is not empty
         const csv_append = fs.existsSync(CSV_FILE_PATH) && fs.statSync(CSV_FILE_PATH).size > 0;
-
         // If the file does not exist or is empty, create file and add first line
         if (!csv_append) {
             fs.writeFileSync(CSV_FILE_PATH, 'unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n');
@@ -247,12 +241,10 @@ async function init_csv() {
         console.log(`${GREEN}[ERROR ${date_string()}] Failed to initialize CSV at ${CSV_FILE_PATH}: ${error.toString()}${RESET}`);
     }
 }
-
 // Appends data to the CSV file with error handling
 async function write_csv(data) {
     // Check the csv file status and create one if necessary
     await init_csv();
-
     // Append data to the file
     try {
         const unix_time = moment().unix();
@@ -261,22 +253,27 @@ async function write_csv(data) {
         console.log(`${GREEN}[ERROR ${date_string()}] Failed to append to CSV: ${error.toString()}${RESET}`);
     }
 }
-
 // Queries device data from Easee API and writes to CSV
 async function query_device_data() {
     // Get Equalizer data
-    const equalizer_data = await fetch_data(`https://api.easee.com/api/equalizers/{id}/state`, config().equalizer_id);
-
+    const equalizer_data = await fetch_data(
+        'https://api.easee.com/api/equalizers/{id}/state',
+        config().equalizer_id,
+        [31, 32, 33],
+        { 31: 'currentL1', 32: 'currentL2', 33: 'currentL3' }
+    );
     // Get charger data
-    const charger_data = await fetch_data(`https://api.easee.com/api/chargers/{id}/state`, config().charger_id);
-
+    const charger_data = await fetch_data(
+        'https://api.easee.com/api/chargers/{id}/state',
+        config().charger_id,
+        [183, 184, 185],
+        { 183: 'inCurrentT3', 184: 'inCurrentT4', 185: 'inCurrentT5' }
+    );
     // Check if the data contains required keys
     const required_keys_eq = ['currentL1', 'currentL2', 'currentL3'];
     const required_keys_ch = ['inCurrentT3', 'inCurrentT4', 'inCurrentT5'];
-
     const is_valid_eq = required_keys_eq.every(key => key in equalizer_data);
     const is_valid_ch = required_keys_ch.every(key => key in charger_data);
-
     // Write to csv if equalizer or charger data is valid
     if (is_valid_eq || is_valid_ch) {
         // Fill missing equalizer data with zeros
@@ -287,9 +284,7 @@ async function query_device_data() {
         const ch_curr1 = is_valid_ch ? charger_data.inCurrentT3.toFixed(2) : '0';
         const ch_curr2 = is_valid_ch ? charger_data.inCurrentT4.toFixed(2) : '0';
         const ch_curr3 = is_valid_ch ? charger_data.inCurrentT5.toFixed(2) : '0';
-
         await write_csv(`${ch_curr1},${ch_curr2},${ch_curr3},${eq_curr1},${eq_curr2},${eq_curr3}`);
-
         if (!is_valid_eq) {
             console.log(`${GREEN}[${date_string()}] No data found for equalizer '${config().equalizer_id}', writing charger data only${RESET}`);
         }
@@ -300,21 +295,18 @@ async function query_device_data() {
         console.log(`${GREEN}[ERROR ${date_string()}] No data found for any device!${RESET}`);
         console.log(`${GREEN}[${date_string()}] The CSV file is not updated${RESET}`);
     }
-
     // Debug printouts
     if (DEBUG) {
         console.log(`${YELLOW}[DEBUG ${date_string()}] Charger data: ${JSON.stringify(charger_data, null, 2)}${RESET}`);
         console.log(`${YELLOW}[DEBUG ${date_string()}] Equalizer data: ${JSON.stringify(equalizer_data, null, 2)}${RESET}`);
     }
 }
-
 // ### Main Execution ###
 (async () => {
     try {
         // Validate required configuration fields before proceeding
         const cfg = config();
         const errors = [];
-
         if (!cfg.charger_id) {
             errors.push("Missing 'charger_id'");
         }
@@ -327,10 +319,8 @@ async function query_device_data() {
         if (errors.length > 0) {
             throw new Error(errors.join('; '));
         }
-
         // Check the csv file status and create one if necessary
         await init_csv();
-
         // Run Easee query and write to csv file
         await query_device_data();
     } catch (error) {
