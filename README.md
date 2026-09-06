@@ -1,106 +1,166 @@
+# ST-MQ
 
-# SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
+ST-MQ is a local home-energy controller under development for a Raspberry Pi 5
+Home Assistant add-on and standalone Linux. The authoritative project brief is
+`CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
+[docs/PROGRESS.md](docs/PROGRESS.md).
 
-This tool can be run as a standalone app (see below) or as a [Home Assistant add-on](DOCS.md). The tool uses MQTT communication, so it can be used with any home automation system that can receive MQTT messages, not just SmartThings. However, the setup instructions are provided only for SmartThings. The tool evaluates the current kWh spot price and signals whether the energy consumption is economical, considering the user-defined configuration parameters.
+Version 0.8.0 provides an offline, tested foundation: SQLite history, conservative
+heating decisions, incremental thermal learning, a monitoring dashboard and
+read-only H66 acquisition. **Default startup uses simulated devices in shadow
+mode. No physical heat-pump command transport is enabled in the new application.**
 
-## Nordpool kWh spot price control for SmartThings
-The [mqtt-control.js](scripts/mqtt-control.js) nodejs script obtains Nordic and Baltic electricity prices from [Entso-E Transparency platform](https://transparency.entsoe.eu/) API or [Elering](https://dashboard.elering.ee/assets/api-doc.html) backup API (Elering API works only for fi, ee, lt, and lv country codes), and publishes an MQTT message through an MQTT broker to the [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver installed on SmartThings. The script stores data in `./share/st-mq/st-mq.csv`, which can be plotted with the [html chart tool](chart/index.html). The file `./share/st-mq/st-mq.csv` has the following format:
+The comfort reference is inferred from sustained occupied normal-temperature
+plateaus under the house's existing controls. The preferred maximum drop defaults
+to **1 °C**. References stay fixed during cooling, recovery and preheating. A
+missing reference or unreliable model keeps the requested heating mode normal.
+A provisional historical reference is not automatically applied to the live house.
 
-```
-unix_time,price,heat_on,temp_in,temp_ga,temp_out
-```
+## Run locally
 
-NOTE! The device running [mqtt-control.js](scripts/mqtt-control.js) should be connected to the same local area network as the MQTT broker and the SmartThings hub.
+Use Node.js **22.19 or newer** (Node 22 LTS is the container baseline). SQLite is
+built into Node; Node 22 emits its experimental-feature warning. No GPU or paid
+model service is used.
 
-## Easee API query script
-The Easee API query script stores the respective user's Easee Charger and Easee Equalizer data into `./share/st-mq/easee.csv`. The stored data contains electric current for three phases for Easee Charger (charger consumption) and Easee Equalizer (total home consumption). This data can also be plotted with the [html chart tool](chart/index.html). The `./share/st-mq/easee.csv` has the following format:
-
-```
-unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3
-```
-
-## Installation (standalone)
-Install `mosquitto` MQTT broker, `npm`, `nodejs`, and `pm2` process manager (optional) if not already installed:
-```
-sudo apt update
-sudo apt install -y mosquitto nodejs npm pm2
-```
-
-Clone this repo by
-```
-git clone https://github.com/hokkanen/st-mq.git
-```
-
-Install npm dependencies locally in the project folder by
-```
-cd st-mq
-npm i
-```
-
-## Setup (standalone)
-
-### SmartThings
-In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages, which indicate whether the kWh spot price is favourable for energy consumption. If the conditions are not favourable, `heatoff` is published; otherwise, `heaton15` is published. Additionally, when the conditions are favourable, `heaton60` message is published together with `heaton15` message during the daytime (4:45 - 18:45 Europe/Berlin time) if no prior `heaton60` messages have been published within the past hour.
-
-### Config
-The root directory contains [config.json](config.json) file in which the `options` section needs to be updated. In the config, fill in geolocation information, temperature-to-heating-hours mapping array, MQTT broker details, and the required API keys and SmartThings device IDs for the temperature sensors. For more information, check the [HASS translations file](translations/en.yaml).
-
-To collect consumption data from local Easee devices, Easee authentication and device information are required as well. Giving either a username and password, or an access token and refresh token, is required. Providing tokens only should be a theoretically safer option since they provide limited access to Easee account. However, giving a username and password has turned out to be a more stable option, since the refresh token update procedure may in rare occasions, fail (maybe a few times a year when running the tool 24/7). If neither of these authentication methods is provided, Easee consumption data is not collected.
-
-The user-specific [Entso-E](https://transparency.entsoe.eu/), [OpenWeatherMap](https://home.openweathermap.org/), and [SmartThings](https://account.smartthings.com/tokens) API keys can be obtained freely by registering for these services. If the [OpenWeatherMap](https://home.openweathermap.org/) and [SmartThings](https://account.smartthings.com/tokens) API keys are not set (ie, these API queries are not attempted or fail), the inside and garage temperatures are not logged, and the outside temperature is queried from the Finnish Meteorological Institute (FMI) for finnish locations. However, inside and garage temperatures are only used for csv logging, and do not impact the heat adjustment algorithm. If no outside temperature is obtained, the algorithm follows the last specified `temp_to_hours` entry specified in the [config.json](config.json).
-
-### Mosquitto MQTT broker
-Set up Mosquitto user name and password by creating a password file with
-```
-sudo mosquitto_passwd -c /etc/mosquitto/passwd <username>
-```
-Create a user config file with `micro` editor by
-```
-sudo micro /etc/mosquitto/conf.d/myconfig.conf
-```
-with the following contents:
-```
-# Allow connections from anywhere
-listener 1883
-
-# Require credentials for connections
-allow_anonymous false
-password_file /etc/mosquitto/passwd
-```
-Restart Mosquitto to apply the changes:
-```
-sudo systemctl restart mosquitto
-```
-
-## Running (standalone)
-To start all required services, ie, [easee-query.js](scripts/easee-query.js) and [mqtt-control.js](scripts/mqtt-control.js) scripts, and a web server for [chart/index.html](chart/index.html), run [scheduler.js](scheduler.js) in the current terminal instance by
-```
-node scheduler.js
-```
-or just web server by
-```
+```sh
+npm ci
+npm test
 npm run build
-npm run preview
+npm start
 ```
-Running dev server instance (`npm run dev`) gives hot module replacement (HMR) and auto-refresh on csv updates.
 
-To run with `pm2` process manager without using the [scheduler.js](scheduler.js) script, use the following ([easee-query.js](scripts/easee-query.js) does not have an internal scheduler):
-```
-pm2 start ./scripts/mqtt-control.js
-pm2 start ./scripts/easee-query.js --cron-restart="*/5 * * * *" --no-autorestart
-pm2 start npm --name "chart-builder" -- run build
-pm2 start npm --name "chart-server" -- run preview
-```
-The console output uses blue color for [mqtt-control.js](scripts/mqtt-control.js) and green color for [easee-query.js](scripts/easee-query.js) (the [chart](chart/index.html) builder and server logs are in `./share/st-mq/chart-builder.log` and `./share/st-mq/chart-server.log`, respectively). The [chart](chart/index.html) itself can be accessed with a browser at [http://localhost:1234](http://localhost:1234).
+Open **http://127.0.0.1:1234**. The UI labels simulated readings and example prices.
+`node scheduler.js` also starts the safe application unless the separate legacy
+live gate is explicitly enabled. Neither default entry point reads standalone
+provider credentials. The server serves the completed UI build; it does not
+rebuild historical CSVs or run a permanent Vite build watcher.
 
-## Create persistent app list (standalone)
-Make `pm2` restart automatically after reboot by
-```
-pm2 startup
-```
-and following the instructions. After all desired apps have been started, save the app list by
+The UI has monitoring, shadow and simulated active modes, selectable observations,
+price/weather outlooks, requested/actual state, stale-data indication, learning
+health, explicit occupancy and timed normal-heating overrides. The default 21 °C
+**demo** target is confined to simulation, not inferred as the real house's target.
+Overrides are persistent; changing one in shadow mode does not operate equipment.
+Away mode currently preserves normal fallback; return times are recorded but
+return-aware optimization is pending.
 
+For UI development run `npm start` and `npm run dev` in separate terminals. Vite
+proxies `/api` to the backend. `npm run preview` alone does not provide the API.
+
+## Persistence and historical data
+
+Standalone databases are in `var/`; Home Assistant uses `/data/st-mq/`. Simulation
+uses `simulation.sqlite`; real/offline household history uses `st-mq.sqlite`.
+Override the directory with `STMQ_DATA_DIR`. These databases and supplied CSVs are
+excluded from Git and Docker contexts. The owner's existing `data/options.json`
+is preserved and remains governed by the repository's existing git-crypt setup.
+
+```sh
+npm run history -- import
+npm run history -- summary
+npm run history -- tail --follow
+npm run history -- export --output /tmp/indoor.csv --signal indoor_temperature
+npm run history -- backup --output /tmp/st-mq-backup.sqlite
+npm run history -- restore --input /tmp/st-mq-backup.sqlite --db /tmp/restored.sqlite
+STMQ_INPUT=offline npm start
 ```
-pm2 save
+
+Import defaults to the two supplied `CODEX` CSVs, with streaming batches,
+SHA-256 provenance, interruption recovery and idempotence across file paths.
+Importing the same file twice adds no observations. Differently edited source
+files retain separate provenance; they are not silently merged into canonical
+historical readings. Historical prices stay ex VAT. Missing readings stay null,
+zero-current anomalies stay flagged, and commands never become compressor labels.
+March–May 2026 is an approximate absence/heating-off annotation excluded from
+occupied-model training. All 84 dated handoff counters are preserved; DHW runtime
+is not added to compressor runtime.
+
+Backups use SQLite's online backup API. Restore to a new path while the target
+application is stopped; validate it before changing the configured path. Keep
+backups on separate storage. Schema upgrades run transactionally; newer unknown
+schemas are rejected. Queries are bounded to at most 5,000 observations. The HTTP
+history endpoint limits a request to 31 days. Source history is retained; there
+is no automatic deletion policy in this stage. Monitor disk growth and archive
+through tested backups/export.
+
+```sh
+npm run history -- counter --signal auxiliary_6kw_runtime --value 447 --date 2026-09-06
+npm run history -- annotate --kind absence --from 2026-03-01T00:00:00+02:00 --to 2026-06-01T00:00:00+03:00 --note 'Approximate heating-off absence'
+node scripts/benchmark-history.js var/st-mq.sqlite
 ```
-so the apps will respawn after reboot. After a `nodejs` upgrade the startup script should be updated by running `pm2 unstartup` and `pm2 startup`.
+
+## Connections and access
+
+| Variable | Default / purpose |
+| --- | --- |
+| `STMQ_INPUT` | `simulated`; also `offline` or read-only `mqtt` |
+| `STMQ_MODE` | `shadow`; also `monitoring`, or `active` for simulator only |
+| `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
+| `STMQ_PORT` | `1234` |
+| `STMQ_HOST` | `127.0.0.1`; add-on listens on `0.0.0.0` |
+| `STMQ_API_TOKEN` | Required, at least 24 characters, when listening beyond loopback |
+| `STMQ_CONFIG` | Existing connection JSON; defaults to `data/options.json`, or `/data/options.json` in add-on |
+| `STMQ_H66_DEVICE` | Exact H66 topic prefix; required for `mqtt` input |
+| `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
+
+Use a trusted local network or an authenticated HTTPS reverse proxy for remote
+access. API authentication protects both household data and setting changes;
+credentials are never returned in API responses. The browser keeps an entered
+API token in session storage for its tab. There is no internet exposure configured
+by this project.
+
+Read-only MQTT reuses the existing broker address/user/password and subscribes to
+`<device>/HP/+`. There are **no SET publications**. Source timestamps, installed
+register scaling and actual device/controller semantics need verification. Plain
+H66 payloads lack source timestamps, so their freshness stays unknown rather than
+being fabricated from receipt time. Retained/duplicate/invalid messages are
+handled explicitly. See [domain semantics](src/domain/README.md).
+
+All-in pricing is a tested backend module with explicit effective-dated margin,
+tax and VAT inputs plus the supplied day/night and seasonal transfer schedules.
+It does not silently configure dated tax values or activate the seasonal tariff.
+Automated market/weather/SmartThings/Easee acquisition has **not yet migrated**
+into the new backend. Their existing scripts are retained, including the Easee
+replacement observation endpoint, but are not launched by default. A verified
+provider/temperature adapter and simple contract setup are the next integration
+stage. Do not treat the example price outlook as the actual contract.
+
+## Learning and control limits
+
+Learning uses bounded chronological samples and a holdout comparison against
+persistence and the prior model. A versioned checkpoint retains parameters,
+rollback model, current thermal estimate and processed cursor. Historical rebuild
+runs in a worker after the UI/control starts; ordinary restart processes only new
+rows. Bad candidate models are rejected. History is the rebuilding source.
+
+The experimental schedule evaluator compares continuous normal operation with
+modest reductions, prices their recovery and terminal reserve, penalizes comfort
+deviations and includes energy uncertainty. Severe cooling, poor freshness,
+unverified energy response, recovery debt, faults and overrides select normal
+fallback. Native normal operation is not forced preheating. The initial evaluator
+requires verified heat-pump energy samples; current snapshots do not qualify.
+Consequently the supplied history alone does not authorize economic dispatch.
+An uncertainty-aware estimator that can safely use weaker evidence remains work
+for the next stage. No actual bill savings are established.
+
+DHWR retains the legacy `heaton60` then `heaton15` intent sequence, ten-minute
+pulses, Helsinki 05:45–19:45 window and separate persistent 52.5-minute recency.
+Quarter-hour scheduling normally spaces pulses by at least one hour. No native
+hygiene/integral/auxiliary settings are changed. H66 writes, verified readback,
+manual panel reconciliation and physical communication-failure recovery are
+pending commissioning. No battery dispatch is implemented.
+
+## Deployment paths
+
+See [Home Assistant setup](DOCS.md). A local container build needs no `BUILD_FROM`
+argument:
+
+```sh
+docker build -t st-mq:development .
+```
+
+The same Node core and SQLite schema run in both targets. The container supports
+`amd64` and `aarch64`; this development host validates x86 execution only. CI
+includes a build for both architectures. [deploy/st-mq.service](deploy/st-mq.service)
+is an example standalone systemd unit to adapt to an installation; it has not been
+installed or enabled by development. Stop the old command owner before any future
+live migration. [Legacy documentation](docs/LEGACY.md) is retained for reference.

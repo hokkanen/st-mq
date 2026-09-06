@@ -1,25 +1,39 @@
-# SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)
+# Home Assistant add-on development setup
 
-![Supports aarch64 Architecture][aarch64-shield]
-![Supports amd64 Architecture][amd64-shield]
-![Supports armhf Architecture][armhf-shield]
-![Supports armv7 Architecture][armv7-shield]
-![Supports i386 Architecture][i386-shield]
+The 0.8.0 application starts with **simulated devices and shadow plans**. No live
+controller or provider is launched. Implementation is not production commissioned;
+see [progress and remaining work](docs/PROGRESS.md).
 
+1. Build/install ST-MQ through the repository's existing add-on mechanism on
+   `aarch64` (Raspberry Pi 5) or `amd64`.
+2. In the add-on configuration, set `controller.web_token` to a private token of
+   at least 24 characters. It protects household data and settings. Leave
+   `controller.input: simulated` and `controller.mode: shadow` for initial review.
+3. Start the add-on and open the web UI on its mapped port (default 1234). Enter
+   that token in the browser. The UI clearly labels simulation.
+4. Persistent data is under `/data/st-mq/`, inside the add-on's persistent data
+   volume. Include this in backups. The existing `/share` mapping is retained.
+5. Import history explicitly with `node scripts/history.js import --db
+   /data/st-mq/st-mq.sqlite --file /share/st-mq/st-mq-corrected.csv --kind stmq`,
+   then import Easee with `--kind easee`. Input files are never included in the
+   application image.
+6. Choose `controller.input: offline` to view imported history and rebuild its
+   model without device connections. `mqtt` additionally requires verified H66
+   installation and `controller.h66_device`; acquisition is read-only. MQTT
+   connection fields reuse the existing configuration.
 
-[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fhokkanen%2Fst-mq)
+A blank network-access token prevents startup with a clear configuration error.
+The Home Assistant settings select startup defaults; settings edited in the UI
+persist in the database for that input. `active` applies only to simulated devices.
+The house comfort reference is inferred; preferred drop defaults to 1 °C.
 
-1. Install ST-MQ using the above button
-2. Install MQTT broker (Mosquitto HASS add-on address is preconfigured in config, but can be changed)
-3. In SmartThings, install [MQTTDevices](https://github.com/toddaustin07/MQTTDevices) edge driver, set the correct IP for the device where the MQTT broker is running, and subscribe to `from_stmq/heat/action` topic and listen for `heaton15`/`heaton60`/`heatoff` messages
-4. Set up ST-MQ configuration on the add-on's configuration tab
-5. Start the ST-MQ add-on
-6. Access html chart at http://homeassistant.local:1234 (default port)
-7. The output files and the chart server log are in `/root/share/st-mq/` under HASS file system
-8. The HASS add-on log tab shows MQTT controller output (blue) and Easee query output (green)
+The Dockerfile uses an explicit Node 22 Alpine base with a default `BUILD_FROM`, a
+finite frontend build and `npm ci`. It does not rely on Supervisor injecting a
+base-image argument, and contains no architecture-specific native SQLite addon.
+Node's own SQLite and Intl time-zone support are exercised in the container smoke
+check. Development has not installed or started this add-on on the owner's HA.
 
-[aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg
-[amd64-shield]: https://img.shields.io/badge/amd64-yes-green.svg
-[armhf-shield]: https://img.shields.io/badge/armhf-yes-green.svg
-[armv7-shield]: https://img.shields.io/badge/armv7-yes-green.svg
-[i386-shield]: https://img.shields.io/badge/i386-yes-green.svg
+Physical relay/H66 command ownership, controller compatibility, bounded writes,
+readback and communication-loss behavior must be verified before a later live
+migration. Retain the relay hardware until that migration is demonstrated. Existing
+legacy scripts are preserved and gated; see [README](README.md).

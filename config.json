@@ -1,19 +1,16 @@
 {
     "name": "ST-MQ",
-    "description": "SmartThings MQTT tools with kWh spot price query (Nordic + Baltic)",
-    "version": "0.7.5",
+    "description": "Local home-energy monitoring, offline learning and simulated heating control",
+    "version": "0.8.0",
     "url": "https://github.com/hokkanen/st-mq",
     "slug": "st-mq",
     "arch": [
-        "armhf",
-        "armv7",
         "aarch64",
-        "amd64",
-        "i386"
+        "amd64"
     ],
     "startup": "services",
     "boot": "auto",
-    "init": "false",
+    "init": false,
     "ports": {
         "1234/tcp": 1234
     },
@@ -80,6 +77,12 @@
             "refresh_token": "",
             "charger_id": "EHXXXXXX",
             "equalizer_id": "QPXXXXXX"
+        },
+        "controller": {
+            "input": "simulated",
+            "mode": "shadow",
+            "web_token": "",
+            "h66_device": ""
         }
     },
     "schema": {
@@ -118,6 +121,13 @@
             "refresh_token": "password?",
             "charger_id": "str",
             "equalizer_id": "str"
+        },
+        "controller": {
+            "input": "list(simulated|offline|mqtt)",
+            "mode": "list(monitoring|shadow|active)",
+            "web_token": "password",
+            "h66_device": "str?"
         }
-    }
+    },
+    "webui": "http://[HOST]:[PORT:1234]"
 }

@@ -1,0 +1,25 @@
+[Unit]
+Description=ST-MQ local energy monitoring
+After=network.target
+
+[Service]
+Type=simple
+User=stmq
+WorkingDirectory=/opt/st-mq
+Environment=STMQ_DATA_DIR=/var/lib/st-mq
+Environment=STMQ_INPUT=simulated
+Environment=STMQ_MODE=shadow
+EnvironmentFile=-/etc/st-mq.env
+ExecStart=/usr/bin/env node /opt/st-mq/src/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+StateDirectory=st-mq
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/st-mq
+
+[Install]
+WantedBy=multi-user.target

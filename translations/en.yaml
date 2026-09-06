@@ -1,4 +1,7 @@
 configuration:
+  controller:
+    name: Controller workspace
+    description: Start with simulated input and shadow mode. Set a private web token of at least 24 characters. Offline input reads imported history; MQTT input is read-only and needs the exact installed H66 device prefix. Active mode operates only the simulator.
   geoloc:
     name: Geolocation (country code required; coordinates recommended)
     description: Provide the country code and coordinates of your location. These are used for the Entso-E and Elering price queries (country code), and Finnish Meteorological Institute (FMI) and OpenWeatherMap (OWM) temperature queries (coordinates).
