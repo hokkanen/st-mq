@@ -112,6 +112,18 @@ test('thermal-only or stale models cannot authorize economic dispatch', () => {
   }
 });
 
+test('unknown forecast issuance accepts only an explicit fresh snapshot and cannot revive old issuance', () => {
+  const input = fixture();
+  input.forecast[0] = { ...input.forecast[0], issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now };
+  assert.equal(decide(input).action, 'reduction');
+  for (const change of [{ issuedAtBasis: undefined }, { fetchedAt: now - 7 * HOUR }, { fetchedAt: now + 1 },
+    { issuedAt: iso(now - 7 * HOUR), fetchedAt: now }]) {
+    const invalid = structuredClone(input); Object.assign(invalid.forecast[0], change);
+    assert.ok(decide(invalid).reasons.includes('missing-or-incomplete-price-weather-horizon'));
+  }
+  assert.equal(input.forecast[0].issuedAt, null);
+});
+
 test('small comfort breaches are soft and deeper/longer breaches cost more', () => {
   assert.equal(comfortPenalty(20, 21, 1), 0);
   assert.ok(comfortPenalty(19.99, 21, 1) > 0);

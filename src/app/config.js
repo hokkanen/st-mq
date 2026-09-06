@@ -25,16 +25,18 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     addon = raw.options ?? raw;
   }
   const input = env.STMQ_INPUT ?? addon.controller?.input ?? 'simulated';
-  if (!['simulated', 'mqtt', 'offline'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt or offline');
+  if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (env.STMQ_ADDON === '1' ? '/data/st-mq' : `${cwd}/var`));
   const configPath = env.STMQ_CONFIG ?? (existsSync('/data/options.json') && env.STMQ_ADDON === '1' ? '/data/options.json' : `${cwd}/data/options.json`);
   let connections = {};
   // Standalone offline/simulated starts never read the owner's credentials.
-  if (input === 'mqtt') {
+  if (input === 'mqtt' || input === 'providers') {
     const raw = JSON.parse(readFileSync(configPath, 'utf8'));
     connections = raw.options ?? raw;
-    if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
-    if (!(env.STMQ_H66_DEVICE ?? addon.controller?.h66_device)) throw new Error('STMQ_H66_DEVICE is required for read-only H66 acquisition');
+    if (input === 'mqtt') {
+      if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
+      if (!(env.STMQ_H66_DEVICE ?? addon.controller?.h66_device)) throw new Error('STMQ_H66_DEVICE is required for read-only H66 acquisition');
+    }
   }
   const port = Number(env.STMQ_PORT ?? 1234);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');

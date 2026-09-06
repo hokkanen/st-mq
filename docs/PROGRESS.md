@@ -112,30 +112,27 @@ separation from heat-pump-driven equilibrium. Live baseline reconciliation is an
 explicit remaining step. No savings are inferred by replaying altered commands
 against unchanged electricity consumption.
 
-### Remaining implementation stages
+### Remaining implementation stages after the initial offline release
 
-1. Migrate existing market/weather/SmartThings/Easee acquisition into the backend
-   with protocol fixtures, issued-forecast persistence, timestamp/freshness
-   validation, token refresh and outage recovery. The legacy scripts remain
-   available but are not launched by default; no live providers were queried.
-2. Add compact effective-dated electricity-contract setup and wire the tested
-   all-in pricing module to actual provider intervals. Current UI prices are
-   explicitly simulated; no unverified tax defaults or seasonal switch exist.
-3. Reconcile the inferred comfort reference with contemporary occupied heating
-   behavior and distinguish warm passive plateaus. Improve thermal/energy models
+1. Commission real API access and source freshness for the tested provider/contract
+   stage below. Offline fixtures
+   do not establish access to the household's accounts or current devices.
+2. Reconcile the inferred comfort reference with contemporary occupied heating
+   behavior. New candidates exclude unsupported warm-weather plateaus, but the
+   current house reference remains unverified. Improve thermal/energy models
    on chronological holdouts; do not require heat-pump metering as a prerequisite
    for all further work. The first experimental evaluator currently requires
    verified energy response and cannot dispatch economically from these CSVs alone.
-4. Add verified actual-state/readback ingestion and incremental online learning
+3. Add verified actual-state/readback ingestion and incremental online learning
    for the real plant. Current online learning covers the simulator; imported
    history rebuild runs independently. Plain H66 MQTT observations preserve their
    unknown source time and unverified scaling. Installed hardware is unconfirmed.
-5. Verify auxiliary/recovery attribution, hygiene completion, panel changes,
+4. Verify auxiliary/recovery attribution, hygiene completion, panel changes,
    device-side failure behavior, setting ownership/expiry and bounded H66 writes
    before implementing/authorizing a physical executor. No such writes are enabled.
-6. Add return-aware away behavior, richer planned/actual signal history, bill
+5. Add return-aware away behavior, richer planned/actual signal history, bill
    reporting and appropriate retention after useful data volume is measured.
-7. Run ARM64 image/runtime checks and a representative Pi soak test; then assess
+6. Run ARM64 image/runtime checks and a representative Pi soak test; then assess
    shadow prediction quality before any separately authorized live deployment.
 
 ### Repeatable validation
@@ -150,8 +147,80 @@ docker run --rm --network none --tmpfs /data st-mq:development node scripts/smok
 ```
 
 The automated suite covers unit, persistence, API and entry-point integration;
-**68 automated tests pass**, in addition to the browser and container smoke checks.
-browser smoke is an additional optional script requiring a separately started
+**68 automated tests passed in the initial offline release**, in addition to its
+browser and container smoke checks. These counts and the benchmark above predate
+the provider stage below.
+Browser smoke is an additional optional script requiring a separately started
 isolated Firefox BiDi instance and simulated application. In this Codex sandbox,
 subprocess/loopback tests required normal subprocess/network-listener support;
 the full suite was run with the approved test-command escalation.
+
+## Provider and contract stage, 6 September 2026 — offline integration verified
+
+- **Read-only provider path:** `STMQ_INPUT=providers` / add-on
+  `controller.input: providers` reuses existing connections. ENTSO-E market and
+  OpenWeather forecast acquisition run hourly; optional SmartThings/Easee device
+  acquisition runs every five minutes independently. Durable cache timestamps
+  preserve age across failures and restart. Physical writes remain disabled.
+- **Protocol semantics:** offline fixtures cover ENTSO-E A01/A03 curves,
+  quarter-hour/hourly resolution, 92/100-quarter DST days, missing values,
+  duplicates/revisions and ex-VAT normalization. Weather valid time is distinct
+  from fetch time; unknown OpenWeather issuance stays explicit. SmartThings/Easee
+  adapters validate timestamps/units and preserve uncertainty in current snapshots.
+  Easee authentication renewal and secret persistence are isolated from observations
+  and browser responses; they do not alter charger settings.
+- **Compact contract setup:** dated margin/tax excluding VAT, VAT percentage and
+  supplied transfer tariff feed backend all-in pricing. There are no unverified
+  tax defaults, automatic seasonal switches or invented historical charges.
+- **Reference learning:** unsupported warm-weather plateaus are excluded from
+  new comfort-reference candidates. The earlier 22.9 °C historical result belongs
+  to the initial replay above and is not evidence of a commissioned house target.
+- **Elering limitation:** documentation did not resolve the endpoint's interval-end
+  and VAT semantics. Automatic fallback remains unavailable until those semantics
+  are vetted in developer configuration; ordinary setup adds no engineering knobs.
+- **Validation:** all **145 automated tests** pass. Firefox browser checks pass
+  for dated rates/VAT conversion, settings, overrides, backend data, charts and
+  desktop/mobile layout, with no console errors. The rebuilt x86 container
+  (`7543d04f6119`, Node v22.23.2) passes its network-disabled startup/UI/restart smoke
+  test. No user credentials were used, no live household APIs or devices were
+  queried, and no Pi/Home Assistant runtime claim is made.
+- **Review regressions:** a future sensor timestamp cannot pin the current value;
+  UI and control share the 30-minute temperature freshness boundary; converted
+  Fahrenheit remains usable provenance. Outages retain original observation ages.
+  Five-minute polling cannot bypass a longer persisted retry backoff. SQLite
+  rollback also restores the in-memory observation view. Rejected HTTP responses
+  cancel their unread bodies. Each retained forecast block expires independently;
+  neither a newer envelope nor a restart makes it fresh again. Chart gaps and
+  terminal interval ends follow the backend's actual durations.
+- **Focused commits:** `d284ea4` tightens baseline inference and chronological
+  validation; `2ef334c` adds bounded read-only adapters, fixtures and schema-v2
+  immutable provider snapshots. The following integration commit connects polling,
+  dated pricing, quality-aware startup/UI and the regression tests.
+
+### Updated checkpoint replay and restart
+
+The incompatible old reference checkpoint rebuilt once from the same 56,980
+historical ST-MQ rows. Replay completed in **5.56 s**, with **26 ms** application
+readiness, **141.4 MiB** peak process RSS including workers and **8.6 ms** largest
+sampled event-loop delay on this x86 development host. It retained at most 768
+samples. Ordinary restart was ready in **21 ms**, processed **0** old rows, peaked
+at **99.7 MiB** RSS and sampled **2.1 ms** worst loop delay. These are local run
+measurements, not Raspberry Pi or long-term soak results.
+
+Stricter learning accepted 6 candidate models and rejected 217. The latest
+candidate's chronological error was **0.2235 °C/h**, worse than persistence at
+**0.1601 °C/h**, so it was rejected; the retained May 2025 model is stale. The
+24-hour train/validation embargo and invalid-reading continuity barriers prevent
+nearby or missing observations from creating misleading validation evidence.
+
+The new provisional reference is **21.6 °C**, supported by December 2024 occupied
+normal-operation plateaus with mean outside temperature **3.17 °C**. It is labelled
+a cool-weather heating-demand proxy, not verified continuous compressor activity
+or a commissioned current-house target. The default preferred drop remains **1 °C**.
+The former passive-summer reference is no longer retained by compatible checkpoints.
+No household bill savings or validated contemporary energy response are established.
+
+Primary-source verification and fixture limitations are recorded in
+`test/fixtures/providers-README.md`. Documentation/schema inspection establishes
+the implemented protocol interpretation, not successful live API commissioning.
+The release version remains 0.8.0 until the stage's combined checks are complete.

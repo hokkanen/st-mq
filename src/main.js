@@ -7,7 +7,7 @@ import { Engine } from './app/engine.js';
 import { createAppServer } from './app/server.js';
 import { startHistoryLearning, startOnlineLearning } from './app/learning.js';
 
-export async function start({ config = loadConfig(), clock = Date.now } = {}) {
+export async function start({ config = loadConfig(), clock = Date.now, providerOptions = {} } = {}) {
   const started = performance.now();
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(config.dbPath);
@@ -38,6 +38,10 @@ export async function start({ config = loadConfig(), clock = Date.now } = {}) {
     if (config.input === 'mqtt') {
       const { startMqtt } = await import('./acquisition/mqtt.js');
       acquisition = await startMqtt({ engine, store, config });
+    }
+    if (config.input === 'providers') {
+      const { startProviders } = await import('./acquisition/providers.js');
+      acquisition = startProviders({ ...providerOptions, engine, store, config, clock });
     }
     const schedule = () => {
       timer = setTimeout(() => {

@@ -46,8 +46,12 @@ function getIntervals(prices, forecast, now) {
     // Split at weather boundaries and at one-hour steps while preserving actual price duration.
     while (cursor < intervalEnd) {
       const weather = forecast.find(item => instant(item.start) <= cursor && instant(item.end) > cursor);
+      // Some providers expose forecast valid times but no issuance timestamp.
+      // Only an explicitly labelled snapshot may use its original fetch time.
+      const weatherAt = weather?.issuedAt == null && weather?.issuedAtBasis === 'fetched-snapshot'
+        ? instant(weather.fetchedAt) : instant(weather?.issuedAt);
       if (!weather || !finite(weather.outdoorC) || weather.outdoorC < -60 || weather.outdoorC > 50
-        || !finite(instant(weather.issuedAt)) || instant(weather.issuedAt) > now || now - instant(weather.issuedAt) > 6 * HOUR) return null;
+        || !finite(weatherAt) || weatherAt > now || now - weatherAt > 6 * HOUR) return null;
       const stepEnd = Math.min(intervalEnd, instant(weather.end), cursor + HOUR);
       intervals.push({ start: cursor, end: stepEnd, durationHours: (stepEnd - cursor) / HOUR,
         price: price.allInCentsPerKWh, outdoorC: weather.outdoorC });

@@ -42,6 +42,8 @@ export function createAppServer({ engine, store, token = '', staticDir = resolve
         if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return json(403, { error: 'Cross-origin request rejected' });
         if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, engine.status());
+        if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
+        if (req.method === 'POST' && url.pathname === '/api/contract') return json(200, engine.addContractPeriod(await body(req)));
         if (req.method === 'GET' && url.pathname === '/api/events') return json(200, store.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();

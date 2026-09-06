@@ -9,12 +9,17 @@ Version 0.8.0 provides an offline, tested foundation: SQLite history, conservati
 heating decisions, incremental thermal learning, a monitoring dashboard and
 read-only H66 acquisition. **Default startup uses simulated devices in shadow
 mode. No physical heat-pump command transport is enabled in the new application.**
+Read-only market, weather, SmartThings and Easee providers plus dated contract
+setup are integrated and tested with offline fixtures. No household API connection
+or physical equipment has been commissioned by this development work.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
 to **1 °C**. References stay fixed during cooling, recovery and preheating. A
 missing reference or unreliable model keeps the requested heating mode normal.
 A provisional historical reference is not automatically applied to the live house.
+Warm-weather plateaus without credible heating evidence are excluded from new
+reference candidates, so passive summer warmth does not establish a heating target.
 
 ## Run locally
 
@@ -92,7 +97,7 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 
 | Variable | Default / purpose |
 | --- | --- |
-| `STMQ_INPUT` | `simulated`; also `offline` or read-only `mqtt` |
+| `STMQ_INPUT` | `simulated`; also `offline`, read-only `mqtt`, or read-only `providers` |
 | `STMQ_MODE` | `shadow`; also `monitoring`, or `active` for simulator only |
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
 | `STMQ_PORT` | `1234` |
@@ -115,14 +120,41 @@ H66 payloads lack source timestamps, so their freshness stays unknown rather tha
 being fabricated from receipt time. Retained/duplicate/invalid messages are
 handled explicitly. See [domain semantics](src/domain/README.md).
 
-All-in pricing is a tested backend module with explicit effective-dated margin,
-tax and VAT inputs plus the supplied day/night and seasonal transfer schedules.
-It does not silently configure dated tax values or activate the seasonal tariff.
-Automated market/weather/SmartThings/Easee acquisition has **not yet migrated**
-into the new backend. Their existing scripts are retained, including the Easee
-replacement observation endpoint, but are not launched by default. A verified
-provider/temperature adapter and simple contract setup are the next integration
-stage. Do not treat the example price outlook as the actual contract.
+`STMQ_INPUT=providers` selects the new read-only provider path. It reuses
+`geoloc`, `entsoe`, `openweathermap`, `smartthings` and `easee` connection fields
+from the existing options JSON. Configure only the services in use: SmartThings
+indoor/outdoor device IDs and Easee acquisition are optional. The garage is outside
+heating optimization. Device requests run every five minutes; market and weather
+requests run hourly on separate schedules. Outages retain cached observations and
+forecasts with their original timestamps, so restart or refresh does not make old
+data fresh. Failed polls back off automatically, and retries survive restart.
+Provider input cannot enable physical active control.
+
+ENTSO-E is the primary day-ahead market source. Its currency, energy units,
+quarter-hour/hourly resolution, positions and document revisions are validated.
+OpenWeather supplies the three-hour forecast; its valid timestamps and downloaded
+snapshot time are stored separately. Its JSON response does not document an
+issuance timestamp, so the application marks that uncertainty. Rolling updates
+retain still-fresh near-term forecast blocks with their original snapshot provenance;
+missing intervals remain visible as gaps in charts. SmartThings
+timestamps and Easee current observations retain their quality flags. Current
+snapshots are not metered energy or heat-pump power. Easee login/token renewal is
+the only provider authentication mutation; it does not change charging settings.
+
+The contract form accepts dated retailer margin and electricity tax in **c/kWh
+excluding VAT**, VAT as a **percentage**, and the day/night or seasonal transfer
+tariff. Transfer already includes VAT. No tax/VAT values are silently filled in,
+and no seasonal switch is scheduled automatically. Confirm effective dates against
+the actual contract and applicable tax tables. Missing historical rates prevent
+historical billing; applying current charges to old readings is a scenario. The
+example outlook in simulation remains unrelated to the actual contract.
+
+Elering fallback remains limited: the public API schema did not establish terminal
+interval duration and VAT semantics clearly enough to enable it automatically.
+It requires vetted endpoint semantics in developer configuration, outside normal
+household setup. No missing prices are filled by guessing the next interval's end.
+See [provider fixture provenance](test/fixtures/providers-README.md) for the checked
+documentation and remaining verification limits.
 
 ## Learning and control limits
 

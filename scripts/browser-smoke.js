@@ -41,6 +41,31 @@ try {
   await until("document.getElementById('drop').textContent === '0.9 °C'");
   await evaluate("document.getElementById('max-drop').value='1'; document.getElementById('settings-form').requestSubmit(); true");
   await until("document.getElementById('drop').textContent === '1 °C'");
+  assert.equal(await evaluate("document.getElementById('price-label').textContent"), 'EXAMPLE ALL-IN PRICE');
+  assert.equal(await evaluate("document.getElementById('price-status').textContent"), 'Synthetic example prices');
+  assert.equal(await evaluate("document.getElementById('weather-status').textContent"), 'Synthetic weather');
+  assert.equal(await evaluate("document.getElementById('contract-vat').value"), '', 'Household rates must not be guessed');
+  await evaluate(`(async () => {
+    const status = await (await fetch('/api/status')).json();
+    if (status.input !== 'simulated') throw new Error('Contract smoke test requires an isolated simulation');
+    const previous = status.contract?.periods?.at(-1);
+    const date = new Date((previous?.from ?? Date.UTC(2026, 0, 1)) + 2 * 86400000).toISOString().slice(0, 10);
+    document.getElementById('contract-editor').open = true;
+    document.getElementById('contract-date').value = date;
+    document.getElementById('contract-margin').value = '1.25';
+    document.getElementById('contract-tax').value = '2';
+    document.getElementById('contract-vat').value = '24';
+    document.getElementById('contract-tariff').value = 'seasonal';
+    document.getElementById('contract-tariff').dispatchEvent(new Event('change'));
+    document.getElementById('contract-form').requestSubmit();
+    return true;
+  })()`);
+  await until("document.getElementById('contract-message').textContent.includes('Dated rates saved')");
+  await until("document.getElementById('contract-periods').textContent.includes('1.25 c/kWh')");
+  assert.equal(await evaluate("(async () => (await (await fetch('/api/contract')).json()).periods.at(-1).vatRate)()"), 0.24);
+  assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('1.25 c/kWh')"), true);
+  assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('Seasonal')"), true);
+  assert.equal(await evaluate("document.getElementById('contract-vat').value"), '', 'Next rate period starts with blank fields');
   await until("document.getElementById('events').children.length > 0");
   const capture = async name => { const shot = await command('browsingContext.captureScreenshot', { context, origin: 'document' }); writeFileSync(`var/${name}.png`, Buffer.from(shot.data, 'base64')); };
   await capture('dashboard-desktop');
@@ -49,6 +74,6 @@ try {
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Mobile layout must not scroll horizontally');
   await capture('dashboard-mobile');
   assert.deepEqual(errors, []);
-  console.log('Browser smoke passed: loaded backend data, chart, override and settings forms, desktop/mobile layout; no console errors.');
+  console.log('Browser smoke passed: backend data, chart, overrides, settings, dated contract/VAT entry, synthetic provider status, desktop/mobile layout; no console errors.');
   await command('browser.close', {});
 } finally { ws.close(); }

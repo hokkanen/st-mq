@@ -113,3 +113,28 @@ test('read-only MQTT subscribes on reconnect, preserves retained uncertainty, ig
   assert.equal(JSON.stringify(store.events()).includes('private-password'), false);
   await reader.close();
 });
+
+test('dated contract API enforces authentication and validation, persists revisions and keeps simulation prices separate', async t => {
+  const { engine, store, config } = setup(t);
+  const token = 'synthetic-test-access-token-24';
+  const server = createAppServer({ engine, store, token });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const rates = { effectiveDate: '2026-09-06', marginCtPerKwh: 1.25, taxCtPerKwh: 2, vatRate: 0.24, tariff: 'day-night' };
+  assert.equal((await fetch(`${base}/api/contract`)).status, 401);
+  assert.equal((await fetch(`${base}/api/contract`, { headers, method: 'POST', body: JSON.stringify({ ...rates, vatRate: 24 }) })).status, 400);
+  assert.equal(engine.contract(), null);
+  const post = () => fetch(`${base}/api/contract`, { headers, method: 'POST', body: JSON.stringify(rates) });
+  const response = await post();
+  assert.equal(response.status, 200);
+  const saved = await response.json();
+  assert.equal(saved.periods[0].vatRate, 0.24);
+  assert.deepEqual(await (await fetch(`${base}/api/contract`, { headers })).json(), saved);
+  assert.equal((await post()).status, 400, 'Duplicate date cannot silently replace existing rates');
+  const restarted = new Engine({ store, config, clock: engine.clock });
+  assert.deepEqual(restarted.contract(), saved);
+  assert.equal(restarted.status().priceStatus, 'simulated');
+  assert.equal(store.events().filter(event => event.type === 'contract-period-added').length, 1);
+});

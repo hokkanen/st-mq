@@ -1,7 +1,40 @@
 import { decide, restoreCheckpoint } from '../control/index.js';
+import { goodQuality } from '../control/learning.js';
 import { validateSettings } from './config.js';
 import { SimulatedPlant, simulatedOutlook } from './simulator.js';
 import { Executor } from './executor.js';
+import { assembleOutlook, contractWithPeriod } from './contract.js';
+
+const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
+
+function trustworthy(observation, now) {
+  const phaseCurrent = /^(?:ev1|property)_current_l[123]$/.test(observation?.signal ?? '');
+  const quality = phaseCurrent && Array.isArray(observation?.quality)
+    ? observation.quality.filter(flag => flag !== 'current_snapshot_not_energy') : observation?.quality;
+  if (!observation || !Number.isFinite(observation.value) || !Number.isFinite(observation.sourceTime)
+    || observation.sourceTime > now || !goodQuality(quality)) return false;
+  if (observation.signal === 'indoor_temperature') return observation.value > 2 && observation.value < 40;
+  if (observation.signal === 'outdoor_temperature') return observation.value >= -60 && observation.value <= 50;
+  if (phaseCurrent) return observation.value >= 0 && observation.value <= 1000;
+  return true;
+}
+
+function remember(latest, observation, now) {
+  if (!observation || typeof observation.signal !== 'string') return;
+  const prior = latest[observation.signal];
+  const incomingValid = trustworthy(observation, now), priorValid = trustworthy(prior, now);
+  // Old measurements remain useful history during outages, with their original age.
+  // A bad/future measurement must never prevent a later trustworthy sample from recovering service.
+  if (!prior || (incomingValid && (!priorValid || observation.sourceTime >= prior.sourceTime))
+    || (!priorValid && !incomingValid && (observation.receivedAt ?? 0) >= (prior.receivedAt ?? 0)))
+    latest[observation.signal] = observation;
+}
+
+function decorate(reading, signal, now) {
+  if (!reading) return { value: null, stale: true };
+  return { ...reading, stale: !trustworthy({ ...reading, signal, sourceTime: reading.observedAt }, now)
+    || now - reading.observedAt > OBSERVATION_MAX_AGE_MS };
+}
 
 export class Engine {
   constructor({ store, config, clock = Date.now }) {
@@ -13,19 +46,29 @@ export class Engine {
     if (config.input !== 'simulated' && this.settings.mode === 'active') this.settings.mode = 'shadow';
     this.plant = config.input === 'simulated' ? new SimulatedPlant(store.getState('simulation:plant') ?? {}) : null;
     this.executor = new Executor({ input: config.input, store, plant: this.plant });
-    this.latest = {};
+    this.latest = Object.create(null);
     if (config.input === 'offline') {
       for (const signal of ['indoor_temperature', 'outdoor_temperature']) {
         const observation = store.latestObservation(signal);
-        if (observation) this.latest[signal] = observation;
+        if (observation) remember(this.latest, observation, clock());
+      }
+    }
+    if (config.input === 'providers') {
+      try {
+        const cached = store.getState('provider:observations');
+        if (Array.isArray(cached) && cached.length <= 64) for (const observation of cached) {
+          if (['smartthings', 'easee'].includes(observation?.source)) remember(this.latest, observation, clock());
+        }
+      } catch {
+        // Provider polling reconstructs a corrupt cache. Do not replay it into observation history.
+        store.event('provider-cache-rebuild', { reason: 'corrupt-observation-cache' }, clock());
       }
     }
     this.latestStatus = null;
   }
   ingest(observation) {
     this.store.observation(observation);
-    const prior = this.latest[observation.signal];
-    if (!prior || (observation.sourceTime ?? 0) >= (prior.sourceTime ?? 0)) this.latest[observation.signal] = observation;
+    remember(this.latest, observation, this.clock());
   }
   updateSettings(input) {
     const next = validateSettings(input);
@@ -34,6 +77,16 @@ export class Engine {
     this.store.event('settings-changed', { previous: this.settings, next }, this.clock());
     this.settings = next;
     return this.tick();
+  }
+  contract() { return this.store.getState(`contract:${this.config.input}`); }
+  addContractPeriod(input) {
+    const contract = contractWithPeriod(this.contract(), input);
+    this.store.transaction(() => {
+      this.store.setState(`contract:${this.config.input}`, contract);
+      this.store.event('contract-period-added', { period: contract.periods.at(-1) }, this.clock());
+    });
+    this.tick();
+    return contract;
   }
   setOverride(minutes) {
     if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) throw new Error('Override duration must be 0–1440 whole minutes');
@@ -60,7 +113,7 @@ export class Engine {
       };
       observations = { indoor: map('indoor_temperature'), outdoor: map('outdoor_temperature'),
         actual: { mode: 'unknown', verified: false, source: input } };
-      outlook = this.store.getState('live:outlook') ?? outlook;
+      outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
     const overrideKey = `override:${input}`;
     let override = this.store.getState(overrideKey);
@@ -91,11 +144,14 @@ export class Engine {
     }
     this.store.event('decision', { input, mode: this.settings.mode, action: decision.action, reasons: decision.reasons, commands: decision.commands,
       execution: execution.status, liveWrites: false }, now);
-    const decorate = obs => obs ? { ...obs, stale: !Number.isFinite(obs.observedAt) || now - obs.observedAt > 3_600_000 || obs.observedAt > now } : { value: null, stale: true };
     this.latestStatus = { now, input, mode: this.settings.mode, liveWrites: false, settings: this.settings,
       demoComfortTargetC: this.plant && this.settings.comfort.targetC === null ? 21 : null,
-      observations: { indoor: decorate(observations.indoor), outdoor: decorate(observations.outdoor), actual: execution.actual ?? observations.actual },
+      observations: { indoor: decorate(observations.indoor, 'indoor_temperature', now),
+        outdoor: decorate(observations.outdoor, 'outdoor_temperature', now), actual: execution.actual ?? observations.actual },
       override, decision, execution, prices: outlook.prices, forecast: outlook.forecast,
+      spot: outlook.spot ?? [], priceStatus: this.plant ? 'simulated' : outlook.priceStatus,
+      weatherStatus: this.plant ? 'simulated' : outlook.weatherStatus,
+      providers: this.store.getState('providers:health') ?? {}, contract: this.contract(),
       learning: { ...decision.learningHealth, background: this.store.getState('learning:health') },
       savings: { status: 'unproven', explanation: 'Simulated or shadow decisions do not establish actual bill savings.' } };
     return this.latestStatus;
@@ -105,9 +161,17 @@ export class Engine {
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;
-    for (const key of ['indoor', 'outdoor']) {
-      const obs = result.observations[key];
-      obs.stale = obs.stale || now - obs.observedAt > 3_600_000;
+    result.providers = this.store.getState('providers:health') ?? {};
+    for (const [key, signal] of [['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature']]) {
+      result.observations[key] = decorate(result.observations[key], signal, now);
+    }
+    if (!this.plant) {
+      const outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
+      Object.assign(result, outlook);
+      for (const [key, signal] of [['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature']]) {
+        const obs = this.latest[signal];
+        if (obs) result.observations[key] = decorate({ value: obs.value, observedAt: obs.sourceTime, quality: obs.quality }, signal, now);
+      }
     }
     return result;
   }
