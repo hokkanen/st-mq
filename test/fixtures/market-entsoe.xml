@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Publication_MarketDocument xmlns="urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3">
+  <mRID>synthetic-market-document</mRID><revisionNumber>1</revisionNumber><type>A44</type>
+  <createdDateTime>2026-09-05T12:00:00Z</createdDateTime>
+  <period.timeInterval><start>2026-09-06T00:00Z</start><end>2026-09-06T02:00Z</end></period.timeInterval>
+  <TimeSeries><mRID>1</mRID><in_Domain.mRID codingScheme="A01">10YFI-1--------U</in_Domain.mRID>
+    <out_Domain.mRID codingScheme="A01">10YFI-1--------U</out_Domain.mRID>
+    <currency_Unit.name>EUR</currency_Unit.name><price_Measure_Unit.name>MWH</price_Measure_Unit.name><curveType>A01</curveType>
+    <Period><timeInterval><start>2026-09-06T00:00Z</start><end>2026-09-06T01:00Z</end></timeInterval><resolution>PT15M</resolution>
+      <Point><position>1</position><price.amount>-50</price.amount></Point>
+      <Point><position>2</position><price.amount>0</price.amount></Point>
+      <Point><position>4</position><price.amount>100</price.amount></Point>
+    </Period>
+    <Period><timeInterval><start>2026-09-06T01:00Z</start><end>2026-09-06T02:00Z</end></timeInterval><resolution>PT60M</resolution>
+      <Point><position>1</position><price.amount>500</price.amount></Point>
+    </Period>
+  </TimeSeries>
+</Publication_MarketDocument>

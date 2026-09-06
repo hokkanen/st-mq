@@ -1,0 +1,218 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createDeviceProviders } from '../src/acquisition/devices.js';
+
+const fixtures = JSON.parse(readFileSync(new URL('./fixtures/provider-devices.json', import.meta.url), 'utf8'));
+const now = Date.parse('2026-09-06T12:05:00Z');
+const smartthings = { token: 'synthetic-smartthings-token', inside_temp_dev_id: 'indoor/device', outside_temp_dev_id: 'outdoor-device' };
+const easee = { access_token: 'synthetic-old-access', refresh_token: 'synthetic-old-refresh', charger_id: 'charger/device', equalizer_id: 'equalizer-device', user: 'synthetic-user', pw: 'synthetic-password' };
+const httpError = (status, message = 'provider included a synthetic-secret in its error') => Object.assign(new Error(message), { status });
+
+test('unconfigured device providers perform no HTTP requests', async () => {
+  const providers = createDeviceProviders({ http: { json() { throw new Error('unexpected HTTP'); } } });
+  assert.deepEqual(await providers.temperatures({ now }), []);
+  assert.deepEqual(await providers.easee({ now }), []);
+  assert.throws(() => createDeviceProviders({}), /HTTP JSON/);
+  await assert.rejects(providers.temperatures({ now: NaN }), /timestamp/);
+});
+
+test('SmartThings reads status with encoded IDs, converts units and preserves source freshness', async () => {
+  const calls = []; const controller = new AbortController();
+  const providers = createDeviceProviders({ connections: { smartthings }, http: { async json(url, options) {
+    calls.push({ url, options });
+    return url.includes('indoor%2Fdevice') ? fixtures.smartthingsC : fixtures.smartthingsF;
+  } } });
+  const rows = await providers.temperatures({ now, signal: controller.signal });
+  assert.equal(rows[0].signal, 'indoor_temperature'); assert.equal(rows[0].value, 21.75);
+  assert.equal(rows[0].sourceTime, Date.parse('2026-09-06T12:00:00Z'));
+  assert.equal(rows[0].receivedAt, now); assert.equal(rows[1].value, 20); assert.equal(rows[1].unit, 'degC');
+  assert(rows[1].quality.includes('converted_fahrenheit'));
+  assert(calls.every(call => call.options.method === 'GET' && call.options.signal === controller.signal));
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer synthetic-smartthings-token');
+  assert(!JSON.stringify(rows).includes('must-not-persist'));
+  assert(!JSON.stringify(rows).includes(smartthings.token));
+});
+
+test('temperature outage affects only its device and never yields false zero or leaks errors', async () => {
+  const providers = createDeviceProviders({ connections: { smartthings }, http: { async json(url) {
+    if (url.includes('indoor')) throw httpError(401);
+    return fixtures.smartthingsF;
+  } } });
+  const rows = await providers.temperatures({ now });
+  assert.equal(rows[0].value, null); assert.equal(rows[0].sourceTime, null);
+  assert(rows[0].quality.includes('http_status_401')); assert.equal(rows[1].value, 20);
+  assert(!JSON.stringify(rows).includes('synthetic-secret'));
+});
+
+test('missing, stale, future, unknown-unit and malformed temperature readings are explicit', async () => {
+  const samples = [
+    { value: null, unit: 'C' },
+    { value: 21, unit: 'K', timestamp: '2026-09-06T12:00:00Z' },
+    { value: 'secret', unit: 'C', timestamp: '2026-09-06T12:00:00Z' },
+    { value: 21, unit: 'C', timestamp: '2026-09-05T12:00:00Z' },
+    { value: 21, unit: 'C', timestamp: '2026-09-06T13:00:00Z' },
+    { value: 0, unit: 'C', timestamp: '2026-09-06T12:00:00' },
+  ];
+  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, outside_temp_dev_id: '' } }, http: { async json() {
+    return { components: { main: { temperatureMeasurement: { temperature: samples.shift() } } } };
+  } } });
+  const rows = [];
+  for (let i = 0; i < 6; i++) rows.push((await providers.temperatures({ now }))[0]);
+  assert.equal(rows[0].value, null); assert(rows[0].quality.includes('source_time_unknown'));
+  assert.equal(rows[1].value, null); assert(rows[1].quality.includes('invalid_unit'));
+  assert.equal(rows[2].value, null); assert(rows[2].quality.includes('invalid_numeric'));
+  assert(rows[3].quality.includes('stale')); assert(rows[4].quality.includes('future_source_time'));
+  assert.equal(rows[5].value, 0); assert.equal(rows[5].sourceTime, null); assert(rows[5].quality.includes('suspect_zero_indoor'));
+  assert(!JSON.stringify(rows).includes('secret'));
+});
+
+test('configured temperature without a token remains missing and does not contact cloud', async () => {
+  const providers = createDeviceProviders({ connections: { smartthings: { inside_temp_dev_id: 'inside' } }, http: { json() { throw new Error('unexpected'); } } });
+  const [row] = await providers.temperatures({ now });
+  assert.equal(row.value, null); assert(row.quality.includes('missing_configuration'));
+});
+
+test('Easee uses replacement observations endpoint and preserves every phase timestamp and null', async () => {
+  const calls = [];
+  const providers = createDeviceProviders({ connections: { easee }, http: { async json(url, options) {
+    calls.push({ url, options }); return url.includes('ids=183') ? fixtures.charger : fixtures.equalizer;
+  } } });
+  const rows = await providers.easee({ now });
+  assert.equal(rows.length, 6); assert.equal(rows[0].value, 10.5); assert.equal(rows[5].value, null);
+  assert.equal(rows[0].sourceTime, Date.parse('2026-09-06T12:00:00Z'));
+  assert.equal(rows[4].sourceTime, Date.parse('2026-09-06T11:58:00Z'));
+  assert(rows.every(row => row.unit === 'A' && row.quality.includes('current_snapshot_not_energy')));
+  assert(rows.every(row => row.quality.includes('asynchronous_snapshot')));
+  assert.equal(calls[0].url, 'https://api.easee.com/state/charger%2Fdevice/observations?ids=183,184,185');
+  assert.equal(calls[1].url, 'https://api.easee.com/state/equalizer-device/observations?ids=31,32,33');
+  assert(calls.every(call => call.options.method === 'GET'));
+  assert(!JSON.stringify(rows).includes('must-not-persist'));
+});
+
+test('concurrent Easee 401s share a single refresh and save only rotated token pair', async () => {
+  let refreshes = 0; let gets = 0; let loads = 0; const saved = [];
+  const connections = { easee: structuredClone(easee) }; const original = structuredClone(connections);
+  const providers = createDeviceProviders({ connections, tokenStore: {
+    async load() { loads++; return null; }, async save(pair) { saved.push(pair); },
+  }, http: { async json(url, options) {
+    if (url.endsWith('/refresh_token')) {
+      refreshes++; await new Promise(resolve => setImmediate(resolve));
+      assert.equal(JSON.parse(options.body).refreshToken, easee.refresh_token);
+      return { accessToken: 'rotated-access', refreshToken: 'rotated-refresh', secret: 'discarded' };
+    }
+    gets++;
+    if (options.headers.Authorization === `Bearer ${easee.access_token}`) throw httpError(401);
+    assert.equal(options.headers.Authorization, 'Bearer rotated-access');
+    return url.includes('ids=183') ? fixtures.charger : fixtures.equalizer;
+  } } });
+  const rows = await providers.easee({ now });
+  assert.equal(rows.length, 6); assert(!rows[0].quality.includes('provider_error'));
+  assert.equal(refreshes, 1); assert.equal(gets, 4); assert.equal(loads, 1);
+  assert.deepEqual(saved, [{ accessToken: 'rotated-access', refreshToken: 'rotated-refresh' }]);
+  assert.deepEqual(connections, original);
+});
+
+test('saved token pair takes precedence over original connection and is loaded once', async () => {
+  let loads = 0;
+  const providers = createDeviceProviders({ connections: { easee }, tokenStore: {
+    async load() { loads++; return { accessToken: 'saved-access', refreshToken: 'saved-refresh' }; },
+  }, http: { async json(url, options) {
+    assert.equal(options.headers.Authorization, 'Bearer saved-access');
+    return url.includes('ids=183') ? fixtures.charger : fixtures.equalizer;
+  } } });
+  await providers.easee({ now }); await providers.easee({ now: now + 300_000 });
+  assert.equal(loads, 1);
+});
+
+test('Easee login fallback is serialized and data reads retry at most once', async () => {
+  const calls = [];
+  const providers = createDeviceProviders({ connections: { easee }, http: { async json(url, options) {
+    calls.push(url);
+    if (url.endsWith('/refresh_token')) throw httpError(401);
+    if (url.endsWith('/login')) {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(JSON.parse(options.body), { userName: easee.user, password: easee.pw });
+      return { accessToken: 'still-rejected', refreshToken: 'new-refresh' };
+    }
+    throw httpError(401);
+  } } });
+  const rows = await providers.easee({ now });
+  assert(rows.every(row => row.value === null && row.quality.includes('http_status_401')));
+  assert.equal(calls.filter(url => url.endsWith('/refresh_token')).length, 1);
+  assert.equal(calls.filter(url => url.endsWith('/login')).length, 1);
+  assert.equal(calls.filter(url => url.includes('/state/')).length, 4);
+});
+
+test('rate limiting and server outages never trigger Easee authentication retries', async () => {
+  for (const status of [429, 500, 503]) {
+    const calls = [];
+    const providers = createDeviceProviders({ connections: { easee }, http: { async json(url) { calls.push(url); throw httpError(status); } } });
+    const rows = await providers.easee({ now });
+    assert.equal(calls.length, 2); assert(calls.every(url => url.includes('/state/')));
+    assert(rows.every(row => row.value === null && row.quality.includes(`http_status_${status}`)));
+  }
+});
+
+test('Easee anomalies retain values, quality and unknown timestamps without energy inference', async () => {
+  const providers = createDeviceProviders({ connections: { easee }, http: { async json(url) {
+    return (url.includes('ids=183') ? [183, 184, 185] : [31, 32, 33]).map(id => ({ id, value: id > 100 ? 16 : 0 }));
+  } } });
+  const rows = await providers.easee({ now });
+  assert(rows.every(row => row.sourceTime === null && row.quality.includes('source_time_unknown')));
+  assert(rows.every(row => row.quality.includes('ev_exceeds_property_current')));
+  assert(rows.slice(3).every(row => row.value === 0 && row.quality.includes('all_zero_property_current')));
+  assert(rows.every(row => row.unit === 'A'));
+});
+
+test('Easee missing phases, units and conflicting duplicate readings are explicit', async () => {
+  const providers = createDeviceProviders({ connections: { easee: { ...easee, equalizer_id: '' } }, http: { async json() {
+    return [
+      { id: 183, value: 1, timestamp: '2026-09-06T12:00:00Z' },
+      { id: 183, value: 2, timestamp: '2026-09-06T12:00:00Z' },
+      { id: 184, value: 200, unit: 'W', timestamp: '2026-09-06T12:00:00Z' },
+    ];
+  } } });
+  const rows = await providers.easee({ now });
+  assert.equal(rows[0].value, null); assert(rows[0].quality.includes('conflicting_duplicate'));
+  assert.equal(rows[1].value, null); assert(rows[1].quality.includes('invalid_unit'));
+  assert.equal(rows[2].value, null); assert(rows[2].quality.includes('missing'));
+});
+
+test('token storage and malformed API failures never leak tokens or response contents', async () => {
+  for (const tokenStore of [{ async load() { throw new Error(easee.refresh_token); } }, { async load() { return { accessToken: easee.access_token }; } }]) {
+    const providers = createDeviceProviders({ connections: { easee }, tokenStore, http: { async json() { throw new Error('should not run'); } } });
+    const rows = await providers.easee({ now });
+    assert(rows.every(row => row.quality.includes('provider_error')));
+    assert(!JSON.stringify(rows).includes('synthetic'));
+  }
+});
+
+test('token storage read outage recovers automatically on the next poll', async () => {
+  let reads = 0;
+  const providers = createDeviceProviders({ connections: { easee }, tokenStore: { async load() {
+    reads++;
+    if (reads === 1) throw new Error('temporary disk outage');
+    return { accessToken: 'saved-access', refreshToken: 'saved-refresh' };
+  } }, http: { async json(url) { return url.includes('ids=183') ? fixtures.charger : fixtures.equalizer; } } });
+  assert((await providers.easee({ now })).every(row => row.quality.includes('provider_error')));
+  const recovered = await providers.easee({ now: now + 300_000 });
+  assert.equal(reads, 2); assert(!recovered[0].quality.includes('provider_error')); assert.equal(recovered[0].value, 10.5);
+});
+
+test('failed token persistence is retried without rotating tokens again', async () => {
+  let saves = 0; let refreshes = 0;
+  const providers = createDeviceProviders({ connections: { easee }, tokenStore: {
+    async save() { saves++; if (saves === 1) throw new Error('temporary write outage'); },
+  }, http: { async json(url, options) {
+    if (url.endsWith('/refresh_token')) {
+      refreshes++; await new Promise(resolve => setImmediate(resolve));
+      return { accessToken: 'new-access', refreshToken: 'new-refresh' };
+    }
+    if (options.headers.Authorization === `Bearer ${easee.access_token}`) throw httpError(401);
+    return url.includes('ids=183') ? fixtures.charger : fixtures.equalizer;
+  } } });
+  assert((await providers.easee({ now })).every(row => row.quality.includes('provider_error')));
+  assert(!(await providers.easee({ now: now + 300_000 }))[0].quality.includes('provider_error'));
+  assert.equal(saves, 2); assert.equal(refreshes, 1);
+});

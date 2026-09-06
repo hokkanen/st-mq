@@ -1,8 +1,9 @@
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
 import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -38,6 +39,14 @@ CREATE TABLE counters (
   note TEXT NOT NULL, provenance TEXT NOT NULL, created_at INTEGER NOT NULL,
   UNIQUE(device, signal, observed_date, provenance)
 );`;
+
+const snapshotsSchema = `
+CREATE TABLE provider_snapshots (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, source TEXT NOT NULL,
+  issued_at INTEGER, fetched_at INTEGER NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL,
+  UNIQUE(kind, source, fetched_at, digest)
+);
+CREATE INDEX snapshots_kind_time ON provider_snapshots(kind, fetched_at, id);`;
 
 function integer(value, name) {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer`);
@@ -77,7 +86,11 @@ export class Store {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       if (version > SCHEMA_VERSION) throw new Error(`Database schema ${version} is newer than supported version ${SCHEMA_VERSION}`);
-      if (version === 0) this.transaction(() => { this.db.exec(schema); this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`); });
+      if (version < SCHEMA_VERSION) this.transaction(() => {
+        if (version === 0) this.db.exec(schema);
+        if (version < 2) this.db.exec(snapshotsSchema);
+        this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
@@ -107,6 +120,27 @@ export class Store {
     this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
       .run(label(key, 'key'), json(value), Date.now());
+  }
+
+  snapshot({ kind, source, issuedAt = null, fetchedAt, payload }) {
+    if (!['market', 'weather'].includes(kind)) throw new Error('Invalid provider snapshot kind');
+    label(source, 'source'); instant(fetchedAt, 'fetchedAt');
+    if (issuedAt !== null) instant(issuedAt, 'issuedAt');
+    const encoded = json(payload);
+    if (Buffer.byteLength(encoded) > 2 * 1024 * 1024) throw new Error('Provider snapshot is too large');
+    const digest = createHash('sha256').update(encoded).digest('hex');
+    this.db.prepare(`INSERT INTO provider_snapshots (kind,source,issued_at,fetched_at,payload,digest)
+      VALUES (?,?,?,?,?,?) ON CONFLICT(kind,source,fetched_at,digest) DO NOTHING`).run(kind, source, issuedAt, fetchedAt, encoded, digest);
+    return this.db.prepare('SELECT id FROM provider_snapshots WHERE kind=? AND source=? AND fetched_at=? AND digest=?').get(kind, source, fetchedAt, digest).id;
+  }
+
+  snapshots({ kind, afterId = 0, limit = 100 } = {}) {
+    if (kind !== undefined && !['market', 'weather'].includes(kind)) throw new Error('Invalid provider snapshot kind');
+    const params = [integer(afterId, 'afterId')];
+    if (kind !== undefined) params.push(kind);
+    params.push(limitValue(limit));
+    return this.db.prepare(`SELECT * FROM provider_snapshots WHERE id > ? ${kind === undefined ? '' : 'AND kind = ?'} ORDER BY id LIMIT ?`).all(...params)
+      .map(row => ({ id: row.id, kind: row.kind, source: row.source, issuedAt: row.issued_at, fetchedAt: row.fetched_at, payload: JSON.parse(row.payload) }));
   }
 
   event(type, payload, at = Date.now()) {
@@ -259,7 +293,8 @@ export class Store {
     const check = new DatabaseSync(resolve(source), { readOnly: true });
     try {
       if (check.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('Backup database failed integrity check');
-      if (check.prepare('PRAGMA user_version').get().user_version !== SCHEMA_VERSION) throw new Error('Unsupported backup schema');
+      const version = check.prepare('PRAGMA user_version').get().user_version;
+      if (version < 1 || version > SCHEMA_VERSION) throw new Error('Unsupported backup schema');
       check.prepare('SELECT key, value FROM state LIMIT 1').all();
       mkdirSync(dirname(path), { recursive: true });
       closeSync(openSync(path, 'wx', 0o600));

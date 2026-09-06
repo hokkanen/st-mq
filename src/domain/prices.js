@@ -56,6 +56,7 @@ export function normalizePriceIntervals(rows, { unit, vatIncluded, source } = {}
 
 export function validateContract(contract) {
   if (!contract || !Array.isArray(contract.periods) || !contract.periods.length) throw new TypeError('Effective-dated contract periods are required');
+  if (contract.periods.length > 512) throw new RangeError('Too many contract periods');
   const mode = contract.mode ?? 'billing';
   if (!['billing', 'scenario'].includes(mode)) throw new TypeError('Contract mode must be billing or scenario');
   if (mode === 'scenario') instantMs(contract.scenarioAt);
@@ -120,6 +121,7 @@ export function priceIntervals(intervals, contractInput) {
       result.push({ ...interval, start: sorted[i], end: sorted[i + 1],
         durationHours: (sorted[i + 1] - sorted[i]) / 3_600_000,
         ...calculate(sorted[i], interval.spotCtPerKwh, contract) });
+      if (result.length > 100_000) throw new RangeError('Too many split price intervals; use bounded batches');
     }
     previousEnd = end;
   }
