@@ -93,8 +93,10 @@ test('bad observations, duplicates and future data do not overwrite processed st
     { ...samples.at(-1), timestamp: iso(start + 31 * HOUR), quality: 'bad' },
     { ...samples.at(-1), timestamp: iso(start + 32 * HOUR) }];
   const result = updateLearning(checkpoint, bad, { now: start + 31 * HOUR });
-  assert.equal(result.processedThrough, samples.at(-1).timestamp);
-  assert.equal(result.samples.length, samples.length);
+  assert.equal(result.processedThrough, iso(start + 31 * HOUR));
+  assert.equal(result.samples.length, samples.length + 2);
+  assert.equal(result.thermalState, null);
+  assert.ok(result.samples.slice(-2).every(sample => sample.kind === 'continuity-barrier'));
 });
 
 test('a changed chronological holdout rejects a poor fit while keeping the prior checkpoint model', () => {
@@ -138,4 +140,83 @@ test('learned comfort reference freezes across lower plateaus and is not inflate
   assert.deepEqual(inferComfortReference(reference, preheat, { now: start + 59 * HOUR }), reference);
   const higher = plateau(30, 21.6, start + 30 * HOUR);
   assert.equal(inferComfortReference(reference, higher, { now: start + 59 * HOUR }).targetC, 21.6);
+});
+
+test('a passive summer plateau cannot establish or inflate the household heating reference', () => {
+  const warm = plateau(30, 23).map(sample => ({ ...sample, outdoorC: 21 }));
+  assert.equal(inferComfortReference(null, warm, { now: start + 29 * HOUR }), null);
+  const reference = inferComfortReference(null, plateau(), { now: start + 29 * HOUR });
+  const laterWarm = warm.map(sample => ({ ...sample, timestamp: iso(Date.parse(sample.timestamp) + 30 * HOUR) }));
+  assert.deepEqual(inferComfortReference(reference, laterWarm, { now: start + 59 * HOUR }), reference);
+});
+
+test('cool-weather inference records its provisional heat-demand evidence without requiring an energy meter', () => {
+  const reference = inferComfortReference(null, plateau(), { now: start + 29 * HOUR });
+  assert.equal(reference.version, 2);
+  assert.equal(reference.heatingEvidence.kind, 'sustained-cool-weather-proxy');
+  assert.equal(reference.confidence, 'provisional-heating-demand-baseline');
+  assert.ok(reference.heatingEvidence.meanOutdoorC <= 10);
+  assert.ok(reference.heatingEvidence.meanIndoorOutdoorGapC >= 10);
+});
+
+test('verified repeated space-heating activity can support a mild-weather baseline', () => {
+  const samples = plateau().map((sample, i) => ({ ...sample, outdoorC: 14,
+    heating: { verified: true, compressorActive: i % 2 === 0, route: 'space-heating' } }));
+  const reference = inferComfortReference(null, samples, { now: start + 29 * HOUR });
+  assert.equal(reference?.targetC, 21);
+  assert.equal(reference.heatingEvidence.kind, 'verified-space-heating-activity');
+  assert.equal(reference.confidence, 'observed-heating-baseline');
+  for (const sample of samples) sample.heating.verified = false;
+  assert.equal(inferComfortReference(null, samples, { now: start + 29 * HOUR }), null);
+});
+
+test('DHW operation and verified inactive compressor observations do not prove heating demand', () => {
+  for (const heating of [{ verified: true, compressorActive: true, route: 'dhw' },
+    { verified: true, compressorActive: false, route: 'space-heating' }]) {
+    const samples = plateau().map(sample => ({ ...sample, heating }));
+    assert.equal(inferComfortReference(null, samples, { now: start + 29 * HOUR }), null);
+  }
+});
+
+test('bad array-quality readings break baseline continuity through incremental processing and restart', () => {
+  const samples = plateau();
+  samples[20].quality = ['unknown-source-time'];
+  let checkpoint = updateLearning(null, samples.slice(0, 21), { now: start + 20 * HOUR });
+  assert.equal(checkpoint.comfortReference, null);
+  checkpoint = restoreCheckpoint(JSON.stringify(checkpoint), { now: start + 21 * HOUR });
+  checkpoint = updateLearning(checkpoint, samples.slice(21), { now: start + 29 * HOUR });
+  assert.equal(checkpoint.comfortReference, null);
+  assert.equal(checkpoint.samples[20].kind, 'continuity-barrier');
+});
+
+test('invalid readings cannot be bridged to invent thermal model transitions', () => {
+  const samples = trajectories(100);
+  for (let i = 1; i < samples.length; i += 2) samples[i].quality = ['missing'];
+  const checkpoint = updateLearning(null, samples, { now: start + 99 * HOUR });
+  assert.equal(checkpoint.model, null);
+  assert.equal(checkpoint.health.reason, 'insufficient-transitions');
+});
+
+test('the chronological holdout starts after a full-day embargo and unordered samples are rejected', () => {
+  const samples = trajectories();
+  const result = fitModel(samples);
+  assert.equal(result.accepted, true);
+  assert.ok(Date.parse(result.model.validation.validateFrom) - Date.parse(result.model.validation.trainThrough) >= 24 * HOUR);
+  assert.equal(fitModel([...samples].reverse()).reason, 'nonchronological-input');
+});
+
+test('old checkpoint/reference inference rules force a rebuild instead of retaining a summer target', () => {
+  const old = { ...emptyCheckpoint(), version: 1, comfortReference: { version: 1, targetC: 22.9 } };
+  const restored = restoreCheckpoint(old);
+  assert.equal(restored.comfortReference, null);
+  assert.equal(restored.health.reason, 'incompatible-checkpoint');
+});
+
+test('rejected candidate validation cannot report accepted in learning health', () => {
+  const samples = trajectories();
+  const previous = fitModel(samples).model;
+  const shiftedTraining = samples.map((sample, i) => i < 168 ? { ...sample, indoorC: sample.indoorC + 3 } : sample);
+  const result = fitModel(shiftedTraining, previous);
+  assert.equal(result.reason, 'holdout-degraded');
+  assert.equal(result.validation.accepted, false);
 });

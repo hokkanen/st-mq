@@ -1,5 +1,5 @@
 /** Bounded, chronological empirical learning. These estimates are not metered savings. */
-export const CHECKPOINT_VERSION = 1;
+export const CHECKPOINT_VERSION = 2;
 export const MAX_SAMPLES = 768;
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
@@ -8,7 +8,7 @@ const mean = values => values.reduce((sum, value) => sum + value, 0) / values.le
 
 export function goodQuality(quality) {
   const flags = Array.isArray(quality) ? quality : quality ? [quality] : [];
-  return flags.every(flag => ['good', 'simulated', 'historical', 'corrected_price'].includes(flag));
+  return flags.every(flag => ['good', 'simulated', 'historical', 'corrected_price', 'converted_fahrenheit'].includes(flag));
 }
 
 export function emptyCheckpoint() {
@@ -17,12 +17,52 @@ export function emptyCheckpoint() {
     health: { status: 'collecting', accepted: 0, rejected: 0 } };
 }
 
+function validReference(reference) {
+  return reference?.version === 2 && finite(reference.targetC) && reference.targetC >= 12 && reference.targetC <= 28
+    && ['sustained-cool-weather-proxy', 'verified-space-heating-activity'].includes(reference.heatingEvidence?.kind)
+    && finite(instant(reference.establishedAt)) && finite(instant(reference.updatedAt));
+}
+
+function heatingEvidence(samples) {
+  let totalHours = 0, outdoorDegreeHours = 0, gapDegreeHours = 0;
+  let verifiedHours = 0, activeHours = 0;
+  const activeTimes = [];
+  for (let i = 0; i < samples.length - 1; i++) {
+    const sample = samples[i], hours = (instant(samples[i + 1].timestamp) - instant(sample.timestamp)) / HOUR;
+    totalHours += hours;
+    outdoorDegreeHours += sample.outdoorC * hours;
+    gapDegreeHours += (sample.indoorC - sample.outdoorC) * hours;
+    const heating = sample.heating;
+    if (heating?.verified === true && typeof heating.compressorActive === 'boolean'
+      && ['space-heating', 'dhw', 'idle'].includes(heating.route) && goodQuality(heating.quality)) {
+      verifiedHours += hours;
+      if (heating.compressorActive && heating.route === 'space-heating') {
+        activeHours += hours;
+        activeTimes.push(instant(sample.timestamp));
+      }
+    }
+  }
+  const summary = { hours: totalHours, meanOutdoorC: outdoorDegreeHours / totalHours,
+    meanIndoorOutdoorGapC: gapDegreeHours / totalHours, verifiedHours, spaceHeatingHours: activeHours };
+  if (verifiedHours >= 6) {
+    // Repeated space heating is useful evidence; compressor activity routed to DHW is not.
+    if (activeHours >= 2 && activeTimes.at(-1) - activeTimes[0] >= 6 * HOUR)
+      return { ...summary, kind: 'verified-space-heating-activity' };
+    return null;
+  }
+  // In the absence of plant telemetry this is only a provisional heating-demand proxy.
+  // Sustained cool weather excludes warm nights/daytime solar plateaus without requiring a meter.
+  if (samples.every(sample => sample.outdoorC <= 15 && sample.indoorC - sample.outdoorC >= 8)
+    && summary.meanOutdoorC <= 10 && summary.meanIndoorOutdoorGapC >= 10)
+    return { ...summary, kind: 'sustained-cool-weather-proxy' };
+  return null;
+}
+
 /** Infer the room temperature produced by household knobs under sustained normal mode.
  * A stored reference never follows a falling temperature. Deliberate knob changes can reset it explicitly.
  */
 export function inferComfortReference(previous, samples, { now = Date.now() } = {}) {
-  const retained = previous?.version === 1 && finite(previous.targetC) && previous.targetC >= 12
-    && previous.targetC <= 28 ? structuredClone(previous) : null;
+  const retained = validReference(previous) ? structuredClone(previous) : null;
   const sorted = samples.filter(sample => sample && finite(instant(sample.timestamp)) && instant(sample.timestamp) <= instant(now))
     .sort((a, b) => instant(a.timestamp) - instant(b.timestamp)).slice(-MAX_SAMPLES);
   const last = sorted.at(-1);
@@ -44,11 +84,14 @@ export function inferComfortReference(previous, samples, { now = Date.now() } = 
   const midpoint = Math.floor(plateau.length / 2);
   if (Math.abs(mean(plateau.slice(0, midpoint).map(sample => sample.indoorC))
     - mean(plateau.slice(midpoint).map(sample => sample.indoorC))) > 0.15) return retained;
+  const evidence = heatingEvidence(uninterrupted);
+  if (!evidence) return retained;
   const targetC = Math.round(values[Math.floor((values.length - 1) * 0.75)] * 10) / 10;
   if (targetC < 12 || targetC > 28 || (retained && targetC <= retained.targetC + 0.1)) return retained;
-  return { version: 1, targetC, establishedAt: retained?.establishedAt ?? last.timestamp,
+  return { version: 2, targetC, establishedAt: retained?.establishedAt ?? last.timestamp,
     updatedAt: last.timestamp, source: 'sustained-occupied-normal-temperature-plateau',
-    confidence: 'provisional-observed-baseline', windowStart: uninterrupted[0].timestamp,
+    confidence: evidence.kind === 'verified-space-heating-activity' ? 'observed-heating-baseline' : 'provisional-heating-demand-baseline',
+    heatingEvidence: evidence, windowStart: uninterrupted[0].timestamp,
     windowEnd: last.timestamp, samples: uninterrupted.length,
     semantics: 'temperature achieved by native household settings; normal request does not prove continuous compressor runtime' };
 }
@@ -59,6 +102,21 @@ function validSample(sample) {
     && sample.outdoorC >= -60 && sample.outdoorC <= 50
     && ['normal', 'reduction'].includes(sample.action)
     && goodQuality(sample.quality);
+}
+
+function normalizedRecords(samples) {
+  const byTime = new Map();
+  for (const sample of samples) {
+    const time = instant(sample?.timestamp);
+    if (!finite(time)) continue;
+    const timestamp = new Date(time).toISOString();
+    // Preserve uncertainty as a timestamped barrier. Dropping it would invent uninterrupted history.
+    const normalized = validSample(sample) ? { ...sample, timestamp }
+      : { timestamp, kind: 'continuity-barrier', quality: ['invalid-observation'] };
+    const prior = byTime.get(time);
+    if (!prior || normalized.kind === 'continuity-barrier') byTime.set(time, normalized);
+  }
+  return [...byTime.values()].sort((a, b) => instant(a.timestamp) - instant(b.timestamp));
 }
 
 export function validateModel(model) {
@@ -96,7 +154,8 @@ export function restoreCheckpoint(input, { now = Date.now(), thermalMaxAgeMs = H
   if (!checkpoint || checkpoint.version !== CHECKPOINT_VERSION || !Array.isArray(checkpoint.samples)) {
     return { ...emptyCheckpoint(), health: { status: 'rebuilding', reason: 'incompatible-checkpoint' } };
   }
-  checkpoint.samples = checkpoint.samples.filter(validSample).sort((a, b) => instant(a.timestamp) - instant(b.timestamp)).slice(-MAX_SAMPLES);
+  checkpoint.samples = normalizedRecords(checkpoint.samples).slice(-MAX_SAMPLES);
+  if (!validReference(checkpoint.comfortReference)) checkpoint.comfortReference = null;
   if (checkpoint.model !== null && !validateModel(checkpoint.model)) {
     const fallback = validateModel(checkpoint.previousModel) ? checkpoint.previousModel : null;
     checkpoint.model = fallback;
@@ -164,10 +223,17 @@ function fitEnergy(rows) {
 }
 
 export function fitModel(samples, previousModel = null) {
+  if (!Array.isArray(samples) || samples.some((sample, i) => !finite(instant(sample?.timestamp))
+    || (i > 0 && instant(sample.timestamp) <= instant(samples[i - 1].timestamp))))
+    return { accepted: false, reason: 'nonchronological-input' };
   const rows = transitions(samples);
   if (rows.length < 48) return { accepted: false, reason: 'insufficient-transitions' };
   const split = Math.floor(rows.length * 0.7);
-  const training = rows.slice(0, split), validation = rows.slice(split);
+  const training = rows.slice(0, split);
+  // A full-day embargo reduces leakage from nearby observations and short recovery episodes.
+  // Multi-day slab-memory effects still need separate trajectory validation.
+  const validation = rows.slice(split).filter(row => instant(row.start) >= instant(training.at(-1).end) + 24 * HOUR);
+  if (validation.length < 12) return { accepted: false, reason: 'insufficient-validation-window' };
   if (['normal', 'reduction'].some(action => training.filter(row => row.action === action).length < 8
     || validation.filter(row => row.action === action).length < 4)) return { accepted: false, reason: 'insufficient-action-coverage' };
   const matrix = Array.from({ length: 3 }, () => [0, 0, 0]), rhs = [0, 0, 0];
@@ -187,14 +253,14 @@ export function fitModel(samples, previousModel = null) {
   parameters.uncertaintyCPerHour = Math.max(0.03, Math.min(1, mae * 2));
   const model = { version: 1, trainedAt: rows.at(-1).end, parameters,
     energy: fitEnergy(training), validation: { chronological: true, accepted: true, samples: validation.length,
-      trainThrough: training.at(-1).end, validateFrom: validation[0].start, maeCPerHour: mae,
+      trainThrough: training.at(-1).end, validateFrom: validation[0].start, embargoHours: 24, maeCPerHour: mae,
       persistenceMaeCPerHour: persistenceMae, previousMaeCPerHour: finite(previousMae) ? previousMae : null },
     provenance: { method: 'bounded chronological three-coefficient temperature regression',
       samples: rows.length, start: rows[0].start, end: rows.at(-1).end,
       recovery: 'conservative provisional reserve model; not a measured effective slab capacity' } };
   if (!validateModel(model) || coefficients[2] < -0.03) return { accepted: false, reason: 'implausible-model' };
   if (mae > persistenceMae * 0.95 + 0.005 || mae > previousMae * 1.05 + 0.005)
-    return { accepted: false, reason: 'holdout-degraded', validation: model.validation };
+    return { accepted: false, reason: 'holdout-degraded', validation: { ...model.validation, accepted: false } };
   return { accepted: true, model };
 }
 
@@ -203,8 +269,7 @@ export function updateLearning(input, incoming, { now = Date.now(), maxBatch = 5
   if (!Array.isArray(incoming) || incoming.length > Math.min(512, maxBatch)) throw new RangeError('Learning requires a bounded batch of at most 512 rows');
   const checkpoint = restoreCheckpoint(input ?? emptyCheckpoint(), { now });
   const last = checkpoint.processedThrough === null ? -Infinity : instant(checkpoint.processedThrough);
-  const samples = incoming.filter(validSample).filter(sample => instant(sample.timestamp) > last && instant(sample.timestamp) <= instant(now))
-    .sort((a, b) => instant(a.timestamp) - instant(b.timestamp));
+  const samples = normalizedRecords(incoming).filter(sample => instant(sample.timestamp) > last && instant(sample.timestamp) <= instant(now));
   const seen = new Set(checkpoint.samples.map(sample => instant(sample.timestamp)));
   for (const sample of samples) if (!seen.has(instant(sample.timestamp))) {
     checkpoint.samples.push({ ...sample, timestamp: new Date(instant(sample.timestamp)).toISOString() });
@@ -215,7 +280,7 @@ export function updateLearning(input, incoming, { now = Date.now(), maxBatch = 5
   if (samples.length) {
     const lastSample = checkpoint.samples.at(-1);
     checkpoint.processedThrough = lastSample.timestamp;
-    checkpoint.thermalState = { observedAt: lastSample.timestamp, indoorC: lastSample.indoorC };
+    checkpoint.thermalState = validSample(lastSample) ? { observedAt: lastSample.timestamp, indoorC: lastSample.indoorC } : null;
   }
   // Refit only after a modest batch has accrued; ingestion and command work can continue between pages.
   const sinceFit = (checkpoint.samplesSinceFit ?? 0) + samples.length;
