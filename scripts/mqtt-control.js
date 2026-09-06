@@ -7,6 +7,7 @@ import moment from 'moment-timezone';
 import mqtt from 'mqtt';
 import schedule from 'node-schedule';
 import { XMLParser } from 'fast-xml-parser';
+import { requireLegacyLive } from '../src/app/legacy-gate.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -853,6 +854,7 @@ class HeatAdjustment {
 
 (async () => {
     try {
+        requireLegacyLive();
         // Validate required configuration fields before proceeding
         const cfg = config();
         const requiredFields = ['country_code', 'mqtt_address', 'mqtt_user', 'mqtt_pw'];

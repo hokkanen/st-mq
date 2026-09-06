@@ -89,6 +89,7 @@ export function hasValidatedEnergy(model) { return validEnergy(model?.energy); }
 
 /** A corrupt checkpoint never delays normal operation. Model parameters and thermal state age separately. */
 export function restoreCheckpoint(input, { now = Date.now(), thermalMaxAgeMs = HOUR } = {}) {
+  if (input == null) return emptyCheckpoint();
   let checkpoint;
   try { checkpoint = typeof input === 'string' ? JSON.parse(input) : structuredClone(input); }
   catch { return { ...emptyCheckpoint(), health: { status: 'rebuilding', reason: 'corrupt-checkpoint' } }; }
@@ -96,7 +97,7 @@ export function restoreCheckpoint(input, { now = Date.now(), thermalMaxAgeMs = H
     return { ...emptyCheckpoint(), health: { status: 'rebuilding', reason: 'incompatible-checkpoint' } };
   }
   checkpoint.samples = checkpoint.samples.filter(validSample).sort((a, b) => instant(a.timestamp) - instant(b.timestamp)).slice(-MAX_SAMPLES);
-  if (!validateModel(checkpoint.model)) {
+  if (checkpoint.model !== null && !validateModel(checkpoint.model)) {
     const fallback = validateModel(checkpoint.previousModel) ? checkpoint.previousModel : null;
     checkpoint.model = fallback;
     checkpoint.health = { status: fallback ? 'rolled-back' : 'rebuilding', reason: 'invalid-model' };

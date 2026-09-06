@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0', // Allow LAN access
     port: 1212,
-    allowedHosts: true, // Allow access through custom host names
+    proxy: { '/api': 'http://127.0.0.1:1234' },
     fs: {
       allow: (() => { // Redefine accessible folders due to HASSIO symlink to outside dir
         const allow = [
@@ -29,14 +29,10 @@ export default defineConfig({
   preview: {
     host: '0.0.0.0', // Allow LAN access
     port: 1234,
-    allowedHosts: true, // Allow access through custom host names
   },
   build: {
     outDir: resolve(__dirname, 'dist'), // Set build directory
     emptyOutDir: true, // Clean build directory before building
-    watch: {
-      buildDelay: 5000, // Wait 5s before updating build files when file change detected
-    },
     rollupOptions: {
       output: { // Disable file name hashing to prevent breaking update fetches
         entryFileNames: '[name].js',

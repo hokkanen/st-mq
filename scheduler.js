@@ -3,6 +3,7 @@ import fs from 'fs';
 import schedule from 'node-schedule';
 import { spawn } from 'child_process';
 import path, { dirname } from 'path';
+import { legacyLiveAllowed } from './src/app/legacy-gate.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +30,11 @@ function spawn_process(command, args = [], options = { stdio: 'inherit', cwd: __
 
 // Begin execution here
 (async () => {
+    if (!legacyLiveAllowed()) {
+        const { start } = await import('./src/main.js');
+        await start();
+        return;
+    }
     // Create the csv directory if it does not exist
     const csv_dir = path.join(__dirname, 'share', 'st-mq');
     if (!fs.existsSync(csv_dir)) {
