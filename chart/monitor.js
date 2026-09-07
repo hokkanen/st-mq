@@ -1,4 +1,5 @@
 import { createHistoryChart } from './history-chart.js';
+import { describeProvider, outdoorSourceLabel, providerName } from './provider-status.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
@@ -68,37 +69,25 @@ function renderContract(s) {
   }
 }
 function renderProviders(s) {
-  $('price-status').textContent = priceStatuses[s.priceStatus] ?? 'Price status unavailable';
-  $('weather-status').textContent = weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable';
+  const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
+  $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
+  $('weather-status').textContent = `${weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable'}${weatherSource ? ` · ${weatherSource}` : ''}`;
   $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
     : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Read-only provider downloads. Equipment commands remain disabled.';
-  const names = { temperatures: 'SmartThings temperatures', smartthings: 'SmartThings temperatures', easee: 'Easee currents', market: 'Electricity market', weather: 'Weather forecast' };
   const entries = Object.entries(s.providers ?? {});
   $('providers').replaceChildren();
   for (const [name, health] of entries) {
     if (!health || typeof health !== 'object') continue;
+    const display = describeProvider(name, health, { now: s.now, formatTime: time });
     const row = document.createElement('li');
     const heading = document.createElement('div'); heading.className = 'provider-heading';
-    const title = document.createElement('strong'); title.textContent = names[name] ?? 'Data provider';
+    const title = document.createElement('strong'); title.textContent = display.title;
     const state = document.createElement('span');
-    const statuses = { ok: 'Available', healthy: 'Available', available: 'Available', success: 'Available', running: 'Updating', fetching: 'Updating', error: 'Needs attention', degraded: 'Needs attention', disabled: 'Not enabled', unconfigured: 'Not configured', 'not-configured': 'Not configured', waiting: 'Waiting', pending: 'Waiting' };
-    state.textContent = statuses[health.status] ?? 'Status pending';
-    state.className = ['error', 'degraded'].includes(health.status) ? 'stale' : 'muted';
+    state.textContent = display.state;
+    state.className = display.attention ? 'stale' : 'muted';
     heading.append(title, state);
     const detail = document.createElement('p'); detail.className = 'muted';
-    const success = health.lastSuccessAt ?? health.lastSuccess;
-    detail.textContent = Number.isFinite(success) ? `Last successful download ${time(success)}.` : 'No successful download recorded.';
-    const failure = health.lastError ?? health.error;
-    if (failure) {
-      // Only a small status/code vocabulary enters the page; raw response text does not.
-      const code = typeof failure === 'object' ? failure.code : failure;
-      const status = typeof failure === 'object' ? failure.status : health.httpStatus;
-      const safeCode = typeof code === 'string' && /^HTTP-[1-5][0-9]{2}$/.test(code) ? code.replace('-', ' ')
-        : typeof code === 'string' && /^(?:provider|missing|invalid|unconfigured|partial|no|http|credentials|token)[a-z0-9_-]{0,70}$/.test(code) ? label(code) : 'Download failed';
-      const at = health.lastErrorAt ?? (typeof failure === 'object' ? failure.at : null) ?? health.lastAttemptAt;
-      detail.textContent += ` Last error: ${safeCode}${Number.isInteger(status) && status >= 100 && status <= 599 ? ` (HTTP ${status})` : ''}${Number.isFinite(at) ? ` · ${time(at)}` : ''}.`;
-      if (Number.isFinite(health.nextAttemptAt)) detail.textContent += ` Retry ${time(health.nextAttemptAt)}.`;
-    }
+    detail.textContent = display.detail;
     row.append(heading, detail); $('providers').append(row);
   }
   if (!entries.length) {
@@ -115,7 +104,9 @@ function render(s) {
     const obs = s.observations[key];
     $(key).textContent = Number.isFinite(obs.value) ? `${obs.value.toFixed(1)} °C` : '—';
     $(key).classList.toggle('stale', obs.stale);
-    $(`${key}-age`).textContent = obs.stale ? 'Missing or stale reading' : `Observed ${time(obs.observedAt)}`;
+    const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
+    const age = obs.stale ? 'Missing or stale reading' : `${obs.source === 'openweathermap' ? 'Updated' : 'Observed'} ${time(obs.observedAt)}`;
+    $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${age}`;
   }
   $('requested').textContent = s.decision.action === 'normal' ? 'Normal' : 'Reduction';
   $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;

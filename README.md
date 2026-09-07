@@ -5,13 +5,16 @@ Home Assistant add-on and standalone Linux. The authoritative project brief is
 `CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
 [docs/PROGRESS.md](docs/PROGRESS.md).
 
-Version 0.8.1 provides an offline foundation: SQLite history, conservative
+Version 0.8.2 provides a tested foundation: SQLite history, conservative
 heating decisions, incremental thermal learning, a monitoring dashboard and
 read-only H66 acquisition. **Default startup uses simulated devices in shadow
 mode. No physical heat-pump command transport is enabled in the new application.**
 Read-only market, weather, SmartThings and Easee providers plus dated contract
-setup are integrated and tested with offline fixtures. No household API connection
-or physical equipment has been commissioned by this development work.
+setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies the primary
+weather forecast and outdoor observations, with OpenWeather as backup. Offline
+regressions and a separate opt-in live suite verify the provider paths. See the
+[progress log](docs/PROGRESS.md) for actual live-check results and remaining limits.
+Physical equipment control has not been commissioned.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
@@ -161,26 +164,74 @@ H66 payloads lack source timestamps, so their freshness stays unknown rather tha
 being fabricated from receipt time. Retained/duplicate/invalid messages are
 handled explicitly. See [domain semantics](src/domain/README.md).
 
-`STMQ_INPUT=providers` selects the new read-only provider path. It reuses
-`geoloc`, `entsoe`, `openweathermap`, `smartthings` and `easee` connection fields
-from the existing options JSON. Configure only the services in use: SmartThings
-indoor/outdoor device IDs and Easee acquisition are optional. The garage is outside
-heating optimization. Device requests run every five minutes; market and weather
-requests run hourly on separate schedules. Outages retain cached observations and
-forecasts with their original timestamps, so restart or refresh does not make old
-data fresh. Failed polls back off automatically, and retries survive restart.
-Provider input cannot enable physical active control.
+Start read-only collection with:
 
-ENTSO-E is the primary day-ahead market source. Its currency, energy units,
-quarter-hour/hourly resolution, positions and document revisions are validated.
-OpenWeather supplies the three-hour forecast; its valid timestamps and downloaded
-snapshot time are stored separately. Its JSON response does not document an
-issuance timestamp, so the application marks that uncertainty. Rolling updates
-retain still-fresh near-term forecast blocks with their original snapshot provenance;
-missing intervals remain visible as gaps in charts. SmartThings
-timestamps and Easee current observations retain their quality flags. Current
-snapshots are not metered energy or heat-pump power. Easee login/token renewal is
-the only provider authentication mutation; it does not change charging settings.
+```sh
+STMQ_INPUT=providers npm start
+```
+
+This reuses `geoloc`, `entsoe`, `openweathermap`, `smartthings` and `easee`
+connection fields from the existing options JSON. FMI and Elering need no API key
+or additional provider configuration. FMI uses the configured latitude/longitude;
+Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO-E
+bidding zone. SmartThings indoor/garage sensors and Easee acquisition are optional.
+The garage is outside heating optimization. Provider input cannot enable physical
+active control or publish heating/DHWR commands.
+
+| Data | Primary → backup | Normal collection interval |
+| --- | --- | --- |
+| Electricity prices | ENTSO-E → Elering's own public API | 1 hour |
+| Temperature forecast | FMI HARMONIE → OpenWeather | 1 hour |
+| Outdoor temperature | FMI nearby weather station → OpenWeather area estimate | 10 minutes |
+| Indoor/garage temperatures | SmartThings | 5 minutes |
+| Property/charger currents | Easee | 5 minutes |
+
+These are collection schedules, not guarantees that each provider publishes a new
+measurement that often. FMI forecasts use hourly valid times; OpenWeather's
+forecast uses three-hour slots. Market prices retain each actual hourly or
+quarter-hour delivery interval. Source observations and downloaded forecast/market
+snapshots are saved when collected, with source timestamps kept separately from
+receipt time.
+
+Market fallback starts on a failed request, missing current price, or incomplete
+current-day coverage. Tomorrow being unpublished is normal and does not itself
+trigger another request. Elering is contacted directly, with validated currency,
+VAT and terminal-interval semantics; no intermediary service is used. Neither
+source fills missing prices or extends them past the published horizon. See
+[the Elering verification evidence](test/fixtures/market-elering-evidence.md).
+
+Forecast and outdoor observation have independent FMI → OpenWeather fallback
+chains. An unavailable weather station therefore does not discard a good FMI
+forecast. The outdoor card identifies a **nearby station** or an **area estimate**;
+neither is a thermometer at the house. FMI selects the nearest fresh station among
+up to three returned candidates within 50 km. With valid configured coordinates,
+these sources own outdoor temperature; a SmartThings outdoor sensor does not
+replace them. Without coordinates, an existing SmartThings outdoor sensor may
+still be collected.
+
+**Data connections** shows the selected provider, **Using backup** when applicable,
+and the primary provider's next retry. Requests are bounded and failures back off
+per source, respecting rate-limit delays through restarts. One failed primary
+cannot cause rapid repeated calls while a backup works. Outages retain cached data
+with its original age; restart or refresh does not make old data fresh. FMI model
+publication, analysis and forecast-valid times are separate. OpenWeather does not
+supply a documented forecast issuance timestamp, so that field remains unknown.
+Still-fresh near-term forecast blocks retain their original snapshot provenance.
+
+SmartThings and Easee readings retain their quality flags. Current snapshots are
+not metered energy or heat-pump power. Easee authentication can refresh tokens;
+it does not change charging settings.
+
+Normal `npm test` and `npm run check` stay offline. To verify current service access
+and the configured keys explicitly, use the [bounded live test suite](docs/live-testing.md):
+
+```sh
+npm run test:live
+npm run test:live -- --services fmi-forecast,fmi-observation
+```
+
+Each primary and backup is checked separately, so a working fallback cannot hide
+a rejected key. The suite uses no MQTT and sends no equipment commands.
 
 The contract form accepts dated retailer margin and electricity tax in **c/kWh
 excluding VAT**, VAT as a **percentage**, and the day/night or seasonal transfer
@@ -189,13 +240,6 @@ and no seasonal switch is scheduled automatically. Confirm effective dates again
 the actual contract and applicable tax tables. Missing historical rates prevent
 historical billing; applying current charges to old readings is a scenario. The
 example outlook in simulation remains unrelated to the actual contract.
-
-Elering fallback remains limited: the public API schema did not establish terminal
-interval duration and VAT semantics clearly enough to enable it automatically.
-It requires vetted endpoint semantics in developer configuration, outside normal
-household setup. No missing prices are filled by guessing the next interval's end.
-See [provider fixture provenance](test/fixtures/providers-README.md) for the checked
-documentation and remaining verification limits.
 
 ## Learning and control limits
 

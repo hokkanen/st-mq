@@ -1,6 +1,6 @@
 # Home Assistant add-on development setup
 
-The 0.8.1 application starts with **simulated devices and shadow plans**. Default
+The 0.8.2 application starts with **simulated devices and shadow plans**. Default
 startup launches no live controller or provider. Implementation is not production commissioned;
 see [progress and remaining work](docs/PROGRESS.md).
 
@@ -23,13 +23,15 @@ see [progress and remaining work](docs/PROGRESS.md).
    model without device connections. `mqtt` additionally requires verified H66
    installation and `controller.h66_device`; acquisition is read-only. MQTT
    connection fields reuse the existing configuration.
-7. The provider stage adds `controller.input: providers` for read-only acquisition
-   from configured services. Reuse existing geolocation, ENTSO-E and OpenWeather
-   connection fields; SmartThings indoor/outdoor sensors and Easee are optional.
-   Device acquisition runs every five minutes, while market/weather refresh hourly.
-   This selects external reads and authentication, and enables no equipment writes.
-   Offline integration checks pass; start with the simulated review
-   path above. Development has not used the owner's API credentials.
+7. Choose `controller.input: providers` for read-only acquisition. Existing
+   latitude/longitude and market country enable the public FMI and Elering
+   providers without new keys. ENTSO-E remains the primary price source, with
+   Elering's own API as automatic backup. FMI is primary for the weather forecast
+   and nearby-station outdoor temperature; the existing OpenWeather token enables
+   both backup services. These are independent fallback chains. SmartThings
+   indoor/garage sensors and Easee are optional. Collection runs every five minutes
+   for devices, ten minutes for outdoor temperature, and hourly for prices and
+   forecasts. This input sends no equipment commands.
 8. In the web contract form, enter an effective date, retailer margin and electricity
    tax in c/kWh excluding VAT, VAT as a percentage, and the transfer tariff. Keep
    the current day/night tariff unless the household contract has actually changed.
@@ -60,15 +62,26 @@ persist in the database for that input. `active` applies only to simulated devic
 The house comfort reference is inferred; preferred drop defaults to 1 °C.
 Unsupported warm-weather temperature plateaus are excluded from new reference
 candidates. Cached provider readings keep their source timestamps through outages
-and restarts. The OpenWeather forecast records fetch time separately because its
-JSON response does not supply a documented issuance timestamp.
+and restarts. FMI forecast publication, model analysis and valid times are stored
+separately. The OpenWeather forecast records fetch time separately because its
+JSON response does not supply a documented issuance timestamp. Missing prices and
+forecast intervals remain gaps; tomorrow's prices appear only when published.
 
-Elering fallback awaits vetted interval/VAT semantics for the specific endpoint;
-this is a developer integration limitation, not an additional household setup
-question. The ENTSO-E provider does not require those settings. The provider stage
-has offline protocol fixtures; real API access, token behavior and Raspberry Pi
-runtime still need commissioning. The current x86 container checks do not establish
-behavior on the owner's Home Assistant installation.
+The outdoor card labels **FMI nearby station** or **OpenWeather area estimate**;
+neither establishes the temperature at the house itself. With valid configured
+coordinates, this selected chain owns outdoor temperature and an optional
+SmartThings outdoor sensor does not overwrite it. FMI requires a fresh station
+reading within 50 km. **Data connections** names each selected provider and shows
+**Using backup**, a concise primary error and the next scheduled primary retry.
+Per-source retries are bounded, honor rate limits and persist through restarts.
+
+Normal automated tests stay offline. The separate [live testing section](docs/live-testing.md)
+checks the configured APIs and keys without starting the controller or connecting
+to MQTT. From a repository checkout, run `npm run test:live`, or select services
+with `npm run test:live -- --services fmi-forecast,fmi-observation`. See the
+[progress log](docs/PROGRESS.md) for actual live results. Successful API checks do
+not commission physical control or establish Raspberry Pi/Home Assistant runtime;
+the x86 container checks cover a different deployment environment.
 
 The Dockerfile uses an explicit Node 22 Alpine base with a default `BUILD_FROM`, a
 finite frontend build and `npm ci`. It does not rely on Supervisor injecting a

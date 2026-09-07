@@ -324,3 +324,82 @@ Firefox BiDi listener on port 39124 and creates its own temporary simulation.
 The legacy comparison starts a separate Firefox instance and requires the
 supplied `CODEX` CSVs and their already-imported `var/st-mq.sqlite` database.
 Use `--full-only` for its separate full-archive comparison.
+
+## Direct provider fallbacks and live verification — v0.8.2, 7 September 2026
+
+ENTSO-E remains the primary price provider. Its fallback now calls Elering's own
+endpoint directly, without a third-party relay or extra household configuration.
+The adapters preserve EUR/MWh-to-c/kWh conversion, ex-VAT meaning, negative prices,
+actual market interval lengths and the October 2025 quarter-hour transition.
+Missing current prices, internal gaps or truncated coverage of today trigger the
+fallback. Tomorrow's prices not yet being published is a normal limited horizon.
+An explicit bidding zone is never silently replaced by another country's prices.
+
+FMI is now the primary forecast and outdoor-temperature provider. Forecasts use
+the HARMONIE/MEPS hourly temperature points, recording publication time separately
+from model analysis time. Observations select the nearest fresh weather station
+within 50 km of the configured location. The two routes fail over independently
+to OpenWeather's forecast and current-weather endpoints. Regional values are
+labelled as such; a forecast is never recorded as an observed house temperature.
+
+The live test caught an FMI integration defect that the initial public city-name
+probe did not reveal: the observation query silently ignored `latlon` and returned
+an empty collection. The corrected adapter uses the observation endpoint's
+documented `bbox`, bounds response size/station count, and filters station distance
+after decoding. Configured-location verification then succeeded. Regression tests
+now distinguish the observation request from the forecast request, which does
+accept `latlon`.
+
+Market and forecast polls remain hourly, outdoor observations run every ten
+minutes, and SmartThings/Easee polls remain every five minutes. Cached values keep
+their source timestamps across failures and restart. FMI recovery restores its
+primary role even when an OpenWeather calculation timestamp is slightly newer.
+Provider errors are sanitized; backoff survives restart and honors bounded
+`Retry-After`. Access denials and rate-limit delays are shared between a provider's
+forecast and current-temperature routes. A missing station alone does not disable
+a working forecast. The interface names selected providers and shows backup use,
+primary failure and the next retry.
+
+### Validation checkpoint
+
+All **218 offline tests** pass, including the opt-in live runner's route allowlist,
+serialization, request budget, authentication limits, redaction and cooldowns.
+The production UI build and Firefox desktop/mobile checks pass, including actual
+source labels, backup status, date navigation and settings/contract forms. The
+amd64 image `96f9e2c2522d` (Node 22.23.2) passes startup/restart plus a complete
+synthetic provider-to-storage/status/chart check with networking disabled. The
+live-test files are included in the image; add-on configuration and private-cache
+paths have dedicated tests. ARM64/Pi runtime validation remains a separate target.
+
+The owner explicitly authorized live API-key use for this stage. Direct checks
+used the existing options in memory and produced these results:
+
+| Live service | Observed result |
+| --- | --- |
+| ENTSO-E | Configured key returned 100 valid Finnish price intervals covering now. |
+| Elering | Direct public endpoint returned 100 intervals; all overlapping prices matched ENTSO-E within 0.000001 c/kWh. |
+| FMI forecast | 48 hourly forecast intervals, with distinct publication/model timestamps. |
+| FMI observation | Corrected configured-location query returned a fresh station reading, eight minutes old at verification. |
+| OpenWeather forecast | Configured key returned 40 three-hour forecast intervals. |
+| OpenWeather current | Configured key returned a current temperature with a fresh calculation timestamp. |
+| SmartThings | Both configured temperature devices returned readable values; the oldest source timestamp was about 40 minutes old. |
+| Easee | Charger and equalizer access succeeded and returned all six phase values; all were flagged stale, with the oldest about 45 hours old. |
+
+API access and measurement freshness are separate findings. SmartThings temperature
+ages are judged against the controller's 30-minute boundary. Easee's endpoint
+returns last-reported state; its phase-current event timestamps cannot be replaced
+with the time of this successful request. Neither stale fields nor a successful
+GET alone establish current device connectivity or fresh power measurements.
+
+The keyed checks required seven read requests and no authentication renewal.
+Public FMI/Elering queries also verified their protocols and the corrected
+observation path. No live MQTT messages, heating/DHWR/charger commands, household
+database writes or options edits were made. Browser and container tests used
+isolated synthetic data. No repeated invalid-key attempts or intentional provider
+rate-limit tests were performed.
+
+`npm test` remains offline. `npm run test:live` runs the explicitly opted-in live
+section, with individual services selectable for a repaired connection. It uses a
+private lock and cooldown state and reports failures separately so a backup cannot
+hide a broken primary. See [live testing](live-testing.md) for commands, request
+bounds, token-cache handling and what a passing check proves.

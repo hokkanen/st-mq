@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
+import { providerFixture } from './lib/provider-fixture.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -132,9 +133,28 @@ try {
   await until("document.getElementById('history').dataset.ready === 'true'");
   assert.equal(await legendState('spot'), 'true', 'Contract refresh preserves legend preferences');
   await until("document.getElementById('events').children.length > 0");
+  await app.close();
+  const fixture = providerFixture(now);
+  app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'), connections: fixture.connections },
+    clock: () => now, providerOptions: fixture.providerOptions });
+  await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+  await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
+  await until("document.getElementById('outdoor-age').textContent.includes('FMI nearby station')");
+  await until("document.getElementById('history').dataset.ready === 'true'");
+  assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
+  assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
+  assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
+  assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
+  await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await capture('home-energy-provider-fixture-desktop');
+  await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+  await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', timings,
-    checked: ['default-dark', 'theme-persistence', 'Finnish-today', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'override-settings-contract-forms'] }, null, 2));
+    checked: ['default-dark', 'theme-persistence', 'Finnish-today', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'override-settings-contract-forms', 'provider-sources-and-fallbacks'] }, null, 2));
   await command('browser.close', {});
 } finally {
   ws?.close();
