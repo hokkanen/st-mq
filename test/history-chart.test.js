@@ -1,0 +1,117 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, selectedRange, shiftDate, validDate, visible } from '../chart/history-model.js';
+
+test('calendar controls use Finnish dates across UTC midnight, leap days and both clock changes', () => {
+  assert.equal(finnishDate(Date.parse('2026-09-07T21:30:00Z')), '2026-09-08');
+  assert.deepEqual(selectedRange('yesterday', Date.parse('2026-03-29T21:30:00Z')), { startDate: '2026-03-29', endDate: '2026-03-30' });
+  assert.deepEqual(selectedRange('tomorrow', Date.parse('2026-10-24T22:30:00Z')), { startDate: '2026-10-25', endDate: '2026-10-26' });
+  assert.equal(shiftDate('2024-02-28', 1), '2024-02-29');
+  assert.equal(shiftDate('2026-01-01', -1), '2025-12-31');
+  assert.equal(validDate('2026-02-29'), false);
+  assert.equal(validDate('2026-13-01'), false);
+  assert.equal(validDate('2026-01-01<script>'), false);
+  assert.throws(() => shiftDate('2026-02-30', 1), /valid calendar/);
+});
+
+test('left axis groups remain exclusive while all shared temperatures and prices survive every choice', () => {
+  const shared = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
+  for (const [left, expected] of [['power', ['property_power', 'charger_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']]]) {
+    const datasets = historyDatasets({}, left);
+    assert.deepEqual(datasets.filter(dataset => dataset.yAxisID === 'left').map(dataset => dataset.key), expected);
+    assert.deepEqual(datasets.filter(dataset => dataset.yAxisID === 'right').map(dataset => dataset.key), shared);
+    assert.equal(datasets.find(dataset => dataset.key === 'all_in_price').hidden, false);
+    assert.equal(datasets.find(dataset => dataset.key === 'spot_price').hidden, true);
+  }
+  assert.equal(visible('dhwr'), false);
+  assert.equal(visible('heatOff'), true);
+  assert.equal(visible('auxHeat'), true);
+});
+
+test('axis ticks stay on whole Finnish hours and calendar days across DST with exact outer bounds', () => {
+  const hours = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  for (const range of [
+    { startDate: '2026-03-29', endDate: '2026-03-29', from: Date.parse('2026-03-28T22:00Z'), to: Date.parse('2026-03-29T21:00Z') },
+    { startDate: '2026-10-25', endDate: '2026-10-25', from: Date.parse('2026-10-24T21:00Z'), to: Date.parse('2026-10-25T22:00Z') },
+  ]) {
+    const ticks = calendarTicks(range, 9);
+    assert.equal(ticks[0].value, range.from); assert.equal(ticks.at(-1).value, range.to);
+    assert.ok(ticks.every(tick => hours.format(tick.value).endsWith(':00')));
+    assert.ok(ticks.every((tick, index) => !index || tick.value > ticks[index - 1].value));
+  }
+  const range = { startDate: '2026-03-25', endDate: '2026-04-05', from: Date.parse('2026-03-24T22:00Z'), to: Date.parse('2026-04-05T21:00Z') };
+  const ticks = calendarTicks(range, 5);
+  assert.ok(ticks.length <= 5);
+  assert.ok(ticks.every(tick => hours.format(tick.value) === '00:00'));
+  assert.deepEqual(ticks.map(tick => finnishDate(tick.value)), ['2026-03-25', '2026-03-28', '2026-03-31', '2026-04-03', '2026-04-06']);
+});
+
+test('charger fills and shared outdoor visibility retain exact missing and negative values', () => {
+  const series = { property_power: [{ x: 1, y: 2 }, { x: 2, y: null }, { x: 3, y: 4 }], heating_integral: [{ x: 1, y: -300 }], all_in_price: [{ x: 1, y: -2 }, { x: 2, y: -2 }, { x: 2, y: null }] };
+  const preferences = { outdoor_temperature: false, spot_price: true };
+  const power = historyDatasets(series, 'power', preferences);
+  assert.equal(power.find(dataset => dataset.key === 'charger_power').fill, 'origin');
+  assert.equal(power.find(dataset => dataset.key === 'charger_power').stepped, true);
+  assert.equal(power.find(dataset => dataset.key === 'property_power').stepped, true);
+  assert.equal(power.find(dataset => dataset.key === 'property_power').fill, false);
+  assert.deepEqual(power.find(dataset => dataset.key === 'property_power').data, series.property_power);
+  assert.equal(power.find(dataset => dataset.key === 'outdoor_forecast').hidden, true);
+  assert.deepEqual(power.find(dataset => dataset.key === 'outdoor_forecast').borderDash, [5, 4]);
+  assert.equal(power.find(dataset => dataset.key === 'spot_price').hidden, false);
+  assert.equal(historyDatasets(series, 'integral', preferences)[0].data[0].y, -300);
+  assert.deepEqual(power.find(dataset => dataset.key === 'all_in_price').data, series.all_in_price);
+  assert.ok(power.every(dataset => !dataset.spanGaps && dataset.tension === 0));
+});
+
+test('chart queries preserve selected dates without expanding to forecast horizon', () => {
+  assert.equal(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'power' }), '/api/chart?start=2026-09-08&end=2026-09-08&left=power&points=800');
+  assert.throws(() => chartQuery({ startDate: '2026-09-08', endDate: '2026-09-07', left: 'power' }), /end date/);
+  assert.throws(() => chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'injected' }), /left axis/);
+});
+
+test('quick navigation cancels obsolete downloads even if their transport ignores cancellation', async () => {
+  const requests = [];
+  const loader = createChartLoader({ api: (path, { signal }) => new Promise(resolve => requests.push({ path, signal, resolve })) });
+  const first = loader.load({ startDate: '2026-09-07', endDate: '2026-09-07', left: 'power' });
+  await Promise.resolve();
+  const rejection = assert.rejects(first, { name: 'AbortError' });
+  const second = loader.load({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'phases' });
+  await Promise.resolve();
+  assert.equal(requests[0].signal.aborted, true);
+  requests[1].resolve({ chosen: 'tomorrow' });
+  assert.deepEqual(await second, { chosen: 'tomorrow' });
+  requests[0].resolve({ chosen: 'old day' });
+  await rejection;
+  loader.close();
+});
+
+test('cache coalesces duplicate polls, preserves fast return navigation and expires live data sooner', async () => {
+  let time = Date.parse('2026-09-07T12:00:00Z'), calls = 0;
+  const loader = createChartLoader({ now: () => time, api: async () => ({ call: ++calls }) });
+  const today = { startDate: '2026-09-07', endDate: '2026-09-07', left: 'power' };
+  const past = { ...today, startDate: '2026-09-01', endDate: '2026-09-01' };
+  const first = loader.load(today), duplicate = loader.load(today);
+  assert.equal(first, duplicate);
+  assert.deepEqual(await first, { call: 1 });
+  time += 15_000;
+  assert.deepEqual(await loader.load(today), { call: 1 });
+  assert.deepEqual(await loader.load(past), { call: 2 });
+  assert.deepEqual(await loader.load(today), { call: 1 });
+  time += 60_000;
+  assert.deepEqual(await loader.load(today), { call: 3 });
+  assert.deepEqual(await loader.load(past), { call: 2 });
+  loader.invalidate();
+  assert.deepEqual(await loader.load(past), { call: 4 });
+});
+
+test('bounded response cache evicts least recently used date/axis combinations', async () => {
+  let calls = 0;
+  const loader = createChartLoader({ api: async () => ({ call: ++calls }), maxEntries: 2 });
+  const base = { startDate: '2026-09-07', endDate: '2026-09-07', left: 'power' };
+  await loader.load(base);
+  await loader.load({ ...base, left: 'phases' });
+  assert.deepEqual(await loader.load(base), { call: 1 });
+  await loader.load({ ...base, left: 'integral' });
+  assert.deepEqual(await loader.load({ ...base, left: 'phases' }), { call: 4 });
+  loader.close();
+});

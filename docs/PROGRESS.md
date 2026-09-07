@@ -223,4 +223,104 @@ No household bill savings or validated contemporary energy response are establis
 Primary-source verification and fixture limitations are recorded in
 `test/fixtures/providers-README.md`. Documentation/schema inspection establishes
 the implemented protocol interpretation, not successful live API commissioning.
-The release version remains 0.8.0 until the stage's combined checks are complete.
+That provider-stage checkpoint used version 0.8.0.
+
+## Interface upgrade — v0.8.1, 7 September 2026
+
+The private dashboard now uses **Home Energy**, with the promotional title and
+footer removed. A green dark theme is the default; a visible theme button restores
+the green/white light theme and remembers the choice in the browser. The small
+external theme script applies that choice before CSS paints, under the existing
+content security policy. Production script/style filenames include content hashes
+so an upgrade loads assets matching its new HTML.
+
+The combined history chart moves directly below the current readings and restores
+the multi-signal view requested from v0.7.5:
+
+- Inclusive start/end selectors use Finnish calendar boundaries, defaulting to
+  today from 00:00 to the next midnight. Quick buttons select Today, Yesterday +
+  today, or Today + tomorrow. Forecasts and known market prices are clipped to
+  that range, including a tomorrow-only selection; DST days retain their real
+  duration.
+- The left-axis selector shows estimated combined property/charger power,
+  individual phase currents, or heating integral. Charger series are fills.
+  Legend entries change with the selected left-axis group; temperatures and
+  prices remain on the right. The power estimate uses all three contemporaneous
+  phase currents at nominal 230 V, never treats current snapshots as energy,
+  and is identified as an estimate in the interface.
+- All-in price is visible by default. Spot price remains separate and initially
+  hidden; historical all-in values require the appropriate dated contract rates.
+  Outdoor forecasts are dashed and stay distinct from observations.
+- Shading order is Heat Off, Aux Heat, DHWR. DHWR starts hidden and retains the
+  ten-minute historical pulse-request interpretation. Heat Off means requested
+  reduction rather than measured compressor activity. Aux Heat requires verified
+  timestamped output readings; runtime-counter dates do not invent historical
+  episodes. Integral and auxiliary history await suitable H66 observations.
+
+`GET /api/chart` combines the selected series and shading in one authenticated,
+read-only response. It accepts at most 3,660 calendar days and 100–2,000 display
+time buckets per series. Every selected source row contributes to first/last,
+extrema and missing-data summaries; the API does not truncate long histories to
+their earliest rows. Dense shading is summarized by recorded activity per display
+interval. File-backed SQLite chart queries run in a background worker. The browser
+caches recent selections and cancels obsolete requests during rapid navigation.
+The existing raw `/api/history` endpoint retains its 31-day/5,000-row bounds.
+
+This stage changes display and read-only historical access. It enables no physical
+control transport, invokes no providers from chart requests, and preserves the
+owner's options and supplied data.
+
+### Interface validation
+
+The complete automated suite passes **174 tests** at this checkpoint. Isolated
+Firefox checks also pass for populated charts, dark/light persistence, the three
+left-axis groups, shared legend preferences, rapid date changes, tomorrow-only
+forecasts, mobile portrait/landscape layout, settings, overrides and dated contract
+entry. The synthetic fixture includes all three activity layers; it is confined
+to the test script and is never seeded into the household database.
+
+The production build passes. The amd64 image `61b22e47ab09` (Node 22.23.2)
+passes its network-disabled startup, built theme asset, chart API and restart
+smoke check with temporary storage. No household providers or devices were
+contacted, and no ARM64 runtime validation is claimed.
+
+A final regression verifies that importing CSVs after native observations cannot
+change scalar source precedence when the selected range crosses the compact-query
+threshold. Native scalar readings take priority in both query paths; duplicate
+ordering remains consistent for temperatures, prices and individual phases.
+
+The same supplied historical data was compared with the actual v0.7.5 chart and
+data-processing code from `8c701d6`, using Firefox at 1440 × 1000 and the same
+installed Chart.js 4.5.0. Times include data access, processing and chart update;
+they exclude the old chart's additional approximately one-second animation.
+
+| Selected history | v0.7.5 cold | New cold | v0.7.5 cached return | New cached return |
+| --- | ---: | ---: | ---: | ---: |
+| One day | 1,909 ms | 205 ms | 175 ms | 15 ms |
+| Two days | 1,777 ms | 181 ms | 322 ms | 20 ms |
+| One month | 2,046 ms | 508 ms | 468 ms | 49 ms |
+| Entire supplied history | 2,229 ms | 6,436 ms | 887 ms | 114 ms |
+
+Cached returns are medians of three visits after navigating to a different day.
+Cold visits use a fresh browser module cache and chart worker; operating-system
+file caches are uncontrolled. Historical spot and DHWR were enabled in the new
+chart for this comparison; missing household contract rates were not invented.
+The old cold request transferred about 14 MB of CSVs; corresponding new chart
+responses were 24 KB, 46 KB and 273 KB. These desktop loopback measurements do
+not establish Android, Raspberry Pi or remote-network timing.
+
+The first uncached request for the entire 6 December 2023–6 September 2026 archive
+remains slower than v0.7.5. Its read-only worker scans all 2,010,410 observations,
+using compact original import rows where possible, and returns approximately
+632 KiB of chart data. The measured process peak was 178 MiB RSS with a 22 ms
+largest sampled main-loop delay. Reopening that range is faster from cache, but
+the cold full-archive result does not meet the v0.7.5 timing target. The common
+day, two-day and month selections do.
+
+Reproduce the chart browser and read-only history comparisons with
+`scripts/browser-chart-smoke.js`, `scripts/benchmark-chart.js` and
+`scripts/benchmark-legacy-chart.js`. The browser smoke script expects an isolated
+Firefox BiDi listener on port 39124 and creates its own temporary simulation.
+The legacy comparison starts a separate Firefox instance and requires the
+supplied `CODEX` CSVs and their already-imported `var/st-mq.sqlite` database.
+Use `--full-only` for its separate full-archive comparison.

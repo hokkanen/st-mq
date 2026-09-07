@@ -5,7 +5,7 @@ Home Assistant add-on and standalone Linux. The authoritative project brief is
 `CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
 [docs/PROGRESS.md](docs/PROGRESS.md).
 
-Version 0.8.0 provides an offline, tested foundation: SQLite history, conservative
+Version 0.8.1 provides an offline foundation: SQLite history, conservative
 heating decisions, incremental thermal learning, a monitoring dashboard and
 read-only H66 acquisition. **Default startup uses simulated devices in shadow
 mode. No physical heat-pump command transport is enabled in the new application.**
@@ -40,8 +40,8 @@ live gate is explicitly enabled. Neither default entry point reads standalone
 provider credentials. The server serves the completed UI build; it does not
 rebuild historical CSVs or run a permanent Vite build watcher.
 
-The UI has monitoring, shadow and simulated active modes, selectable observations,
-price/weather outlooks, requested/actual state, stale-data indication, learning
+The Home Energy UI has monitoring, shadow and simulated active modes, combined
+history and price/weather outlooks, requested/actual state, stale-data indication, learning
 health, explicit occupancy and timed normal-heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
 Overrides are persistent; changing one in shadow mode does not operate equipment.
@@ -50,6 +50,43 @@ return-aware optimization is pending.
 
 For UI development run `npm start` and `npm run dev` in separate terminals. Vite
 proxies `/api` to the backend. `npm run preview` alone does not provide the API.
+
+## Using the chart
+
+The interface opens in a green dark theme. The header's **Light theme / Dark
+theme** button changes it and remembers the choice in this browser. The chart is
+directly below the current readings.
+
+- **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
+  Start and end dates are inclusive Finnish calendar days, including daylight-saving
+  changes. **Show dates** applies the selected range. **Today**, **Yesterday +
+  today** and **Today + tomorrow** provide quick navigation. To see tomorrow alone,
+  set both dates to tomorrow. Forecasts and known electricity prices appear only
+  inside the selected dates; they never extend the horizontal axis automatically.
+- **Left axis:** **Total power** shows combined property power as a line and
+  charger power as a fill. **Phase currents** shows the three property phase lines
+  in amperes with corresponding charger fills. **Heating integral** selects the
+  integral instead. Only that group's legend items appear. The power view estimates
+  kW as `230 × (L1 + L2 + L3) / 1000` from contemporaneous current readings; it is
+  not measured active power, metered energy or heat-pump consumption.
+- **Right axis:** indoor, garage and outdoor temperatures and electricity prices
+  stay available with every left-axis selection. The dashed outdoor continuation
+  is forecast. All-in price is visible initially; **Spot price** is initially
+  hidden and excludes VAT and other charges. All-in prices require contract rates
+  covering the selected dates; an unavailable series stays empty rather than
+  silently substituting spot or present-day charges.
+- **Shading:** **Heat Off**, **Aux Heat**, then **DHWR**. Tap legend items to hide
+  or show them; DHWR starts hidden. Heat Off represents requested historical
+  reduction, not measured compressor stoppage. DHWR marks requested ten-minute
+  recirculation pulses. Aux Heat needs verified timestamped auxiliary-output
+  observations; dated runtime counters cannot identify individual episodes. H66
+  auxiliary/integral history will remain empty until suitable readings exist.
+
+Chart changes affect the display only. Viewing history neither polls providers
+nor sends equipment commands. Large ranges use bounded display resolution,
+preserving extremes and missing-data breaks; dense shading represents recorded
+activity within each display interval. Queries run in a background worker and
+recent selections are cached. A newer selection cancels an obsolete request.
 
 ## Persistence and historical data
 
@@ -82,8 +119,12 @@ is not added to compressor runtime.
 Backups use SQLite's online backup API. Restore to a new path while the target
 application is stopped; validate it before changing the configured path. Keep
 backups on separate storage. Schema upgrades run transactionally; newer unknown
-schemas are rejected. Queries are bounded to at most 5,000 observations. The HTTP
-history endpoint limits a request to 31 days. Source history is retained; there
+schemas are rejected. Raw observation queries are bounded to at most 5,000
+observations; `/api/history` limits a request to 31 days. The separate `/api/chart`
+endpoint accepts inclusive `start`/`end` calendar dates, `left=power|phases|integral`
+and a `points` resolution of 100–2,000 time buckets per series. It accepts at most
+3,660 calendar days and summarizes the full selected history into bounded drawing
+data. Source history is retained; there
 is no automatic deletion policy in this stage. Monitor disk growth and archive
 through tested backups/export.
 

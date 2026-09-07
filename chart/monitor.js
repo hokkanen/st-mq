@@ -1,11 +1,10 @@
-import Chart from 'chart.js/auto';
-import { intervalPoints } from './interval-points.js';
+import { createHistoryChart } from './history-chart.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
 let lastStatus;
 let lastEvent = 0;
-let graph;
+let historyChart;
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
 const dayFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric' });
@@ -32,8 +31,8 @@ const reasons = {
   'missing-or-stale-observations': 'Waiting for fresh temperature observations',
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
-async function api(path, data) {
-  const response = await fetch(path, { method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+async function api(path, data, options = {}) {
+  const response = await fetch(path, { signal: options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   if (response.status === 401) { $('auth').hidden = false; throw new Error('Enter your access token to view this installation.'); }
   const result = await response.json();
   if (!response.ok) throw new Error(result.error ?? 'Request failed');
@@ -145,30 +144,6 @@ function render(s) {
   $('override-scope').textContent = s.mode === 'active' ? 'This override applies to the simulated plant only.' : 'This mode records the request without sending equipment commands.';
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
-async function plot(s) {
-  const signal = $('signal').value;
-  const rows = await api(`/api/history?signal=${encodeURIComponent(signal)}&from=${s.now - 86_400_000}&to=${s.now}&limit=2000`);
-  const benignFlags = new Set(['historical', 'simulated', 'good', 'gap_before', 'requested_not_observed', 'current_snapshot_not_energy', 'corrected_historical_price', 'excludes_vat_and_other_charges', 'converted_fahrenheit']);
-  const history = [];
-  for (const row of rows.sort((a, b) => a.sourceTime - b.sourceTime)) {
-    if (!Number.isFinite(row.sourceTime)) continue;
-    const previous = history.at(-1);
-    const gapMs = signal.includes('current') ? 1800_000 : 3 * 3600_000;
-    if (previous && row.sourceTime - previous.x > gapMs) history.push({ x: previous.x + 1, y: null });
-    history.push({ x: row.sourceTime, y: row.quality.every(flag => benignFlags.has(flag)) ? row.value : null });
-  }
-  const prices = intervalPoints(s.prices, 'allInCentsPerKWh', { limit: 96 });
-  const weather = intervalPoints(s.forecast, 'outdoorC', { limit: 24 });
-  const spot = intervalPoints(s.spot ?? [], 'spotCtPerKwh', { limit: 192 });
-  const data = { datasets: [
-    { label: $('signal').selectedOptions[0].text, data: history, borderColor: '#377455', pointRadius: 1, borderWidth: 2, spanGaps: false },
-    { label: `${s.input === 'simulated' ? 'Example all-in' : 'All-in'} price (c/kWh)`, data: prices, borderColor: '#b58a45', yAxisID: 'price', pointRadius: 0, borderWidth: 1.5, stepped: 'before', spanGaps: false },
-    { label: `${s.input === 'simulated' ? 'Example outdoor' : 'Outdoor'} forecast (°C)`, data: weather, borderColor: '#7c9ab2', borderDash: [4, 4], pointRadius: 0, stepped: 'before', spanGaps: false, hidden: true },
-    { label: 'Spot price, ex VAT and charges (c/kWh)', data: spot, borderColor: '#9f7d9c', yAxisID: 'price', borderDash: [3, 3], pointRadius: 0, borderWidth: 1.5, stepped: 'before', spanGaps: false, hidden: prices.length > 0 },
-  ] };
-  if (graph) { data.datasets.forEach((d, i) => { d.hidden = !graph.isDatasetVisible(i); }); graph.data = data; graph.update('none'); return; }
-  graph = new Chart($('history'), { type: 'line', data, options: { responsive: true, maintainAspectRatio: false, animation: false, parsing: false, scales: { x: { type: 'linear', ticks: { maxTicksLimit: 7, callback: value => time(value) }, grid: { color: '#eff2ed' } }, y: { grid: { color: '#eff2ed' } }, price: { position: 'right', grid: { drawOnChartArea: false } } }, plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { title: items => time(items[0].parsed.x) } } } } });
-}
 async function events() {
   const rows = await api(`/api/events?after=${lastEvent}&limit=50`);
   for (const event of rows) {
@@ -181,7 +156,7 @@ async function events() {
   }
   while ($('events').children.length > 100) $('events').lastChild.remove();
 }
-async function refresh() { try { const s = await api('/api/status'); render(s); await Promise.all([plot(s), events()]); } catch (error) { showError(error); } }
+async function refresh({ forceChart = false } = {}) { try { const s = await api('/api/status'); render(s); await Promise.all([historyChart.refresh(s, { force: forceChart }), events()]); } catch (error) { showError(error); } }
 $('auth').addEventListener('submit', event => { event.preventDefault(); token = $('token').value; sessionStorage.setItem('stmq-token', token); $('token').value = ''; refresh(); });
 $('settings-form').addEventListener('submit', async event => { event.preventDefault(); try { const occupancy = { mode: $('occupancy').value }; if ($('return-at').value) occupancy.returnAt = new Date($('return-at').value).toISOString(); render(await api('/api/settings', { mode: $('mode').value, comfort: { targetC: lastStatus.settings.comfort.targetC, maxDropC: Number($('max-drop').value) }, occupancy })); } catch (error) { showError(error); } });
 $('override-form').addEventListener('submit', async event => { event.preventDefault(); try { render(await api('/api/override', { minutes: Number($('duration').value) })); } catch (error) { showError(error); } });
@@ -200,10 +175,11 @@ $('contract-form').addEventListener('submit', async event => {
     $('contract-form').reset();
     $('tariff-detail').textContent = 'Transfer charges include VAT. Choose the tariff on your contract.';
     $('contract-message').textContent = 'Dated rates saved. Earlier rate periods are preserved.';
-    await refresh();
+    await refresh({ forceChart: true });
   } catch (error) { $('contract-message').textContent = error.message; }
   finally { $('contract-submit').disabled = false; }
 });
-$('signal').addEventListener('change', () => { if (lastStatus) plot(lastStatus).catch(showError); });
+historyChart = createHistoryChart({ api: (path, options) => api(path, undefined, options) });
+document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 await refresh();
 setInterval(refresh, 15_000);

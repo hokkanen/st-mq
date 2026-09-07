@@ -1,6 +1,6 @@
 # Home Assistant add-on development setup
 
-The 0.8.0 application starts with **simulated devices and shadow plans**. Default
+The 0.8.1 application starts with **simulated devices and shadow plans**. Default
 startup launches no live controller or provider. Implementation is not production commissioned;
 see [progress and remaining work](docs/PROGRESS.md).
 
@@ -10,7 +10,9 @@ see [progress and remaining work](docs/PROGRESS.md).
    at least 24 characters. It protects household data and settings. Leave
    `controller.input: simulated` and `controller.mode: shadow` for initial review.
 3. Start the add-on and open the web UI on its mapped port (default 1234). Enter
-   that token in the browser. The UI clearly labels simulation.
+   that token in the browser. The **Home Energy** UI clearly labels simulation.
+   It starts in the green dark theme; the header button switches to the light
+   theme and remembers that choice in the browser.
 4. Persistent data is under `/data/st-mq/`, inside the add-on's persistent data
    volume. Include this in backups. The existing `/share` mapping is retained.
 5. Import history explicitly with `node scripts/history.js import --db
@@ -34,6 +36,23 @@ see [progress and remaining work](docs/PROGRESS.md).
    Transfer rates already include VAT. No current tax defaults or historical
    effective dates are inferred. The seasonal alternative is available but is never
    activated merely because a future switching date was discussed.
+
+The main chart defaults to today's complete Finnish calendar day. Its inclusive
+start/end selectors and **Today**, **Yesterday + today**, **Today + tomorrow**
+shortcuts keep both observations and forecasts within the selected dates. The
+**Left axis** selector chooses combined power, phase currents or heating integral;
+temperatures and prices remain available on the right. Power is an estimate from
+three phase currents at nominal 230 V, not metered active power or energy. All-in
+price is initially visible; Spot price and DHWR are initially hidden and can be
+enabled in the legend. Historical all-in prices need dated contract coverage.
+
+Heat Off shading records reduction requests; DHWR records ten-minute pulse
+requests. Aux Heat requires actual timestamped auxiliary-output observations, and
+heating integral requires compatible readings. There is no reconstruction of old
+auxiliary episodes from dated runtime counters. Until H66 supplies verified
+observations, those series may be empty. Chart interaction reads stored data and
+cached outlooks; it does not issue provider requests or equipment commands.
+See [the chart controls and data limits](README.md#using-the-chart) for details.
 
 A blank network-access token prevents startup with a clear configuration error.
 The Home Assistant settings select startup defaults; settings edited in the UI

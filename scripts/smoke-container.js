@@ -11,10 +11,23 @@ let app = await start({ config });
 try {
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const headers = config.token ? { Authorization: `Bearer ${config.token}` } : {};
-  assert.equal((await fetch(`${base}/`)).status, 200);
+  const page = await fetch(`${base}/`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.ok(html.includes('<title>Home Energy</title>'));
+  const themePath = html.match(/src="([^\"]*theme[^\"]*\.js)"/)?.[1];
+  assert.ok(themePath, 'Prepaint theme asset is included');
+  assert.equal((await fetch(new URL(themePath, base))).status, 200);
   const state = await (await fetch(`${base}/api/status`, { headers })).json();
   assert.equal(state.liveWrites, false);
   assert.equal(state.input, 'simulated');
+  const chartResponse = await fetch(`${base}/api/chart`, { headers });
+  assert.equal(chartResponse.status, 200);
+  const chart = await chartResponse.json();
+  assert.equal(chart.left, 'power');
+  assert.equal(chart.range.startDate, chart.range.endDate);
+  assert.equal(chart.range.timeZone, 'Europe/Helsinki');
+  assert.ok(chart.series.all_in_price.length > 0);
   app.engine.setOverride(60);
 } finally { await app.close(); }
 app = await start({ config });
