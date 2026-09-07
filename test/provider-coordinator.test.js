@@ -9,6 +9,7 @@ import { loadConfig } from '../src/app/config.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { start } from '../src/main.js';
 import { assembleOutlook } from '../src/app/contract.js';
+import { describeProvider } from '../chart/provider-status.js';
 
 const initial = Date.parse('2026-09-06T09:00:00Z'), MINUTE = 60_000;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -226,9 +227,9 @@ test('rolling weather keeps a still-fresh current block with its original proven
   } finally { await providers.close(); }
 });
 
-test('all-zero, impossible relative current and asynchronous snapshots report degraded provider quality', async t => {
+test('all-zero and impossible relative currents need attention, while different measurement times do not', async t => {
   const f = fixture(t);
-  f.options.config.connections = { easee: { charger_id: 'fixture-ev' } };
+  f.options.config.connections = { easee: { equalizer_id: 'fixture-property' } };
   let issue = 'all_zero_property_current';
   f.options.devices.easee = async ({ now }) => [{ source: 'easee', device: 'fixture-ev', signal: 'property_current_l1',
     value: 0, unit: 'A', sourceTime: now, receivedAt: now, quality: ['current_snapshot_not_energy', issue] }];
@@ -237,8 +238,12 @@ test('all-zero, impossible relative current and asynchronous snapshots report de
     for (const [i, flag] of ['all_zero_property_current', 'ev_exceeds_property_current', 'asynchronous_snapshot'].entries()) {
       issue = flag; f.setTime(initial + i * 30 * MINUTE); await providers.runDue();
       const health = f.store.getState('providers:health').easee;
-      assert.equal(health.status, 'degraded');
-      assert.deepEqual(health.qualityIssues, [flag]);
+      assert.equal(health.status, flag === 'asynchronous_snapshot' ? 'ok' : 'degraded');
+      assert.deepEqual(health.qualityIssues, flag === 'asynchronous_snapshot' ? [] : [flag]);
+      assert.deepEqual(health.currentReadings, { property: {
+        qualityIssues: flag === 'asynchronous_snapshot' ? [] : [flag], error: null,
+        lastSuccessAt: initial + i * 30 * MINUTE,
+      } });
       assert.equal(health.lastSuccessAt, initial + i * 30 * MINUTE);
       assert.equal(health.nextAttemptAt, initial + (i * 30 + 5) * MINUTE);
       assert.equal(health.failures, 0);
@@ -264,7 +269,7 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
       source: 'easee', device: `fixture-${prefix}`, signal: `${prefix}_current_l${phase}`,
       value: prefix === 'ev1' ? 0 : 2 + easeeCalls + phase, unit: 'A',
       sourceTime: prefix === 'ev1' ? sourceAt : now, receivedAt: now,
-      quality: ['current_snapshot_not_energy', ...(prefix === 'ev1' ? ['stale'] : [])],
+      quality: ['current_snapshot_not_energy', 'asynchronous_snapshot', ...(prefix === 'ev1' ? ['stale'] : [])],
     })));
   };
   let providers = startProviders(f.options);
@@ -280,6 +285,15 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
         assert.equal(health.failures, 0);
         assert.equal(health.error, null);
         assert.deepEqual(health.qualityIssues, [job === 'easee' ? 'charger_stale' : 'stale']);
+        if (job === 'easee') {
+          const description = describeProvider('easee', health, { now, formatTime: at => String(at) });
+          assert.equal(description.attention, false);
+          assert.equal(description.state, 'Available');
+          assert.match(description.detail, /Charger readings have source timestamps older than/);
+          assert.match(description.detail, /Charger readings: Last successful download/);
+          assert.match(description.detail, /Property readings: Last successful download/);
+          assert.doesNotMatch(description.detail, /different times/);
+        }
       }
       assert.equal(f.store.observations({ signal: 'property_current_l1' }).at(-1).value, 4 + i);
       assert.equal(f.engine.status().observations.indoor.stale, true);
@@ -336,6 +350,166 @@ test('Easee property staleness needs attention and clears when property timestam
     }
     assert(f.store.observations({ signal: 'property_current_l1' })
       .filter(row => row.sourceTime === initial - 60 * MINUTE).every(row => row.quality.includes('stale')));
+  } finally { await providers.close(); }
+});
+
+test('Easee scopes partial errors and quality notes to the affected current readings across restart', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  let failed = null;
+  f.options.devices.easee = async ({ now }) => ['ev1', 'property'].flatMap(prefix => [1, 2, 3].map(phase => ({
+    source: 'easee', device: `fixture-${prefix}`, signal: `${prefix}_current_l${phase}`,
+    value: prefix === failed ? null : 5, unit: 'A', receivedAt: now, sourceTime: prefix === failed ? null : now,
+    quality: prefix === failed ? ['provider_error', 'http_status_503', 'missing', 'source_time_unknown']
+      : ['asynchronous_snapshot', 'duplicate_observation', ...(prefix === 'property' ? ['negative_current'] : [])],
+  })));
+  let providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    let health = f.engine.status().providers.easee;
+    assert.deepEqual(health.currentReadings, {
+      charger: { qualityIssues: [], error: null, lastSuccessAt: initial },
+      property: { qualityIssues: ['negative_current'], error: null, lastSuccessAt: initial },
+    });
+    failed = 'ev1'; f.setTime(initial + 5 * MINUTE); await providers.runDue();
+    health = f.engine.status().providers.easee;
+    assert.equal(health.error, 'HTTP-503');
+    assert.equal(health.status, 'degraded');
+    assert.deepEqual(health.currentReadings.charger, {
+      qualityIssues: ['provider_error', 'missing', 'source_time_unknown'], error: 'HTTP-503', lastSuccessAt: initial,
+    });
+    assert.deepEqual(health.currentReadings.property, {
+      qualityIssues: ['negative_current'], error: null, lastSuccessAt: initial + 5 * MINUTE,
+    });
+    assert.equal(health.lastSuccessAt, initial);
+    await providers.close(); providers = startProviders(f.options);
+    assert.deepEqual(f.engine.status().providers.easee.currentReadings, health.currentReadings);
+    failed = 'property'; f.setTime(initial + 10 * MINUTE); await providers.runDue();
+    health = f.engine.status().providers.easee;
+    assert.equal(health.currentReadings.charger.error, null);
+    assert.equal(health.currentReadings.charger.lastSuccessAt, initial + 10 * MINUTE);
+    assert.equal(health.currentReadings.property.error, 'HTTP-503');
+    assert.equal(health.currentReadings.property.lastSuccessAt, initial + 5 * MINUTE);
+    assert.equal(JSON.stringify(health).includes('asynchronous_snapshot'), false);
+  } finally { await providers.close(); }
+});
+
+test('charger age and asynchronous snapshots never restore an attention state, even with old failure counters', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { charger_id: 'fixture-ev' } };
+  for (const flags of [['charger_stale', 'asynchronous_snapshot'], ['asynchronous_snapshot'], ['stale']]) {
+    f.store.setState('providers:health', { easee: { status: 'degraded', failures: 2, error: null,
+      lastSuccessAt: initial - MINUTE, nextAttemptAt: initial + 20 * MINUTE,
+      qualityIssues: flags, staleSourceTimes: { charger_stale: initial - 60 * MINUTE } } });
+    const providers = startProviders(f.options);
+    try {
+      const health = f.engine.status().providers.easee;
+      assert.equal(health.status, 'ok');
+      assert.equal(health.failures, 0);
+      assert.equal(health.nextAttemptAt, initial + 20 * MINUTE);
+      assert.equal(JSON.stringify(health).includes('asynchronous_snapshot'), false);
+      assert.deepEqual(Object.keys(health.currentReadings), ['charger']);
+      assert.equal(health.currentReadings.charger.error, null);
+    } finally { await providers.close(); }
+  }
+});
+
+test('Easee restores sanitized device health without hiding real errors or property staleness', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  f.store.setState('providers:health', { easee: { status: 'degraded', error: null,
+    nextAttemptAt: initial + 20 * MINUTE, qualityIssues: ['asynchronous_snapshot', 'charger_stale'],
+    currentReadings: {
+      charger: { qualityIssues: ['stale', 'asynchronous_snapshot', 'synthetic-private-response'], error: null,
+        lastSuccessAt: initial, raw: 'synthetic-private-response' },
+      property: { qualityIssues: ['stale', 'invalid_unit', 'missing'], error: 'HTTP_503',
+        lastSuccessAt: 'synthetic-private-response' },
+      'synthetic-private-response': { error: 'synthetic-private-response' },
+    } } });
+  let providers = startProviders(f.options);
+  try {
+    let health = f.engine.status().providers.easee;
+    assert.equal(health.status, 'degraded');
+    assert.deepEqual(health.qualityIssues, ['charger_stale', 'property_stale']);
+    assert.deepEqual(health.currentReadings, {
+      charger: { qualityIssues: ['charger_stale'], error: null, lastSuccessAt: initial },
+      property: { qualityIssues: ['property_stale', 'invalid_unit', 'missing'], error: 'HTTP-503', lastSuccessAt: null },
+    });
+    assert.equal(JSON.stringify(health).includes('synthetic-private-response'), false);
+    assert.equal(JSON.stringify(health).includes('asynchronous_snapshot'), false);
+    await providers.close();
+    health.currentReadings.property.error = 'synthetic-private-response';
+    f.store.setState('providers:health', { easee: health });
+    providers = startProviders(f.options);
+    health = f.engine.status().providers.easee;
+    assert.equal(health.currentReadings.property.error, 'provider-request-failed');
+    assert.equal(health.status, 'degraded');
+    assert.equal(JSON.stringify(health).includes('synthetic-private-response'), false);
+  } finally { await providers.close(); }
+});
+
+test('Easee invalid downloads and thrown errors retain separately dated successes', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { equalizer_id: 'fixture-property' } };
+  let kind = 'ok';
+  f.options.devices.easee = async ({ now }) => {
+    if (kind === 'throw') throw Object.assign(new Error('synthetic-private-response'), { status: 429 });
+    if (kind === 'empty') return [];
+    return [{ source: 'easee', device: 'fixture-property', signal: 'property_current_l1', unit: 'A',
+      sourceTime: now, receivedAt: now, value: kind === 'ok' ? 5 : null,
+      quality: kind === 'ok' ? [] : ['invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'missing', 'duplicate_observation'] }];
+  };
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    for (const [index, failure] of ['invalid', 'empty', 'throw'].entries()) {
+      kind = failure; f.setTime(initial + (index + 1) * 30 * MINUTE); await providers.runDue();
+      const health = f.engine.status().providers.easee;
+      assert.equal(health.status, failure === 'throw' ? 'error' : 'degraded');
+      assert.equal(health.currentReadings.property.error, failure === 'throw' ? 'HTTP-429' : 'missing-or-invalid-observations');
+      assert.equal(health.currentReadings.property.lastSuccessAt, initial);
+      assert.deepEqual(Object.keys(health.currentReadings), ['property']);
+      if (failure === 'invalid') assert.deepEqual(health.currentReadings.property.qualityIssues,
+        ['invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'missing']);
+      assert.equal(JSON.stringify(health).includes('synthetic-private-response'), false);
+    }
+  } finally { await providers.close(); }
+});
+
+test('invalid persisted Easee scopes cannot suppress a legacy current quality problem', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  for (const currentReadings of [{}, [], 'synthetic-private-response', { charger: [] }]) {
+    f.store.setState('providers:health', { easee: { status: 'degraded', error: null,
+      qualityIssues: ['negative_current'], nextAttemptAt: initial + 20 * MINUTE, currentReadings } });
+    const providers = startProviders(f.options);
+    try {
+      const health = f.engine.status().providers.easee;
+      assert.equal(health.status, 'degraded');
+      assert.deepEqual(health.qualityIssues, ['negative_current']);
+      assert.equal(health.currentReadings, undefined);
+      assert.equal(describeProvider('easee', health, { now: initial, formatTime: at => String(at) }).attention, true);
+    } finally { await providers.close(); }
+  }
+});
+
+test('a missing configured Easee device is scoped as a failure while returned readings still succeed', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    const health = f.engine.status().providers.easee;
+    assert.equal(health.status, 'degraded');
+    assert.equal(health.error, 'missing-or-invalid-observations');
+    assert.deepEqual(health.currentReadings, {
+      charger: { qualityIssues: [], error: null, lastSuccessAt: initial },
+      property: { qualityIssues: [], error: 'missing-or-invalid-observations', lastSuccessAt: null },
+    });
+    const description = describeProvider('easee', health, { now: initial, formatTime: at => String(at) });
+    assert.equal(description.attention, true);
+    assert.match(description.detail, /Property readings: Readings are missing or invalid/);
+    assert.match(description.detail, /Charger readings: Last successful download/);
   } finally { await providers.close(); }
 });
 
@@ -419,8 +593,9 @@ test('restart preserves visible failures and fallback details during a scheduled
     assert.equal(health.easee.status, 'degraded');
     assert.equal(health.easee.error, 'HTTP-401');
     assert.equal(health.easee.nextAttemptAt, initial + 29 * MINUTE);
-    assert.deepEqual(health.easee.qualityIssues, ['stale']);
-    assert.deepEqual(health.easee.staleSourceTimes, { stale: initial - 60 * MINUTE });
+    assert.deepEqual(health.easee.qualityIssues, ['charger_stale']);
+    assert.deepEqual(health.easee.staleSourceTimes, { charger_stale: initial - 60 * MINUTE });
+    assert.equal(health.easee.currentReadings, undefined, 'legacy generic errors must not acquire invented device scope');
     assert.equal(health.weather.status, 'fallback');
     assert.equal(health.weather.acquisition.attempts[0].error, 'HTTP-429');
     assert.equal(health.weather.sourceBackoff.fmi.failures, 1, 'restoration must not count a new failure');

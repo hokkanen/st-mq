@@ -13,9 +13,13 @@ const SOURCES = new Set(['entsoe', 'elering', 'fmi', 'openweathermap']);
 const OBSERVATION_SOURCES = ['smartthings', 'easee', 'fmi', 'openweathermap'];
 const QUALITY_ISSUES = new Set(['future_source_time', 'source_time_unknown', 'stale', 'charger_stale', 'property_stale',
   'implausible_temperature', 'suspect_zero_indoor', 'implausible_current', 'negative_current',
-  'all_zero_property_current', 'ev_exceeds_property_current', 'asynchronous_snapshot']);
+  'all_zero_property_current', 'ev_exceeds_property_current']);
 const DOWNLOAD_ISSUES = new Set(['provider_error', 'missing_configuration', 'invalid_unit',
   'invalid_numeric', 'conflicting_duplicate', 'missing']);
+const CURRENT_ISSUES = new Set(['future_source_time', 'source_time_unknown', 'charger_stale', 'property_stale',
+  'implausible_current', 'negative_current', 'all_zero_property_current', 'ev_exceeds_property_current',
+  ...DOWNLOAD_ISSUES]);
+const CURRENT_GROUPS = { charger: 'ev1', property: 'property' };
 const COMPLETED_STATES = new Set(['ok', 'fallback', 'degraded', 'error']);
 const qualityIssues = flags => Array.isArray(flags) ? [...new Set(flags.filter(flag => QUALITY_ISSUES.has(flag)))] : [];
 const STALE_ISSUES = new Set(['stale', 'charger_stale', 'property_stale']);
@@ -46,6 +50,49 @@ const savedError = error => ['incomplete-market-coverage', 'missing-or-invalid-o
   ? error : error ? safeFailure(error) : null;
 const safeFailure = value => typeof value === 'string' && /^HTTP[-_][1-5]\d{2}$/i.test(value)
   ? value.toUpperCase().replace('_', '-') : 'provider-request-failed';
+const currentError = value => value === 'missing-or-invalid-observations' ? value : value ? safeFailure(value) : null;
+const currentIssues = (group, flags) => [...new Set((Array.isArray(flags) ? flags : [])
+  .map(flag => flag === 'stale' ? `${group}_stale` : flag)
+  .filter(flag => CURRENT_ISSUES.has(flag)
+    && (flag !== 'charger_stale' || group === 'charger')
+    && (!['property_stale', 'all_zero_property_current'].includes(flag) || group === 'property')))];
+function observationFailure(rows) {
+  return !rows.length || rows.some(row => row.value === null || row.quality.some(flag => DOWNLOAD_ISSUES.has(flag)))
+    ? rows.flatMap(row => row.quality).find(flag => /^http_status_[1-5]\d{2}$/.test(flag))
+      ?.replace('http_status_', 'HTTP-') ?? 'missing-or-invalid-observations' : null;
+}
+function savedCurrentReadings(previous, configured) {
+  const candidate = previous?.currentReadings;
+  const saved = Object.keys(CURRENT_GROUPS).some(group => candidate?.[group]
+    && typeof candidate[group] === 'object' && !Array.isArray(candidate[group])) ? candidate : null;
+  const issues = qualityIssues(previous?.qualityIssues);
+  // Older caches cannot identify which device had a generic quality/download
+  // failure. Leave those descriptions unscoped until the next successful poll.
+  if (!saved && (previous?.error || issues.some(flag => !['charger_stale', 'property_stale', 'all_zero_property_current'].includes(flag)))) return undefined;
+  const groups = Object.keys(CURRENT_GROUPS).filter(group => configured.includes(group)
+    || saved?.[group] && typeof saved[group] === 'object' && !Array.isArray(saved[group])
+    || issues.includes(`${group}_stale`) || group === 'property' && issues.includes('all_zero_property_current'));
+  return Object.fromEntries(groups.map(group => {
+    const row = saved?.[group];
+    return [group, { qualityIssues: currentIssues(group, row?.qualityIssues ?? issues),
+      error: currentError(row?.error),
+      lastSuccessAt: validSourceTime(row?.lastSuccessAt) ? row.lastSuccessAt
+        : !row && !previous?.error && validSourceTime(previous?.lastSuccessAt) ? previous.lastSuccessAt : null }];
+  }));
+}
+function currentReadings(rows, configured, previous, now) {
+  const result = {};
+  for (const [group, prefix] of Object.entries(CURRENT_GROUPS)) {
+    const readings = rows.filter(row => new RegExp(`^${prefix}_current_l[123]$`).test(row.signal));
+    if (!configured.includes(group) && !readings.length) continue;
+    const error = observationFailure(readings);
+    result[group] = { qualityIssues: currentIssues(group, [
+      ...readings.flatMap(row => row.quality.filter(flag => !STALE_ISSUES.has(flag))),
+      ...observationQuality('easee', readings, now).issues,
+    ]), error, lastSuccessAt: error ? previous?.[group]?.lastSuccessAt ?? null : now };
+  }
+  return result;
+}
 const boundedDelay = value => Number.isFinite(value) ? Math.min(24 * 60 * MINUTE, Math.max(0, value)) : 0;
 function backoff(failures, error, requested = 0) {
   return Math.max(boundedDelay(requested), /HTTP-(401|403)/.test(error ?? '') ? 30 * MINUTE
@@ -114,6 +161,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
   const deviceConnections = location ? { ...connections, smartthings: { ...connections.smartthings, outside_temp_dev_id: '' } } : connections;
   devices ??= createDeviceProviders({ connections: deviceConnections, http, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
   const smartthings = connections.smartthings ?? {}, easee = connections.easee ?? {};
+  const configuredCurrents = [['charger', 'charger_id'], ['property', 'equalizer_id']]
+    .filter(([, key]) => present(easee[key])).map(([group]) => group);
   const definitions = {
     temperatures: { enabled: ['inside_temp_dev_id', 'garage_temp_dev_id', ...(!location ? ['outside_temp_dev_id'] : [])].some(key => present(smartthings[key])),
       period: 5 * MINUTE, run: args => devices.temperatures(args) },
@@ -146,6 +195,28 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
         .map(([source, state]) => [source, { failures: Math.min(10, Math.max(0, state.failures ?? 0)),
           nextAttemptAt: state.nextAttemptAt, error: safeFailure(state.error),
           shared: state.shared === true || /HTTP-(401|403|429)/.test(safeFailure(state.error)) }])) };
+    if (name === 'easee' && job.enabled) {
+      const state = health[name];
+      if (configuredCurrents.length === 1 && state.qualityIssues.includes('stale')) {
+        const flag = `${configuredCurrents[0]}_stale`;
+        state.qualityIssues = [...new Set(state.qualityIssues.map(issue => issue === 'stale' ? flag : issue))];
+        if (state.staleSourceTimes.stale) {
+          state.staleSourceTimes[flag] = Math.min(state.staleSourceTimes[flag] ?? Infinity, state.staleSourceTimes.stale);
+          delete state.staleSourceTimes.stale;
+        }
+      }
+      const readings = savedCurrentReadings({ ...previous, qualityIssues: state.qualityIssues }, configuredCurrents);
+      if (readings) {
+        state.currentReadings = readings;
+        if (previous?.currentReadings) state.qualityIssues = qualityIssues(Object.values(readings).flatMap(row => row.qualityIssues));
+      }
+      // Idle charger age and phase reporting times never require attention,
+      // including while waiting for a scheduled poll after an upgrade/restart.
+      if (health[name].status === 'degraded' && !health[name].error
+        && !health[name].qualityIssues.some(flag => flag !== 'charger_stale')
+        && !Object.values(readings ?? {}).some(row => row.error || row.qualityIssues.some(flag => flag !== 'charger_stale')))
+        Object.assign(health[name], { status: 'ok', failures: 0 });
+    }
   }
   store.setState('providers:health', health);
   let closed = false, timer;
@@ -154,7 +225,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     const job = definitions[name], state = health[name], at = clock();
     Object.assign(state, { status: 'running', lastAttemptAt: at });
     store.setState('providers:health', health);
-    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {};
+    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings;
     try {
       // Forecast and current weather share provider hosts/keys. A server's rate
       // limit or access denial applies to both routes, while a missing station
@@ -189,20 +260,29 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
           // Last-reported values can stay unchanged while downloads succeed. Keep
           // their original source ages and warnings without slowing other devices.
           ({ issues, staleSourceTimes } = observationQuality(name, result, clock()));
-          if (!result.length || result.some(row => row.value === null || row.quality.some(flag => DOWNLOAD_ISSUES.has(flag)))) {
-            failure = result.flatMap(row => row.quality).find(flag => /^http_status_\d{3}$/.test(flag))
-              ?.replace('http_status_', 'HTTP-') ?? 'missing-or-invalid-observations';
+          failure = observationFailure(result);
+          if (name === 'easee') {
+            readings = currentReadings(result, configuredCurrents, state.currentReadings, clock());
+            failure ??= Object.values(readings).find(row => row.error)?.error ?? null;
           }
         }
       }); } catch (error) { engine.latest = latestBefore; throw error; }
       state.qualityIssues = issues;
       state.staleSourceTimes = staleSourceTimes;
+      if (readings) state.currentReadings = readings;
       state.status = failure || issues.some(flag => flag !== 'charger_stale') ? 'degraded' : state.acquisition?.fallbackUsed ? 'fallback' : 'ok';
     } catch (error) {
       if (closed) return;
       noteAcquisition(state, error?.acquisition, clock());
       retryAfterMs = boundedDelay(error?.retryAfterMs);
       state.status = 'error'; failure = errorCode(error);
+      if (name === 'easee') {
+        const groups = [...new Set([...configuredCurrents, ...Object.keys(state.currentReadings ?? {})])];
+        state.currentReadings = Object.fromEntries(groups.map(group => [group, {
+          qualityIssues: state.currentReadings?.[group]?.qualityIssues ?? [], error: failure,
+          lastSuccessAt: state.currentReadings?.[group]?.lastSuccessAt ?? null,
+        }]));
+      }
     }
     if (closed) return;
     state.error = failure;

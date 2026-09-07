@@ -47,8 +47,80 @@ function qualityLabel(flag, health, now) {
   return label.replace('old source timestamps.', `source timestamps older than ${hours} ${hours === 1 ? 'hour' : 'hours'}.`);
 }
 
+const currentQualityLabels = Object.freeze({
+  source_time_unknown: 'Some readings have no source timestamp.',
+  future_source_time: 'Some source timestamps are in the future.',
+  implausible_current: 'Some current readings are implausible.',
+  negative_current: 'Some current readings are negative.',
+  conflicting_duplicate: 'Some readings disagree at the same source timestamp.',
+  invalid_unit: 'Some readings have unsupported units.',
+  invalid_numeric: 'Some readings have invalid values.',
+  missing: 'Some current readings are missing.',
+  missing_configuration: 'Current readings are not configured.',
+  provider_error: 'Current readings could not be downloaded.',
+});
+const currentFlags = flags => Array.isArray(flags) ? [...new Set(flags.filter(flag =>
+  typeof flag === 'string' && (Object.hasOwn(currentQualityLabels, flag)
+    || ['stale', 'charger_stale', 'property_stale', 'all_zero_property_current', 'ev_exceeds_property_current'].includes(flag))))] : [];
+
+const scopedCurrentFlags = (flags, key) => currentFlags(flags).map(flag =>
+  flag === 'stale' ? `${key}_stale` : flag);
+
+function describeEasee(health, { now, formatTime }) {
+  const groups = ['charger', 'property'].filter(key => Object.hasOwn(health.currentReadings ?? {}, key)
+    && health.currentReadings[key] && typeof health.currentReadings[key] === 'object');
+  const scope = key => key === 'charger' ? 'Charger readings' : 'Property readings';
+  const sharedScope = groups.length === 1 ? scope(groups[0]) : 'Charger and property readings';
+  const sentences = [];
+  const sentence = (subject, text) => sentences.push(`${subject}: ${text.replace(/^./, value => value.toUpperCase())}`);
+  const addIssues = (flags, subject) => {
+    for (const flag of currentFlags(flags)) {
+      if (['charger_stale', 'property_stale', 'all_zero_property_current', 'ev_exceeds_property_current'].includes(flag)) {
+        sentences.push(qualityLabel(flag, health, now));
+      } else if (flag === 'stale') {
+        sentence(subject, qualityLabel(flag, health, now));
+      } else sentence(subject, currentQualityLabels[flag]);
+    }
+  };
+  let scopedError = false;
+  if (groups.length) {
+    for (const key of groups) {
+      const reading = health.currentReadings[key];
+      sentence(scope(key), Number.isFinite(reading.lastSuccessAt)
+        ? `Last successful download ${formatTime(reading.lastSuccessAt)}.` : 'No successful download recorded.');
+      addIssues(scopedCurrentFlags(reading.qualityIssues, key)
+        .filter(flag => !reading.error || flag !== 'provider_error'), scope(key));
+      if (reading.error) { scopedError = true; sentence(scope(key), `${failureLabel(reading.error)}.`); }
+    }
+  } else {
+    // Older health snapshots did not retain the device behind a generic issue.
+    // Name that ambiguity instead of attributing the issue to the wrong device.
+    const success = health.lastSuccessAt ?? health.lastSuccess;
+    sentence(sharedScope, Number.isFinite(success)
+      ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.');
+    addIssues(health.qualityIssues, 'Charger or property readings');
+  }
+  if (health.error && !scopedError) sentence(groups.length ? sharedScope : 'Charger or property readings', `${failureLabel(health.error)}.`);
+  if ((health.error || scopedError) && Number.isFinite(health.nextAttemptAt) && health.nextAttemptAt > now) {
+    sentence(sharedScope, `Next try ${formatTime(health.nextAttemptAt)}.`);
+  } else if (['waiting', 'pending'].includes(health.status) && Number.isFinite(health.nextAttemptAt)) {
+    sentence(sharedScope, health.nextAttemptAt > now ? `Next download ${formatTime(health.nextAttemptAt)}.` : 'Download is due.');
+  }
+  const flags = groups.length ? groups.flatMap(key => scopedCurrentFlags(health.currentReadings[key].qualityIssues, key)) : currentFlags(health.qualityIssues);
+  const needsAttention = flags.some(flag => flag !== 'charger_stale');
+  const onlyInformational = !needsAttention && !health.error && !scopedError
+    && (groups.length > 0 || Array.isArray(health.qualityIssues)
+      && health.qualityIssues.some(flag => ['charger_stale', 'asynchronous_snapshot'].includes(flag)));
+  const attention = Boolean(needsAttention || health.error || scopedError || health.status === 'error'
+    || health.status === 'degraded' && !onlyInformational);
+  const state = ['ok', 'healthy', 'available', 'success', 'degraded'].includes(health.status)
+    ? attention ? 'Needs attention' : 'Available' : states[health.status] ?? 'Status pending';
+  return { title: jobs.easee, state, attention, detail: [...new Set(sentences)].join(' ') };
+}
+
 /** Only known source names, failure codes and quality flags enter display text; provider bodies never do. */
 export function describeProvider(job, health, { now, formatTime }) {
+  if (job === 'easee') return describeEasee(health, { now, formatTime });
   const selected = providerName(health.source ?? health.acquisition?.selected);
   const base = jobs[job] ?? 'Data provider';
   const title = selected && !base.startsWith(selected) ? `${base} · ${selected}` : base;

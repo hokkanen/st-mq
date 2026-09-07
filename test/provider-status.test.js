@@ -66,15 +66,85 @@ test('waiting providers show their scheduled download and distinguish a due requ
   assert.match(describeProvider('temperatures', health, options).detail, /Download is due/);
 });
 
-test('successful downloads with old or asynchronous readings explain quality separately', () => {
+test('Easee describes old readings without reporting different measurement times', () => {
   const result = describeProvider('easee', { status: 'degraded', lastSuccessAt: now, error: null,
     nextAttemptAt: now + 300_000, qualityIssues: ['stale', 'asynchronous_snapshot'] }, options);
   assert.equal(result.state, 'Needs attention');
   assert.equal(result.attention, true);
   assert.match(result.detail, /Last successful download 10:00/);
   assert.match(result.detail, /Some readings have old source timestamps/);
-  assert.match(result.detail, /Current readings were measured at different times/);
+  assert.match(result.detail, /Charger or property readings: Some readings have old source timestamps/);
+  assert.doesNotMatch(result.detail, /measured at different times|asynchronous/);
   assert.doesNotMatch(result.detail, /download failed|No successful download|Next try/);
+});
+
+test('Easee ignores timestamp mismatch and charger age in cached degraded statuses', () => {
+  for (const qualityIssues of [['asynchronous_snapshot'], ['charger_stale'], ['charger_stale', 'asynchronous_snapshot']]) {
+    for (const status of ['ok', 'degraded']) {
+      const display = describeProvider('easee', { status, qualityIssues, error: null, failures: 1 }, options);
+      assert.equal(display.state, 'Available');
+      assert.equal(display.attention, false);
+      assert.doesNotMatch(display.detail, /measured at different times|asynchronous/);
+    }
+  }
+});
+
+test('each Easee sentence identifies the affected readings, including partial downloads and retry', () => {
+  const display = describeProvider('easee', { status: 'degraded', error: 'HTTP-429', nextAttemptAt: now + 300_000,
+    currentReadings: {
+      charger: { qualityIssues: ['missing', 'invalid_unit'], error: 'HTTP-429', lastSuccessAt: now - 3_600_000 },
+      property: { qualityIssues: ['negative_current', 'source_time_unknown'], error: null, lastSuccessAt: now },
+    } }, options);
+  assert.equal(display.attention, true);
+  for (const sentence of display.detail.split(/\.\s*/).filter(Boolean)) {
+    assert.match(sentence, /Charger|Property|property/, sentence);
+  }
+  assert.match(display.detail, /Charger readings: Last successful download 09:00\./);
+  assert.match(display.detail, /Property readings: Last successful download 10:00\./);
+  assert.match(display.detail, /Charger readings: Some current readings are missing\./);
+  assert.match(display.detail, /Charger readings: Some readings have unsupported units\./);
+  assert.match(display.detail, /Property readings: Some current readings are negative\./);
+  assert.match(display.detail, /Property readings: Some readings have no source timestamp\./);
+  assert.match(display.detail, /Charger readings: Rate limited \(HTTP 429\)\./);
+  assert.doesNotMatch(display.detail, /Property readings: (Rate limited|Download failed)/);
+  assert.match(display.detail, /Charger and property readings: Next try 10:05\./);
+});
+
+test('scoped charger age stays informational and scopes all other current notes', () => {
+  const informational = { status: 'degraded', qualityIssues: ['charger_stale', 'asynchronous_snapshot'],
+    staleSourceTimes: { charger_stale: now - 90 * 60_000 },
+    currentReadings: { charger: { qualityIssues: ['charger_stale', 'asynchronous_snapshot'], error: null, lastSuccessAt: now } } };
+  const display = describeProvider('easee', informational, options);
+  assert.equal(display.state, 'Available');
+  assert.equal(display.attention, false);
+  assert.match(display.detail, /Charger readings have source timestamps older than 1.5 hours\./);
+  assert.doesNotMatch(display.detail, /[Pp]roperty|different times|asynchronous/);
+  informational.currentReadings.charger.qualityIssues = ['stale', 'asynchronous_snapshot'];
+  assert.equal(describeProvider('easee', informational, options).attention, false,
+    'Generic old flags must use the known charger scope');
+  for (const key of ['charger', 'property']) {
+    for (const flag of ['future_source_time', 'source_time_unknown', 'implausible_current', 'negative_current',
+      'invalid_numeric', 'invalid_unit', 'conflicting_duplicate', 'missing', 'provider_error', 'missing_configuration']) {
+      const result = describeProvider('easee', { status: 'degraded',
+        currentReadings: { [key]: { qualityIssues: [flag], error: null, lastSuccessAt: null } } }, options);
+      const subject = key === 'charger' ? 'Charger' : 'Property';
+      assert.equal(result.attention, true, flag);
+      for (const sentence of result.detail.split(/\.\s*/).filter(Boolean)) assert.ok(sentence.startsWith(subject), sentence);
+    }
+  }
+});
+
+test('Easee waiting, unknown errors and untrusted scope fields produce only named safe sentences', () => {
+  const secret = 'https://provider.example/?token=private-secret';
+  const health = { status: 'waiting', nextAttemptAt: now + 300_000,
+    currentReadings: { property: { qualityIssues: [], error: null, lastSuccessAt: null } } };
+  assert.equal(describeProvider('easee', health, options).detail,
+    'Property readings: No successful download recorded. Property readings: Next download 10:05.');
+  health.currentReadings.property = { qualityIssues: [secret, 'asynchronous_snapshot', 'constructor'], error: secret, lastSuccessAt: secret };
+  health.currentReadings[secret] = { qualityIssues: ['missing'], error: secret };
+  const display = describeProvider('easee', health, options);
+  assert.match(display.detail, /Property readings: Download failed\./);
+  assert.doesNotMatch(JSON.stringify(display), /private-secret|provider\.example|https:|constructor|different times/);
 });
 
 test('download errors retain retry details alongside existing reading quality warnings', () => {
