@@ -57,7 +57,7 @@ export const leftGroups = Object.freeze({
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
   property: '#e98576', ev: '#e98576', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
-  indoor: '#81ca99', garage: '#e3b47b', outdoor: '#83b8da', integral: '#cea0dc', price: '#e6e9cf', spot: '#b6a6c9',
+  indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#6ba58d', auxHeat: '#d38e66', dhwr: '#b3a15a',
 });
 
@@ -96,14 +96,15 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
       data: series[key] ?? [],
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
-      borderWidth: kind === 'fill' ? 0 : isPrice ? 1.5 : 1.8,
-      borderDash: kind === 'forecast' ? [5, 4] : key === 'spot_price' ? [2, 4] : [],
+      borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
+      borderDash: kind === 'forecast' ? [5, 4] : isPrice ? [1, 3] : [],
       fill: kind === 'fill' ? 'origin' : false,
       order: kind === 'fill' ? 2 : 1,
-      pointRadius: (series[key] ?? []).filter(point => Number.isFinite(point.y)).length === 1 ? 2 : 0,
+      pointBackgroundColor: palette[colorKey], pointBorderColor: palette[colorKey],
+      pointRadius: isPrice ? 1 : (series[key] ?? []).filter(point => Number.isFinite(point.y)).length === 1 ? 2 : 0,
       pointHoverRadius: 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
-      stepped: isPrice || kind === 'forecast' || isLeft && left !== 'integral',
+      stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral',
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),
     };
   });

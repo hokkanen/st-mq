@@ -35,11 +35,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   let graph, payload, plottedSelection, fingerprint, status, initialized = false, closed = false;
   let palette = { ...defaultPalette }, lastContract, lastLiveRevision, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
-  let activePreset = 'today', previousToday;
+  let activePreset = 'today', previousToday, rangeEnabled = false;
 
   function listen(node, event, handler) { node.addEventListener(event, handler); listeners.push(() => node.removeEventListener(event, handler)); }
   function updateControls() {
     $('date-start').value = selection.startDate; $('date-end').value = selection.endDate; $('left-axis').value = selection.left;
+    $('date-range-enabled').checked = rangeEnabled;
+    $('date-end').disabled = !rangeEnabled;
+    $('date-end').min = selection.startDate;
     for (const preset of ['today', 'yesterday', 'tomorrow']) $(`range-${preset}`).setAttribute('aria-pressed', String(activePreset === preset));
   }
   function readPalette() {
@@ -159,7 +162,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     status = nextStatus ?? { now: Date.now() };
     const today = finnishDate(status.now);
     if (!initialized || previousToday && today !== previousToday && activePreset) {
-      selection = { ...selection, ...selectedRange(activePreset ?? 'today', status.now) };
+      if (activePreset) selection = { ...selection, ...selectedRange(activePreset, status.now) };
       updateControls(); initialized = true;
     }
     previousToday = today;
@@ -185,12 +188,34 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
   }
   function choosePreset(preset) {
+    rangeEnabled = preset !== 'today';
     activePreset = preset; selection = { ...selection, ...selectedRange(preset, status?.now ?? Date.now()) }; updateControls(); return refresh();
   }
-  listen($('chart-range-form'), 'submit', event => {
-    event.preventDefault(); activePreset = null;
-    selection = { ...selection, startDate: $('date-start').value, endDate: $('date-end').value };
+  function applyDates() {
+    if (!$('chart-range-form').checkValidity()) return;
+    activePreset = null;
+    selection = { ...selection, startDate: $('date-start').value, endDate: rangeEnabled ? $('date-end').value : $('date-start').value };
     updateControls(); refresh();
+  }
+  listen($('date-start'), 'change', () => {
+    const start = $('date-start');
+    if (!start.checkValidity()) return;
+    const end = $('date-end');
+    end.min = start.value;
+    if (!rangeEnabled || !end.value || end.value < start.value) end.value = start.value;
+    applyDates();
+  });
+  listen($('date-end'), 'change', applyDates);
+  listen($('date-range-enabled'), 'change', () => {
+    rangeEnabled = $('date-range-enabled').checked;
+    $('date-end').disabled = !rangeEnabled;
+    $('date-end').min = $('date-start').value;
+    if (!rangeEnabled || !$('date-end').value || $('date-end').value < $('date-start').value) $('date-end').value = $('date-start').value;
+    if (rangeEnabled) $('date-end').focus();
+    else applyDates();
+  });
+  listen($('chart-range-form'), 'submit', event => {
+    event.preventDefault(); applyDates();
   });
   listen($('left-axis'), 'change', () => { selection = { ...selection, left: $('left-axis').value }; refresh(); });
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));

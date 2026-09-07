@@ -58,6 +58,10 @@ try {
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark');
   assert.equal(await evaluate("document.getElementById('date-start').value"), '2026-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').value"), '2026-09-07');
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
+  assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-yesterday,range-today,range-tomorrow');
   assert.equal(await evaluate("document.getElementById('left-axis').value"), 'power');
   assert.equal(await evaluate("document.body.textContent.includes('A comfortable home')"), false);
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
@@ -67,10 +71,36 @@ try {
   assert.equal(await legendState('dhwr'), 'false');
   await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
+  await evaluate("localStorage.setItem('home-energy-theme', 'light'); true");
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
-  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
-  await evaluate("document.getElementById('theme-toggle').click(); true");
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark', 'Reload starts dark even with a legacy light preference');
+  // A single start-date change opens one old day; the disabled end follows it.
+  await evaluate("document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2024-09-07' && document.getElementById('history').dataset.rangeEnd === '2024-09-07'");
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-07');
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
+  // Clicking the label enables a range and places the cursor in the end picker.
+  await evaluate("document.querySelector('.end-date-toggle').click(); true");
+  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
+  assert.equal(await evaluate('document.activeElement.id'), 'date-end');
+  await evaluate("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeEnd === '2024-09-09'");
+  // An end before the start is rejected without replacing the plotted range.
+  await evaluate("document.getElementById('date-end').value='2024-09-06'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
+  assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), false);
+  assert.equal(await evaluate("document.getElementById('history').dataset.rangeEnd"), '2024-09-09');
+  await evaluate("document.getElementById('date-range-enabled').click(); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeEnd === '2024-09-07'");
+  // Moving the start beyond an enabled end keeps a valid one-day selection.
+  await evaluate("document.getElementById('date-range-enabled').click(); document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2024-09-12' && document.getElementById('history').dataset.rangeEnd === '2024-09-12'");
+  await evaluate("document.getElementById('range-today').click(); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
+  assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   await evaluate("Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes('spot')).click(); true");
   for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'], ['power', 'charger_power', 'heating_integral']]) {
     const began = performance.now();
@@ -83,6 +113,8 @@ try {
   // Rapid changes must settle on the last request even if previous requests finish late.
   await evaluate("document.getElementById('range-yesterday').click(); document.getElementById('range-tomorrow').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-08'");
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
   await evaluate("document.getElementById('date-start').value='2026-09-08'; document.getElementById('date-end').value='2026-09-08'; document.getElementById('chart-range-form').requestSubmit(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-08' && document.getElementById('history').dataset.rangeEnd === '2026-09-08'");
   const tomorrow = await fetch(`${base}/api/chart?start=2026-09-08&end=2026-09-08`).then(r => r.json());
@@ -154,7 +186,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', timings,
-    checked: ['default-dark', 'theme-persistence', 'Finnish-today', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'override-settings-contract-forms', 'provider-sources-and-fallbacks'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'override-settings-contract-forms', 'provider-sources-and-fallbacks'] }, null, 2));
   await command('browser.close', {});
 } finally {
   ws?.close();

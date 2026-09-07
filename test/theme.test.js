@@ -24,10 +24,10 @@ function browser({ preference = null, denyStorage = false, ready = false } = {})
   return { root, meta, button, theme: window.homeEnergyTheme, changes, saved,
     ready: () => documentListeners.get('DOMContentLoaded')?.(),
     click: () => buttonListeners.get('click')?.forEach(listener => listener()),
-    storage: event => windowListeners.get('storage')(event) };
+    storage: event => windowListeners.get('storage')?.(event) };
 }
 
-test('theme is dark before DOM readiness and toggle persists a light preference', () => {
+test('theme is dark before DOM readiness and toggle changes only the current page', () => {
   const page = browser();
   assert.equal(page.root.dataset.theme, 'dark');
   assert.equal(page.meta.content, '#101e19');
@@ -36,23 +36,24 @@ test('theme is dark before DOM readiness and toggle persists a light preference'
   page.click();
   assert.equal(page.root.dataset.theme, 'light');
   assert.equal(page.theme.current, 'light');
-  assert.equal(page.saved.get('home-energy-theme'), 'light');
+  assert.equal(page.saved.size, 0);
   assert.equal(page.button.textContent, 'Dark theme');
   assert.equal(page.button.attributes['aria-label'], 'Switch to dark theme');
   assert.equal(page.changes.length, 1);
   assert.equal(page.changes[0].type, 'themechange');
   assert.equal(page.changes[0].detail.theme, 'light');
+  assert.equal(browser().theme.current, 'dark');
 });
 
-test('saved light theme is applied before page content and invalid preferences use dark', () => {
+test('legacy saved light preference is ignored and every page starts dark', () => {
   const page = browser({ preference: 'light' });
-  assert.equal(page.root.dataset.theme, 'light');
-  assert.equal(page.meta.content, '#f3f5f1');
+  assert.equal(page.root.dataset.theme, 'dark');
+  assert.equal(page.meta.content, '#101e19');
   page.ready();
-  assert.equal(page.button.textContent, 'Dark theme');
+  assert.equal(page.button.textContent, 'Light theme');
   assert.equal(browser({ preference: 'invalid' }).theme.current, 'dark');
   page.theme.setTheme('invalid');
-  assert.equal(page.theme.current, 'light');
+  assert.equal(page.theme.current, 'dark');
   assert.equal(page.changes.length, 0);
 });
 
@@ -65,15 +66,18 @@ test('unavailable browser storage does not prevent theme switching', () => {
   assert.equal(page.theme.current, 'dark');
 });
 
-test('theme changes in other tabs are reflected, including cleared preferences', () => {
+test('storage changes in other tabs do not override the current page theme', () => {
   const page = browser({ ready: true });
   page.storage({ key: 'unrelated', newValue: 'light' });
   assert.equal(page.theme.current, 'dark');
   page.storage({ key: 'home-energy-theme', newValue: 'light' });
+  assert.equal(page.theme.current, 'dark');
+  page.click();
   assert.equal(page.theme.current, 'light');
   assert.equal(page.button.textContent, 'Dark theme');
   page.storage({ key: null, newValue: null });
-  assert.equal(page.theme.current, 'dark');
-  assert.equal(page.button.textContent, 'Light theme');
+  assert.equal(page.theme.current, 'light');
+  assert.equal(page.button.textContent, 'Dark theme');
+  assert.equal(page.changes.length, 1);
   assert.equal(page.saved.size, 0);
 });

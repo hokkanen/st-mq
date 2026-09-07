@@ -403,3 +403,26 @@ section, with individual services selectable for a repaired connection. It uses 
 private lock and cooldown state and reports failures separately so a backup cannot
 hide a broken primary. See [live testing](live-testing.md) for commands, request
 bounds, token-cache handling and what a passing check proves.
+
+## Chart appearance and simpler date navigation — 7 September 2026
+
+Each page load now starts in the green dark theme, including browsers with an old
+saved light preference. The header toggle changes the current page. Temperature
+lines use blue outdoors, green indoors and orange for the garage; price lines use
+the thin dotted steps from 0.7.5, with theme-dependent grey for spot and white/black
+for all-in price.
+
+The shortcuts now read Yesterday – today, Today, Today – tomorrow, with Today
+selected initially. End date starts disabled and follows Start date, so browsing
+one historical day requires changing only one date. A labelled checkbox enables
+an inclusive end date; unchecking it returns to a single day. Date changes apply
+automatically, and Show dates remains available. Shortcuts synchronize both dates
+and the checkbox. An end before the start cannot replace the chart; moving Start
+date beyond the existing end brings the end forward to keep a valid selection.
+
+Validation: production build and 12 focused chart/theme tests passed. The Firefox
+smoke check passed for a day two years ago, checkbox/label activation, invalid
+ranges, shortcut order/state, dark-on-reload, rapid date changes, and desktop plus
+390px portrait/844px landscape layouts. Existing chart, legend, forecast and form
+checks passed using isolated synthetic data. No live provider or equipment calls
+were needed.

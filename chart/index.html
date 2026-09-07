@@ -43,14 +43,17 @@
       </div>
       <div class="chart-range-controls">
         <form id="chart-range-form" class="date-range">
-          <label>Start date <input id="date-start" type="date" required></label>
-          <label>End date <input id="date-end" type="date" required></label>
+          <label class="date-field"><span class="date-label">Start date</span><input id="date-start" type="date" required></label>
+          <div class="date-field">
+            <label class="date-label end-date-toggle"><input id="date-range-enabled" type="checkbox" aria-label="Use an end date" aria-controls="date-end">End date</label>
+            <input id="date-end" type="date" aria-label="End date" required disabled>
+          </div>
           <button type="submit">Show dates</button>
         </form>
         <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
+          <button id="range-yesterday" type="button" aria-pressed="false">Yesterday – today</button>
           <button id="range-today" type="button" aria-pressed="true">Today</button>
-          <button id="range-yesterday" type="button" aria-pressed="false">Yesterday + today</button>
-          <button id="range-tomorrow" type="button" aria-pressed="false">Today + tomorrow</button>
+          <button id="range-tomorrow" type="button" aria-pressed="false">Today – tomorrow</button>
         </div>
       </div>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>

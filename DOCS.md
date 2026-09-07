@@ -11,8 +11,8 @@ see [progress and remaining work](docs/PROGRESS.md).
    `controller.input: simulated` and `controller.mode: shadow` for initial review.
 3. Start the add-on and open the web UI on its mapped port (default 1234). Enter
    that token in the browser. The **Home Energy** UI clearly labels simulation.
-   It starts in the green dark theme; the header button switches to the light
-   theme and remembers that choice in the browser.
+   Each page load starts in the green dark theme; the header button switches to
+   the light theme for the current page.
 4. Persistent data is under `/data/st-mq/`, inside the add-on's persistent data
    volume. Include this in backups. The existing `/share` mapping is retained.
 5. Import history explicitly with `node scripts/history.js import --db
@@ -39,8 +39,9 @@ see [progress and remaining work](docs/PROGRESS.md).
    effective dates are inferred. The seasonal alternative is available but is never
    activated merely because a future switching date was discussed.
 
-The main chart defaults to today's complete Finnish calendar day. Its inclusive
-start/end selectors and **Today**, **Yesterday + today**, **Today + tomorrow**
+The main chart defaults to today's complete Finnish calendar day. Choose a start
+date to view one day; check **End date** to enable an inclusive date range. Date
+changes apply automatically. **Yesterday – today**, **Today**, **Today – tomorrow**
 shortcuts keep both observations and forecasts within the selected dates. The
 **Left axis** selector chooses combined power, phase currents or heating integral;
 temperatures and prices remain available on the right. Power is an estimate from

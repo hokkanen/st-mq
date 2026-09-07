@@ -25,11 +25,11 @@
   --chart-phase-1: #83c7ef;
   --chart-phase-2: #d4ba7f;
   --chart-phase-3: #c19fdb;
-  --chart-indoor: #dfad86;
-  --chart-garage: #baa0dc;
-  --chart-outdoor: #9dcea0;
-  --chart-price: #e3cf77;
-  --chart-spot: #cf9cbb;
+  --chart-indoor: #81ca99;
+  --chart-garage: #eda65e;
+  --chart-outdoor: #83b8da;
+  --chart-price: #ffffff;
+  --chart-spot: #c5c5c5;
   --chart-integral: #80cbb3;
   --chart-heat-off: #5a7696;
   --chart-aux: #bf7856;
@@ -62,11 +62,11 @@
   --chart-phase-1: #2877a7;
   --chart-phase-2: #94701d;
   --chart-phase-3: #8e55a6;
-  --chart-indoor: #a1582e;
-  --chart-garage: #895aa5;
-  --chart-outdoor: #397844;
-  --chart-price: #957011;
-  --chart-spot: #a05480;
+  --chart-indoor: #397844;
+  --chart-garage: #b66a20;
+  --chart-outdoor: #3278b3;
+  --chart-price: #000000;
+  --chart-spot: #555555;
   --chart-integral: #377b60;
   --chart-heat-off: #668bb0;
   --chart-aux: #c17c4e;
@@ -116,7 +116,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .axis-control { margin: 0; min-width: 172px; }
 .chart-range-controls { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 14px 24px; margin-top: 20px; }
 .date-range { display: flex; align-items: flex-end; gap: 10px; min-width: 0; }
-.date-range label { margin: 0; flex: 1 1 140px; }
+.date-range .date-field { display: flex; flex-direction: column; gap: 8px; margin: 0; flex: 1 1 140px; min-width: 0; }
+.date-range .date-label { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; min-height: 28px; margin: 0; font-size: 12px; }
+.end-date-toggle { cursor: pointer; align-self: flex-start; }
+.date-range input[type="checkbox"] { width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.date-range input:disabled { color: var(--muted); background: var(--surface-soft); opacity: .5; cursor: not-allowed; }
 .date-range button { margin: 0; white-space: nowrap; }
 .range-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; }
 .range-shortcuts button { margin: 0; background: transparent; color: var(--muted); border-color: var(--border); padding: 10px 12px; font-size: 12px; }
@@ -193,8 +197,8 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
   .axis-control { min-width: 135px; font-size: 10px; gap: 4px; }
   .axis-control select { font-size: 12px; padding: 9px 7px; }
   .date-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
-  .date-range label { font-size: 11px; }
-  .date-range input { width: 100%; font-size: 12px; padding: 10px 6px; }
+  .date-range .date-label { font-size: 11px; }
+  .date-range input[type="date"] { width: 100%; font-size: 12px; padding: 10px 6px; }
   .date-range button { grid-column: 1 / -1; min-height: 38px; padding: 8px 12px; font-size: 12px; }
   .range-shortcuts { gap: 4px; }
   .range-shortcuts button { font-size: 10px; padding: 8px 5px; min-height: 38px; }

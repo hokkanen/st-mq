@@ -1,10 +1,9 @@
 // This small classic script runs before CSS is loaded, avoiding a theme flash.
 // Keep it independent of the deferred dashboard bundle and API availability.
+// Every page starts dark; the toggle changes only the current page.
 (() => {
-  const key = 'home-energy-theme';
   const root = document.documentElement;
   let current = 'dark';
-  try { if (localStorage.getItem(key) === 'light') current = 'light'; } catch { /* Storage can be unavailable in private browser contexts. */ }
   let button;
 
   function reflect() {
@@ -22,7 +21,6 @@
   function setTheme(theme) {
     if (theme !== 'dark' && theme !== 'light') return current;
     current = theme;
-    try { localStorage.setItem(key, current); } catch { /* The toggle still works without persistence. */ }
     reflect();
     document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: current } }));
     return current;
@@ -41,11 +39,4 @@
   window.homeEnergyTheme = { get current() { return current; }, toggle, setTheme, initialize };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialize, { once: true });
   else initialize();
-  window.addEventListener('storage', event => {
-    if (event.key !== key && event.key !== null) return;
-    // Clearing preferences restores the default dark theme across open tabs.
-    current = event.newValue === 'light' ? 'light' : 'dark';
-    reflect();
-    document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: current } }));
-  });
 })();
