@@ -6,12 +6,13 @@ import { loadConfig } from './app/config.js';
 import { Engine } from './app/engine.js';
 import { createAppServer } from './app/server.js';
 import { startHistoryLearning, startOnlineLearning } from './app/learning.js';
+import { createChartService } from './app/chart-service.js';
 
 export async function start({ config = loadConfig(), clock = Date.now, providerOptions = {} } = {}) {
   const started = performance.now();
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const store = new Store(config.dbPath);
-  let engine, server, acquisition, learning, timer, closed = false;
+  let engine, server, acquisition, learning, chartService, timer, closed = false;
   const signalHandlers = new Map();
   async function close() {
     if (closed) return;
@@ -21,6 +22,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     await acquisition?.close();
     await learning?.close();
     await engine?.learner?.close();
+    await chartService?.close();
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     store.close();
   }
@@ -28,7 +30,8 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     engine = new Engine({ store, config, clock });
     engine.learner = startOnlineLearning({ store, input: config.input });
     engine.tick();
-    server = createAppServer({ engine, store, token: config.token, staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
+    chartService = createChartService({ store });
+    server = createAppServer({ engine, store, chartService, token: config.token, staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(config.port, config.host, resolve);

@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
+import { getChartData } from './chart-data.js';
+import { simulatedOutlook } from './simulator.js';
 
 function authorized(req, token) {
   if (!token) return true;
@@ -24,7 +26,7 @@ function numberParam(url, key, fallback, max) {
   return n;
 }
 
-export function createAppServer({ engine, store, token = '', staticDir = resolve('dist') }) {
+export function createAppServer({ engine, store, chartService, token = '', staticDir = resolve('dist') }) {
   return createServer(async (req, res) => {
     const json = (code, value) => {
       res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -42,6 +44,23 @@ export function createAppServer({ engine, store, token = '', staticDir = resolve
         if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return json(403, { error: 'Cross-origin request rejected' });
         if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, engine.status());
+        if (req.method === 'GET' && url.pathname === '/api/chart') {
+          const now = engine.clock();
+          const args = { input: engine.config.input, contract: engine.contract(),
+            market: store.getState('provider:market'), weather: store.getState('provider:weather'),
+            simulated: engine.plant ? simulatedOutlook(now) : null, now,
+            startDate: url.searchParams.get('start') ?? undefined,
+            endDate: url.searchParams.get('end') ?? undefined,
+            left: url.searchParams.get('left') ?? 'power', points: numberParam(url, 'points', 800, 4096) };
+          const cancellation = new AbortController();
+          const cancel = () => cancellation.abort();
+          res.once('close', cancel);
+          try {
+            const result = chartService ? await chartService.query(args, { signal: cancellation.signal }) : getChartData({ store, ...args });
+            if (!res.destroyed) return json(200, result);
+          } finally { res.removeListener('close', cancel); }
+          return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
         if (req.method === 'POST' && url.pathname === '/api/contract') return json(200, engine.addContractPeriod(await body(req)));
         if (req.method === 'GET' && url.pathname === '/api/events') return json(200, store.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
@@ -72,7 +91,7 @@ export function createAppServer({ engine, store, token = '', staticDir = resolve
         json(404, { error: 'UI build not found. Run npm run build.' });
       }
     } catch (error) {
-      json(400, { error: error.message });
+      if (!res.destroyed) json(400, { error: error.message });
     }
   });
 }

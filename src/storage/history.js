@@ -48,7 +48,7 @@ function scalar(cell) {
   return Number.isFinite(value) ? value : null;
 }
 
-function decodeRow(kind, line, previousTime) {
+export function decodeHistoryRow(kind, line, previousTime = null) {
   let cells;
   try { cells = parseCsvLine(line); } catch { return { sourceTime: null, quality: ['invalid_csv'], observations: [] }; }
   if (cells.length !== HEADERS[kind].split(',').length) return { sourceTime: null, quality: ['invalid_column_count'], observations: [] };
@@ -121,7 +121,7 @@ export async function importCsv(store, file, { kind, batchSize = 500, onProgress
         headerSeen = true; continue;
       }
       rowNumber++;
-      const decoded = decodeRow(kind, line, previousTime);
+      const decoded = decodeHistoryRow(kind, line, previousTime);
       if (decoded.sourceTime !== null) previousTime = decoded.sourceTime;
       else rejected++;
       batch.push({ ...decoded, raw: line, rowNumber });
