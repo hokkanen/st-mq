@@ -63,51 +63,74 @@
     </section>
 
     <section class="controller-panels" aria-label="Home controller">
-      <article id="home-control" class="panel home-control" aria-labelledby="control-title">
-        <p class="eyebrow">HOME CONTROL</p><h2 id="control-title">Heating &amp; time away</h2>
-        <p id="decision-title" class="control-decision">Waiting for a decision</p><p id="reasons" class="muted"></p>
-        <div class="detail"><span>Learned comfort reference</span><span id="reference">Learning normal temperature</span></div>
-        <div class="detail"><span>Maximum drop when home</span><span id="drop">1 °C</span></div>
-        <div class="detail"><span>Recirculation</span><span id="dhwr">—</span></div>
-        <form id="temporary-form" class="temporary-form">
-          <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-          <div class="temporary-field">
-            <label for="away-until">Away until</label>
-            <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-            <p id="away-status" class="temporary-status">Home</p>
-            <p id="away-help" class="muted">Plan for an empty house, then recover comfort by your return. The occupied temperature-drop limit does not apply while away.</p>
-          </div>
-          <div class="temporary-field">
-            <label for="pause-until">Pause until</label>
-            <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-            <p id="override-status" class="temporary-status">Price control is not paused.</p>
-            <p id="pause-help" class="muted">Pause price-based reductions. The heat pump follows its own controls; monitoring and learning continue.</p>
-          </div>
-          <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-          <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-        </form>
-      </article>
+      <div class="controller-column">
+        <article class="panel data-panel" aria-labelledby="data-title">
+          <p class="eyebrow">DATA &amp; LEARNING</p><h2 id="data-title">Prices, weather &amp; the house</h2>
+          <div class="detail"><span>Electricity prices</span><span id="price-status">Waiting for status</span></div>
+          <div class="detail"><span>Weather outlook</span><span id="weather-status">Waiting for status</span></div>
+          <div class="detail"><span>House model</span><span id="learning-title">Building a baseline</span></div>
+          <details id="data-details">
+            <summary>Connection &amp; learning details</summary>
+            <p id="provider-context" class="muted"></p><ul id="providers" class="provider-list"></ul>
+            <p id="learning-detail" class="muted"></p>
+            <p id="savings" class="muted"></p>
+            <p class="muted">A successful download does not make an old sensor reading fresh. Observation times remain visible above.</p>
+          </details>
+        </article>
 
-      <article class="panel electricity-panel" aria-labelledby="electricity-title">
-        <p class="eyebrow">ELECTRICITY</p><h2 id="electricity-title">Configured rates</h2>
-        <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
-        <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
-        <p class="muted">Rates and the temperature-drop limit are set in the configuration.</p>
-      </article>
+        <article class="panel temporary-panel" aria-labelledby="temporary-title">
+          <p class="eyebrow">TEMPORARY CONTROLS</p><h2 id="temporary-title">Away &amp; pause</h2>
+          <form id="temporary-form" class="temporary-form">
+            <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+            <div class="temporary-field">
+              <label for="away-until">Away until</label>
+              <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+              <p id="away-status" class="temporary-status">At home.</p>
+              <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+            </div>
+            <div class="temporary-field">
+              <label for="pause-until">Pause until</label>
+              <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+              <p id="override-status" class="temporary-status">Price control is not paused.</p>
+              <p id="pause-help" class="muted">Pause price-based reductions. The heat pump follows its own controls; monitoring and learning continue.</p>
+            </div>
+            <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+            <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+          </form>
+          <details id="heating-test-details" class="heating-test-details">
+            <summary>Test heating commands</summary>
+            <p id="heating-test-help" class="muted">Each button immediately sends one real MQTT command to the configured control devices. Normal heating follows the heat pump’s own controls.</p>
+            <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Send a test heating command" aria-describedby="heating-test-help heating-test-status">
+              <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>heatoff</span><small>Tariff reduction</small></button>
+              <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>heaton15</span><small>Normal heating</small></button>
+              <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>heaton60</span><small>Recirculation pulse</small></button>
+            </div>
+            <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
+            <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+          </details>
+        </article>
+      </div>
 
-      <article class="panel data-panel" aria-labelledby="data-title">
-        <p class="eyebrow">DATA &amp; LEARNING</p><h2 id="data-title">Prices, weather &amp; the house</h2>
-        <div class="detail"><span>Electricity prices</span><span id="price-status">Waiting for status</span></div>
-        <div class="detail"><span>Weather outlook</span><span id="weather-status">Waiting for status</span></div>
-        <div class="detail"><span>House model</span><span id="learning-title">Building a baseline</span></div>
-        <details id="data-details">
-          <summary>Connection &amp; learning details</summary>
-          <p id="provider-context" class="muted"></p><ul id="providers" class="provider-list"></ul>
-          <p id="learning-detail" class="muted"></p>
-          <p id="savings" class="muted"></p>
-          <p class="muted">A successful download does not make an old sensor reading fresh. Observation times remain visible above.</p>
-        </details>
-      </article>
+      <div class="controller-column">
+        <article id="home-control" class="panel home-control" aria-labelledby="control-title">
+          <p class="eyebrow">HOME CONTROL</p><h2 id="control-title">Heating &amp; comfort</h2>
+          <div class="control-summary">
+            <p id="control-mode" class="control-mode">Waiting for controller status</p>
+            <p id="decision-title" class="control-decision">Waiting for a decision</p><p id="reasons" class="muted"></p>
+          </div>
+          <div class="detail"><span>Price control</span><span id="control-price">—</span></div>
+          <div class="detail"><span>Comfort reference</span><span id="reference">Learning normal temperature</span></div>
+          <div class="detail"><span>Maximum drop when home</span><span id="drop">1 °C</span></div>
+          <div class="detail"><span>Recirculation</span><span id="dhwr">—</span></div>
+        </article>
+
+        <article class="panel electricity-panel" aria-labelledby="electricity-title">
+          <p class="eyebrow">ELECTRICITY</p><h2 id="electricity-title">Configured rates</h2>
+          <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+          <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+          <p class="muted">Rates and the temperature-drop limit are set in the configuration.</p>
+        </article>
+      </div>
     </section>
 
     <section class="panel">

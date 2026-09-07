@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { helsinkiCalendar, transferPrice, normalizePriceIntervals, allInPrice,
-  priceIntervals, costForPower, validateContract } from '../src/domain/prices.js';
+  priceIntervals, costForPower, validateContract, DEFAULT_TRANSFER_RATES_EX_VAT } from '../src/domain/prices.js';
 
 // Deliberately synthetic test contract, not verified Finnish tax rates.
 const contract = { periods: [{ from: '2026-01-01T00:00:00Z', marginCtPerKwh: 0.5,
@@ -35,6 +35,30 @@ test('seasonal tariff uses literal Monday-Saturday and November-March, including
   assert.equal(transferPrice('2026-10-31T12:00:00+02:00', 'seasonal'), 2.07);
   assert.equal(transferPrice('2026-11-02T07:00:00+02:00', 'seasonal'), 4.17);
   assert.equal(allInPrice('2027-11-02T12:00:00+02:00', 0, contract).tariff, 'day-night');
+});
+
+test('VAT-exclusive seasonal defaults apply only Monday-Saturday 07:00–22:00 in winter', () => {
+  const rates = DEFAULT_TRANSFER_RATES_EX_VAT;
+  assert.equal(rates.vatIncluded, false);
+  assert.equal(rates.winterDayCtPerKwh, 3.32);
+  assert.equal(rates.otherCtPerKwh, 1.65);
+  // January 5–10 are Monday–Saturday; check both ends of each daytime window.
+  for (const date of ['2026-01-05', '2026-01-06', '2026-01-07', '2026-01-08', '2026-01-09', '2026-01-10']) {
+    for (const [time, expected] of [['06:59:59', 2.07075], ['07:00:00', 4.1666],
+      ['21:59:59', 4.1666], ['22:00:00', 2.07075]]) {
+      near(transferPrice(`${date}T${time}+02:00`, 'seasonal', rates, 0.255), expected);
+    }
+  }
+  // Every hour of Sunday uses the lower rate, even across the spring DST change.
+  for (const [start, end] of [
+    ['2026-01-11T00:00:00+02:00', '2026-01-12T00:00:00+02:00'],
+    ['2026-03-29T00:00:00+02:00', '2026-03-30T00:00:00+03:00'],
+  ]) {
+    for (let at = Date.parse(start); at < Date.parse(end); at += 3_600_000) {
+      near(transferPrice(at, 'seasonal', rates, 0.255), 2.07075);
+    }
+  }
+  near(transferPrice('2026-07-06T12:00:00+03:00', 'seasonal', rates, 0.255), 2.07075);
 });
 
 test('DST repeated and skipped hours retain distinct UTC instants', () => {

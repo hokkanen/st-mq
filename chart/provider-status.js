@@ -71,7 +71,9 @@ function describeEasee(health, { now, formatTime }) {
     && health.currentReadings[key] && typeof health.currentReadings[key] === 'object');
   const scope = key => key === 'charger' ? 'Charger readings' : 'Property readings';
   const sharedScope = groups.length === 1 ? scope(groups[0]) : 'Charger and property readings';
-  const sentences = [];
+  const success = health.lastSuccessAt ?? health.lastSuccess;
+  const sentences = [Number.isFinite(success)
+    ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.'];
   const sentence = (subject, text) => sentences.push(`${subject}: ${text.replace(/^./, value => value.toUpperCase())}`);
   const addIssues = (flags, subject) => {
     for (const flag of currentFlags(flags)) {
@@ -86,8 +88,6 @@ function describeEasee(health, { now, formatTime }) {
   if (groups.length) {
     for (const key of groups) {
       const reading = health.currentReadings[key];
-      sentence(scope(key), Number.isFinite(reading.lastSuccessAt)
-        ? `Last successful download ${formatTime(reading.lastSuccessAt)}.` : 'No successful download recorded.');
       addIssues(scopedCurrentFlags(reading.qualityIssues, key)
         .filter(flag => !reading.error || flag !== 'provider_error'), scope(key));
       if (reading.error) { scopedError = true; sentence(scope(key), `${failureLabel(reading.error)}.`); }
@@ -95,9 +95,6 @@ function describeEasee(health, { now, formatTime }) {
   } else {
     // Older health snapshots did not retain the device behind a generic issue.
     // Name that ambiguity instead of attributing the issue to the wrong device.
-    const success = health.lastSuccessAt ?? health.lastSuccess;
-    sentence(sharedScope, Number.isFinite(success)
-      ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.');
     addIssues(health.qualityIssues, 'Charger or property readings');
   }
   if (health.error && !scopedError) sentence(groups.length ? sharedScope : 'Charger or property readings', `${failureLabel(health.error)}.`);

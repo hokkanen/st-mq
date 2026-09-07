@@ -62,10 +62,10 @@
       "tax_ct_per_kwh_ex_vat": 2.325,
       "vat_percent": 25.5,
       "transfer_tariff": "day-night",
-      "day_transfer_ct_per_kwh_ex_vat": 2.661354581673307,
-      "night_transfer_ct_per_kwh_ex_vat": 1.561752988047809,
-      "winter_day_transfer_ct_per_kwh_ex_vat": 3.3227091633466137,
-      "other_transfer_ct_per_kwh_ex_vat": 1.649402390438247,
+      "day_transfer_ct_per_kwh_ex_vat": 2.66,
+      "night_transfer_ct_per_kwh_ex_vat": 1.56,
+      "winter_day_transfer_ct_per_kwh_ex_vat": 3.32,
+      "other_transfer_ct_per_kwh_ex_vat": 1.65,
       "effective_date": ""
     }
   },

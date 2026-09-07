@@ -6,6 +6,7 @@ import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { providerFixture } from './lib/provider-fixture.js';
+import { EventEmitter } from 'node:events';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -191,16 +192,22 @@ try {
     await evaluate('scrollTo(0, 0); true');
   }
   // Home controls use Finnish wall times even in a browser running in another zone.
-  assert.equal(await evaluate("document.querySelectorAll('.controller-panels > article').length"), 3);
+  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 4);
+  assert.equal(await evaluate("document.getElementById('home-control').textContent.includes('Household')"), false);
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
   assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
   assert.equal(await evaluate("document.getElementById('data-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
+  assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
+  assert.equal(await evaluate("document.querySelector('.controller-column .temporary-panel') !== null && document.querySelector('.controller-column:nth-child(2) .electricity-panel') !== null"), true);
   await evaluate(`document.getElementById('away-until').value = '2026-09-09T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input'));
     document.getElementById('pause-until').value = '2026-09-07T18:00';
     document.getElementById('pause-until').dispatchEvent(new Event('input'));
     document.getElementById('temporary-form').requestSubmit(); true`);
   await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Paused', 'A pause takes precedence over away mode');
   assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z');
   assert.equal(app.engine.status().override.expiresAt, Date.parse('2026-09-07T15:00:00Z'));
   await command('browsingContext.reload', { context, wait: 'complete' });
@@ -218,11 +225,13 @@ try {
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
   await evaluate("document.getElementById('resume-now').click(); true");
   await until("document.getElementById('override-status').textContent === 'Price control is not paused.'");
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Away');
   assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z', 'Resuming preserves the saved away deadline');
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00', 'Resuming preserves an unrelated pending edit');
   assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), false);
   await evaluate("document.getElementById('home-now').click(); true");
-  await until("document.getElementById('away-status').textContent === 'Home'");
+  await until("document.getElementById('away-status').textContent === 'At home.'");
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
   assert.equal(await evaluate("document.getElementById('away-until').value"), '');
   assert.equal(app.engine.settings.occupancy.mode, 'occupied');
   // Invalid DST choices leave both settings untouched and the draft available to correct.
@@ -258,8 +267,19 @@ try {
   fixture.providerOptions.devices.easee = async () => (await fixtureCurrents()).map(row => ({ ...row,
     sourceTime: row.sourceTime - (row.signal.startsWith('property_current_') ? (Number(row.signal.at(-1)) - 1) * 90_000 : 0),
   }));
-  app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'), connections: fixture.connections },
-    clock: () => now, providerOptions: fixture.providerOptions });
+  const testPublishes = [];
+  let testConnections = 0, acknowledgeHeating;
+  const connectTestBroker = () => {
+    testConnections++;
+    const client = new EventEmitter();
+    client.publish = (topic, payload, options, callback) => { testPublishes.push({ topic, payload, options }); acknowledgeHeating = callback; };
+    client.end = (force, options, callback) => callback?.();
+    queueMicrotask(() => client.emit('connect'));
+    return client;
+  };
+  app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'),
+    connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } },
+    clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
   await until("document.getElementById('outdoor-age').textContent.includes('FMI nearby station')");
@@ -279,16 +299,46 @@ try {
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
+  assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
+  assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
+  await evaluate(`document.getElementById('heating-test-details').open = true;
+    document.getElementById('away-until').value = '2026-09-10T18:00';
+    document.getElementById('away-until').dispatchEvent(new Event('input')); true`);
+  for (const command of ['heatoff', 'heaton15', 'heaton60']) {
+    acknowledgeHeating = null;
+    await evaluate(`document.getElementById('test-${command}').click(); document.getElementById('test-${command}').click(); true`);
+    await until("document.getElementById('heating-test-buttons').getAttribute('aria-busy') === 'true'");
+    for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(typeof acknowledgeHeating, 'function');
+    assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
+    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent.includes('sent via MQTT')"), false);
+    acknowledgeHeating();
+    await until(`document.getElementById('heating-test-message').textContent.includes('${command} sent via MQTT') && !document.getElementById('test-${command}').disabled`);
+    assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
+  }
+  assert.deepEqual(testPublishes, ['heatoff', 'heaton15', 'heaton60'].map(payload => ({ topic: 'from_stmq/heat/action', payload, options: { qos: 1, retain: false } })));
+  assert.equal(app.engine.status().observations.actual.mode, 'unknown');
+  acknowledgeHeating = null;
+  await evaluate("document.getElementById('test-heatoff').click(); true");
+  for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(typeof acknowledgeHeating, 'function');
+  acknowledgeHeating(new Error('synthetic-private-broker-error'));
+  await until("document.getElementById('heating-test-message').classList.contains('form-error') && !document.getElementById('test-heatoff').disabled");
+  assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
+  await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
+  await capture('home-energy-mqtt-tests-desktop');
   await evaluate("document.getElementById('data-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+  await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
+  await capture('home-energy-mqtt-tests-mobile');
   await evaluate("document.getElementById('data-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-controller-panels', 'provider-sources-and-fallbacks'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {});
 } finally {
   ws?.close();

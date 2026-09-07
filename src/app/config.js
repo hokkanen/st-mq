@@ -18,7 +18,7 @@ export function validateSettings(input = {}) {
 }
 
 // Permanent settings come from options/environment, temporary occupancy from the
-// database. Only live acquisition receives credentials from the options file.
+// database. Only live acquisition and the command transport receive credentials.
 export function loadConfig(env = process.env, cwd = process.cwd()) {
   const addon = env.STMQ_ADDON === '1';
   const configPath = env.STMQ_CONFIG ?? (addon ? '/data/options.json' : `${cwd}/data/options.json`);

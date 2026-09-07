@@ -64,6 +64,7 @@ export function createAppServer({ engine, store, chartService, token = '', stati
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
         if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates are configured in options/config. Restart after editing them.' });
         if (req.method === 'POST' && url.pathname === '/api/temporary') return json(200, engine.setTemporary(await body(req)));
+        if (req.method === 'POST' && url.pathname === '/api/heating-test') return json(200, await engine.testHeating(await body(req)));
         if (req.method === 'GET' && url.pathname === '/api/events') return json(200, store.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();

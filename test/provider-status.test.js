@@ -89,18 +89,20 @@ test('Easee ignores timestamp mismatch and charger age in cached degraded status
   }
 });
 
-test('each Easee sentence identifies the affected readings, including partial downloads and retry', () => {
+test('Easee shares its last complete download while naming affected readings in issues and retry', () => {
   const display = describeProvider('easee', { status: 'degraded', error: 'HTTP-429', nextAttemptAt: now + 300_000,
+    lastSuccessAt: now - 3_600_000,
     currentReadings: {
       charger: { qualityIssues: ['missing', 'invalid_unit'], error: 'HTTP-429', lastSuccessAt: now - 3_600_000 },
       property: { qualityIssues: ['negative_current', 'source_time_unknown'], error: null, lastSuccessAt: now },
     } }, options);
   assert.equal(display.attention, true);
-  for (const sentence of display.detail.split(/\.\s*/).filter(Boolean)) {
+  const [download, ...issues] = display.detail.split(/\.\s*/).filter(Boolean);
+  assert.equal(download, 'Last successful download 09:00');
+  for (const sentence of issues) {
     assert.match(sentence, /Charger|Property|property/, sentence);
   }
-  assert.match(display.detail, /Charger readings: Last successful download 09:00\./);
-  assert.match(display.detail, /Property readings: Last successful download 10:00\./);
+  assert.equal(display.detail.match(/successful download/g).length, 1);
   assert.match(display.detail, /Charger readings: Some current readings are missing\./);
   assert.match(display.detail, /Charger readings: Some readings have unsupported units\./);
   assert.match(display.detail, /Property readings: Some current readings are negative\./);
@@ -129,7 +131,9 @@ test('scoped charger age stays informational and scopes all other current notes'
         currentReadings: { [key]: { qualityIssues: [flag], error: null, lastSuccessAt: null } } }, options);
       const subject = key === 'charger' ? 'Charger' : 'Property';
       assert.equal(result.attention, true, flag);
-      for (const sentence of result.detail.split(/\.\s*/).filter(Boolean)) assert.ok(sentence.startsWith(subject), sentence);
+      const [download, ...issues] = result.detail.split(/\.\s*/).filter(Boolean);
+      assert.equal(download, 'No successful download recorded');
+      for (const sentence of issues) assert.ok(sentence.startsWith(subject), sentence);
     }
   }
 });
@@ -139,12 +143,31 @@ test('Easee waiting, unknown errors and untrusted scope fields produce only name
   const health = { status: 'waiting', nextAttemptAt: now + 300_000,
     currentReadings: { property: { qualityIssues: [], error: null, lastSuccessAt: null } } };
   assert.equal(describeProvider('easee', health, options).detail,
-    'Property readings: No successful download recorded. Property readings: Next download 10:05.');
+    'No successful download recorded. Property readings: Next download 10:05.');
   health.currentReadings.property = { qualityIssues: [secret, 'asynchronous_snapshot', 'constructor'], error: secret, lastSuccessAt: secret };
   health.currentReadings[secret] = { qualityIssues: ['missing'], error: secret };
   const display = describeProvider('easee', health, options);
   assert.match(display.detail, /Property readings: Download failed\./);
   assert.doesNotMatch(JSON.stringify(display), /private-secret|provider\.example|https:|constructor|different times/);
+});
+
+test('Easee download sentence is shared across healthy, legacy and partially successful snapshots', () => {
+  for (const health of [
+    { lastSuccessAt: now, currentReadings: {
+      charger: { lastSuccessAt: now, qualityIssues: [] }, property: { lastSuccessAt: now, qualityIssues: [] },
+    } },
+    { lastSuccessAt: now, currentReadings: { charger: { lastSuccessAt: now, qualityIssues: [] } } },
+    { lastSuccess: now },
+  ]) {
+    assert.equal(describeProvider('easee', { status: 'ok', ...health }, options).detail,
+      'Last successful download 10:00.');
+  }
+  const partial = describeProvider('easee', { status: 'degraded', lastSuccessAt: null,
+    currentReadings: {
+      charger: { lastSuccessAt: now, qualityIssues: [] },
+      property: { lastSuccessAt: null, qualityIssues: [], error: 'HTTP-503' },
+    } }, options);
+  assert.equal(partial.detail, 'No successful download recorded. Property readings: Download failed (HTTP 503).');
 });
 
 test('download errors retain retry details alongside existing reading quality warnings', () => {

@@ -7,13 +7,14 @@ import { createAppServer } from './app/server.js';
 import { startHistoryLearning, startOnlineLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
 import { prepareStorage } from './app/storage-paths.js';
+import { createHeatingTransport } from './control/mqtt.js';
 
 export async function start({ config = loadConfig(), clock = Date.now, providerOptions = {}, mqttOptions = {} } = {}) {
   const started = performance.now();
   const migrated = await prepareStorage(config);
   const store = new Store(config.dbPath);
   if (migrated) store.event('database-migrated', migrated, clock());
-  let engine, server, learning, chartService, timer, closed = false;
+  let engine, server, learning, chartService, commandTransport, timer, closed = false;
   const acquisitions = [];
   const signalHandlers = new Map();
   async function close() {
@@ -22,6 +23,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     if (engine) engine.onTemporaryChange = null;
+    await commandTransport?.close();
     await Promise.all(acquisitions.map(acquisition => acquisition.close()));
     await learning?.close();
     await engine?.learner?.close();
@@ -30,7 +32,10 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     store.close();
   }
   try {
-    engine = new Engine({ store, config, clock });
+    if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
+      commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect });
+    }
+    engine = new Engine({ store, config, clock, commandTransport });
     engine.learner = startOnlineLearning({ store, input: config.input });
     engine.tick();
     chartService = createChartService({ store });
@@ -61,7 +66,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     };
     engine.onTemporaryChange = schedule;
     schedule();
-    console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: false,
+    console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: false, manualHeatingTests: engine.heatingTests().available,
       address: server.address(), startupMs: Math.round(performance.now() - started) }));
     for (const signal of ['SIGTERM', 'SIGINT']) {
       const handler = () => close().catch(error => { console.error(error.message); process.exitCode = 1; });

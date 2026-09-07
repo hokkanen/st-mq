@@ -8,7 +8,8 @@ Home Assistant add-on and standalone Linux. The authoritative project brief is
 Version 0.8.3 provides a tested foundation: SQLite history, conservative
 heating decisions, incremental thermal learning, a monitoring dashboard and
 read-only H66 acquisition. **Default startup uses simulated devices in shadow
-mode. No physical heat-pump command transport is enabled in the new application.**
+mode. Automatic physical heat-pump control remains disabled.** Explicit manual
+MQTT tests are available with live input and a configured broker.
 Read-only market, weather, SmartThings and Easee providers plus dated contract
 setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies the primary
 weather forecast and outdoor observations, with OpenWeather as backup. Offline
@@ -57,6 +58,21 @@ The existing evidence/freshness gates still apply. **Pause until** requests norm
 native operation without price reductions. Both controls use Finnish time, survive
 restarts, expire at their deadlines and can be cancelled independently.
 
+Under **Away & pause**, the **Test heating commands** section starts closed. With
+`providers` or `mqtt` input and an existing `mqtt.address` configuration, its
+`heatoff`, `heaton15` and `heaton60` buttons send the selected real command to
+`from_stmq/heat/action`, using the controller's executor and QoS 1 without retain.
+Each button sends exactly one command; the normal recirculation sequence is
+`heaton60` followed by `heaton15`. A successful test confirms broker acknowledgement,
+not equipment response. Tests are logged, do not change Away/Pause or enable
+automatic control, and are unavailable in simulation/offline mode. Failed or
+timed-out tests are not retried automatically; delivery may be unconfirmed.
+Enabled buttons mean MQTT is configured; the connection is checked when a test
+is sent. Connection failures distinguish an unreachable broker, refused connection,
+DNS, login or TLS problems and report that no command was sent. If a connection
+fails after publishing begins, check device state before retrying because delivery
+is unconfirmed.
+
 For UI development run `npm start` and `npm run dev` in separate terminals. Vite
 proxies `/api` to the backend. `npm run preview` alone does not provide the API.
 
@@ -99,6 +115,12 @@ nor sends equipment commands. Large ranges use bounded display resolution,
 preserving extremes and missing-data breaks; dense shading represents recorded
 activity within each display interval. Queries run in a background worker and
 recent selections are cached. A newer selection cancels an obsolete request.
+For date ranges containing now, temperature, power, phase-current and integral
+lines extend their last recorded value to the current time on each status refresh,
+even when the history response is cached. Hover text identifies the original
+recording time. These display extensions do not add measurements to history or
+make old readings fresh for control. Missing/invalid values retain their gaps;
+prices, forecasts and equipment-state shading keep their recorded time bounds.
 
 ## Persistence and historical data
 
@@ -209,7 +231,10 @@ measurement that often. FMI forecasts use hourly valid times; OpenWeather's
 forecast uses three-hour slots. Market prices retain each actual hourly or
 quarter-hour delivery interval. Source observations and downloaded forecast/market
 snapshots are saved when collected, with source timestamps kept separately from
-receipt time.
+receipt time. Successful device downloads count even when values have not changed
+or source timestamps are old. Reading-quality warnings remain visible without
+slowing the five-minute collection cadence; failed or malformed downloads still
+back off. Restarts preserve the last result and retry details.
 
 Market fallback starts on a failed request, missing current price, or incomplete
 current-day coverage. Tomorrow being unpublished is normal and does not itself
@@ -266,16 +291,15 @@ as a percentage and applied once to spot, margin, tax and transfer. Default valu
 | --- | ---: | ---: |
 | `margin_ct_per_kwh_ex_vat` | 0.33 | 0.41415 |
 | `tax_ct_per_kwh_ex_vat` | 2.325 | 2.917875 |
-| `day_transfer_ct_per_kwh_ex_vat` | 3.34 / 1.255 | 3.34 |
-| `night_transfer_ct_per_kwh_ex_vat` | 1.96 / 1.255 | 1.96 |
-| `winter_day_transfer_ct_per_kwh_ex_vat` | 4.17 / 1.255 | 4.17 |
-| `other_transfer_ct_per_kwh_ex_vat` | 2.07 / 1.255 | 2.07 |
+| `day_transfer_ct_per_kwh_ex_vat` | 2.66 | 3.3383 |
+| `night_transfer_ct_per_kwh_ex_vat` | 1.56 | 1.9578 |
+| `winter_day_transfer_ct_per_kwh_ex_vat` | 3.32 | 4.1666 |
+| `other_transfer_ct_per_kwh_ex_vat` | 1.65 | 2.07075 |
 
-The actual numeric defaults, including full-precision transfer conversions, are
-in `config.json`. `vat_percent` defaults to `25.5`; `transfer_tariff` defaults to
+The numeric VAT-exclusive defaults are in `config.json`. `vat_percent` defaults to `25.5`; `transfer_tariff` defaults to
 `day-night`. Daytime is 07:00–22:00 Finnish time. Seasonal winter daytime is
-November–March, Monday–Saturday 07:00–22:00; other times use the lower seasonal
-rate. Seasonal is available but is not activated automatically.
+November–March, Monday–Saturday 07:00–22:00; Sundays and all other times use the
+lower seasonal rate. Seasonal is available but is not activated automatically.
 
 `controller.max_drop_c` defaults to 1°C for occupied operation; it does not constrain
 away cooling. The comfort reference remains learned from native occupied operation.

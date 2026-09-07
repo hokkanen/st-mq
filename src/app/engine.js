@@ -5,6 +5,7 @@ import { SimulatedPlant, simulatedOutlook } from './simulator.js';
 import { Executor } from './executor.js';
 import { assembleOutlook, contractWithPeriod, reconcileConfiguredContract } from './contract.js';
 import { temporaryUpdate } from './temporary.js';
+import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
 
 const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 
@@ -38,7 +39,7 @@ function decorate(reading, signal, now) {
 }
 
 export class Engine {
-  constructor({ store, config, clock = Date.now }) {
+  constructor({ store, config, clock = Date.now, commandTransport = null }) {
     this.store = store;
     this.config = config;
     this.clock = clock;
@@ -59,7 +60,7 @@ export class Engine {
       }
     }
     this.plant = config.input === 'simulated' ? new SimulatedPlant(store.getState('simulation:plant') ?? {}) : null;
-    this.executor = new Executor({ input: config.input, store, plant: this.plant });
+    this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport });
     this.latest = Object.create(null);
     if (config.input === 'offline') {
       for (const signal of ['indoor_temperature', 'outdoor_temperature']) {
@@ -114,6 +115,38 @@ export class Engine {
   setOverride(minutes) {
     if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) throw new Error('Override duration must be 0–1440 whole minutes');
     return this.setTemporary({ pauseUntil: minutes ? new Date(this.clock() + minutes * 60_000).toISOString() : null });
+  }
+  heatingTests() {
+    const available = ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
+    return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
+      : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
+        : 'Configure an MQTT broker to enable real device tests.',
+    lastResult: this.store.getState(`heating-test:${this.config.input}`) };
+  }
+  async testHeating(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).length !== 1 || !HEATING_COMMANDS.includes(input.command)) throw new Error('Choose heatoff, heaton15 or heaton60.');
+    const capability = this.heatingTests();
+    if (!capability.available) throw new Error(capability.reason);
+    if (this.heatingTestBusy) throw new Error('An MQTT test is already in progress.');
+    this.heatingTestBusy = true;
+    const command = input.command;
+    try {
+      this.store.event('heating-test-requested', { input: this.config.input, command }, this.clock());
+      // Use the controller's executor without changing its decision, temporary
+      // settings or learned state. A publish acknowledgement is not readback.
+      const execution = await this.executor.execute({ commands: [command] }, { mode: this.settings.mode, now: this.clock(), manualTest: true });
+      const result = { command, ...execution, at: this.clock() };
+      this.store.setState(`heating-test:${this.config.input}`, result);
+      this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
+      return result;
+    } catch (error) {
+      const message = heatingErrorMessage(error?.code);
+      const result = { command, status: 'failed', sent: false, actual: null, at: this.clock(), error: message };
+      this.store.setState(`heating-test:${this.config.input}`, result);
+      this.store.event('heating-test-failed', { input: this.config.input, ...result }, result.at);
+      throw new Error(message);
+    } finally { this.heatingTestBusy = false; }
   }
   setTemporary(input) {
     const now = this.clock(), changes = temporaryUpdate(input, now);
@@ -208,7 +241,7 @@ export class Engine {
       demoComfortTargetC: this.plant && this.settings.comfort.targetC === null ? 21 : null,
       observations: { indoor: decorate(observations.indoor, 'indoor_temperature', now),
         outdoor: decorate(observations.outdoor, 'outdoor_temperature', now), actual: execution.actual ?? observations.actual },
-      override, decision, execution, prices: outlook.prices, forecast: outlook.forecast,
+      override, decision, execution, heatingTests: this.heatingTests(), prices: outlook.prices, forecast: outlook.forecast,
       spot: outlook.spot ?? [], priceStatus: this.plant ? 'simulated' : outlook.priceStatus,
       weatherStatus: this.plant ? 'simulated' : outlook.weatherStatus,
       providers: this.store.getState('providers:health') ?? {}, contract: this.contract(), configuredPrices: this.config.priceSettings ?? null,
@@ -224,6 +257,7 @@ export class Engine {
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;
+    result.heatingTests = this.heatingTests();
     result.providers = this.store.getState('providers:health') ?? {};
     for (const [key, signal] of [['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature']]) {
       result.observations[key] = decorate(result.observations[key], signal, now);

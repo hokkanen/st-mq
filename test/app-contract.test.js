@@ -65,8 +65,10 @@ test('composite forecast rows expire independently and refreshing its envelope c
   assert.deepEqual(stale.forecast, []);
 });
 
-test('configuration defaults use ex-VAT inputs and reconstruct the intended VAT-inclusive rates exactly', () => {
+test('configuration defaults use exact ex-VAT day and night rates', () => {
   const settings = configuredPriceSettings();
+  assert.equal(settings.transferRates.dayCtPerKwh, 2.66);
+  assert.equal(settings.transferRates.nightCtPerKwh, 1.56);
   assert.equal(settings.marginCtPerKwh, 0.33);
   assert.equal(settings.taxCtPerKwh, 2.325);
   assert.equal(settings.vatRate, 0.255);
@@ -75,8 +77,8 @@ test('configuration defaults use ex-VAT inputs and reconstruct the intended VAT-
   const contract = reconcileConfiguredContract(null, settings, now);
   assert.equal(contract.periods[0].from, Date.parse('2026-09-06T21:00:00Z'));
   const price = allInPrice(now, 10, contract);
-  assert.ok(Math.abs(price.totalCtPerKwh - (12.55 + 0.41415 + 2.917875 + 3.34)) < 1e-10);
-  assert.ok(Math.abs(price.transferIncludingVatCtPerKwh - 3.34) < 1e-10);
+  assert.ok(Math.abs(price.totalCtPerKwh - (12.55 + 0.41415 + 2.917875 + 3.3383)) < 1e-10);
+  assert.ok(Math.abs(price.transferIncludingVatCtPerKwh - 3.3383) < 1e-10);
   for (const invalid of [{ vat_percent: '25.5' }, { vat_percent: 101 }, { margin_ct_per_kwh_ex_vat: '0.33' },
     { tax_ct_per_kwh_ex_vat: -1 }, { day_transfer_ct_per_kwh_ex_vat: -1 }, { effective_date: '2026-02-31' }]) {
     assert.throws(() => configuredPriceSettings(invalid));
@@ -100,7 +102,7 @@ test('configured rate changes snapshot transfers and VAT without repricing saved
     day_transfer_ct_per_kwh_ex_vat: 4 }), now + 3600000);
   assert.equal(revised.periods.length, 3);
   assert.ok(Math.abs(allInPrice(now + 3600000, 10, revised).transferIncludingVatCtPerKwh - 4.8) < 1e-10);
-  assert.ok(Math.abs(allInPrice(now, 10, revised).transferIncludingVatCtPerKwh - 3.34) < 1e-10);
+  assert.ok(Math.abs(allInPrice(now, 10, revised).transferIncludingVatCtPerKwh - 3.3383) < 1e-10);
   assert.throws(() => reconcileConfiguredContract(revised, configuredPriceSettings({ effective_date: '2026-09-06' }), now + 7200000), /last saved period/);
 });
 
@@ -109,8 +111,8 @@ test('explicit configuration effective dates retain Finnish DST boundaries and d
   const contract = reconcileConfiguredContract(null, settings, Date.parse('2026-09-07T12:00:00Z'));
   assert.equal(contract.periods[0].from, Date.parse('2026-10-24T21:00:00Z'));
   assert.throws(() => allInPrice('2026-10-24T20:00:00Z', 5, contract), /historical/);
-  assert.ok(Math.abs(allInPrice('2026-11-02T12:00:00Z', 5, contract).transferIncludingVatCtPerKwh - 4.17) < 1e-10);
-  assert.ok(Math.abs(allInPrice('2026-11-01T12:00:00Z', 5, contract).transferIncludingVatCtPerKwh - 2.07) < 1e-10);
+  assert.ok(Math.abs(allInPrice('2026-11-02T12:00:00Z', 5, contract).transferIncludingVatCtPerKwh - 4.1666) < 1e-10);
+  assert.ok(Math.abs(allInPrice('2026-11-01T12:00:00Z', 5, contract).transferIncludingVatCtPerKwh - 2.07075) < 1e-10);
 });
 
 test('configuration application is byte-stable on the first and later ordinary restarts', () => {

@@ -290,8 +290,8 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
           assert.equal(description.attention, false);
           assert.equal(description.state, 'Available');
           assert.match(description.detail, /Charger readings have source timestamps older than/);
-          assert.match(description.detail, /Charger readings: Last successful download/);
-          assert.match(description.detail, /Property readings: Last successful download/);
+          assert.ok(description.detail.startsWith(`Last successful download ${now}.`));
+          assert.equal(description.detail.match(/successful download/g).length, 1);
           assert.doesNotMatch(description.detail, /different times/);
         }
       }
@@ -382,6 +382,11 @@ test('Easee scopes partial errors and quality notes to the affected current read
       qualityIssues: ['negative_current'], error: null, lastSuccessAt: initial + 5 * MINUTE,
     });
     assert.equal(health.lastSuccessAt, initial);
+    const description = describeProvider('easee', health, { now: initial + 5 * MINUTE, formatTime: at => String(at) });
+    assert.ok(description.detail.startsWith(`Last successful download ${initial}.`));
+    assert.equal(description.detail.match(/successful download/g).length, 1);
+    assert.match(description.detail, /Charger readings: Download failed \(HTTP 503\)/);
+    assert.match(description.detail, /Property readings: Some current readings are negative/);
     await providers.close(); providers = startProviders(f.options);
     assert.deepEqual(f.engine.status().providers.easee.currentReadings, health.currentReadings);
     failed = 'property'; f.setTime(initial + 10 * MINUTE); await providers.runDue();
@@ -509,7 +514,8 @@ test('a missing configured Easee device is scoped as a failure while returned re
     const description = describeProvider('easee', health, { now: initial, formatTime: at => String(at) });
     assert.equal(description.attention, true);
     assert.match(description.detail, /Property readings: Readings are missing or invalid/);
-    assert.match(description.detail, /Charger readings: Last successful download/);
+    assert.ok(description.detail.startsWith('No successful download recorded.'));
+    assert.equal(description.detail.match(/successful download/g).length, 1);
   } finally { await providers.close(); }
 });
 

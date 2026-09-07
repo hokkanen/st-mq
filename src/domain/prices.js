@@ -32,8 +32,8 @@ export function helsinkiCalendar(instant) {
 export const LEGACY_TRANSFER_RATES = Object.freeze({ vatIncluded: true,
   dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 });
 export const DEFAULT_TRANSFER_RATES_EX_VAT = Object.freeze({ vatIncluded: false,
-  dayCtPerKwh: 3.34 / 1.255, nightCtPerKwh: 1.96 / 1.255,
-  winterDayCtPerKwh: 4.17 / 1.255, otherCtPerKwh: 2.07 / 1.255 });
+  dayCtPerKwh: 2.66, nightCtPerKwh: 1.56,
+  winterDayCtPerKwh: 3.32, otherCtPerKwh: 1.65 });
 
 export function validateTransferRates(rates) {
   if (!rates || typeof rates.vatIncluded !== 'boolean') throw new TypeError('Transfer rates must explicitly state whether VAT is included');

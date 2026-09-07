@@ -96,9 +96,11 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .metrics p { font-size: 10px; letter-spacing: 1.3px; margin: 0 0 12px; }
 .metrics strong { display: block; font-weight: 450; font-size: 31px; letter-spacing: -1px; }
 .metrics small { display: block; font-size: 11px; color: var(--muted); margin-top: 10px; }
-.controller-panels { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 24px; align-items: start; }
-.home-control { grid-row: span 2; }
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; min-width: 0; }
+.controller-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; margin-bottom: 24px; }
+.controller-column { display: grid; gap: 24px; min-width: 0; }
+.controller-column > .panel { margin-bottom: 0; }
+.panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
+.controller-column > .panel:last-child { padding-bottom: calc(var(--panel-padding) + var(--column-height-adjustment, 0px)); }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
 .detail > span:last-child { text-align: right; }
 .muted { color: var(--muted); font-size: 12px; }
@@ -151,9 +153,13 @@ footer { text-align: center; color: var(--muted); font-size: 11px; padding: 10px
 [hidden] { display: none !important; }
 summary { cursor: pointer; font-size: 14px; padding: 14px 0; color: var(--text); }
 details { border-top: 1px solid var(--border); margin-top: 18px; }
-.control-decision { margin-bottom: 4px; font-size: 16px; }
-.home-control #reasons { margin-top: 4px; }
-.form-timezone { margin: 20px 0 16px; }
+.control-summary { padding: 16px; margin: 6px 0 8px; background: var(--surface-soft); border-radius: 7px; }
+.control-mode { margin: 0 0 8px; font-size: 10px; color: var(--muted); }
+.control-decision { margin: 0 0 4px; font-size: 16px; font-weight: 550; }
+.home-control #reasons { margin: 4px 0 0; }
+.home-control #reasons:empty { display: none; }
+.home-control .detail:last-child { border-bottom: 0; padding-bottom: 0; }
+.form-timezone { margin: 0 0 16px; }
 .temporary-field { margin: 18px 0; }
 .temporary-field label { margin: 0 0 8px; font-size: 13px; }
 .temporary-input-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 10px; align-items: center; }
@@ -170,6 +176,16 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
 .temporary-form input:disabled { opacity: .6; }
 .form-error { color: var(--error-text); }
 #override-scope { margin: 12px 0 0; }
+.heating-test-details summary { font-size: 12px; padding-bottom: 0; }
+.heating-test-details[open] summary { padding-bottom: 4px; }
+.heating-test-buttons { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.heating-test-buttons button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px; margin: 0; }
+.heating-test-buttons button span { font: 13px ui-monospace, monospace; }
+.heating-test-buttons button small { font-size: 10px; color: var(--muted); }
+.heating-test-buttons button:disabled { cursor: default; }
+#heating-test-status { margin: 10px 0 0; }
+#heating-test-message { overflow-wrap: anywhere; }
+#heating-test-message:empty { display: none; }
 .tariff-heading { font-size: 14px; font-weight: 550; margin: 14px 0 0; }
 .rate-table { border-collapse: collapse; width: 100%; margin: 14px 0; text-align: left; font-size: 12px; }
 .rate-table caption { text-align: left; color: var(--muted); font-size: 11px; padding-bottom: 8px; }
@@ -196,9 +212,9 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 16px; }
   .metrics article { padding: 16px 18px; }
   .metrics strong { font-size: 27px; }
-  .controller-panels { grid-template-columns: 1fr; gap: 0; }
-  .home-control { grid-row: auto; }
-  .panel { padding: 20px; margin-bottom: 16px; }
+  .controller-panels { grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px; }
+  .controller-column { gap: 16px; }
+  .panel { --panel-padding: 20px; margin-bottom: 16px; }
   .plot { height: 420px; }
   .chart-range-controls { gap: 12px; }
   .date-range { flex: 1 1 100%; }
@@ -212,7 +228,7 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
   #connection { flex-basis: 100%; font-size: 9px; }
   .theme-toggle { padding: 6px 10px; min-height: 34px; font-size: 11px; }
   main { padding: 0 10px 8px; }
-  .panel { padding: 17px; }
+  .panel { --panel-padding: 17px; }
   .history-panel { padding: 17px 10px 12px; }
   .chart-heading { align-items: flex-start; gap: 10px; }
   .chart-heading h2 { font-size: 18px; }
