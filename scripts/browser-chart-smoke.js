@@ -52,6 +52,14 @@ try {
     throw new Error(`UI did not settle: ${expression}; errors: ${JSON.stringify(errors)}`);
   };
   const base = `http://127.0.0.1:${app.server.address().port}`;
+  const checkDateAlignment = async () => {
+    assert.equal(await evaluate(`(() => {
+      const start = document.getElementById('date-start'), end = document.getElementById('date-end');
+      const a = start.getBoundingClientRect(), b = end.getBoundingClientRect();
+      return ['top', 'height', 'width'].every(key => Math.abs(a[key] - b[key]) < 1)
+        && getComputedStyle(start).fontSize === getComputedStyle(end).fontSize;
+    })()`), true, 'Date fields have matching widths, heights, alignment and text size');
+  };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });
   await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.title'), 'Home Energy');
@@ -59,6 +67,7 @@ try {
   assert.equal(await evaluate("document.getElementById('date-start').value"), '2026-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').value"), '2026-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
+  await checkDateAlignment();
   assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-yesterday,range-today,range-tomorrow');
@@ -134,11 +143,16 @@ try {
   await capture('home-energy-dark-desktop');
   await evaluate("document.getElementById('theme-toggle').click(); true");
   await capture('home-energy-light-desktop');
+  await checkDateAlignment();
   await evaluate("document.getElementById('theme-toggle').click(); true");
   for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
     await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Mobile layout fits screen');
+    await checkDateAlignment();
+    await evaluate("document.getElementById('date-range-enabled').click(); true");
+    await checkDateAlignment();
+    await evaluate("document.getElementById('date-range-enabled').click(); true");
     await capture(`home-energy-dark-${viewport.width}`);
     await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
     await capture(`home-energy-chart-${viewport.width}`);
