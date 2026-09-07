@@ -426,3 +426,56 @@ ranges, shortcut order/state, dark-on-reload, rapid date changes, and desktop pl
 390px portrait/844px landscape layouts. Existing chart, legend, forecast and form
 checks passed using isolated synthetic data. No live provider or equipment calls
 were needed.
+
+## Home Assistant configuration and temporary controls — 0.8.3, 7 September 2026
+
+Compared the deployment with 0.7.5 and current official Home Assistant config,
+public add-on folder and SSH mount documentation. The old `/share/st-mq` workflow
+was intentional. `/share` is retained for imports/exports; the working database is
+now in `/config/st-mq` via `addon_config:rw`, visible to Terminal & SSH under
+`/addon_configs/<repository-id>_st-mq/st-mq`. Tokens/options remain private. Upgrade
+migration snapshots the old database with its committed WAL pages, verifies it,
+publishes the result atomically without overwriting a destination, and retains the
+original. Supervisor backups use cold mode. Docker pins Node explicitly, so an
+old Supervisor injecting an incompatible `BUILD_FROM` cannot replace the base.
+
+Options/schema/translations now describe current features. Removed `temp_to_hours`
+and dummy device IDs; optional credential/auth alternatives remain available.
+Standalone and add-on configuration both supply permanent settings. Occupied drop
+defaults to 1°C; persisted browser settings cannot override options on restart.
+The owner's local options file was backed up privately and updated with these
+sections; all existing connection settings were preserved and it is not committed.
+
+Every configured monetary value excludes VAT. User-confirmed margin is 0.33 c/kWh;
+tax is 2.325 c/kWh, yielding 2.917875 including 25.5% VAT. Full-precision transfer
+defaults retain 3.34/1.96 inclusive day/night and 4.17/2.07 seasonal. All components
+are configurable and snapshotted by effective date. Existing legacy inclusive
+transfer snapshots retain their meaning; unstarted configured future periods can
+be corrected/cancelled without rewriting elapsed history. Permanent-setting HTTP
+writes are disabled; the dashboard reports active rates, including both VAT bases.
+
+Away/Pause now share a compact Home control card. Finnish local datetimes are
+resolved on the server; DST gaps/overlaps require an unambiguous time. Atomic edits,
+independent cancellation, restart restoration and exact deadline expiry are
+covered. Away excludes the occupied drop penalty and relative comfort constraints,
+while costing recovery/auxiliary energy against continuous native operation.
+Return requirements apply inside the verified forecast horizon. Poor evidence,
+faults and pause still select native normal fallback; no physical transport was
+added. MQTT acquisition can now coexist with the online providers.
+
+Validation: **248 offline tests passed**, including VAT/history, future rate
+changes, expiry/restart, database migration, H66/provider coexistence and away
+cost/recovery behavior. Production frontend build passed. Firefox tests passed in
+both Europe/Helsinki and America/Los_Angeles browser timezones, with desktop,
+390px portrait and 844px landscape layouts and no console errors. Populated chart
+interactions remain responsive; the existing chart and event log were preserved.
+The separate compatibility browser script now runs the maintained isolated suite.
+
+The network-disabled AMD64 container check passed the actual image CMD, options
+immutability, authentication, public database migration, configured prices/drop,
+temporary controls, restart, cold backup/export/restore, restored startup and
+direct shared-folder inspection in a second container. Provider fixtures exercised
+FMI/Elering plumbing without HTTP access. CI now builds and runs these checks for
+both AMD64 and ARM64. Local ARM64 emulation and an actual Supervisor/Pi installation
+were unavailable; these results do not claim either was tested. No live provider
+requests or physical MQTT/control messages were sent for this upgrade.

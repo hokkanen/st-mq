@@ -65,8 +65,15 @@ function getIntervals(prices, forecast, now) {
 
 /** Evaluate a whole candidate including recovery and conservative terminal reserve cost. */
 export function evaluateSchedule({ intervals, reductionHours = 0, indoorC, targetC, maxDropC,
-  severeDropC = 2, maxRiseC = 2, deficitDegreeHours = 0, model }) {
+  severeDropC = 2, maxRiseC = 2, deficitDegreeHours = 0, model, occupancy = { mode: 'occupied' },
+  nativeEndIndoorC = null }) {
   const p = model.parameters, energy = model.energy;
+  const returnAt = instant(occupancy.returnAt);
+  const occupiedAt = at => occupancy.mode !== 'away' || finite(returnAt) && at >= returnAt;
+  if (occupancy.mode === 'away' && reductionHours > 0 && !finite(nativeEndIndoorC)) {
+    nativeEndIndoorC = evaluateSchedule({ intervals, indoorC, targetC, maxDropC,
+      severeDropC, maxRiseC, deficitDegreeHours, model, occupancy }).endIndoorC;
+  }
   let temperature = indoorC, deficit = deficitDegreeHours, electricityKwh = 0, auxiliaryKwh = 0;
   let costCents = 0, absoluteCostCents = 0, penalty = 0, elapsed = 0, severe = false;
   const steps = [];
@@ -74,10 +81,15 @@ export function evaluateSchedule({ intervals, reductionHours = 0, indoorC, targe
     // Substeps avoid interpreting a long price interval as a long mandatory command duration.
     let remaining = interval.durationHours;
     while (remaining > 1e-9) {
+      const at = interval.end - remaining * HOUR;
       let dt = Math.min(0.25, remaining);
       if (elapsed < reductionHours && elapsed + dt > reductionHours) dt = reductionHours - elapsed;
+      // Return is an actual occupancy boundary, even inside a price interval.
+      if (finite(returnAt) && at < returnAt && at + dt * HOUR > returnAt) dt = (returnAt - at) / HOUR;
       const action = elapsed + 1e-8 < reductionHours ? 'reduction' : 'normal';
       const loss = p.lossPerHour * (temperature - interval.outdoorC);
+      // The learned reference describes the native house knobs. Away changes
+      // our objective, not the temperature the heat pump itself tries to maintain.
       const nativeNeed = Math.max(0, loss + Math.max(0, targetC - temperature) * 0.3);
       const heat = Math.min(action === 'normal' ? p.normalHeatCPerHour : p.reducedHeatCPerHour, nativeNeed);
       const reserveRecharge = action === 'normal' ? Math.min(deficit, p.recoveryDegreeHoursPerHour * dt) : 0;
@@ -93,18 +105,30 @@ export function evaluateSchedule({ intervals, reductionHours = 0, indoorC, targe
       auxiliaryKwh += auxKwh;
       costCents += kwh * interval.price;
       absoluteCostCents += Math.abs(kwh * interval.price);
-      penalty += comfortPenalty(temperature, targetC, maxDropC, dt);
+      const occupied = occupiedAt(at);
+      if (occupied) penalty += comfortPenalty(temperature, targetC, maxDropC, dt);
       const uncertainty = p.uncertaintyCPerHour * Math.sqrt(elapsed + dt);
-      if (temperature - uncertainty < targetC - severeDropC || temperature + uncertainty > targetC + maxRiseC) severe = true;
-      steps.push({ at: iso(interval.end - remaining * HOUR + dt * HOUR), action, indoorC: temperature,
+      // Check the return instant itself, but never apply occupied limits to an
+      // earlier away interval. Native equipment fault protection remains separate.
+      if (occupiedAt(at + dt * HOUR)
+        && (temperature - uncertainty < targetC - severeDropC || temperature + uncertainty > targetC + maxRiseC)) severe = true;
+      steps.push({ at: iso(at + dt * HOUR), action, occupied, indoorC: temperature,
         uncertaintyC: uncertainty, deficitDegreeHours: deficit, electricityKwh: kwh, auxiliaryKwh: auxKwh });
       elapsed += dt;
       remaining -= dt;
     }
   }
-  // Neither cheap purchase timing nor an unrecovered end state is counted as a saving.
-  const terminalDeficit = deficit + Math.max(0, targetC - temperature);
-  const terminalKwh = terminalDeficit / p.normalHeatCPerHour * energy.normalKw * energy.recoveryMultiplier;
+  // Charge for heat deferred by our actions in every regime. While away use
+  // continuous native operation as the economic comparison, not an obligation
+  // to reach the occupied room target. The normal baseline itself owes no such
+  // relative recovery cost. Reuse that baseline when comparing multiple options.
+  const endsOccupied = occupiedAt(intervals.at(-1).end);
+  const terminalReferenceC = endsOccupied ? targetC : nativeEndIndoorC;
+  const terminalDeficit = deficit + (finite(terminalReferenceC) ? Math.max(0, terminalReferenceC - temperature) : 0);
+  const terminalRecoveryHours = terminalDeficit / p.normalHeatCPerHour;
+  const terminalAuxiliaryKwh = occupancy.mode === 'away' && terminalDeficit > 0.5
+    ? terminalRecoveryHours * energy.auxiliaryKw * energy.recoveryMultiplier : 0;
+  const terminalKwh = terminalRecoveryHours * energy.normalKw * energy.recoveryMultiplier + terminalAuxiliaryKwh;
   const terminalPrice = Math.max(0, ...intervals.map(interval => interval.price));
   const terminalCostCents = terminalKwh * terminalPrice;
   costCents += terminalCostCents;
@@ -113,7 +137,7 @@ export function evaluateSchedule({ intervals, reductionHours = 0, indoorC, targe
   const uncertaintyCents = Math.max(2, (absoluteCostCents + Math.abs(terminalCostCents)) * energy.relativeUncertainty);
   return { reductionHours, costCents, comfortPenalty: penalty, score: costCents + penalty,
     electricityKwh, auxiliaryKwh, endIndoorC: temperature, endDeficitDegreeHours: deficit,
-    terminalKwh, terminalCostCents, uncertaintyCents, severe, steps };
+    terminalKwh, terminalAuxiliaryKwh, terminalCostCents, terminalReferenceC, uncertaintyCents, severe, endsOccupied, steps };
 }
 
 /** Pure decision function. commands are intents; only the application's single executor may act. */
@@ -126,6 +150,9 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   const maxDrop = finite(comfort.maxDropC) && comfort.maxDropC >= 0 && comfort.maxDropC <= 2 ? comfort.maxDropC : 1;
   const severeDrop = finite(comfort.severeDropC) && comfort.severeDropC > maxDrop && comfort.severeDropC <= 5 ? comfort.severeDropC : Math.max(2, maxDrop + 0.5);
   const maxRise = finite(comfort.maxRiseC) && comfort.maxRiseC > 0 && comfort.maxRiseC <= 5 ? comfort.maxRiseC : 2;
+  const returnAt = instant(settings.occupancy?.returnAt);
+  const away = settings.occupancy?.mode === 'away' && !(finite(returnAt) && returnAt <= timestamp);
+  const occupancy = away ? settings.occupancy : { mode: 'occupied' };
   const observationAge = finite(settings.maxObservationAgeMs) && settings.maxObservationAgeMs > 0
     ? Math.min(settings.maxObservationAgeMs, HOUR) : 30 * 60_000;
   const indoor = observations.indoor, outdoor = observations.outdoor;
@@ -138,7 +165,16 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   const hours = stateFresh ? age / HOUR : 0;
   let deficit = finite(state.deficitDegreeHours) && state.deficitDegreeHours >= 0 ? Math.min(24, state.deficitDegreeHours) : 0;
   const recoverRate = validateModel(model) ? model.parameters.recoveryDegreeHoursPerHour : 0.25;
-  if (state.lastAction === 'reduction') deficit += hours * Math.max(0.1, finite(target) && finite(indoor?.value) ? target - indoor.value : 0.2);
+  if (state.lastAction === 'reduction') {
+    // While away a low room temperature is allowed; it is not itself evidence
+    // of a growing comfort debt. Track the heat withheld by the reduction model.
+    const p = model?.parameters;
+    const withheldHeat = away && validateModel(model) && finite(indoor?.value) && finite(outdoor?.value) && finite(target)
+      ? Math.max(0, Math.min(p.normalHeatCPerHour,
+        Math.max(0, p.lossPerHour * (indoor.value - outdoor.value) + Math.max(0, target - indoor.value) * 0.3)) - p.reducedHeatCPerHour)
+      : Math.max(0.1, finite(target) && finite(indoor?.value) ? target - indoor.value : 0.2);
+    deficit += hours * withheldHeat;
+  }
   else if (state.lastAction === 'normal') deficit = Math.max(0, deficit - hours * recoverRate);
   const nextState = { ...state, version: 1, lastDecisionAt: iso(timestamp), deficitDegreeHours: deficit };
   if (!stateFresh) {
@@ -154,11 +190,11 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   else if (timestamp - instant(model.trainedAt) > 30 * 24 * HOUR || instant(model.trainedAt) > timestamp) reasons.push('stale-thermal-model');
   if (!hasValidatedEnergy(model)) reasons.push('unvalidated-heating-energy-model');
   if (finite(reconcile) && reconcile > timestamp) reasons.push('reconciling-thermal-reserve');
-  if (deficit > 0.15) reasons.push('recovery-deficit');
+  if (!away && deficit > 0.15) reasons.push('recovery-deficit');
   if (override?.mode === 'normal' && instant(override.expiresAt) > timestamp) reasons.push('timed-normal-override');
-  if (settings.occupancy?.mode === 'away') reasons.push('explicit-away-normal-fallback');
-  if (freshIndoor && finite(target) && indoor.value <= target - severeDrop) reasons.push('severe-cooling-protection');
-  if (freshIndoor && finite(target) && indoor.value >= target + maxRise) reasons.push('severe-overheat-native-protection');
+  if (away && settings.occupancy.returnAt != null && !finite(returnAt)) reasons.push('invalid-away-return-time');
+  if (!away && freshIndoor && finite(target) && indoor.value <= target - severeDrop) reasons.push('severe-cooling-protection');
+  if (!away && freshIndoor && finite(target) && indoor.value >= target + maxRise) reasons.push('severe-overheat-native-protection');
   if (observations.fault?.active === true) reasons.push('equipment-fault-native-protection');
   if (observations.integral?.verified === true && fresh(observations.integral, timestamp, observationAge)
     && finite(observations.integral.recoveryThreshold) && observations.integral.value <= observations.integral.recoveryThreshold)
@@ -167,18 +203,27 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
     const intervals = getIntervals(prices, forecast, timestamp);
     if (!intervals) reasons.push('missing-or-incomplete-price-weather-horizon');
     else {
-      const options = [0, 0.25, 0.5, 1, 2].map(reductionHours => evaluateSchedule({ intervals, reductionHours,
+      const horizonEnd = intervals.at(-1).end;
+      const durationHours = (horizonEnd - timestamp) / HOUR;
+      const reductions = away ? [0, 0.25, 0.5, 1, 2, 4, 8, 12, 24].filter(hours => hours <= durationHours) : [0, 0.25, 0.5, 1, 2];
+      const scheduleInput = { intervals,
         indoorC: indoor.value, targetC: target, maxDropC: maxDrop, severeDropC: severeDrop,
-        maxRiseC: maxRise, deficitDegreeHours: deficit, model }));
-      const baseline = options[0];
+        maxRiseC: maxRise, deficitDegreeHours: deficit, model, occupancy };
+      const baseline = evaluateSchedule(scheduleInput);
+      const options = [baseline, ...reductions.slice(1).map(reductionHours => evaluateSchedule({ ...scheduleInput,
+        reductionHours, nativeEndIndoorC: baseline.endIndoorC }))];
       const candidates = options.slice(1).filter(option => !option.severe
         && option.score + option.uncertaintyCents + baseline.uncertaintyCents < baseline.score
-        && option.endDeficitDegreeHours <= baseline.endDeficitDegreeHours + 0.1
-        && option.endIndoorC >= baseline.endIndoorC - 0.2);
+        && (!option.endsOccupied || (option.endDeficitDegreeHours <= baseline.endDeficitDegreeHours + 0.1
+          && option.endIndoorC >= baseline.endIndoorC - 0.2)));
       const chosen = candidates.sort((a, b) => a.score - b.score)[0] ?? baseline;
       action = chosen.reductionHours > 0 ? 'reduction' : 'normal';
-      reasons.push(action === 'reduction' ? 'conservative-predicted-full-cycle-benefit' : 'continuous-normal-preferred');
-      plan = { generatedAt: iso(timestamp), horizonEnd: iso(intervals.at(-1).end),
+      reasons.push(action === 'reduction' ? away ? 'away-predicted-cost-benefit' : 'conservative-predicted-full-cycle-benefit' : 'continuous-normal-preferred');
+      plan = { generatedAt: iso(timestamp), horizonEnd: iso(horizonEnd),
+        occupancy: { mode: away ? 'away' : 'occupied', returnAt: away && finite(returnAt) ? iso(returnAt) : null,
+          returnWithinHorizon: away && finite(returnAt) && returnAt <= horizonEnd },
+        objective: away ? 'cost including recovery and auxiliary heat; occupied comfort resumes at return' : 'occupied comfort and full-cycle cost',
+        terminalPriceBasis: 'nonnegative maximum within verified horizon; conservative recovery allowance, not a future price forecast',
         baseline, chosen, alternatives: options.map(({ steps, ...summary }) => summary),
         estimatedBenefitCents: baseline.costCents - chosen.costCents,
         evidence: 'model estimate including recovery and uncertainty; not measured bill savings' };
@@ -189,7 +234,7 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   nextState.lastDhwrAt = dhwrRequested ? iso(timestamp) : (state.lastDhwrAt ?? null);
   return { action, reasons, commands: action === 'reduction' ? ['heatoff'] : dhwrRequested ? ['heaton60', 'heaton15'] : ['heaton15'],
     dhwr: { requested: dhwrRequested, lastPulseAt: nextState.lastDhwrAt, durationMinutes: 10 },
-    nextState, plan, comfort: { targetC: finite(target) ? target : null, maxDropC: maxDrop,
+    nextState, plan, comfort: { targetC: finite(target) ? target : null, maxDropC: maxDrop, maxDropApplies: !away,
       source: finite(comfort.targetC) ? 'explicit-setting' : learned?.comfortReference?.source ?? 'awaiting-normal-baseline' },
     learningHealth: learned?.health ?? { status: 'collecting' },
     semantics: 'heatoff requests tariff reduction; normal mode cannot force preheating or prove compressor operation' };

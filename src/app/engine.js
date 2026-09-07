@@ -3,7 +3,8 @@ import { goodQuality } from '../control/learning.js';
 import { validateSettings } from './config.js';
 import { SimulatedPlant, simulatedOutlook } from './simulator.js';
 import { Executor } from './executor.js';
-import { assembleOutlook, contractWithPeriod } from './contract.js';
+import { assembleOutlook, contractWithPeriod, reconcileConfiguredContract } from './contract.js';
+import { temporaryUpdate } from './temporary.js';
 
 const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 
@@ -41,9 +42,22 @@ export class Engine {
     this.store = store;
     this.config = config;
     this.clock = clock;
-    this.settings = validateSettings(store.getState(`settings:${config.input}`) ?? config.settings);
+    const previousSettings = store.getState(`settings:${config.input}`);
+    const occupancy = store.getState(`occupancy:${config.input}`) ?? previousSettings?.occupancy ?? config.settings?.occupancy;
+    // Permanent settings belong to options/config; only temporary occupancy comes
+    // from persisted UI state. Old browser settings must not override a restart.
+    this.settings = validateSettings({ ...config.settings, ...(occupancy ? { occupancy } : {}) });
     // A persisted active mode cannot grant physical command authorization.
     if (config.input !== 'simulated' && this.settings.mode === 'active') this.settings.mode = 'shadow';
+    if (config.priceSettings) {
+      const contract = reconcileConfiguredContract(this.contract(), config.priceSettings, clock());
+      if (JSON.stringify(contract) !== JSON.stringify(this.contract())) {
+        store.transaction(() => {
+          store.setState(`contract:${config.input}`, contract);
+          store.event('configured-rates-applied', { input: config.input, period: contract.periods.at(-1) }, clock());
+        });
+      }
+    }
     this.plant = config.input === 'simulated' ? new SimulatedPlant(store.getState('simulation:plant') ?? {}) : null;
     this.executor = new Executor({ input: config.input, store, plant: this.plant });
     this.latest = Object.create(null);
@@ -53,7 +67,7 @@ export class Engine {
         if (observation) remember(this.latest, observation, clock());
       }
     }
-    if (config.input === 'providers') {
+    if (['providers', 'mqtt'].includes(config.input)) {
       try {
         const cached = store.getState('provider:observations');
         if (Array.isArray(cached) && cached.length <= 64) for (const observation of cached) {
@@ -82,6 +96,7 @@ export class Engine {
     const next = validateSettings(input);
     if (next.mode === 'active' && this.config.input !== 'simulated') throw new Error('Active physical control awaits equipment commissioning');
     this.store.setState(`settings:${this.config.input}`, next);
+    this.store.setState(`occupancy:${this.config.input}`, next.occupancy);
     this.store.event('settings-changed', { previous: this.settings, next }, this.clock());
     this.settings = next;
     return this.tick();
@@ -98,14 +113,58 @@ export class Engine {
   }
   setOverride(minutes) {
     if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) throw new Error('Override duration must be 0–1440 whole minutes');
-    const override = minutes ? { mode: 'normal', createdAt: this.clock(), expiresAt: this.clock() + minutes * 60_000 } : null;
-    this.store.setState(`override:${this.config.input}`, override);
-    this.store.event('override-changed', { override }, this.clock());
-    return this.tick();
+    return this.setTemporary({ pauseUntil: minutes ? new Date(this.clock() + minutes * 60_000).toISOString() : null });
+  }
+  setTemporary(input) {
+    const now = this.clock(), changes = temporaryUpdate(input, now);
+    let occupancy = this.settings.occupancy;
+    this.store.transaction(() => {
+      if (Object.hasOwn(changes, 'awayUntil')) {
+        occupancy = changes.awayUntil === null ? { mode: 'occupied' } : { mode: 'away', returnAt: new Date(changes.awayUntil).toISOString() };
+        this.store.setState(`occupancy:${this.config.input}`, occupancy);
+        this.store.event('occupancy-changed', { occupancy }, now);
+      }
+      if (Object.hasOwn(changes, 'pauseUntil')) {
+        const override = changes.pauseUntil === null ? null : { mode: 'normal', createdAt: now, expiresAt: changes.pauseUntil };
+        this.store.setState(`override:${this.config.input}`, override);
+        this.store.event('override-changed', { override }, now);
+      }
+    });
+    this.settings = { ...this.settings, occupancy };
+    const result = this.tick();
+    this.onTemporaryChange?.();
+    return result;
+  }
+  nextTemporaryDeadline() {
+    const now = this.clock();
+    const deadlines = [this.settings.occupancy?.mode === 'away' ? Date.parse(this.settings.occupancy.returnAt) : NaN,
+      this.store.getState(`override:${this.config.input}`)?.expiresAt];
+    return Math.min(...deadlines.filter(at => Number.isFinite(at) && at > now));
+  }
+  expireTemporary(now) {
+    if (this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= now) {
+      const occupancy = { mode: 'occupied' };
+      this.store.transaction(() => {
+        this.store.setState(`occupancy:${this.config.input}`, occupancy);
+        this.store.event('occupancy-expired', { input: this.config.input }, now);
+      });
+      this.settings = { ...this.settings, occupancy };
+    }
+    const key = `override:${this.config.input}`;
+    let override = this.store.getState(key);
+    if (override && override.expiresAt <= now) {
+      this.store.transaction(() => {
+        this.store.setState(key, null);
+        this.store.event('override-expired', { input: this.config.input }, now);
+      });
+      override = null;
+    }
+    return override;
   }
   tick() {
     const now = this.clock();
     const input = this.config.input;
+    const override = this.expireTemporary(now);
     let observations, outlook = { prices: [], forecast: [] };
     if (this.plant) {
       observations = this.plant.sample(now);
@@ -122,13 +181,6 @@ export class Engine {
       observations = { indoor: map('indoor_temperature'), outdoor: map('outdoor_temperature'),
         actual: { mode: 'unknown', verified: false, source: input } };
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
-    }
-    const overrideKey = `override:${input}`;
-    let override = this.store.getState(overrideKey);
-    if (override && override.expiresAt <= now) {
-      override = null;
-      this.store.setState(overrideKey, null);
-      this.store.event('override-expired', { input }, now);
     }
     const stateKey = `controller:${input}:${this.settings.mode}`;
     let checkpoint = null;
@@ -159,13 +211,16 @@ export class Engine {
       override, decision, execution, prices: outlook.prices, forecast: outlook.forecast,
       spot: outlook.spot ?? [], priceStatus: this.plant ? 'simulated' : outlook.priceStatus,
       weatherStatus: this.plant ? 'simulated' : outlook.weatherStatus,
-      providers: this.store.getState('providers:health') ?? {}, contract: this.contract(),
+      providers: this.store.getState('providers:health') ?? {}, contract: this.contract(), configuredPrices: this.config.priceSettings ?? null,
       learning: { ...decision.learningHealth, background: this.store.getState('learning:health') },
       savings: { status: 'unproven', explanation: 'Simulated or shadow decisions do not establish actual bill savings.' } };
     return this.latestStatus;
   }
   status() {
     if (!this.latestStatus) return this.tick();
+    const checkTime = this.clock();
+    if (this.latestStatus.override?.expiresAt <= checkTime
+      || this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= checkTime) return this.tick();
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;

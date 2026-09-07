@@ -34,6 +34,7 @@ test('shadow and monitoring record intents without operating the simulated plant
 
 test('active simulation applies pulse sequence once and restart preserves recency and timed override', t => {
   const { engine, store, config, advance } = setup(t);
+  config.settings = { ...config.settings, mode: 'active' };
   engine.updateSettings({ mode: 'active', comfort: { maxDropC: 1 } });
   assert.ok(engine.plant.state.pulseUntil > engine.clock());
   const pulseUntil = engine.plant.state.pulseUntil;
@@ -114,27 +115,47 @@ test('read-only MQTT subscribes on reconnect, preserves retained uncertainty, ig
   await reader.close();
 });
 
-test('dated contract API enforces authentication and validation, persists revisions and keeps simulation prices separate', async t => {
-  const { engine, store, config } = setup(t);
+test('permanent settings APIs are read-only and configured price revisions preserve history on restart', async t => {
+  const { engine, store, config, advance } = setup(t);
   const token = 'synthetic-test-access-token-24';
   const server = createAppServer({ engine, store, token });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const rates = { effectiveDate: '2026-09-06', marginCtPerKwh: 1.25, taxCtPerKwh: 2, vatRate: 0.24, tariff: 'day-night' };
   assert.equal((await fetch(`${base}/api/contract`)).status, 401);
-  assert.equal((await fetch(`${base}/api/contract`, { headers, method: 'POST', body: JSON.stringify({ ...rates, vatRate: 24 }) })).status, 400);
-  assert.equal(engine.contract(), null);
-  const post = () => fetch(`${base}/api/contract`, { headers, method: 'POST', body: JSON.stringify(rates) });
-  const response = await post();
-  assert.equal(response.status, 200);
-  const saved = await response.json();
-  assert.equal(saved.periods[0].vatRate, 0.24);
+  for (const path of ['contract', 'settings']) assert.equal((await fetch(`${base}/api/${path}`, { headers, method: 'POST', body: '{}' })).status, 405);
+  const saved = engine.contract();
+  assert.equal(saved.periods[0].vatRate, 0.255);
+  assert.equal(saved.periods[0].marginCtPerKwh, 0.33);
   assert.deepEqual(await (await fetch(`${base}/api/contract`, { headers })).json(), saved);
-  assert.equal((await post()).status, 400, 'Duplicate date cannot silently replace existing rates');
   const restarted = new Engine({ store, config, clock: engine.clock });
-  assert.deepEqual(restarted.contract(), saved);
+  assert.equal(restarted.contract().periods.length, 1);
   assert.equal(restarted.status().priceStatus, 'simulated');
-  assert.equal(store.events().filter(event => event.type === 'contract-period-added').length, 1);
+  advance(3600_000);
+  const changed = new Engine({ store, config: { ...config, priceSettings: { ...config.priceSettings, marginCtPerKwh: 0.4 } }, clock: engine.clock });
+  assert.equal(changed.contract().periods.length, 2);
+  assert.equal(changed.contract().periods[0].marginCtPerKwh, 0.33);
+  assert.equal(changed.contract().periods[1].marginCtPerKwh, 0.4);
+  assert.equal(changed.contract().periods[1].from, engine.clock());
+});
+
+test('temporary controls API checks authentication, JSON and atomic Finnish dates', async t => {
+  const { engine, store } = setup(t);
+  const token = 'synthetic-test-access-token-24';
+  const server = createAppServer({ engine, store, token });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const endpoint = `http://127.0.0.1:${server.address().port}/api/temporary`;
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  assert.equal((await fetch(endpoint, { method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await fetch(endpoint, { method: 'POST', headers: { ...headers, Origin: 'https://example.invalid' }, body: '{}' })).status, 403);
+  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ awayUntilLocal: '2026-09-08T10:00', pauseUntilLocal: '2026-09-07T12:00' }) });
+  assert.equal(response.status, 200);
+  const status = await response.json();
+  assert.equal(status.settings.occupancy.returnAt, '2026-09-08T07:00:00.000Z');
+  assert.equal(status.override.expiresAt, Date.parse('2026-09-07T09:00Z'));
+  assert.equal(status.liveWrites, false);
+  assert.equal((await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ awayUntilLocal: null, pauseUntilLocal: '2026-09-05T00:00' }) })).status, 400);
+  assert.equal(engine.status().settings.occupancy.mode, 'away');
 });

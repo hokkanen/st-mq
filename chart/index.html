@@ -62,73 +62,54 @@
       <p id="chart-notes" class="muted chart-notes"></p>
     </section>
 
-    <section class="columns">
-      <article class="panel">
-        <p class="eyebrow">CONTROLLER</p><h2 id="decision-title">Waiting for a decision</h2><p id="reasons"></p>
+    <section class="controller-panels" aria-label="Home controller">
+      <article id="home-control" class="panel home-control" aria-labelledby="control-title">
+        <p class="eyebrow">HOME CONTROL</p><h2 id="control-title">Heating &amp; time away</h2>
+        <p id="decision-title" class="control-decision">Waiting for a decision</p><p id="reasons" class="muted"></p>
+        <div class="detail"><span>Learned comfort reference</span><span id="reference">Learning normal temperature</span></div>
+        <div class="detail"><span>Maximum drop when home</span><span id="drop">1 °C</span></div>
         <div class="detail"><span>Recirculation</span><span id="dhwr">—</span></div>
-        <div class="detail"><span>Comfort reference</span><span id="reference">Learning normal temperature</span></div>
-        <div class="detail"><span>Preferred drop</span><span id="drop">1 °C</span></div>
-        <p class="muted">Recirculation stays within 05:45–19:45 Finnish time. Normal heat mode follows the pump’s own controls.</p>
+        <form id="temporary-form" class="temporary-form">
+          <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+          <div class="temporary-field">
+            <label for="away-until">Away until</label>
+            <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+            <p id="away-status" class="temporary-status">Home</p>
+            <p id="away-help" class="muted">Plan for an empty house, then recover comfort by your return. The occupied temperature-drop limit does not apply while away.</p>
+          </div>
+          <div class="temporary-field">
+            <label for="pause-until">Pause until</label>
+            <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+            <p id="override-status" class="temporary-status">Price control is not paused.</p>
+            <p id="pause-help" class="muted">Pause price-based reductions. The heat pump follows its own controls; monitoring and learning continue.</p>
+          </div>
+          <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+          <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+        </form>
       </article>
-      <article class="panel">
-        <p class="eyebrow">LEARNING &amp; EVIDENCE</p><h2 id="learning-title">Building a baseline</h2><p id="learning-detail"></p>
-        <div class="notice">Bill savings are not established.</div><p id="savings" class="muted"></p>
-      </article>
-    </section>
 
-    <section class="columns">
-      <article class="panel">
-        <p class="eyebrow">ELECTRICITY CONTRACT</p><h2>Your rates, by date</h2>
-        <p id="contract-context" class="muted">Enter the rates and effective date shown on your contract or bill.</p>
-        <div id="contract-periods"><p class="muted">No contract rates entered.</p></div>
-        <details id="contract-editor">
-          <summary>Add a dated rate period</summary>
-          <form id="contract-form">
-            <label>Effective date in Finland <input id="contract-date" type="date" required></label>
-            <div class="form-pair">
-              <label>Retailer margin (c/kWh, ex VAT) <input id="contract-margin" type="number" min="-20" max="100" step="any" inputmode="decimal" required></label>
-              <label>Electricity tax (c/kWh, ex VAT) <input id="contract-tax" type="number" min="0" max="100" step="any" inputmode="decimal" required></label>
-            </div>
-            <label>VAT (%) <input id="contract-vat" type="number" min="0" max="100" step="any" inputmode="decimal" required></label>
-            <label>Transfer tariff
-              <select id="contract-tariff" required>
-                <option value="" disabled selected>Select your contracted tariff</option>
-                <option value="day-night">Day / night</option><option value="seasonal">Seasonal</option>
-              </select>
-            </label>
-            <p id="tariff-detail" class="muted">Transfer charges include VAT. Choose the tariff on your contract.</p>
-            <p class="muted">Rates begin at Finnish local midnight. A new period preserves earlier rates; a future date schedules the change.</p>
-            <button id="contract-submit">Save dated rates</button><p id="contract-message" role="status" class="muted"></p>
-          </form>
-        </details>
+      <article class="panel electricity-panel" aria-labelledby="electricity-title">
+        <p class="eyebrow">ELECTRICITY</p><h2 id="electricity-title">Configured rates</h2>
+        <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+        <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+        <p class="muted">Rates and the temperature-drop limit are set in the configuration.</p>
       </article>
-      <article class="panel">
-        <p class="eyebrow">DATA CONNECTIONS</p><h2>Prices, forecasts and sensors</h2>
+
+      <article class="panel data-panel" aria-labelledby="data-title">
+        <p class="eyebrow">DATA &amp; LEARNING</p><h2 id="data-title">Prices, weather &amp; the house</h2>
         <div class="detail"><span>Electricity prices</span><span id="price-status">Waiting for status</span></div>
         <div class="detail"><span>Weather outlook</span><span id="weather-status">Waiting for status</span></div>
-        <p id="provider-context" class="muted"></p><ul id="providers" class="provider-list"></ul>
-        <p class="muted">A successful download does not make an old sensor reading fresh. Observation times remain visible above.</p>
+        <div class="detail"><span>House model</span><span id="learning-title">Building a baseline</span></div>
+        <details id="data-details">
+          <summary>Connection &amp; learning details</summary>
+          <p id="provider-context" class="muted"></p><ul id="providers" class="provider-list"></ul>
+          <p id="learning-detail" class="muted"></p>
+          <p id="savings" class="muted"></p>
+          <p class="muted">A successful download does not make an old sensor reading fresh. Observation times remain visible above.</p>
+        </details>
       </article>
     </section>
 
-    <section class="columns">
-      <form id="settings-form" class="panel">
-        <p class="eyebrow">OPERATING SETTINGS</p><h2>Heating settings</h2>
-        <label>Mode <select id="mode"><option value="monitoring">Monitoring</option><option value="shadow">Shadow · record plans</option><option value="active">Active · simulator only</option></select></label>
-        <label>Preferred maximum drop (°C) <input id="max-drop" type="number" min="0" max="2" step="0.1" value="1" required></label>
-        <label>Occupancy <select id="occupancy"><option value="occupied">Occupied</option><option value="away">Away</option></select></label>
-        <label>Expected return (optional) <input id="return-at" type="datetime-local"></label>
-        <p class="muted">The comfort reference is learned during sustained normal operation. Away mode is explicit and does not count reduced service as occupied savings.</p>
-        <button>Save settings</button>
-      </form>
-      <form id="override-form" class="panel">
-        <p class="eyebrow">TEMPORARY OVERRIDE</p><h2>Restore normal heating</h2>
-        <p>Pause price-based reductions for a limited time. The override survives restart and expires automatically.</p>
-        <label>Duration <select id="duration"><option value="60">1 hour</option><option value="120">2 hours</option><option value="240">4 hours</option><option value="0">Cancel override</option></select></label>
-        <button>Apply override</button><p id="override-status" class="muted">No override.</p>
-        <p id="override-scope" class="notice">Shadow mode records the request without sending equipment commands.</p>
-      </form>
-    </section>
     <section class="panel">
       <div class="section-top"><div><h2>Event log</h2></div><small id="updated">—</small></div><ol id="events"></ol>
     </section>

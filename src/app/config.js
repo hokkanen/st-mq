@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { configuredPriceSettings } from './contract.js';
 
 export function validateSettings(input = {}) {
   const settings = {
@@ -16,34 +17,42 @@ export function validateSettings(input = {}) {
   return settings;
 }
 
-// Connection settings are deliberately separate from browser-editable settings.
+// Permanent settings come from options/environment, temporary occupancy from the
+// database. Only live acquisition receives credentials from the options file.
 export function loadConfig(env = process.env, cwd = process.cwd()) {
-  let addon = {};
-  const addonPath = env.STMQ_CONFIG ?? '/data/options.json';
-  if (env.STMQ_ADDON === '1' && existsSync(addonPath)) {
-    const raw = JSON.parse(readFileSync(addonPath, 'utf8'));
-    addon = raw.options ?? raw;
-  }
-  const input = env.STMQ_INPUT ?? addon.controller?.input ?? 'simulated';
-  if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
-  const dataDir = resolve(env.STMQ_DATA_DIR ?? (env.STMQ_ADDON === '1' ? '/data/st-mq' : `${cwd}/var`));
-  const configPath = env.STMQ_CONFIG ?? (existsSync('/data/options.json') && env.STMQ_ADDON === '1' ? '/data/options.json' : `${cwd}/data/options.json`);
-  let connections = {};
-  // Standalone offline/simulated starts never read the owner's credentials.
-  if (input === 'mqtt' || input === 'providers') {
+  const addon = env.STMQ_ADDON === '1';
+  const configPath = env.STMQ_CONFIG ?? (addon ? '/data/options.json' : `${cwd}/data/options.json`);
+  let options = {};
+  if (env.STMQ_CONFIG && !existsSync(configPath)) throw new Error('STMQ_CONFIG must name an existing options.json file');
+  if (existsSync(configPath)) {
     const raw = JSON.parse(readFileSync(configPath, 'utf8'));
-    connections = raw.options ?? raw;
+    options = raw.options ?? raw;
+  }
+  const input = env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
+  if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
+  const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
+  const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
+  let connections = {};
+  if (input === 'mqtt' || input === 'providers') {
+    if (!existsSync(configPath)) throw new Error('Live input requires an existing STMQ_CONFIG/options.json file');
+    connections = options;
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
-      if (!(env.STMQ_H66_DEVICE ?? addon.controller?.h66_device)) throw new Error('STMQ_H66_DEVICE is required for read-only H66 acquisition');
+      if (!(env.STMQ_H66_DEVICE ?? options.controller?.h66_device)) throw new Error('STMQ_H66_DEVICE is required for read-only H66 acquisition');
     }
   }
   const port = Number(env.STMQ_PORT ?? 1234);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');
   const host = env.STMQ_HOST ?? '127.0.0.1';
-  const token = env.STMQ_API_TOKEN ?? addon.controller?.web_token ?? '';
+  const token = env.STMQ_API_TOKEN ?? options.controller?.web_token ?? '';
   if (!['127.0.0.1', '::1', 'localhost'].includes(host) && token.length < 24) throw new Error('Network listening requires STMQ_API_TOKEN with at least 24 characters');
-  return { input, dataDir, dbPath: resolve(dataDir, input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite'), host, port, token, connections,
-    deviceId: env.STMQ_H66_DEVICE ?? addon.controller?.h66_device, h66Verification: env.STMQ_H66_VERIFICATION,
-    settings: validateSettings({ mode: env.STMQ_MODE ?? addon.controller?.mode ?? 'shadow' }) };
+  const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
+  const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
+  return { addon, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
+    legacyDbPath: resolve(dataDir, databaseName),
+    host, port, token, connections, priceSettings: configuredPriceSettings(options.electricity),
+    deviceId: env.STMQ_H66_DEVICE ?? options.controller?.h66_device,
+    h66Verification: verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
+    settings: validateSettings({ mode: env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
+      comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
 }

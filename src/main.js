@@ -1,4 +1,3 @@
-import { mkdirSync } from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { Store } from './storage/store.js';
@@ -7,19 +6,23 @@ import { Engine } from './app/engine.js';
 import { createAppServer } from './app/server.js';
 import { startHistoryLearning, startOnlineLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
+import { prepareStorage } from './app/storage-paths.js';
 
-export async function start({ config = loadConfig(), clock = Date.now, providerOptions = {} } = {}) {
+export async function start({ config = loadConfig(), clock = Date.now, providerOptions = {}, mqttOptions = {} } = {}) {
   const started = performance.now();
-  mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  const migrated = await prepareStorage(config);
   const store = new Store(config.dbPath);
-  let engine, server, acquisition, learning, chartService, timer, closed = false;
+  if (migrated) store.event('database-migrated', migrated, clock());
+  let engine, server, learning, chartService, timer, closed = false;
+  const acquisitions = [];
   const signalHandlers = new Map();
   async function close() {
     if (closed) return;
     closed = true;
     clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
-    await acquisition?.close();
+    if (engine) engine.onTemporaryChange = null;
+    await Promise.all(acquisitions.map(acquisition => acquisition.close()));
     await learning?.close();
     await engine?.learner?.close();
     await chartService?.close();
@@ -40,19 +43,23 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     learning = config.input !== 'simulated' ? startHistoryLearning({ store }) : null;
     if (config.input === 'mqtt') {
       const { startMqtt } = await import('./acquisition/mqtt.js');
-      acquisition = await startMqtt({ engine, store, config });
+      acquisitions.push(await startMqtt({ ...mqttOptions, engine, store, config }));
     }
-    if (config.input === 'providers') {
+    if (['providers', 'mqtt'].includes(config.input)) {
       const { startProviders } = await import('./acquisition/providers.js');
-      acquisition = startProviders({ ...providerOptions, engine, store, config, clock });
+      acquisitions.push(startProviders({ ...providerOptions, engine, store, config, clock }));
     }
     const schedule = () => {
+      clearTimeout(timer);
+      const now = clock();
+      const next = Math.min(now + 900_000 - (now % 900_000), engine.nextTemporaryDeadline());
       timer = setTimeout(() => {
         try { engine.tick(); }
         catch (error) { store.event('controller-error', { message: error.message }, clock()); }
         if (!closed) schedule();
-      }, 900_000 - (clock() % 900_000));
+      }, Math.max(1, next - now));
     };
+    engine.onTemporaryChange = schedule;
     schedule();
     console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: false,
       address: server.address(), startupMs: Math.round(performance.now() - started) }));

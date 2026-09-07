@@ -14,7 +14,7 @@ const initial = Date.parse('2026-09-06T09:00:00Z'), MINUTE = 60_000;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-providers-'));
-  const config = { ...loadConfig({ STMQ_DATA_DIR: dir, STMQ_PORT: '0' }), input: 'providers',
+  const config = { ...loadConfig({ STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' }, easee: { charger_id: 'fixture-ev' },
       entsoe: { token: 'fixture-not-a-real-token' }, openweathermap: { token: 'fixture-weather' } } };
   const store = new Store(config.dbPath);
@@ -48,7 +48,8 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
     const status = f.engine.tick();
     assert.equal(status.liveWrites, false);
     assert.equal(status.decision.action, 'normal');
-    assert.equal(status.priceStatus, 'contract-not-configured');
+    assert.equal(status.priceStatus, 'configured');
+    assert.ok(status.prices.length > 0);
     assert.equal(status.observations.indoor.value, null);
     held.resolve(); await first; await second;
     assert.equal(f.engine.status().observations.indoor.value, 21.1);
@@ -129,7 +130,7 @@ test('unconfigured providers make no requests', async t => {
 test('provider startup serves UI while a device request is pending and closes cleanly', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-start-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }), input: 'providers',
+  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' } } };
   let pending = false, cancelled = false;
   const app = await start({ config, clock: () => initial, providerOptions: { devices: {

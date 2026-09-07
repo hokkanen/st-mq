@@ -5,7 +5,7 @@ Home Assistant add-on and standalone Linux. The authoritative project brief is
 `CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
 [docs/PROGRESS.md](docs/PROGRESS.md).
 
-Version 0.8.2 provides a tested foundation: SQLite history, conservative
+Version 0.8.3 provides a tested foundation: SQLite history, conservative
 heating decisions, incremental thermal learning, a monitoring dashboard and
 read-only H66 acquisition. **Default startup uses simulated devices in shadow
 mode. No physical heat-pump command transport is enabled in the new application.**
@@ -39,8 +39,9 @@ npm start
 
 Open **http://127.0.0.1:1234**. The UI labels simulated readings and example prices.
 `node scheduler.js` also starts the safe application unless the separate legacy
-live gate is explicitly enabled. Neither default entry point reads standalone
-provider credentials. The server serves the completed UI build; it does not
+live gate is explicitly enabled. Existing `data/options.json` supplies permanent
+settings; without an explicit input selection the application uses simulation.
+Simulation and offline modes do not connect to providers. The server serves the completed UI build; it does not
 rebuild historical CSVs or run a permanent Vite build watcher.
 
 The Home Energy UI has monitoring, shadow and simulated active modes, combined
@@ -48,8 +49,13 @@ history and price/weather outlooks, requested/actual state, stale-data indicatio
 health, explicit occupancy and timed normal-heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
 Overrides are persistent; changing one in shadow mode does not operate equipment.
-Away mode currently preserves normal fallback; return times are recorded but
-return-aware optimization is pending.
+**Away until** removes the occupied temperature-drop requirement until the chosen
+return time. The planner compares cost with continuous native operation, including
+recovery and auxiliary energy. Occupied requirements resume at the return time
+within the available forecast horizon; forecasts are never invented beyond it.
+The existing evidence/freshness gates still apply. **Pause until** requests normal
+native operation without price reductions. Both controls use Finnish time, survive
+restarts, expire at their deadlines and can be cancelled independently.
 
 For UI development run `npm start` and `npm run dev` in separate terminals. Vite
 proxies `/api` to the backend. `npm run preview` alone does not provide the API.
@@ -96,9 +102,16 @@ recent selections are cached. A newer selection cancels an obsolete request.
 
 ## Persistence and historical data
 
-Standalone databases are in `var/`; Home Assistant uses `/data/st-mq/`. Simulation
+Standalone databases are in `var/`; Home Assistant uses `/config/st-mq/` in the
+public add-on folder, accessible through SSH under
+`/addon_configs/<repository-id>_st-mq/st-mq/`. Simulation
 uses `simulation.sqlite`; real/offline household history uses `st-mq.sqlite`.
-Override the directory with `STMQ_DATA_DIR`. These databases and supplied CSVs are
+Override the database directory with `STMQ_DATABASE_DIR`. Private provider token
+caches remain in `STMQ_DATA_DIR` (`/data/st-mq` in HA). Existing HA databases migrate
+through SQLite's backup API to the public folder; the original is retained and an
+existing destination is never overwritten. `/share/st-mq` remains the exchange
+folder for historical CSVs and exported backups. See [SSH access and backups](DOCS.md#ssh-database-access-and-backups).
+These databases and supplied CSVs are
 excluded from Git and Docker contexts. The owner's existing `data/options.json`
 is preserved and remains governed by the repository's existing git-crypt setup.
 
@@ -147,10 +160,12 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | `STMQ_INPUT` | `simulated`; also `offline`, read-only `mqtt`, or read-only `providers` |
 | `STMQ_MODE` | `shadow`; also `monitoring`, or `active` for simulator only |
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
+| `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
 | `STMQ_HOST` | `127.0.0.1`; add-on listens on `0.0.0.0` |
 | `STMQ_API_TOKEN` | Required, at least 24 characters, when listening beyond loopback |
-| `STMQ_CONFIG` | Existing connection JSON; defaults to `data/options.json`, or `/data/options.json` in add-on |
+| `STMQ_CONFIG` | Settings and connections JSON; defaults to `data/options.json`, or `/data/options.json` in add-on |
+| `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1°C) |
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; required for `mqtt` input |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
@@ -161,7 +176,7 @@ API token in session storage for its tab. There is no internet exposure configur
 by this project.
 
 Read-only MQTT reuses the existing broker address/user/password and subscribes to
-`<device>/HP/+`. There are **no SET publications**. Source timestamps, installed
+`<device>/HP/+` alongside the configured online providers. There are **no SET publications**. Source timestamps, installed
 register scaling and actual device/controller semantics need verification. Plain
 H66 payloads lack source timestamps, so their freshness stays unknown rather than
 being fabricated from receipt time. Retained/duplicate/invalid messages are
@@ -236,13 +251,43 @@ npm run test:live -- --services fmi-forecast,fmi-observation
 Each primary and backup is checked separately, so a working fallback cannot hide
 a rejected key. The suite uses no MQTT and sends no equipment commands.
 
-The contract form accepts dated retailer margin and electricity tax in **c/kWh
-excluding VAT**, VAT as a **percentage**, and the day/night or seasonal transfer
-tariff. Transfer already includes VAT. No tax/VAT values are silently filled in,
-and no seasonal switch is scheduled automatically. Confirm effective dates against
-the actual contract and applicable tax tables. Missing historical rates prevent
-historical billing; applying current charges to old readings is a scenario. The
-example outlook in simulation remains unrelated to the actual contract.
+## Permanent configuration and prices
+
+Edit add-on options in Home Assistant, or `data/options.json` on Linux, and restart.
+`config.json` defines add-on metadata, defaults and schema; it is not the owner's
+credentials file. The dashboard reports the active values; only Away/Pause are
+editable there. Configuration takes precedence over old browser-saved mode/drop
+settings. `temp_to_hours` is obsolete and has been removed.
+
+All monetary options under `electricity` are **c/kWh excluding VAT**. VAT is entered
+as a percentage and applied once to spot, margin, tax and transfer. Default values:
+
+| Option | Excluding VAT | Including 25.5% VAT |
+| --- | ---: | ---: |
+| `margin_ct_per_kwh_ex_vat` | 0.33 | 0.41415 |
+| `tax_ct_per_kwh_ex_vat` | 2.325 | 2.917875 |
+| `day_transfer_ct_per_kwh_ex_vat` | 3.34 / 1.255 | 3.34 |
+| `night_transfer_ct_per_kwh_ex_vat` | 1.96 / 1.255 | 1.96 |
+| `winter_day_transfer_ct_per_kwh_ex_vat` | 4.17 / 1.255 | 4.17 |
+| `other_transfer_ct_per_kwh_ex_vat` | 2.07 / 1.255 | 2.07 |
+
+The actual numeric defaults, including full-precision transfer conversions, are
+in `config.json`. `vat_percent` defaults to `25.5`; `transfer_tariff` defaults to
+`day-night`. Daytime is 07:00–22:00 Finnish time. Seasonal winter daytime is
+November–March, Monday–Saturday 07:00–22:00; other times use the lower seasonal
+rate. Seasonal is available but is not activated automatically.
+
+`controller.max_drop_c` defaults to 1°C for occupied operation; it does not constrain
+away cooling. The comfort reference remains learned from native occupied operation.
+`controller.input` and `controller.mode` are also configuration-owned.
+
+The optional `electricity.effective_date` is a Finnish calendar date. First-use
+rates begin today if no date is supplied; subsequent changes begin when loaded.
+Rates, transfer amounts and VAT are saved per period so future changes preserve
+historical calculations. Unstarted scheduled changes can be revised in options.
+Missing historical rates leave historical all-in prices unavailable; current
+defaults are not silently applied to old readings. Simulation prices remain
+labelled synthetic and independent of the household contract.
 
 ## Learning and control limits
 
@@ -253,8 +298,9 @@ runs in a worker after the UI/control starts; ordinary restart processes only ne
 rows. Bad candidate models are rejected. History is the rebuilding source.
 
 The experimental schedule evaluator compares continuous normal operation with
-modest reductions, prices their recovery and terminal reserve, penalizes comfort
-deviations and includes energy uncertainty. Severe cooling, poor freshness,
+modest reductions, prices their recovery and terminal reserve, penalizes occupied
+comfort deviations and includes energy uncertainty. Away uses energy/recovery cost
+without the occupied drop penalty. Severe occupied cooling, poor freshness,
 unverified energy response, recovery debt, faults and overrides select normal
 fallback. Native normal operation is not forced preheating. The initial evaluator
 requires verified heat-pump energy samples; current snapshots do not qualify.
@@ -280,7 +326,9 @@ docker build -t st-mq:development .
 
 The same Node core and SQLite schema run in both targets. The container supports
 `amd64` and `aarch64`; this development host validates x86 execution only. CI
-includes a build for both architectures. [deploy/st-mq.service](deploy/st-mq.service)
+builds and runs the isolated mounted add-on smoke check for both architectures.
+Run `scripts/test-addon-container.sh st-mq:development` to check a local image.
+[deploy/st-mq.service](deploy/st-mq.service)
 is an example standalone systemd unit to adapt to an installation; it has not been
 installed or enabled by development. Stop the old command owner before any future
 live migration. [Legacy documentation](docs/LEGACY.md) is retained for reference.

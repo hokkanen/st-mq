@@ -169,14 +169,117 @@ test('restart with stale state reconciles for four hours and keeps prior reserve
   assert.equal(result.nextState.reconcileUntil, iso(now + 4 * HOUR));
 });
 
-test('normal override, away mode, fault and verified integral warning take precedence', () => {
+test('normal override, fault and verified integral warning take precedence', () => {
   const cases = [input => { input.override = { mode: 'normal', expiresAt: iso(now + HOUR) }; },
-    input => { input.settings.occupancy = { mode: 'away' }; },
     input => { input.observations.fault = { active: true }; },
     input => { input.observations.integral = { value: -900, recoveryThreshold: -800, verified: true, observedAt: iso(now) }; }];
   for (const mutate of cases) { const input = fixture(); mutate(input); assert.equal(decide(input).action, 'normal'); }
   const input = fixture(); input.override = { mode: 'normal', expiresAt: iso(now - 1) };
   assert.equal(decide(input).action, 'reduction');
+});
+
+test('away planning removes occupied drop limits while retaining native heating and recovery economics', () => {
+  const input = fixture();
+  input.observations.indoor.value = 18;
+  assert.equal(decide(input).action, 'normal');
+  input.settings.occupancy = { mode: 'away', returnAt: iso(now + 48 * HOUR) };
+  const away = decide(input);
+  assert.equal(away.action, 'reduction');
+  assert.equal(away.comfort.maxDropApplies, false);
+  assert.equal(away.comfort.targetC, 21);
+  assert.equal(away.plan.chosen.comfortPenalty, 0);
+  assert.ok(away.plan.alternatives.every(option => !option.severe));
+  assert.equal(away.plan.chosen.terminalReferenceC, away.plan.baseline.endIndoorC);
+  assert.ok(away.plan.chosen.terminalReferenceC < 21);
+  assert.ok(away.plan.chosen.terminalCostCents > 0);
+  assert.ok(away.plan.chosen.steps.every(step => !step.occupied));
+  for (const maxDropC of [0, 2]) {
+    const changed = structuredClone(input); changed.settings.comfort.maxDropC = maxDropC;
+    assert.deepEqual(decide(changed).plan.chosen, away.plan.chosen);
+  }
+});
+
+test('away return deadline restores occupied comfort at its precise instant', () => {
+  const returnAt = now + 67 * 60_000;
+  const occupancy = { mode: 'away', returnAt: iso(returnAt) };
+  const schedule = evaluateSchedule({ intervals: [{ start: now, end: now + 8 * HOUR,
+    durationHours: 8, price: 10, outdoorC: 0 }], reductionHours: 2, indoorC: 18,
+    targetC: 21, maxDropC: 1, model: model(), occupancy });
+  assert.ok(schedule.steps.some(step => Date.parse(step.at) === returnAt));
+  assert.ok(schedule.steps.filter(step => Date.parse(step.at) <= returnAt).every(step => !step.occupied));
+  assert.ok(schedule.steps.filter(step => Date.parse(step.at) > returnAt).every(step => step.occupied));
+  assert.ok(schedule.comfortPenalty > 0);
+  assert.equal(schedule.severe, true);
+  assert.equal(schedule.endsOccupied, true);
+  const input = fixture(); input.observations.indoor.value = 18; input.settings.occupancy = occupancy;
+  const decision = decide(input);
+  assert.equal(decision.action, 'normal');
+  assert.equal(decision.plan.occupancy.returnWithinHorizon, true);
+  assert.equal(decision.plan.occupancy.returnAt, iso(returnAt));
+});
+
+test('return outside the known horizon adds no invented weather or premature occupied target', () => {
+  const input = fixture(); input.observations.indoor.value = 18;
+  input.settings.occupancy = { mode: 'away', returnAt: iso(now + 48 * HOUR) };
+  const first = decide(input);
+  input.settings.occupancy.returnAt = iso(now + 72 * HOUR);
+  const later = decide(input);
+  assert.equal(first.plan.occupancy.returnWithinHorizon, false);
+  assert.equal(first.plan.horizonEnd, iso(now + 24 * HOUR));
+  assert.deepEqual(first.plan.chosen, later.plan.chosen);
+  assert.match(first.plan.terminalPriceBasis, /not a future price forecast/);
+  input.settings.occupancy.returnAt = iso(now);
+  const returned = decide(input);
+  assert.equal(returned.comfort.maxDropApplies, true);
+  assert.ok(returned.reasons.includes('severe-cooling-protection'));
+});
+
+test('away dispatch rejects apparent savings when measured auxiliary recovery cost outweighs them', () => {
+  const input = fixture(); input.observations.indoor.value = 18;
+  input.settings.occupancy = { mode: 'away', returnAt: iso(now + 48 * HOUR) };
+  const modestAuxiliary = decide(input);
+  assert.equal(modestAuxiliary.action, 'reduction');
+  input.learned.model.energy.auxiliaryKw = 20;
+  const highAuxiliary = decide(input);
+  assert.equal(highAuxiliary.action, 'normal');
+  assert.ok(highAuxiliary.plan.alternatives.find(option => option.reductionHours === 2).costCents > highAuxiliary.plan.baseline.costCents);
+  assert.ok(highAuxiliary.plan.alternatives.find(option => option.reductionHours === 24).terminalAuxiliaryKwh > 0);
+});
+
+test('away mode prices heat debt rather than treating a low room temperature as occupied comfort debt', () => {
+  const input = fixture(); input.observations.indoor.value = 18;
+  input.settings.occupancy = { mode: 'away' };
+  input.state.lastAction = 'reduction'; input.state.lastDecisionAt = iso(now - HOUR);
+  input.state.deficitDegreeHours = 1;
+  const result = decide(input);
+  assert.ok(result.plan);
+  assert.ok(!result.reasons.includes('recovery-deficit'));
+  assert.ok(result.nextState.deficitDegreeHours > 1);
+  assert.ok(result.nextState.deficitDegreeHours < 2);
+  assert.ok(result.plan.chosen.auxiliaryKwh > 0);
+  assert.ok(result.plan.alternatives.at(-1).terminalCostCents > 0);
+});
+
+test('away dispatch still requires trustworthy data and obeys pause and native protection', () => {
+  const cases = [
+    ['timed-normal-override', input => { input.override = { mode: 'normal', expiresAt: iso(now + HOUR) }; }],
+    ['equipment-fault-native-protection', input => { input.observations.fault = { active: true }; }],
+    ['verified-integral-recovery-warning', input => { input.observations.integral = { value: -900, recoveryThreshold: -800, verified: true, observedAt: iso(now) }; }],
+    ['missing-or-stale-observations', input => { input.observations.indoor.observedAt = iso(now - HOUR); }],
+    ['unvalidated-heating-energy-model', input => { input.learned.model.energy = null; }],
+    ['unvalidated-thermal-model', input => { input.learned.model.validation.accepted = false; }],
+    ['stale-thermal-model', input => { input.learned.model.trainedAt = iso(now - 31 * 24 * HOUR); }],
+    ['missing-or-incomplete-price-weather-horizon', input => { input.forecast[0].issuedAt = iso(now - 7 * HOUR); }],
+    ['invalid-away-return-time', input => { input.settings.occupancy.returnAt = 'invalid'; }],
+  ];
+  for (const [reason, mutate] of cases) {
+    const input = fixture(); input.settings.occupancy = { mode: 'away', returnAt: iso(now + 48 * HOUR) };
+    mutate(input);
+    const result = decide(input);
+    assert.equal(result.action, 'normal', reason);
+    assert.equal(result.plan, null, reason);
+    assert.ok(result.reasons.includes(reason), reason);
+  }
 });
 
 test('DHWR local-time boundaries follow Helsinki in winter, summer and DST transitions', () => {

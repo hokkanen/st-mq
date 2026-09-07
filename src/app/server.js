@@ -62,7 +62,8 @@ export function createAppServer({ engine, store, chartService, token = '', stati
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
-        if (req.method === 'POST' && url.pathname === '/api/contract') return json(200, engine.addContractPeriod(await body(req)));
+        if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates are configured in options/config. Restart after editing them.' });
+        if (req.method === 'POST' && url.pathname === '/api/temporary') return json(200, engine.setTemporary(await body(req)));
         if (req.method === 'GET' && url.pathname === '/api/events') return json(200, store.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();
@@ -73,7 +74,6 @@ export function createAppServer({ engine, store, chartService, token = '', stati
           if (!/^[a-z0-9_]{1,64}$/.test(signal)) throw new Error('Invalid signal');
           return json(200, store.observations({ signal, from, to, limit: numberParam(url, 'limit', 1000, 5000) }));
         }
-        if (req.method === 'POST' && url.pathname === '/api/settings') return json(200, engine.updateSettings(await body(req)));
         if (req.method === 'POST' && url.pathname === '/api/override') return json(200, engine.setOverride((await body(req)).minutes));
         return json(404, { error: 'Unknown endpoint' });
       }

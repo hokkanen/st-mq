@@ -15,10 +15,11 @@ let app, ws;
 const pending = new Map(), errors = [], timings = [];
 let id = 0;
 try {
-  const config = loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' });
+  writeFileSync(join(directory, 'options.json'), '{}');
+  const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  config.priceSettings = { ...config.priceSettings, effectiveDate: '2020-01-01' };
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
-  app.engine.addContractPeriod({ effectiveDate: '2020-01-01', marginCtPerKwh: 0.5, taxCtPerKwh: 2, vatRate: 0.25, tariff: 'day-night' });
   ws = new WebSocket(process.argv[2] ?? 'ws://127.0.0.1:39124/session');
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   ws.onmessage = event => {
@@ -44,8 +45,9 @@ try {
     if (result.type === 'exception') throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  const until = async expression => {
-    for (let i = 0; i < 150; i++) {
+  const browserTimeZone = await evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone');
+  const until = async (expression, attempts = 150) => {
+    for (let i = 0; i < attempts; i++) {
       if (await evaluate(expression)) return;
       await new Promise(resolve => setTimeout(resolve, 30));
     }
@@ -158,27 +160,66 @@ try {
     await capture(`home-energy-chart-${viewport.width}`);
     await evaluate('scrollTo(0, 0); true');
   }
-  // The surrounding controller forms still operate against this isolated simulation.
-  await evaluate("document.getElementById('duration').value='120'; document.getElementById('override-form').requestSubmit(); true");
-  await until("document.getElementById('override-status').textContent.includes('until')");
-  await evaluate("document.getElementById('max-drop').value='0.9'; document.getElementById('settings-form').requestSubmit(); true");
-  await until("document.getElementById('drop').textContent === '0.9 °C'");
-  assert.equal(await evaluate("document.getElementById('contract-vat').value"), '', 'Rates are not prefilled');
-  await evaluate(`document.getElementById('contract-editor').open = true;
-    document.getElementById('contract-date').value = '2026-09-07';
-    document.getElementById('contract-margin').value = '1.25';
-    document.getElementById('contract-tax').value = '2';
-    document.getElementById('contract-vat').value = '24';
-    document.getElementById('contract-tariff').value = 'seasonal';
-    document.getElementById('contract-tariff').dispatchEvent(new Event('change'));
-    document.getElementById('contract-form').requestSubmit(); true`);
-  await until("document.getElementById('contract-message').textContent.includes('Dated rates saved')");
-  await until("document.getElementById('contract-periods').textContent.includes('1.25 c/kWh')");
-  assert.equal(app.engine.contract().periods.at(-1).vatRate, 0.24);
-  assert.equal(await evaluate("document.getElementById('contract-vat').value"), '');
+  // Home controls use Finnish wall times even in a browser running in another zone.
+  assert.equal(await evaluate("document.querySelectorAll('.controller-panels > article').length"), 3);
+  assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
+  assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
+  assert.equal(await evaluate("document.getElementById('data-details').open"), false);
+  await evaluate(`document.getElementById('away-until').value = '2026-09-09T18:00';
+    document.getElementById('away-until').dispatchEvent(new Event('input'));
+    document.getElementById('pause-until').value = '2026-09-07T18:00';
+    document.getElementById('pause-until').dispatchEvent(new Event('input'));
+    document.getElementById('temporary-form').requestSubmit(); true`);
+  await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
+  assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z');
+  assert.equal(app.engine.status().override.expiresAt, Date.parse('2026-09-07T15:00:00Z'));
+  await command('browsingContext.reload', { context, wait: 'complete' });
+  await until("document.getElementById('away-until').value === '2026-09-09T18:00'");
+  assert.equal(await evaluate("document.getElementById('pause-until').value"), '2026-09-07T18:00');
+  assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), true);
+  // Pending edits survive blur and an actual background status poll.
+  await evaluate(`window.__statusPolls = 0; const originalFetch = window.fetch;
+    window.fetch = (...args) => { if (args[0] === '/api/status') window.__statusPolls++; return originalFetch(...args); };
+    document.getElementById('away-until').value = '2026-09-10T18:00';
+    document.getElementById('away-until').dispatchEvent(new Event('input'));
+    document.getElementById('away-until').blur(); true`);
+  await until('window.__statusPolls > 0', 650);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
+  await evaluate("document.getElementById('resume-now').click(); true");
+  await until("document.getElementById('override-status').textContent === 'Price control is not paused.'");
+  assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z', 'Resuming preserves the saved away deadline');
+  assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00', 'Resuming preserves an unrelated pending edit');
+  assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), false);
+  await evaluate("document.getElementById('home-now').click(); true");
+  await until("document.getElementById('away-status').textContent === 'Home'");
+  assert.equal(await evaluate("document.getElementById('away-until').value"), '');
+  assert.equal(app.engine.settings.occupancy.mode, 'occupied');
+  // Invalid DST choices leave both settings untouched and the draft available to correct.
+  await evaluate(`document.getElementById('away-until').value = '2026-10-25T03:30';
+    document.getElementById('away-until').dispatchEvent(new Event('input'));
+    document.getElementById('pause-until').value = '2026-09-07T18:00';
+    document.getElementById('pause-until').dispatchEvent(new Event('input'));
+    document.getElementById('temporary-form').requestSubmit(); true`);
+  await until("document.getElementById('temporary-message').classList.contains('form-error')");
+  assert.equal(app.engine.settings.occupancy.mode, 'occupied');
+  assert.equal(app.engine.status().override, null);
+  assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-10-25T03:30');
+  await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('history').dataset.ready === 'true'");
-  assert.equal(await legendState('spot'), 'true', 'Contract refresh preserves legend preferences');
   await until("document.getElementById('events').children.length > 0");
+  for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
+    await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
+    await evaluate("document.getElementById('home-control').scrollIntoView(); true");
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Home controls fit desktop and mobile');
+    assert.equal(await evaluate(`(() => {
+      const a = document.getElementById('away-until').getBoundingClientRect();
+      const b = document.getElementById('pause-until').getBoundingClientRect();
+      return Math.abs(a.width-b.width) < 1 && Math.abs(a.height-b.height) < 1;
+    })()`), true, 'Temporary date fields match');
+    await capture(`home-energy-controls-${viewport.width}`);
+  }
   await app.close();
   const fixture = providerFixture(now);
   app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'), connections: fixture.connections },
@@ -191,16 +232,16 @@ try {
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
-  await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('data-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
-  await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('data-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'override-settings-contract-forms', 'provider-sources-and-fallbacks'] }, null, 2));
+  console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-controller-panels', 'provider-sources-and-fallbacks'] }, null, 2));
   await command('browser.close', {});
 } finally {
   ws?.close();

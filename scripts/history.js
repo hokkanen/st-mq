@@ -49,7 +49,8 @@ export async function main(argv = process.argv.slice(2)) {
   };
   if (!Object.hasOwn(accepted, command)) throw new Error(`Unknown command: ${command}\n${usage}`);
   for (const key of Object.keys(options)) if (key !== 'db' && !accepted[command].includes(key)) throw new Error(`Unknown option --${key} for ${command}`);
-  const path = options.db ?? process.env.STMQ_DATABASE ?? resolve(process.env.STMQ_DATA_DIR ?? 'var', 'st-mq.sqlite');
+  const path = options.db ?? process.env.STMQ_DATABASE ?? resolve(process.env.STMQ_DATABASE_DIR
+    ?? (process.env.STMQ_ADDON === '1' ? '/config/st-mq' : process.env.STMQ_DATA_DIR ?? 'var'), 'st-mq.sqlite');
   if (command === 'restore') {
     required(options, 'db');
     console.log(JSON.stringify({ restored: await Store.restore(required(options, 'input'), path) }, null, 2)); return;

@@ -1,25 +1,72 @@
 configuration:
   controller:
-    name: Controller workspace
-    description: Start with simulated input and shadow mode. Set a private web token of at least 24 characters. Offline input reads imported history; MQTT input is read-only and needs the exact installed H66 device prefix. Active mode operates only the simulator.
+    name: Home controller
+    description: >-
+      Start with simulated input and shadow mode. Set a private web token of at
+      least 24 characters for network access. Providers input reads online
+      sensors, electricity prices and weather. MQTT input adds read-only H66
+      readings and needs the exact installed H66 device prefix. An optional
+      reviewed h66_verification_file confirms installed register meanings;
+      relative paths are inside this add-on's SSH-accessible /config folder.
+      Active mode
+      operates only the simulator. max_drop_c is the preferred occupied
+      temperature drop in °C (default 1); away periods have no comfort-drop
+      limit. The comfort reference is learned from continuous normal heating.
+      Away until and Pause until are temporary dashboard controls.
+  electricity:
+    name: Electricity rates — c/kWh EXCLUDING VAT
+    description: >-
+      Enter every monetary value in cents/kWh excluding VAT, including margin,
+      electricity tax and all transfer rates. VAT is added once using vat_percent
+      (default 25.5). Defaults are margin 0.33 (0.41415 including VAT) and tax
+      2.325 (2.917875 including VAT). Default day/night transfer rates correspond
+      to 3.34/1.96 including VAT. Seasonal winter-day/other rates correspond to
+      4.17/2.07 including VAT. Daytime is 07:00–22:00 Finnish time; seasonal
+      winter daytime is November–March, Monday–Saturday, with no holiday
+      exceptions. transfer_tariff selects day-night or seasonal. Leave
+      effective_date empty to apply changed rates at restart; first setup
+      begins at today's Finnish midnight. An explicit YYYY-MM-DD date starts
+      at Finnish midnight. Later rate changes apply now or in the future;
+      elapsed history is preserved. A future configured change can be edited
+      before it starts. To cancel it, restore the current rates and clear the
+      effective date. Previous rate snapshots remain available for history.
   geoloc:
-    name: Geolocation (country code required; coordinates recommended)
-    description: Provide the country code and coordinates of your location. These are used for the Entso-E and Elering price queries (country code), and Finnish Meteorological Institute (FMI) and OpenWeatherMap (OWM) temperature queries (coordinates).
-  temp_to_hours:
-    name: Temperature-to-heating-hours mapping (required)
-    description: Mapping between the outside temperature and daily heating hours. Linear interpolation is used in-between points. If the temperature goes outside the given range, the endpoint values are used (no extrapolation).
+    name: Location for prices and weather
+    description: >-
+      The country code selects ENTSO-E and Elering electricity prices.
+      Coordinates select FMI weather forecasts and the nearest fresh outdoor
+      weather observation, with OpenWeatherMap as backup.
   mqtt:
-    name: MQTT settings (required)
-    description: Provide MQTT broker address, username, and password. MQTT is used to communicate with the local SmartThings hub.
+    name: MQTT broker for H66 (optional)
+    description: >-
+      MQTT input subscribes to the installed H66 using this broker address,
+      username and password. It does not send commands to the heat pump or
+      domestic hot-water circulation. Providers input does not need MQTT.
   entsoe:
-    name: Entso-E API authentication (recommended)
-    description: Provide Entso-E API token. If not provided, the Elering backup API will be queried, but it only supports fi, ee, lt, and lv country codes. Also, if Elering goes down, there is no further fallback.
+    name: ENTSO-E API token (recommended)
+    description: >-
+      ENTSO-E is the primary electricity price source. Direct Elering prices
+      are the backup and need no API key; supported countries are FI, EE, LV
+      and LT. The optional domain overrides the country-derived bidding zone;
+      omit it to use country_code. Elering only substitutes the same zone.
   smartthings:
-    name: SmartThings API authentication (recommended)
-    description: Provide SmartThings API token and the SmartThings device IDs for the devices providing inside, garage, and outside temperatures. These can be found from 'my.smarthings.com'. If not provided, the temperatures cannot be obtained through SmartThings API; inside and garage temperatures are not logged and outside temperature is queried from FMI or OWM.
+    name: SmartThings temperature sensors (optional)
+    description: >-
+      Provide a SmartThings token and device IDs for indoor and garage
+      temperature readings. The optional outdoor sensor is retained as an
+      alternative reading; FMI is the primary outdoor temperature source.
+      Missing or stale indoor readings prevent live optimization.
   openweathermap:
-    name: OpenWeatherMap API authentication (optional)
-    description: Provide OpenWeatherMap API token. If not provided, and outside temperature cannot be obtained through SmartThings or FMI APIs, the outside temperature is not logged and the algorithm follows the last specified "temp_to_hours" entry in the configuration.
+    name: OpenWeatherMap weather backup (optional)
+    description: >-
+      Provide an OpenWeatherMap token for forecast and current outdoor
+      temperature fallback when FMI is unavailable. FMI requires no API key.
+      Missing weather is reported explicitly; no temperature-to-hours mapping
+      is used by the learned controller.
   easee:
-    name: Easee settings (optional)
-    description: Provide Easee authentication and device information to collect consumption data. Giving either "user" and "pw" or "access_token" and "refresh_token" is enough (see README.md file for more details). If authentication details are not provided, Easee consumption data is not collected.
+    name: Easee consumption readings (optional)
+    description: >-
+      Provide device IDs and either user/password or access_token/refresh_token
+      to collect charger and Equalizer readings. Leave device IDs empty when
+      unused. Readings are read-only; token renewals are cached privately and
+      options.json is not rewritten. Stale measurements remain marked stale.

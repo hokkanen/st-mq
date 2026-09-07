@@ -96,7 +96,8 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .metrics p { font-size: 10px; letter-spacing: 1.3px; margin: 0 0 12px; }
 .metrics strong { display: block; font-weight: 450; font-size: 31px; letter-spacing: -1px; }
 .metrics small { display: block; font-size: 11px; color: var(--muted); margin-top: 10px; }
-.columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
+.controller-panels { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 24px; align-items: start; }
+.home-control { grid-row: span 2; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
 .detail > span:last-child { text-align: right; }
@@ -148,23 +149,43 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 footer { text-align: center; color: var(--muted); font-size: 11px; padding: 10px 24px 28px; }
 .stale { color: var(--stale) !important; }
 [hidden] { display: none !important; }
-.form-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
 summary { cursor: pointer; font-size: 14px; padding: 14px 0; color: var(--text); }
 details { border-top: 1px solid var(--border); margin-top: 18px; }
-.contract-period { border-bottom: 1px solid var(--border); padding: 14px 0; }
-.contract-period h3 { font-size: 14px; font-weight: 550; margin: 0; }
-.contract-period p { margin: 5px 0; }
-.rate-values { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 12px 0 0; }
-.rate-values dt { font-size: 11px; color: var(--muted); }
-.rate-values dd { font-size: 13px; margin: 4px 0 0; }
+.control-decision { margin-bottom: 4px; font-size: 16px; }
+.home-control #reasons { margin-top: 4px; }
+.form-timezone { margin: 20px 0 16px; }
+.temporary-field { margin: 18px 0; }
+.temporary-field label { margin: 0 0 8px; font-size: 13px; }
+.temporary-input-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 10px; align-items: center; }
+.temporary-input-row input { width: 100%; height: 44px; font-size: 14px; }
+.temporary-input-row button { margin: 0; height: 44px; padding: 8px 6px; font-size: 12px; white-space: nowrap; }
+.secondary-button { color: var(--text); background: transparent; border-color: var(--border); }
+.secondary-button:hover { background: var(--surface-soft); }
+.secondary-button:disabled, #temporary-submit:disabled { cursor: default; }
+.temporary-status { font-size: 12px; margin: 8px 0 0; }
+.temporary-field .muted { margin: 5px 0 0; }
+.temporary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.temporary-actions button { margin: 0; }
+.temporary-actions p { margin: 0; flex: 1 1 180px; }
+.temporary-form input:disabled { opacity: .6; }
+.form-error { color: var(--error-text); }
+#override-scope { margin: 12px 0 0; }
+.tariff-heading { font-size: 14px; font-weight: 550; margin: 14px 0 0; }
+.rate-table { border-collapse: collapse; width: 100%; margin: 14px 0; text-align: left; font-size: 12px; }
+.rate-table caption { text-align: left; color: var(--muted); font-size: 11px; padding-bottom: 8px; }
+.rate-table th, .rate-table td { padding: 9px 6px; border-bottom: 1px solid var(--border); font-weight: 400; }
+.rate-table th:first-child { padding-left: 0; }
+.rate-table th:not(:first-child), .rate-table td { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rate-table th:last-child, .rate-table td:last-child { padding-right: 0; }
+.rate-table thead th { color: var(--muted); font-size: 11px; }
+.data-panel details { margin-top: 12px; }
+.data-panel summary { padding-bottom: 0; font-size: 12px; }
 .provider-list { list-style: none; padding: 0; margin: 18px 0; }
 .provider-list li { border-bottom: 1px solid var(--border); padding: 13px 0; }
 .provider-heading { display: flex; justify-content: space-between; gap: 15px; font-size: 12px; }
 .provider-heading strong { font-weight: 550; }
 .provider-list p { margin: 5px 0 0; }
 .provider-heading span { text-align: right; }
-#contract-periods { max-height: 380px; overflow: auto; }
-#contract-message:empty { display: none; }
 @media (max-width: 800px) {
   header { gap: 14px; padding: 15px 18px; }
   h1 { font-size: 21px; }
@@ -175,7 +196,8 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 16px; }
   .metrics article { padding: 16px 18px; }
   .metrics strong { font-size: 27px; }
-  .columns { grid-template-columns: 1fr; gap: 0; }
+  .controller-panels { grid-template-columns: 1fr; gap: 0; }
+  .home-control { grid-row: auto; }
   .panel { padding: 20px; margin-bottom: 16px; }
   .plot { height: 420px; }
   .chart-range-controls { gap: 12px; }
@@ -208,7 +230,8 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
   .chart-legend-button { font-size: 10px; gap: 5px; padding: 7px 4px; }
   .chart-legend-swatch { flex-basis: 14px; width: 14px; }
   .section-top:not(.chart-heading) { align-items: flex-start; flex-direction: column; gap: 0; }
-  .form-pair { grid-template-columns: 1fr; gap: 0; }
+  .temporary-input-row { grid-template-columns: minmax(0, 1fr) 94px; gap: 8px; }
+  .temporary-input-row input { font-size: 12px; padding: 10px 8px; }
   .provider-heading { flex-wrap: wrap; }
   .detail { font-size: 12px; }
 }

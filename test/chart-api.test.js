@@ -9,11 +9,11 @@ import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { createChartService } from '../src/app/chart-service.js';
 
-async function fixture(t) {
+async function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-api-'));
   const store = new Store(join(directory, 'test.sqlite'));
   const now = Date.parse('2026-09-07T09:00:00Z');
-  const config = { ...loadConfig({}, directory), input: 'providers', connections: {} };
+  const config = { ...loadConfig({}, directory), input: 'providers', connections: {}, ...overrides };
   const engine = new Engine({ store, config, clock: () => now });
   const service = createChartService({ store });
   const token = 'synthetic-chart-api-access-token';
@@ -57,7 +57,9 @@ test('chart defaults to today in Finland and includes shared right-axis data for
 });
 
 test('dated contract edits invalidate chart pricing without filling uncovered historical dates', async t => {
-  const { base, headers, store, engine, now } = await fixture(t);
+  // An imported installation can have historical prices before its configured
+  // rate coverage. Exercise that case independently of new-install defaults.
+  const { base, headers, store, engine, now } = await fixture(t, { priceSettings: null });
   store.observation({ source: 'csv:stmq', device: 'legacy_stmq', signal: 'spot_price', value: -5,
     unit: 'c/kWh_ex_vat', sourceTime: now - 3600000, receivedAt: now, quality: ['historical', 'corrected_historical_price', 'excludes_vat_and_other_charges'] });
   const read = () => fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07`, { headers }).then(response => response.json());

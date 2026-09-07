@@ -1,133 +1,127 @@
 {
-    "name": "ST-MQ",
-    "description": "Local home-energy monitoring, offline learning and simulated heating control",
-  "version": "0.8.2",
-    "url": "https://github.com/hokkanen/st-mq",
-    "slug": "st-mq",
-    "arch": [
-        "aarch64",
-        "amd64"
-    ],
-    "startup": "services",
-    "boot": "auto",
-    "init": false,
-    "ports": {
-        "1234/tcp": 1234
+  "name": "ST-MQ",
+  "description": "Home energy monitoring, learned heating scheduling and read-only H66 acquisition",
+  "version": "0.8.3",
+  "url": "https://github.com/hokkanen/st-mq",
+  "slug": "st-mq",
+  "arch": [
+    "aarch64",
+    "amd64"
+  ],
+  "startup": "services",
+  "boot": "auto",
+  "init": false,
+  "ports": {
+    "1234/tcp": 1234
+  },
+  "map": [
+    "share:rw",
+    "addon_config:rw"
+  ],
+  "options": {
+    "geoloc": {
+      "country_code": "fi",
+      "latitude": "60.3972",
+      "longitude": "25.6578"
     },
-    "map": [
-        "share:rw"
-    ],
-    "options": {
-        "geoloc": {
-            "country_code": "fi",
-            "latitude": "60.3972",
-            "longitude": "25.6578"
-        },
-        "temp_to_hours": [
-            {
-                "temp": 30,
-                "hours": 2
-            },
-            {
-                "temp": 20,
-                "hours": 12
-            },
-            {
-                "temp": 10,
-                "hours": 14
-            },
-            {
-                "temp": 0,
-                "hours": 16
-            },
-            {
-                "temp": -10,
-                "hours": 18
-            },
-            {
-                "temp": -20,
-                "hours": 20
-            },
-            {
-                "temp": -30,
-                "hours": 24
-            }
-        ],
-        "mqtt": {
-            "address": "mqtt://core-mosquitto",
-            "user": "",
-            "pw": ""
-        },
-        "entsoe": {
-            "token": ""
-        },
-        "smartthings": {
-            "token": "",
-            "inside_temp_dev_id": "",
-            "garage_temp_dev_id": "",
-            "outside_temp_dev_id": ""
-        },
-        "openweathermap": {
-            "token": ""
-        },
-        "easee": {
-            "user": "",
-            "pw": "",
-            "access_token": "",
-            "refresh_token": "",
-            "charger_id": "EHXXXXXX",
-            "equalizer_id": "QPXXXXXX"
-        },
-        "controller": {
-            "input": "simulated",
-            "mode": "shadow",
-            "web_token": "",
-            "h66_device": ""
-        }
+    "mqtt": {
+      "address": "mqtt://core-mosquitto",
+      "user": "",
+      "pw": ""
     },
-    "schema": {
-        "geoloc": {
-            "country_code": "str",
-            "latitude": "str?",
-            "longitude": "str?"
-        },
-        "temp_to_hours": [
-            {
-                "temp": "int",
-                "hours": "int"
-            }
-        ],
-        "mqtt": {
-            "address": "str",
-            "user": "str",
-            "pw": "password"
-        },
-        "entsoe": {
-            "token": "password?"
-        },
-        "smartthings": {
-            "token": "password?",
-            "inside_temp_dev_id": "str?",
-            "garage_temp_dev_id": "str?",
-            "outside_temp_dev_id": "str?"
-        },
-        "openweathermap": {
-            "token": "password?"
-        },
-        "easee": {
-            "user": "str?",
-            "pw": "password?",
-            "access_token": "password?",
-            "refresh_token": "password?",
-            "charger_id": "str",
-            "equalizer_id": "str"
-        },
-        "controller": {
-            "input": "list(simulated|offline|mqtt|providers)",
-            "mode": "list(monitoring|shadow|active)",
-            "web_token": "password",
-            "h66_device": "str?"
-        }
+    "entsoe": {
+      "token": ""
     },
-    "webui": "http://[HOST]:[PORT:1234]"
+    "smartthings": {
+      "token": "",
+      "inside_temp_dev_id": "",
+      "garage_temp_dev_id": "",
+      "outside_temp_dev_id": ""
+    },
+    "openweathermap": {
+      "token": ""
+    },
+    "easee": {
+      "user": "",
+      "pw": "",
+      "access_token": "",
+      "refresh_token": "",
+      "charger_id": "",
+      "equalizer_id": ""
+    },
+    "controller": {
+      "input": "simulated",
+      "mode": "shadow",
+      "web_token": "",
+      "h66_device": "",
+      "max_drop_c": 1,
+      "h66_verification_file": ""
+    },
+    "electricity": {
+      "margin_ct_per_kwh_ex_vat": 0.33,
+      "tax_ct_per_kwh_ex_vat": 2.325,
+      "vat_percent": 25.5,
+      "transfer_tariff": "day-night",
+      "day_transfer_ct_per_kwh_ex_vat": 2.661354581673307,
+      "night_transfer_ct_per_kwh_ex_vat": 1.561752988047809,
+      "winter_day_transfer_ct_per_kwh_ex_vat": 3.3227091633466137,
+      "other_transfer_ct_per_kwh_ex_vat": 1.649402390438247,
+      "effective_date": ""
+    }
+  },
+  "schema": {
+    "geoloc": {
+      "country_code": "str",
+      "latitude": "str?",
+      "longitude": "str?"
+    },
+    "mqtt": {
+      "address": "str",
+      "user": "str",
+      "pw": "password"
+    },
+    "entsoe": {
+      "token": "password?",
+      "domain": "str?"
+    },
+    "smartthings": {
+      "token": "password?",
+      "inside_temp_dev_id": "str?",
+      "garage_temp_dev_id": "str?",
+      "outside_temp_dev_id": "str?"
+    },
+    "openweathermap": {
+      "token": "password?"
+    },
+    "easee": {
+      "user": "str?",
+      "pw": "password?",
+      "access_token": "password?",
+      "refresh_token": "password?",
+      "charger_id": "str?",
+      "equalizer_id": "str?"
+    },
+    "controller": {
+      "input": "list(simulated|offline|mqtt|providers)",
+      "mode": "list(monitoring|shadow|active)",
+      "web_token": "password",
+      "h66_device": "str?",
+      "max_drop_c": "float(0,2)",
+      "h66_verification_file": "str?"
+    },
+    "electricity": {
+      "margin_ct_per_kwh_ex_vat": "float(-20,100)",
+      "tax_ct_per_kwh_ex_vat": "float(0,100)",
+      "vat_percent": "float(0,100)",
+      "transfer_tariff": "list(day-night|seasonal)",
+      "day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "night_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "winter_day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "other_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "effective_date": "str?"
+    }
+  },
+  "webui": "http://[HOST]:[PORT:1234]",
+  "backup": "cold",
+  "timeout": 30
 }

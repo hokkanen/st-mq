@@ -26,12 +26,34 @@ export function helsinkiCalendar(instant) {
     minute: +parts.minute, weekday: weekdays.indexOf(parts.weekday), timeZone: TIME_ZONE };
 }
 
-/** User-supplied marginal transfer rates, including VAT. No inferred holiday exceptions. */
-export function transferPrice(instant, tariff = 'day-night') {
+// Old database contracts used these VAT-inclusive rates implicitly. Preserve
+// their exact meaning when reading history; new configuration snapshots every
+// transfer component explicitly excluding VAT alongside its effective VAT rate.
+export const LEGACY_TRANSFER_RATES = Object.freeze({ vatIncluded: true,
+  dayCtPerKwh: 3.34, nightCtPerKwh: 1.96, winterDayCtPerKwh: 4.17, otherCtPerKwh: 2.07 });
+export const DEFAULT_TRANSFER_RATES_EX_VAT = Object.freeze({ vatIncluded: false,
+  dayCtPerKwh: 3.34 / 1.255, nightCtPerKwh: 1.96 / 1.255,
+  winterDayCtPerKwh: 4.17 / 1.255, otherCtPerKwh: 2.07 / 1.255 });
+
+export function validateTransferRates(rates) {
+  if (!rates || typeof rates.vatIncluded !== 'boolean') throw new TypeError('Transfer rates must explicitly state whether VAT is included');
+  const result = { vatIncluded: rates.vatIncluded };
+  for (const key of ['dayCtPerKwh', 'nightCtPerKwh', 'winterDayCtPerKwh', 'otherCtPerKwh']) {
+    result[key] = finite(rates[key], `Transfer ${key}`);
+    if (result[key] < 0 || result[key] > 100) throw new RangeError('Transfer charges must be 0–100 c/kWh');
+  }
+  return result;
+}
+
+/** Marginal transfer charge including VAT. No inferred holiday exceptions. */
+export function transferPrice(instant, tariff = 'day-night', rates = LEGACY_TRANSFER_RATES, vatRate) {
+  const values = validateTransferRates(rates);
+  const multiplier = values.vatIncluded ? 1 : 1 + finite(vatRate, 'Transfer VAT fraction');
+  if (multiplier < 1 || multiplier > 2) throw new RangeError('VAT must be a fraction from 0 to 1');
   const { month, hour, weekday } = helsinkiCalendar(instant);
   const day = hour >= 7 && hour < 22;
-  if (tariff === 'day-night') return day ? 3.34 : 1.96;
-  if (tariff === 'seasonal') return (month >= 11 || month <= 3) && weekday !== 0 && day ? 4.17 : 2.07;
+  if (tariff === 'day-night') return (day ? values.dayCtPerKwh : values.nightCtPerKwh) * multiplier;
+  if (tariff === 'seasonal') return ((month >= 11 || month <= 3) && weekday !== 0 && day ? values.winterDayCtPerKwh : values.otherCtPerKwh) * multiplier;
   throw new TypeError(`Unsupported transfer tariff: ${tariff}`);
 }
 
@@ -68,8 +90,9 @@ export function validateContract(contract) {
     const vatRate = finite(period.vatRate, 'VAT fraction');
     if (taxCtPerKwh < 0 || vatRate < 0 || vatRate > 1) throw new RangeError('Tax must be nonnegative; VAT must be a fraction from 0 to 1');
     const tariff = period.tariff ?? 'day-night';
-    transferPrice(from, tariff);
-    return { ...period, from, to, marginCtPerKwh, taxCtPerKwh, vatRate, tariff };
+    const transferRates = validateTransferRates(period.transferRates ?? LEGACY_TRANSFER_RATES);
+    transferPrice(from, tariff, transferRates, vatRate);
+    return { ...period, from, to, marginCtPerKwh, taxCtPerKwh, vatRate, tariff, transferRates };
   }).sort((a, b) => a.from - b.from);
   for (let i = 1; i < periods.length; i++) {
     if (periods[i].from < periods[i - 1].to) throw new RangeError('Overlapping contract periods');
@@ -85,11 +108,14 @@ function calculate(instant, spotCtPerKwh, contract) {
   const period = contract.periods.find(p => p.from <= rateAt && rateAt < p.to);
   if (!period) throw new RangeError('No verified/configured contract rates cover this instant; historical calculation requires historical rates');
   const spot = finite(spotCtPerKwh, 'Spot price');
-  const { marginCtPerKwh, taxCtPerKwh, vatRate, tariff } = period;
-  const transferIncludingVatCtPerKwh = transferPrice(at, tariff);
+  const { marginCtPerKwh, taxCtPerKwh, vatRate, tariff, transferRates } = period;
+  const transferIncludingVatCtPerKwh = transferPrice(at, tariff, transferRates, vatRate);
   const vatCtPerKwh = (spot + marginCtPerKwh + taxCtPerKwh) * vatRate;
+  const transferExcludingVatCtPerKwh = transferIncludingVatCtPerKwh / (1 + vatRate);
+  const transferVatCtPerKwh = transferIncludingVatCtPerKwh - transferExcludingVatCtPerKwh;
   return { spotCtPerKwh: spot, marginCtPerKwh, taxCtPerKwh, vatRate, vatCtPerKwh,
-    transferIncludingVatCtPerKwh,
+    transferIncludingVatCtPerKwh, transferExcludingVatCtPerKwh, transferVatCtPerKwh,
+    totalVatCtPerKwh: vatCtPerKwh + transferVatCtPerKwh,
     totalCtPerKwh: finite(spot + marginCtPerKwh + taxCtPerKwh + vatCtPerKwh + transferIncludingVatCtPerKwh, 'All-in price'),
     unit: 'c/kWh', tariff, mode: contract.mode, rateFrom: period.from,
     provenance: period.provenance ?? 'User-configured rates; not independently verified' };

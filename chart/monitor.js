@@ -1,11 +1,16 @@
 import { createHistoryChart } from './history-chart.js';
 import { describeProvider, outdoorSourceLabel, providerName } from './provider-status.js';
+import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
 let lastStatus;
 let lastEvent = 0;
 let historyChart;
+let temporaryBusy = false;
+let refreshSequence = 0;
+const dirtyTemporary = new Set();
+const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
 const dayFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric' });
@@ -42,31 +47,59 @@ async function api(path, data, options = {}) {
 }
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
 function renderContract(s) {
-  const periods = s.contract?.periods ?? [];
+  const current = activeRates(s);
+  const period = current ?? s.configuredPrices;
   $('contract-context').textContent = s.input === 'simulated'
-    ? 'Rates saved here belong to this simulation. The example price outlook stays synthetic.'
-    : 'Enter the rates and effective date shown on your contract or bill. Rates apply only from their configured date.';
+    ? 'Configured charges are shown below. The simulation’s example price outlook stays synthetic.'
+    : current ? `Rates in use · from ${day(current.from)}.`
+      : period ? 'Configured charges. No dated rate period covers the current time.'
+        : 'No configured charges are available. All-in prices need dated contract rates.';
   const list = $('contract-periods');
   list.replaceChildren();
-  if (!periods.length) {
-    const empty = document.createElement('p'); empty.className = 'muted';
-    empty.textContent = 'No contract rates entered. All-in household prices need your dated charges.';
-    list.append(empty);
+  if (!period) return;
+  const heading = document.createElement('h3'); heading.className = 'tariff-heading';
+  heading.textContent = `${tariffNames[period.tariff] ?? 'Transfer tariff'} · VAT ${decimal(period.vatRate * 100)}%`;
+  const tariff = document.createElement('p'); tariff.className = 'muted';
+  tariff.textContent = period.tariff === 'seasonal'
+    ? 'Winter day: November–March, Monday–Saturday, 07:00–22:00. Other rate at all other times.'
+    : 'Day: 07:00–22:00. Night: 22:00–07:00. Finnish local time.';
+  const table = document.createElement('table'); table.className = 'rate-table';
+  const caption = document.createElement('caption'); caption.textContent = 'Variable charges · c/kWh';
+  const header = document.createElement('thead'); const headerRow = document.createElement('tr');
+  for (const text of ['Charge', 'Excl. VAT', 'Incl. VAT']) {
+    const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; headerRow.append(cell);
   }
-  for (const period of [...periods].reverse()) {
-    const item = document.createElement('article'); item.className = 'contract-period';
-    const heading = document.createElement('h3');
-    const status = period.from > s.now ? 'Scheduled' : period.to != null && period.to <= s.now ? 'Past rates' : 'Current rates';
-    heading.textContent = `${status} · from ${day(period.from)}`;
-    const tariff = document.createElement('p'); tariff.className = 'muted';
-    tariff.textContent = `${tariffNames[period.tariff] ?? 'Transfer tariff'}${period.to != null ? ` · until ${day(period.to)} (exclusive)` : ''}`;
-    const charges = document.createElement('dl'); charges.className = 'rate-values';
-    for (const [name, value] of [['Margin, ex VAT', `${decimal(period.marginCtPerKwh)} c/kWh`], ['Tax, ex VAT', `${decimal(period.taxCtPerKwh)} c/kWh`], ['VAT', `${decimal(period.vatRate * 100)}%`]]) {
-      const field = document.createElement('div'); const dt = document.createElement('dt'); const dd = document.createElement('dd');
-      dt.textContent = name; dd.textContent = value; field.append(dt, dd); charges.append(field);
+  header.append(headerRow);
+  const body = document.createElement('tbody');
+  for (const { name, excludingVat, includingVat } of rateRows(period)) {
+    const row = document.createElement('tr');
+    const title = document.createElement('th'); title.scope = 'row'; title.textContent = name; row.append(title);
+    for (const amount of [excludingVat, includingVat]) {
+      const cell = document.createElement('td'); cell.textContent = decimal(amount); row.append(cell);
     }
-    item.append(heading, tariff, charges); list.append(item);
+    body.append(row);
   }
+  table.append(caption, header, body);
+  list.append(heading, table, tariff);
+}
+function updateTemporaryButtons() {
+  $('temporary-submit').disabled = temporaryBusy || dirtyTemporary.size === 0;
+  const saved = lastStatus ? temporaryValues(lastStatus) : {};
+  $('home-now').disabled = temporaryBusy || !($('away-until').value || saved.awayUntilLocal);
+  $('resume-now').disabled = temporaryBusy || !($('pause-until').value || saved.pauseUntilLocal);
+}
+function renderTemporary(s) {
+  const saved = temporaryValues(s);
+  for (const [field, id] of Object.entries(temporaryFields)) {
+    if (!dirtyTemporary.has(field)) $(id).value = saved[field];
+  }
+  $('away-status').textContent = saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}.` : 'Home';
+  $('override-status').textContent = saved.pauseUntilLocal
+    ? `Price control paused until ${time(s.override.expiresAt)}.` : 'Price control is not paused.';
+  $('override-scope').textContent = s.input === 'simulated'
+    ? 'These changes apply to the simulation only.'
+    : 'Read-only operation: these choices are recorded; equipment commands remain disabled.';
+  updateTemporaryButtons();
 }
 function renderProviders(s) {
   const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
@@ -125,14 +158,7 @@ function render(s) {
   $('learning-title').textContent = s.learning?.status === 'collecting' ? 'Collecting observations' : label(s.learning?.status ?? 'Collecting observations');
   $('learning-detail').textContent = s.learning?.message ?? s.learning?.reason ?? 'Conservative normal operation while confidence is established.';
   $('savings').textContent = s.savings.explanation;
-  if (!$('settings-form').contains(document.activeElement)) {
-    $('mode').value = s.mode;
-    $('mode').querySelector('[value="active"]').disabled = s.input !== 'simulated';
-    $('max-drop').value = s.settings.comfort.maxDropC;
-    $('occupancy').value = s.settings.occupancy.mode;
-  }
-  $('override-status').textContent = s.override && s.override.expiresAt > s.now ? `Normal heating requested until ${time(s.override.expiresAt)}.` : 'No override.';
-  $('override-scope').textContent = s.mode === 'active' ? 'This override applies to the simulated plant only.' : 'This mode records the request without sending equipment commands.';
+  renderTemporary(s);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
 async function events() {
@@ -147,29 +173,60 @@ async function events() {
   }
   while ($('events').children.length > 100) $('events').lastChild.remove();
 }
-async function refresh({ forceChart = false } = {}) { try { const s = await api('/api/status'); render(s); await Promise.all([historyChart.refresh(s, { force: forceChart }), events()]); } catch (error) { showError(error); } }
-$('auth').addEventListener('submit', event => { event.preventDefault(); token = $('token').value; sessionStorage.setItem('stmq-token', token); $('token').value = ''; refresh(); });
-$('settings-form').addEventListener('submit', async event => { event.preventDefault(); try { const occupancy = { mode: $('occupancy').value }; if ($('return-at').value) occupancy.returnAt = new Date($('return-at').value).toISOString(); render(await api('/api/settings', { mode: $('mode').value, comfort: { targetC: lastStatus.settings.comfort.targetC, maxDropC: Number($('max-drop').value) }, occupancy })); } catch (error) { showError(error); } });
-$('override-form').addEventListener('submit', async event => { event.preventDefault(); try { render(await api('/api/override', { minutes: Number($('duration').value) })); } catch (error) { showError(error); } });
-$('contract-tariff').addEventListener('change', () => {
-  $('tariff-detail').textContent = $('contract-tariff').value === 'day-night'
-    ? 'Transfer including VAT: 3.34 c/kWh at 07:00–22:00; 1.96 c/kWh overnight. All times are Finnish local time.'
-    : 'Transfer including VAT: 4.17 c/kWh in November–March, Monday–Saturday, 07:00–22:00; 2.07 c/kWh otherwise. All times are Finnish local time.';
-});
-$('contract-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  $('contract-submit').disabled = true; $('contract-message').textContent = '';
+async function refresh({ forceChart = false } = {}) {
+  if (temporaryBusy) return;
+  const sequence = ++refreshSequence;
   try {
-    await api('/api/contract', { effectiveDate: $('contract-date').value,
-      marginCtPerKwh: $('contract-margin').valueAsNumber, taxCtPerKwh: $('contract-tax').valueAsNumber,
-      vatRate: $('contract-vat').valueAsNumber / 100, tariff: $('contract-tariff').value });
-    $('contract-form').reset();
-    $('tariff-detail').textContent = 'Transfer charges include VAT. Choose the tariff on your contract.';
-    $('contract-message').textContent = 'Dated rates saved. Earlier rate periods are preserved.';
-    await refresh({ forceChart: true });
-  } catch (error) { $('contract-message').textContent = error.message; }
-  finally { $('contract-submit').disabled = false; }
+    const s = await api('/api/status');
+    if (sequence !== refreshSequence) return;
+    render(s);
+    await Promise.all([historyChart.refresh(s, { force: forceChart }), events()]);
+  } catch (error) { if (sequence === refreshSequence) showError(error); }
+}
+$('auth').addEventListener('submit', event => { event.preventDefault(); token = $('token').value; sessionStorage.setItem('stmq-token', token); $('token').value = ''; refresh(); });
+for (const [field, id] of Object.entries(temporaryFields)) {
+  const changed = () => {
+    if ($(id).value === (lastStatus ? temporaryValues(lastStatus)[field] : '')) dirtyTemporary.delete(field);
+    else dirtyTemporary.add(field);
+    $('temporary-message').classList.remove('form-error');
+    $('temporary-message').textContent = dirtyTemporary.size ? 'Changes are not applied yet.' : '';
+    updateTemporaryButtons();
+  };
+  $(id).addEventListener('input', changed);
+  $(id).addEventListener('change', changed);
+}
+async function applyTemporary(values) {
+  if (temporaryBusy) return;
+  temporaryBusy = true;
+  ++refreshSequence;
+  updateTemporaryButtons();
+  for (const id of Object.values(temporaryFields)) $(id).disabled = true;
+  $('temporary-message').classList.remove('form-error');
+  $('temporary-message').textContent = 'Applying…';
+  try {
+    const result = await api('/api/temporary', values);
+    for (const field of Object.keys(values)) dirtyTemporary.delete(field);
+    render(result);
+    $('temporary-message').textContent = dirtyTemporary.size ? 'Applied. Other changes are not applied yet.' : 'Changes applied.';
+    await events();
+  } catch (error) {
+    $('temporary-message').classList.add('form-error');
+    $('temporary-message').textContent = error.message;
+  } finally {
+    temporaryBusy = false;
+    for (const id of Object.values(temporaryFields)) $(id).disabled = false;
+    updateTemporaryButtons();
+  }
+}
+$('temporary-form').addEventListener('submit', event => {
+  event.preventDefault();
+  // Send only edited fields. An existing ambiguous autumn clock time may have
+  // been set through the offset-aware API and must survive an unrelated edit.
+  const values = Object.fromEntries([...dirtyTemporary].map(field => [field, $(temporaryFields[field]).value || null]));
+  if (Object.keys(values).length) applyTemporary(values);
 });
+$('home-now').addEventListener('click', () => applyTemporary({ awayUntilLocal: null }));
+$('resume-now').addEventListener('click', () => applyTemporary({ pauseUntilLocal: null }));
 historyChart = createHistoryChart({ api: (path, options) => api(path, undefined, options) });
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 await refresh();
