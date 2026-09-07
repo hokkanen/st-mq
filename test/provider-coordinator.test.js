@@ -236,9 +236,196 @@ test('all-zero, impossible relative current and asynchronous snapshots report de
   try {
     for (const [i, flag] of ['all_zero_property_current', 'ev_exceeds_property_current', 'asynchronous_snapshot'].entries()) {
       issue = flag; f.setTime(initial + i * 30 * MINUTE); await providers.runDue();
-      assert.equal(f.store.getState('providers:health').easee.status, 'degraded');
+      const health = f.store.getState('providers:health').easee;
+      assert.equal(health.status, 'degraded');
+      assert.deepEqual(health.qualityIssues, [flag]);
+      assert.equal(health.lastSuccessAt, initial + i * 30 * MINUTE);
+      assert.equal(health.nextAttemptAt, initial + (i * 30 + 5) * MINUTE);
+      assert.equal(health.failures, 0);
+      assert.equal(health.error, null);
       assert.equal(f.store.observations().at(-1).quality.includes(flag), true);
     }
+  } finally { await providers.close(); }
+});
+
+test('old unchanged temperatures and idle EV currents do not slow downloads of changing property currents', async t => {
+  const f = fixture(t);
+  f.options.config.connections = { smartthings: { inside_temp_dev_id: 'fixture-room' },
+    easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  const sourceAt = initial - 2 * 24 * 60 * MINUTE;
+  let easeeCalls = 0, temperatureCalls = 0;
+  f.options.devices.temperatures = async ({ now }) => {
+    temperatureCalls++;
+    return [{ ...f.temperature()[0], sourceTime: sourceAt, receivedAt: now, quality: ['stale'] }];
+  };
+  f.options.devices.easee = async ({ now }) => {
+    easeeCalls++;
+    return ['ev1', 'property'].flatMap(prefix => [1, 2, 3].map(phase => ({
+      source: 'easee', device: `fixture-${prefix}`, signal: `${prefix}_current_l${phase}`,
+      value: prefix === 'ev1' ? 0 : 2 + easeeCalls + phase, unit: 'A',
+      sourceTime: prefix === 'ev1' ? sourceAt : now, receivedAt: now,
+      quality: ['current_snapshot_not_energy', ...(prefix === 'ev1' ? ['stale'] : [])],
+    })));
+  };
+  let providers = startProviders(f.options);
+  try {
+    for (let i = 0; i < 8; i++) {
+      const now = initial + i * 5 * MINUTE;
+      f.setTime(now); await providers.runDue();
+      for (const job of ['temperatures', 'easee']) {
+        const health = f.store.getState('providers:health')[job];
+        assert.equal(health.status, job === 'easee' ? 'ok' : 'degraded');
+        assert.equal(health.lastSuccessAt, now);
+        assert.equal(health.nextAttemptAt, now + 5 * MINUTE);
+        assert.equal(health.failures, 0);
+        assert.equal(health.error, null);
+        assert.deepEqual(health.qualityIssues, [job === 'easee' ? 'charger_stale' : 'stale']);
+      }
+      assert.equal(f.store.observations({ signal: 'property_current_l1' }).at(-1).value, 4 + i);
+      assert.equal(f.engine.status().observations.indoor.stale, true);
+      if (i === 3) {
+        await providers.close(); providers = startProviders(f.options);
+        assert.equal(f.store.getState('providers:health').easee.status, 'ok');
+        assert.deepEqual(f.store.getState('providers:health').easee.qualityIssues, ['charger_stale']);
+        await providers.runDue();
+        assert.equal(easeeCalls, 4, 'restart preserves the normal next poll');
+      }
+    }
+    assert.equal(easeeCalls, 8); assert.equal(temperatureCalls, 8);
+    assert(f.store.observations({ signal: 'ev1_current_l1' }).every(row => row.sourceTime === sourceAt));
+    assert(f.store.observations({ signal: 'indoor_temperature' }).every(row => row.sourceTime === sourceAt));
+  } finally { await providers.close(); }
+});
+
+test('Easee property staleness needs attention and clears when property timestamps recover', async t => {
+  const f = fixture(t);
+  f.options.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  let oldCharger = false, oldProperty = true;
+  f.options.devices.easee = async ({ now }) => ['ev1', 'property'].flatMap(prefix => [1, 2, 3].map(phase => {
+    const stale = prefix === 'ev1' ? oldCharger : oldProperty;
+    return { source: 'easee', device: `fixture-${prefix}`, signal: `${prefix}_current_l${phase}`,
+      value: prefix === 'ev1' ? 0 : 5, unit: 'A', receivedAt: now,
+      sourceTime: stale ? initial - 60 * MINUTE : now,
+      quality: ['current_snapshot_not_energy', ...(stale ? ['stale'] : [])] };
+  }));
+  let providers = startProviders(f.options);
+  try {
+    for (const [i, [charger, property, issues]] of [
+      [false, true, ['property_stale']],
+      [true, true, ['charger_stale', 'property_stale']],
+      [true, false, ['charger_stale']],
+      [false, false, []],
+    ].entries()) {
+      oldCharger = charger; oldProperty = property;
+      const now = initial + i * 5 * MINUTE;
+      f.setTime(now); await providers.runDue();
+      const health = f.engine.status().providers.easee;
+      assert.equal(health.status, property ? 'degraded' : 'ok');
+      assert.deepEqual(health.qualityIssues, issues);
+      assert.deepEqual(health.staleSourceTimes, Object.fromEntries(issues.map(flag => [flag, initial - 60 * MINUTE])));
+      assert.equal(health.lastSuccessAt, now);
+      assert.equal(health.nextAttemptAt, now + 5 * MINUTE);
+      assert.equal(health.failures, 0);
+      assert.equal(health.error, null);
+      if (i === 1) {
+        await providers.close(); providers = startProviders(f.options);
+        assert.equal(f.store.getState('providers:health').easee.status, 'degraded');
+        assert.deepEqual(f.store.getState('providers:health').easee.qualityIssues, issues);
+        assert.deepEqual(f.store.getState('providers:health').easee.staleSourceTimes, health.staleSourceTimes);
+      }
+    }
+    assert(f.store.observations({ signal: 'property_current_l1' })
+      .filter(row => row.sourceTime === initial - 60 * MINUTE).every(row => row.quality.includes('stale')));
+  } finally { await providers.close(); }
+});
+
+test('old timestamp attention starts at 30 minutes for currents and two hours for all temperatures', async t => {
+  const f = fixture(t);
+  f.config.connections = { smartthings: { inside_temp_dev_id: 'fixture-room' },
+    easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' },
+    geoloc: { latitude: '60.4', longitude: '25.6', country_code: 'fi' } };
+  let age = 0;
+  f.options.devices.temperatures = async ({ now }) => [{ ...f.temperature()[0],
+    sourceTime: now - age, quality: ['stale'] }];
+  f.options.outdoor = async ({ now }) => [{ source: 'fmi', device: 'fixture-station', signal: 'outdoor_temperature',
+    value: 12, unit: 'degC', sourceTime: now - age, receivedAt: now, quality: ['stale'] }];
+  f.options.devices.easee = async ({ now }) => ['ev1', 'property'].flatMap(prefix => [1, 2, 3].map(phase => ({
+    source: 'easee', device: `fixture-${prefix}`, signal: `${prefix}_current_l${phase}`,
+    value: prefix === 'ev1' ? 0 : 5, unit: 'A', receivedAt: now, sourceTime: now - age,
+    quality: ['current_snapshot_not_energy', 'stale'],
+  })));
+  const providers = startProviders(f.options);
+  try {
+    for (const [i, minutes] of [20, 30 - 1 / MINUTE, 30, 90, 120 - 1 / MINUTE, 120, 150, 20].entries()) {
+      age = Math.round(minutes * MINUTE);
+      const now = initial + i * 10 * MINUTE;
+      f.setTime(now); await providers.runDue();
+      const health = f.engine.status().providers;
+      const currentsOld = age >= 30 * MINUTE, temperaturesOld = age >= 120 * MINUTE;
+      assert.equal(health.easee.status, currentsOld ? 'degraded' : 'ok', `current age ${age}`);
+      assert.deepEqual(health.easee.qualityIssues, currentsOld ? ['charger_stale', 'property_stale'] : []);
+      assert.deepEqual(health.easee.staleSourceTimes, currentsOld ? { charger_stale: now - age, property_stale: now - age } : {});
+      for (const name of ['temperatures', 'outdoor']) {
+        assert.equal(health[name].status, temperaturesOld ? 'degraded' : 'ok', `${name} age ${age}`);
+        assert.deepEqual(health[name].qualityIssues, temperaturesOld ? ['stale'] : []);
+        assert.deepEqual(health[name].staleSourceTimes, temperaturesOld ? { stale: now - age } : {});
+      }
+      assert.equal(f.store.observations({ signal: 'property_current_l1' }).at(-1).quality.includes('stale'), true,
+        'attention thresholds must preserve control freshness flags');
+      assert.equal(f.store.observations({ signal: 'indoor_temperature' }).at(-1).quality.includes('stale'), true);
+    }
+  } finally { await providers.close(); }
+});
+
+test('attention age uses oldest source timestamps independently of transport age and existing stale flags', async t => {
+  const f = fixture(t);
+  f.config.connections = { easee: { equalizer_id: 'fixture-property' } };
+  f.options.devices.easee = async ({ now }) => [1, 2, 3].map(phase => ({
+    source: 'easee', device: 'fixture-property', signal: `property_current_l${phase}`, value: 5, unit: 'A',
+    sourceTime: now - phase * 35 * MINUTE, receivedAt: now, quality: ['current_snapshot_not_energy'],
+  }));
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    const health = f.engine.status().providers.easee;
+    assert.equal(health.status, 'degraded');
+    assert.equal(health.lastSuccessAt, initial);
+    assert.deepEqual(health.qualityIssues, ['property_stale']);
+    assert.deepEqual(health.staleSourceTimes, { property_stale: initial - 105 * MINUTE });
+  } finally { await providers.close(); }
+});
+
+test('restart preserves visible failures and fallback details during a scheduled wait', async t => {
+  const f = fixture(t);
+  f.store.setState('providers:health', {
+    temperatures: { status: 'ok', lastAttemptAt: initial - MINUTE, lastSuccessAt: initial - MINUTE,
+      nextAttemptAt: initial + 4 * MINUTE, failures: 0 },
+    easee: { status: 'degraded', lastAttemptAt: initial - MINUTE, lastSuccessAt: null,
+      nextAttemptAt: initial + 29 * MINUTE, failures: 3, error: 'HTTP-401',
+      qualityIssues: ['stale', 'synthetic-private-response'],
+      staleSourceTimes: { stale: initial - 60 * MINUTE, charger_stale: 'synthetic-private-response',
+        property_stale: -1, 'synthetic-private-response': initial - 120 * MINUTE } },
+    weather: { status: 'fallback', nextAttemptAt: initial + 30 * MINUTE,
+      source: 'openweathermap', acquisition: { primary: 'fmi', selected: 'openweathermap', fallbackUsed: true,
+        privateBody: 'synthetic-private-response', attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429' },
+          { source: 'openweathermap', status: 'ok' }] },
+      sourceBackoff: { fmi: { nextAttemptAt: initial + 30 * MINUTE, failures: 1, error: 'HTTP-429', shared: true } } },
+    market: { status: 'running', nextAttemptAt: initial + 20 * MINUTE },
+  });
+  const providers = startProviders(f.options);
+  try {
+    const health = f.store.getState('providers:health');
+    assert.equal(health.temperatures.status, 'ok');
+    assert.equal(health.easee.status, 'degraded');
+    assert.equal(health.easee.error, 'HTTP-401');
+    assert.equal(health.easee.nextAttemptAt, initial + 29 * MINUTE);
+    assert.deepEqual(health.easee.qualityIssues, ['stale']);
+    assert.deepEqual(health.easee.staleSourceTimes, { stale: initial - 60 * MINUTE });
+    assert.equal(health.weather.status, 'fallback');
+    assert.equal(health.weather.acquisition.attempts[0].error, 'HTTP-429');
+    assert.equal(health.weather.sourceBackoff.fmi.failures, 1, 'restoration must not count a new failure');
+    assert.equal(health.market.status, 'waiting', 'an interrupted request is no longer running');
+    assert.equal(JSON.stringify(health).includes('synthetic-private-response'), false);
   } finally { await providers.close(); }
 });
 

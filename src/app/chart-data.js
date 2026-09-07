@@ -74,7 +74,7 @@ class HistoryLine {
   constructor(envelope, gap) { this.envelope = envelope; this.gap = gap; this.previous = null; }
   add(x, y) {
     const previous = this.previous;
-    if (previous && x - previous.x > this.gap) {
+    if (previous && x - previous.x > this.gap && x > this.envelope.from) {
       this.envelope.add(Math.max(this.envelope.from, previous.x + 1), null);
       this.envelope.add(x - 1, null);
     }
@@ -102,6 +102,38 @@ function valueOf(row, flags) {
   if (PHASES.includes(row.signal) && row.unit !== 'A') return null;
   if (row.signal === 'spot_price' && !['c/kWh_ex_vat', 'c/kWh'].includes(row.unit)) return null;
   return row.value;
+}
+
+/** Easee reports the latest state of each phase, with independent event clocks.
+ * Combine one device/poll, retaining the newest phase's source time for display.
+ * Indexed lookups include unchanged phases outside the selected history window;
+ * emitting at the last source row preserves stream order with bounded memory. */
+function* alignEaseePowerSnapshots(rows, db, now) {
+  const snapshot = db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,import_id,row_number
+    FROM observations WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=?
+    AND signal IN (?,?,?) ORDER BY id`);
+  const cache = new Map();
+  for (const row of rows) {
+    if (row.source !== 'easee' || row.import_id !== null || !PHASES.includes(row.signal)) {
+      yield row; continue;
+    }
+    const prefix = row.signal.startsWith('property_') ? 'property' : 'ev1';
+    const key = JSON.stringify([prefix, row.device, row.received_at]);
+    let group = cache.get(key);
+    if (!group) {
+      const phases = new Map(snapshot.all(row.device, row.received_at,
+        ...[1, 2, 3].map(phase => `${prefix}_current_l${phase}`)).map(phase => [phase.signal, phase]));
+      const values = [...phases.values()];
+      const anchor = values.filter(phase => Number.isFinite(phase.source_time) && phase.source_time <= now)
+        .sort((a, b) => b.source_time - a.source_time || b.id - a.id)[0];
+      group = { rows: values, anchor };
+      if (cache.size >= 128) cache.delete(cache.keys().next().value);
+      cache.set(key, group);
+    }
+    if (row.id !== group.anchor?.id) continue;
+    for (const phase of group.rows) yield { ...phase, source_time: group.anchor.source_time,
+      value: Number.isFinite(phase.source_time) && phase.source_time <= now ? phase.value : null, alignedPowerSnapshot: true };
+  }
 }
 
 class ShadeEnvelope {
@@ -241,11 +273,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
     ...(left === 'integral' ? ['heating_integral'] : PHASES)]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
-  const query = store.db.prepare(`SELECT o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
-    o.quality,o.import_id,o.row_number,CASE WHEN o.signal='auxiliary_output' THEN o.raw END AS raw
+  const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
+    o.quality,o.import_id,o.row_number,CASE WHEN o.signal='auxiliary_output' THEN o.raw END AS raw`;
+  const sourceScope = input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'";
+  const query = store.db.prepare(`SELECT ${columns}
     FROM observations o INDEXED BY observations_time LEFT JOIN imports i ON i.id=o.import_id
     WHERE o.source_time>=? AND o.source_time<? AND o.signal IN (${[...requested].map(() => '?').join(',')})
-    AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
+    AND ${sourceScope}
     ${compactImports ? 'AND o.import_id IS NULL' : ''}
     AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.source_time,o.id`);
   const flagsOf = qualityReader(); let rawRows = 0, invalidRows = 0, latestOutdoor = null;
@@ -317,8 +351,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
       for (const group of phases.values()) {
         const complete = group.values.every(value => Number.isFinite(value));
         const previous = candidates.get(group.prefix);
-        if (!previous || (complete && !previous.complete) || complete === previous.complete
-          && (group.priority > previous.priority || group.priority === previous.priority && group.id > previous.id))
+        // A newer invalid poll must break the line even when an older complete
+        // poll has the same last-change timestamp. Native data precedes imports.
+        if (!previous || group.priority > previous.priority
+          || group.priority === previous.priority && group.id > previous.id)
           candidates.set(group.prefix, { ...group, complete });
       }
       for (const [prefix, group] of candidates) lines[prefix === 'property' ? 'property_power' : 'charger_power']
@@ -327,8 +363,29 @@ export function getChartData({ store, input = 'offline', contract = null, market
     atRows = new Map(); phases = new Map();
   };
   const nativeRows = query.iterate(range.from - 3 * HOUR, Math.min(range.to, now + 1), ...requested);
-  const rows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, Math.min(range.to, now + 1), requested) : nativeRows;
-  for (const row of rows) {
+  const historyRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, Math.min(range.to, now + 1), requested) : nativeRows;
+  function* rowsWithPreviousReadings() {
+    if (range.from <= now && now < range.to) {
+      // A sensor can stay unchanged for days. Seed live plots with its latest
+      // prior reading, including invalid readings so they cannot revive old data.
+      // Indexed lookups avoid expanding the selected history scan indefinitely.
+      const signals = [...TEMPERATURES, ...(left === 'integral' ? ['heating_integral'] : PHASES)];
+      const latest = store.db.prepare(`SELECT o.source_time FROM observations o INDEXED BY observations_signal_time
+        LEFT JOIN imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<?
+        AND ${sourceScope} AND (o.import_id IS NULL OR i.status='complete')
+        ORDER BY o.source_time DESC,o.id DESC LIMIT 1`);
+      const times = new Set(signals.map(signal => latest.get(signal, range.from - 3 * HOUR)?.source_time).filter(Number.isFinite));
+      const seeds = store.db.prepare(`SELECT ${columns} FROM observations o INDEXED BY observations_time
+        LEFT JOIN imports i ON i.id=o.import_id WHERE o.source_time=?
+        AND o.signal IN (${signals.map(() => '?').join(',')}) AND ${sourceScope}
+        AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.id`);
+      // Keep complete acquisition cohorts and normal duplicate/source precedence.
+      for (const at of [...times].sort((a, b) => a - b)) yield* seeds.iterate(at, ...signals);
+    }
+    yield* historyRows;
+  }
+  const rows = rowsWithPreviousReadings();
+  for (const row of left === 'power' ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
     if (row.imported) {
       if (time !== null && time !== row.source_time) flushTime();
       time = row.source_time;
@@ -363,12 +420,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (value === null) invalidRows++;
     if (left === 'power' && PHASES.includes(row.signal)) {
       const prefix = row.signal.startsWith('property') ? 'property' : 'ev1';
-      // Same original CSV row, or same API snapshot and source timestamp. Never
-      // join a stale phase to a newer phase or combine separate devices.
+      // Same original CSV row, or the last-reported states from one device poll.
+      // Easee phases retain independent source timestamps in the phase view.
       const key = `${prefix}:${row.source}:${row.device}:${row.import_id ?? ''}:${row.row_number ?? row.received_at}`;
       let group = phases.get(key);
       if (!group) { group = { prefix, id: row.id, values: [null, null, null], priority: row.import_id === null ? 1 : 0 }; phases.set(key, group); }
-      group.values[Number(row.signal.at(-1)) - 1] = flags.includes('asynchronous_snapshot') || flags.includes('ev_exceeds_property_current') ? null : value;
+      group.values[Number(row.signal.at(-1)) - 1] = !row.alignedPowerSnapshot && flags.includes('asynchronous_snapshot')
+        || flags.includes('ev_exceeds_property_current') ? null : value;
       group.id = row.id;
     } else rememberScalar(row, value);
   }
@@ -413,10 +471,15 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const series = Object.fromEntries(Object.entries(envelopes).map(([name, envelope]) => [name, envelope.values()]));
   for (const key of Object.keys(shading)) shading[key] = shading[key].values();
   if (Object.values(shading).some(rows => rows.some(row => row.aggregated))) warnings.push('Dense shading shows the occupied fraction of each display interval.');
-  return { range, now, input, left, series, shading, meta: { warnings, rawRows, invalidRows,
+  // These are original source timestamps, even when outside the visible range.
+  // Only the browser draws carry-forward tails; no synthetic readings are stored.
+  const lastReadings = Object.fromEntries([...TEMPERATURES,
+    ...(left === 'power' ? ['property_power', 'charger_power'] : left === 'phases' ? PHASES : ['heating_integral'])]
+    .filter(name => lines[name].previous).map(name => [name, { ...lines[name].previous }]));
+  return { range, now, input, left, series, shading, meta: { warnings, rawRows, invalidRows, lastReadings,
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
-    powerEstimate: left === 'power' ? '230 V × sum of three contemporaneous phase currents; estimated kW, not metered power or energy.' : null,
+    powerEstimate: left === 'power' ? '230 V × sum of three last-reported phase currents from one device acquisition; estimated kW, not metered power or energy.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Verified timestamped auxiliary output only; dated counters cannot identify episodes.',
     dhwrBasis: 'Historical ten-minute pulse requests, not verified pump feedback.',

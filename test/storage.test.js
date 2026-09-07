@@ -30,6 +30,37 @@ test('schema migrates once, checkpoints survive restart, future schema is reject
   assert.throws(() => new Store(path), /newer/);
 });
 
+test('schema-v2 migration preserves observations and indexes complete Easee acquisitions', t => {
+  const { store, path } = fixture(t);
+  const receivedAt = 4_000_000;
+  for (const phase of [1, 2, 3]) store.observation({
+    source: 'easee', device: 'example-equalizer', signal: `property_current_l${phase}`,
+    value: phase, unit: 'A', sourceTime: phase * 1_000_000, receivedAt,
+  });
+  store.observation({ source: 'mqtt', device: 'example-equalizer', signal: 'property_current_l1',
+    value: 7, unit: 'A', sourceTime: receivedAt, receivedAt });
+  store.setState('checkpoint', { cursor: 42 });
+  const before = store.observations();
+  store.close();
+
+  const prior = new DatabaseSync(path);
+  prior.exec('DROP INDEX observations_easee_acquisition; PRAGMA user_version = 2');
+  prior.close();
+  const migrated = new Store(path);
+  try {
+    assert.equal(migrated.summary().schemaVersion, SCHEMA_VERSION);
+    assert.deepEqual(migrated.observations(), before);
+    assert.deepEqual(migrated.getState('checkpoint'), { cursor: 42 });
+    const sql = `SELECT signal,source_time FROM observations
+      WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=? ORDER BY id`;
+    const params = ['example-equalizer', receivedAt];
+    assert.equal(migrated.db.prepare(sql).all(...params).length, 3);
+    assert(migrated.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params)
+      .some(row => /SEARCH observations USING INDEX observations_easee_acquisition/.test(row.detail)),
+    'Acquisition lookup must use the migrated index instead of scanning observation history');
+  } finally { migrated.close(); }
+});
+
 test('events return a chronological tail and a cursor follows new events', t => {
   const { store } = fixture(t);
   for (let n = 1; n <= 7; n++) store.event('decision', { n }, n * 1000);

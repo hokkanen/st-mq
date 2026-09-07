@@ -83,11 +83,31 @@ test('Easee uses replacement observations endpoint and preserves every phase tim
   assert.equal(rows[0].sourceTime, Date.parse('2026-09-06T12:00:00Z'));
   assert.equal(rows[4].sourceTime, Date.parse('2026-09-06T11:58:00Z'));
   assert(rows.every(row => row.unit === 'A' && row.quality.includes('current_snapshot_not_energy')));
-  assert(rows.every(row => row.quality.includes('asynchronous_snapshot')));
+  assert(rows.slice(0, 3).every(row => !row.quality.includes('asynchronous_snapshot')));
+  assert(rows.slice(3).every(row => row.quality.includes('asynchronous_snapshot')));
   assert.equal(calls[0].url, 'https://api.easee.com/state/charger%2Fdevice/observations?ids=183,184,185');
   assert.equal(calls[1].url, 'https://api.easee.com/state/equalizer-device/observations?ids=31,32,33');
   assert(calls.every(call => call.options.method === 'GET'));
   assert(!JSON.stringify(rows).includes('must-not-persist'));
+});
+
+test('an old idle charger does not mark fresh equalizer phases as asynchronous', async () => {
+  let mismatchedEqualizer = false;
+  const providers = createDeviceProviders({ connections: { easee }, http: { async json(url) {
+    const charger = url.includes('ids=183');
+    return (charger ? [183, 184, 185] : [31, 32, 33]).map((id, phase) => ({
+      id, value: charger ? 0 : 5 + phase,
+      timestamp: new Date(charger ? now - 2 * 86400_000 : now - (mismatchedEqualizer && phase === 1 ? 120_000 : 0)).toISOString(),
+    }));
+  } } });
+  const rows = await providers.easee({ now });
+  assert(rows.slice(0, 3).every(row => row.quality.includes('stale')));
+  assert(rows.slice(3).every(row => !row.quality.includes('stale')));
+  assert(rows.every(row => !row.quality.includes('asynchronous_snapshot')));
+  mismatchedEqualizer = true;
+  const mismatched = await providers.easee({ now });
+  assert(mismatched.slice(3).every(row => row.quality.includes('asynchronous_snapshot')));
+  assert(mismatched.slice(0, 3).every(row => !row.quality.includes('asynchronous_snapshot')));
 });
 
 test('concurrent Easee 401s share a single refresh and save only rotated token pair', async () => {

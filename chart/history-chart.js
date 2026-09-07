@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, selectedRange, visible } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible } from './history-model.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -137,7 +137,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
               borderColor: palette.border, borderWidth: 1,
               callbacks: {
                 title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
-                label: item => `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}`,
+                label: item => `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`,
               },
             },
           },
@@ -151,6 +151,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const simulated = payload.input === 'simulated' ? ' · simulated data' : '';
     $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${hasValues ? '' : ' · No visible readings for these dates'}`;
     const notes = ['Dashed outdoor line: forecast. All values stay within the selected dates.'];
+    if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push('Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
     if (plot.left === 'power') notes.push('Power is estimated at 230 V from all three phase currents; it is not measured active power.');
     if (!(payload.series.all_in_price ?? []).some(point => Number.isFinite(point.y))) notes.push('All-in prices are unavailable for these dates. Spot price can be enabled in the legend.');
     if (Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated))) notes.push('Shading on this long range is lighter in proportion to recorded activity within each time bucket.');
@@ -178,8 +179,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     try {
       const result = await loader.load(selection, { force, today });
       if (generation !== selectionGeneration || closed) return;
-      const nextFingerprint = JSON.stringify({ range: result.range, input: result.input, series: result.series, shading: result.shading, meta: result.meta, left: selection.left });
-      payload = result; plottedSelection = { ...selection };
+      // The response cache may contain unchanged measurements. Advance their
+      // display tails and the now marker using each fresh server-status clock.
+      const plotNow = Number.isFinite(status.now) ? status.now : result.now;
+      payload = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
+      const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, left: selection.left,
+        now: plotNow >= payload.range.from && plotNow < payload.range.to ? plotNow : null });
+      plottedSelection = { ...selection };
       if (nextFingerprint !== fingerprint) { fingerprint = nextFingerprint; renderChart(); }
       else if (canvas.dataset.ready !== 'true') renderChart();
     } catch (error) {

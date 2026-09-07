@@ -11,6 +11,39 @@ const errorCode = error => Number.isInteger(error?.status) && error.status >= 10
   ? `HTTP-${error.status}` : 'provider-request-failed';
 const SOURCES = new Set(['entsoe', 'elering', 'fmi', 'openweathermap']);
 const OBSERVATION_SOURCES = ['smartthings', 'easee', 'fmi', 'openweathermap'];
+const QUALITY_ISSUES = new Set(['future_source_time', 'source_time_unknown', 'stale', 'charger_stale', 'property_stale',
+  'implausible_temperature', 'suspect_zero_indoor', 'implausible_current', 'negative_current',
+  'all_zero_property_current', 'ev_exceeds_property_current', 'asynchronous_snapshot']);
+const DOWNLOAD_ISSUES = new Set(['provider_error', 'missing_configuration', 'invalid_unit',
+  'invalid_numeric', 'conflicting_duplicate', 'missing']);
+const COMPLETED_STATES = new Set(['ok', 'fallback', 'degraded', 'error']);
+const qualityIssues = flags => Array.isArray(flags) ? [...new Set(flags.filter(flag => QUALITY_ISSUES.has(flag)))] : [];
+const STALE_ISSUES = new Set(['stale', 'charger_stale', 'property_stale']);
+const validSourceTime = value => Number.isSafeInteger(value) && value > 0 && value <= 8640000000000000;
+const savedStaleSourceTimes = times => Object.fromEntries(Object.entries(times ?? {})
+  .filter(([flag, at]) => STALE_ISSUES.has(flag) && validSourceTime(at)));
+// Attention thresholds are separate from the stricter freshness checks used for
+// control. Preserve those observations, and keep idle charger age informational.
+function observationQuality(name, rows, now) {
+  const staleSourceTimes = {};
+  const issues = rows.flatMap(row => {
+    const maximumAge = /_current_l[123]$/.test(row.signal) ? 30 * MINUTE
+      : /_temperature$/.test(row.signal) ? 120 * MINUTE : null;
+    const stale = maximumAge === null ? row.quality.includes('stale')
+      : validSourceTime(row.sourceTime) && now - row.sourceTime >= maximumAge;
+    const flags = row.quality.filter(flag => !STALE_ISSUES.has(flag));
+    if (stale) {
+      const flag = name === 'easee' && /^ev1_current_l[123]$/.test(row.signal) ? 'charger_stale'
+        : name === 'easee' && /^property_current_l[123]$/.test(row.signal) ? 'property_stale' : 'stale';
+      flags.push(flag);
+      if (validSourceTime(row.sourceTime)) staleSourceTimes[flag] = Math.min(staleSourceTimes[flag] ?? Infinity, row.sourceTime);
+    }
+    return flags;
+  });
+  return { issues: qualityIssues(issues), staleSourceTimes };
+}
+const savedError = error => ['incomplete-market-coverage', 'missing-or-invalid-observations', 'provider-request-failed'].includes(error)
+  ? error : error ? safeFailure(error) : null;
 const safeFailure = value => typeof value === 'string' && /^HTTP[-_][1-5]\d{2}$/i.test(value)
   ? value.toUpperCase().replace('_', '-') : 'provider-request-failed';
 const boundedDelay = value => Number.isFinite(value) ? Math.min(24 * 60 * MINUTE, Math.max(0, value)) : 0;
@@ -24,13 +57,26 @@ function configuredLocation(connections) {
     && Math.abs(Number(latitude)) <= 90 && Math.abs(Number(longitude)) <= 180;
 }
 
+function acquisitionInfo(raw) {
+  if (!raw || !SOURCES.has(raw.primary) || !Array.isArray(raw.attempts)) return null;
+  const info = { primary: raw.primary, selected: SOURCES.has(raw.selected) ? raw.selected : null,
+    fallbackUsed: raw.fallbackUsed === true,
+    attempts: raw.attempts.slice(0, 4).filter(row => SOURCES.has(row?.source)).map(row => ({
+      source: row.source, status: ['ok', 'error', 'not-configured', 'incomplete', 'backoff'].includes(row.status) ? row.status : 'error',
+      error: row.error ? safeFailure(row.error) : null, retryAfterMs: boundedDelay(row.retryAfterMs),
+    })) };
+  if (raw.coverage) info.coverage = {
+    current: raw.coverage.current === true, completeToday: raw.coverage.completeToday === true,
+    gaps: raw.coverage.gaps === true,
+    knownUntil: Number.isSafeInteger(raw.coverage.knownUntil) ? raw.coverage.knownUntil : null,
+  };
+  return info;
+}
+
 function noteAcquisition(state, raw, now) {
-  if (!raw || !SOURCES.has(raw.primary) || !Array.isArray(raw.attempts)) return;
-  const attempts = raw.attempts.slice(0, 4).filter(row => SOURCES.has(row?.source)).map(row => ({
-    source: row.source, status: ['ok', 'error', 'not-configured', 'incomplete', 'backoff'].includes(row.status) ? row.status : 'error',
-    error: row.error ? safeFailure(row.error) : null, retryAfterMs: boundedDelay(row.retryAfterMs),
-  }));
-  for (const attempt of attempts) {
+  const info = acquisitionInfo(raw);
+  if (!info) return;
+  for (const attempt of info.attempts) {
     if (attempt.status === 'ok') delete state.sourceBackoff[attempt.source];
     else if (['error', 'incomplete'].includes(attempt.status)) {
       const failures = Math.min(10, (state.sourceBackoff[attempt.source]?.failures ?? 0) + 1);
@@ -39,13 +85,7 @@ function noteAcquisition(state, raw, now) {
         shared: /HTTP-(401|403|429)/.test(attempt.error ?? '') || attempt.retryAfterMs > 0 };
     }
   }
-  state.acquisition = { primary: raw.primary, selected: SOURCES.has(raw.selected) ? raw.selected : null,
-    fallbackUsed: raw.fallbackUsed === true, attempts };
-  if (raw.coverage) state.acquisition.coverage = {
-    current: raw.coverage.current === true, completeToday: raw.coverage.completeToday === true,
-    gaps: raw.coverage.gaps === true,
-    knownUntil: Number.isSafeInteger(raw.coverage.knownUntil) ? raw.coverage.knownUntil : null,
-  };
+  state.acquisition = info;
 }
 
 function cacheWeather(previous, result, snapshotId, now) {
@@ -93,9 +133,13 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     // Honor bounded retry/cadence state on ordinary restarts, never stale running state.
     const due = Number.isFinite(previous?.nextAttemptAt) && previous.nextAttemptAt <= now + 24 * 60 * MINUTE
       ? Math.max(now, previous.nextAttemptAt) : now;
-    health[name] = { status: job.enabled ? 'waiting' : 'not-configured',
+    health[name] = { status: job.enabled ? (COMPLETED_STATES.has(previous?.status) ? previous.status : 'waiting') : 'not-configured',
       lastAttemptAt: previous?.lastAttemptAt ?? null, lastSuccessAt: previous?.lastSuccessAt ?? null,
-      nextAttemptAt: job.enabled ? due : null, failures: Math.min(10, Math.max(0, previous?.failures ?? 0)), error: null,
+      nextAttemptAt: job.enabled ? due : null, failures: Math.min(10, Math.max(0, previous?.failures ?? 0)),
+      error: job.enabled ? savedError(previous?.error) : null,
+      qualityIssues: job.enabled ? qualityIssues(previous?.qualityIssues) : [],
+      staleSourceTimes: job.enabled ? savedStaleSourceTimes(previous?.staleSourceTimes) : {},
+      ...(job.enabled && acquisitionInfo(previous?.acquisition) ? { acquisition: acquisitionInfo(previous.acquisition) } : {}),
       source: typeof previous?.source === 'string' && OBSERVATION_SOURCES.concat([...SOURCES]).includes(previous.source) ? previous.source : null,
       sourceBackoff: Object.fromEntries(Object.entries(previous?.sourceBackoff ?? {}).filter(([source, state]) =>
         SOURCES.has(source) && Number.isFinite(state?.nextAttemptAt) && state.nextAttemptAt <= now + 24 * 60 * MINUTE)
@@ -110,7 +154,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     const job = definitions[name], state = health[name], at = clock();
     Object.assign(state, { status: 'running', lastAttemptAt: at });
     store.setState('providers:health', health);
-    let failure = null, retryAfterMs = 0;
+    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {};
     try {
       // Forecast and current weather share provider hosts/keys. A server's rate
       // limit or access denial applies to both routes, while a missing station
@@ -142,18 +186,18 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
           store.setState('provider:observations', Object.values(engine.latest)
             .filter(row => OBSERVATION_SOURCES.includes(row.source)));
           retryAfterMs = Math.max(0, ...result.map(row => boundedDelay(row.raw?.retryAfterMs)));
-          // Missing or erroneous data is visible even when an older reading remains usable.
-          if (!result.length || result.some(row => row.value === null || row.quality.some(flag =>
-            ['provider_error', 'missing_configuration', 'invalid_unit', 'invalid_numeric', 'future_source_time',
-              'source_time_unknown', 'stale', 'implausible_temperature', 'suspect_zero_indoor',
-              'conflicting_duplicate', 'implausible_current', 'negative_current', 'all_zero_property_current',
-              'ev_exceeds_property_current', 'asynchronous_snapshot'].includes(flag)))) {
+          // Last-reported values can stay unchanged while downloads succeed. Keep
+          // their original source ages and warnings without slowing other devices.
+          ({ issues, staleSourceTimes } = observationQuality(name, result, clock()));
+          if (!result.length || result.some(row => row.value === null || row.quality.some(flag => DOWNLOAD_ISSUES.has(flag)))) {
             failure = result.flatMap(row => row.quality).find(flag => /^http_status_\d{3}$/.test(flag))
               ?.replace('http_status_', 'HTTP-') ?? 'missing-or-invalid-observations';
           }
         }
       }); } catch (error) { engine.latest = latestBefore; throw error; }
-      state.status = failure ? 'degraded' : state.acquisition?.fallbackUsed ? 'fallback' : 'ok';
+      state.qualityIssues = issues;
+      state.staleSourceTimes = staleSourceTimes;
+      state.status = failure || issues.some(flag => flag !== 'charger_stale') ? 'degraded' : state.acquisition?.fallbackUsed ? 'fallback' : 'ok';
     } catch (error) {
       if (closed) return;
       noteAcquisition(state, error?.acquisition, clock());
@@ -164,7 +208,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     state.error = failure;
     state.failures = failure ? Math.min(10, state.failures + 1) : 0;
     if (!failure) state.lastSuccessAt = clock();
-    // Five-minute minimum and bounded exponential backoff also cover HTTP 429.
+    // Only failed downloads back off. Successfully received older device state
+    // stays on the normal cadence, including when an unused charger is stale.
     let delay = failure ? backoff(state.failures, failure, retryAfterMs) : job.period;
     const sourceDelays = (state.acquisition?.attempts ?? []).filter(attempt => attempt.status !== 'not-configured')
       .map(attempt => state.sourceBackoff[attempt.source]?.nextAttemptAt - clock());

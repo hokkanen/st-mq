@@ -77,6 +77,35 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('A comfortable home')"), false);
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   const legendState = text => evaluate(`Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))?.getAttribute('aria-pressed')`);
+  const checkPowerDrawn = async () => {
+    await until(`document.getElementById('history').dataset.ready === 'true'
+      && document.getElementById('history').dataset.left === 'power'
+      && ['property_power', 'charger_power'].every(key =>
+        document.querySelector('[data-chart-key="' + key + '"]')?.getAttribute('aria-pressed') === 'true')`);
+    for (const key of ['property_power', 'charger_power']) {
+      const changedPixels = await evaluate(`(async () => {
+        const canvas = document.getElementById('history');
+        const context = canvas.getContext('2d');
+        const button = document.querySelector('[data-chart-key="${key}"]');
+        const settled = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await settled();
+        const before = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        button.click();
+        await settled();
+        const after = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let changed = 0;
+        for (let i = 0; i < before.length; i += 4) {
+          if (before[i] !== after[i] || before[i + 1] !== after[i + 1]
+            || before[i + 2] !== after[i + 2] || before[i + 3] !== after[i + 3]) changed++;
+        }
+        button.click();
+        await settled();
+        return changed;
+      })()`);
+      assert.ok(changedPixels > 0, `${key} draws visible chart pixels, not just a legend entry`);
+    }
+  };
+  await checkPowerDrawn();
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'false');
   assert.equal(await legendState('dhwr'), 'false');
@@ -113,12 +142,13 @@ try {
   assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   await evaluate("Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes('spot')).click(); true");
-  for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'], ['power', 'charger_power', 'heating_integral']]) {
+  for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
     await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
     assert.equal(await legendState('spot'), 'true', 'Shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
+    if (left === 'power') await checkPowerDrawn();
     timings.push({ action: left, elapsedMs: Math.round(performance.now() - began) });
   }
   // Rapid changes must settle on the last request even if previous requests finish late.
@@ -222,12 +252,29 @@ try {
   }
   await app.close();
   const fixture = providerFixture(now);
+  const fixtureCurrents = fixture.providerOptions.devices.easee;
+  // Equalizer phases share an acquisition but retain independent source clocks.
+  // This used to leave property power empty while charger power still rendered.
+  fixture.providerOptions.devices.easee = async () => (await fixtureCurrents()).map(row => ({ ...row,
+    sourceTime: row.sourceTime - (row.signal.startsWith('property_current_') ? (Number(row.signal.at(-1)) - 1) * 90_000 : 0),
+  }));
   app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'), connections: fixture.connections },
     clock: () => now, providerOptions: fixture.providerOptions });
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
   await until("document.getElementById('outdoor-age').textContent.includes('FMI nearby station')");
   await until("document.getElementById('history').dataset.ready === 'true'");
+  const providerChart = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?start=2026-09-07&end=2026-09-07&left=power`).then(response => response.json());
+  for (const [key, expected] of [['property_power', 6.9], ['charger_power', 2.07]]) {
+    assert.ok(providerChart.series[key].some(point => Number.isFinite(point.y) && Math.abs(point.y - expected) < 1e-9),
+      `${key} contains the expected total from all three provider phase currents`);
+  }
+  await checkPowerDrawn();
+  for (const left of ['phases', 'integral', 'power']) {
+    await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
+    await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)}`);
+  }
+  await checkPowerDrawn();
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
@@ -241,7 +288,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-controller-panels', 'provider-sources-and-fallbacks'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-controller-panels', 'provider-sources-and-fallbacks'] }, null, 2));
   await command('browser.close', {});
 } finally {
   ws?.close();

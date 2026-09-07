@@ -218,8 +218,13 @@ export function createDeviceProviders({ connections = {}, http, tokenStore } = {
       const property = rows.filter(row => row.signal.startsWith('property_'));
       const charger = rows.filter(row => row.signal.startsWith('ev1_'));
       if (property.length === 3 && property.every(row => row.value === 0)) property.forEach(row => row.quality.push('all_zero_property_current'));
-      const timestamps = rows.map(row => row.sourceTime).filter(at => at !== null);
-      if (timestamps.length > 1 && Math.max(...timestamps) - Math.min(...timestamps) > 30_000) rows.forEach(row => row.quality.push('asynchronous_snapshot'));
+      // Each device reports its own phase snapshot. An unused charger's old
+      // event timestamps say nothing about the Equalizer's phase consistency.
+      for (const group of [property, charger]) {
+        const timestamps = group.map(row => row.sourceTime).filter(at => at !== null);
+        if (timestamps.length > 1 && Math.max(...timestamps) - Math.min(...timestamps) > 30_000)
+          group.forEach(row => row.quality.push('asynchronous_snapshot'));
+      }
       if (property.length === 3 && charger.length === 3 && rows.every(row => row.value !== null)
         && charger.reduce((sum, row) => sum + row.value, 0) > property.reduce((sum, row) => sum + row.value, 0) + 0.5) rows.forEach(row => row.quality.push('ev_exceeds_property_current'));
       return rows;

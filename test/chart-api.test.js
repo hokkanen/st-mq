@@ -56,6 +56,29 @@ test('chart defaults to today in Finland and includes shared right-axis data for
   }
 });
 
+test('total-power API includes property phases reported minutes apart and preserves phase timestamps', async t => {
+  const { base, headers, store, now } = await fixture(t);
+  const propertyTimes = [now - 45 * 60_000, now - 10 * 60_000, now];
+  for (const [i, sourceTime] of propertyTimes.entries()) {
+    store.observation({ source: 'easee', device: 'fixture-property', signal: `property_current_l${i + 1}`,
+      value: i + 1, unit: 'A', sourceTime, receivedAt: now, quality: ['current_snapshot_not_energy', 'asynchronous_snapshot'] });
+    store.observation({ source: 'easee', device: 'fixture-charger', signal: `ev1_current_l${i + 1}`,
+      value: 0, unit: 'A', sourceTime: now - 3_600_000, receivedAt: now,
+      quality: ['current_snapshot_not_energy', 'stale'] });
+  }
+  const powerResponse = await fetch(`${base}/api/chart?left=power`, { headers });
+  assert.equal(powerResponse.status, 200);
+  const power = await powerResponse.json();
+  assert(power.series.property_power.some(point => Math.abs(point.y - 1.38) < 0.000001));
+  assert(power.series.charger_power.some(point => point.y === 0));
+  assert.equal(power.meta.lastReadings.property_power.x, now);
+  assert.equal(power.meta.lastReadings.charger_power.x, now - 3_600_000);
+  const phases = await fetch(`${base}/api/chart?left=phases`, { headers }).then(response => response.json());
+  for (const [i, sourceTime] of propertyTimes.entries()) {
+    assert(phases.series[`property_current_l${i + 1}`].some(point => point.x === sourceTime && point.y === i + 1));
+  }
+});
+
 test('dated contract edits invalidate chart pricing without filling uncovered historical dates', async t => {
   // An imported installation can have historical prices before its configured
   // rate coverage. Exercise that case independently of new-install defaults.

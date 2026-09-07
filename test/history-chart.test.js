@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, selectedRange, shiftDate, validDate, visible } from '../chart/history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible } from '../chart/history-model.js';
 
 test('calendar controls use Finnish dates across UTC midnight, leap days and both clock changes', () => {
   assert.equal(finnishDate(Date.parse('2026-09-07T21:30:00Z')), '2026-09-08');
@@ -55,6 +55,7 @@ test('charger fills and shared outdoor visibility retain exact missing and negat
   assert.equal(power.find(dataset => dataset.key === 'property_power').stepped, true);
   assert.equal(power.find(dataset => dataset.key === 'property_power').fill, false);
   assert.deepEqual(power.find(dataset => dataset.key === 'property_power').data, series.property_power);
+  assert.deepEqual(power.find(dataset => dataset.key === 'property_power').pointRadius, [2, 0, 2], 'Isolated valid totals remain visible between gaps');
   assert.equal(power.find(dataset => dataset.key === 'outdoor_forecast').hidden, true);
   assert.deepEqual(power.find(dataset => dataset.key === 'outdoor_forecast').borderDash, [5, 4]);
   assert.equal(power.find(dataset => dataset.key === 'spot_price').hidden, false);
@@ -114,4 +115,46 @@ test('bounded response cache evicts least recently used date/axis combinations',
   await loader.load({ ...base, left: 'integral' });
   assert.deepEqual(await loader.load({ ...base, left: 'phases' }), { call: 4 });
   loader.close();
+});
+
+test('all measured lines carry their last value to each fresh status time without changing cached history', async () => {
+  const from = Date.parse('2026-09-07T00:00:00+03:00'), recordedAt = from + 3_600_000;
+  let now = from + 4 * 3_600_000, calls = 0;
+  const keys = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'property_power', 'charger_power',
+    ...['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), 'heating_integral'];
+  const series = Object.fromEntries(keys.map((key, index) => [key, [{ x: recordedAt, y: index - 3 }]]));
+  for (const key of ['all_in_price', 'spot_price', 'outdoor_forecast']) series[key] = [{ x: recordedAt, y: 5 }];
+  const original = { range: { from, to: from + 24 * 3_600_000 }, now, series };
+  const before = structuredClone(original);
+  const loader = createChartLoader({ now: () => now, api: async () => { calls++; return original; } });
+  const selection = { startDate: '2026-09-07', endDate: '2026-09-07', left: 'power' };
+  for (let poll = 0; poll < 3; poll++, now += 15_000) {
+    const cached = await loader.load(selection);
+    const display = historySeriesAt(cached, now);
+    for (const key of keys) {
+      assert.deepEqual(display[key].at(-1), { x: now, y: series[key][0].y, carriedForward: true, observedAt: recordedAt });
+      assert.equal(display[key].length, 2, 'Each refresh starts from original history');
+    }
+    for (const key of ['all_in_price', 'spot_price', 'outdoor_forecast']) assert.equal(display[key], series[key]);
+    assert.deepEqual(original, before);
+  }
+  assert.equal(calls, 1, 'The tail moves while the HTTP response stays cached');
+  loader.close();
+});
+
+test('old readings can start a live day, while missing, historical and future readings remain unextended', () => {
+  const from = 1_000_000, now = from + 100_000, to = from + 200_000;
+  const payload = { range: { from, to }, now, series: {
+    indoor_temperature: [], garage_temperature: [{ x: from + 10, y: 12 }, { x: from + 20, y: null }],
+    outdoor_temperature: [], property_power: [{ x: now + 1, y: 3 }], charger_power: [],
+  }, meta: { lastReadings: { indoor_temperature: { x: from - 86_400_000, y: 21 },
+    garage_temperature: { x: from + 20, y: null }, outdoor_temperature: { x: from - 10, y: null },
+    charger_power: { x: from - 86_400_000, y: 0 } } } };
+  const display = historySeriesAt(payload);
+  assert.deepEqual(display.indoor_temperature, [from, now].map(x => ({ x, y: 21, carriedForward: true, observedAt: from - 86_400_000 })));
+  assert.deepEqual(display.charger_power, [from, now].map(x => ({ x, y: 0, carriedForward: true, observedAt: from - 86_400_000 })));
+  for (const key of ['garage_temperature', 'outdoor_temperature', 'property_power']) assert.equal(display[key], payload.series[key]);
+  assert.equal(historySeriesAt(payload, to), payload.series, 'Past dates retain recorded historical gaps');
+  assert.equal(historySeriesAt(payload, from - 1), payload.series, 'Future dates do not invent observations');
+  assert.equal(historySeriesAt(payload, NaN), payload.series);
 });

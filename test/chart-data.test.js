@@ -7,6 +7,7 @@ import { Store } from '../src/storage/store.js';
 import { Envelope, chartRange, getChartData } from '../src/app/chart-data.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { importCsv } from '../src/storage/history.js';
+import { historySeriesAt } from '../chart/history-model.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000;
 const from = Date.parse('2026-01-15T00:00:00+02:00');
@@ -49,6 +50,113 @@ test('combined power requires all three phases from the same timestamp and acqui
     const phaseView = get(store, { left: 'phases' });
     assert.equal(phaseView.series.property_current_l1[0].y, 10);
     assert(!Object.hasOwn(phaseView.series, 'property_power'));
+  } finally { store.close(); }
+});
+
+test('Easee power combines one acquisition with independent phase event timestamps', () => {
+  const store = new Store(':memory:');
+  try {
+    const receivedAt = from + MINUTE;
+    const timestamps = [from - 4 * HOUR, from - 45 * MINUTE, from + 1300];
+    for (let phase = 1; phase <= 3; phase++) {
+      put(store, `property_current_l${phase}`, phase * 10, timestamps[phase - 1], {
+        source: 'easee', device: 'fixture-equalizer', receivedAt,
+        // Older adapter versions flagged both devices when only the idle
+        // charger's timestamps lagged. The chart rechecks each device itself.
+        quality: ['current_snapshot_not_energy', 'asynchronous_snapshot'],
+      });
+      put(store, `ev1_current_l${phase}`, 0, from - 2 * HOUR, {
+        source: 'easee', device: 'fixture-charger', receivedAt,
+        quality: ['current_snapshot_not_energy', 'stale', 'asynchronous_snapshot'],
+      });
+    }
+    put(store, 'indoor_temperature', 21, from + 500);
+    const result = get(store);
+    assert.deepEqual(result.series.property_power, [{ x: timestamps[2], y: 13.8 }]);
+    assert.deepEqual(result.meta.lastReadings.property_power, { x: timestamps[2], y: 13.8 });
+    assert.equal(historySeriesAt(result).property_power.at(-1).y, 13.8);
+    assert.equal(historySeriesAt(result).charger_power.at(-1).y, 0);
+    assert.equal(result.series.indoor_temperature[0].y, 21);
+    const phaseView = get(store, { left: 'phases' });
+    for (let phase = 1; phase <= 3; phase++)
+      assert.equal(phaseView.meta.lastReadings[`property_current_l${phase}`].x, timestamps[phase - 1]);
+  } finally { store.close(); }
+});
+
+test('Easee total power accepts independent event clocks but rejects missing phases and mixed devices or acquisitions', () => {
+  const store = new Store(':memory:');
+  try {
+    const phase = (number, at, extra = {}) => put(store, `property_current_l${number}`, 10, at, {
+      source: 'easee', device: 'fixture-equalizer', receivedAt: from + MINUTE, ...extra,
+    });
+    phase(1, from); phase(2, from + 100); phase(3, from + 30_000);
+    phase(1, from + MINUTE, { receivedAt: from + 2 * MINUTE });
+    phase(2, from + MINUTE + 100, { receivedAt: from + 2 * MINUTE });
+    phase(3, from + MINUTE + 30_001, { receivedAt: from + 2 * MINUTE });
+    phase(1, from + 2 * MINUTE, { receivedAt: from + 3 * MINUTE });
+    phase(2, from + 2 * MINUTE + 100, { receivedAt: from + 3 * MINUTE });
+    phase(3, from + 2 * MINUTE + 200, { receivedAt: from + 3 * MINUTE + 1 });
+    phase(1, from + 3 * MINUTE, { receivedAt: from + 4 * MINUTE });
+    phase(2, from + 3 * MINUTE + 100, { receivedAt: from + 4 * MINUTE });
+    phase(3, from + 3 * MINUTE + 200, { receivedAt: from + 4 * MINUTE, device: 'other-fixture-equalizer' });
+    phase(1, from + 4 * MINUTE, { receivedAt: from + 5 * MINUTE });
+    phase(2, from + 4 * MINUTE + 100, { receivedAt: from + 5 * MINUTE });
+    const result = get(store);
+    assert.deepEqual(result.series.property_power.filter(point => point.y !== null), [
+      { x: from + 30_000, y: 6.9 }, { x: from + MINUTE + 30_001, y: 6.9 },
+    ]);
+    assert.equal(result.meta.lastReadings.property_power.y, null);
+    assert.equal(historySeriesAt(result).property_power.at(-1).y, null, 'A missing latest phase cannot revive an earlier total');
+  } finally { store.close(); }
+});
+
+test('Easee power loads unchanged phases outside historical scan bounds without joining other polls', () => {
+  const store = new Store(':memory:');
+  try {
+    const receivedAt = from + HOUR;
+    const timestamps = [from - 5 * 24 * HOUR, from - 4 * HOUR, from + MINUTE];
+    for (const [i, at] of timestamps.entries()) put(store, `property_current_l${i + 1}`, 10, at, {
+      source: 'easee', device: 'fixture-equalizer', receivedAt, quality: ['asynchronous_snapshot', 'stale'],
+    });
+    const count = store.db.prepare('SELECT count(*) AS total FROM observations').get().total;
+    for (const chartNow of [now, now + 2 * 24 * HOUR]) {
+      const result = get(store, { now: chartNow });
+      assert.deepEqual(result.series.property_power, [{ x: from + MINUTE, y: 6.9 }]);
+      assert.deepEqual(result.meta.lastReadings.property_power, { x: from + MINUTE, y: 6.9 });
+    }
+    assert.equal(store.db.prepare('SELECT count(*) AS total FROM observations').get().total, count);
+  } finally { store.close(); }
+});
+
+test('Easee power keeps missing or unknown-time phases invalid after a complete older poll', () => {
+  for (const invalid of [{ value: null }, { sourceTime: null }, { sourceTime: now + MINUTE, quality: ['future_source_time'] }]) {
+    const store = new Store(':memory:');
+    try {
+      const putPhase = (phase, at, extra = {}) => store.observation({ source: 'easee', device: 'fixture-equalizer',
+        signal: `property_current_l${phase}`, value: 10, unit: 'A', sourceTime: at, receivedAt: at, ...extra });
+      for (const phase of [1, 2, 3]) putPhase(phase, from);
+      putPhase(1, from + MINUTE);
+      putPhase(2, from - HOUR, { receivedAt: from + MINUTE });
+      putPhase(3, from - 2 * HOUR, { receivedAt: from + MINUTE, ...invalid });
+      const result = get(store);
+      assert.equal(result.meta.lastReadings.property_power.y, null);
+      assert.equal(historySeriesAt(result).property_power.at(-1).y, null);
+    } finally { store.close(); }
+  }
+});
+
+test('a newer invalid Easee poll supersedes a complete poll with the same source timestamps', () => {
+  const store = new Store(':memory:');
+  try {
+    for (const receivedAt of [from + MINUTE, from + 2 * MINUTE]) {
+      for (const phase of [1, 2, 3]) put(store, `property_current_l${phase}`,
+        phase === 3 && receivedAt === from + 2 * MINUTE ? null : 10, from, {
+          source: 'easee', device: 'fixture-equalizer', receivedAt,
+        });
+    }
+    const result = get(store);
+    assert.deepEqual(result.series.property_power, [{ x: from, y: null }]);
+    assert.equal(historySeriesAt(result).property_power.at(-1).y, null);
   } finally { store.close(); }
 });
 
@@ -263,4 +371,58 @@ test('native scalar readings remain authoritative when CSV history is imported l
       assert.deepEqual(long.series, single.series, `${left}: range length cannot change source precedence`);
     }
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('live charts recover old unchanged readings and expose original timestamps for display-only tails', () => {
+  const store = new Store(':memory:');
+  try {
+    const recordedAt = from - 2 * 24 * HOUR;
+    for (const [signal, value] of [['indoor_temperature', 21], ['garage_temperature', 12], ['outdoor_temperature', -4]])
+      put(store, signal, value, recordedAt);
+    for (const phase of [1, 2, 3]) {
+      put(store, `property_current_l${phase}`, phase, recordedAt);
+      put(store, `ev1_current_l${phase}`, 0, recordedAt);
+    }
+    // An update before the visible day must supersede an older seed without
+    // inserting an artificial missing marker at the start of the day.
+    put(store, 'garage_temperature', 13, from - HOUR);
+    put(store, 'heating_integral', -200, recordedAt, { unit: 'degree-minutes' });
+    const count = store.db.prepare('SELECT count(*) AS total FROM observations').get().total;
+    for (const left of ['power', 'phases', 'integral']) {
+      const result = get(store, { left });
+      const projected = historySeriesAt(result, now);
+      for (const key of ['indoor_temperature', 'garage_temperature', 'outdoor_temperature',
+        ...(left === 'power' ? ['property_power', 'charger_power'] : left === 'phases'
+          ? ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)) : ['heating_integral'])]) {
+        assert.equal(projected[key][0].x, from, `${key} starts at the chosen day`);
+        assert.equal(projected[key].at(-1).x, now, `${key} reaches now`);
+        assert.equal(projected[key].at(-1).observedAt, key === 'garage_temperature' ? from - HOUR : recordedAt);
+        assert.equal(result.series[key].length, 0, 'The API still describes actual recorded history');
+      }
+      assert.equal(projected.garage_temperature.at(-1).y, 13);
+      assert.deepEqual(result.series.spot_price, []);
+    }
+    assert.equal(store.db.prepare('SELECT count(*) AS total FROM observations').get().total, count, 'Projection never appends observations');
+    assert.deepEqual(get(store, { now: now + 3 * 24 * HOUR }).series.indoor_temperature, [], 'Historical selections stay unchanged');
+  } finally { store.close(); }
+});
+
+test('latest invalid readings and incomplete current acquisitions cannot revive old carried-forward values', () => {
+  const store = new Store(':memory:');
+  try {
+    const old = from - 2 * 24 * HOUR;
+    put(store, 'indoor_temperature', 21, old);
+    put(store, 'indoor_temperature', 0, old + HOUR, { quality: ['suspect_zero_indoor'] });
+    for (const phase of [1, 2, 3]) put(store, `property_current_l${phase}`, 5, old);
+    put(store, 'property_current_l1', 6, old + HOUR);
+    put(store, 'garage_temperature', 14, old, { source: 'simulation' });
+    const result = get(store);
+    assert.equal(result.meta.lastReadings.indoor_temperature.y, null);
+    assert.equal(result.meta.lastReadings.property_power.y, null);
+    const projected = historySeriesAt(result);
+    assert.deepEqual(projected.indoor_temperature, []);
+    assert.deepEqual(projected.property_power, []);
+    assert.deepEqual(projected.garage_temperature, [], 'Non-simulation charts cannot seed from synthetic readings');
+    assert.equal(historySeriesAt(get(store, { input: 'simulated' })).garage_temperature.at(-1).y, 14);
+  } finally { store.close(); }
 });

@@ -84,6 +84,32 @@ const seriesInfo = {
 };
 const rightKeys = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
 
+const heldReadingKeys = [...Object.values(leftGroups).flat(), 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
+
+/** Advance display tails without changing source timestamps or cached history. */
+export function historySeriesAt(payload, now = payload.now) {
+  const { range, series = {}, meta = {} } = payload;
+  if (!Number.isFinite(now) || now < range.from || now >= range.to) return series;
+  const projected = { ...series };
+  for (const key of heldReadingKeys) {
+    if (!Object.hasOwn(series, key)) continue;
+    const points = series[key];
+    const last = meta.lastReadings?.[key] ?? points.at(-1);
+    if (!last || !Number.isFinite(last.x) || !Number.isFinite(last.y) || last.x > now) continue;
+    // Explicit missing/invalid readings remain breaks, even if older metadata
+    // was paired with a newer series. Never bridge a missing final sample.
+    const end = points.at(-1);
+    if (end && (end.x > now || !Number.isFinite(end.y) || end.x > last.x)) continue;
+    const start = Math.max(range.from, last.x);
+    const carried = x => ({ x, y: last.y, carriedForward: true, observedAt: last.x });
+    const tail = [];
+    if (!end && start <= now) tail.push(carried(start));
+    if (now > (end?.x ?? start)) tail.push(carried(now));
+    if (tail.length) projected[key] = [...points, ...tail];
+  }
+  return projected;
+}
+
 export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
   if (!leftGroups[left]) throw new RangeError('Choose power, phase currents or heating integral.');
   return [...leftGroups[left], ...rightKeys].map(key => {
@@ -91,9 +117,10 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
     const isLeft = leftGroups[left].includes(key);
     const isPrice = key.endsWith('_price');
+    const data = series[key] ?? [];
     return {
       key, visibilityKey, unit, kind, label,
-      data: series[key] ?? [],
+      data,
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
@@ -101,7 +128,9 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
       fill: kind === 'fill' ? 'origin' : false,
       order: kind === 'fill' ? 2 : 1,
       pointBackgroundColor: palette[colorKey], pointBorderColor: palette[colorKey],
-      pointRadius: isPrice ? 1 : (series[key] ?? []).filter(point => Number.isFinite(point.y)).length === 1 ? 2 : 0,
+      // A finite reading surrounded by gaps has no line segment to draw.
+      pointRadius: isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
+        && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
       pointHoverRadius: 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
       stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral',

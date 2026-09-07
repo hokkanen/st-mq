@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -48,6 +48,12 @@ CREATE TABLE provider_snapshots (
 );
 CREATE INDEX snapshots_kind_time ON provider_snapshots(kind, fetched_at, id);`;
 
+// Phase event timestamps can differ within one complete Easee API response.
+// Chart queries recover the other phases without rescanning unrelated history.
+const easeeAcquisitionIndex = `
+CREATE INDEX observations_easee_acquisition ON observations(device, received_at, id)
+WHERE source='easee' AND import_id IS NULL;`;
+
 function integer(value, name) {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer`);
   return value;
@@ -89,6 +95,7 @@ export class Store {
       if (version < SCHEMA_VERSION) this.transaction(() => {
         if (version === 0) this.db.exec(schema);
         if (version < 2) this.db.exec(snapshotsSchema);
+        if (version < 3) this.db.exec(easeeAcquisitionIndex);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
