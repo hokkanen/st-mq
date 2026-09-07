@@ -264,6 +264,22 @@ export function getChartData({ store, input = 'offline', contract = null, market
   };
   let time = null, atRows = new Map(), phases = new Map();
   let previousHeat = null, previousAux = null;
+  const rememberScalar = (row, value) => {
+    const previous = atRows.get(row.signal)?.row;
+    if (previous) {
+      const native = row.import_id == null, previousNative = previous.import_id == null;
+      // The short query orders expanded observations by insertion ID; the
+      // compact query merges original imports before native readings. Resolve
+      // precedence explicitly so selecting more days cannot change a value.
+      if (previousNative && !native) return;
+      if (native === previousNative) {
+        if (native && previous.id > row.id) return;
+        if (!native && (previous.import_id > row.import_id
+          || previous.import_id === row.import_id && previous.row_number > row.row_number)) return;
+      }
+    }
+    atRows.set(row.signal, { row, value });
+  };
   const addState = (row, value, kind) => {
     const previous = kind === 'heat' ? previousHeat : previousAux;
     const gap = kind === 'heat' ? 30 * 60_000 : 5 * 60_000;
@@ -335,7 +351,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
         rawRows++;
         const value = valueOf(observation, observation.quality);
         if (value === null) invalidRows++;
-        atRows.set(observation.signal, { value, row: { ...observation, source_time: time, source: `csv:${row.kind}` } });
+        rememberScalar({ ...observation, source_time: time, source: `csv:${row.kind}`,
+          import_id: row.id, row_number: row.row_number }, value);
       }
       continue;
     }
@@ -353,7 +370,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       if (!group) { group = { prefix, id: row.id, values: [null, null, null], priority: row.import_id === null ? 1 : 0 }; phases.set(key, group); }
       group.values[Number(row.signal.at(-1)) - 1] = flags.includes('asynchronous_snapshot') || flags.includes('ev_exceeds_property_current') ? null : value;
       group.id = row.id;
-    } else atRows.set(row.signal, { row, value });
+    } else rememberScalar(row, value);
   }
   if (time !== null) flushTime();
   // A last command is only a bounded request; it is not indefinite confirmation.

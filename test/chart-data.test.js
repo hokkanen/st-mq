@@ -239,3 +239,28 @@ test('worker cache invalidates on new observations; aborts release the bounded q
     await assert.rejects(service.query(args), /closed/);
   } finally { await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('native scalar readings remain authoritative when CSV history is imported later, for every date-range path', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-precedence-'));
+  const store = new Store(':memory:');
+  try {
+    put(store, 'indoor_temperature', 21, from);
+    put(store, 'indoor_temperature', 23, from);
+    put(store, 'spot_price', 9, from);
+    for (const phase of [1, 2, 3]) put(store, `property_current_l${phase}`, 10 + phase, from);
+    const stmqPath = join(directory, 'stmq.csv'), easeePath = join(directory, 'easee.csv');
+    writeFileSync(stmqPath, `unix_time,price,heat_on,temp_in,temp_ga,temp_out\n${from / 1000},2,15,18,11,-2\n${from / 1000},3,15,19,12,-3\n`);
+    writeFileSync(easeePath, `unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n${from / 1000},2,2,2,4,5,6\n${from / 1000},3,3,3,5,6,7\n`);
+    await importCsv(store, stmqPath, { kind: 'stmq' });
+    await importCsv(store, easeePath, { kind: 'easee' });
+    for (const left of ['power', 'phases', 'integral']) {
+      const single = get(store, { left, contract, points: 2000 });
+      const long = get(store, { left, contract, points: 2000, endDate: '2026-01-24' });
+      assert.equal(single.series.indoor_temperature[0].y, 23, `${left}: newest native temperature wins`);
+      assert.equal(single.series.spot_price[0].y, 9, `${left}: native spot price wins`);
+      assert.equal(single.series.garage_temperature[0].y, 12, `${left}: newest imported row wins without native data`);
+      if (left === 'phases') assert.equal(single.series.property_current_l1[0].y, 11);
+      assert.deepEqual(long.series, single.series, `${left}: range length cannot change source precedence`);
+    }
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
