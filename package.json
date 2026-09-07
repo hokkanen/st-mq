@@ -1,6 +1,6 @@
 {
   "name": "ST-MQ",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "start": "node src/main.js",
     "test": "node --test test/*.test.js",
     "test:unit": "node --test test/*.test.js",
+    "test:live": "node scripts/test-live.js",
     "history": "node scripts/history.js",
     "check": "npm test && npm run build"
   },
