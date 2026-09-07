@@ -39,6 +39,15 @@ test('body and lifetime bounds apply without Content-Length; pending requests st
   await assert.rejects(aborted.json('https://api.easee.com'), /closed/);
 });
 
+test('rate-limit delays are bounded and preserved without response secrets', async () => {
+  for (const [header, expected] of [['120', 120_000], ['9999999', 86400_000], ['invalid', null]]) {
+    const http = createHttp({ fetchImpl: async () => new Response('secret', { status: 429, headers: { 'Retry-After': header } }) });
+    await assert.rejects(http.text('https://api.openweathermap.org/data/2.5/weather?appid=secret'), error =>
+      error.status === 429 && error.retryAfterMs === expected && !JSON.stringify(error).includes('secret'));
+    http.close();
+  }
+});
+
 test('rotating tokens persist privately without copying username/password or modifying other settings', t => {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-tokens-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

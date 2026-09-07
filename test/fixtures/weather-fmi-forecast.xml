@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored offline example based on FMI WFS timevaluepair; no household data. -->
+<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:omso="http://inspire.ec.europa.eu/schemas/omso/3.0" xmlns:om="http://www.opengis.net/om/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:sams="http://www.opengis.net/samplingSpatial/2.0" xmlns:sam="http://www.opengis.net/sampling/2.0" xmlns:target="http://xml.fmi.fi/namespace/om/atmosphericfeatures/1.1" xmlns:wml2="http://www.opengis.net/waterml/2.0">
+  <wfs:member><omso:PointTimeSeriesObservation>
+    <om:phenomenonTime><gml:TimePeriod><gml:beginPosition>2026-09-07T06:00:00Z</gml:beginPosition><gml:endPosition>2026-09-07T10:00:00Z</gml:endPosition></gml:TimePeriod></om:phenomenonTime>
+    <om:resultTime><gml:TimeInstant><gml:timePosition>2026-09-07T06:00:00Z</gml:timePosition></gml:TimeInstant></om:resultTime>
+    <om:procedure xlink:href="http://xml.fmi.fi/inspire/process/harmonie_scandinavia_surface"/>
+    <om:parameter><om:NamedValue><om:name xlink:href="https://inspire.ec.europa.eu/codeList/ProcessParameterValue/value/numericalModel/analysisTime"/><om:value><gml:TimeInstant><gml:timePosition>2026-09-07T00:00:00Z</gml:timePosition></gml:TimeInstant></om:value></om:NamedValue></om:parameter>
+    <om:observedProperty xlink:href="https://opendata.fmi.fi/meta?observableProperty=forecast&amp;param=temperature&amp;language=eng"/>
+    <om:featureOfInterest><sams:SF_SpatialSamplingFeature>
+      <sam:sampledFeature><target:LocationCollection><target:member><target:Location><gml:identifier codeSpace="http://xml.fmi.fi/namespace/stationcode/geoid">660561</gml:identifier><gml:name codeSpace="http://xml.fmi.fi/namespace/locationcode/name">Example forecast point</gml:name></target:Location></target:member></target:LocationCollection></sam:sampledFeature>
+      <sams:shape><gml:MultiPoint><gml:pointMembers><gml:Point srsName="http://www.opengis.net/def/crs/EPSG/0/4326"><gml:pos>60.39 25.66</gml:pos></gml:Point></gml:pointMembers></gml:MultiPoint></sams:shape>
+    </sams:SF_SpatialSamplingFeature></om:featureOfInterest>
+    <om:result><wml2:MeasurementTimeseries>
+      <wml2:point><wml2:MeasurementTVP><wml2:time>2026-09-07T06:00:00Z</wml2:time><wml2:value>10.5</wml2:value></wml2:MeasurementTVP></wml2:point>
+      <wml2:point><wml2:MeasurementTVP><wml2:time>2026-09-07T07:00:00Z</wml2:time><wml2:value>NaN</wml2:value></wml2:MeasurementTVP></wml2:point>
+      <wml2:point><wml2:MeasurementTVP><wml2:time>2026-09-07T08:00:00Z</wml2:time><wml2:value>13</wml2:value></wml2:MeasurementTVP></wml2:point>
+      <wml2:point><wml2:MeasurementTVP><wml2:time>2026-09-07T09:00:00Z</wml2:time><wml2:value>14</wml2:value></wml2:MeasurementTVP></wml2:point>
+      <wml2:point><wml2:MeasurementTVP><wml2:time>2026-09-07T10:00:00Z</wml2:time><wml2:value>15</wml2:value></wml2:MeasurementTVP></wml2:point>
+    </wml2:MeasurementTimeseries></om:result>
+  </omso:PointTimeSeriesObservation></wfs:member>
+</wfs:FeatureCollection>

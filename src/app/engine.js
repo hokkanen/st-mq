@@ -57,7 +57,7 @@ export class Engine {
       try {
         const cached = store.getState('provider:observations');
         if (Array.isArray(cached) && cached.length <= 64) for (const observation of cached) {
-          if (['smartthings', 'easee'].includes(observation?.source)) remember(this.latest, observation, clock());
+          if (['smartthings', 'easee', 'fmi', 'openweathermap'].includes(observation?.source)) remember(this.latest, observation, clock());
         }
       } catch {
         // Provider polling reconstructs a corrupt cache. Do not replay it into observation history.
@@ -66,8 +66,16 @@ export class Engine {
     }
     this.latestStatus = null;
   }
-  ingest(observation) {
+  ingest(observation, { selectedOutdoorSource = false } = {}) {
     this.store.observation(observation);
+    if (selectedOutdoorSource && observation.signal === 'outdoor_temperature'
+      && trustworthy(observation, this.clock()) && this.clock() - observation.sourceTime <= OBSERVATION_MAX_AGE_MS
+      && observation.source !== this.latest.outdoor_temperature?.source) {
+      // A recovered FMI observation is the selected primary even if a backup
+      // provider's calculation timestamp is a few minutes newer.
+      this.latest.outdoor_temperature = observation;
+      return;
+    }
     remember(this.latest, observation, this.clock());
   }
   updateSettings(input) {
@@ -109,7 +117,7 @@ export class Engine {
     } else {
       const map = signal => {
         const obs = this.latest[signal];
-        return obs ? { value: obs.value, observedAt: obs.sourceTime, quality: obs.quality } : null;
+        return obs ? { value: obs.value, observedAt: obs.sourceTime, quality: obs.quality, source: obs.source } : null;
       };
       observations = { indoor: map('indoor_temperature'), outdoor: map('outdoor_temperature'),
         actual: { mode: 'unknown', verified: false, source: input } };
@@ -170,7 +178,7 @@ export class Engine {
       Object.assign(result, outlook);
       for (const [key, signal] of [['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature']]) {
         const obs = this.latest[signal];
-        if (obs) result.observations[key] = decorate({ value: obs.value, observedAt: obs.sourceTime, quality: obs.quality }, signal, now);
+        if (obs) result.observations[key] = decorate({ value: obs.value, observedAt: obs.sourceTime, quality: obs.quality, source: obs.source }, signal, now);
       }
     }
     return result;

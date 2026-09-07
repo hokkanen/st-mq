@@ -2,10 +2,18 @@ const ALLOWED_HOSTS = new Set(['api.smartthings.com', 'api.easee.com', 'web-api.
   'dashboard.elering.ee', 'api.openweathermap.org', 'opendata.fmi.fi']);
 
 export class ProviderError extends Error {
-  constructor(code, status = null) {
+  constructor(code, status = null, retryAfterMs = null) {
     super(code);
     this.name = 'ProviderError'; this.code = code; this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+function retryDelay(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const seconds = /^\d+$/.test(value.trim()) ? Number(value) : null;
+  const delay = seconds === null ? Date.parse(value) - Date.now() : seconds * 1000;
+  return Number.isFinite(delay) && delay >= 0 ? Math.min(24 * 3600_000, Math.max(1000, delay)) : null;
 }
 
 /** Finite requests with sanitized errors: URLs, authorization and response bodies
@@ -30,7 +38,8 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     let reader, response;
     try {
       response = await fetchImpl(url.href, { ...options, method, redirect: 'error', signal });
-      if (!response.ok) throw new ProviderError('provider-http-error', response.status);
+      if (!response.ok) throw new ProviderError('provider-http-error', response.status,
+        retryDelay(response.headers.get('retry-after')));
       const declared = Number(response.headers.get('content-length'));
       if (Number.isFinite(declared) && declared > maxBytes) throw new ProviderError('provider-response-too-large');
       if (!response.body) throw new ProviderError('empty-provider-response');

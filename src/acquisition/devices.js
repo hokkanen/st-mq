@@ -38,6 +38,7 @@ function sanitized(error, provider) {
   const status = httpStatus(error);
   const clean = new Error(`${provider} request failed${status === null ? '' : ` (HTTP ${status})`}`);
   if (status !== null) clean.status = status;
+  if (Number.isFinite(error?.retryAfterMs)) clean.retryAfterMs = Math.min(86400_000, Math.max(0, error.retryAfterMs));
   return clean;
 }
 function failureFlags(error) {
@@ -47,9 +48,9 @@ function failureFlags(error) {
 function validNow(now) {
   if (!Number.isSafeInteger(now) || Math.abs(now) > 8640000000000000) throw new TypeError('now must be a UTC timestamp in milliseconds');
 }
-function baseObservation({ source, device, signal, unit, now, quality = [] }) {
+function baseObservation({ source, device, signal, unit, now, quality = [], retryAfterMs }) {
   return { source, device, signal, value: null, unit, sourceTime: null, receivedAt: now,
-    quality: [...quality, 'missing', 'source_time_unknown'], raw: null };
+    quality: [...quality, 'missing', 'source_time_unknown'], raw: Number.isFinite(retryAfterMs) ? { retryAfterMs } : null };
 }
 
 function temperatureObservation(payload, device, signal, now) {
@@ -201,7 +202,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore } = {
         return temperatureObservation(payload, smartthings[key], name, now);
       }));
       return results.map((result, index) => result.status === 'fulfilled' ? result.value : baseObservation({
-        source: 'smartthings', device: smartthings[jobs[index][0]], signal: jobs[index][1], unit: 'degC', now, quality: failureFlags(result.reason),
+        source: 'smartthings', device: smartthings[jobs[index][0]], signal: jobs[index][1], unit: 'degC', now, quality: failureFlags(result.reason), retryAfterMs: result.reason?.retryAfterMs,
       }));
     },
 
@@ -212,7 +213,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore } = {
         currentObservations(await easeeRequest(easee[key], ids, signal), easee[key], ids, prefix, now)));
       const rows = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : jobs[index][1].map((id, phase) => baseObservation({
         source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][2]}_l${phase + 1}`, unit: 'A', now,
-        quality: ['current_snapshot_not_energy', ...failureFlags(result.reason)],
+        quality: ['current_snapshot_not_energy', ...failureFlags(result.reason)], retryAfterMs: result.reason?.retryAfterMs,
       })));
       const property = rows.filter(row => row.signal.startsWith('property_'));
       const charger = rows.filter(row => row.signal.startsWith('ev1_'));

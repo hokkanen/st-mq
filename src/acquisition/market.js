@@ -1,12 +1,22 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
+import moment from 'moment-timezone';
 import { instantMs, normalizePriceIntervals } from '../domain/prices.js';
+import { ProviderError } from './http.js';
 
 export const MARKET_SOURCES = Object.freeze({
   entsoe: 'https://documenter.getpostman.com/view/7009892/2s93JtP3F6',
   curves: 'https://eepublicdownloads.entsoe.eu/clean-documents/EDI/Library/cim_based/Introduction_of_different_Timeseries_possibilities__curvetypes__with_ENTSO-E_electronic_document_v1.4.pdf',
-  elering: 'https://dashboard.elering.ee/v3/api-docs', inspectedAt: '2026-09-06',
+  elering: 'https://dashboard.elering.ee/v3/api-docs',
+  eleringDisplay: 'https://elering.ee/',
+  transition: 'https://www.nordpoolgroup.com/en/trading/Operational-Message-List/2025/09/market-data---reminder-for-sdac-15-minute-go-live-20250905084800/',
+  inspectedAt: '2026-09-07',
 });
 const MAX_ROWS = 2048, MAX_SPAN = 7 * 86_400_000;
+const ZONES = Object.freeze({ fi: '10YFI-1--------U', ee: '10Y1001A1001A39I', lt: '10YLT-1001A0008Q', lv: '10YLV-1001A00074' });
+// Nord Pool's delivery day begins in CET/CEST, one hour after Finnish midnight.
+// Verified against Elering's own historic endpoint across the market transition.
+const QUARTER_HOUR_START = Date.parse('2025-09-30T22:00:00Z');
+const DURATION_EVIDENCE = `${MARKET_SOURCES.transition}; direct Elering historic boundary verified ${MARKET_SOURCES.inspectedAt}`;
 const array = value => value == null ? [] : Array.isArray(value) ? value : [value];
 const numeric = value => typeof value === 'number' ? value : typeof value === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) ? Number(value) : NaN;
 const parser = new XMLParser({ ignoreAttributes: true, removeNSPrefix: true, parseTagValue: false, processEntities: false });
@@ -92,47 +102,138 @@ export function decodeEntsoe(input, { fetchedAt, domain } = {}) {
     fetchedAt, intervals, provenance: MARKET_SOURCES.entsoe };
 }
 
-/** Elering JSON has no interval end or units; require explicit verified endpoint semantics. */
-export function decodeElering(body, { country, fetchedAt, intervalMinutes, durationEvidence, unit, vatIncluded } = {}) {
+/** The original Elering endpoint publishes Nord Pool EUR/MWh prices excluding VAT.
+ * Its JSON omits ends; use the documented market transition, never row spacing.
+ * A missing row therefore leaves a gap, including the final supplied interval.
+ */
+export function decodeElering(body, { country, fetchedAt } = {}) {
   fetchedAt = instantMs(fetchedAt);
-  if (![15, 60].includes(intervalMinutes) || typeof durationEvidence !== 'string' || !durationEvidence.trim() || unit !== 'EUR/MWh' || vatIncluded !== false) {
-    throw new Error('Elering requires verified intervalMinutes, durationEvidence, EUR/MWh and ex-VAT configuration');
-  }
+  if (!Object.hasOwn(ZONES, country)) throw new Error('Unsupported Elering market country');
   const entries = body?.data?.[country];
   if (body?.success !== true || !Array.isArray(entries) || !entries.length || entries.length > MAX_ROWS) throw new Error('Invalid Elering price response');
   const unique = new Map();
   for (const row of entries) {
     if (!Number.isSafeInteger(row.timestamp) || !Number.isFinite(row.price)) throw new Error('Invalid Elering timestamp or price');
     const start = instantMs(row.timestamp * 1000);
-    if (start % (intervalMinutes * 60_000) !== 0) throw new Error('Elering timestamp disagrees with configured resolution');
+    const intervalMinutes = start < QUARTER_HOUR_START ? 60 : 15;
+    if (start % (intervalMinutes * 60_000) !== 0) throw new Error('Elering timestamp disagrees with market resolution');
     if (unique.has(start) && unique.get(start).value !== row.price) throw new Error('Conflicting Elering duplicate');
-    unique.set(start, { start, end: start + intervalMinutes * 60_000, value: row.price });
+    unique.set(start, { start, end: start + intervalMinutes * 60_000, value: row.price, resolution: `PT${intervalMinutes}M` });
   }
   const rows = [...unique.values()].sort((a, b) => a.start - b.start);
   span(rows[0].start, rows.at(-1).end);
   return { source: 'elering', issuedAt: null, fetchedAt,
-    intervals: normalizePriceIntervals(rows, { unit, vatIncluded, source: 'elering' })
-      .map(row => ({ ...row, fetchedAt, issuedAt: null, issuedAtBasis: 'not-supplied', resolution: `PT${intervalMinutes}M`, durationEvidence })),
+    intervals: normalizePriceIntervals(rows, { unit: 'EUR/MWh', vatIncluded: false, source: 'elering' })
+      .map((row, i) => ({ ...row, fetchedAt, issuedAt: null, issuedAtBasis: 'not-supplied',
+        resolution: rows[i].resolution, durationEvidence: DURATION_EVIDENCE })),
     provenance: MARKET_SOURCES.elering };
 }
 
-export async function fetchMarket({ connections, now, http, signal } = {}) {
-  const fetchedAt = instantMs(now), start = Math.floor(fetchedAt / 3_600_000) * 3_600_000, end = start + 48 * 3_600_000;
-  const country = connections?.geoloc?.country_code?.toLowerCase();
-  const zones = { fi: '10YFI-1--------U', ee: '10Y1001A1001A39I', lt: '10YLT-1001A0008Q', lv: '10YLV-1001A00074' };
-  const domain = connections?.entsoe?.domain ?? zones[country];
-  if (connections?.entsoe?.token && domain) {
-    const url = new URL('https://web-api.tp.entsoe.eu/api');
-    const format = at => new Date(at).toISOString().replace(/[-:]/g, '').slice(0, 13).replace('T', '');
-    url.search = new URLSearchParams({ securityToken: connections.entsoe.token, documentType: 'A44', 'contract_MarketAgreement.type': 'A01',
-      in_Domain: domain, out_Domain: domain, periodStart: format(start), periodEnd: format(end) });
-    try { return decodeEntsoe(await http.text(url.toString(), { method: 'GET', signal }), { fetchedAt, domain }); }
-    catch { if (!connections?.elering) throw new Error('ENTSO-E market acquisition failed'); }
+export function marketLocation(connections = {}) {
+  const configured = connections.geoloc?.country_code?.toLowerCase();
+  const domain = connections.entsoe?.domain ?? ZONES[configured];
+  // An explicit domain takes precedence: never replace one bidding zone by another.
+  const country = Object.entries(ZONES).find(([, value]) => value === domain)?.[0]
+    ?? (connections.entsoe?.domain == null && Object.hasOwn(ZONES, configured) ? configured : null);
+  return { country, domain };
+}
+
+function windowFor(now) {
+  const fetchedAt = instantMs(now), midnight = moment.tz(fetchedAt, 'Europe/Helsinki').startOf('day');
+  return { fetchedAt, start: midnight.valueOf(), dayEnd: midnight.clone().add(1, 'day').valueOf(),
+    end: midnight.clone().add(2, 'days').valueOf() };
+}
+
+function coverage(intervals, now, dayEnd) {
+  let cursor = now, gaps = false;
+  const future = intervals.filter(row => row.end > now);
+  for (const row of future) {
+    if (row.start > cursor) { gaps = true; break; }
+    cursor = Math.max(cursor, row.end);
   }
-  if (!['fi', 'ee', 'lt', 'lv'].includes(country)) throw new Error('A supported market country or explicit bidding zone is required');
-  if (!connections?.elering) throw new Error('Market provider credentials or verified Elering configuration are required');
+  return { current: cursor > now, continuousUntil: cursor, completeToday: cursor >= dayEnd,
+    knownUntil: future.at(-1)?.end ?? null, gaps };
+}
+
+function boundedResult(result, range) {
+  const intervals = result.intervals.filter(row => row.start < range.end && row.end > range.start)
+    .map(row => ({ ...row, start: Math.max(row.start, range.start), end: Math.min(row.end, range.end) }));
+  const resultCoverage = coverage(intervals, range.fetchedAt, range.dayEnd);
+  if (!resultCoverage.current) throw new ProviderError(`${result.source}-current-price-missing`);
+  return { ...result, intervals, coverage: resultCoverage };
+}
+
+function failed(source, error, signal) {
+  if (signal?.aborted) throw new ProviderError('provider-request-aborted');
+  // Provider response bodies and request URLs may contain the token; copy safe fields only.
+  const code = error instanceof ProviderError ? error.code : `${source}-invalid-response`;
+  const status = Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599 ? error.status : null;
+  const clean = new ProviderError(code, status);
+  if (Number.isFinite(error?.retryAfterMs) && error.retryAfterMs >= 0) clean.retryAfterMs = error.retryAfterMs;
+  throw clean;
+}
+
+/** Direct original providers also exported for explicitly opted-in live verification. */
+export async function fetchEntsoe({ connections, now, http, signal } = {}) {
+  const range = windowFor(now), { domain } = marketLocation(connections);
+  if (typeof connections?.entsoe?.token !== 'string' || !connections.entsoe.token.trim() || !domain) throw new ProviderError('entsoe-not-configured');
+  if (signal?.aborted) throw new ProviderError('provider-request-aborted');
+  const url = new URL('https://web-api.tp.entsoe.eu/api');
+  const format = at => new Date(at).toISOString().replace(/[-:]/g, '').slice(0, 13).replace('T', '');
+  url.search = new URLSearchParams({ securityToken: connections.entsoe.token, documentType: 'A44', 'contract_MarketAgreement.type': 'A01',
+    in_Domain: domain, out_Domain: domain, periodStart: format(range.start), periodEnd: format(range.end) });
+  try {
+    return boundedResult(decodeEntsoe(await http.text(url.toString(), { method: 'GET', signal }), { fetchedAt: range.fetchedAt, domain }), range);
+  } catch (error) { failed('entsoe', error, signal); }
+}
+
+export async function fetchElering({ connections, now, http, signal } = {}) {
+  const range = windowFor(now), { country } = marketLocation(connections);
+  if (!country) throw new ProviderError('elering-not-configured');
+  if (signal?.aborted) throw new ProviderError('provider-request-aborted');
   const url = new URL('https://dashboard.elering.ee/api/nps/price');
-  url.search = new URLSearchParams({ start: new Date(start).toISOString(), end: new Date(end).toISOString() });
-  try { return decodeElering(await http.json(url.toString(), { method: 'GET', signal }), { ...connections.elering, country, fetchedAt }); }
-  catch { throw new Error('Elering market acquisition failed; verify provider configuration and availability'); }
+  // Elering treats end as inclusive. The application uses half-open UTC intervals.
+  url.search = new URLSearchParams({ start: new Date(range.start).toISOString(), end: new Date(range.end - 1).toISOString() });
+  try {
+    return boundedResult(decodeElering(await http.json(url.toString(), { method: 'GET', signal }), { country, fetchedAt: range.fetchedAt }), range);
+  } catch (error) { failed('elering', error, signal); }
+}
+
+function attemptFailure(source, error) {
+  return { source, status: error.code === `${source}-not-configured` ? 'not-configured' : 'error',
+    error: error.status ? `HTTP-${error.status}` : error.code,
+    ...(Number.isFinite(error.retryAfterMs) ? { retryAfterMs: error.retryAfterMs } : {}) };
+}
+
+/** One primary GET, then one original-provider fallback only when needed.
+ * Tomorrow not being published yet is a valid short horizon, not an outage.
+ */
+export async function fetchMarket({ connections, now, http, signal, skipSources = [] } = {}) {
+  const attempts = [];
+  let primary, backup, lastError;
+  for (const [source, fetcher] of [['entsoe', fetchEntsoe], ['elering', fetchElering]]) {
+    if (signal?.aborted) throw new ProviderError('provider-request-aborted');
+    if (skipSources.includes(source)) { attempts.push({ source, status: 'backoff', error: null }); continue; }
+    try {
+      const result = await fetcher({ connections, now, http, signal });
+      const incomplete = result.coverage.gaps || !result.coverage.completeToday;
+      attempts.push({ source, status: incomplete ? 'incomplete' : 'ok',
+        error: incomplete ? 'incomplete-market-coverage' : null });
+      if (source === 'entsoe') primary = result; else backup = result;
+      if (!incomplete) break;
+    } catch (error) {
+      if (signal?.aborted) throw new ProviderError('provider-request-aborted');
+      lastError = error; attempts.push(attemptFailure(source, error));
+    }
+  }
+  const selected = !primary ? backup : !backup ? primary
+    : backup.coverage.continuousUntil > primary.coverage.continuousUntil ? backup : primary;
+  if (!selected) {
+    const error = new ProviderError('market-providers-unavailable', lastError?.status ?? null);
+    if (Number.isFinite(lastError?.retryAfterMs)) error.retryAfterMs = lastError.retryAfterMs;
+    error.acquisition = { primary: 'entsoe', selected: null, fallbackUsed: false, attempts };
+    throw error;
+  }
+  return { ...selected, acquisition: { primary: 'entsoe', selected: selected.source,
+    fallbackUsed: selected.source !== 'entsoe', attempts, coverage: selected.coverage } };
 }

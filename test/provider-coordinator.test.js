@@ -240,3 +240,126 @@ test('all-zero, impossible relative current and asynchronous snapshots report de
     }
   } finally { await providers.close(); }
 });
+
+test('location enables public market/FMI jobs without paid keys and outdoor observations survive restart', async t => {
+  const f = fixture(t);
+  f.config.connections = { geoloc: { latitude: '60.4', longitude: '25.6', country_code: 'fi' } };
+  let source = 'fmi', at = initial - 10 * MINUTE;
+  f.options.outdoor = async ({ now }) => {
+    const rows = [{ source, device: 'fixture-weather-station', signal: 'outdoor_temperature', value: 12,
+      unit: 'degC', sourceTime: at, receivedAt: now, quality: [], raw: { spatialBasis: 'nearby-weather-station' } }];
+    rows.acquisition = { primary: 'fmi', selected: source, fallbackUsed: source !== 'fmi',
+      attempts: source === 'fmi' ? [{ source, status: 'ok' }]
+        : [{ source: 'fmi', status: 'error', error: 'HTTP-503' }, { source, status: 'ok' }] };
+    return rows;
+  };
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.equal(f.store.getState('providers:health').market.status, 'ok');
+    assert.equal(f.store.getState('providers:health').weather.status, 'ok');
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    source = 'openweathermap'; at = initial + 9 * MINUTE;
+    f.setTime(initial + 10 * MINUTE); await providers.runDue();
+    assert.equal(f.store.getState('providers:health').outdoor.status, 'fallback');
+    assert.equal(f.engine.status().observations.outdoor.source, 'openweathermap');
+    source = 'fmi'; at = initial + 5 * MINUTE;
+    f.setTime(initial + 20 * MINUTE); await providers.runDue();
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi', 'Fresh primary replaces a newer backup calculation');
+    assert.equal(f.engine.status().observations.outdoor.observedAt, at);
+    const count = f.store.observations().length;
+    const restored = new Engine({ store: f.store, config: f.config, clock: () => initial + 20 * MINUTE });
+    assert.equal(restored.status().observations.outdoor.source, 'fmi');
+    assert.equal(restored.status().observations.outdoor.observedAt, at);
+    assert.equal(f.store.observations().length, count);
+  } finally { await providers.close(); }
+});
+
+test('healthy backup respects primary Retry-After across polls and restart', async t => {
+  const f = fixture(t); let calls = 0;
+  f.options.weather = async ({ now, skipSources }) => {
+    calls++;
+    if (calls > 1) assert.deepEqual(skipSources, ['fmi']);
+    const result = { source: 'openweathermap', fetchedAt: now, issuedAt: null,
+      forecast: [{ start: now, end: now + 3 * 60 * MINUTE, outdoorC: 4, fetchedAt: now, issuedAt: null, issuedAtBasis: 'fetched-snapshot' }] };
+    result.acquisition = { primary: 'fmi', selected: 'openweathermap', fallbackUsed: true,
+      attempts: [{ source: 'fmi', status: calls === 1 ? 'error' : 'backoff', error: calls === 1 ? 'HTTP-429' : null,
+        retryAfterMs: calls === 1 ? 2 * 60 * MINUTE : undefined }, { source: 'openweathermap', status: 'ok' }] };
+    return result;
+  };
+  let providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.equal(f.store.getState('providers:health').weather.status, 'fallback');
+    assert.equal(f.store.getState('providers:health').weather.sourceBackoff.fmi.nextAttemptAt, initial + 2 * 60 * MINUTE);
+    await providers.close();
+    f.setTime(initial + 60 * MINUTE); providers = startProviders(f.options);
+    await providers.runDue();
+    assert.equal(calls, 2);
+    assert.equal(f.engine.status().weatherStatus, 'available');
+    assert.equal(f.store.getState('providers:health').weather.source, 'openweathermap');
+  } finally { await providers.close(); }
+});
+
+test('FMI outdoor selection cannot be overwritten by an optional SmartThings outside sensor', async t => {
+  const f = fixture(t);
+  f.config.connections.geoloc = { latitude: 60.4, longitude: 25.6, country_code: 'fi' };
+  f.config.connections.smartthings.outside_temp_dev_id = 'fixture-outside';
+  f.options.devices.temperatures = async ({ now }) => [...f.temperature(), { source: 'smartthings', device: 'fixture-outside',
+    signal: 'outdoor_temperature', value: 30, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
+  f.options.outdoor = async ({ now }) => [{ source: 'fmi', device: 'fixture-station', signal: 'outdoor_temperature',
+    value: 12, unit: 'degC', sourceTime: now - 5 * MINUTE, receivedAt: now, quality: [] }];
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    f.setTime(initial + 5 * MINUTE); await providers.runDue();
+    assert.equal(f.engine.status().observations.outdoor.value, 12);
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).some(row => row.source === 'smartthings'), false);
+  } finally { await providers.close(); }
+});
+
+test('long device Retry-After and denied credentials survive restart without immediate retry', async t => {
+  const f = fixture(t);
+  f.options.devices.temperatures = async () => f.temperature().map(row => ({ ...row, value: null, sourceTime: null,
+    quality: ['provider_error', 'http_status_429', 'missing'], raw: { retryAfterMs: 2 * 60 * MINUTE } }));
+  let providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.equal(f.store.getState('providers:health').temperatures.nextAttemptAt, initial + 2 * 60 * MINUTE);
+    await providers.close(); f.setTime(initial + 5 * MINUTE);
+    let called = false; f.options.devices.temperatures = async () => { called = true; return f.temperature(); };
+    providers = startProviders(f.options); await providers.runDue();
+    assert.equal(called, false);
+  } finally { await providers.close(); }
+});
+
+test('rate limits are shared between forecast and observation routes after restart', async t => {
+  const f = fixture(t);
+  f.config.connections.geoloc = { latitude: 60.4, longitude: 25.6, country_code: 'fi' };
+  const original = f.options.weather;
+  f.options.weather = async args => ({ ...await original(args), source: 'openweathermap',
+    acquisition: { primary: 'fmi', selected: 'openweathermap', fallbackUsed: true,
+      attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429', retryAfterMs: 120 * MINUTE },
+        { source: 'openweathermap', status: 'ok' }] } });
+  let count = 0;
+  f.options.outdoor = async ({ now, skipSources }) => {
+    if (count++) assert.ok(skipSources.includes('fmi'), 'A forecast rate limit also blocks the observation route');
+    const source = skipSources.includes('fmi') ? 'openweathermap' : 'fmi';
+    const rows = [{ source, device: 'fixture-station', signal: 'outdoor_temperature', value: 12,
+      unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
+    rows.acquisition = { primary: 'fmi', selected: source, fallbackUsed: source !== 'fmi',
+      attempts: source === 'fmi' ? [{ source, status: 'ok' }]
+        : [{ source: 'fmi', status: 'backoff' }, { source, status: 'ok' }] };
+    return rows;
+  };
+  let providers = startProviders(f.options);
+  try {
+    await providers.runDue(); await providers.close();
+    f.setTime(initial + 10 * MINUTE); providers = startProviders(f.options); await providers.runDue();
+    const state = f.store.getState('providers:health').outdoor;
+    assert.equal(state.source, 'openweathermap');
+    assert.equal(state.status, 'fallback');
+    assert.equal(state.sourceBackoff.fmi.nextAttemptAt, initial + 120 * MINUTE);
+  } finally { await providers.close(); }
+});
