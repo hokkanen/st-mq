@@ -1,6 +1,16 @@
 name: Offline validation
 on: [push, pull_request]
 jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-secrets.js --history HEAD
   test:
     runs-on: ubuntu-latest
     strategy:

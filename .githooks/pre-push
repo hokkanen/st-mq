@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+while read -r local_ref local_oid remote_ref remote_oid; do
+    # A deletion has an all-zero local object ID and introduces no history.
+    case "$local_oid" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+    node scripts/check-secrets.js --history "$local_oid" < /dev/null
+done

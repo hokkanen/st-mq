@@ -3,8 +3,21 @@ dist/
 node_modules/
 share/
 var/
-CODEX/*.csv
+# Private operational notes and household data exports stay local.
+CODEX/
+workspace/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
 .env
+.env.*
+!.env.example
+
+# Local credentials, decryption keys, and private configuration backups.
+*.key
+*.pem
+*.p12
+*.pfx
+git-crypt-key*
+.git-crypt-key*
+options.json.*

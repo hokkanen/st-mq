@@ -1,1 +1,4 @@
-data/options.json filter=git-crypt diff=git-crypt
+# Protect this filename in every directory, including accidental backup copies.
+options.json filter=git-crypt diff=git-crypt -text
+options.json.* filter=git-crypt diff=git-crypt -text
+workspace/consumption.csv filter=git-crypt diff=git-crypt -text
