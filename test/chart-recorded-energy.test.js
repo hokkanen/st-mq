@@ -47,6 +47,53 @@ test('phase kWh produces average real power without 230 V and explicitly equival
   } finally { store.close(); }
 });
 
+test('recorded standby and threshold power stay visible on charts but only charging enters timing costs', () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, powers = [0.05, 0.1, 0.1001, 6, 0];
+    for (const [index, kw] of powers.entries())
+      interval(store, start + index * MINUTE, start + (index + 1) * MINUTE, [kw / 60, 0, 0]);
+    const range = { from: start, to: start + 5 * MINUTE };
+    const boundary = start + 3 * MINUTE;
+    const result = project(store, range, range.to, [{ start: day.from, end: boundary, totalCtPerKwh: 10 },
+      { start: boundary, end: day.to, totalCtPerKwh: 50 }]);
+    const charging = result.timing.charger;
+    near(charging.energyKwh, (0.1001 + 6) / 60);
+    near(charging.actualCostEuro, 0.1001 / 60 * 0.1 + 6 / 60 * 0.5);
+    assert.equal(charging.coverage, 1);
+    assert.equal(charging.coverageDetails.includedMs, 2 * MINUTE);
+    assert.equal(charging.coverageDetails.chargingMs, 2 * MINUTE);
+    assert.equal(charging.coverageDetails.idleMs, 3 * MINUTE);
+    assert.equal(charging.coverageDetails.powerMs, 5 * MINUTE);
+    assert.equal(charging.coverageDetails.missingPowerMs, 0);
+    assert.equal(charging.provisional, false);
+    assert.equal(charging.evidence.sources[0].durationMs, 2 * MINUTE);
+    assert.equal(charging.evidence.sources[0].share, 1);
+    assert.equal(charging.evidence.sources[0].firstAt, start + 2 * MINUTE);
+    assert.equal(charging.evidence.sources[0].lastAt, start + 4 * MINUTE);
+    assert.equal(charging.evidence.energyBasis, 'recorded-intervals');
+    assert.deepEqual(result.meta, { rows: 15, intervals: 5 });
+    for (const [index, kw] of powers.entries())
+      near(result.series.charger_power.find(row => row.x === start + index * MINUTE)?.y, kw);
+    assert.equal(store.db.prepare('SELECT count(*) count FROM observations').get().count, 15);
+  } finally { store.close(); }
+});
+
+test('exactly 100 W stays idle when uneven recorded durations round the reconstructed power upward', () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, end = start + 7000, kwh = 0.1 * (end - start) / HOUR;
+    interval(store, start, end, [kwh / 3, kwh / 3, kwh / 3]);
+    const result = project(store, { from: start, to: end }, end);
+    near(result.series.charger_power[0].y, 0.1);
+    assert.equal(result.timing.charger.value, null);
+    assert.equal(result.timing.charger.coverageDetails.idleMs, 7000);
+    assert.equal(result.timing.charger.coverageDetails.chargingMs, 0);
+    assert.equal(result.timing.charger.coverageDetails.missingPowerMs, 0);
+    assert.equal(result.timing.charger.provisional, false);
+  } finally { store.close(); }
+});
+
 test('an interval crossing both selected boundaries is clipped for display and energy accounting', () => {
   const store = new Store(':memory:');
   try {

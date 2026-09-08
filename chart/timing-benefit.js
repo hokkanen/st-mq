@@ -1,10 +1,11 @@
 import { timingDisplay, timingExplanations } from './timing-model.js';
 
-/** Inline explanations live inside the native fold, which survives chart refreshes. */
+/** Keep native folds mounted while the chart refreshes their figures and notes. */
 export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
-  let lastFingerprint, closed = false;
+  let lastFingerprint, closed = false, notes;
+  const cards = new Map();
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -22,19 +23,36 @@ export function createTimingBenefit(root) {
     parent.append(section);
     return section;
   }
-  function deviceCard(display) {
-    const card = element('article', 'timing-card timing-device'); card.dataset.device = display.key;
+  function initialize(displays) {
+    const intro = element('div', 'timing-intro');
+    paragraph(intro, 'The same energy, priced at the recorded times and at each full day’s average all-in price.');
+    paragraph(intro, 'Positive = cheaper timing · Negative = dearer timing', 'timing-sign-guide');
+    const devices = element('div', 'timing-devices');
+    for (const display of displays) {
+      const card = element('article', 'timing-card timing-device'); card.dataset.device = display.key;
+      const overview = element('div', 'timing-device-overview');
+      const details = element('details', 'timing-device-detail'); details.dataset.device = display.key;
+      details.append(element('summary', '', display.key === 'heatPump' ? 'Heating details' : 'Charger details'));
+      const content = element('div', 'timing-detail-content');
+      details.append(content); card.append(overview, details); devices.append(card);
+      cards.set(display.key, { overview, content });
+    }
+    notes = element('div', 'timing-explanations');
+    root.replaceChildren(intro, devices, notes);
+  }
+  function deviceOverview(display) {
+    const overview = document.createDocumentFragment();
     const heading = element('div', 'timing-device-heading');
     heading.append(element('h3', 'timing-device-name', display.name));
     if (display.periodLabel) heading.append(element('span', 'timing-period', display.periodLabel));
-    card.append(heading);
+    overview.append(heading);
     const result = element('p', 'timing-result');
     if (display.available) {
       result.append(element('strong', 'timing-amount', display.amount), element('span', 'timing-outcome', display.outcome));
-    } else result.append(element('strong', 'timing-unavailable', 'Comparison unavailable'));
-    card.append(result);
-    if (!display.available) paragraph(card, display.unavailableReason, 'timing-unavailable-reason');
-    paragraph(card, display.smallDifferenceExplanation, 'timing-small-difference');
+    } else result.append(element('strong', 'timing-unavailable', display.noChargingDetected ? 'No charging detected' : 'Comparison unavailable'));
+    overview.append(result);
+    if (!display.available && !display.noChargingDetected) paragraph(overview, display.unavailableReason, 'timing-unavailable-reason');
+    paragraph(overview, display.smallDifferenceExplanation, 'timing-small-difference');
 
     const meta = element('div', 'timing-meta');
     if (display.basis) {
@@ -44,16 +62,14 @@ export function createTimingBenefit(root) {
     }
     meta.append(element('span', 'timing-coverage', display.coverageLabel));
     if (display.assumedRates) meta.append(element('span', 'timing-assumed', 'Assumed rates'));
-    card.append(meta);
-    paragraph(card, display.calculationPeriod, 'timing-dates');
-    return card;
+    overview.append(meta);
+    paragraph(overview, display.calculationPeriod, 'timing-dates');
+    return overview;
   }
-
   function deviceDetail(display) {
-    const card = element('article', 'timing-card timing-device-detail'); card.dataset.device = display.key;
-    card.append(element('h3', 'timing-device-name', `${display.name} details`));
+    const content = document.createDocumentFragment();
     const energy = element('section', 'timing-energy');
-    energy.append(element('h4', '', display.available ? 'Energy behind this figure' : 'Energy needed for a comparison'));
+    energy.append(element('h4', '', display.available ? 'Energy used in the comparison' : 'What data is needed'));
     paragraph(energy, display.energyExplanation);
     if (display.available && display.sources.length) {
       const track = element('div', 'timing-evidence-track'); track.setAttribute('aria-hidden', 'true');
@@ -65,7 +81,7 @@ export function createTimingBenefit(root) {
       for (const source of display.sources) {
         const row = element('div', 'timing-source'); row.dataset.source = source.key;
         const title = element('div', 'timing-source-heading');
-        title.append(element('strong', '', source.label), element('span', 'timing-source-share', `${source.percentage} of included time`));
+        title.append(element('strong', '', source.label), element('span', 'timing-source-share', `${source.percentage} of ${display.includedTimeLabel}`));
         row.append(title);
         paragraph(row, source.explanation);
         paragraph(row, source.dates, 'timing-source-dates');
@@ -75,21 +91,21 @@ export function createTimingBenefit(root) {
     }
     for (const text of display.auxiliaryNotes) paragraph(energy, text);
     paragraph(energy, display.availablePowerPeriod, 'timing-dates');
-    card.append(energy);
+    content.append(energy);
 
     const coverage = element('section', 'timing-time');
-    coverage.append(element('h4', '', 'Which periods are included'));
+    coverage.append(element('h4', '', display.coverageHeading));
     paragraph(coverage, display.coverageSummary, 'timing-coverage-summary');
     paragraph(coverage, display.coverageExplanation);
     paragraph(coverage, display.periodExplanation, 'timing-period-explanation');
-    card.append(coverage);
+    content.append(coverage);
     if (display.assumedRates) {
       const rates = element('div', 'timing-device-rates');
       paragraph(rates, display.rateSummary, 'timing-assumed');
       paragraph(rates, display.ratePeriod, 'timing-dates');
-      card.append(rates);
+      content.append(rates);
     }
-    return card;
+    return content;
   }
 
   return {
@@ -100,27 +116,25 @@ export function createTimingBenefit(root) {
       const fingerprint = JSON.stringify({ displays, chartAssumedRates });
       if (fingerprint === lastFingerprint) return;
       lastFingerprint = fingerprint;
-      const intro = element('div', 'timing-intro');
-      paragraph(intro, 'Compare heating and charging with the same daily energy at each full day’s average all-in price.');
-      paragraph(intro, 'Positive = cheaper timing · Negative = dearer timing', 'timing-sign-guide');
-      const devices = element('div', 'timing-devices');
-      for (const display of displays) devices.append(deviceCard(display));
-      const notes = element('div', 'timing-explanations');
+      if (!notes) initialize(displays);
+      for (const display of displays) {
+        const card = cards.get(display.key);
+        card.overview.replaceChildren(deviceOverview(display));
+        card.content.replaceChildren(deviceDetail(display));
+      }
+      notes.replaceChildren();
       explanation(notes, 'How the comparison works', timingExplanations.comparison);
-      explanation(notes, 'What time coverage means', timingExplanations.coverage);
-      explanation(notes, 'How to read the energy sources', timingExplanations.evidence);
+      explanation(notes, 'What the percentages mean', timingExplanations.coverage);
+      explanation(notes, 'Where the energy figures come from', timingExplanations.evidence);
       if (chartAssumedRates || displays.some(display => display.assumedRates)) {
         const rates = explanation(notes, 'When contract rates are assumed', timingExplanations.rates, 'timing-rate-explanation');
         if (chartAssumedRates) {
           const context = element('div', 'timing-chart-rates');
           paragraph(context, 'Chart uses assumed rates', 'timing-assumed');
-          paragraph(context, 'The price chart uses assumed rates in this selection. No device comparison shown here includes affected time; an unavailable comparison remains unavailable.');
+          paragraph(context, 'The price chart uses assumed rates, but no device comparison here includes the affected periods.');
           rates.append(context);
         }
       }
-      const evidence = element('div', 'timing-evidence-devices');
-      for (const display of displays) evidence.append(deviceDetail(display));
-      root.replaceChildren(intro, devices, notes, evidence);
     },
     close() { closed = true; },
   };

@@ -14,6 +14,7 @@ import { addHistoricalHeatPump } from './chart-heat-pump.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
+const CHARGING_MIN_POWER_KW = 0.1;
 const TEMPERATURES = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
 const PHASES = ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`));
 const LEARNING = ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'];
@@ -292,7 +293,7 @@ export class DailyTimingBenchmark {
   constructor(range, now, prices = [], energyBases = {}) {
     this.range = range; this.now = Math.min(now, range.to); this.previous = new Map();
     this.details = Object.fromEntries(['heatPump', 'charger'].map(name => [name, {
-      powerMs: 0, firstPowerAt: null, lastPowerAt: null, sources: new Map(),
+      powerMs: 0, chargingMs: 0, idleMs: 0, firstPowerAt: null, lastPowerAt: null, sources: new Map(),
       energyBases: new Set(energyBases[name] ? [energyBases[name]] : []), timeBases: new Set(),
       auxiliaryAssumedMs: 0, auxiliaryUnknownMs: 0,
       priceAssumptions: { durationMs: 0, firstAt: null, lastAt: null, timeBasis: 'included-period' },
@@ -323,17 +324,24 @@ export class DailyTimingBenchmark {
       const details = this.details[name];
       const firstAt = previous.evidence?.intervalStart ?? previous.at;
       const lastAt = previous.evidence?.intervalEnd ?? previous.at;
+      // Standby readings establish known history, but only actual charging
+      // belongs in charger timing costs and their evidence percentages.
+      // Reconstructing kW from phase energy can round an exact 100 W upward.
+      const includedPower = name !== 'charger' || previous.kw > CHARGING_MIN_POWER_KW + Number.EPSILON;
       if (end > start) {
         details.powerMs += end - start;
-        details.firstPowerAt = Math.min(details.firstPowerAt ?? firstAt, firstAt);
-        details.lastPowerAt = Math.max(details.lastPowerAt ?? lastAt, lastAt);
-        details.energyBases.add(previous.evidence?.energyBasis ?? 'power-snapshots');
-        details.timeBases.add(previous.evidence?.timeBasis ?? 'power-sample-time');
+        if (name === 'charger') details[includedPower ? 'chargingMs' : 'idleMs'] += end - start;
+        if (includedPower) {
+          details.firstPowerAt = Math.min(details.firstPowerAt ?? firstAt, firstAt);
+          details.lastPowerAt = Math.max(details.lastPowerAt ?? lastAt, lastAt);
+          details.energyBases.add(previous.evidence?.energyBasis ?? 'power-snapshots');
+          details.timeBases.add(previous.evidence?.timeBasis ?? 'power-sample-time');
+        }
       }
       // Binary lookup keeps long-range costs proportional to source observations.
       let lo = 0, hi = this.prices.length;
       while (lo < hi) { const mid = (lo + hi) >>> 1; if (this.prices[mid].end <= start) lo = mid + 1; else hi = mid; }
-      for (let i = lo; i < this.prices.length && this.prices[i].start < end; i++) {
+      for (let i = lo; includedPower && i < this.prices.length && this.prices[i].start < end; i++) {
         const price = this.prices[i];
         let a = Math.max(start, price.start), b = Math.min(end, price.end);
         while (a < b) {
@@ -385,6 +393,9 @@ export class DailyTimingBenchmark {
       const actualCostEuro = this.days.reduce((sum, day) => sum + day[name].cost, 0);
       const uniformCostEuro = this.days.reduce((sum, day) => sum + day[name].energy * (day.average ?? 0) / 100, 0);
       const details = this.details[name], share = ms => covered ? ms / covered : 0;
+      const coverageDuration = name === 'charger' ? details.chargingMs : duration;
+      const missingPowerMs = Math.max(0, duration - details.powerMs);
+      const incompletePriceMs = Math.max(0, (name === 'charger' ? details.chargingMs : details.powerMs) - covered);
       const energyBasis = details.energyBases.size > 1 ? 'recorded-and-legacy'
         : [...details.energyBases][0] ?? 'power-snapshots';
       const timeBasis = details.timeBases.size > 1 ? 'mixed-recorded-time'
@@ -392,9 +403,13 @@ export class DailyTimingBenchmark {
       return [name, { value: covered ? uniformCostEuro - actualCostEuro : null, energyKwh: covered ? energyKwh : null,
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
-        coverage: duration ? Math.min(1, covered / duration) : 0, provisional: this.now < this.range.to || covered < duration,
+        coverage: coverageDuration ? Math.min(1, covered / coverageDuration) : 0,
+        provisional: this.now < this.range.to || (name === 'charger'
+          ? missingPowerMs > 0 || incompletePriceMs > 0 : covered < duration),
         coverageDetails: { elapsedMs: duration, includedMs: covered, powerMs: details.powerMs,
-          missingPowerMs: Math.max(0, duration - details.powerMs), incompletePriceMs: Math.max(0, details.powerMs - covered),
+          missingPowerMs, incompletePriceMs,
+          ...(name === 'charger' ? { chargingMs: details.chargingMs, idleMs: details.idleMs,
+            minimumPowerKw: CHARGING_MIN_POWER_KW, coverageBasis: 'charging-time' } : {}),
           from: this.range.from, to: Math.max(this.range.from, this.now),
           firstPowerAt: details.firstPowerAt, lastPowerAt: details.lastPowerAt },
         evidence: { basis: 'included-time', energyBasis, timeBasis,

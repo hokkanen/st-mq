@@ -21,9 +21,11 @@ export function seedTimingBrowserFixture(store) {
         } else if (date === '2026-09-04' && slot <= 24) {
           add('heat_pump_power', slot < 24 ? 2 : null, 'kW', from + slot * quarter,
             { basis: 'estimated', powerBasis: 'modelled', compressorObserved: false, auxiliaryObserved: false, auxiliaryAssumed: true });
-        } else if (date === '2026-09-05' && slot < 24) {
-          const powerBasis = slot < 12 ? 'measured' : slot < 18 ? 'currents' : 'unknown';
-          add('charger_power', slot < 12 ? 3 : 1, 'kW', from + slot * quarter, { powerBasis });
+        } else if (date === '2026-09-05' && slot < 48) {
+          const powerBasis = slot < 12 || slot >= 24 ? 'measured' : slot < 18 ? 'currents' : 'unknown';
+          // Six hours of low standby readings must not inflate measured charging
+          // evidence. The remaining unrecorded hours are unknown, not idle.
+          add('charger_power', slot < 12 ? 3 : slot < 24 ? 1 : 0.05, 'kW', from + slot * quarter, { powerBasis });
         }
       }
       if (date !== '2026-09-03') {
@@ -42,7 +44,7 @@ export function seedTimingBrowserFixture(store) {
         }
       }
       // Finish scalar power before the next day's independent current fixture.
-      if (date === '2026-09-05') add('charger_power', null, 'kW', from + 24 * quarter);
+      if (date === '2026-09-05') add('charger_power', null, 'kW', from + 48 * quarter);
       if (date === '2026-09-03') {
         for (let phase = 1; phase <= 3; phase++) add(`ev1_current_l${phase}`, null, 'A', from + 96 * quarter);
       }
@@ -84,6 +86,29 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const scrollTo = css => evaluate(`document.querySelector(${JSON.stringify(css)}).scrollIntoView({ block: 'start' }); true`);
   const checkOpen = expected => evaluate(expanded).then(actual => assert.equal(actual, expected,
     'Timing expansion follows the reader’s choice'));
+  const checkDetailOpen = async (device, expected) => {
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).open`), expected,
+      `${device} details follow the reader’s choice independently`);
+  };
+  const checkEqualHeights = async () => {
+    assert.equal(await evaluate(`(() => {
+      const boxes = [...document.querySelectorAll('.timing-device')].map(element => element.getBoundingClientRect());
+      return boxes.length === 2 && Math.abs(boxes[0].top - boxes[1].top) < 1
+        && Math.abs(boxes[0].height - boxes[1].height) < 1;
+    })()`), true, 'Side-by-side cards stay the same height with unequal results or expanded details');
+  };
+  const checkContentOrder = async () => {
+    assert.equal(await evaluate(`(() => {
+      const notes = document.querySelector('.timing-explanations');
+      const cards = [...document.querySelectorAll('.timing-device')];
+      return notes.parentElement.lastElementChild === notes
+        && cards.every(card => {
+          const fold = card.querySelector('.timing-device-detail');
+          return fold?.tagName === 'DETAILS' && fold.querySelector(':scope > summary')
+            && notes.getBoundingClientRect().top >= card.getBoundingClientRect().bottom - 1;
+        }) && document.querySelector('.timing-evidence-devices') === null;
+    })()`), true, 'Each card contains its own native details fold and shared explanations come last');
+  };
 
   assert.equal(await evaluate("document.getElementById('timing-details').tagName"), 'DETAILS');
   assert.match(await text(summary), /Timing cost/i);
@@ -106,50 +131,86 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     'Native summary keeps keyboard focus while toggling');
   assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button, #timing-benefit [role=dialog]').length"), 0,
     'Timing results and explanations are ordinary text without popup controls');
+  for (const [device, label] of [['heatPump', 'Heating details'], ['charger', 'Charger details']]) {
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).tagName`), 'DETAILS');
+    assert.equal((await text(`${detail(device)} > summary`)).trim(), label);
+    await checkDetailOpen(device, false);
+  }
+  await evaluate(`window.timingFoldFixture.devices = Object.fromEntries(['heatPump', 'charger'].map(device => {
+    const details = document.querySelector('.timing-device-detail[data-device="' + device + '"]');
+    return [device, { details, summary: details.querySelector(':scope > summary') }];
+  })); true`);
 
   assert.match(await text(card('heatPump')), /unavailable/i);
   assert.match(await text(`${card('charger')} .timing-amount`), /€[\d.]+/);
-  assert.match(await text(`${card('charger')} .timing-coverage`), /100% of time included/,
-    'Recorded zero current counts toward elapsed-time coverage');
+  assert.match(await text(`${card('charger')} .timing-coverage`), /100% of detected charging included/,
+    'Idle hours do not reduce or inflate the share of detected charging included');
   assert.match(await text(`${card('charger')} .timing-assumed`), /assumed rates/i);
   assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
   assert.match(await text('.timing-rate-explanation'), /historical spot prices/i);
-  assert.match(await text(detail('charger')), /100%.*included time/i);
+  assert.match(await text(detail('charger')), /100%.*included charging time/i);
   assert.match(await text(card('charger')), /2026/);
   assert.match(await text('.timing-explanations'), /zero/i);
-  assert.match(await text('.timing-explanations'), /how often the device ran/i);
+  assert.match(await text('.timing-explanations'), /idle periods are left out/i);
+  assert.match(await text('.timing-explanations'), /missing readings are unknown/i);
   assert.match(await text('.timing-explanations'), /whole day|full.day|daily average/i);
   assert.match(await text('.timing-explanations'), /does not prove|not proven/i);
   assert.match(await text(card('heatPump')), /power|energy/i);
+  await checkEqualHeights();
+  await checkContentOrder();
   await checkFits();
   await scrollTo(summary);
   await capture('home-energy-timing-historical-desktop');
+  await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
+  await key('\uE007');
+  await until(`document.querySelector(${JSON.stringify(detail('charger'))}).open`);
+  await checkDetailOpen('heatPump', false);
+  await checkEqualHeights();
+  await key(' ');
+  await until(`!document.querySelector(${JSON.stringify(detail('charger'))}).open`);
+  await key('\uE007');
+  await until(`document.querySelector(${JSON.stringify(detail('charger'))}).open`);
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.devices.charger.summary'), true,
+    'Nested native summary keeps keyboard focus while toggling');
+  await checkOpen(true);
+  await scrollTo(summary);
+  await capture('home-energy-timing-one-detail-desktop');
 
   await chooseDate('2026-09-05');
   await checkOpen(true);
   assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details && document.querySelector('#timing-details > summary') === window.timingFoldFixture.summary"), true,
     'Changing dates updates the contents without replacing the fold or its summary');
-  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.summary'), true,
-    'Changing data preserves focus on the native summary');
+  for (const device of ['heatPump', 'charger']) {
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}) === window.timingFoldFixture.devices.${device}.details
+      && document.querySelector(${JSON.stringify(`${detail(device)} > summary`)}) === window.timingFoldFixture.devices.${device}.summary`), true,
+    'Changing dates updates detail contents without replacing their folds or summaries');
+  }
+  await checkDetailOpen('heatPump', false);
+  await checkDetailOpen('charger', true);
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.devices.charger.summary'), true,
+    'Changing data preserves focus on the nested native summary');
   assert.match(await text(`${card('heatPump')} .timing-basis`), /operation estimate/i);
   assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
   assert.match(await text(detail('heatPump')), /reconstruct|recorded equipment/i);
   assert.match(await text(`${card('charger')} .timing-basis`), /mixed/i);
   for (const [source, share] of [['measured', '50%'], ['currents', '25%'], ['unknown', '25%']]) {
     const sourceText = await text(`${detail('charger')} .timing-source[data-source="${source}"]`);
-    assert.ok(sourceText.includes(share), `${source} is weighted by included time, not observation count`);
-    assert.match(sourceText, /included time/i);
+    assert.ok(sourceText.includes(share), `${source} is weighted by active charging time, excluding standby readings`);
+    assert.match(sourceText, /included charging time/i);
     assert.match(sourceText, /2026/, 'Contributing dates remain next to each source explanation');
   }
   assert.match(await text(`${detail('charger')} .timing-source[data-source="measured"]`), /dedicated power/i);
   assert.match(await text(`${detail('charger')} .timing-source[data-source="currents"]`), /230 V/i);
-  assert.match(await text(`${detail('charger')} .timing-source[data-source="unknown"]`), /not recorded/i);
-  assert.equal(await evaluate(`(() => {
-    const cards = [...document.querySelectorAll('.timing-device')].map(element => element.getBoundingClientRect());
-    const note = document.querySelector('.timing-explanations').getBoundingClientRect();
-    const details = [...document.querySelectorAll('.timing-device-detail')].map(element => element.getBoundingClientRect());
-    return cards.every(box => note.top >= box.bottom - 1) && details.every(box => box.top >= note.bottom - 1);
-  })()`), true, 'Both results precede the shared explanations and the longer device details');
+  assert.match(await text(`${detail('charger')} .timing-source[data-source="unknown"]`), /does not say how it was measured or estimated/i);
+  const coverage = JSON.parse(await evaluate(`fetch('/api/chart?start=2026-09-05&end=2026-09-05').then(response => response.json()).then(data => JSON.stringify(data.timingBenefit.charger.coverageDetails))`));
+  assert.equal(coverage.chargingMs, 6 * 3_600_000);
+  assert.equal(coverage.idleMs, 6 * 3_600_000);
+  assert.equal(coverage.missingPowerMs, 12 * 3_600_000);
+  assert.match(await text(`${card('charger')} .timing-coverage`), /100% of detected charging included/);
+  assert.match(await text(detail('charger')), /unknown|missing/i,
+    'The charging detail still explains unrecorded time separately from idle time');
+  await checkEqualHeights();
+  await checkContentOrder();
 
   for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 640 }]) {
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
@@ -161,9 +222,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
         const r = document.querySelector('.timing-device[data-device="' + device + '"]').getBoundingClientRect();
         return { top: r.top, left: r.left, bottom: r.bottom };
       }))`));
-      if (viewport.width === 1440) {
+      if (viewport.width > 800) {
         assert.ok(Math.abs(positions[0].top - positions[1].top) < 1 && positions[0].left < positions[1].left,
           'Desktop presents heat pump left and charger right');
+        await checkEqualHeights();
       } else if (viewport.width <= 390) {
         assert.ok(positions[1].top >= positions[0].bottom && Math.abs(positions[0].left - positions[1].left) < 1,
           'Narrow screens stack the device cards in reading order');
@@ -174,17 +236,34 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       await capture(`home-energy-timing-evidence-${theme}-${viewport.width}`);
       await scrollTo('.timing-explanations');
       await capture(`home-energy-timing-explanations-${theme}-${viewport.width}`);
+      await tap(`${detail('heatPump')} > summary`);
+      await until(`document.querySelector(${JSON.stringify(detail('heatPump'))}).open`);
+      await checkDetailOpen('charger', true);
+      await checkOpen(true);
+      await checkFits();
+      await checkContentOrder();
+      if (viewport.width > 800) await checkEqualHeights();
+      await scrollTo(summary);
+      await capture(`home-energy-timing-both-details-${theme}-${viewport.width}`);
+      await tap(`${detail('heatPump')} > summary`);
+      await until(`!document.querySelector(${JSON.stringify(detail('heatPump'))}).open`);
+      await checkDetailOpen('charger', true);
       await tap(summary);
       await until(`!${expanded}`);
       await capture(`home-energy-timing-folded-${theme}-${viewport.width}`);
       await tap(summary);
       await until(expanded);
+      await checkDetailOpen('heatPump', false);
+      await checkDetailOpen('charger', true);
     }
   }
 
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await chooseDate('2026-09-04');
   await checkOpen(true);
+  await checkDetailOpen('heatPump', false);
+  await checkDetailOpen('charger', true);
+  await checkEqualHeights();
   assert.match(await text(`${card('heatPump')} .timing-basis`), /operation estimate/i);
   assert.match(await text(`${card('heatPump')} .timing-coverage`), /25% of time included/);
   assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
@@ -200,7 +279,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-assumed').length"), 1,
     'The chart-level assumed-rate indication appears once when both comparisons are unavailable');
   assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
-  assert.match(await text('.timing-chart-rates'), /No device comparison.*includes affected time/i);
+  assert.match(await text('.timing-chart-rates'), /no device comparison.*includes the affected periods/i);
   assert.doesNotMatch(await text('.timing-chart-rates'), /0% of included time/,
     'Chart-only assumptions do not present an irrelevant zero share of included device time');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
@@ -216,6 +295,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     'Known-rate dates remove obsolete explanations about assumed contract rates');
   await tap(summary);
   await until(expanded);
+  await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
   // Wait for a real background status poll while the reader leaves the fold open.
   await evaluate(`window.timingFoldFixture.fetch = window.fetch.bind(window);
     window.timingFoldFixture.polls = 0;
@@ -231,6 +311,11 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await checkOpen(true);
     assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details"), true,
       'Background polling preserves the native fold');
+    await checkDetailOpen('heatPump', false);
+    await checkDetailOpen('charger', true);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail('charger'))}) === window.timingFoldFixture.devices.charger.details
+      && document.activeElement === window.timingFoldFixture.devices.charger.summary`), true,
+    'Background polling preserves the nested fold and keyboard focus');
   } finally {
     await evaluate('window.fetch = window.timingFoldFixture.fetch; delete window.timingFoldFixture; true');
   }

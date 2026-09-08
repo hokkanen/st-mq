@@ -37,7 +37,9 @@ test('daily timing comparison uses exact local-day duration, including both DST 
     assert(Math.abs(result.charger.value - (2 * average / 100 + 0.2)) < 1e-10);
     assert.equal(result.charger.coverage, 1);
     assert.equal(result.charger.coverageDetails.elapsedMs, hours * HOUR);
-    assert.equal(result.charger.coverageDetails.includedMs, hours * HOUR);
+    assert.equal(result.charger.coverageDetails.includedMs, HOUR);
+    assert.equal(result.charger.coverageDetails.chargingMs, HOUR);
+    assert.equal(result.charger.coverageDetails.idleMs, (hours - 1) * HOUR);
     assert.equal(result.charger.coverageDetails.missingPowerMs, 0);
     assert.equal(result.charger.evidence.sources[0].share, 1);
     assert.equal(result.charger.provisional, false);
@@ -171,7 +173,7 @@ test('old charger timing uses current known rates and historical spot without ch
     assert.equal(result.timingBenefit.charger.priceAssumptions.share, 1,
       'Historical included time all uses assumed rates');
     assert.equal(result.timingBenefit.charger.priceAssumptions.firstAt, from);
-    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + 90 * MINUTE);
+    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + HOUR);
     assert.equal(verified.timingBenefit.charger.assumedPrices, false);
     assert.equal(result.timingBenefit.heatPump.value, null);
     assert.equal(result.timingBenefit.heatPump.assumedPrices, false);
@@ -269,15 +271,15 @@ test('legacy heat-pump estimates do not replace missing original equipment and d
 test('charger current and legacy scalar evidence remain distinct and missing prices still report available power', () => {
   const store = new Store(':memory:');
   try {
-    for (let phase = 1; phase <= 3; phase++) put(store, `ev1_current_l${phase}`, 0, from);
-    put(store, 'charger_power', 0, from + 30 * MINUTE, { unit: 'kW', raw: {
+    for (let phase = 1; phase <= 3; phase++) put(store, `ev1_current_l${phase}`, 3, from);
+    put(store, 'charger_power', 1, from + 30 * MINUTE, { unit: 'kW', raw: {
       basis: 'Three coherent phase currents × nominal 230 V; not an energy meter',
     } });
-    put(store, 'charger_power', 0, from + HOUR, { unit: 'kW' });
+    put(store, 'charger_power', 1, from + HOUR, { unit: 'kW' });
     const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
     const included = get(store, { market, contract, now: from + 90 * MINUTE }).timingBenefit.charger;
     assert.equal(included.coverage, 1);
-    assert.equal(included.value, 0);
+    assert(included.value > 0, 'Charging uses the cheaper night transfer rate');
     assert.deepEqual(included.evidence.sources.map(source => [source.key, source.durationMs]),
       [['currents', HOUR], ['unknown', 30 * MINUTE]]);
     const excluded = get(store, { contract, now: from + 90 * MINUTE }).timingBenefit.charger;
@@ -362,7 +364,7 @@ test('rate assumptions in the daily baseline are flagged even when charging has 
     assert.equal(result.timingBenefit.charger.priceAssumptions.share, 1,
       'Assumed full-day baseline affects even the energy that has known rates');
     assert.equal(result.timingBenefit.charger.priceAssumptions.firstAt, from + HOUR);
-    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + 2 * HOUR);
+    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + 90 * MINUTE);
     const verified = get(store, { market, contract });
     assert.equal(verified.timingBenefit.charger.assumedPrices, false);
     assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);

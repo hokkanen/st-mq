@@ -383,12 +383,22 @@ and recorder checkpoints do not force a history download. Short views react to
 new committed data. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
 The **Timing cost** fold starts closed beneath the chart, alongside **Recording
-details**. Opening it shows both heat-pump and charger summaries first, followed by
-shared calculation and assumption notes in a centered column. Separate device
-details below show energy sources, timestamps and time coverage. All explanations
-appear as normal text.
-The fold works with keyboard and touch and keeps its state across chart refreshes
-and date changes. Meter counters are also selectable under
+details**. Matching-height summary boxes contain separate **Heating details** and
+**Charger details** folds for energy sources, timestamps and coverage. Shared
+explanations come last in a centered column. All three folds support keyboard and
+touch and keep their state across chart refreshes and date changes.
+
+The charger timing comparison uses only recorded periods with average power
+above 100 W. Its percentage is the share of detected charging time with complete
+daily prices; source and rate-assumption shares use that included charging time.
+Observed idle periods at or below 100 W and unknown history are reported separately.
+Neither contributes energy or time to the charger comparison. Its daily average
+price still spans the full Finnish day. A 100% result describes the detected
+charging, not completeness of the history. The threshold affects this comparison
+only; original energy records, chart series and CSV import interpretation remain
+unchanged. Heating continues to count valid zero-consumption time in its coverage.
+
+Meter counters are also selectable under
 Meter checks, separately from estimated interval energy.
 
 ## Synthetic year benchmark

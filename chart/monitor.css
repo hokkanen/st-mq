@@ -161,10 +161,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
 .timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
-.timing-devices, .timing-evidence-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.timing-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; align-items: stretch; }
 .timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
-.timing-evidence-devices { margin-top: 32px; }
-.timing-device-detail .timing-energy { border-top: 0; padding-top: 0; }
+.timing-device { display: grid; grid-row: span 2; grid-template-rows: subgrid; row-gap: 0; }
+.timing-device-overview { min-width: 0; }
+.timing-card .timing-device-detail { margin-top: 20px; align-self: start; min-width: 0; }
+.timing-device-detail > summary { padding: 14px 0 0; font-weight: 550; }
+.timing-device-detail[open] > summary { padding-bottom: 18px; }
+.timing-device-detail .timing-energy { margin-top: 0; border-top: 0; padding-top: 0; }
 .timing-device-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .timing-device-name { margin: 0; font-size: 18px; font-weight: 550; }
 .timing-period { color: var(--muted); font-size: 12px; }
@@ -200,7 +204,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-explanation p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
 .timing-chart-rates { margin-top: 16px; border-left: 3px solid var(--stale); padding-left: 16px; }
 @media (max-width: 800px) {
-  .timing-devices, .timing-evidence-devices { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .timing-devices { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .timing-device { display: block; grid-row: auto; }
   .timing-card { padding: 20px; }
 }
 @media (max-width: 480px) {

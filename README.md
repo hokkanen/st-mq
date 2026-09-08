@@ -144,20 +144,24 @@ directly below the current readings.
   source details identify those estimates and simulation. Missing equipment data
   or dated heat-pump power assumptions leave gaps. Heat-pump power is never
   property consumption minus charger consumption.
-  **Time included** describes the share of the selected elapsed time that enters
-  the calculation, including valid zero-power intervals. It is not
-  runtime, the share of charging days or a confidence score. The evidence mix
-  describes shares of that included time, so frequent samples do not receive
-  extra weight. Missing power periods and days with incomplete spot prices are
-  excluded; the result is not extrapolated to missing periods. For today, the
-  denominator runs from Finnish midnight to the calculation time.
+  Heating's **Time included** is the share of elapsed time covered by usable
+  energy and complete daily prices, including valid zero-power intervals.
+  The charger's percentage covers **detected charging** only: intervals with
+  average power above 100 W. Idle periods at or below 100 W contribute neither
+  energy nor time to the charger comparison or its source and assumed-rate shares.
+  The full-day average price still includes every hour. Missing readings remain
+  unknown, separate from idle time; 100% of detected charging does not mean all
+  charging was recorded. With no detected charging, no comparison is shown.
+  The source mix is weighted by included time, not sample count, energy or
+  accuracy. Missing history and charging periods with incomplete daily prices
+  are excluded, without extrapolation. Future hours do not reduce coverage.
   Calculations use the underlying energy and equipment intervals independently
   of chart point reduction and the selected left axis.
   The fold starts closed, like **Recording details**, and stays as you set it
-  when the chart refreshes or dates change. Both result summaries come first,
-  followed by shared explanations of the calculation, coverage and price
-  assumptions. Separate device details below show source shares, timestamps and
-  missing-time information as normal text. Missing historical contract rates
+  when the chart refreshes or dates change. Matching-height device boxes contain
+  their own **Heating details** and **Charger details** folds for source shares,
+  timestamps and missing-time information. Shared explanations come last, in a
+  centered column. Missing historical contract rates
   use the nearest known rates with historical spot prices;
   **Assumed rates** includes assumptions affecting the daily average even when
   the device ran during a period with known rates. This comparison does not
