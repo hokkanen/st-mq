@@ -139,12 +139,17 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       const result = payload?.timingBenefit?.[key], row = document.createElement('p'), title = document.createElement('strong');
       title.textContent = `${name}: `;
       row.append(title, document.createTextNode(Number.isFinite(result?.value)
-        ? `${money(result.value)} timing benefit · estimated${result.provisional ? ' · provisional' : ''} · ${Math.round(result.coverage * 100)}% coverage`
+        ? `${money(result.value)} timing benefit · estimated${result.assumedPrices ? ' · assumed rates' : ''}${result.provisional ? ' · provisional' : ''} · ${Math.round(result.coverage * 100)}% coverage`
         : 'Timing comparison unavailable · energy and full-day prices needed'));
       row.title = result?.basis ?? ''; root.append(row);
     }
+    if (payload?.meta?.priceAssumptions?.used || Object.values(payload?.timingBenefit ?? {}).some(result => result.assumedPrices)) {
+      const caution = document.createElement('p'); caution.className = 'timing-explanation timing-price-caution';
+      caution.textContent = 'Some historical all-in prices use the nearest known contract rates. Estimated timing benefits depend on these assumed rates.';
+      root.append(caution);
+    }
     const note = document.createElement('p'); note.className = 'timing-explanation';
-    note.textContent = 'Same recorded energy at each whole day’s average all-in price. Positive = cheaper timing; negative = dearer. Missing periods excluded. Not proven controller savings.';
+    note.textContent = 'Same recorded energy at each whole day’s average all-in price. Positive = cheaper timing; negative = dearer. Missing energy periods and days with incomplete spot prices are excluded. Not proven controller savings.';
     root.append(note);
   }
   function renderChart() {

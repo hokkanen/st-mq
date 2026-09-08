@@ -144,6 +144,88 @@ test('historical charger timing uses coherent phase acquisitions on every axis a
   } finally { store.close(); }
 });
 
+test('old charger timing uses current known rates and historical spot without changing control prices or history', () => {
+  const store = new Store(':memory:');
+  try {
+    const current = from + 60 * 24 * HOUR;
+    const currentContract = { periods: [{ ...contract.periods[0], from: current }] };
+    const market = { fetchedAt: current, intervals: [interval(from, from + HOUR, -10), interval(from + HOUR, from + 24 * HOUR, 20)] };
+    for (const at of [from, from + 30 * MINUTE]) for (let phase = 1; phase <= 3; phase++)
+      put(store, `ev1_current_l${phase}`, 10, at);
+    for (let phase = 1; phase <= 3; phase++) put(store, `ev1_current_l${phase}`, 0, from + HOUR);
+    const before = store.db.prepare('SELECT count(*) count FROM observations').get().count;
+    const savedContract = JSON.stringify(currentContract);
+    const result = get(store, { market, contract: currentContract, now: current });
+    const verified = get(store, { market, contract, now: current });
+    assert(result.timingBenefit.charger.value > 0);
+    assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);
+    assert.equal(result.timingBenefit.charger.assumedPrices, true);
+    assert.equal(verified.timingBenefit.charger.assumedPrices, false);
+    assert.equal(result.timingBenefit.heatPump.value, null);
+    assert.equal(result.timingBenefit.heatPump.assumedPrices, false);
+    assert.equal(result.meta.priceAssumptions.used, true);
+    assert.equal(JSON.stringify(currentContract), savedContract);
+    assert.equal(store.db.prepare('SELECT count(*) count FROM observations').get().count, before);
+    const noContract = get(store, { market, now: current });
+    assert.equal(noContract.timingBenefit.charger.value, null);
+    assert.equal(noContract.meta.priceAssumptions.used, false);
+  } finally { store.close(); }
+});
+
+test('legacy CSV spot slots enable charger timing on short and compact ranges without provider snapshots', async () => {
+  const store = new Store(':memory:'), directory = mkdtempSync(join(tmpdir(), 'stmq-timing-'));
+  try {
+    const file = join(directory, 'synthetic-prices.csv');
+    const rows = ['unix_time,price,heat_on,temp_in,temp_ga,temp_out'];
+    // The old logger timestamps readings after processing, a few seconds into each slot.
+    for (let slot = 0; slot < 96; slot++) rows.push(`${(from + slot * 15 * MINUTE) / 1000 + 7},${slot < 4 ? -10 : 20},15,21,10,-5`);
+    writeFileSync(file, rows.join('\n'));
+    await importCsv(store, file, { kind: 'stmq' });
+    const evFile = join(directory, 'synthetic-charger.csv');
+    writeFileSync(evFile, ['unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3',
+      `${from / 1000},10,10,10,12,12,12`, `${(from + 30 * MINUTE) / 1000},10,10,10,12,12,12`,
+      `${(from + HOUR) / 1000},0,0,0,2,2,2`].join('\n'));
+    await importCsv(store, evFile, { kind: 'easee' });
+    const current = from + 60 * 24 * HOUR;
+    const currentContract = { periods: [{ ...contract.periods[0], from: current }] };
+    const result = get(store, { now: current, contract: currentContract });
+    const benefit = result.timingBenefit.charger;
+    assert(Math.abs(benefit.energyKwh - 6.9) < 1e-10);
+    const expectedAverage = ((-10 + 23 * 20) / 24 + 0.4 + 2.2) * 1.255 + (9 * 1.96 + 15 * 3.34) / 24;
+    const expectedActualPrice = (-10 + 0.4 + 2.2) * 1.255 + 1.96;
+    assert(Math.abs(benefit.value - 6.9 * (expectedAverage - expectedActualPrice) / 100) < 1e-10);
+    assert.equal(benefit.assumedPrices, true);
+    assert.equal(result.timingBenefit.heatPump.value, null);
+    for (const left of ['power', 'integral', 'learning_aux_profit']) {
+      const compact = get(store, { now: current, contract: currentContract, startDate: '2026-01-08', left, points: 100 });
+      assert.equal(compact.timingBenefit.charger.value, benefit.value);
+      assert.equal(compact.timingBenefit.charger.energyKwh, benefit.energyKwh);
+      assert.equal(compact.timingBenefit.charger.assumedPrices, true);
+    }
+    // An authoritative missing slot is still missing even with known contract rates.
+    put(store, 'spot_price', null, from + 8 * HOUR + 10 * 1000);
+    const incomplete = get(store, { now: current, contract: currentContract });
+    assert.equal(incomplete.timingBenefit.charger.value, null);
+    assert.equal(incomplete.timingBenefit.charger.assumedPrices, false);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('rate assumptions in the daily baseline are flagged even when charging has dated rates', () => {
+  const store = new Store(':memory:');
+  try {
+    const partialContract = { periods: [{ ...contract.periods[0], from: from + HOUR }] };
+    const market = { fetchedAt: from, intervals: [interval(from, from + HOUR, -10), interval(from + HOUR, from + 24 * HOUR, 20)] };
+    put(store, 'charger_power', 2, from + HOUR, { unit: 'kW' });
+    put(store, 'charger_power', 0, from + HOUR + 30 * MINUTE, { unit: 'kW' });
+    const result = get(store, { market, contract: partialContract });
+    assert(Number.isFinite(result.timingBenefit.charger.value));
+    assert.equal(result.timingBenefit.charger.assumedPrices, true);
+    const verified = get(store, { market, contract });
+    assert.equal(verified.timingBenefit.charger.assumedPrices, false);
+    assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);
+  } finally { store.close(); }
+});
+
 test('archived solar forecast remains separate from future forecast and is never filled into unknown history', () => {
   const store = new Store(':memory:');
   try {
@@ -381,7 +463,7 @@ test('shading respects bounded requests, DHWR pulses and separately verified com
   } finally { store.close(); }
 });
 
-test('all-in history uses effective-dated rates and never substitutes spot when rates are missing', () => {
+test('all-in history uses nearest dated rates with an explicit assumption and still requires a contract', () => {
   const store = new Store(':memory:');
   try {
     put(store, 'spot_price', -4, from);
@@ -394,8 +476,12 @@ test('all-in history uses effective-dated rates and never substitutes spot when 
     assert(Math.abs(priced.series.all_in_price.at(-1).y - ((8 + 0.4 + 2.2) * 1.255 + 3.34)) < 1e-10);
     const futureRates = { periods: [{ ...contract.periods[0], from: from + 7 * HOUR }] };
     const partial = get(store, { contract: futureRates });
-    assert.equal(partial.series.all_in_price[0].y, null);
+    assert.equal(partial.series.all_in_price[0].y, priced.series.all_in_price[0].y);
+    assert.equal(partial.series.all_in_price[0].assumedPrice, true);
     assert(partial.series.all_in_price.at(-1).y > 0);
+    assert.equal(partial.series.all_in_price.at(-1).assumedPrice, false);
+    assert.equal(partial.meta.priceAssumptions.used, true);
+    assert.equal(priced.meta.priceAssumptions.used, false);
   } finally { store.close(); }
 });
 
@@ -414,6 +500,27 @@ test('stored market snapshots preserve old prices and latest differently partiti
     assert(!result.series.spot_price.some(point => point.y === 99));
     const oldView = get(store, { now: from + 20 * 24 * HOUR });
     assert(oldView.series.spot_price.some(point => point.y === 2));
+  } finally { store.close(); }
+});
+
+test('provider intervals override reconstructed spot slots across partial and missing slots without overlap', () => {
+  const store = new Store(':memory:');
+  try {
+    for (let slot = 0; slot < 96; slot++)
+      put(store, 'spot_price', slot === 1 ? null : 10, from + slot * 15 * MINUTE + 7000);
+    put(store, 'charger_power', 2, from, { unit: 'kW' });
+    put(store, 'charger_power', 2, from + 30 * MINUTE, { unit: 'kW' });
+    put(store, 'charger_power', 0, from + HOUR, { unit: 'kW' });
+    const override = interval(from + 5 * MINUTE, from + 35 * MINUTE, -10);
+    const market = { fetchedAt: from, intervals: [override] };
+    const result = get(store, { contract, market, now: from + 24 * HOUR });
+    const explicit = get(store, { contract, now: from + 24 * HOUR, market: { ...market, intervals: [
+      interval(from, override.start, 10), override, interval(override.end, from + 24 * HOUR, 10)] } });
+    assert(Number.isFinite(result.timingBenefit.charger.value));
+    for (const key of ['value', 'actualCostEuro', 'uniformCostEuro', 'energyKwh', 'coverage'])
+      assert(Math.abs(result.timingBenefit.charger[key] - explicit.timingBenefit.charger[key]) < 1e-10, key);
+    assert.equal(result.series.spot_price.find(point => point.x === override.start).y, -10);
+    assert.equal(result.series.spot_price.find(point => point.x === override.end).y, 10);
   } finally { store.close(); }
 });
 

@@ -1,6 +1,8 @@
 import moment from 'moment-timezone';
-import { allInPrice, priceIntervals, validateContract } from '../domain/prices.js';
+import { validateContract } from '../domain/prices.js';
 import { assembleOutlook } from './contract.js';
+import { createHistoricalPricing } from './chart-prices.js';
+import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 
@@ -225,7 +227,24 @@ function knownIntervals(market, store, range, now) {
     for (const change of changes) change.direction > 0 ? active.add(change.id) : active.delete(change.id);
     previous = at;
   }
-  return result;
+  // Historical scalar slots fill only gaps in explicit provider intervals.
+  // Merge sorted intervals in linear time instead of expanding years of CSV
+  // slots into the provider-revision event map above.
+  const combined = []; let index = 0;
+  for (const slot of historicalSpotIntervals(store, range, now)) {
+    while (index < result.length && result[index].end <= slot.start) combined.push(result[index++]);
+    let cursor = slot.start;
+    while (index < result.length && result[index].start < slot.end) {
+      const provider = result[index];
+      if (cursor < provider.start) combined.push({ ...slot, start: cursor, end: provider.start });
+      cursor = Math.max(cursor, provider.end);
+      if (provider.end > slot.end) break;
+      combined.push(provider); index++;
+    }
+    if (cursor < slot.end) combined.push({ ...slot, start: cursor });
+  }
+  while (index < result.length) combined.push(result[index++]);
+  return combined;
 }
 
 const WEATHER_SOURCES = new Set(['fmi', 'openmeteo', 'husdata-h66', 'smartthings', 'simulation']);
@@ -252,7 +271,8 @@ function intervalPoints(intervals, key, envelope) {
     const start = Math.max(envelope.from, interval.start), end = Math.min(envelope.to, interval.end);
     if (end <= start || !Number.isFinite(interval[key])) continue;
     if (previous && start > previous) { envelope.add(previous, null); envelope.add(start - 1, null); }
-    const metadata = ['outdoorC', 'solarRadiationWm2'].includes(key) ? weatherPointMetadata(interval, key === 'solarRadiationWm2') : undefined;
+    const metadata = ['outdoorC', 'solarRadiationWm2'].includes(key) ? weatherPointMetadata(interval, key === 'solarRadiationWm2')
+      : key === 'totalCtPerKwh' ? { assumedPrice: interval.assumedPrice === true } : undefined;
     envelope.add(start, interval[key], metadata);
     envelope.add(end - 1, interval[key], metadata);
     previous = end;
@@ -270,15 +290,16 @@ export class DailyTimingBenchmark {
     let priceIndex = 0;
     for (let day = moment.tz(range.from, CHART_TIME_ZONE).startOf('day'); day.valueOf() < range.to; day.add(1, 'day')) {
       const start = day.valueOf(), end = day.clone().add(1, 'day').valueOf();
-      let covered = 0, weighted = 0;
+      let covered = 0, weighted = 0, assumedPrices = false;
       while (priceIndex < this.prices.length && this.prices[priceIndex].end <= start) priceIndex++;
       for (let index = priceIndex; index < this.prices.length; index++) {
         const price = this.prices[index];
         if (price.start >= end) break;
         const duration = Math.max(0, Math.min(end, price.end) - Math.max(start, price.start));
         covered += duration; weighted += duration * price.totalCtPerKwh;
+        if (duration > 0 && price.assumedPrice) assumedPrices = true;
       }
-      this.days.push({ start, end, average: covered === end - start ? weighted / covered : null,
+      this.days.push({ start, end, average: covered === end - start ? weighted / covered : null, assumedPrices,
         observedDuration: Math.max(0, Math.min(end, this.now) - Math.max(start, range.from)), heatPump: { energy: 0, cost: 0, covered: 0 }, charger: { energy: 0, cost: 0, covered: 0 } });
     }
   }
@@ -318,6 +339,7 @@ export class DailyTimingBenchmark {
       const uniformCostEuro = this.days.reduce((sum, day) => sum + day[name].energy * (day.average ?? 0) / 100, 0);
       return [name, { value: covered ? uniformCostEuro - actualCostEuro : null, energyKwh: covered ? energyKwh : null,
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
+        assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
         coverage: duration ? Math.min(1, covered / duration) : 0, provisional: this.now < this.range.to || covered < duration,
         basis: name === 'charger' ? 'Estimated from three phase-current snapshots' : 'Estimated heat-pump electrical power; no whole-property subtraction',
         explanation: 'Recorded energy at its actual times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
@@ -412,11 +434,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) ? Infinity : name === 'auxiliary_power' ? 5 * 60_000 : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation'].includes(name))]));
   const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
   const marketIntervals = input === 'simulated' ? [] : knownIntervals(market, store, range, now);
-  const priced = input === 'simulated' ? (simulated?.prices ?? []).map(row => ({ ...row, totalCtPerKwh: row.allInCentsPerKWh })) : [];
-  if (rates) for (const interval of marketIntervals) for (const period of rates.periods) {
-    const start = Math.max(interval.start, period.from), end = Math.min(interval.end, period.to);
-    if (end > start) priced.push(...priceIntervals([{ ...interval, start, end }], contract));
-  }
+  const historicalPricing = rates ? createHistoricalPricing(rates) : null;
+  const priced = input === 'simulated' ? (simulated?.prices ?? []).map(row => ({ ...row, totalCtPerKwh: row.allInCentsPerKWh }))
+    : historicalPricing?.intervals(marketIntervals) ?? [];
+  const priceAssumptions = { used: priced.some(price => price.assumedPrice) };
   const timing = new DailyTimingBenchmark(range, now, priced);
   addHistoricalChargerTiming(store, timing, range, now, input);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
@@ -436,19 +457,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
     ${compactImports ? 'AND o.import_id IS NULL' : ''}
     AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.source_time,o.id`);
   const flagsOf = qualityReader(); let rawRows = 0, invalidRows = 0, latestOutdoor = null;
-  const priceBases = new Map();
-  const historicalTotal = (at, value) => {
-    const period = rates.periods.find(period => period.from <= at && at < period.to);
-    if (!period) return null;
-    const key = `${Math.floor(at / HOUR)}:${period.from}`;
-    let base = priceBases.get(key);
-    if (base === undefined) {
-      base = allInPrice(at, 0, contract).totalCtPerKwh;
-      if (priceBases.size >= 4096) priceBases.delete(priceBases.keys().next().value);
-      priceBases.set(key, base);
-    }
-    return base + value * (1 + period.vatRate);
-  };
   let time = null, atRows = new Map(), phases = new Map();
   let previousHeat = null;
   const verified = row => {
@@ -533,11 +541,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
         }
         if (signal === 'outdoor_temperature' && value !== null) latestOutdoor = time;
         if (signal === 'spot_price' && rates) {
-          let total = null;
-          if (value !== null) {
-            total = historicalTotal(time, value);
-          }
-          lines.all_in_price.add(time, total);
+          const total = value === null ? null : historicalPricing.total(time, value);
+          lines.all_in_price.add(time, total?.totalCtPerKwh ?? null, total ? { assumedPrice: total.assumedPrice } : undefined);
         }
       }
     }
@@ -674,14 +679,14 @@ export function getChartData({ store, input = 'offline', contract = null, market
       let index = 0;
       for (const point of previous) {
         while (index < intervals.length && intervals[index].end <= point.x) index++;
-        if (!intervals[index] || point.x < intervals[index].start) envelopes[name].add(point.x, point.y);
+        if (!intervals[index] || point.x < intervals[index].start) envelopes[name].add(point.x, point.y, point);
       }
     };
     replaceCovered('spot_price'); replaceCovered('all_in_price');
     intervalPoints(intervals, 'spotCtPerKwh', envelopes.spot_price);
     if (rates) {
       intervalPoints(priced, 'totalCtPerKwh', envelopes.all_in_price);
-    } else warnings.push('All-in price needs contract rates covering the selected dates; spot remains a separate series.');
+    } else warnings.push('All-in price needs at least one known set of contract rates; spot remains a separate series.');
     const outlook = assembleOutlook(null, weather, null, now);
     intervalPoints(outlook.forecast.map(row => ({ ...row, start: Math.max(row.start, now, latestOutdoor ?? now) })), 'outdoorC', envelopes.outdoor_forecast);
     if (envelopes.solar_forecast) {
@@ -689,9 +694,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
       warnings.push('Solar radiation uses FMI forecasts with Open-Meteo as backup, including archived historical values; it is not measured at the house.');
     }
     if (rates && !envelopes.all_in_price.values().some(point => point.y !== null))
-      warnings.push('No all-in price is available for these dates: market data and dated contract coverage are both required.');
+      warnings.push('No all-in price is available for these dates: spot prices and known contract rates are required.');
   }
   const series = Object.fromEntries(Object.entries(envelopes).map(([name, envelope]) => [name, envelope.values()]));
+  priceAssumptions.used ||= series.all_in_price.some(point => Number.isFinite(point.y) && point.assumedPrice);
   for (const key of Object.keys(shading)) shading[key] = shading[key].values();
   if (Object.values(shading).some(rows => rows.some(row => row.aggregated))) warnings.push('Dense shading shows the occupied fraction of each display interval.');
   // These are original source timestamps, even when outside the visible range.
@@ -701,7 +707,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, rawRows, invalidRows, lastReadings, learning: learningMetadata,
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata,
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? '230 V × sum of three last-reported phase currents from one device acquisition; estimated kW, not metered power or energy.' : null,

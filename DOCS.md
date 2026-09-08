@@ -79,10 +79,22 @@ legend choices persist. A separate strip shows observed native operating mode.
 
 The chart's daily HP and EV price-timing comparisons hold recorded energy fixed
 and compare its cost with each day's duration-weighted average all-in price.
-They require data and contract coverage and are distinct from the learning
-metrics' modelled full-cycle profit. Missing AUX routing, solar forecasts or
-complete recovery evidence stays unknown. Historical values are stored as learned;
-new forecasts and models do not rewrite earlier chart samples.
+Missing historical contract periods use the nearest known rates with historical
+spot prices, applying the rate schedule at the historical Finnish local time.
+With only today's rates recorded, earlier entries use those rates. Affected
+comparisons show **assumed rates**, and a caution appears whenever displayed
+prices or timing benefits use this assumption. Coverage continues to describe
+energy and price availability; it does not imply that assumed rates were verified.
+
+Historical scalar spot readings supply their containing 15-minute price slot,
+allowing for small logging delays. Missing slots stay missing, and a complete
+day's spot prices are still required for its daily average. Missing energy
+periods are excluded. Charger phase currents can provide older energy estimates;
+heat-pump comparisons still require dedicated power readings. These timing
+comparisons are distinct from the learning metrics' modelled full-cycle profit.
+Missing AUX routing, solar forecasts or complete recovery evidence stays unknown.
+Learning values are stored as learned; new forecasts and models do not rewrite
+earlier learning chart samples.
 
 A blank network-access token prevents startup with a clear configuration error.
 Home Assistant options own permanent settings. The **Away until** and **Pause

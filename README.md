@@ -115,9 +115,10 @@ directly below the current readings.
 - **Right axis:** indoor, garage and outdoor temperatures and electricity prices
   stay available with every left-axis selection. The dashed outdoor continuation
   is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
-  charges. Explicit saved legend choices are preserved. All-in prices require contract rates
-  covering the selected dates; an unavailable series stays empty rather than
-  silently substituting spot or present-day charges.
+  charges. Explicit saved legend choices are preserved. All-in prices combine
+  historical spot prices with the contract rates for that date, or the nearest
+  known rates when the date is uncovered. A caution identifies these assumptions;
+  missing spot prices stay unavailable.
 - **Shading:** crosshatched **Heat Off** represents requested reduction; yellow
   **Compressor · house** and blue **Compressor · hot water** require concurrent
   compressor/routing readbacks. Brown **DHWR** marks requested ten-minute pulses
@@ -127,6 +128,11 @@ directly below the current readings.
 - **Timing benefit:** below the chart, heat-pump and charger estimates compare
   recorded energy at its actual times with the same daily energy at the whole
   Finnish day's average all-in price. Coverage and provisional results are shown.
+  Missing historical contract rates use the nearest known rates with historical
+  spot prices; affected estimates show **assumed rates** and a caution. Missing
+  energy periods and days with incomplete spot prices are excluded. Older charger
+  phase-current readings can support this comparison; heat-pump energy still
+  requires its own power readings.
   This is a timing comparison, not proof of controller savings.
 
 Chart changes affect the display only. Viewing history neither polls providers
@@ -353,9 +359,13 @@ The optional `electricity.effective_date` is a Finnish calendar date. First-use
 rates begin today if no date is supplied; subsequent changes begin when loaded.
 Rates, transfer amounts and VAT are saved per period so future changes preserve
 historical calculations. Unstarted scheduled changes can be revised in options.
-Missing historical rates leave historical all-in prices unavailable; current
-defaults are not silently applied to old readings. Simulation prices remain
-labelled synthetic and independent of the household contract.
+For chart history and timing comparisons, missing historical contract periods
+use the nearest known rates while preserving historical spot prices. If only
+today's rates are known, those rates apply to earlier readings. The historical
+local time determines the day/night or seasonal transfer rate. These price
+assumptions are labelled in the interface; known dated rates remain unchanged.
+Simulation prices remain labelled synthetic and independent of the household
+contract.
 
 ## Learning and control limits
 

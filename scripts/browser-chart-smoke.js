@@ -286,8 +286,22 @@ try {
     return client;
   };
   app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'),
+    priceSettings: { ...config.priceSettings, effectiveDate: '2026-09-07' },
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } },
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
+  // Artificial legacy readings predate the only known contract period. Charger
+  // phase currents and quarter-hour spot prices suffice; no HP power is invented.
+  const historicalStart = Date.parse('2026-09-06T00:00:00+03:00');
+  app.store.transaction(() => {
+    for (let slot = 0; slot <= 96; slot++) {
+      const at = historicalStart + slot * 15 * 60_000;
+      const add = (signal, value, unit) => app.store.observation({ source: 'browser-fixture',
+        device: 'synthetic-historical-charger', signal, value, unit,
+        sourceTime: at, receivedAt: at, quality: [], raw: { fixture: true } });
+      if (slot < 96) add('spot_price', slot < 4 ? 0 : 20, 'c/kWh_ex_vat');
+      for (let phase = 1; phase <= 3; phase++) add(`ev1_current_l${phase}`, slot < 4 ? 10 : 0, 'A');
+    }
+  });
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
   await until("document.getElementById('outdoor-age').textContent.includes('FMI nearby station')");
@@ -298,6 +312,21 @@ try {
       `${key} contains the expected total from all three provider phase currents`);
   }
   await checkPowerDrawn();
+  assert.equal(await evaluate("document.querySelector('.timing-price-caution') === null"), true,
+    'Known contract rates need no assumption caution');
+  await evaluate("document.getElementById('date-start').value='2026-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-06'");
+  assert.match(await evaluate("document.getElementById('timing-benefit').children[0].textContent"), /^Heat pump: Timing comparison unavailable/);
+  assert.match(await evaluate("document.getElementById('timing-benefit').children[1].textContent"), /^Charger: €[\d.]+ timing benefit.*assumed rates.*100% coverage/);
+  assert.equal(await evaluate("document.querySelectorAll('.timing-price-caution').length"), 1);
+  assert.match(await evaluate("document.querySelector('.timing-price-caution').textContent"), /nearest known contract rates.*timing benefits depend on these assumed rates/);
+  await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Historical price caution fits mobile');
+  await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+  await evaluate("document.getElementById('range-today').click(); true");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'");
+  assert.equal(await evaluate("document.querySelector('.timing-price-caution') === null"), true,
+    'Returning to known rates removes the historical caution');
   for (const left of ['phases', 'integral', 'power']) {
     await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)}`);
@@ -327,11 +356,13 @@ try {
   assert.deepEqual(testPublishes, ['heatoff', 'heaton15', 'heaton60'].map(payload => ({ topic: 'from_stmq/heat/action', payload, options: { qos: 1, retain: false } })));
   assert.equal(app.engine.status().observations.actual.mode, 'unknown');
   acknowledgeHeating = null;
-  await evaluate("document.getElementById('test-heatoff').click(); true");
+  // Normal heat is allowed during the preceding DHWR pulse; reduction would
+  // correctly fail before publishing and never exercise broker-error handling.
+  await evaluate("document.getElementById('test-heaton15').click(); true");
   for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(typeof acknowledgeHeating, 'function');
   acknowledgeHeating(new Error('synthetic-private-broker-error'));
-  await until("document.getElementById('heating-test-message').classList.contains('form-error') && !document.getElementById('test-heatoff').disabled");
+  await until("document.getElementById('heating-test-message').classList.contains('form-error') && !document.getElementById('test-heaton15').disabled");
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
@@ -346,7 +377,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'conditional-price-caution', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {});
 } finally {
   ws?.close();
