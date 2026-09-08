@@ -85,17 +85,22 @@ export function renderEnergyAudits(rows, root) {
   if(!root)return;
   root.replaceChildren();
   const note=document.createElement('p');note.className='muted';
-  note.textContent='Meter counters only check integrated energy. They never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
+  note.textContent='The latest check for each cumulative meter compares estimated energy with the meter increase between two readings. These checks never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
   if(!rows?.length) {const p=document.createElement('p');p.textContent='Waiting for fresh accumulated-kWh updates.';root.append(p);return;}
   const table=document.createElement('table');table.className='recording-table';
+  const date = value => new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value);
   for(const item of rows) {
     const row=document.createElement('tr'),title=document.createElement('th');title.scope='row';
     title.textContent=item.signal?.startsWith('property')?'Property':'Charger';
-    const when=document.createElement('small');when.textContent=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(item.sourceTime);title.append(when);row.append(title);
+    const meter=document.createElement('small');meter.textContent=item.signal?.startsWith('property')?'Cumulative import meter':'Lifetime energy meter';title.append(meter);
+    const when=document.createElement('small');when.textContent=`Meter reading: ${date(item.sourceTime)}`;title.append(when);row.append(title);
     const comparison=item.comparison,cell=document.createElement('td');
     cell.textContent=comparison ? `${number(comparison.differenceKwh)} kWh difference · ${number(comparison.differencePercent)}% · estimated minus meter`
       : 'Comparison pending: two valid counters and matching energy coverage needed';
-    if (comparison) { const detail=document.createElement('small');detail.textContent=`${number(comparison.estimatedKwh)} kWh estimated / ${number(comparison.meteredKwh)} kWh meter${comparison.edgeEstimated?' · interval edges prorated':''}`;cell.append(detail); }
+    if (comparison) {
+      const detail=document.createElement('small');detail.textContent=`${number(comparison.estimatedKwh)} kWh estimated / ${number(comparison.meteredKwh)} kWh meter${comparison.edgeEstimated?' · interval edges prorated':''}`;cell.append(detail);
+      const period=document.createElement('small');period.textContent=`Compared: ${date(comparison.start)} – ${date(comparison.end)}`;cell.append(period);
+    }
     row.append(cell);table.append(row);
   }
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);root.append(wrap);

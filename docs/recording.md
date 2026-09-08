@@ -107,10 +107,17 @@ path. Missing intervals remain missing in energy and timing comparisons.
 
 ### Audit-only cumulative meters
 
-Charger lifetime energy (`124`), session energy (`121`) and Equalizer accumulated
-import energy (`45`) are stored separately in `energy_audits` when a new counter
-observation arrives. Duplicate timestamp/value pairs are not copied. Source
-timestamps, resets, out-of-order counters and availability are retained.
+Charger lifetime energy (`124`) and Equalizer accumulated import energy (`45`)
+are stored separately in `energy_audits` when a new counter observation arrives.
+Both measure cumulative energy, so the charger and property checks use the same
+comparison basis. Charger session energy (`121`) is no longer requested or
+recorded; previously stored session readings remain in history. Duplicate
+timestamp/value pairs are not copied. Source timestamps, resets, out-of-order
+counters and availability are retained.
+
+The meter-check panel shows only the latest reading for each cumulative meter,
+with its comparison interval when available. It is not a list of readings or an
+average across charging sessions. Older audit readings remain available in history.
 
 Recording diagnostics compare a valid counter increment with the sum of committed
 phase-energy estimates over the same source-time period. Missing coverage prevents

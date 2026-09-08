@@ -37,14 +37,37 @@ test('chart API requires authentication and rejects malformed date/axis/point se
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
 });
-test('meter diagnostics are authenticated, bounded and omit private device identities',async t=>{
+test('meter diagnostics show one latest cumulative check per meter, preserving comparisons and privacy',async t=>{
   const {base,headers,store,now}=await fixture(t);
-  for(let i=0;i<25;i++)store.energyAudit({source:'easee',device:'invented-private-device',signal:'property_energy_counter',
-    sourceTime:now+i,receivedAt:now+i,value:i,quality:[]});
   assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);
+  const read=()=>fetch(`${base}/api/energy-audits`,{headers}).then(response=>response.json());
+  assert.deepEqual(await read(),[]);
+  for(const [at,value] of [[now-60000,10],[now,10.03]])store.energyAudit({source:'easee',device:'invented-property',
+    signal:'property_import_energy_counter',sourceTime:at,receivedAt:at,value});
+  for(let phase=1;phase<=3;phase++)store.observation({source:'easee',device:'invented-property',
+    signal:`property_energy_l${phase}`,sourceTime:now,receivedAt:now,value:0.01,unit:'kWh',quality:['estimated'],
+    raw:{intervalStart:now-60000,intervalEnd:now}});
+  // Older property readings must survive more than a page of charger updates.
+  for(let i=1;i<=25;i++)store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_lifetime_energy_counter',
+    sourceTime:now+i*60000,receivedAt:now+i*60000,value:100+i});
+  // Session history is retained, but never appears as another charger check.
+  store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_session_energy_counter',
+    sourceTime:now+26*60000,receivedAt:now+26*60000,value:5});
+  // A delayed old observation must not replace the newest meter reading.
+  store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_lifetime_energy_counter',
+    sourceTime:now+30000,receivedAt:now+27*60000,value:100.5});
+  const auditCount=store.energyAudits().length;
   const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
-  const rows=await response.json();assert.equal(rows.length,20);assert.equal(rows[0].sourceTime,now+24);
-  assert(!JSON.stringify(rows).includes('invented-private-device'));assert(rows.every(row=>!Object.hasOwn(row,'device')));
+  const rows=await response.json();
+  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_lifetime_energy_counter']);
+  assert.deepEqual(rows.map(row=>row.sourceTime),[now,now+25*60000]);
+  assert.equal(rows[0].comparison.start,now-60000);
+  assert.equal(rows[0].comparison.end,now);
+  assert.ok(Math.abs(rows[0].comparison.differenceKwh)<1e-12);
+  assert.equal(rows[1].comparison,null);
+  assert(rows.every(row=>!Object.hasOwn(row,'device')&&!Object.hasOwn(row,'value')));
+  assert(!JSON.stringify(rows).includes('invented-'));
+  assert.equal(store.energyAudits().length,auditCount,'summary never deletes audit history');
 });
 test('every catalogue axis works, including historical meter references without learning use',async t=>{
   const {base,headers,store,now}=await fixture(t);

@@ -45,9 +45,11 @@ export function createAppServer({ engine, store, chartService, token = '', stati
         if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, engine.status());
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          const last = store.db.prepare('SELECT MAX(id) AS id FROM energy_audits').get().id ?? 0;
-          const rows = store.energyAudits({ after: Math.max(0,last-20), limit:20 });
-          return json(200, rows.map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison})).reverse());
+          // One current check per cumulative meter. Select independently so a
+          // frequently updated charger cannot hide the property's older reading.
+          const rows = ['property_import_energy_counter','ev1_lifetime_energy_counter']
+            .flatMap(signal => store.energyAudits({ signal, newestFirst:true, limit:1 }));
+          return json(200, rows.map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison})));
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();

@@ -259,13 +259,15 @@ export class Store {
       .run(source,device,signal,sourceTime,receivedAt,value,json(quality),comparison === null ? null : json(comparison)).changes);
   }
 
-  energyAudits({ device, from, to, after = 0, limit = 100 } = {}) {
+  energyAudits({ device, signal, from, to, after = 0, limit = 100, newestFirst = false } = {}) {
     const clauses = ['id>?'], params = [integer(after,'after')];
     if (device !== undefined) { clauses.push('device=?'); params.push(label(device,'device')); }
+    if (signal !== undefined) { clauses.push('signal=?'); params.push(label(signal,'signal')); }
     if (from !== undefined) { clauses.push('source_time>=?'); params.push(instant(from,'from')); }
     if (to !== undefined) { clauses.push('source_time<?'); params.push(instant(to,'to')); }
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT * FROM energy_audits WHERE ${clauses.join(' AND ')} ORDER BY id LIMIT ?`).all(...params)
+    return this.db.prepare(`SELECT * FROM energy_audits WHERE ${clauses.join(' AND ')}
+      ORDER BY ${newestFirst ? 'source_time DESC,id DESC' : 'id'} LIMIT ?`).all(...params)
       .map(row => {
         const result = { id:row.id,source:row.source,device:row.device,signal:row.signal,sourceTime:row.source_time,
           receivedAt:row.received_at,value:row.value,quality:JSON.parse(row.quality),
