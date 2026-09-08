@@ -4,6 +4,8 @@ node_modules/
 share/
 var/
 # Private operational notes and household data exports stay local.
+/notes
+/prompt
 CODEX/
 workspace/
 *.sqlite

@@ -29,21 +29,38 @@ test('read-only topics are scoped exactly and never interpret settings, commands
   assert.match(H66_DOCUMENTATION.controller, /C60.pdf$/);
 });
 
-test('source time and hardware scale are separate verification requirements', () => {
+test('documented MQTT engineering units and receipt time work without installed overrides', () => {
   const unverified = createH66Decoder({ deviceId: 'fixture-device' }).decode({ ...base, sourceAt: at });
-  assert.equal(unverified.value, null);
+  assert.equal(unverified.value, 31.5);
   assert.equal(unverified.rawNumeric, 31.5);
-  assert.equal(unverified.usableForControl, false);
-  assert.ok(unverified.issues.includes('unverified-scaling'));
+  assert.equal(unverified.usableForControl, true);
+  assert.equal(unverified.installationVerified, false);
+  assert.equal(unverified.verification, 'documented-C60-MQTT-engineering-units');
   const noSource = make().decode(base);
   assert.equal(noSource.value, 31.5);
   assert.equal(noSource.sourceAt, null);
-  assert.equal(noSource.freshness, 'unknown');
-  assert.equal(noSource.usableForControl, false);
+  assert.equal(noSource.freshness, 'fresh');
+  assert.equal(noSource.observedAt, ms);
+  assert.equal(noSource.timeBasis, 'mqtt-received');
+  assert.equal(noSource.sensorMeasuredAt, null);
+  assert.equal(noSource.usableForControl, true);
   const good = make().decode({ ...base, sourceAt: ms - 10_000 });
   assert.equal(good.quality, 'good');
   assert.equal(good.usableForControl, true);
   assert.throws(() => make({ verifiedRegisters: { '0001': { scale: 0.1 } } }), /verification/);
+});
+
+test('C60 settings and optional native pump readings are decoded distinctly', () => {
+  const decoder = createH66Decoder({ deviceId: 'fixture-device' });
+  for (const [register, value, signal] of [['0208', 60, 'dhw_stop_setting'], ['0212', 40, 'dhw_start_setting'],
+    ['1A04', 1, 'brine_pump_active'], ['1A06', 0, 'heating_pump_active'], ['3109', 70, 'heating_pump_speed']]) {
+    const reading = decoder.decode({ ...base, topic: `fixture-device/HP/${register}`, payload: String(value) });
+    assert.equal(reading.signal, signal);
+    assert.equal(reading.value, value);
+    assert.equal(reading.usableForControl, true);
+  }
+  const unknown = decoder.decode({ ...base, topic: 'fixture-device/HP/FFFF', payload: '1' });
+  assert.equal(unknown.usableForControl, false);
 });
 
 test('retained messages cannot become current plant state, and stale/future readings are explicit', () => {

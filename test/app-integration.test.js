@@ -52,7 +52,7 @@ test('active simulation applies pulse sequence once and restart preserves recenc
 
 test('physical inputs cannot activate control, ingest does not fabricate unknown source timestamps', t => {
   const { engine, store } = setup(t, 'offline');
-  assert.throws(() => engine.updateSettings({ mode: 'active' }), /commissioning/);
+  assert.throws(() => engine.updateSettings({ mode: 'active' }), /offline input cannot control equipment/);
   engine.ingest({ source: 'mqtt', device: 'h66', signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: null, receivedAt: engine.clock(), quality: ['unknown-source-time'] });
   const status = engine.tick();
   assert.equal(store.latestObservation('indoor_temperature').sourceTime, null);
@@ -63,7 +63,7 @@ test('physical inputs cannot activate control, ingest does not fabricate unknown
 
 test('corrupt learned JSON cannot delay conservative startup', t => {
   const { engine, store } = setup(t);
-  store.db.prepare('INSERT INTO state (key,value,updated_at) VALUES (?,?,?)').run('learned:simulated', '{broken', 0);
+  store.db.prepare('INSERT INTO state (key,value,updated_at) VALUES (?,?,?)').run('adaptive:simulated', '{broken', 0);
   assert.equal(engine.tick().decision.action, 'normal');
   assert.ok(store.events().some(e => e.type === 'checkpoint-rebuild'));
 });
@@ -93,22 +93,33 @@ test('authenticated API serves authoritative state, bounded history and persiste
   assert.equal((await fetch(`${base}/api/override`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{"minutes":-1}' })).status, 400);
 });
 
-test('read-only MQTT subscribes on reconnect, preserves retained uncertainty, ignores writes and logs bounded errors', async t => {
+test('MQTT requests snapshots on reconnect, preserves retained uncertainty and logs bounded errors', async t => {
   const { engine, store, config } = setup(t, 'mqtt');
   const fake = new EventEmitter();
   const subscriptions = [];
   fake.subscribe = (topic, options, done) => { subscriptions.push(topic); done(); };
   fake.end = (force, options, done) => done();
-  fake.publish = () => assert.fail('Read-only acquisition must never publish');
+  const publications = [];
+  fake.publish = (topic, payload, options, done) => {
+    assert.equal(topic, 'test-h66/HP/CMD'); assert.equal(payload, 'GETALL');
+    publications.push(payload); done();
+  };
   const reader = await startMqtt({ engine, store, config: { ...config, deviceId: 'test-h66', connections: { mqtt: { address: 'mqtt://example.invalid', user: 'private-user', pw: 'private-password' } } }, connect: () => fake });
-  fake.emit('connect'); fake.emit('connect');
-  assert.deepEqual(subscriptions, ['test-h66/HP/+', 'test-h66/HP/+']);
+  fake.emit('connect'); fake.emit('connect'); fake.emit('offline'); fake.emit('connect');
+  assert.deepEqual(subscriptions, ['test-h66/HP/#', 'test-h66/HP/#']);
+  assert.equal(publications.length, 2);
   fake.emit('message', 'test-h66/HP/0008', Buffer.from('21.2'), { retain: true });
   const observation = store.latestObservation('indoor_temperature');
-  assert.equal(observation.sourceTime, null);
-  assert.equal(observation.value, null);
+  assert.equal(observation.sourceTime, engine.clock());
+  assert.equal(observation.raw.sensorMeasuredAt, null);
+  assert.equal(observation.raw.usableForControl, false);
+  assert.equal(observation.value, 21.2);
   assert.ok(observation.quality.includes('retained'));
   fake.emit('message', 'test-h66/HP/SET/0203', Buffer.from('25'));
+  fake.emit('message', 'test-h66/HP/0008', Buffer.from('21.4'), { retain: false });
+  const live = store.latestObservation('indoor_temperature');
+  assert.equal(live.raw.timeBasis, 'mqtt-received'); assert.equal(live.raw.verified, true);
+  assert.equal(live.raw.usableForControl, true); assert.deepEqual(live.quality, []);
   for (let i = 0; i < 100; i++) fake.emit('error', new Error('private-password'));
   assert.equal(store.events().filter(e => e.type === 'mqtt-error').length, 1);
   assert.equal(JSON.stringify(store.events()).includes('private-password'), false);

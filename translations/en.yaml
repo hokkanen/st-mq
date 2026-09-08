@@ -34,8 +34,10 @@ configuration:
     name: Location for prices and weather
     description: >-
       The country code selects ENTSO-E and Elering electricity prices.
-      Coordinates select FMI weather forecasts and the nearest fresh outdoor
-      weather observation, with OpenWeatherMap as backup.
+      Coordinates select FMI temperature and solar radiation forecasts, with
+      Open-Meteo ICON as backup. Neither weather service needs an API key.
+      Current outdoor temperature uses the H66 sensor first, then a fresh FMI
+      nearby station reading, then an Open-Meteo model estimate.
   mqtt:
     name: MQTT broker for H66 (optional)
     description: >-
@@ -54,15 +56,9 @@ configuration:
     description: >-
       Provide a SmartThings token and device IDs for indoor and garage
       temperature readings. The optional outdoor sensor is retained as an
-      alternative reading; FMI is the primary outdoor temperature source.
+      alternative reading; current outdoor temperature uses H66, then FMI,
+      then Open-Meteo when coordinates are configured.
       Missing or stale indoor readings prevent live optimization.
-  openweathermap:
-    name: OpenWeatherMap weather backup (optional)
-    description: >-
-      Provide an OpenWeatherMap token for forecast and current outdoor
-      temperature fallback when FMI is unavailable. FMI requires no API key.
-      Missing weather is reported explicitly; no temperature-to-hours mapping
-      is used by the learned controller.
   easee:
     name: Easee consumption readings (optional)
     description: >-

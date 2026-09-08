@@ -1,5 +1,24 @@
 # Repository instructions
 
+## Required commits for AI tasks
+
+- Every AI task that changes repository files must commit its completed changes
+  before the final response, however small the task. This includes code, tests,
+  documentation, configuration, formatting, and repository instructions.
+- Commits are authorized by default; do not wait for another request or ask for
+  confirmation. Follow an explicit user instruction not to commit when given.
+- **Never create empty commits.** If a task makes no net repository changes,
+  report that no commit was needed. Do not manufacture changes just to commit.
+- Commit only the task's intended changes. Preserve unrelated pending work
+  unless the user explicitly asks to include it.
+- Complete appropriate validation and all secret/encryption checks below before
+  committing. Never bypass a failed check to satisfy this rule; resolve it or
+  clearly report the blocker without claiming the task is complete.
+- The lead agent coordinates commits for delegated work. Subagents must not
+  stage or commit concurrently unless explicitly assigned ownership of Git work.
+- Report the resulting commit hash and validation outcome. Creating a commit
+  does not authorize pushing it; push only when the user requests it.
+
 ## Mandatory protection of secrets and personal data
 
 These rules apply to every agent and contributor, every branch, and every commit,

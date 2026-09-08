@@ -1,5 +1,5 @@
 const ALLOWED_HOSTS = new Set(['api.smartthings.com', 'api.easee.com', 'web-api.tp.entsoe.eu',
-  'dashboard.elering.ee', 'api.openweathermap.org', 'opendata.fmi.fi']);
+  'dashboard.elering.ee', 'api.open-meteo.com', 'opendata.fmi.fi']);
 
 export class ProviderError extends Error {
   constructor(code, status = null, retryAfterMs = null) {

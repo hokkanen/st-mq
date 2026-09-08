@@ -5,14 +5,15 @@ Home Assistant add-on and standalone Linux. The authoritative project brief is
 `CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
 [docs/PROGRESS.md](docs/PROGRESS.md).
 
-Version 0.8.3 provides a tested foundation: SQLite history, conservative
-heating decisions, incremental thermal learning, a monitoring dashboard and
-read-only H66 acquisition. **Default startup uses simulated devices in shadow
-mode. Automatic physical heat-pump control remains disabled.** Explicit manual
-MQTT tests are available with live input and a configured broker.
+The controller provides SQLite history, adaptive thermal learning, complete
+preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/control.
+**Default startup uses simulated devices in shadow mode.** With live input,
+configured transport and active mode, the controller can operate heating and
+supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
 Read-only market, weather, SmartThings and Easee providers plus dated contract
-setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies the primary
-weather forecast and outdoor observations, with OpenWeather as backup. Offline
+setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies temperature
+and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
+the H66 sensor first, then FMI station observations, then Open-Meteo estimates. Offline
 regressions and a separate opt-in live suite verify the provider paths. See the
 [progress log](docs/PROGRESS.md) for actual live-check results and remaining limits.
 Physical equipment control has not been commissioned.
@@ -20,7 +21,8 @@ Physical equipment control has not been commissioned.
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
 to **1 °C**. References stay fixed during cooling, recovery and preheating. A
-missing reference or unreliable model keeps the requested heating mode normal.
+missing reference keeps the requested heating mode normal. Initial model estimates
+retain uncertainty and limit the duration and cost of learning trials.
 A provisional historical reference is not automatically applied to the live house.
 Warm-weather plateaus without credible heating evidence are excluded from new
 reference candidates, so passive summer warmth does not establish a heating target.
@@ -45,7 +47,7 @@ settings; without an explicit input selection the application uses simulation.
 Simulation and offline modes do not connect to providers. The server serves the completed UI build; it does not
 rebuild historical CSVs or run a permanent Vite build watcher.
 
-The Home Energy UI has monitoring, shadow and simulated active modes, combined
+The Home Energy UI has monitoring, shadow and active modes, combined
 history and price/weather outlooks, requested/actual state, stale-data indication, learning
 health, explicit occupancy and timed normal-heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
@@ -57,6 +59,8 @@ within the available forecast horizon; forecasts are never invented beyond it.
 The existing evidence/freshness gates still apply. **Pause until** requests normal
 native operation without price reductions. Both controls use Finnish time, survive
 restarts, expire at their deadlines and can be cancelled independently.
+Live active mode applies the plan; monitoring and shadow show it without automatic
+equipment commands.
 
 Under **Away & pause**, the **Test heating commands** section starts closed. With
 `providers` or `mqtt` input and an existing `mqtt.address` configuration, its
@@ -72,6 +76,12 @@ is sent. Connection failures distinguish an unreachable broker, refused connecti
 DNS, login or TLS problems and report that no command was sent. If a connection
 fails after publishing begins, check device state before retrying because delivery
 is unconfirmed.
+
+**Test H66 settings** offers timed ROOM (`0203`), DHW start (`0212`), DHW stop
+(`0208`) and operating-mode (`2201`) tests when the connection and fresh writable
+readbacks are ready. The current baseline is saved and restored after expiry.
+The UI distinguishes a sent request from device readback and a pending restore.
+These are real manual commands with live input, including in shadow mode.
 
 For UI development run `npm start` and `npm run dev` in separate terminals. Vite
 proxies `/api` to the backend. `npm run preview` alone does not provide the API.
@@ -91,24 +101,33 @@ directly below the current readings.
   tomorrow alone, leave End date unchecked and choose tomorrow as Start date.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
-- **Left axis:** **Total power** shows combined property power as a line and
-  charger power as a fill. **Phase currents** shows the three property phase lines
+- **Left axis:** **Power** shows combined property power as a line, estimated
+  auxiliary power as a red fill and charger power as a fill over it. Fills overlap
+  from zero; they are not stacked. **Phase currents** shows the three property phase lines
   in amperes with corresponding charger fills. **Heating integral** selects the
-  integral instead. Only that group's legend items appear. The power view estimates
+  integral instead. Four **Learning** choices show profit after recovery, profit
+  with observed auxiliary recovery, recovery cost prediction error and learned
+  normal indoor temperature. **Solar radiation** shows archived and future FMI
+  forecasts in W/m², not a solar sensor. Only that group's legend items appear.
+  The property and charger power view estimates
   kW as `230 × (L1 + L2 + L3) / 1000` from contemporaneous current readings; it is
   not measured active power, metered energy or heat-pump consumption.
 - **Right axis:** indoor, garage and outdoor temperatures and electricity prices
   stay available with every left-axis selection. The dashed outdoor continuation
-  is forecast. All-in price is visible initially; **Spot price** is initially
-  hidden and excludes VAT and other charges. All-in prices require contract rates
+  is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
+  charges. Explicit saved legend choices are preserved. All-in prices require contract rates
   covering the selected dates; an unavailable series stays empty rather than
   silently substituting spot or present-day charges.
-- **Shading:** **Heat Off**, **Aux Heat**, then **DHWR**. Tap legend items to hide
-  or show them; DHWR starts hidden. Heat Off represents requested historical
-  reduction, not measured compressor stoppage. DHWR marks requested ten-minute
-  recirculation pulses. Aux Heat needs verified timestamped auxiliary-output
-  observations; dated runtime counters cannot identify individual episodes. H66
-  auxiliary/integral history will remain empty until suitable readings exist.
+- **Shading:** crosshatched **Heat Off** represents requested reduction; yellow
+  **Compressor · house** and blue **Compressor · hot water** require concurrent
+  compressor/routing readbacks. Brown **DHWR** marks requested ten-minute pulses
+  and starts hidden. A separate **Pump mode** strip shows categorical H66 readback.
+  Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
+  individual auxiliary episodes.
+- **Timing benefit:** below the chart, heat-pump and charger estimates compare
+  recorded energy at its actual times with the same daily energy at the whole
+  Finnish day's average all-in price. Coverage and provisional results are shown.
+  This is a timing comparison, not proof of controller savings.
 
 Chart changes affect the display only. Viewing history neither polls providers
 nor sends equipment commands. Large ranges use bounded display resolution,
@@ -121,6 +140,13 @@ even when the history response is cached. Hover text identifies the original
 recording time. These display extensions do not add measurements to history or
 make old readings fresh for control. Missing/invalid values retain their gaps;
 prices, forecasts and equipment-state shading keep their recorded time bounds.
+Auxiliary output has a five-minute freshness bound. Learning histories keep the
+estimate assessed at the time and never rewrite old points using a later model.
+
+**Data & learning** separates **Connection & provider details** from **Learning
+details**. The latter explains current parameters, temperature-validation evidence,
+completed-cycle counts and the four chartable metrics. See the detailed
+[learning and control explanation](docs/learning-and-control.md).
 
 ## Persistence and historical data
 
@@ -162,7 +188,8 @@ application is stopped; validate it before changing the configured path. Keep
 backups on separate storage. Schema upgrades run transactionally; newer unknown
 schemas are rejected. Raw observation queries are bounded to at most 5,000
 observations; `/api/history` limits a request to 31 days. The separate `/api/chart`
-endpoint accepts inclusive `start`/`end` calendar dates, `left=power|phases|integral`
+endpoint accepts inclusive `start`/`end` calendar dates, `left=power|phases|integral`,
+`solar_radiation`, or the four `learning_*` signals described above,
 and a `points` resolution of 100–2,000 time buckets per series. It accepts at most
 3,660 calendar days and summarizes the full selected history into bounded drawing
 data. Source history is retained; there
@@ -179,8 +206,8 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 
 | Variable | Default / purpose |
 | --- | --- |
-| `STMQ_INPUT` | `simulated`; also `offline`, read-only `mqtt`, or read-only `providers` |
-| `STMQ_MODE` | `shadow`; also `monitoring`, or `active` for simulator only |
+| `STMQ_INPUT` | `simulated`; also `offline`, `mqtt`, or `providers` |
+| `STMQ_MODE` | `shadow`; also `monitoring`, or `active` with supported live transport or simulation |
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
@@ -188,7 +215,7 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | `STMQ_API_TOKEN` | Required, at least 24 characters, when listening beyond loopback |
 | `STMQ_CONFIG` | Settings and connections JSON; defaults to `data/options.json`, or `/data/options.json` in add-on |
 | `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1°C) |
-| `STMQ_H66_DEVICE` | Exact H66 topic prefix; required for `mqtt` input |
+| `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
 Use a trusted local network or an authenticated HTTPS reverse proxy for remote
@@ -197,12 +224,13 @@ credentials are never returned in API responses. The browser keeps an entered
 API token in session storage for its tab. There is no internet exposure configured
 by this project.
 
-Read-only MQTT reuses the existing broker address/user/password and subscribes to
-`<device>/HP/+` alongside the configured online providers. There are **no SET publications**. Source timestamps, installed
-register scaling and actual device/controller semantics need verification. Plain
-H66 payloads lack source timestamps, so their freshness stays unknown rather than
-being fabricated from receipt time. Retained/duplicate/invalid messages are
-handled explicitly. See [domain semantics](src/domain/README.md).
+MQTT reuses the existing broker address/user/password and subscribes to
+`<device>/HP/+` alongside configured online providers. Supported active control and
+explicit manual tests can publish SET requests. Plain H66 values lack a source
+measurement timestamp: non-retained receipt time is labeled as the communication
+freshness basis, with the source timestamp still unknown. Retained, duplicate and
+invalid messages are handled explicitly. A documented C60 profile does not prove
+installed-device semantics. See [learning and H66 control](docs/learning-and-control.md).
 
 Start read-only collection with:
 
@@ -210,25 +238,25 @@ Start read-only collection with:
 STMQ_INPUT=providers npm start
 ```
 
-This reuses `geoloc`, `entsoe`, `openweathermap`, `smartthings` and `easee`
-connection fields from the existing options JSON. FMI and Elering need no API key
-or additional provider configuration. FMI uses the configured latitude/longitude;
+This reuses `geoloc`, `entsoe`, `smartthings` and `easee` connection fields from
+the existing options JSON. FMI, Open-Meteo and Elering need no API key or additional
+provider configuration. Weather uses the configured latitude/longitude;
 Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO-E
 bidding zone. SmartThings indoor/garage sensors and Easee acquisition are optional.
-The garage is outside heating optimization. Provider input cannot enable physical
-active control or publish heating/DHWR commands.
+The garage is outside heating optimization. Provider input in shadow mode observes
+and plans; active mode can use a configured command transport.
 
 | Data | Primary → backup | Normal collection interval |
 | --- | --- | --- |
 | Electricity prices | ENTSO-E → Elering's own public API | 1 hour |
-| Temperature forecast | FMI HARMONIE → OpenWeather | 1 hour |
-| Outdoor temperature | FMI nearby weather station → OpenWeather area estimate | 10 minutes |
+| Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 1 hour |
+| Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 10 minutes |
 | Indoor/garage temperatures | SmartThings | 5 minutes |
 | Property/charger currents | Easee | 5 minutes |
 
 These are collection schedules, not guarantees that each provider publishes a new
-measurement that often. FMI forecasts use hourly valid times; OpenWeather's
-forecast uses three-hour slots. Market prices retain each actual hourly or
+measurement that often. FMI and Open-Meteo forecasts use hourly valid times.
+Market prices retain each actual hourly or
 quarter-hour delivery interval. Source observations and downloaded forecast/market
 snapshots are saved when collected, with source timestamps kept separately from
 receipt time. Successful device downloads count even when values have not changed
@@ -243,22 +271,38 @@ VAT and terminal-interval semantics; no intermediary service is used. Neither
 source fills missing prices or extends them past the published horizon. See
 [the Elering verification evidence](test/fixtures/market-elering-evidence.md).
 
-Forecast and outdoor observation have independent FMI → OpenWeather fallback
-chains. An unavailable weather station therefore does not discard a good FMI
-forecast. The outdoor card identifies a **nearby station** or an **area estimate**;
-neither is a thermometer at the house. FMI selects the nearest fresh station among
-up to three returned candidates within 50 km. With valid configured coordinates,
-these sources own outdoor temperature; a SmartThings outdoor sensor does not
-replace them. Without coordinates, an existing SmartThings outdoor sensor may
-still be collected.
+Temperature and solar forecasts use FMI first and Open-Meteo ICON Seamless as
+backup. Missing FMI solar intervals can use Open-Meteo radiation while keeping
+available FMI temperatures; each solar value retains its provider provenance.
+Solar radiation is global shortwave radiation on a horizontal surface in W/m²,
+including cloud effects. Open-Meteo's hourly radiation averages the preceding hour
+and is aligned to that interval rather than shifted into the next hour.
+
+Current outdoor temperature uses a fresh **H66 outdoor sensor** reading (register
+`0007`) first, then a fresh **FMI nearby station** reading, then an **Open-Meteo
+model estimate**. Source priority takes precedence over a slightly newer backup
+timestamp. Missing or stale H66 readings fall back automatically and fresh H66
+readings regain priority. FMI selects the nearest fresh station among up to three
+returned candidates within 50 km. The station and model estimate describe the
+surrounding area. Weather forecasts and current-temperature acquisition are
+independent; an unavailable station therefore does not discard a good FMI forecast.
+With coordinates configured, SmartThings outdoor readings do not replace this
+chain; without coordinates, an existing SmartThings outdoor sensor can still be
+used when H66 is unavailable.
+
+[Open-Meteo](https://open-meteo.com/en/docs/dwd-api) supplies DWD ICON forecasts
+without registration or a key for noncommercial use within the free API limits.
+The application requests ICON Seamless explicitly to use a forecast system
+independent of FMI. Current Open-Meteo weather is modeled, not a sensor observation.
 
 **Data connections** shows the selected provider, **Using backup** when applicable,
 and the primary provider's next retry. Requests are bounded and failures back off
 per source, respecting rate-limit delays through restarts. One failed primary
 cannot cause rapid repeated calls while a backup works. Outages retain cached data
 with its original age; restart or refresh does not make old data fresh. FMI model
-publication, analysis and forecast-valid times are separate. OpenWeather does not
-supply a documented forecast issuance timestamp, so that field remains unknown.
+publication, analysis and forecast-valid times are separate. Open-Meteo does not
+supply a documented forecast issuance timestamp, so that field remains unknown;
+its generation duration is not treated as an issuance time.
 Still-fresh near-term forecast blocks retain their original snapshot provenance.
 
 SmartThings and Easee readings retain their quality flags. Current snapshots are
@@ -280,8 +324,8 @@ a rejected key. The suite uses no MQTT and sends no equipment commands.
 
 Edit add-on options in Home Assistant, or `data/options.json` on Linux, and restart.
 `config.json` defines add-on metadata, defaults and schema; it is not the owner's
-credentials file. The dashboard reports the active values; only Away/Pause are
-editable there. Configuration takes precedence over old browser-saved mode/drop
+credentials file. The dashboard reports the active values; Away/Pause and explicit
+timed tests are available there. Configuration takes precedence over old browser-saved mode/drop
 settings. `temp_to_hours` is obsolete and has been removed.
 
 All monetary options under `electricity` are **c/kWh excluding VAT**. VAT is entered
@@ -315,29 +359,27 @@ labelled synthetic and independent of the household contract.
 
 ## Learning and control limits
 
-Learning uses bounded chronological samples and a holdout comparison against
-persistence and the prior model. A versioned checkpoint retains parameters,
-rollback model, current thermal estimate and processed cursor. Historical rebuild
-runs in a worker after the UI/control starts; ordinary restart processes only new
-rows. Bad candidate models are rejected. History is the rebuilding source.
+The adaptive model fits bounded chronological temperature samples and checks
+later trajectories against the previous model and temperature persistence.
+Historical work runs separately from the control loop. Initial estimates support
+bounded learning trials, with explicit energy uncertainty and cost budgets.
+Cycle assessments include full recovery and remaining reserve; incomplete cycles
+do not enter profit or prediction-error averages. Estimated electricity and the
+planned shorter-reduction comparison reference do not establish actual bill savings.
 
-The experimental schedule evaluator compares continuous normal operation with
-modest reductions, prices their recovery and terminal reserve, penalizes occupied
-comfort deviations and includes energy uncertainty. Away uses energy/recovery cost
-without the occupied drop penalty. Severe occupied cooling, poor freshness,
-unverified energy response, recovery debt, faults and overrides select normal
-fallback. Native normal operation is not forced preheating. The initial evaluator
-requires verified heat-pump energy samples; current snapshots do not qualify.
-Consequently the supplied history alone does not authorize economic dispatch.
-An uncertainty-aware estimator that can safely use weaker evidence remains work
-for the next stage. No actual bill savings are established.
+Live H66 control captures and restores existing ROOM/DHW/mode baselines, checks
+readback and retains restoration obligations through restarts. A1/A2 and native
+hysteresis are configured prediction inputs, not values read from integral
+register `8105`. The configured defaults are A2 −990 and auxiliary hysteresis
+30 °C; A1 and compressor hysteresis remain unknown until configured. The DHW stop
+register `0208` is not a physical compressor temperature cap.
 
-DHWR retains the legacy `heaton60` then `heaton15` intent sequence, ten-minute
-pulses, Helsinki 05:45–19:45 window and separate persistent 52.5-minute recency.
-Quarter-hour scheduling normally spaces pulses by at least one hour. No native
-hygiene/integral/auxiliary settings are changed. H66 writes, verified readback,
-manual panel reconciliation and physical communication-failure recovery are
-pending commissioning. No battery dispatch is implemented.
+DHWR retains ten-minute legacy pulses and its modeled coupling to house heat.
+The native periodic hygiene cycle remains unchanged, with an explicitly accepted
+possibility of delayed auxiliary availability during temporary control. No claim
+of a verified hygiene outcome or commissioned hardware follows from the tests.
+Read [the full assumptions and limits](docs/learning-and-control.md) before interpreting
+cycle metrics. No battery dispatch is implemented.
 
 ## Deployment paths
 

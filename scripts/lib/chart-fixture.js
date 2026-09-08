@@ -20,8 +20,16 @@ export function seedChartFixture(store, now) {
       add('outdoor_temperature', 2 + Math.sin(i / 28) * 4, 'degC', at);
       add('heating_integral', -40 - (i % 30) * 5, 'degree-minutes', at);
       add('auxiliary_output', cycle >= 30 && cycle <= 33 ? 33 : 0, '%', at);
+      add('auxiliary_power', cycle >= 30 && cycle <= 33 ? 3 : 0, 'kW', at);
+      add('compressor_active', cycle < 40 ? 1 : 0, 'state', at);
+      add('dhw_routing', cycle >= 34 ? 1 : 0, 'state', at);
+      add('operating_mode', cycle >= 18 && cycle < 27 ? 4 : 1, 'state', at);
+      add('solar_radiation', Math.max(0, 300 * Math.sin(i / 15)), 'W/m²', at);
       add('requested_heat_mode', cycle >= 18 && cycle < 27 ? 0 : i % 12 === 0 ? 60 : 15, 'legacy_command', at);
       add('spot_price', -2 + Math.round((1 + Math.sin(i / 15)) * 30) / 2, 'c/kWh_ex_vat', at);
+      if (i % 12 === 0) for (const [signal, value, unit] of [['learning_profit', Math.sin(i / 60), 'EUR/cycle'],
+        ['learning_aux_profit', Math.sin(i / 60) - 0.3, 'EUR/cycle'], ['learning_recovery_error', 1 / (1 + i / 48), 'EUR/cycle'], ['learning_indoor_temperature', 21.1, 'degC']])
+        add(signal, value, unit, at, 'controller-learning', 'simulated');
     }
   });
 }

@@ -5,7 +5,7 @@ import { configuredPriceSettings } from './contract.js';
 export function validateSettings(input = {}) {
   const settings = {
     mode: input.mode ?? 'shadow',
-    comfort: { targetC: null, maxDropC: 1, ...(input.comfort ?? {}) },
+    comfort: { targetC: null, maxDropC: 1, severeDropC: 2, ...(input.comfort ?? {}) },
     occupancy: input.occupancy ?? { mode: 'occupied' },
   };
   if (!['monitoring', 'shadow', 'active'].includes(settings.mode)) throw new Error('Invalid operating mode');
@@ -15,6 +15,46 @@ export function validateSettings(input = {}) {
   if (!['occupied', 'away'].includes(settings.occupancy.mode)) throw new Error('Invalid occupancy mode');
   if (settings.occupancy.returnAt != null && !Number.isFinite(Date.parse(settings.occupancy.returnAt))) throw new Error('Invalid return time');
   return settings;
+}
+
+export const CONTROL_DEFAULTS = Object.freeze({
+  auxIntegralA2: -990, auxHysteresisC: 30, compressorIntegralA1: null, compressorHysteresisC: null,
+  a2Basis: 'absolute', heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025,
+  maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
+  maxPreheatHours: 2, maxRoomBoostC: 5, learningTrials: true, trialBudgetCentsPerDay: 100,
+  maxTrialCostCents: 50, recoveryTimeoutHours: 48,
+  dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
+});
+
+export function controlConfiguration(input = {}) {
+  const map = { aux_integral_a2: 'auxIntegralA2', aux_hysteresis_c: 'auxHysteresisC',
+    compressor_integral_a1: 'compressorIntegralA1', compressor_hysteresis_c: 'compressorHysteresisC',
+    a2_basis: 'a2Basis', heat_pump_compressor_kw: 'heatPumpCompressorKw', auxiliary_rated_kw: 'auxRatedKw',
+    circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', max_reduction_hours: 'maxReductionHours',
+    max_away_reduction_hours: 'maxAwayReductionHours', max_unobserved_reduction_hours: 'maxUnobservedReductionHours',
+    max_preheat_hours: 'maxPreheatHours', max_room_boost_c: 'maxRoomBoostC', learning_trials: 'learningTrials',
+    trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
+    recovery_timeout_hours: 'recoveryTimeoutHours' };
+  const result = { ...CONTROL_DEFAULTS };
+  for (const [key, value] of Object.entries(input)) if (map[key]) result[map[key]] = value;
+  for (const [key, value] of Object.entries(result)) {
+    if (['a2Basis', 'learningTrials'].includes(key)) continue;
+    if (value === null && ['compressorIntegralA1', 'compressorHysteresisC'].includes(key)) continue;
+    if (!Number.isFinite(value)) throw new Error(`Invalid controller setting: ${key}`);
+  }
+  if (!['absolute', 'offset'].includes(result.a2Basis) || typeof result.learningTrials !== 'boolean') throw new Error('Invalid learning or integral configuration');
+  if (result.auxIntegralA2 >= 0 || result.auxIntegralA2 < -5000 || result.auxHysteresisC <= 0 || result.auxHysteresisC > 50
+    || !Number.isInteger(result.maxRoomBoostC) || result.maxRoomBoostC < 1 || result.maxRoomBoostC > 5 || result.maxPreheatHours <= 0 || result.maxPreheatHours > 6
+    || result.maxReductionHours <= 0 || result.maxReductionHours > 12 || result.maxAwayReductionHours <= 0 || result.maxAwayReductionHours > 24
+    || result.maxUnobservedReductionHours <= 0 || result.maxUnobservedReductionHours > 2
+    || result.heatPumpCompressorKw <= 0 || result.heatPumpCompressorKw > 20 || result.auxRatedKw <= 0 || result.auxRatedKw > 20
+    || result.compressorIntegralA1 !== null && (result.compressorIntegralA1 >= 0 || result.compressorIntegralA1 < -1000)
+    || result.compressorHysteresisC !== null && (result.compressorHysteresisC <= 0 || result.compressorHysteresisC > 50)
+    || result.circulationKw < 0 || result.circulationKw > 1 || result.dhwrKw < 0 || result.dhwrKw > 1 || result.trialBudgetCentsPerDay < 0 || result.trialBudgetCentsPerDay > 1000
+    || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
+    || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168)
+    throw new Error('Controller settings exceed supported bounds');
+  return result;
 }
 
 // Permanent settings come from options/environment, temporary occupancy from the
@@ -38,7 +78,6 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     connections = options;
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
-      if (!(env.STMQ_H66_DEVICE ?? options.controller?.h66_device)) throw new Error('STMQ_H66_DEVICE is required for read-only H66 acquisition');
     }
   }
   const port = Number(env.STMQ_PORT ?? 1234);
@@ -52,6 +91,10 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     legacyDbPath: resolve(dataDir, databaseName),
     host, port, token, connections, priceSettings: configuredPriceSettings(options.electricity),
     deviceId: env.STMQ_H66_DEVICE ?? options.controller?.h66_device,
+    control: controlConfiguration(options.controller),
+    h66: { enabled: Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: true,
+      maxAgeMs: 300000, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
+      auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
     h66Verification: verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ mode: env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };

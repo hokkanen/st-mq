@@ -17,12 +17,17 @@ hide a broken primary. The live checks cover:
 | --- | --- |
 | `entsoe` | The configured key and bidding zone return prices covering now. |
 | `elering` | Elering's own endpoint returns prices covering now, without a key. |
-| `fmi-forecast` | FMI returns a usable temperature forecast extending at least six hours. |
+| `fmi-forecast` | FMI returns usable temperature and solar radiation forecasts extending at least six hours. |
 | `fmi-observation` | FMI returns a recent outdoor temperature observation. |
-| `openweather-forecast` | The configured OpenWeather key returns a usable backup forecast. |
-| `openweather-current` | The same key returns a recent backup outdoor observation. |
+| `openmeteo-forecast` | Open-Meteo ICON returns usable temperature and solar radiation forecasts without a key. |
+| `openmeteo-current` | Open-Meteo ICON returns a recent outdoor temperature model estimate without a key. |
 | `smartthings` | Every configured temperature device returns a valid reading. |
 | `easee` | Every configured charger/equalizer returns all three phase currents. |
+
+Open-Meteo uses the configured latitude and longitude; no API key is needed.
+Its current temperature is a model estimate, while FMI current temperature comes
+from a nearby weather station. H66 outdoor temperature has first priority in the
+controller; these provider checks do not connect to or verify H66.
 
 Missing optional device IDs and missing optional API tokens are explicitly
 skipped. A configured provider returning an error, missing readings or invalid
@@ -37,6 +42,7 @@ To check only a repaired service, select it explicitly:
 
 ```bash
 npm run test:live -- --services fmi-forecast,fmi-observation
+npm run test:live -- --services openmeteo-forecast,openmeteo-current
 npm run test:live -- --services smartthings
 ```
 
@@ -44,7 +50,7 @@ Use the service names in the table. Checks and HTTP requests run serially. A run
 has at most 20 requests, each with a 12-second timeout and a 4 MiB response limit.
 There are no general retries. Easee permits at most one refresh and one login
 fallback, with one data retry after successful authentication. A denied
-SmartThings/OpenWeather key stops further calls to that account immediately.
+SmartThings key stops further calls to that account immediately.
 Rate limiting stops the affected host, including calls already queued locally.
 
 The runner uses a local lock to prevent overlapping live test runs. It waits at

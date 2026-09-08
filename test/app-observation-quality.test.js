@@ -117,7 +117,7 @@ test('provider restart hydrates bounded cached observations without freshening o
   assert.equal(status.observations.indoor.observedAt, beginning - 20 * MINUTE);
   assert.equal(status.observations.indoor.stale, false);
   assert.equal(status.observations.outdoor.stale, true);
-  assert.equal(store.observations().length, 0);
+  assert.equal(store.observations().filter(o=>['smartthings','fmi','openmeteo','easee'].includes(o.source)).length, 0);
   assert.deepEqual(store.getState('provider:observations'), cached);
   setTime(beginning + 11 * MINUTE);
   const restarted = new Engine({ store, config, clock: engine.clock });

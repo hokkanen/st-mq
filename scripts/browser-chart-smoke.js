@@ -108,7 +108,7 @@ try {
   };
   await checkPowerDrawn();
   assert.equal(await legendState('all-in'), 'true');
-  assert.equal(await legendState('spot'), 'false');
+  assert.equal(await legendState('spot'), 'true');
   assert.equal(await legendState('dhwr'), 'false');
   await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
@@ -143,11 +143,13 @@ try {
   assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   await evaluate("Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes('spot')).click(); true");
-  for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'], ['power', 'property_power', 'heating_integral']]) {
+  for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'],
+    ...['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'].map(name => [name, name, 'property_power']),
+    ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
     await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
-    assert.equal(await legendState('spot'), 'true', 'Shared legend preference survives axis changes');
+    assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
     if (left === 'power') await checkPowerDrawn();
     timings.push({ action: left, elapsedMs: Math.round(performance.now() - began) });
@@ -167,7 +169,13 @@ try {
   await evaluate("document.getElementById('range-yesterday').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
   const populated = await fetch(`${base}/api/chart?start=2026-09-06&end=2026-09-07`).then(r => r.json());
-  for (const key of ['heatOff', 'auxHeat', 'dhwr']) assert.ok(populated.shading[key].length > 0, `Synthetic ${key} shading is available`);
+  for (const key of ['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr']) assert.ok(populated.shading[key].length > 0, `Synthetic ${key} shading is available`);
+  assert.ok(populated.operatingModes.length > 0);
+  assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));
+  assert.equal(await evaluate("document.getElementById('learning-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
+  assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
+  await evaluate("document.getElementById('learning-details').open = true; document.getElementById('learning-details').scrollIntoView(); true");
   mkdirSync('var', { recursive: true });
   const capture = async name => {
     const shot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });

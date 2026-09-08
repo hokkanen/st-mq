@@ -56,14 +56,30 @@ test('live Easee budget permits one authentication flow and never repeats denied
   } finally { http.close(); }
 });
 
-test('live rate limiting stops other routes on the same account without exposing response content', async () => {
+test('live rate limiting stops other requests to the same provider without exposing response content', async () => {
   let requests = 0;
   const http = createLiveHttp({ fetchImpl: async () => { requests++; return new Response('echoed synthetic-secret', { status: 429 }); } });
   try {
-    await assert.rejects(http.json('https://api.openweathermap.org/data/2.5/forecast?appid=synthetic-secret'), error =>
+    await assert.rejects(http.json('https://api.open-meteo.com/v1/forecast?hourly=temperature_2m,shortwave_radiation'), error =>
       error.status === 429 && !error.message.includes('synthetic-secret'));
-    await assert.rejects(http.json('https://api.openweathermap.org/data/2.5/weather'), { code: 'live-provider-cooldown' });
+    await assert.rejects(http.json('https://api.open-meteo.com/v1/forecast?current=temperature_2m'), { code: 'live-provider-cooldown' });
     assert.equal(requests, 1);
+  } finally { http.close(); }
+});
+
+test('live Open-Meteo budget allows one forecast and one current request without a key', async () => {
+  let requests = 0;
+  const http = createLiveHttp({ fetchImpl: async url => {
+    requests++; assert.equal(new URL(url).searchParams.has('apikey'), false); return ok();
+  } });
+  const forecast = 'https://api.open-meteo.com/v1/forecast?hourly=temperature_2m,shortwave_radiation';
+  const current = 'https://api.open-meteo.com/v1/forecast?current=temperature_2m';
+  try {
+    await http.json(forecast); await http.json(current);
+    await assert.rejects(http.json(forecast), { code: 'live-request-budget-exhausted' });
+    await assert.rejects(http.json(current), { code: 'live-request-budget-exhausted' });
+    assert.equal(requests, 2);
+    assert.deepEqual(http.summary().counts, { 'openmeteo-forecast': 1, 'openmeteo-current': 1 });
   } finally { http.close(); }
 });
 

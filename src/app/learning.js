@@ -21,11 +21,14 @@ export function startOnlineLearning({ store, input }) {
   };
 }
 
-export function startHistoryLearning({ store }) {
+export function startHistoryLearning({ store, config = {} }) {
   let worker = null, stopped = false;
   const run = () => {
     if (worker || stopped) return;
-    worker = new Worker(new URL('./learning-worker.js', import.meta.url), { workerData: { dbPath: store.path } });
+    // Only model settings cross this boundary; provider credentials are irrelevant.
+    const modelConfig = Object.fromEntries(['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', 'dhwrKw', 'targetC', 'thermalPriors']
+      .filter(key => config[key] !== undefined).map(key => [key, config[key]]));
+    worker = new Worker(new URL('./learning-worker.js', import.meta.url), { workerData: { dbPath: store.path, config: modelConfig } });
     worker.on('message', result => { if (result.error) store.event('learning-error', { message: result.error }); });
     worker.on('error', error => { store.event('learning-error', { message: error.message }); });
     worker.on('exit', () => { worker = null; });

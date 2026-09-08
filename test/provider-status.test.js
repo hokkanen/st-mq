@@ -21,13 +21,19 @@ test('healthy backup is named and its primary retry respects both cooldown and p
   assert.match(result.detail, /Next ENTSO-E try 12:00/);
 });
 
-test('weather card descriptions distinguish a nearby station from a house sensor or regional estimate', () => {
+test('weather card descriptions distinguish H66 sensor, nearby station and model estimate', () => {
   const common = { status: 'ok', lastSuccessAt: now };
+  assert.equal(outdoorSourceLabel('husdata-h66'), 'H66 outdoor sensor');
   assert.equal(outdoorSourceLabel('fmi'), 'FMI nearby station');
-  assert.equal(outdoorSourceLabel('openweathermap'), 'OpenWeather area estimate');
+  assert.equal(outdoorSourceLabel('openmeteo'), 'Open-Meteo model estimate');
+  assert.match(describeProvider('outdoor', { ...common, source: 'husdata-h66' }, options).detail, /Measured by the heat pump’s outdoor sensor/);
   assert.match(describeProvider('outdoor', { ...common, source: 'fmi' }, options).detail, /Observed at a nearby weather station/);
-  assert.match(describeProvider('outdoor', { ...common, source: 'openweathermap' }, options).detail, /Area estimate; not a house sensor/);
+  const modeled = describeProvider('outdoor', { ...common, source: 'openmeteo' }, options);
+  assert.equal(modeled.title, 'Outdoor temperature · Open-Meteo');
+  assert.match(modeled.detail, /Model estimate for the area/);
+  assert.doesNotMatch(modeled.detail, /Observed|Measured/);
   assert.equal(describeProvider('weather', { ...common, source: 'fmi' }, options).title, 'Weather forecast · FMI');
+  assert.equal(describeProvider('weather', { ...common, source: 'openmeteo' }, options).title, 'Weather forecast · Open-Meteo');
 });
 
 test('missing primary configuration does not advertise a retry and both failed providers stay visible', () => {
@@ -41,6 +47,20 @@ test('missing primary configuration does not advertise a retry and both failed p
   assert.equal(result.attention, true);
   assert.match(result.detail, /ENTSO-E: access denied \(HTTP 401\)/);
   assert.match(result.detail, /Elering: download failed \(HTTP 503\)/);
+});
+
+test('mixed weather fallback identifies the solar provider while keeping FMI temperature', () => {
+  const common = { status: 'fallback', source: 'fmi', lastSuccessAt: now,
+    acquisition: { primary: 'fmi', selected: 'fmi', solarSource: 'openmeteo', fallbackUsed: true,
+      attempts: [{ source: 'fmi', status: 'incomplete' }, { source: 'openmeteo', status: 'ok' }] } };
+  const result = describeProvider('weather', common, options);
+  assert.equal(result.title, 'Weather forecast · FMI');
+  assert.equal(result.state, 'Using backup');
+  assert.match(result.detail, /Solar radiation uses the Open-Meteo forecast/);
+  assert.match(result.detail, /temperature or solar forecast coverage is incomplete/);
+  assert.doesNotMatch(result.detail, /price coverage/);
+  common.acquisition.solarSource = 'mixed';
+  assert.match(describeProvider('weather', common, options).detail, /FMI with Open-Meteo forecasts filling missing intervals/);
 });
 
 test('unknown source names, codes and provider response text cannot expose URLs or secrets in the UI', () => {

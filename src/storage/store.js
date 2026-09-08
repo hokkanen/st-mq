@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -54,6 +54,16 @@ const easeeAcquisitionIndex = `
 CREATE INDEX observations_easee_acquisition ON observations(device, received_at, id)
 WHERE source='easee' AND import_id IS NULL;`;
 
+const learningSchema = `
+CREATE TABLE learning_samples (
+ id INTEGER PRIMARY KEY, input TEXT NOT NULL, at INTEGER NOT NULL, payload TEXT NOT NULL,
+ UNIQUE(input, at));
+CREATE INDEX learning_samples_input_at ON learning_samples(input, at);
+CREATE TABLE learning_cycles (
+ id TEXT PRIMARY KEY, input TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
+ status TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);`;
+
 function integer(value, name) {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer`);
   return value;
@@ -96,6 +106,7 @@ export class Store {
         if (version === 0) this.db.exec(schema);
         if (version < 2) this.db.exec(snapshotsSchema);
         if (version < 3) this.db.exec(easeeAcquisitionIndex);
+        if (version < 4) this.db.exec(learningSchema);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
@@ -127,6 +138,32 @@ export class Store {
     this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
       .run(label(key, 'key'), json(value), Date.now());
+  }
+
+  learningSample(input, sample) {
+    label(input, 'input'); instant(sample.timestamp, 'sample timestamp');
+    return this.db.prepare('INSERT INTO learning_samples(input,at,payload) VALUES(?,?,?) ON CONFLICT(input,at) DO NOTHING')
+      .run(input, sample.timestamp, json(sample)).changes > 0;
+  }
+
+  learningSamples({ input, after = 0, limit = 256 } = {}) {
+    return this.db.prepare('SELECT id,payload FROM learning_samples WHERE input=? AND id>? ORDER BY id LIMIT ?')
+      .all(label(input, 'input'), integer(after, 'after'), limitValue(limit))
+      .map(row => ({ id: row.id, ...JSON.parse(row.payload) }));
+  }
+
+  cycle(input, cycle) {
+    if (!['active','completed','incomplete'].includes(cycle?.status)) throw new TypeError('Invalid cycle status');
+    if (cycle.endedAt != null && instant(cycle.endedAt,'cycle end') < cycle.startedAt) throw new TypeError('Cycle end precedes its start');
+    this.db.prepare(`INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at,status=excluded.status,payload=excluded.payload`)
+      .run(label(cycle.id, 'cycle id'), label(input, 'input'), instant(cycle.startedAt, 'cycle start'),
+        cycle.endedAt ?? null, label(cycle.status, 'cycle status'), json(cycle));
+  }
+
+  cycles({ input, limit = 100, completedOnly = false } = {}) {
+    return this.db.prepare(`SELECT payload FROM learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
+      ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit)).map(row => JSON.parse(row.payload));
   }
 
   snapshot({ kind, source, issuedAt = null, fetchedAt, payload }) {

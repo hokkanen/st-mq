@@ -18,14 +18,14 @@ and [WFS examples](https://en.ilmatieteenlaitos.fi/open-data-manual-wfs-examples
 The forecast parser distinguishes model analysis, publication and valid times;
 observations retain the station's timestamp and nearby-station spatial basis.
 Tests reject stale, distant, malformed and wrong-parameter data, preserve missing
-slots, and verify independent FMI → OpenWeather chains for forecast and outdoor
+slots, and verify independent FMI → Open-Meteo chains for forecast and outdoor
 observation. Forecast points are never ingested as observed outdoor temperatures.
 
-The OpenWeather fixture follows the official [five-day/three-hour forecast documentation](https://openweathermap.org/forecast5), checked 2026-09-06. Metric requests supply Celsius and `dt` is forecast-valid Unix time in UTC. The JSON response has no documented model issuance field. `issuedAt` remains null and `issuedAtBasis` is `fetched-snapshot`, with separate `fetchedAt`. Missing forecast slots remain gaps. This enables retaining the actual downloaded forecast snapshot without inventing historical forecasts or claiming to know the provider's issuance instant.
+The Open-Meteo fixture follows the official [forecast API documentation](https://open-meteo.com/en/docs) and [DWD ICON API documentation](https://open-meteo.com/en/docs/dwd-api). Requests select ICON Seamless, Celsius and Unix timestamps in UTC. `shortwave_radiation` is global horizontal radiation in W/m² averaged over the preceding hour, so it is aligned to that interval rather than the following hour. Current temperature is a model estimate and retains its valid timestamp and model basis. The JSON response has no documented model issuance field. `issuedAt` remains null and `issuedAtBasis` is `fetched-snapshot`, with separate `fetchedAt`; response generation duration is not an issuance time. Missing forecast slots remain gaps. Fixtures and tests cover radiation alignment, missing values, invalid units, stale model estimates and keyless fallback.
 
 
 The [opt-in live suite](../../docs/live-testing.md) is separate from these fixtures.
 It tests each configured primary and backup directly, with bounded serial requests,
 rate-limit cooldowns and sanitized output. Passing deterministic tests establishes
 parser/control behavior; only a successful current live check establishes access
-with the installation's current API keys.
+using the installation's configuration (and API keys where required).

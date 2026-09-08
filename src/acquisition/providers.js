@@ -9,8 +9,8 @@ const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
 const errorCode = error => Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599
   ? `HTTP-${error.status}` : 'provider-request-failed';
-const SOURCES = new Set(['entsoe', 'elering', 'fmi', 'openweathermap']);
-const OBSERVATION_SOURCES = ['smartthings', 'easee', 'fmi', 'openweathermap'];
+const SOURCES = new Set(['entsoe', 'elering', 'fmi', 'openmeteo']);
+const OBSERVATION_SOURCES = ['smartthings', 'easee', 'fmi', 'openmeteo'];
 const QUALITY_ISSUES = new Set(['future_source_time', 'source_time_unknown', 'stale', 'charger_stale', 'property_stale',
   'implausible_temperature', 'suspect_zero_indoor', 'implausible_current', 'negative_current',
   'all_zero_property_current', 'ev_exceeds_property_current']);
@@ -112,6 +112,7 @@ function acquisitionInfo(raw) {
       source: row.source, status: ['ok', 'error', 'not-configured', 'incomplete', 'backoff'].includes(row.status) ? row.status : 'error',
       error: row.error ? safeFailure(row.error) : null, retryAfterMs: boundedDelay(row.retryAfterMs),
     })) };
+  if (['fmi', 'openmeteo', 'mixed'].includes(raw.solarSource)) info.solarSource = raw.solarSource;
   if (raw.coverage) info.coverage = {
     current: raw.coverage.current === true, completeToday: raw.coverage.completeToday === true,
     gaps: raw.coverage.gaps === true,
@@ -156,8 +157,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature, automatic = true } = {}) {
   const connections = config.connections ?? {};
   const location = configuredLocation(connections);
-  // Outdoor acquisition has an explicit FMI → OpenWeather owner. An optional
-  // SmartThings outdoor sensor must not race with and replace that selected source.
+  // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
+  // selects a usable H66 reading before either weather source.
   const deviceConnections = location ? { ...connections, smartthings: { ...connections.smartthings, outside_temp_dev_id: '' } } : connections;
   devices ??= createDeviceProviders({ connections: deviceConnections, http, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
   const smartthings = connections.smartthings ?? {}, easee = connections.easee ?? {};
@@ -170,9 +171,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
       period: 5 * MINUTE, run: args => devices.easee(args) },
     market: { enabled: present(connections.entsoe?.token) || ['fi', 'ee', 'lv', 'lt'].includes(connections.geoloc?.country_code?.toLowerCase()) || Boolean(connections.elering),
       period: 60 * MINUTE, run: args => market({ ...args, connections, http }), snapshot: true, sources: ['entsoe', 'elering'] },
-    weather: { enabled: location || present(connections.openweathermap?.token),
-      period: 60 * MINUTE, run: args => weather({ ...args, connections, http }), snapshot: true, sources: ['fmi', 'openweathermap'] },
-    outdoor: { enabled: location, period: 10 * MINUTE, run: args => outdoor({ ...args, connections, http }), sources: ['fmi', 'openweathermap'] },
+    weather: { enabled: location,
+      period: 60 * MINUTE, run: args => weather({ ...args, connections, http }), snapshot: true, sources: ['fmi', 'openmeteo'] },
+    outdoor: { enabled: location, period: 10 * MINUTE, run: args => outdoor({ ...args, connections, http }), sources: ['fmi', 'openmeteo'] },
   };
   const health = {}, pending = new Map(), cancellation = new AbortController();
   const saved = store.getState('providers:health') ?? {};
@@ -227,7 +228,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     store.setState('providers:health', health);
     let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings;
     try {
-      // Forecast and current weather share provider hosts/keys. A server's rate
+      // Forecast and current weather share provider hosts. A server's rate
       // limit or access denial applies to both routes, while a missing station
       // reading alone must not disable a working forecast.
       for (const other of Object.values(health)) for (const [source, blocked] of Object.entries(other.sourceBackoff)) {
@@ -241,6 +242,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
       // SQLite rollback must also restore the in-memory view used by decisions.
       const latestBefore = Object.assign(Object.create(Object.getPrototypeOf(engine.latest)), engine.latest);
+      const outdoorBefore = Object.assign(Object.create(null), engine.outdoorCandidates);
       try { store.transaction(() => {
         if (job.snapshot) {
           const snapshotId = store.snapshot({ kind: name, source: result.source, issuedAt: result.issuedAt,
@@ -252,9 +254,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
           if (!Array.isArray(result) || result.length > 20) throw new Error('Invalid observation batch');
           for (const observation of result) {
             if (name === 'temperatures' && location && observation.signal === 'outdoor_temperature') continue;
-            engine.ingest(observation, { selectedOutdoorSource: name === 'outdoor' });
+            engine.ingest(observation);
           }
-          store.setState('provider:observations', Object.values(engine.latest)
+          store.setState('provider:observations', engine.providerObservations()
             .filter(row => OBSERVATION_SOURCES.includes(row.source)));
           retryAfterMs = Math.max(0, ...result.map(row => boundedDelay(row.raw?.retryAfterMs)));
           // Last-reported values can stay unchanged while downloads succeed. Keep
@@ -266,7 +268,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
             failure ??= Object.values(readings).find(row => row.error)?.error ?? null;
           }
         }
-      }); } catch (error) { engine.latest = latestBefore; throw error; }
+      }); } catch (error) { engine.latest = latestBefore; engine.outdoorCandidates = outdoorBefore; throw error; }
       state.qualityIssues = issues;
       state.staleSourceTimes = staleSourceTimes;
       if (readings) state.currentReadings = readings;

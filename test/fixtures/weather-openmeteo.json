@@ -1,0 +1,56 @@
+{
+  "latitude": 60.39,
+  "longitude": 25.66,
+  "utc_offset_seconds": 0,
+  "timezone": "GMT",
+  "hourly_units": {
+    "time": "unixtime",
+    "temperature_2m": "°C",
+    "shortwave_radiation": "W/m²"
+  },
+  "hourly": {
+    "time": [
+      1788760800,
+      1788764400,
+      1788768000,
+      1788771600,
+      1788775200,
+      1788778800,
+      1788782400,
+      1788786000,
+      1788789600
+    ],
+    "temperature_2m": [
+      10.5,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "shortwave_radiation": [
+      0,
+      0,
+      100,
+      250,
+      400,
+      500,
+      450,
+      300,
+      100
+    ]
+  },
+  "current_units": {
+    "time": "unixtime",
+    "interval": "seconds",
+    "temperature_2m": "°C"
+  },
+  "current": {
+    "time": 1788761700,
+    "interval": 900,
+    "temperature_2m": 12
+  }
+}

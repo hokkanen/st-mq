@@ -42,7 +42,7 @@ test('body and lifetime bounds apply without Content-Length; pending requests st
 test('rate-limit delays are bounded and preserved without response secrets', async () => {
   for (const [header, expected] of [['120', 120_000], ['9999999', 86400_000], ['invalid', null]]) {
     const http = createHttp({ fetchImpl: async () => new Response('secret', { status: 429, headers: { 'Retry-After': header } }) });
-    await assert.rejects(http.text('https://api.openweathermap.org/data/2.5/weather?appid=secret'), error =>
+    await assert.rejects(http.text('https://api.open-meteo.com/data/2.5/weather?appid=secret'), error =>
       error.status === 429 && error.retryAfterMs === expected && !JSON.stringify(error).includes('secret'));
     http.close();
   }

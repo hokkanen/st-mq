@@ -16,16 +16,20 @@ test('calendar controls use Finnish dates across UTC midnight, leap days and bot
 
 test('left axis groups remain exclusive while all shared temperatures and prices survive every choice', () => {
   const shared = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
-  for (const [left, expected] of [['power', ['property_power', 'charger_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']]]) {
+  for (const [left, expected] of [['power', ['property_power', 'auxiliary_power', 'charger_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']],
+    ...['learning_profit','learning_aux_profit','learning_recovery_error','learning_indoor_temperature'].map(name => [name, [name]]), ['solar_radiation', ['solar_radiation', 'solar_forecast']]]) {
     const datasets = historyDatasets({}, left);
     assert.deepEqual(datasets.filter(dataset => dataset.yAxisID === 'left').map(dataset => dataset.key), expected);
     assert.deepEqual(datasets.filter(dataset => dataset.yAxisID === 'right').map(dataset => dataset.key), shared);
     assert.equal(datasets.find(dataset => dataset.key === 'all_in_price').hidden, false);
-    assert.equal(datasets.find(dataset => dataset.key === 'spot_price').hidden, true);
+    assert.equal(datasets.find(dataset => dataset.key === 'spot_price').hidden, false);
   }
   assert.equal(visible('dhwr'), false);
   assert.equal(visible('heatOff'), true);
-  assert.equal(visible('auxHeat'), true);
+  assert.equal(visible('compressorSpace'), true);
+  assert.equal(visible('compressorDhw'), true);
+  assert.equal(visible('operatingMode'), true);
+  assert.equal(visible('spot_price', { spot_price: false }), false, 'Explicit saved choices win over new defaults');
 });
 
 test('axis ticks stay on whole Finnish hours and calendar days across DST with exact outer bounds', () => {
@@ -51,6 +55,9 @@ test('charger fills and shared outdoor visibility retain exact missing and negat
   const preferences = { outdoor_temperature: false, spot_price: true };
   const power = historyDatasets(series, 'power', preferences);
   assert.equal(power.find(dataset => dataset.key === 'charger_power').fill, 'origin');
+  assert.equal(power.find(dataset => dataset.key === 'auxiliary_power').fill, 'origin');
+  assert(power.find(dataset => dataset.key === 'auxiliary_power').order > power.find(dataset => dataset.key === 'charger_power').order, 'Chart.js draws auxiliary first, then overlays charger');
+  assert(power.every(dataset => !dataset.stack), 'Power fills use independent zero baselines');
   assert.equal(power.find(dataset => dataset.key === 'charger_power').stepped, true);
   assert.equal(power.find(dataset => dataset.key === 'property_power').stepped, true);
   assert.equal(power.find(dataset => dataset.key === 'property_power').fill, false);

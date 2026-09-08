@@ -44,7 +44,7 @@ test('schema-v2 migration preserves observations and indexes complete Easee acqu
   store.close();
 
   const prior = new DatabaseSync(path);
-  prior.exec('DROP INDEX observations_easee_acquisition; PRAGMA user_version = 2');
+  prior.exec('DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles; PRAGMA user_version = 2');
   prior.close();
   const migrated = new Store(path);
   try {

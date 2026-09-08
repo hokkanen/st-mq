@@ -86,11 +86,17 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   assert.equal((await engine.testHeating({ command: 'heaton15' })).sent, true);
 });
 
-test('a physical transport never enables automatic active, shadow or monitoring writes', t => {
+test('physical writes require active mode while shadow and monitoring remain observational', async t => {
   const { store } = setup(t);
-  const executor = new Executor({ input: 'mqtt', store, commandTransport: { publish: () => assert.fail('Unexpected physical publish') } });
+  const commands = [];
+  const executor = new Executor({ input: 'mqtt', store, clock: () => 0, commandTransport: { publish: async batch => {
+    commands.push(batch); return { status: 'mqtt', sent: true, actual: null };
+  } } });
+  t.after(() => { clearTimeout(executor.timer); executor.closed = true; });
   for (const mode of ['monitoring', 'shadow']) assert.equal(executor.execute({ commands: ['heatoff'] }, { mode, now: 0 }).sent, false);
-  assert.throws(() => executor.execute({ commands: ['heatoff'] }, { mode: 'active', now: 0 }), /not commissioned/);
+  assert.equal(commands.length, 0);
+  assert.equal((await executor.execute({ commands: ['heatoff'] }, { mode: 'active', now: 0 })).sent, true);
+  assert.deepEqual(commands, [['heatoff']]);
 });
 
 test('heating test API authenticates, validates same-origin JSON and waits for publish acknowledgement', async t => {

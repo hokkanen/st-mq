@@ -115,3 +115,16 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.options.easee.charger_id, '');
   assert.equal(addon.schema.easee.charger_id, 'str?');
 });
+
+test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {
+  const directory=mkdtempSync(join(tmpdir(),'stmq-live-config-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const path=join(directory,'options.json');
+  writeFileSync(path,JSON.stringify({controller:{input:'mqtt',mode:'active',compressor_integral_a1:-60,compressor_hysteresis_c:10},mqtt:{address:'mqtt://synthetic.invalid'}}));
+  const cfg=loadConfig({STMQ_CONFIG:path},directory);
+  assert.equal(cfg.input,'mqtt');assert.equal(cfg.settings.mode,'active');assert.equal(cfg.h66.enabled,false);
+  assert.equal(cfg.control.auxIntegralA2,-990);assert.equal(cfg.control.auxHysteresisC,30);
+  assert.equal(cfg.control.compressorIntegralA1,-60);assert.equal(cfg.control.compressorHysteresisC,10);
+  const defaults=loadConfig({},'/missing-repository');
+  assert.equal(defaults.control.compressorIntegralA1,null);assert.equal(defaults.control.compressorHysteresisC,null);
+});

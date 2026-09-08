@@ -1,6 +1,7 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes } from './history-model.js';
+import { outdoorSourceLabel, providerName } from './provider-status.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -10,11 +11,12 @@ const paletteVariables = {
   text: '--text', muted: '--muted', border: '--border', grid: '--grid',
   property: '--chart-property', ev: '--chart-ev', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
   indoor: '--chart-indoor', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
-  heatOff: '--chart-heat-off', auxHeat: '--chart-aux-heat', dhwr: '--chart-dhwr',
+  heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
 };
 const shades = [
-  { key: 'heatOff', label: 'Heat Off', detail: 'Requested heating reduction; observed state where available' },
-  { key: 'auxHeat', label: 'Aux Heat', detail: 'Timestamped auxiliary-heating output' },
+  { key: 'heatOff', label: 'Heat Off', detail: 'Requested heating reduction; does not prove compressor stoppage' },
+  { key: 'compressorSpace', label: 'Compressor · house', detail: 'Compressor reported on, valve routed to house heating' },
+  { key: 'compressorDhw', label: 'Compressor · hot water', detail: 'Compressor reported on, valve routed to hot water' },
   { key: 'dhwr', label: 'DHWR', detail: 'Requested 10-minute hot-water recirculation pulses' },
 ];
 
@@ -63,7 +65,16 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
         // Dense historical ranges carry duty fractions instead of inventing continuous activity.
         ctx.globalAlpha = 0.18 * (interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1);
         const left = scales.x.getPixelForValue(from), right = scales.x.getPixelForValue(to);
-        ctx.fillRect(left, chartArea.top, right - left, chartArea.height);
+        if (shade.key === 'heatOff') {
+          ctx.save(); ctx.beginPath(); ctx.rect(left, chartArea.top, right - left, chartArea.height); ctx.clip();
+          ctx.globalAlpha = 0.22 * (interval.aggregated ? interval.fraction : 1); ctx.strokeStyle = palette.heatOff; ctx.lineWidth = 0.6;
+          ctx.beginPath();
+          for (let x = Math.floor((left - chartArea.height) / 14) * 14; x < right + chartArea.height; x += 14) {
+            ctx.moveTo(x, chartArea.top); ctx.lineTo(x + chartArea.height, chartArea.bottom);
+            ctx.moveTo(x, chartArea.top); ctx.lineTo(x - chartArea.height, chartArea.bottom);
+          }
+          ctx.stroke(); ctx.restore();
+        } else ctx.fillRect(left, chartArea.top, right - left, chartArea.height);
       }
     }
     if (payload.now > payload.range.from && payload.now < payload.range.to) {
@@ -87,16 +98,54 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       button.addEventListener('click', () => {
         preferences[key] = !visible(key, preferences); savePreferences();
         for (const dataset of graph.data.datasets) if (dataset.visibilityKey === key) dataset.hidden = !preferences[key];
-        button.setAttribute('aria-pressed', String(preferences[key])); graph.update('none');
+        button.setAttribute('aria-pressed', String(preferences[key])); graph.update('none'); renderModes();
       });
       group.append(button);
     }
-    for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.key], 'fill');
+    for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.key], shade.key === 'heatOff' ? 'pattern' : 'fill');
+    add(groups[0], 'operatingMode', 'Pump mode', 'Configured operating mode from H66 readback; independent of compressor activity', palette.outdoor, 'fill');
     for (const dataset of datasets) {
       if (dataset.key === 'outdoor_forecast') continue;
       add(groups[dataset.yAxisID === 'left' ? 1 : 2], dataset.visibilityKey, dataset.label, dataset.unit, dataset.borderColor, dataset.kind);
     }
     $('chart-legend').replaceChildren(...groups);
+  }
+  function renderModes() {
+    const root = $('operating-modes'); if (!root) return;
+    root.replaceChildren(); root.hidden = !visible('operatingMode', preferences);
+    const title = document.createElement('p'); title.textContent = 'Pump mode · readback (blank intervals: unknown)';
+    const track = document.createElement('div'); track.className = 'mode-track';
+    const chartWidth = graph?.width, area = graph?.chartArea;
+    if (area && chartWidth) { root.style.paddingLeft = `${area.left}px`; root.style.paddingRight = `${chartWidth - area.right}px`; }
+    for (const interval of payload?.operatingModes ?? []) {
+      const item = document.createElement('span'); item.className = 'mode-segment';
+      const name = operationModes[interval.value] ?? 'Unknown';
+      item.style.left = `${100 * (interval.start - payload.range.from) / (payload.range.to - payload.range.from)}%`;
+      item.style.width = `${100 * (interval.end - interval.start) / (payload.range.to - payload.range.from)}%`;
+      item.style.opacity = String((interval.aggregated ? interval.fraction : 1) * 0.7);
+      if (interval.aggregated) { item.style.top = `${interval.value * 20}%`; item.style.height = '20%'; }
+      item.style.backgroundColor = [palette.muted, palette.indoor, palette.outdoor, palette.auxiliary, palette.compressorDhw][interval.value];
+      item.title = `${name} · ${dateTime.format(interval.start)} – ${dateTime.format(interval.end)}${interval.aggregated ? ` · ${Math.round(interval.fraction * 100)}% of this display interval` : ''}`;
+      item.setAttribute('aria-label', item.title); track.append(item);
+    }
+    if (!(payload?.operatingModes?.length)) title.textContent = 'Pump mode · no H66 readback in this period';
+    root.append(title, track);
+  }
+  function renderTiming() {
+    const root = $('timing-benefit'); if (!root) return;
+    root.replaceChildren();
+    const money = value => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(value);
+    for (const [key, name] of [['heatPump', 'Heat pump'], ['charger', 'Charger']]) {
+      const result = payload?.timingBenefit?.[key], row = document.createElement('p'), title = document.createElement('strong');
+      title.textContent = `${name}: `;
+      row.append(title, document.createTextNode(Number.isFinite(result?.value)
+        ? `${money(result.value)} timing benefit · estimated${result.provisional ? ' · provisional' : ''} · ${Math.round(result.coverage * 100)}% coverage`
+        : 'Timing comparison unavailable · energy and full-day prices needed'));
+      row.title = result?.basis ?? ''; root.append(row);
+    }
+    const note = document.createElement('p'); note.className = 'timing-explanation';
+    note.textContent = 'Same recorded energy at each whole day’s average all-in price. Positive = cheaper timing; negative = dearer. Missing periods excluded. Not proven controller savings.';
+    root.append(note);
   }
   function renderChart() {
     if (!payload) return;
@@ -105,7 +154,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const plot = plottedSelection;
     const datasets = historyDatasets(payload.series, plot.left, preferences, palette);
     for (const dataset of datasets) if (dataset.kind === 'fill') dataset.backgroundColor = color(dataset.backgroundColor).alpha(0.25).rgbString();
-    const leftTitle = { power: 'Estimated power · kW', phases: 'Current · A', integral: 'Heating integral · °min' }[plot.left];
+    const leftTitle = leftTitles[plot.left];
     const scales = {
       x: {
         type: 'linear', min: payload.range.from, max: payload.range.to,
@@ -116,7 +165,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
           return plot.startDate === plot.endDate ? clock.format(value) : payload.range.to - payload.range.from > 3 * 86_400_000 ? shortDate.format(value) : [shortDate.format(value), clock.format(value)];
         } },
       },
-      left: { type: 'linear', position: 'left', beginAtZero: plot.left !== 'integral', grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitle, color: palette.muted } },
+      left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(plot.left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitle, color: palette.muted } },
       right: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: 'Temperature · °C / Price · c/kWh', color: palette.muted } },
     };
     if (graph) {
@@ -137,7 +186,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
               borderColor: palette.border, borderWidth: 1,
               callbacks: {
                 title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
-                label: item => `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`,
+                label: item => {
+                  const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
+                  return `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${source ? ` · ${source}` : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                },
               },
             },
           },
@@ -145,14 +197,20 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       });
     }
     renderLegend(datasets);
+    renderModes(); renderTiming();
     const loading = selection.startDate !== plot.startDate || selection.endDate !== plot.endDate || selection.left !== plot.left;
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.left = plot.left; canvas.dataset.ready = String(!loading);
     const hasValues = datasets.some(dataset => !dataset.hidden && dataset.data.some(point => Number.isFinite(point.y)));
     const simulated = payload.input === 'simulated' ? ' · simulated data' : '';
     $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${hasValues ? '' : ' · No visible readings for these dates'}`;
-    const notes = ['Dashed outdoor line: forecast. All values stay within the selected dates.'];
+    const notes = ['Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push('Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
     if (plot.left === 'power') notes.push('Power is estimated at 230 V from all three phase currents; it is not measured active power.');
+    if (plot.left === 'power') notes.push('Auxiliary fill uses verified heater output and configured electrical capacity. Charger fill overlays it; fills are not stacked.');
+    if (plot.left.startsWith('learning_')) {
+      const metadata = payload.meta?.learning?.[plot.left];
+      if (metadata) notes.push(`Latest assessment: ${dateTime.format(metadata.at)}${Number.isFinite(metadata.count) ? ` · ${metadata.count} contributing cycles/observations` : ''}${metadata.basis ? ` · ${metadata.basis}` : ''}.`);
+    }
     if (!(payload.series.all_in_price ?? []).some(point => Number.isFinite(point.y))) notes.push('All-in prices are unavailable for these dates. Spot price can be enabled in the legend.');
     if (Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated))) notes.push('Shading on this long range is lighter in proportion to recorded activity within each time bucket.');
     for (const warning of payload.meta?.warnings ?? []) if (typeof warning === 'string') notes.push(warning.replaceAll('_', ' '));
@@ -168,7 +226,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
     previousToday = today;
     const contract = JSON.stringify(status.contract ?? null);
-    const liveRevision = JSON.stringify({ input: status.input, observations: status.observations, providers: Object.fromEntries(Object.entries(status.providers ?? {}).map(([key, value]) => [key, value?.lastSuccessAt ?? value?.lastSuccess])) });
+    const liveRevision = JSON.stringify({ input: status.input, observations: status.observations,
+      metrics: status.learning?.metrics, h66Readings: status.h66?.readings,
+      providers: Object.fromEntries(Object.entries(status.providers ?? {}).map(([key, value]) => [key, value?.lastSuccessAt ?? value?.lastSuccess])) });
     if (lastContract !== undefined && contract !== lastContract) { loader.invalidate(); force = true; }
     if (lastLiveRevision !== undefined && liveRevision !== lastLiveRevision && selection.endDate >= today) force = true;
     lastContract = contract; lastLiveRevision = liveRevision;

@@ -1,5 +1,5 @@
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openweathermap: 'OpenWeather', smartthings: 'SmartThings', easee: 'Easee' });
+  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', smartthings: 'SmartThings', easee: 'Easee' });
 const jobs = Object.freeze({ temperatures: 'SmartThings temperatures', smartthings: 'SmartThings temperatures',
   easee: 'Easee currents', market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
 const states = Object.freeze({ ok: 'Available', healthy: 'Available', available: 'Available', success: 'Available',
@@ -25,8 +25,9 @@ const qualityLabels = Object.freeze({
 });
 
 export const providerName = source => Object.hasOwn(names, source) ? names[source] : null;
-export const outdoorSourceLabel = source => source === 'fmi' ? 'FMI nearby station'
-  : source === 'openweathermap' ? 'OpenWeather area estimate' : providerName(source);
+export const outdoorSourceLabel = source => source === 'husdata-h66' ? 'H66 outdoor sensor'
+  : source === 'fmi' ? 'FMI nearby station'
+    : source === 'openmeteo' ? 'Open-Meteo model estimate' : providerName(source);
 
 function failureLabel(value) {
   const code = typeof value === 'object' ? value?.code : value;
@@ -118,13 +119,15 @@ function describeEasee(health, { now, formatTime }) {
 /** Only known source names, failure codes and quality flags enter display text; provider bodies never do. */
 export function describeProvider(job, health, { now, formatTime }) {
   if (job === 'easee') return describeEasee(health, { now, formatTime });
-  const selected = providerName(health.source ?? health.acquisition?.selected);
+  const source = health.source ?? health.acquisition?.selected;
+  const selected = providerName(source);
   const base = jobs[job] ?? 'Data provider';
   const title = selected && !base.startsWith(selected) ? `${base} · ${selected}` : base;
   const state = states[health.status] ?? 'Status pending';
   const sentences = [];
-  if (job === 'outdoor' && selected) sentences.push(health.source === 'fmi'
-    ? 'Observed at a nearby weather station.' : health.source === 'openweathermap' ? 'Area estimate; not a house sensor.' : '');
+  if (job === 'outdoor' && selected) sentences.push(source === 'husdata-h66'
+    ? 'Measured by the heat pump’s outdoor sensor.' : source === 'fmi'
+      ? 'Observed at a nearby weather station.' : source === 'openmeteo' ? 'Model estimate for the area.' : '');
   const success = health.lastSuccessAt ?? health.lastSuccess;
   sentences.push(Number.isFinite(success) ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.');
   const qualityFlags = (Array.isArray(health.qualityIssues) ? health.qualityIssues : [])
@@ -132,13 +135,18 @@ export function describeProvider(job, health, { now, formatTime }) {
   const qualityMessages = [...new Set(qualityFlags.map(flag => qualityLabel(flag, health, now)))];
   sentences.push(...qualityMessages);
   const acquisition = health.acquisition;
+  if (job === 'weather' && source === 'fmi' && acquisition?.solarSource === 'openmeteo') {
+    sentences.push('Solar radiation uses the Open-Meteo forecast.');
+  } else if (job === 'weather' && acquisition?.solarSource === 'mixed') {
+    sentences.push('Solar radiation uses FMI with Open-Meteo forecasts filling missing intervals.');
+  }
   const primaryName = providerName(acquisition?.primary);
   const primary = Array.isArray(acquisition?.attempts) ? acquisition.attempts.find(row => row?.source === acquisition.primary) : null;
   const primaryIssue = primaryName && primary && ['error', 'incomplete', 'backoff', 'not-configured'].includes(primary.status);
   if (primaryIssue) {
     const cooldown = health.sourceBackoff?.[acquisition.primary];
     const issue = primary.status === 'not-configured' ? 'not configured'
-      : primary.status === 'incomplete' ? 'price coverage is incomplete'
+      : primary.status === 'incomplete' ? job === 'weather' ? 'temperature or solar forecast coverage is incomplete' : 'price coverage is incomplete'
         : failureLabel(primary.error ?? cooldown?.error);
     sentences.push(`${primaryName}: ${issue}.`);
     const nextTry = Math.max(Number.isFinite(cooldown?.nextAttemptAt) ? cooldown.nextAttemptAt : 0,

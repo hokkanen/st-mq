@@ -78,7 +78,7 @@ test('snapshots preserve unknown provider issuance separately from local fetch t
   const store = new Store(join(directory(t), 'snapshots.sqlite'));
   try {
     const fetchedAt = 1788685200000;
-    store.snapshot({ kind: 'weather', source: 'openweathermap', issuedAt: null, fetchedAt,
+    store.snapshot({ kind: 'weather', source: 'openmeteo', issuedAt: null, fetchedAt,
       payload: { issuedAt: null, issuedAtBasis: 'fetched-snapshot', forecast: [{ outdoorC: 4 }] } });
     store.snapshot({ kind: 'market', source: 'entsoe', issuedAt: fetchedAt - 3600000, fetchedAt,
       payload: { intervals: [{ spotCtPerKwh: -2 }] } });

@@ -1,8 +1,9 @@
 # Home Assistant add-on setup
 
-The 0.8.3 application starts with **simulated devices and shadow plans**. Default
-startup launches no live controller or provider. Implementation is not production commissioned;
-see [progress and remaining work](docs/PROGRESS.md).
+The 0.9.0 application starts with **simulated devices and shadow plans**. Default
+startup launches no live controller or provider. Active MQTT control is available
+when selected in configuration. See [learning and control](docs/learning-and-control.md)
+for the algorithm, native-setting restoration and equipment testing limits.
 
 1. Build/install ST-MQ through the repository's existing add-on mechanism on
    `aarch64` (Raspberry Pi 5) or `amd64`.
@@ -22,21 +23,28 @@ see [progress and remaining work](docs/PROGRESS.md).
    /config/st-mq/st-mq.sqlite --file /share/st-mq/st-mq-corrected.csv --kind stmq`,
    then import Easee with `--kind easee`. Input files are never included in the
    application image.
-6. Choose `controller.input: offline` to view imported history and rebuild its
-   model without device connections. `mqtt` additionally requires verified H66
-   installation and `controller.h66_device`; acquisition is read-only and runs
-   alongside the online providers. Optional `controller.h66_verification_file`
-   names a verified register-scaling file, relative to `/config` or absolute.
-   MQTT connection fields reuse the existing configuration.
-7. Choose `controller.input: providers` for read-only acquisition. Existing
-   latitude/longitude and market country enable the public FMI and Elering
-   providers without new keys. ENTSO-E remains the primary price source, with
-   Elering's own API as automatic backup. FMI is primary for the weather forecast
-   and nearby-station outdoor temperature; the existing OpenWeather token enables
-   both backup services. These are independent fallback chains. SmartThings
-   indoor/garage sensors and Easee are optional. Collection runs every five minutes
-   for devices, ten minutes for outdoor temperature, and hourly for prices and
-   forecasts. This input sends no equipment commands.
+6. Choose `controller.input: offline` to view imported history without device
+   connections. Choose `providers` or `mqtt` for live temperatures and prices.
+   Both support active legacy MQTT relay control. Set `controller.mode: active`
+   to operate heating; `shadow` calculates plans and `monitoring` observes.
+   Retain the existing MQTT connection fields. The controller uses the existing
+   `from_stmq/heat/action` relay integration; it does not replace that automation.
+7. Add `controller.h66_device` when H66 arrives. Both live inputs then subscribe
+   to C60 telemetry and request snapshots; active mode additionally uses the four
+   documented settings. Native baselines are read before each cycle. Optional
+   `controller.h66_verification_file` overrides documented engineering-unit scaling.
+   A missing gateway still permits conservative tariff reduction, without ROOM
+   preheat or claimed compressor-only protection. The Data & learning panel shows
+   the connection, current readings, native settings and model evidence.
+
+   Existing coordinates and market country enable FMI, Open-Meteo and Elering
+   without new keys. ENTSO-E is primary for prices and Elering is the backup.
+   Temperature and global radiation forecasts use FMI first, then Open-Meteo
+   ICON Seamless. Missing FMI radiation can use Open-Meteo while retaining FMI
+   temperature. Radiation includes cloud effects and uses W/m². Current outdoor
+   temperature uses H66 first, then FMI, then an Open-Meteo model estimate. Device
+   collection runs every five minutes, outdoor temperature every ten minutes,
+   prices/forecasts hourly and H66 snapshot requests every minute.
 8. Configure `electricity` in add-on options. Every monetary field explicitly
    **excludes VAT**; `vat_percent` applies VAT once to spot, margin, tax and transfer.
    Defaults are margin **0.33 c/kWh ex VAT**, tax **2.325 c/kWh ex VAT**, and
@@ -60,20 +68,21 @@ daytime applies November–March, Monday–Saturday 07:00–22:00.
 The main chart defaults to today's complete Finnish calendar day. Choose a start
 date to view one day; check **End date** to enable an inclusive date range. Date
 changes apply automatically. **Yesterday – today**, **Today**, **Today – tomorrow**
-shortcuts keep both observations and forecasts within the selected dates. The
-**Left axis** selector chooses combined power, phase currents or heating integral;
-temperatures and prices remain available on the right. Power is an estimate from
-three phase currents at nominal 230 V, not metered active power or energy. All-in
-price is initially visible; Spot price and DHWR are initially hidden and can be
-enabled in the legend. Historical all-in prices need dated contract coverage.
+shortcuts keep both observations and forecasts within the selected dates. The **Left axis** drawer offers Power, phase currents, live heating integral,
+solar radiation and all four historical learning metrics. Temperatures and prices
+remain available on the right. Whole-house and EV power estimates use nominal
+230 V and are labelled estimates. H66 AUX power is a red fill derived from the
+configured rated power (9 kW by default), with EV fill drawn above it. Compressor
+space heating is yellow, hot-water heating blue, DHWR brown and heat-off requests
+use a light crossed hatch. Every series is initially visible except DHWR; saved
+legend choices persist. A separate strip shows observed native operating mode.
 
-Heat Off shading records reduction requests; DHWR records ten-minute pulse
-requests. Aux Heat requires actual timestamped auxiliary-output observations, and
-heating integral requires compatible readings. There is no reconstruction of old
-auxiliary episodes from dated runtime counters. Until H66 supplies verified
-observations, those series may be empty. Chart interaction reads stored data and
-cached outlooks; it does not issue provider requests or equipment commands.
-See [the chart controls and data limits](README.md#using-the-chart) for details.
+The chart's daily HP and EV price-timing comparisons hold recorded energy fixed
+and compare its cost with each day's duration-weighted average all-in price.
+They require data and contract coverage and are distinct from the learning
+metrics' modelled full-cycle profit. Missing AUX routing, solar forecasts or
+complete recovery evidence stays unknown. Historical values are stored as learned;
+new forecasts and models do not rewrite earlier chart samples.
 
 A blank network-access token prevents startup with a clear configuration error.
 Home Assistant options own permanent settings. The **Away until** and **Pause
@@ -87,20 +96,25 @@ Away removes occupied drop penalties and compares predicted cost, including
 recovery and auxiliary heating, with continuous native operation. It restores
 occupied requirements when the return falls within the available forecast horizon.
 Data/model confidence requirements still apply. Pause requests normal native
-operation without price reductions. `active` applies only to simulated devices.
+operation without price reductions and restores owned native settings. `active`
+operates real configured MQTT equipment for either live input.
 The house comfort reference is inferred; preferred drop defaults to 1 °C.
 Unsupported warm-weather temperature plateaus are excluded from new reference
 candidates. Cached provider readings keep their source timestamps through outages
 and restarts. FMI forecast publication, model analysis and valid times are stored
-separately. The OpenWeather forecast records fetch time separately because its
+separately. The Open-Meteo forecast records fetch time separately because its
 JSON response does not supply a documented issuance timestamp. Missing prices and
 forecast intervals remain gaps; tomorrow's prices appear only when published.
 
-The outdoor card labels **FMI nearby station** or **OpenWeather area estimate**;
-neither establishes the temperature at the house itself. With valid configured
-coordinates, this selected chain owns outdoor temperature and an optional
-SmartThings outdoor sensor does not overwrite it. FMI requires a fresh station
-reading within 50 km. **Data connections** names each selected provider and shows
+The outdoor card labels **H66 outdoor sensor**, **FMI nearby station**, or
+**Open-Meteo model estimate** in that priority order. H66 register `0007` supplies
+the house sensor reading when fresh. The station and model fallback describe the
+surrounding area. Missing or stale H66 readings fall back automatically; a fresh
+H66 reading regains priority. With valid configured coordinates, this chain owns
+outdoor temperature and an optional SmartThings outdoor sensor does not overwrite
+it. FMI requires a fresh station reading within 50 km. Open-Meteo needs no key or
+registration for noncommercial use within the free API limits; no weather token
+setting is needed. **Connection & provider details** names each selected provider and shows
 **Using backup**, a concise primary error and the next scheduled primary retry.
 Per-source retries are bounded, honor rate limits and persist through restarts.
 
@@ -118,10 +132,15 @@ incompatible base. It contains no architecture-specific native SQLite addon.
 Node's own SQLite and Intl time-zone support are exercised in the container smoke
 check. Development has not installed or started this add-on on the owner's HA.
 
-Physical relay/H66 command ownership, controller compatibility, bounded writes,
-readback and communication-loss behavior must be verified before a later live
-migration. Retain the relay hardware until that migration is demonstrated. Existing
-legacy scripts are preserved and gated; see [README](README.md).
+The controller owns tariff commands and temporary native changes. Broker delivery
+is distinguished from native register readback and physical compressor activity.
+The documented C60 mapping and mocked tests do not establish installed relay or
+firmware behavior; use the timed device tests to check the installed integration.
+Original ROOM, DHW start/stop and operating mode are restored after reduction.
+Restoration needs the running application and connection; there is no documented
+H66 device-side expiry. Compressor-only reduction can skip the native 14-day
+high-temperature water cycle; this is an intended, accepted design risk.
+See [learning and control](docs/learning-and-control.md) for the complete details.
 
 ## SSH database access and backups
 

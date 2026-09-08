@@ -35,9 +35,16 @@
         <div><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
         <label class="axis-control">Left axis
           <select id="left-axis">
-            <option value="power">Total power</option>
+            <option value="power">Power</option>
             <option value="phases">Phase currents</option>
             <option value="integral">Heating integral</option>
+            <optgroup label="Learning">
+              <option value="learning_profit">Profit after recovery</option>
+              <option value="learning_aux_profit">Profit with auxiliary recovery</option>
+              <option value="learning_recovery_error">Recovery-cost prediction error</option>
+              <option value="learning_indoor_temperature">Learned normal temperature</option>
+            </optgroup>
+            <option value="solar_radiation">Solar radiation forecast</option>
           </select>
         </label>
       </div>
@@ -58,8 +65,10 @@
       </div>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
       <div class="plot"><canvas id="history" aria-label="Home energy, temperature and electricity prices for selected dates" role="img"></canvas></div>
+      <div id="operating-modes" class="mode-history" aria-label="Heat-pump operating mode history"></div>
       <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
       <p id="chart-notes" class="muted chart-notes"></p>
+      <div id="timing-benefit" class="timing-benefit" aria-live="polite"></div>
     </section>
 
     <section class="controller-panels" aria-label="Home controller">
@@ -69,12 +78,21 @@
           <div class="detail"><span>Electricity prices</span><span id="price-status">Waiting for status</span></div>
           <div class="detail"><span>Weather outlook</span><span id="weather-status">Waiting for status</span></div>
           <div class="detail"><span>House model</span><span id="learning-title">Building a baseline</span></div>
+          <div class="detail"><span>Husdata H66</span><span id="h66-status">Not connected</span></div>
           <details id="data-details">
-            <summary>Connection &amp; learning details</summary>
+            <summary>Connection &amp; provider details</summary>
             <p id="provider-context" class="muted"></p><ul id="providers" class="provider-list"></ul>
+            <p id="h66-context" class="muted"></p>
+            <div id="h66-readings"></div>
+            <p class="muted">Reading times and receipt times have different meanings. A successful download does not make an old sensor reading fresh.</p>
+          </details>
+          <details id="learning-details">
+            <summary>Learning details</summary>
             <p id="learning-detail" class="muted"></p>
+            <p id="learning-process" class="muted"></p>
+            <div id="learning-metrics"></div>
+            <p id="learning-evidence" class="muted"></p>
             <p id="savings" class="muted"></p>
-            <p class="muted">A successful download does not make an old sensor reading fresh. Observation times remain visible above.</p>
           </details>
         </article>
 
@@ -108,6 +126,24 @@
             <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
             <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
           </details>
+          <details id="h66-test-details" class="heating-test-details">
+            <summary>Test H66 controls</summary>
+            <p class="muted">Apply a temporary setting to the heat pump. The test checks readback and restores the previous setting when its duration ends.</p>
+            <form id="h66-test-form" class="h66-test-form">
+              <label>Setting<select id="h66-test-register">
+                <option value="0203">Room setting · 0203</option>
+                <option value="0212">Hot water start · 0212</option>
+                <option value="0208">Hot water stop · 0208</option>
+                <option value="2201">Operating mode · 2201</option>
+              </select></label>
+              <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+              <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+              <label>Duration · minutes<input id="h66-test-duration" type="number" min="1" max="15" step="1" value="5" required></label>
+              <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply temporary test</button>
+            </form>
+            <p id="h66-test-status" class="muted">H66 is not connected.</p>
+            <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+          </details>
         </article>
       </div>
 
@@ -137,7 +173,7 @@
       <div class="section-top"><div><h2>Event log</h2></div><small id="updated">—</small></div><ol id="events"></ol>
     </section>
   </main>
-  <footer>Finnish local time · Europe/Helsinki</footer>
+  <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
   <script type="module" src="/monitor.js"></script>
 </body>
 </html>

@@ -23,6 +23,8 @@ test('FMI forecast retains publication/run/valid times independently and leaves 
   assert.equal(result.forecast[0].end, Date.parse('2026-09-07T07:00:00Z'));
   assert.equal(result.forecast.at(-1).end, Date.parse('2026-09-07T10:00:00Z')); // no extrapolation past last valid point
   assert.ok(result.forecast.every(row => row.end - row.start === HOUR && row.unit === 'degC'));
+  assert.ok(result.forecast.every(row => row.solarRadiationWm2 === null));
+  assert.equal(result.solarStatus, 'unavailable');
   assert.deepEqual(result.observations, []);
 });
 
@@ -76,7 +78,7 @@ test('FMI fetches bounded hourly forecast and recent observations using the docu
   const http = { text: async (url, opts) => {
     const parsed = new URL(url); requests.push(parsed);
     assert.equal(parsed.origin, 'https://opendata.fmi.fi'); assert.equal(opts.method, 'GET');
-    return parsed.searchParams.get('parameters') === 'temperature' ? forecastXml : observationXml;
+    return parsed.searchParams.get('parameters') === 'Temperature,RadiationGlobal' ? forecastXml : observationXml;
   } };
   assert.equal((await fetchFmiForecast({ connections, now: at, http })).source, 'fmi');
   assert.equal((await fetchFmiObservation({ connections, now: at, http }))[0].source, 'fmi');
@@ -85,6 +87,7 @@ test('FMI fetches bounded hourly forecast and recent observations using the docu
   assert.equal(requests[0].searchParams.has('bbox'), false);
   assert.equal(requests[0].searchParams.get('endtime'), '2026-09-09T06:00:00.000Z');
   assert.equal(requests[0].searchParams.get('timestep'), '60');
+  assert.equal(requests[0].searchParams.get('parameters'), 'Temperature,RadiationGlobal');
   assert.equal(requests[1].searchParams.get('starttime'), '2026-09-07T05:00:00.000Z');
   assert.equal(requests[1].searchParams.get('endtime'), '2026-09-07T06:20:00.000Z');
   assert.equal(requests[1].searchParams.has('latlon'), false, 'FMI silently ignores unsupported observation latlon');
@@ -102,13 +105,40 @@ test('FMI bbox observations tolerate several returned stations but cap collectio
   assert.throws(() => decodeFmiObservation(excessive, options), /feature collection/);
 });
 
-test('successful FMI primary never calls the keyed OpenWeather backup', async () => {
-  const http = { text: async url => new URL(url).searchParams.get('parameters') === 'temperature' ? forecastXml : observationXml,
+test('complete FMI primary never calls the keyless Open-Meteo backup', async () => {
+  const http = { text: async url => new URL(url).searchParams.get('parameters') === 'Temperature,RadiationGlobal' ? solarFixture().replaceAll('<wml2:value>NaN', '<wml2:value>0') : observationXml,
     json: async () => assert.fail('Backup must remain idle when FMI succeeds') };
-  const configured = { ...connections, openweathermap: { token: 'synthetic-secret' } };
   for (const fetcher of [fetchWeather, fetchOutdoorTemperature]) {
-    const result = await fetcher({ connections: configured, now: at, http });
+    const result = await fetcher({ connections, now: at, http });
     assert.deepEqual(result.acquisition, { primary: 'fmi', selected: 'fmi', fallbackUsed: false,
-      attempts: [{ source: 'fmi', status: 'ok', error: null }] });
+      attempts: [{ source: 'fmi', status: 'ok', error: null }], ...(fetcher === fetchWeather ? { solarSource: 'fmi' } : {}) });
   }
+});
+
+function solarFixture() {
+  const temperature = member(forecastXml).replace('<gml:TimeInstant>', '<gml:TimeInstant gml:id="publication-time">');
+  const radiation = member(forecastXml).replace('param=temperature', 'param=radiationglobal')
+    .replace(/<om:resultTime>[\s\S]*?<\/om:resultTime>/, '<om:resultTime xlink:href="#publication-time"/>')
+    .replace('<wml2:value>10.5', '<wml2:value>0').replace('<wml2:value>13', '<wml2:value>450')
+    .replace('<wml2:value>14', '<wml2:value>NaN').replace('<wml2:value>15', '<wml2:value>600');
+  return forecastXml.replace(member(forecastXml), temperature + radiation);
+}
+
+test('FMI combines only temperature and global radiation, resolving shared publication references', () => {
+  const result = decodeFmiForecast(solarFixture(), options);
+  assert.deepEqual(result.forecast.map(row => row.solarRadiationWm2), [0, 450, null]);
+  assert.equal(result.solarStatus, 'partial');
+  assert.ok(result.forecast.every(row => row.solar.basis === 'forecast' && row.solar.unit === 'W/m²'));
+  assert.deepEqual(result.forecast.at(-1).solar.quality, ['missing-solar-forecast']);
+  assert.equal(result.forecast[1].solar.intervalBasis, 'hourly-point-held-within-published-horizon');
+  assert.equal(result.observations.length, 0, 'Forecast radiation is never converted into an observation');
+});
+
+test('FMI rejects conflicting or invalid radiation metadata without inventing values', () => {
+  const xml = solarFixture();
+  for (const bad of [xml.replace('#publication-time', '#missing'),
+    xml.replace('#publication-time', 'https://example.test/publication'),
+    xml.replace('param=radiationglobal', 'param=windspeedms'),
+    xml.replace('<wml2:value>450', '<wml2:value>-1'),
+    xml.replace('<wml2:value>450', '<wml2:value>2001')]) assert.throws(() => decodeFmiForecast(bad, options));
 });

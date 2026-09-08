@@ -8,7 +8,7 @@ COPY vite.config.js ./
 RUN npm run build
 
 FROM node:22.23.2-alpine
-ARG BUILD_VERSION=0.8.3
+ARG BUILD_VERSION=0.9.0
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="addon" io.hass.arch="aarch64|amd64"
 ENV NODE_ENV=production STMQ_ADDON=1 STMQ_HOST=0.0.0.0 STMQ_DATA_DIR=/data/st-mq STMQ_DATABASE_DIR=/config/st-mq

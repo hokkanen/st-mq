@@ -8,6 +8,8 @@ import mqtt from 'mqtt';
 import schedule from 'node-schedule';
 import { XMLParser } from 'fast-xml-parser';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
+import { createHttp } from '../src/acquisition/http.js';
+import { fetchOpenMeteoCurrent } from '../src/acquisition/weather.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -47,10 +49,8 @@ function config() {
         mqtt_pw: '',
         st_temp_in_id: '',
         st_temp_ga_id: '',
-        st_temp_out_id: '',
         st_token: '',
-        temp_to_hours: [],
-        weather_token: ''
+        temp_to_hours: []
     };
 
     if (!fs.existsSync(CONFIG_PATH)) {
@@ -74,10 +74,8 @@ function config() {
             mqtt_pw: options.mqtt?.pw || '',
             st_temp_in_id: options.smartthings?.inside_temp_dev_id || '',
             st_temp_ga_id: options.smartthings?.garage_temp_dev_id || '',
-            st_temp_out_id: options.smartthings?.outside_temp_dev_id || '',
             st_token: options.smartthings?.token || '',
-            temp_to_hours: options.temp_to_hours || [],
-            weather_token: options.openweathermap?.token || ''
+            temp_to_hours: options.temp_to_hours || []
         };
     } catch (error) {
         console.log(`${BLUE}[ERROR ${date_string()}] Failed to parse ${CONFIG_PATH}: ${error.toString()}${RESET}`);
@@ -605,19 +603,20 @@ class FetchData {
         }
     }
 
-    // Fetches temperature from OpenWeatherMap API
-    async query_owm_temp(lat, lon) {
+    // Uses the same keyless, timestamp-validated model estimate as the controller.
+    async query_openmeteo_temp(lat, lon) {
+        const http = createHttp();
         try {
-            const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${config().weather_token}&units=metric`;
-            const response = await fetch(url);
-            if (this.check_response(response, `OpenWeatherMap (${lat},${lon})`) !== 200) return null;
-            const temp = (await response.json()).main?.temp ?? null;
-            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] OpenWeatherMap Temperature: ${temp?.toFixed(1) ?? 'No valid data'}°C${RESET}`);
+            const rows = await fetchOpenMeteoCurrent({
+                connections: { geoloc: { latitude: lat, longitude: lon } }, now: Date.now(), http
+            });
+            const temp = rows[0]?.value ?? null;
+            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Open-Meteo Temperature: ${temp?.toFixed(1) ?? 'No valid data'}°C${RESET}`);
             return temp;
-        } catch (error) {
-            console.log(`${BLUE}[ERROR ${date_string()}] OpenWeatherMap failed: ${error.toString()}${RESET}`);
+        } catch {
+            console.log(`${BLUE}[ERROR ${date_string()}] Open-Meteo temperature unavailable${RESET}`);
             return null;
-        }
+        } finally { http.close(); }
     }
 
     // Fetches temperature from SmartThings API
@@ -697,19 +696,12 @@ class FetchData {
             const cfg = config();
             const new_inside_temp = await this.query_st_temp(cfg.st_temp_in_id);
             const new_garage_temp = await this.query_st_temp(cfg.st_temp_ga_id);
-            let new_outside_temp = await this.query_st_temp(cfg.st_temp_out_id);
-            let outside_source = new_outside_temp !== null ? 'local' : 'No data';
-
+            // H66 is handled by the main controller; this legacy runner has no H66 input.
+            let new_outside_temp = await this.query_fmi_temp(cfg.lat, cfg.lon);
+            let outside_source = new_outside_temp !== null ? 'FMI' : 'No data';
             if (new_outside_temp === null) {
-                let fmi_temp = null;
-                let owm_temp = null;
-                if (cfg.country_code === 'fi') fmi_temp = await this.query_fmi_temp(cfg.lat, cfg.lon);
-                if (cfg.weather_token) owm_temp = await this.query_owm_temp(cfg.lat, cfg.lon);
-                new_outside_temp = fmi_temp ?? owm_temp ?? null;
-                if (new_outside_temp !== null) {
-                    outside_source = fmi_temp !== null ? 'FMI' : 'OWM';
-                    if (fmi_temp !== null && owm_temp !== null) outside_source = `FMI, OWM gives ${owm_temp.toFixed(1)}°C`;
-                }
+                new_outside_temp = await this.query_openmeteo_temp(cfg.lat, cfg.lon);
+                if (new_outside_temp !== null) outside_source = 'Open-Meteo';
             }
 
             if (new_inside_temp !== null && new_inside_temp !== this.#inside_temp) this.#inside_temp = new_inside_temp;

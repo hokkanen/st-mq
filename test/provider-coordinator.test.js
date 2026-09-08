@@ -17,7 +17,7 @@ function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-providers-'));
   const config = { ...loadConfig({ STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' }, easee: { charger_id: 'fixture-ev' },
-      entsoe: { token: 'fixture-not-a-real-token' }, openweathermap: { token: 'fixture-weather' } } };
+      entsoe: { token: 'fixture-not-a-real-token' }, geoloc: { latitude: 60, longitude: 25 } } };
   const store = new Store(config.dbPath);
   let now = initial;
   const clock = () => now, engine = new Engine({ store, config, clock });
@@ -30,8 +30,10 @@ function fixture(t) {
   const weather = async () => ({ source: 'fixture-weather', issuedAt: null, fetchedAt: now,
     forecast: [{ start: now, end: now + 24 * 60 * MINUTE, outdoorC: 5, issuedAt: null, fetchedAt: now, issuedAtBasis: 'fetched-snapshot' }] });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const outdoor = async () => [{ source: 'fmi', device: 'fixture-weather-station', signal: 'outdoor_temperature',
+    value: 10, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const options = { config, store, engine, clock, http: { json() { throw new Error('Unexpected HTTP request'); }, close() {} },
-    devices: { temperatures: async () => temperature(), easee: async () => current() }, market, weather, automatic: false };
+    devices: { temperatures: async () => temperature(), easee: async () => current() }, market, weather, outdoor, automatic: false };
   return { options, store, engine, config, temperature, setTime(at) { now = at; } };
 }
 
@@ -59,7 +61,7 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
     assert.equal(snapshots.find(row => row.kind === 'weather').issuedAt, null);
     assert.equal(snapshots.find(row => row.kind === 'market').issuedAt, initial - MINUTE);
     assert.equal(f.store.getState('provider:weather').forecast[0].issuedAt, null);
-    assert.equal(f.store.getState('provider:observations').length, 2);
+    assert.equal(f.store.getState('provider:observations').length, 3);
   } finally { held.resolve(); await providers.close(); }
 });
 
@@ -194,9 +196,86 @@ test('a failed observation-cache transaction restores both SQLite history and in
   } finally { await providers.close(); }
 });
 
+test('failed outdoor cache writes restore provider candidates while H66 remains the selected outdoor signal', async t => {
+  const f = fixture(t);
+  f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
+  const h66 = at => ({ source: 'husdata-h66', device: 'fixture-h66', signal: 'outdoor_temperature',
+    value: 0, unit: 'degC', sourceTime: at, receivedAt: at, quality: [], raw: { usableForControl: true, retained: false } });
+  f.engine.ingest(h66(initial));
+  let source = 'fmi';
+  f.options.outdoor = async ({ now }) => [{ source, device: `fixture-${source}`, signal: 'outdoor_temperature',
+    value: source === 'fmi' ? 10 : 7, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
+  const providers = startProviders(f.options);
+  const setState = f.store.setState.bind(f.store);
+  try {
+    await providers.runDue();
+    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    f.setTime(initial + 10 * MINUTE); f.engine.ingest(h66(initial + 10 * MINUTE));
+    const before = {
+      latest: structuredClone(f.engine.latest), candidates: structuredClone(f.engine.outdoorCandidates),
+      providers: structuredClone(f.engine.providerObservations()), cached: f.store.getState('provider:observations'),
+      history: f.store.observations({ signal: 'outdoor_temperature' }),
+    };
+    source = 'openmeteo';
+    f.store.setState = (key, value) => {
+      if (key === 'provider:observations') throw new Error('Synthetic disk write failure');
+      return setState(key, value);
+    };
+    await providers.runDue();
+    assert.equal(f.store.getState('providers:health').outdoor.status, 'error');
+    assert.deepEqual(structuredClone(f.engine.latest), before.latest);
+    assert.deepEqual(structuredClone(f.engine.outdoorCandidates), before.candidates);
+    assert.deepEqual(f.engine.providerObservations(), before.providers);
+    assert.deepEqual(f.store.getState('provider:observations'), before.cached);
+    assert.deepEqual(f.store.observations({ signal: 'outdoor_temperature' }), before.history);
+    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    f.store.setState = setState;
+    const nextAt = f.store.getState('providers:health').outdoor.nextAttemptAt;
+    f.setTime(nextAt); f.engine.ingest(h66(nextAt)); await providers.runDue();
+    assert.equal(f.store.getState('providers:health').outdoor.status, 'ok');
+    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    assert.equal(f.engine.outdoorCandidates.openmeteo.value, 7);
+    assert.deepEqual(f.store.getState('provider:observations').map(row => row.source).sort(), ['fmi', 'openmeteo']);
+  } finally { f.store.setState = setState; await providers.close(); }
+});
+
+test('weather candidates survive polling and restart while live H66 publications stay outside the provider cache', async t => {
+  const f = fixture(t);
+  f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
+  let source = 'fmi', now = initial;
+  f.options.outdoor = async ({ now }) => [{ source, device: `fixture-${source}`, signal: 'outdoor_temperature',
+    value: source === 'fmi' ? 12 : 13, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
+  const h66 = () => ({ source: 'husdata-h66', device: 'fixture-h66', signal: 'outdoor_temperature',
+    value: 0, unit: 'degC', sourceTime: now, receivedAt: now, quality: [], raw: { usableForControl: true, retained: false } });
+  f.engine.ingest(h66());
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    now = initial + 10 * MINUTE; f.setTime(now); source = 'openmeteo'; f.engine.ingest(h66());
+    await providers.runDue();
+    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    assert.deepEqual(Object.keys(f.engine.outdoorCandidates).sort(), ['fmi', 'husdata-h66', 'openmeteo']);
+    const cached = f.store.getState('provider:observations');
+    assert.deepEqual(cached.map(row => row.source).sort(), ['fmi', 'openmeteo']);
+    assert.deepEqual(f.engine.providerObservations(), cached);
+    assert.equal(cached.find(row => row.source === 'fmi').sourceTime, initial);
+    assert.equal(cached.find(row => row.source === 'openmeteo').sourceTime, now);
+    const count = f.store.observations({ signal: 'outdoor_temperature' }).length;
+    const restored = new Engine({ store: f.store, config: f.config, clock: () => now });
+    assert.deepEqual(Object.keys(restored.outdoorCandidates).sort(), ['fmi', 'openmeteo']);
+    assert.equal(restored.status().observations.outdoor.source, 'fmi');
+    assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).length, count, 'Restoring provider cache must not duplicate history');
+    restored.ingest(h66());
+    assert.equal(restored.status().observations.outdoor.source, 'husdata-h66');
+    now = initial + 31 * MINUTE;
+    assert.equal(restored.status().observations.outdoor.source, 'openmeteo', 'Persisted backup remains usable when H66 and FMI expire');
+    assert.equal(restored.status().observations.outdoor.stale, false);
+  } finally { await providers.close(); }
+});
+
 test('rolling weather keeps a still-fresh current block with its original provenance and immutable raw snapshots', async t => {
   const f = fixture(t);
-  f.options.config.connections = { openweathermap: { token: 'fixture-weather' } };
+  f.options.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
   let calls = 0;
   f.options.weather = async ({ now }) => {
     const start = initial + (calls++ ? 3 * 60 * MINUTE : 0);
@@ -586,9 +665,9 @@ test('restart preserves visible failures and fallback details during a scheduled
       staleSourceTimes: { stale: initial - 60 * MINUTE, charger_stale: 'synthetic-private-response',
         property_stale: -1, 'synthetic-private-response': initial - 120 * MINUTE } },
     weather: { status: 'fallback', nextAttemptAt: initial + 30 * MINUTE,
-      source: 'openweathermap', acquisition: { primary: 'fmi', selected: 'openweathermap', fallbackUsed: true,
+      source: 'openmeteo', acquisition: { primary: 'fmi', selected: 'openmeteo', fallbackUsed: true,
         privateBody: 'synthetic-private-response', attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429' },
-          { source: 'openweathermap', status: 'ok' }] },
+          { source: 'openmeteo', status: 'ok' }] },
       sourceBackoff: { fmi: { nextAttemptAt: initial + 30 * MINUTE, failures: 1, error: 'HTTP-429', shared: true } } },
     market: { status: 'running', nextAttemptAt: initial + 20 * MINUTE },
   });
@@ -610,7 +689,7 @@ test('restart preserves visible failures and fallback details during a scheduled
   } finally { await providers.close(); }
 });
 
-test('location enables public market/FMI jobs without paid keys and outdoor observations survive restart', async t => {
+test('location enables keyless weather jobs and fresh primary survives backup polls and restart', async t => {
   const f = fixture(t);
   f.config.connections = { geoloc: { latitude: '60.4', longitude: '25.6', country_code: 'fi' } };
   let source = 'fmi', at = initial - 10 * MINUTE;
@@ -628,19 +707,22 @@ test('location enables public market/FMI jobs without paid keys and outdoor obse
     assert.equal(f.store.getState('providers:health').market.status, 'ok');
     assert.equal(f.store.getState('providers:health').weather.status, 'ok');
     assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
-    source = 'openweathermap'; at = initial + 9 * MINUTE;
+    source = 'openmeteo'; at = initial + 9 * MINUTE;
     f.setTime(initial + 10 * MINUTE); await providers.runDue();
     assert.equal(f.store.getState('providers:health').outdoor.status, 'fallback');
-    assert.equal(f.engine.status().observations.outdoor.source, 'openweathermap');
-    source = 'fmi'; at = initial + 5 * MINUTE;
-    f.setTime(initial + 20 * MINUTE); await providers.runDue();
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi', 'Fresh cached FMI stays ahead of the newer backup');
+    at = initial + 20 * MINUTE;
+    f.setTime(initial + 21 * MINUTE); await providers.runDue();
+    assert.equal(f.engine.status().observations.outdoor.source, 'openmeteo', 'Backup takes over once cached FMI exceeds 30 minutes');
+    source = 'fmi'; at = initial + 15 * MINUTE;
+    f.setTime(initial + 31 * MINUTE); await providers.runDue();
     assert.equal(f.engine.status().observations.outdoor.source, 'fmi', 'Fresh primary replaces a newer backup calculation');
     assert.equal(f.engine.status().observations.outdoor.observedAt, at);
-    const count = f.store.observations().length;
-    const restored = new Engine({ store: f.store, config: f.config, clock: () => initial + 20 * MINUTE });
+    const count = f.store.observations().filter(row => row.source !== 'controller-estimate').length;
+    const restored = new Engine({ store: f.store, config: f.config, clock: () => initial + 31 * MINUTE });
     assert.equal(restored.status().observations.outdoor.source, 'fmi');
     assert.equal(restored.status().observations.outdoor.observedAt, at);
-    assert.equal(f.store.observations().length, count);
+    assert.equal(f.store.observations().filter(row => row.source !== 'controller-estimate').length, count);
   } finally { await providers.close(); }
 });
 
@@ -649,11 +731,11 @@ test('healthy backup respects primary Retry-After across polls and restart', asy
   f.options.weather = async ({ now, skipSources }) => {
     calls++;
     if (calls > 1) assert.deepEqual(skipSources, ['fmi']);
-    const result = { source: 'openweathermap', fetchedAt: now, issuedAt: null,
+    const result = { source: 'openmeteo', fetchedAt: now, issuedAt: null,
       forecast: [{ start: now, end: now + 3 * 60 * MINUTE, outdoorC: 4, fetchedAt: now, issuedAt: null, issuedAtBasis: 'fetched-snapshot' }] };
-    result.acquisition = { primary: 'fmi', selected: 'openweathermap', fallbackUsed: true,
+    result.acquisition = { primary: 'fmi', selected: 'openmeteo', fallbackUsed: true,
       attempts: [{ source: 'fmi', status: calls === 1 ? 'error' : 'backoff', error: calls === 1 ? 'HTTP-429' : null,
-        retryAfterMs: calls === 1 ? 2 * 60 * MINUTE : undefined }, { source: 'openweathermap', status: 'ok' }] };
+        retryAfterMs: calls === 1 ? 2 * 60 * MINUTE : undefined }, { source: 'openmeteo', status: 'ok' }] };
     return result;
   };
   let providers = startProviders(f.options);
@@ -666,7 +748,7 @@ test('healthy backup respects primary Retry-After across polls and restart', asy
     await providers.runDue();
     assert.equal(calls, 2);
     assert.equal(f.engine.status().weatherStatus, 'available');
-    assert.equal(f.store.getState('providers:health').weather.source, 'openweathermap');
+    assert.equal(f.store.getState('providers:health').weather.source, 'openmeteo');
   } finally { await providers.close(); }
 });
 
@@ -707,14 +789,14 @@ test('rate limits are shared between forecast and observation routes after resta
   const f = fixture(t);
   f.config.connections.geoloc = { latitude: 60.4, longitude: 25.6, country_code: 'fi' };
   const original = f.options.weather;
-  f.options.weather = async args => ({ ...await original(args), source: 'openweathermap',
-    acquisition: { primary: 'fmi', selected: 'openweathermap', fallbackUsed: true,
+  f.options.weather = async args => ({ ...await original(args), source: 'openmeteo',
+    acquisition: { primary: 'fmi', selected: 'openmeteo', fallbackUsed: true,
       attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429', retryAfterMs: 120 * MINUTE },
-        { source: 'openweathermap', status: 'ok' }] } });
+        { source: 'openmeteo', status: 'ok' }] } });
   let count = 0;
   f.options.outdoor = async ({ now, skipSources }) => {
     if (count++) assert.ok(skipSources.includes('fmi'), 'A forecast rate limit also blocks the observation route');
-    const source = skipSources.includes('fmi') ? 'openweathermap' : 'fmi';
+    const source = skipSources.includes('fmi') ? 'openmeteo' : 'fmi';
     const rows = [{ source, device: 'fixture-station', signal: 'outdoor_temperature', value: 12,
       unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
     rows.acquisition = { primary: 'fmi', selected: source, fallbackUsed: source !== 'fmi',
@@ -727,7 +809,7 @@ test('rate limits are shared between forecast and observation routes after resta
     await providers.runDue(); await providers.close();
     f.setTime(initial + 10 * MINUTE); providers = startProviders(f.options); await providers.runDue();
     const state = f.store.getState('providers:health').outdoor;
-    assert.equal(state.source, 'openweathermap');
+    assert.equal(state.source, 'openmeteo');
     assert.equal(state.status, 'fallback');
     assert.equal(state.sourceBackoff.fmi.nextAttemptAt, initial + 120 * MINUTE);
   } finally { await providers.close(); }

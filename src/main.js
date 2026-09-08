@@ -4,7 +4,7 @@ import { Store } from './storage/store.js';
 import { loadConfig } from './app/config.js';
 import { Engine } from './app/engine.js';
 import { createAppServer } from './app/server.js';
-import { startHistoryLearning, startOnlineLearning } from './app/learning.js';
+import { startHistoryLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
 import { prepareStorage } from './app/storage-paths.js';
 import { createHeatingTransport } from './control/mqtt.js';
@@ -23,10 +23,13 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     if (engine) engine.onTemporaryChange = null;
+    if (engine?.heatingTestBusy) await commandTransport?.close();
+    await engine?.dispatchPending?.catch(() => {});
+    try { await engine?.executor?.close?.(); }
+    catch { store.event('restoration-pending', { reason: 'application-shutdown' }, clock()); }
     await commandTransport?.close();
     await Promise.all(acquisitions.map(acquisition => acquisition.close()));
     await learning?.close();
-    await engine?.learner?.close();
     await chartService?.close();
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     store.close();
@@ -36,7 +39,13 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
       commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect });
     }
     engine = new Engine({ store, config, clock, commandTransport });
-    engine.learner = startOnlineLearning({ store, input: config.input });
+    // Load durable native-setting obligations before the first active dispatch.
+    // MQTT connection and device publications remain asynchronous.
+    if (['mqtt','providers'].includes(config.input) && config.deviceId && config.connections.mqtt?.address) {
+      const { startMqtt } = await import('./acquisition/mqtt.js');
+      const acquisition = await startMqtt({ ...mqttOptions, engine, store, config });
+      acquisitions.push(acquisition); engine.setH66(acquisition);
+    }
     engine.tick();
     chartService = createChartService({ store });
     server = createAppServer({ engine, store, chartService, token: config.token, staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
@@ -45,11 +54,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
       server.listen(config.port, config.host, resolve);
     });
     // Start UI and conservative control before bounded historical reconstruction.
-    learning = config.input !== 'simulated' ? startHistoryLearning({ store }) : null;
-    if (config.input === 'mqtt') {
-      const { startMqtt } = await import('./acquisition/mqtt.js');
-      acquisitions.push(await startMqtt({ ...mqttOptions, engine, store, config }));
-    }
+    learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     if (['providers', 'mqtt'].includes(config.input)) {
       const { startProviders } = await import('./acquisition/providers.js');
       acquisitions.push(startProviders({ ...providerOptions, engine, store, config, clock }));
@@ -57,7 +62,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     const schedule = () => {
       clearTimeout(timer);
       const now = clock();
-      const next = Math.min(now + 900_000 - (now % 900_000), engine.nextTemporaryDeadline());
+      const next = Math.min(now + 60_000 - (now % 60_000), engine.nextTemporaryDeadline());
       timer = setTimeout(() => {
         try { engine.tick(); }
         catch (error) { store.event('controller-error', { message: error.message }, clock()); }
@@ -66,7 +71,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     };
     engine.onTemporaryChange = schedule;
     schedule();
-    console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: false, manualHeatingTests: engine.heatingTests().available,
+    console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: engine.status().liveWrites, manualHeatingTests: engine.heatingTests().available,
       address: server.address(), startupMs: Math.round(performance.now() - started) }));
     for (const signal of ['SIGTERM', 'SIGINT']) {
       const handler = () => close().catch(error => { console.error(error.message); process.exitCode = 1; });

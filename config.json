@@ -1,7 +1,7 @@
 {
   "name": "ST-MQ",
   "description": "Home energy monitoring, learned heating scheduling and read-only H66 acquisition",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "url": "https://github.com/hokkanen/st-mq",
   "slug": "st-mq",
   "arch": [
@@ -38,9 +38,6 @@
       "garage_temp_dev_id": "",
       "outside_temp_dev_id": ""
     },
-    "openweathermap": {
-      "token": ""
-    },
     "easee": {
       "user": "",
       "pw": "",
@@ -55,7 +52,25 @@
       "web_token": "",
       "h66_device": "",
       "max_drop_c": 1,
-      "h66_verification_file": ""
+      "h66_verification_file": "",
+      "aux_integral_a2": -990,
+      "aux_hysteresis_c": 30,
+      "compressor_integral_a1": null,
+      "compressor_hysteresis_c": null,
+      "a2_basis": "absolute",
+      "heat_pump_compressor_kw": 3,
+      "auxiliary_rated_kw": 9,
+      "circulation_kw": 0.08,
+      "dhwr_kw": 0.025,
+      "max_reduction_hours": 4,
+      "max_away_reduction_hours": 12,
+      "max_unobserved_reduction_hours": 0.5,
+      "max_preheat_hours": 2,
+      "max_room_boost_c": 5,
+      "learning_trials": true,
+      "trial_budget_cents_per_day": 100,
+      "max_trial_cost_cents": 50,
+      "recovery_timeout_hours": 48
     },
     "electricity": {
       "margin_ct_per_kwh_ex_vat": 0.33,
@@ -90,9 +105,6 @@
       "garage_temp_dev_id": "str?",
       "outside_temp_dev_id": "str?"
     },
-    "openweathermap": {
-      "token": "password?"
-    },
     "easee": {
       "user": "str?",
       "pw": "password?",
@@ -107,7 +119,25 @@
       "web_token": "password",
       "h66_device": "str?",
       "max_drop_c": "float(0,2)",
-      "h66_verification_file": "str?"
+      "h66_verification_file": "str?",
+      "aux_integral_a2": "int(-5000,-1)",
+      "aux_hysteresis_c": "float(1,50)",
+      "compressor_integral_a1": "int(-1000,-1)?",
+      "compressor_hysteresis_c": "float(1,50)?",
+      "a2_basis": "list(absolute|offset)",
+      "heat_pump_compressor_kw": "float(0.1,20)",
+      "auxiliary_rated_kw": "float(0.1,20)",
+      "circulation_kw": "float(0,1)",
+      "dhwr_kw": "float(0,1)",
+      "max_reduction_hours": "float(0.25,12)",
+      "max_away_reduction_hours": "float(0.25,24)",
+      "max_unobserved_reduction_hours": "float(0.25,2)",
+      "max_preheat_hours": "float(0.25,6)",
+      "max_room_boost_c": "int(1,5)",
+      "learning_trials": "bool",
+      "trial_budget_cents_per_day": "int(0,1000)",
+      "max_trial_cost_cents": "int(0,1000)",
+      "recovery_timeout_hours": "int(4,168)"
     },
     "electricity": {
       "margin_ct_per_kwh_ex_vat": "float(-20,100)",

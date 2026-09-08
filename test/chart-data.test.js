@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
-import { Envelope, chartRange, getChartData } from '../src/app/chart-data.js';
+import { DailyTimingBenchmark, Envelope, chartRange, getChartData } from '../src/app/chart-data.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { importCsv } from '../src/storage/history.js';
 import { historySeriesAt } from '../chart/history-model.js';
@@ -21,6 +21,179 @@ function put(store, signal, value, at, extra = {}) {
 function get(store, extra = {}) { return getChartData({ store, now, startDate: date, endDate: date, ...extra }); }
 const contract = { periods: [{ from: from - 10 * HOUR, marginCtPerKwh: 0.4, taxCtPerKwh: 2.2, vatRate: 0.255, tariff: 'day-night' }] };
 const interval = (start, end, value) => ({ start, end, spotCtPerKwh: value, unit: 'c/kWh', vatIncluded: false, source: 'fixture' });
+
+test('daily timing comparison uses exact local-day duration, including both DST changes', () => {
+  for (const [date, hours] of [['2026-01-15', 24], ['2026-03-29', 23], ['2026-10-25', 25]]) {
+    const range = chartRange({ startDate: date, now });
+    const prices = [{ start: range.from, end: range.from + HOUR, totalCtPerKwh: -10 },
+      { start: range.from + HOUR, end: range.to, totalCtPerKwh: 20 }];
+    const timing = new DailyTimingBenchmark(range, range.to, prices);
+    for (let at = range.from; at <= range.to; at += 30 * MINUTE) timing.add('charger', at, at < range.from + HOUR ? 2 : 0);
+    const result = timing.result();
+    const average = (-10 + (hours - 1) * 20) / hours;
+    assert.equal(result.charger.energyKwh, 2);
+    assert.equal(result.charger.actualCostEuro, -0.2);
+    assert(Math.abs(result.charger.value - (2 * average / 100 + 0.2)) < 1e-10);
+    assert.equal(result.charger.coverage, 1);
+    assert.equal(result.charger.provisional, false);
+    assert.equal(result.heatPump.value, null, 'No property-minus-charger proxy for heat pump energy');
+  }
+});
+
+test('partial energy, missing prices and telemetry gaps never become a full-day zero-saving claim', () => {
+  const range = chartRange({ startDate: date, now });
+  const prices = [{ start: from, end: from + HOUR, totalCtPerKwh: 0 },
+    { start: from + HOUR, end: range.to, totalCtPerKwh: 24 }];
+  const partial = new DailyTimingBenchmark(range, from + HOUR, prices);
+  partial.add('heatPump', from, 2); partial.add('heatPump', from + HOUR, 0);
+  const result = partial.result().heatPump;
+  assert.equal(result.energyKwh, 1, 'Power held for at most 30 minutes across an unknown gap');
+  assert.equal(result.coverage, 0.5);
+  assert.equal(result.provisional, true);
+  assert.equal(result.value, 0.23, 'Partial observed energy uses the full day’s price, not the partial hour average');
+  const missingPrice = new DailyTimingBenchmark(range, range.to, prices.slice(0, 1));
+  missingPrice.add('charger', from, 2);
+  assert.equal(missingPrice.result().charger.value, null, 'Whole-day price coverage is required');
+  const unknown = new DailyTimingBenchmark(range, from + HOUR, prices);
+  unknown.add('charger', from, null);
+  assert.equal(unknown.result().charger.energyKwh, null);
+});
+
+test('learning histories retain the estimate known at each assessment and preserve unknown auxiliary evidence', () => {
+  const store = new Store(':memory:');
+  try {
+    const extra = { source: 'controller-learning', device: 'offline', unit: 'EUR/cycle', quality: ['estimated'], raw: { count: 3, basis: 'Estimated completed cycles', modelVersion: 1 } };
+    put(store, 'learning_profit', 1.25, from - 5 * 24 * HOUR, extra);
+    put(store, 'learning_profit', -0.75, from + HOUR, { ...extra, raw: { ...extra.raw, count: 4 } });
+    put(store, 'learning_profit', 99, from + 2 * HOUR, { ...extra, device: 'simulated' });
+    put(store, 'learning_aux_profit', null, from + HOUR, { ...extra, quality: ['missing'], raw: { count: 0 } });
+    const result = get(store, { left: 'learning_profit' });
+    assert.equal(result.series.learning_profit[0].x, from);
+    assert.equal(result.series.learning_profit[0].y, 1.25);
+    assert.equal(result.series.learning_profit.find(p => p.x === from + HOUR).y, -0.75);
+    assert.equal(result.series.learning_profit.at(-1).y, -0.75);
+    assert.equal(result.meta.learning.learning_profit.count, 4);
+    assert(!result.series.learning_profit.some(p => p.y === 99));
+    assert(get(store, { left: 'learning_aux_profit' }).series.learning_aux_profit.every(p => p.y === null));
+    assert.deepEqual(get(store, { left: 'learning_recovery_error' }).series.learning_recovery_error, []);
+  } finally { store.close(); }
+});
+
+test('controller estimates remain isolated and reduction requests end at their recorded expiry', () => {
+  const store = new Store(':memory:');
+  try {
+    put(store, 'auxiliary_power', 6, from + HOUR, { source: 'controller-estimate', device: 'simulated', unit: 'kW', quality: ['estimated'] });
+    put(store, 'controller_phase', 2, from - 4 * HOUR, { source: 'controller', device: 'simulated', unit: 'state', quality: ['requested'], raw: { expiresAt: from + 2 * HOUR } });
+    put(store, 'dhwr_request', 1, from + HOUR, { source: 'controller', device: 'simulated', unit: 'state', quality: ['requested'], raw: { expiresAt: from + HOUR + 10 * MINUTE } });
+    put(store, 'requested_heat_mode', 15, from + HOUR, { source: 'simulation', unit: 'legacy_command' });
+    const simulated = get(store, { input: 'simulated' });
+    assert(simulated.series.auxiliary_power.some(p => p.y === 6));
+    assert.deepEqual(simulated.shading.heatOff, [{ start: from, end: from + 2 * HOUR }]);
+    assert.deepEqual(simulated.shading.dhwr, [{ start: from + HOUR, end: from + HOUR + 10 * MINUTE }], 'The following normal request does not erase a separate pulse');
+    const household = get(store);
+    assert.deepEqual(household.series.auxiliary_power, []);
+    assert.deepEqual(household.shading.heatOff, []);
+  } finally { store.close(); }
+});
+
+test('auxiliary power uses documented percentage with installed capacity and expires instead of carrying indefinitely', () => {
+  const store = new Store(':memory:');
+  try {
+    const extra = { source: 'husdata-h66', unit: '%', raw: { verified: 'installed', usableForControl: true, ratedPowerKw: 9 } };
+    put(store, 'auxiliary_output', 33, from + HOUR, extra);
+    put(store, 'auxiliary_output', 67, from + HOUR + MINUTE, extra);
+    put(store, 'auxiliary_output', 100, from + HOUR + 2 * MINUTE, extra);
+    put(store, 'auxiliary_output', 100, from + 2 * HOUR, { ...extra, raw: { verified: 'installed' } });
+    const result = get(store);
+    assert.deepEqual(result.series.auxiliary_power.slice(0, 3).map(p => p.y), [3, 6, 9]);
+    assert.equal(result.series.auxiliary_power.find(p => p.x === from + HOUR + 7 * MINUTE).y, 9);
+    assert(result.series.auxiliary_power.some(p => p.y === null));
+    assert.equal(historySeriesAt(result).auxiliary_power.at(-1).y, null);
+  } finally { store.close(); }
+});
+
+test('timing estimates are independent of the selected axis and display decimation', () => {
+  const store = new Store(':memory:');
+  try {
+    const market = { fetchedAt: from, intervals: [interval(from, from + 4 * HOUR, 0), interval(from + 4 * HOUR, from + 24 * HOUR, 20)] };
+    for (let at = from; at <= now; at += 5 * MINUTE) {
+      put(store, 'heat_pump_power', at < from + 4 * HOUR ? 3 : 0, at, { unit: 'kW', quality: ['estimated'] });
+      put(store, 'charger_power', at < from + 2 * HOUR ? 6 : 0, at, { unit: 'kW', quality: ['estimated'] });
+    }
+    const baseline = get(store, { market, contract, points: 100 }).timingBenefit;
+    for (const left of ['power', 'integral', 'solar_radiation', 'learning_profit'])
+      assert.deepEqual(get(store, { market, contract, points: 2000, left }).timingBenefit, baseline);
+    assert(baseline.heatPump.value > 0);
+    assert.equal(baseline.heatPump.coverage, 1);
+    assert.equal(baseline.heatPump.energyKwh, 12);
+  } finally { store.close(); }
+});
+
+test('historical charger timing uses coherent phase acquisitions on every axis and hands over to scalar power once', () => {
+  const store = new Store(':memory:');
+  try {
+    const market = { fetchedAt: from, intervals: [interval(from, from + HOUR, 0), interval(from + HOUR, from + 24 * HOUR, 20)] };
+    for (const at of [from, from + 30 * MINUTE]) for (let phase = 1; phase <= 3; phase++)
+      put(store, `ev1_current_l${phase}`, 10, at);
+    put(store, 'charger_power', 2, from + HOUR, { unit: 'kW' });
+    put(store, 'charger_power', 0, from + HOUR + 30 * MINUTE, { unit: 'kW' });
+    const power = get(store, { market, contract }).timingBenefit;
+    assert(Math.abs(power.charger.energyKwh - 7.9) < 1e-10);
+    assert.deepEqual(get(store, { market, contract, left: 'integral' }).timingBenefit, power);
+    assert.deepEqual(get(store, { market, contract, left: 'learning_aux_profit' }).timingBenefit, power);
+  } finally { store.close(); }
+});
+
+test('archived solar forecast remains separate from future forecast and is never filled into unknown history', () => {
+  const store = new Store(':memory:');
+  try {
+    put(store, 'solar_radiation', 300, now - 10 * MINUTE, { unit: 'W/m²', source: 'fmi', quality: ['forecast'] });
+    const weather = { fetchedAt: now, forecast: [{ start: now, end: now + HOUR, outdoorC: 1, solarRadiationWm2: 450, issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now }] };
+    const result = get(store, { left: 'solar_radiation', weather });
+    assert.equal(result.series.solar_radiation[0].x, now - 10 * MINUTE);
+    assert.equal(result.series.solar_forecast[0].x, now);
+    assert.equal(result.series.solar_forecast[0].y, 450);
+    assert.match(result.meta.warnings.join(' '), /forecast.*not measured/);
+  } finally { store.close(); }
+});
+
+test('mixed solar providers retain their own provenance through chart points and archived holds', () => {
+  const store = new Store(':memory:');
+  try {
+    const fetchedAt = now - 5 * MINUTE;
+    put(store, 'solar_radiation', 300, now - 10 * MINUTE, { unit: 'W/m²', source: 'controller-estimate', quality: ['estimated'],
+      raw: { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt, intervalBasis: 'preceding-hour-mean', private: 'not-for-display' } });
+    const weather = { source: 'fmi', fetchedAt: now, forecast: [{ start: now, end: now + HOUR, outdoorC: 1,
+      solarRadiationWm2: 450, source: 'fmi', issuedAt: now - HOUR, fetchedAt: now,
+      solar: { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt, intervalBasis: 'preceding-hour-mean', private: 'not-for-display' } }] };
+    const result = get(store, { left: 'solar_radiation', weather });
+    for (const key of ['solar_radiation', 'solar_forecast']) {
+      for (const point of result.series[key].filter(point => Number.isFinite(point.y))) {
+        assert.equal(point.source, 'openmeteo');
+        assert.equal(point.issuedAt, null);
+        assert.equal(point.issuedAtBasis, 'fetched-snapshot');
+        assert.equal(point.fetchedAt, fetchedAt);
+        assert.equal(point.intervalBasis, 'preceding-hour-mean');
+      }
+    }
+    assert.equal(result.series.outdoor_forecast[0].source, 'fmi');
+    assert.match(result.meta.warnings.join(' '), /FMI forecasts with Open-Meteo as backup/);
+    assert.doesNotMatch(JSON.stringify(result), /not-for-display/);
+  } finally { store.close(); }
+});
+
+test('historical outdoor readings identify sources without turning model estimates into sensor readings', () => {
+  const store = new Store(':memory:');
+  try {
+    for (const [source, minutes] of [['husdata-h66', 3], ['fmi', 2], ['openmeteo', 1]])
+      put(store, 'outdoor_temperature', -minutes, now - minutes * MINUTE, { source });
+    const result = get(store);
+    assert.deepEqual(result.series.outdoor_temperature.map(point => point.source), ['husdata-h66', 'fmi', 'openmeteo']);
+    assert.equal(historySeriesAt(result, now).outdoor_temperature.at(-1).source, 'openmeteo');
+    put(store, 'outdoor_temperature', 0, now, { source: 'https://synthetic.invalid/?token=private-fixture' });
+    assert.doesNotMatch(JSON.stringify(get(store)), /private-fixture|synthetic\.invalid/);
+  } finally { store.close(); }
+});
 
 test('Finnish inclusive calendar dates preserve 23/25-hour days and reject invalid ranges', () => {
   assert.equal(chartRange({ startDate: '2026-03-29', now }).to - chartRange({ startDate: '2026-03-29', now }).from, 23 * HOUR);
@@ -180,7 +353,7 @@ test('all right-axis history stays present; bad readings and long gaps remain br
   } finally { store.close(); }
 });
 
-test('shading respects bounded historical requests, ten-minute DHWR and verified auxiliary episodes', () => {
+test('shading respects bounded requests, DHWR pulses and separately verified compressor routing', () => {
   const store = new Store(':memory:');
   try {
     put(store, 'requested_heat_mode', 0, from - 5 * MINUTE, { quality: ['requested_not_observed'], unit: 'legacy_command' });
@@ -192,12 +365,19 @@ test('shading respects bounded historical requests, ten-minute DHWR and verified
     put(store, 'auxiliary_output', 50, from + HOUR, aux);
     put(store, 'auxiliary_output', 0, from + HOUR + 2 * MINUTE, aux);
     put(store, 'auxiliary_output', 100, from + 3 * HOUR, { ...aux, raw: { verified: null } });
+    put(store, 'compressor_active', 1, from + HOUR, { ...aux, unit: 'state' });
+    put(store, 'dhw_routing', 0, from + HOUR, { ...aux, unit: 'state' });
+    put(store, 'operating_mode', 1, from + HOUR, { ...aux, unit: 'state' });
+    put(store, 'dhw_routing', 1, from + HOUR + 2 * MINUTE, { ...aux, unit: 'state' });
     store.counter({ signal: 'auxiliary_3kw_hours', value: 500, observedDate: date });
     store.event('decision', { input: 'offline', action: 'reduction', commands: ['heatoff'], execution: 'shadow' }, from + 6 * HOUR);
     const result = get(store);
     assert.deepEqual(result.shading.heatOff, [{ start: from, end: from + 10 * MINUTE }, { start: from + 4 * HOUR, end: from + 4 * HOUR + 30 * MINUTE }]);
     assert.deepEqual(result.shading.dhwr, [{ start: from + HOUR, end: from + HOUR + 10 * MINUTE }]);
-    assert.deepEqual(result.shading.auxHeat, [{ start: from + HOUR, end: from + HOUR + 2 * MINUTE }]);
+    assert.equal(result.shading.auxHeat, undefined);
+    assert.deepEqual(result.shading.compressorSpace, [{ start: from + HOUR, end: from + HOUR + 2 * MINUTE }]);
+    assert.deepEqual(result.shading.compressorDhw, [{ start: from + HOUR + 2 * MINUTE, end: from + HOUR + 5 * MINUTE }]);
+    assert.deepEqual(result.operatingModes, [{ start: from + HOUR, end: from + HOUR + 5 * MINUTE, value: 1 }]);
   } finally { store.close(); }
 });
 

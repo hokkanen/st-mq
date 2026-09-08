@@ -37,6 +37,8 @@ function checkForecast(result, source, now, t) {
   requireResult(result.forecast.every(row => Number.isSafeInteger(row.start) && Number.isSafeInteger(row.end) &&
     row.end > row.start && Number.isFinite(row.outdoorC) && row.outdoorC >= -90 && row.outdoorC <= 65),
   'Provider returned invalid forecast points');
+  requireResult(result.forecast.some(row => Number.isFinite(row.solarRadiationWm2) && row.solarRadiationWm2 >= 0),
+    'Provider returned no usable solar radiation forecast');
   const until = Math.max(...result.forecast.map(row => row.end));
   requireResult(until > now + 6 * 3_600_000, 'Provider forecast does not cover the next six hours');
   t.diagnostic(`${result.forecast.length} forecast intervals; known through ${new Date(until).toISOString()}`);
@@ -100,16 +102,14 @@ test('live configured providers (explicit opt-in)', { skip: !enabled, timeout: 2
       checkObservations(await weather.fetchFmiObservation({ connections, now, http }),
         { expected: 1, source: 'fmi', outdoor: true, now }, child);
     },
-    'openweather-forecast': async child => {
-      if (!supplied(connections.openweathermap?.token)) return child.skip('No OpenWeather token configured');
+    'openmeteo-forecast': async child => {
       const now = Date.now();
-      checkForecast(await weather.fetchOpenWeatherForecast({ connections, now, http }), 'openweathermap', now, child);
+      checkForecast(await weather.fetchOpenMeteoForecast({ connections, now, http }), 'openmeteo', now, child);
     },
-    'openweather-current': async child => {
-      if (!supplied(connections.openweathermap?.token)) return child.skip('No OpenWeather token configured');
+    'openmeteo-current': async child => {
       const now = Date.now();
-      checkObservations(await weather.fetchOpenWeatherCurrent({ connections, now, http }),
-        { expected: 1, source: 'openweathermap', outdoor: true, now }, child);
+      checkObservations(await weather.fetchOpenMeteoCurrent({ connections, now, http }),
+        { expected: 1, source: 'openmeteo', outdoor: true, now }, child);
     },
     smartthings: async child => {
       const expected = temperatures.filter(key => supplied(connections.smartthings?.[key])).length;

@@ -1,0 +1,125 @@
+// Synthetic local fixture only. Requires an isolated Chrome DevTools listener.
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { start } from '../src/main.js';
+import { loadConfig } from '../src/app/config.js';
+import { seedChartFixture } from './lib/chart-fixture.js';
+import { providerFixture } from './lib/provider-fixture.js';
+import { createH66Controller } from '../src/control/h66.js';
+import { createH66Decoder } from '../src/domain/telemetry.js';
+
+const directory = mkdtempSync(join(tmpdir(), 'stmq-learning-ui-'));
+let now = Date.parse('2026-09-07T12:00:00Z');
+let app, socket, h66, id = 0;
+const pending = new Map(), errors = [];
+try {
+  writeFileSync(join(directory, 'options.json'), '{}');
+  const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  app = await start({ config, clock: () => now }); seedChartFixture(app.store, now);
+  const endpoint = process.argv[2] ?? 'http://127.0.0.1:39125';
+  const target = await fetch(`${endpoint}/json/new?about:blank`, { method: 'PUT' }).then(r => r.json());
+  socket = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+  socket.onmessage = event => {
+    const message = JSON.parse(event.data);
+    if (message.id) {
+      const task = pending.get(message.id); if (!task) return;
+      pending.delete(message.id); clearTimeout(task.timer);
+      message.error ? task.reject(new Error(JSON.stringify(message.error))) : task.resolve(message.result);
+    } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text);
+  };
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    const requestId = ++id, timer = setTimeout(() => reject(new Error(`Timeout: ${method}`)), 20_000);
+    pending.set(requestId, { resolve, reject, timer }); socket.send(JSON.stringify({ id: requestId, method, params }));
+  });
+  const evaluate = async expression => {
+    const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+    return result.result.value;
+  };
+  const until = async expression => {
+    for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
+    throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
+  };
+  await send('Runtime.enable'); await send('Page.enable');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
+  await until("document.getElementById('history')?.dataset.ready === 'true'");
+  assert.equal(await evaluate("document.getElementById('error').hidden"), true);
+  assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
+  const actualStatus = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json());
+  assert.equal(await evaluate(`document.getElementById('learning-evidence').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
+  assert.equal(await evaluate(`document.getElementById('learning-evidence').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);
+  assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
+  await evaluate("document.getElementById('h66-test-register').value='2201'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("document.getElementById('h66-test-mode-field').hidden"), false);
+  assert.equal(await evaluate("document.getElementById('h66-test-value').disabled"), true);
+  await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("document.getElementById('h66-test-temperature-field').hidden"), false);
+  assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
+  assert.equal(await evaluate("document.querySelector('#data-details summary').textContent"), 'Connection & provider details');
+  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning details');
+  for (const key of ['auxiliary_power', 'charger_power']) {
+    assert(await evaluate(`(async () => {
+      const canvas = document.getElementById('history'), ctx = canvas.getContext('2d');
+      const button = document.querySelector('[data-chart-key="${key}"]');
+      const first = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      button.click(); await new Promise(resolve => requestAnimationFrame(resolve));
+      const second = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const changed = first.some((value, index) => value !== second[index]); button.click(); return changed;
+    })()`), `${key} changes rendered pixels`);
+  }
+  assert(await evaluate("document.querySelectorAll('.mode-segment').length > 0"));
+  await evaluate("document.querySelector('[data-chart-key=spot_price]').click()");
+  for (const left of ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature', 'solar_radiation', 'power']) {
+    await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
+    await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === '${left}'`);
+    assert.equal(await evaluate("document.querySelector('[data-chart-key=spot_price]').getAttribute('aria-pressed')"), 'false');
+  }
+  mkdirSync('var', { recursive: true });
+  for (const width of [1440, 390]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    for (const section of ['history-panel', 'learning-details', 'h66-test-details']) {
+      await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; element.scrollIntoView({block:'start'}); })()`);
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${section} fits ${width}px`);
+      const shot = await send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(`var/learning-${section}-${width}.png`, Buffer.from(shot.data, 'base64'));
+    }
+  }
+  // Exercise the real Engine/status/API/H66 controller with an in-memory MQTT
+  // publication function. It has no broker address or physical connection.
+  await app.close(); app = null;
+  const fixture = providerFixture(now), publications = [], deviceId = 'synthetic-browser-h66';
+  app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'providers.sqlite'), connections: fixture.connections },
+    clock: () => now, providerOptions: fixture.providerOptions });
+  const decoder = createH66Decoder({ deviceId });
+  const readback = (register, value) => h66.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`, payload: String(value), receivedAt: now }));
+  h66 = createH66Controller({ deviceId, store: app.store, clock: () => now, config: { writeEnabled: true },
+    publish: async (topic, value) => { publications.push({ topic, value }); readback(topic.slice(-4), Number(value)); } });
+  h66.setConnected(true);
+  for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0]]) readback(register, value);
+  app.engine.setH66(h66); app.engine.tick();
+  await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
+  await until("document.getElementById('h66-status')?.textContent === 'H66 connected'");
+  await until("document.getElementById('h66-test-submit')?.disabled === false");
+  assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
+  await evaluate("document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-duration').value='1'; document.getElementById('h66-test-form').requestSubmit()");
+  await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
+  assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
+  assert.equal(h66.status().readings['0208'].baseline, 55);
+  assert.equal(await evaluate("document.getElementById('h66-readings').textContent.includes('original 55 °C')"), true);
+  now += 61_000; await h66.reconcile({ now }); app.engine.tick();
+  await send('Page.reload');
+  await until("document.getElementById('h66-test-message')?.textContent.includes('no pending overrides')");
+  assert.equal(publications.at(-1).value, '55');
+  assert.equal(h66.status().restorationPending, false);
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'mode strip', 'saved visibility', 'separate details', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
+  await send('Page.close');
+} finally {
+  socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
+  await h66?.close(); await app?.close(); rmSync(directory, { recursive: true, force: true });
+}

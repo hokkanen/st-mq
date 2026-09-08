@@ -48,17 +48,27 @@ export function calendarTicks(range, maxTicks = 9) {
   return ticks.map(value => ({ value }));
 }
 
-export const defaultVisibility = Object.freeze({ heatOff: true, auxHeat: true, dhwr: false, spot_price: false });
+export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, operatingMode: true, dhwr: false, spot_price: true });
 export const leftGroups = Object.freeze({
-  power: ['property_power', 'charger_power'],
+  power: ['property_power', 'auxiliary_power', 'charger_power'],
   phases: ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'],
   integral: ['heating_integral'],
+  learning_profit: ['learning_profit'],
+  learning_aux_profit: ['learning_aux_profit'],
+  learning_recovery_error: ['learning_recovery_error'],
+  learning_indoor_temperature: ['learning_indoor_temperature'],
+  solar_radiation: ['solar_radiation', 'solar_forecast'],
 });
+export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current · A', integral: 'Heating integral · °min',
+  learning_profit: 'Estimated profit after recovery · €/cycle', learning_aux_profit: 'Estimated profit with auxiliary recovery · €/cycle',
+  learning_recovery_error: 'Recovery-cost prediction error · €/cycle', learning_indoor_temperature: 'Learned normal temperature · °C',
+  solar_radiation: 'Solar radiation forecast · W/m²' });
+export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
-  property: '#e98576', ev: '#e98576', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
+  property: '#e98576', ev: '#64bbc0', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
   indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
-  heatOff: '#6ba58d', auxHeat: '#d38e66', dhwr: '#b3a15a',
+  heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#99704e', learning: '#baa0de', solar: '#e4ca67',
 });
 
 export function visible(key, preferences = {}) {
@@ -68,6 +78,7 @@ export function visible(key, preferences = {}) {
 const seriesInfo = {
   property_power: ['Property', 'kW, estimated from phase currents', 'property'],
   charger_power: ['Charger', 'kW, estimated from phase currents', 'ev', 'fill'],
+  auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary', 'fill'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
   property_current_l3: ['Property L3', 'A', 'phase3'],
@@ -75,16 +86,23 @@ const seriesInfo = {
   ev1_current_l2: ['Charger L2', 'A', 'phase2', 'fill'],
   ev1_current_l3: ['Charger L3', 'A', 'phase3', 'fill'],
   heating_integral: ['Heating integral', '°min', 'integral'],
+  learning_profit: ['Profit after recovery', '€/cycle · estimated mean for completed cycles', 'learning', 'learning'],
+  learning_aux_profit: ['Profit with auxiliary recovery', '€/cycle · observed space-heating auxiliary recovery cycles only', 'learning', 'learning'],
+  learning_recovery_error: ['Recovery-cost prediction error', '€/cycle · mean absolute error; lower is better', 'learning', 'learning'],
+  learning_indoor_temperature: ['Learned normal temperature', '°C · learned reference, not a thermostat command', 'learning', 'learning'],
+  solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
+  solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
   indoor_temperature: ['Indoor', '°C', 'indoor'],
   garage_temperature: ['Garage', '°C', 'garage'],
-  outdoor_temperature: ['Outdoor', '°C · dashed line is forecast', 'outdoor'],
+  outdoor_temperature: ['Outdoor', '°C · H66 sensor, FMI station or Open-Meteo model estimate; dashed line is forecast', 'outdoor'],
   outdoor_forecast: ['Outdoor forecast', '°C · forecast', 'outdoor', 'forecast'],
   all_in_price: ['All-in price', 'c/kWh', 'price'],
   spot_price: ['Spot price', 'c/kWh · excludes VAT and other charges', 'spot'],
 };
 const rightKeys = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
 
-const heldReadingKeys = [...Object.values(leftGroups).flat(), 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
+// Learning and H66 output have their own bounded/recorded-state semantics.
+const heldReadingKeys = ['property_power', 'charger_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
 
 /** Advance display tails without changing source timestamps or cached history. */
 export function historySeriesAt(payload, now = payload.now) {
@@ -101,7 +119,7 @@ export function historySeriesAt(payload, now = payload.now) {
     const end = points.at(-1);
     if (end && (end.x > now || !Number.isFinite(end.y) || end.x > last.x)) continue;
     const start = Math.max(range.from, last.x);
-    const carried = x => ({ x, y: last.y, carriedForward: true, observedAt: last.x });
+    const carried = x => ({ ...last, x, y: last.y, carriedForward: true, observedAt: last.x });
     const tail = [];
     if (!end && start <= now) tail.push(carried(start));
     if (now > (end?.x ?? start)) tail.push(carried(now));
@@ -111,7 +129,7 @@ export function historySeriesAt(payload, now = payload.now) {
 }
 
 export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
-  if (!leftGroups[left]) throw new RangeError('Choose power, phase currents or heating integral.');
+  if (!leftGroups[left]) throw new RangeError('Choose a valid left axis.');
   return [...leftGroups[left], ...rightKeys].map(key => {
     const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
@@ -126,7 +144,7 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
       borderDash: kind === 'forecast' ? [5, 4] : isPrice ? [1, 3] : [],
       fill: kind === 'fill' ? 'origin' : false,
-      order: kind === 'fill' ? 2 : 1,
+      order: key === 'auxiliary_power' ? 3 : kind === 'fill' ? 2 : 1,
       pointBackgroundColor: palette[colorKey], pointBorderColor: palette[colorKey],
       // A finite reading surrounded by gaps has no line segment to draw.
       pointRadius: isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)

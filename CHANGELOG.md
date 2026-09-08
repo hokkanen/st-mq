@@ -1,3 +1,27 @@
+# 0.9.0
+
+- Use FMI temperature and solar forecasts with keyless Open-Meteo ICON Seamless
+  fallback, including missing solar intervals. Prefer H66 outdoor temperature,
+  then FMI nearby stations, then Open-Meteo model estimates. Remove the obsolete
+  weather-token setting and label sensors, station readings and estimates.
+- Enable active MQTT tariff control with conservative operation when H66 is absent.
+- Add coupled ROOM/DHWR preheating, cost-aware reduction and recovery, persistent
+  H66 setting restoration, and timed tests for ROOM, DHW start/stop and mode.
+- Use a shared adaptive thermal model with outdoor temperature and cloud-aware
+  global solar-radiation forecast, chronological validation and bounded trials.
+- Track complete-cycle estimated profit, the observed space-heating AUX subgroup,
+  recovery cost prediction error and learned normal indoor temperature in history.
+- Add learning/provider details, solar and learning chart axes, routed compressor
+  shading, AUX power fill, a pump-mode strip and daily price-timing benchmarks.
+- Upgrade SQLite to schema 4; preserve existing observations and record learning
+  samples, cycles and restoration obligations durably.
+
+Active mode must be selected in configuration. Device tests use real commands.
+H66 integration follows the documented C60 MQTT profile and has been tested with
+mocked devices, not the installed pump. Native overrides have software restoration,
+not device-side leases. Compressor-only reductions may skip the native 14-day
+high-temperature water cycle, as explicitly accepted for this controller design.
+
 # 0.8.3
 
 - Put the Home Assistant database in the public add-on folder for Terminal & SSH

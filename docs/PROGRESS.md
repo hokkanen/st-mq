@@ -1,5 +1,26 @@
 # ST-MQ implementation progress
 
+## Current implementation, 7 September 2026 — 0.9.0
+
+The owner authorized the full active controller and UI implementation after the
+planning discussion. The dated sections below describe earlier releases and are
+retained as history; their former "active simulator only" restriction is superseded.
+Validation completed on 8 September 2026: all **376 tests passed** in the
+applied checkout, the production build succeeded, and `git diff --check`
+passed. Synthetic Chrome checks covered desktop/mobile rendering and a
+timed H66 write, readback and restoration through the application API.
+
+Current behavior and evidence limits are documented in
+[Learning and control](learning-and-control.md) and [setup](../DOCS.md).
+Development uses synthetic data and mocked device transports; installed H66 and
+relay behavior has not been tested against the household equipment.
+
+The implementation connects live observations, adaptive thermal fitting, bounded
+preheat/reduction plans, execution readback, recovery assessment and historical
+learning metrics. Native settings are captured before overriding and restored
+with persistent obligations. A missing gateway retains conservative relay control.
+
+
 Authoritative brief: `CODEX/ST-MQ-Codex-handoff.md` (6 September 2026).
 Baseline: `8c701d6`, v0.7.5, branch `H66`. The pre-existing change to
 `data/options.json` and supplied CSVs are owner data and must be preserved.
@@ -159,13 +180,13 @@ the full suite was run with the approved test-command escalation.
 
 - **Read-only provider path:** `STMQ_INPUT=providers` / add-on
   `controller.input: providers` reuses existing connections. ENTSO-E market and
-  OpenWeather forecast acquisition run hourly; optional SmartThings/Easee device
+  the original forecast acquisition run hourly; optional SmartThings/Easee device
   acquisition runs every five minutes independently. Durable cache timestamps
   preserve age across failures and restart. Physical writes remain disabled.
 - **Protocol semantics:** offline fixtures cover ENTSO-E A01/A03 curves,
   quarter-hour/hourly resolution, 92/100-quarter DST days, missing values,
   duplicates/revisions and ex-VAT normalization. Weather valid time is distinct
-  from fetch time; unknown OpenWeather issuance stays explicit. SmartThings/Easee
+  from fetch time; unknown forecast issuance stays explicit. SmartThings/Easee
   adapters validate timestamps/units and preserve uncertainty in current snapshots.
   Easee authentication renewal and secret persistence are isolated from observations
   and browser responses; they do not alter charger settings.
@@ -339,7 +360,8 @@ FMI is now the primary forecast and outdoor-temperature provider. Forecasts use
 the HARMONIE/MEPS hourly temperature points, recording publication time separately
 from model analysis time. Observations select the nearest fresh weather station
 within 50 km of the configured location. The two routes fail over independently
-to OpenWeather's forecast and current-weather endpoints. Regional values are
+to the original backup's forecast and current-weather endpoints (that integration
+has since been removed; see the replacement note below). Regional values are
 labelled as such; a forecast is never recorded as an observed house temperature.
 
 The live test caught an FMI integration defect that the initial public city-name
@@ -353,7 +375,7 @@ accept `latlon`.
 Market and forecast polls remain hourly, outdoor observations run every ten
 minutes, and SmartThings/Easee polls remain every five minutes. Cached values keep
 their source timestamps across failures and restart. FMI recovery restores its
-primary role even when an OpenWeather calculation timestamp is slightly newer.
+primary role even when the backup's calculation timestamp is slightly newer.
 Provider errors are sanitized; backoff survives restart and honors bounded
 `Retry-After`. Access denials and rate-limit delays are shared between a provider's
 forecast and current-temperature routes. A missing station alone does not disable
@@ -380,10 +402,11 @@ used the existing options in memory and produced these results:
 | Elering | Direct public endpoint returned 100 intervals; all overlapping prices matched ENTSO-E within 0.000001 c/kWh. |
 | FMI forecast | 48 hourly forecast intervals, with distinct publication/model timestamps. |
 | FMI observation | Corrected configured-location query returned a fresh station reading, eight minutes old at verification. |
-| OpenWeather forecast | Configured key returned 40 three-hour forecast intervals. |
-| OpenWeather current | Configured key returned a current temperature with a fresh calculation timestamp. |
 | SmartThings | Both configured temperature devices returned readable values; the oldest source timestamp was about 40 minutes old. |
 | Easee | Charger and equalizer access succeeded and returned all six phase values; all were flagged stale, with the oldest about 45 hours old. |
+
+The retired weather integration's live-check rows were removed when its code and
+configuration were removed. Those old checks do not verify Open-Meteo.
 
 API access and measurement freshness are separate findings. SmartThings temperature
 ages are judged against the controller's 30-minute boundary. Easee's endpoint
@@ -479,3 +502,28 @@ FMI/Elering plumbing without HTTP access. CI now builds and runs these checks fo
 both AMD64 and ARM64. Local ARM64 emulation and an actual Supervisor/Pi installation
 were unavailable; these results do not claim either was tested. No live provider
 requests or physical MQTT/control messages were sent for this upgrade.
+
+## Weather fallback and H66 outdoor priority — 8 September 2026
+
+Replaced the original keyed weather backup with Open-Meteo ICON Seamless and
+removed its old token option, schema entry and setup help. Both temperature and
+global shortwave radiation forecasts use FMI first and Open-Meteo as fallback.
+Missing FMI solar values can use Open-Meteo without replacing available FMI
+temperatures; solar-provider provenance stays explicit. Open-Meteo radiation is
+averaged over the preceding hour and aligned to that interval in W/m². The API
+requires no key for noncommercial use within its free limits.
+
+Current outdoor temperature now prefers fresh H66 register `0007`, then a fresh
+nearby FMI station, then an Open-Meteo model estimate. Backup timestamps do not
+override source priority. Fresh H66 data regains priority after an outage; an
+unavailable or stale H66 sensor allows the weather fallback chain. UI labels
+distinguish the house sensor, nearby station and modeled estimate. Weather source
+labels and radiation provenance also remain visible in provider details.
+
+Validation: all 394 unit/integration tests and the production build pass. Four
+read-only live checks using public Helsinki city coordinates pass: FMI forecast,
+FMI current observation, Open-Meteo forecast and Open-Meteo current estimate.
+Both providers returned 48 hourly forecast intervals with solar radiation.
+Simulated MQTT tests cover H66 priority, staleness, errors, disconnect/reconnect,
+retained messages and recovery. Installed H66 hardware is not yet available for
+complete physical testing. No physical device commands were sent.

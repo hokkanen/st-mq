@@ -53,14 +53,17 @@ test('deployment metadata uses an explicit Node base, persistent storage and bot
   assert.equal(addon.version, JSON.parse(readFileSync('package.json', 'utf8')).version);
 });
 
-test('H66 observations coexist with weather and prices and every acquisition closes without publishing', async t => {
+test('H66 observations coexist with weather and prices and acquisition only requests snapshots', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-combined-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const now = Date.parse('2026-09-07T12:00Z');
   const fixture = providerFixture(now), fake = new EventEmitter();
   const subscriptions = []; let closed = 0;
   fake.subscribe = (topic, options, done) => { subscriptions.push(topic); done(); };
-  fake.publish = () => assert.fail('No physical commands are authorized');
+  fake.publish = (topic, payload, options, done) => {
+    assert.equal(topic, 'fixture-h66/HP/CMD'); assert.equal(payload, 'GETALL');
+    assert.equal(options.retain, false); done();
+  };
   fake.end = (force, options, done) => { closed++; done(); };
   const config = { ...loadConfig({ STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } };
@@ -68,7 +71,7 @@ test('H66 observations coexist with weather and prices and every acquisition clo
   try {
     fake.emit('connect');
     for (let i = 0; i < 100 && !app.engine.status().providers.outdoor?.lastSuccessAt; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.deepEqual(subscriptions, ['fixture-h66/HP/+']);
+    assert.deepEqual(subscriptions, ['fixture-h66/HP/#']);
     fake.emit('message', 'fixture-h66/HP/8105', Buffer.from('-180'), { retain: true });
     assert.equal(app.store.latestObservation('heating_integral').source, 'husdata-h66');
     const status = app.engine.tick();
