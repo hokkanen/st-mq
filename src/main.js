@@ -17,6 +17,17 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
   let engine, server, learning, chartService, commandTransport, timer, closed = false;
   const acquisitions = [];
   const signalHandlers = new Map();
+  function reportControllerError(error) {
+    const databaseBusy = error?.code === 'ERR_SQLITE_ERROR' && [5, 6].includes(error.errcode & 0xff);
+    if (!databaseBusy) {
+      try { store.event('controller-error', { message: error.message }, clock()); return; }
+      catch { /* Reporting must survive an unavailable database too. */ }
+    }
+    // A failed write cannot reliably report itself with another database write.
+    // Keep stderr useful without exposing arbitrary errors or private payloads.
+    console.error(JSON.stringify({ event: 'controller-error',
+      reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
+  }
   async function close() {
     if (closed) return;
     closed = true;
@@ -69,7 +80,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
       const next = Math.min(now + 60_000 - (now % 60_000), engine.nextTemporaryDeadline());
       timer = setTimeout(() => {
         try { engine.tick(); }
-        catch (error) { store.event('controller-error', { message: error.message }, clock()); }
+        catch (error) { reportControllerError(error); }
         if (!closed) schedule();
       }, Math.max(1, next - now));
     };

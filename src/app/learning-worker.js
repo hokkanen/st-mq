@@ -3,8 +3,8 @@ import { Store } from '../storage/store.js';
 import { emptyCheckpoint, restoreCheckpoint, updateLearning } from '../control/learning.js';
 import { LEARNING_ALGORITHM, appendLearningRecord, applyLearningRecord, historicalLearningWindows } from './committed-learning.js';
 
-// History runs in small pages off the command/UI thread. SQLite transactionally
-// stores each checkpoint together with the exact cursor that produced it.
+// History runs off the command/UI thread. Only journal/checkpoint writes hold
+// SQLite's writer lock; fitting a page can take longer than the busy timeout.
 const store = new Store(workerData.dbPath);
 let stopped = false;
 parentPort.on('message', message => { if (message === 'stop') stopped = true; });
@@ -30,12 +30,19 @@ try {
     cursor = Math.max(cursor, rows.at(-1).id);
     adaptiveCursor = Math.max(adaptiveCursor, rows.at(-1).id);
     processed += rows.length;
+    const existingSample = store.db.prepare("SELECT id FROM learning_journal WHERE input='history' AND key=?");
+    const entries = store.transaction(() => windows.samples.map(sample => {
+      // An interrupted page may already have immutable entries. Their original
+      // configuration stays authoritative even if settings changed on restart.
+      const id = existingSample.get(`sample:${sample.timestamp}`)?.id
+        ?? appendLearningRecord(store, 'history', 'sample', sample, { config: workerData.config ?? {} });
+      return store.learningJournal({ input: 'history', after: id - 1, limit: 1 })[0];
+    }));
+    // Journal entries are immutable and committed before fitting. A crash before
+    // the checkpoint commit leaves the source cursor unchanged, so restart
+    // encounters the same entries and applies them in the same order.
+    for (const entry of entries) adaptive = applyLearningRecord(adaptive, entry);
     store.transaction(() => {
-      for (const sample of windows.samples) {
-        const id = appendLearningRecord(store, 'history', 'sample', sample, { config: workerData.config ?? {} });
-        const entry = store.learningJournal({ input: 'history', after: id - 1, limit: 1 })[0];
-        adaptive = applyLearningRecord(adaptive, entry);
-      }
       store.setState('learning:history', { version: 1, cursor, checkpoint });
       adaptive = { ...adaptive, historyCursor: adaptiveCursor, historyResampling: windows.state };
       store.setState('adaptive:history', { ...adaptive,

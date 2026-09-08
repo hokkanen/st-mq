@@ -276,18 +276,17 @@ export function applyLearningRecord(checkpoint, entry) {
     configVersion: entry.configVersion, forecastVersion: entry.forecastVersion };
 }
 
-/** Applying entries and advancing the cursor share a transaction. If ingestion
- * committed a journal entry immediately before a crash, it is applied once after
- * restart. Rebuild uses precisely this same ordered entry function. */
+/** Immutable entries are already committed, so replay needs no writer lock.
+ * The checkpoint and its cursor are one atomic state update after computation.
+ * A crash before that update replays the same entries from the saved cursor.
+ * Rebuild uses precisely this same ordered entry function. */
 export function replayLearningJournal(store, input, checkpoint = null, { rebuild = false } = {}) {
   let next = rebuild ? null : checkpoint;
   for (;;) {
     const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: 256 });
     if (!entries.length) break;
-    store.transaction(() => {
-      for (const entry of entries) next = applyLearningRecord(next, entry);
-      store.setState(`adaptive:${input}`, next);
-    });
+    for (const entry of entries) next = applyLearningRecord(next, entry);
+    store.setState(`adaptive:${input}`, next);
   }
   return next ?? restoreAdaptiveCheckpoint(null);
 }
