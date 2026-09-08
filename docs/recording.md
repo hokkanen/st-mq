@@ -382,8 +382,13 @@ Views longer than seven days refresh at five-minute intervals. Ordinary raw poll
 and recorder checkpoints do not force a history download. Short views react to
 new committed data. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
-Timing labels explain their assumptions on hover, keyboard focus or tap; Escape
-and tapping elsewhere dismiss them. Meter counters are also selectable under
+The **Timing cost** fold starts closed beneath the chart, alongside **Recording
+details**. Opening it shows both heat-pump and charger summaries first, followed by
+shared calculation and assumption notes in a centered column. Separate device
+details below show energy sources, timestamps and time coverage. All explanations
+appear as normal text.
+The fold works with keyboard and touch and keeps its state across chart refreshes
+and date changes. Meter counters are also selectable under
 Meter checks, separately from estimated interval energy.
 
 ## Synthetic year benchmark

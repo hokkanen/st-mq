@@ -14,6 +14,28 @@ export const timingSources = {
   simulated: { label: 'Simulated', short: 'simulated', explanation: 'These values come from simulated input. They do not represent measured household consumption or actual savings.' },
 };
 
+/** Explanations shared by both devices and shown below their results. */
+export const timingExplanations = {
+  comparison: [
+    'For each included day, the same calculated device energy is priced two ways: at the times assigned to it, and at that whole day’s time-weighted average all-in price. The daily differences are added together.',
+    'Positive means cheaper timing; negative means dearer timing. Missing periods are excluded, and the amount is not scaled up to cover them. This comparison does not prove savings caused by the controller.',
+  ],
+  coverage: [
+    'Time included is the share of the selected elapsed time that supports a comparison. Valid zero-consumption values count, as do supported estimates. It does not describe how often the device ran, how much energy was measured, or certainty about energy or savings.',
+    'For today, elapsed time runs from Finnish midnight to the calculation time. For other unfinished selections, only the elapsed part is counted. Future hours do not reduce the percentage.',
+    'Each included day needs complete historical spot prices and either recorded or assumed contract rates. Assumed rates do not by themselves reduce time coverage. They cannot fill missing spot prices or device energy history.',
+    'An unavailable comparison has no supported total; unavailable does not mean zero consumption or zero timing difference. Historical gaps may remain permanently; partial data does not promise that more data will arrive.',
+  ],
+  evidence: [
+    'Energy-basis shares describe included time, weighted by duration. They are not percentages of readings, consumed energy, charging time or accuracy.',
+    'Historical values keep their recorded basis; today’s sensors do not reclassify them. Gaps can exist between the contributing dates, and rounded shares may not add to exactly 100%.',
+  ],
+  rates: [
+    'Where dated historical contract rates are missing, the nearest known contract rates are combined with each period’s historical spot price. For dates before the first recorded rates, this uses the earliest known rates, which may be today’s rates.',
+    'Contract charges and VAT may have differed at the time. The timing difference depends on these assumptions, including any assumed rates used in the full-day average. The historical spot prices are not replaced by today’s spot price.',
+  ],
+};
+
 export function timingPercent(share) {
   if (!finite(share) || share <= 0) return '0%';
   if (share < 0.01) return '<1%';
@@ -63,78 +85,72 @@ export function timingDisplay(key, result = {}, payload = {}) {
   const basis = sources.length > 1 ? 'Mixed basis' : sources.length ? timingSources[sources[0].key].label : null;
   const tiny = available && result.value !== 0 && Math.abs(result.value) < 0.005;
   const amount = available ? tiny ? `${result.value < 0 ? '−' : '+'}<€0.01` : euro.format(Object.is(result.value, -0) ? 0 : result.value) : null;
-  const comparison = [
-    'For each included day, the same calculated device energy is priced two ways: at the times assigned to it, and at that whole day’s time-weighted average all-in price. The daily differences are added together.',
-    'Positive means cheaper timing; negative means dearer timing. Missing periods are excluded, and the amount is not scaled up to cover them. This comparison does not prove savings caused by the controller.',
-    key === 'heatPump' ? reconstructed
-      ? 'Heat-pump energy is reconstructed from recorded compressor activity and auxiliary output with dated nominal component powers. It is not household consumption minus charger consumption. Missing equipment observations or dated power assumptions leave gaps; model predictions do not fill them.'
-      : 'Heat-pump energy uses the basis shown below. It is not household consumption minus charger consumption. Model predictions can enter this comparison even when actual compressor activity is unknown.'
-      : recorded ? 'Charger energy uses the original recorded electrical intervals, with older phase-current snapshots where available. These are energy estimates; cumulative meter checks do not correct them.'
-        : 'Charger energy uses the basis shown below; current-based estimates are not a dedicated energy measurement.',
-  ];
-  if (available && Math.abs(result.value) < 0.005) comparison.push('This difference is zero or smaller than half a cent, so it rounds to €0.00. It does not prove zero energy use or zero actual savings.');
-  const calculationSpan = span(coverage.from ?? range.from, coverage.to ?? Math.min(range.to, now), 'Calculation period (Finnish time)');
-  if (calculationSpan) comparison.push(calculationSpan);
+  const calculationPeriod = span(coverage.from ?? range.from, coverage.to ?? Math.min(range.to, now), 'Calculation period (Finnish time)');
+  const smallDifferenceExplanation = available && Math.abs(result.value) < 0.005
+    ? result.value === 0
+      ? 'The calculated timing difference is €0.00. This does not prove zero energy use or zero actual savings.'
+      : 'The calculated difference is smaller than half a cent; its sign still shows whether the timing was cheaper or dearer. This does not prove zero energy use or zero actual savings.'
+    : null;
 
-  const evidence = [
-    'The shares below describe included time, weighted by duration. They are not percentages of readings, consumed energy, charging time or accuracy.',
-    `${mixedTime ? 'Dates span the contributing recorded intervals and older stored power samples' : intervalTime ? 'Dates show the original boundaries of contributing recorded intervals' : 'Dates show the first and last contributing stored power samples'}; gaps can exist between them. Historical values keep their recorded basis; today’s sensors do not reclassify them. Rounded shares may not add to exactly 100%.`,
-  ];
-  if (key === 'heatPump') evidence.push(reconstructed
-    ? 'The heat-pump calculation requires recorded compressor activity, verified auxiliary output and dated nominal power assumptions. It includes domestic hot water operation. Missing or stale equipment readings leave gaps; neither a thermal model prediction nor a requested operating mode supplies missing consumption.'
-    : 'The heat-pump calculation first uses dedicated power, otherwise reported compressor activity with configured powers, and otherwise a predicted running fraction from the thermal model. Auxiliary heating is assessed separately.');
+  const energyExplanation = available
+    ? key === 'heatPump' ? reconstructed
+      ? 'Heat-pump energy includes space heating and domestic hot water. It is reconstructed from recorded equipment operation using the dated powers described below. It is not household consumption minus charger consumption. Model predictions or a requested operating mode do not fill gaps in consumption evidence.'
+      : 'Heat-pump energy first uses dedicated power, otherwise reported compressor activity with configured powers, and otherwise a predicted running fraction from the thermal model. Auxiliary heating is assessed separately. It is not household consumption minus charger consumption. Model predictions can enter this comparison even when actual compressor activity is unknown.'
+      : recorded
+        ? 'Charger energy uses the original recorded electrical intervals, with older phase-current snapshots where available. These are energy estimates; cumulative meter checks do not correct them.'
+        : 'Charger energy uses the recorded basis shown here; current-based estimates are not a dedicated energy measurement.'
+    : key === 'heatPump' ? reconstructed
+      ? 'Recorded compressor activity, verified auxiliary output and dated nominal power assumptions are needed. Missing or stale equipment data cannot be replaced by a thermal model prediction, a requested operating mode or whole-house consumption minus the charger.'
+      : 'A dedicated heat-pump power reading or a stored heat-pump power estimate is needed. Whole-house power is not attributed to the heat pump by subtracting the charger.'
+      : recorded
+        ? 'Usable recorded charger energy intervals are needed, including valid zero-energy intervals during non-charging periods. Older current snapshots can support their original historical periods.'
+        : 'Usable charger power readings or estimates are needed, including zero readings during non-charging periods.';
+
+  const evidenceExplanation = mixedTime
+    ? 'Dates span the contributing recorded intervals and older stored power samples.'
+    : intervalTime
+      ? 'Dates show the original boundaries of contributing recorded intervals.'
+      : 'Dates show the first and last contributing stored power samples.';
   const sourceDetails = sources.map(source => ({ ...source, ...timingSources[source.key],
-    ...(reconstructed && source.key === 'observed' ? { explanation: 'Compressor activity and verified auxiliary output were recorded by the heat pump. Electrical energy is reconstructed using the dated nominal compressor, circulation and auxiliary powers. This includes domestic hot water operation and remains an estimate, not a separate electricity measurement.' } : {}),
+    ...(reconstructed && source.key === 'observed' ? { explanation: 'Recorded compressor activity and verified auxiliary output are converted to electrical energy using the dated nominal compressor, circulation and auxiliary powers. This remains an estimate, not a separate electricity measurement.' } : {}),
     percentage: timingPercent(source.share), dates: span(source.firstAt, source.lastAt, dateBasis) }));
   const auxiliary = result.evidence ?? {};
-  if (key === 'heatPump' && auxiliary.auxiliaryAssumedMs > 0) evidence.push(`Auxiliary heater output was also assumed during ${timingPercent(auxiliary.auxiliaryAssumedShare)} of included time. This can overlap the compressor categories above; it is not an extra share to add to them.`);
-  if (key === 'heatPump' && auxiliary.auxiliaryUnknownMs > 0) evidence.push(`Whether auxiliary heater output was observed or assumed was not recorded for ${timingPercent(auxiliary.auxiliaryUnknownShare)} of included time.`);
+  const auxiliaryNotes = [];
+  if (key === 'heatPump' && auxiliary.auxiliaryAssumedMs > 0) auxiliaryNotes.push(`Auxiliary heater output was also assumed during ${timingPercent(auxiliary.auxiliaryAssumedShare)} of included time. This can overlap the compressor categories above; it is not an extra share to add to them.`);
+  if (key === 'heatPump' && auxiliary.auxiliaryUnknownMs > 0) auxiliaryNotes.push(`Whether auxiliary heater output was observed or assumed was not recorded for ${timingPercent(auxiliary.auxiliaryUnknownShare)} of included time.`);
 
-  const coverageText = [
-    `${timingPercent(ratio)} of the selected elapsed time contributes to this comparison. Valid zero-consumption values count, as do ${reconstructed || recorded ? 'estimated energy intervals' : 'estimated and modelled power values'}. This does not describe how often the device ran or how much of its energy was measured.`,
-    reconstructed ? 'Time is included only when recorded equipment states and dated nominal powers support a heat-pump energy estimate, and all-in prices cover the entire corresponding day. Equipment observations contribute only while their recorded coverage and freshness remain valid. Missing, stale or unverified equipment states, missing power assumptions and days with incomplete prices are excluded.'
-      : recorded ? `Time is included only when there is usable recorded energy and all-in prices for the entire corresponding day. This needs complete historical spot prices and either recorded or assumed contract rates. Recorded energy contributes over its saved interval without extending into gaps.${energyBasis === 'recorded-and-legacy' ? ' Older power snapshots are carried forward for at most 30 minutes.' : ''} Missing or invalid energy intervals and days with incomplete prices are excluded.`
-        : 'Time is included only when there is a usable device power value and all-in prices for the entire corresponding day. This needs complete historical spot prices and either recorded or assumed contract rates. Power values are carried forward for at most 30 minutes. Missing or invalid power values and days with incomplete prices are excluded.',
-  ];
-  if (elapsed >= 0 && finite(included)) coverageText.push(`Included: ${duration(included)} out of ${duration(elapsed)} elapsed. Excluded without usable power: ${duration(coverage.missingPowerMs)}. Excluded with power but incomplete daily prices: ${duration(coverage.incompletePriceMs)}. These groups do not overlap.`);
-  if (inProgress) coverageText.push(today ? 'For today, the denominator runs from Finnish midnight to the calculation time, not to the end of the day. Future hours do not reduce this percentage.' : 'Only the elapsed part of the selected range forms the denominator. Future hours do not reduce this percentage.');
-  if (calculationSpan) coverageText.push(calculationSpan);
-  coverageText.push('Assumed contract rates do not by themselves reduce time coverage. A displayed 100% is time coverage, not certainty about energy or savings.');
+  const coverageExplanation = reconstructed
+    ? 'Time is included only when recorded equipment states and dated nominal powers support a heat-pump energy estimate, and all-in prices cover the entire corresponding day. Equipment observations contribute only while their recorded coverage and freshness remain valid. Missing, stale or unverified equipment states, missing power assumptions and days with incomplete prices are excluded.'
+    : recorded
+      ? `Time is included only when there is usable recorded energy and all-in prices for the entire corresponding day. Recorded energy contributes over its saved interval without extending into gaps.${energyBasis === 'recorded-and-legacy' ? ' Older power snapshots are carried forward for at most 30 minutes.' : ''} Missing or invalid energy intervals and days with incomplete prices are excluded.`
+      : 'Time is included only when there is a usable device power value and all-in prices for the entire corresponding day. Estimated and modelled power values count where they form the recorded basis. Power values are carried forward for at most 30 minutes. Missing or invalid power values and days with incomplete prices are excluded.';
+  const coverageSummary = elapsed >= 0 && finite(included)
+    ? `Included: ${duration(included)} out of ${duration(elapsed)} elapsed. Excluded without usable power: ${duration(coverage.missingPowerMs)}. Excluded with power but incomplete daily prices: ${duration(coverage.incompletePriceMs)}. These groups do not overlap.`
+    : null;
 
   const assumptions = result.priceAssumptions ?? {};
-  const rates = [
-    'Where dated historical contract rates are missing, the nearest known contract rates are combined with each period’s historical spot price. For dates before the first recorded rates, this uses the earliest known rates, which may be today’s rates.',
-    'Contract charges and VAT may have differed at the time. The timing difference depends on these assumptions, including any assumed rates used in the full-day average. The historical spot prices are not replaced by today’s spot price.',
-  ];
-  if (finite(assumptions.share)) rates.push(`${timingPercent(assumptions.share)} of included time depends on assumed rates in its own price or its day’s comparison average.`);
-  const rateSpan = span(assumptions.firstAt, assumptions.lastAt, 'Affected included periods');
-  if (rateSpan) rates.push(`${rateSpan} Gaps may exist within this span.`);
+  const assumedRates = available && Boolean(result.assumedPrices || assumptions.durationMs > 0);
+  const rateSummary = assumedRates && finite(assumptions.share)
+    ? `${timingPercent(assumptions.share)} of included time depends on assumed rates in its own price or its day’s comparison average.`
+    : null;
+  const rateSpan = assumedRates ? span(assumptions.firstAt, assumptions.lastAt, 'Affected included periods') : null;
+  const ratePeriod = rateSpan ? `${rateSpan} Gaps may exist within this span.` : null;
 
   let unavailableReason = 'Energy and full-day prices needed';
   if (elapsed === 0) unavailableReason = 'No elapsed time in this selection';
   else if (coverage.powerMs === 0) unavailableReason = 'No usable device power history';
   else if (coverage.powerMs > 0 && included === 0) unavailableReason = 'Full-day prices missing';
-  const unavailable = [
-    `${name}: ${unavailableReason.toLowerCase()}. There is no supported total for this selection; unavailable does not mean zero consumption or zero timing difference.`,
-    key === 'heatPump' ? reconstructed
-      ? 'Recorded compressor activity, verified auxiliary output and dated nominal power assumptions are needed. Missing or stale equipment data cannot be replaced by a thermal model prediction or whole-house consumption minus the charger.'
-      : 'A dedicated heat-pump power reading or a stored heat-pump power estimate is needed. Whole-house power is not attributed to the heat pump by subtracting the charger.'
-      : recorded ? 'Usable recorded charger energy intervals are needed, including valid zero-energy intervals during non-charging periods. Older current snapshots can support their original historical periods.'
-        : 'Usable charger power readings or estimates are needed, including zero readings during non-charging periods.',
-    'Each included day also needs complete spot prices for the whole day. Nearest known contract rates can fill missing contract history, but cannot fill missing spot prices or device power history.',
-  ];
-  const powerSpan = span(coverage.firstPowerAt, coverage.lastPowerAt, intervalTime ? 'Available energy periods' : 'Available power samples');
-  if (powerSpan) unavailable.push(`${powerSpan} Gaps may exist between them.`);
-  if (calculationSpan) unavailable.push(calculationSpan);
+  const powerSpan = !available ? span(coverage.firstPowerAt, coverage.lastPowerAt, intervalTime ? 'Available energy periods' : 'Available power samples') : null;
+  const availablePowerPeriod = powerSpan ? `${powerSpan} Gaps may exist between them.` : null;
 
   const periodLabel = inProgress ? today ? 'Today so far' : 'Period in progress' : available && result.provisional ? 'Partial data' : null;
-  const period = [
-    inProgress ? 'The selected period has not finished. The comparison stops at the calculation time; later hours may change the total.' : 'Some of the selected elapsed time could not enter the comparison. The displayed total covers only included periods.',
-    'The amount is not extrapolated to missing hours. Historical gaps may remain permanently; this label does not promise that more data will arrive.',
-  ];
-  if (ratio < 1) period.push('The included-time explanation separates missing power history from time excluded because daily prices were incomplete.');
-  if (calculationSpan) period.push(calculationSpan);
+  const periodExplanation = periodLabel ? inProgress
+    ? 'The selected period has not finished. The comparison stops at the calculation time; later hours may change the total. The amount is not extrapolated to missing hours.'
+    : 'Some of the selected elapsed time could not enter the comparison. The displayed total covers only included periods and is not extrapolated to missing hours.'
+    : null;
   return { key, name, available, amount, outcome: 'timing difference', basis, sources: sourceDetails,
-    coverageLabel: `${timingPercent(ratio)} of time included`, assumedRates: available && (result.assumedPrices || assumptions.durationMs > 0),
-    periodLabel, unavailableReason, details: { comparison, evidence, coverage: coverageText, rates, period, unavailable } };
+    coverageLabel: `${timingPercent(ratio)} of time included`, assumedRates,
+    periodLabel, unavailableReason, calculationPeriod, energyExplanation, coverageExplanation, coverageSummary,
+    periodExplanation, smallDifferenceExplanation, availablePowerPeriod, auxiliaryNotes, evidenceExplanation,
+    rateSummary, ratePeriod };
 }

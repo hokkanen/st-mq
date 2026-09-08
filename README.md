@@ -135,7 +135,7 @@ directly below the current readings.
   and starts hidden. A separate **Pump mode** strip shows categorical H66 readback.
   Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
   individual auxiliary episodes.
-- **Timing comparison:** below the chart, each device compares the cost of its
+- **Timing cost:** open this fold below the chart to compare each device's cost of
   included energy at the recorded timestamps with the same daily energy at the
   whole Finnish day's average all-in price. Heat-pump electricity is reconstructed
   from recorded compressor activity and auxiliary output using the nominal powers
@@ -153,9 +153,12 @@ directly below the current readings.
   denominator runs from Finnish midnight to the calculation time.
   Calculations use the underlying energy and equipment intervals independently
   of chart point reduction and the selected left axis.
-  Hover, focus or tap the underlined labels for the calculation, source mix,
-  timestamps, price assumptions and missing-time details. Missing historical
-  contract rates use the nearest known rates with historical spot prices;
+  The fold starts closed, like **Recording details**, and stays as you set it
+  when the chart refreshes or dates change. Both result summaries come first,
+  followed by shared explanations of the calculation, coverage and price
+  assumptions. Separate device details below show source shares, timestamps and
+  missing-time information as normal text. Missing historical contract rates
+  use the nearest known rates with historical spot prices;
   **Assumed rates** includes assumptions affecting the daily average even when
   the device ran during a period with known rates. This comparison does not
   establish savings caused by the controller.

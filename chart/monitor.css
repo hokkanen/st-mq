@@ -156,20 +156,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .mode-history p { font-size: 10px; margin: 3px 0; }
 .mode-track { height: 22px; position: relative; background: var(--surface-soft); border: 1px solid var(--border); overflow: hidden; }
 .mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); border-right: 1px solid var(--surface); }
-.timing-benefit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 36px; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px; }
-.timing-device { min-width: 0; text-align: left; }
-.timing-device[data-device="charger"] { text-align: right; }
-.timing-device-name { margin: 0 0 4px; color: var(--muted); font-size: 12px; font-weight: 550; }
-.timing-help { display: inline-flex; align-items: center; gap: 5px; width: auto; min-height: 28px; margin: 0; padding: 3px 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font-size: 11px; font-weight: 400; line-height: 1.5; text-align: inherit; text-decoration: underline dotted; text-decoration-color: var(--muted); text-underline-offset: 4px; cursor: help; }
-.timing-help:hover, .timing-help[aria-expanded="true"] { color: var(--accent); background: transparent; text-decoration-style: solid; }
-.timing-help:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
-.timing-result { gap: 8px; flex-wrap: wrap; min-height: 32px; }
-.timing-amount { color: var(--text); font-size: 20px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.25; letter-spacing: -.3px; text-decoration: none; }
-.timing-outcome { color: var(--muted); font-size: 11px; }
-.timing-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0 12px; margin-top: 3px; color: var(--muted); }
-.timing-device[data-device="charger"] .timing-meta { justify-content: flex-end; }
-.timing-basis { color: var(--text); }
-.timing-basis::before { content: ''; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--muted); }
+.timing-details { padding-top: 12px; }
+.timing-benefit { padding: 4px 0 8px; }
+.timing-intro { margin: 0 auto 24px; text-align: center; }
+.timing-intro p { margin: 4px 0; }
+.timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
+.timing-devices, .timing-evidence-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
+.timing-evidence-devices { margin-top: 32px; }
+.timing-device-detail .timing-energy { border-top: 0; padding-top: 0; }
+.timing-device-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.timing-device-name { margin: 0; font-size: 18px; font-weight: 550; }
+.timing-period { color: var(--muted); font-size: 12px; }
+.timing-card .timing-result { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin: 14px 0; color: var(--text); }
+.timing-amount { font-size: 32px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.25; letter-spacing: -.6px; }
+.timing-outcome { color: var(--muted); font-size: 13px; }
+.timing-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin: 0 0 14px; font-size: 13px; }
+.timing-basis { display: inline-flex; align-items: center; gap: 7px; }
+.timing-basis::before { content: ''; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--muted); }
 .timing-basis[data-basis="modelled"]::before, .timing-evidence-track [data-source="modelled"] { background: var(--chart-learning); }
 .timing-basis[data-basis="observed"]::before, .timing-evidence-track [data-source="observed"] { background: var(--chart-solar); }
 .timing-basis[data-basis="measured"]::before, .timing-evidence-track [data-source="measured"] { background: var(--chart-property); }
@@ -177,40 +181,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-basis[data-basis="recorded"]::before, .timing-evidence-track [data-source="recorded"] { background: var(--chart-ev); }
 .timing-basis[data-basis="simulated"]::before, .timing-evidence-track [data-source="simulated"] { background: var(--chart-phase-3); }
 .timing-basis[data-basis="mixed"]::before { background: linear-gradient(90deg, var(--chart-property) 50%, var(--chart-learning) 50%); }
-.timing-assumed { color: var(--stale); }
-.timing-breakdown { display: flex; flex-direction: column; align-items: stretch; gap: 5px; width: min(100%, 380px); margin-top: 7px; font-size: 10px; color: var(--muted); line-height: 1.6; }
-.timing-device[data-device="charger"] .timing-breakdown { margin-left: auto; }
-.timing-evidence-track { display: flex; gap: 2px; height: 3px; border-radius: 2px; overflow: hidden; }
+.timing-benefit .timing-assumed { color: var(--stale); }
+.timing-card p { color: var(--muted); font-size: 14px; margin: 10px 0 0; }
+.timing-card .timing-dates, .timing-card .timing-source-dates { font-size: 12px; }
+.timing-unavailable { font-size: 21px; font-weight: 550; }
+.timing-energy, .timing-time, .timing-device-rates { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 20px; }
+.timing-card h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.timing-evidence-track { display: flex; gap: 3px; height: 5px; margin-top: 20px; border-radius: 3px; overflow: hidden; }
 .timing-evidence-track span { flex-basis: 0; min-width: 2px; background: var(--muted); }
-.timing-evidence-caption { display: block; }
-.timing-unavailable { min-height: 32px; font-size: 15px; color: var(--text); }
-.timing-device .timing-unavailable-reason { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
-.timing-benefit .timing-explanation { grid-column: 1 / -1; max-width: 800px; justify-self: center; margin: 1px 0 0; text-align: center; color: var(--muted); font-size: 10px; line-height: 1.7; }
-.timing-chart-rates { display: block; }
-.timing-chart-rates .timing-help { font-size: 10px; }
-.timing-popover { position: fixed; z-index: 1000; display: flex; flex-direction: column; box-sizing: border-box; padding: 16px 18px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); box-shadow: 0 8px 32px #0004; font-size: 12px; line-height: 1.6; text-align: left; }
-.timing-popover[hidden] { display: none; }
-.timing-popover-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
-.timing-popover-title { display: block; padding-top: 2px; font-size: 13px; font-weight: 600; }
-.timing-popover-close { flex: 0 0 28px; min-height: 28px; width: 28px; padding: 0; margin: -3px -7px 0 0; border: 0; background: transparent; color: var(--muted); font-size: 21px; line-height: 28px; }
-.timing-popover-close:hover { background: var(--surface-soft); color: var(--text); }
-.timing-popover-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0 4px 1px 0; scrollbar-width: thin; scrollbar-color: var(--border) var(--surface); }
-.timing-popover-content:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
-.timing-popover p { margin: 8px 0 0; font-size: 12px; }
-.timing-popover-content > p:first-child { margin-top: 0; }
-.timing-source { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
-.timing-source-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 8px; }
+.timing-source { margin-top: 18px; }
+.timing-source + .timing-source { padding-top: 18px; border-top: 1px solid var(--border); }
+.timing-source-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; }
 .timing-source-heading strong { font-weight: 550; }
-.timing-source-share, .timing-popover .timing-source-dates { color: var(--muted); font-size: 11px; }
-@media (max-width: 640px) {
-  .timing-benefit { grid-template-columns: minmax(0, 1fr); gap: 18px; }
-  .timing-device[data-device="charger"] { border-top: 1px solid var(--border); padding-top: 16px; text-align: left; }
-  .timing-device[data-device="charger"] .timing-meta { justify-content: flex-start; }
-  .timing-device[data-device="charger"] .timing-breakdown { margin-left: 0; }
-  .timing-help { min-height: 36px; }
-  .timing-meta { gap: 0 14px; }
-  .timing-breakdown { min-height: 0; margin-top: 5px; padding: 5px 0; }
-  .timing-popover { padding: 14px 16px; }
+.timing-source-share { color: var(--muted); font-size: 12px; }
+.timing-explanations { max-width: 860px; margin: 32px auto 0; border-top: 1px solid var(--border); padding-top: 28px; }
+.timing-explanation + .timing-explanation { margin-top: 26px; }
+.timing-explanation h3 { margin: 0 0 10px; font-size: 16px; font-weight: 550; }
+.timing-explanation p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+.timing-chart-rates { margin-top: 16px; border-left: 3px solid var(--stale); padding-left: 16px; }
+@media (max-width: 800px) {
+  .timing-devices, .timing-evidence-devices { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .timing-card { padding: 20px; }
+}
+@media (max-width: 480px) {
+  .timing-card { padding: 16px; }
+  .timing-intro { text-align: left; }
+  .timing-amount { font-size: 28px; }
+  .timing-explanations { margin-top: 24px; padding-top: 24px; }
 }
 .learning-metric { margin: 14px 0; }
 .learning-metric .detail { padding-bottom: 7px; }

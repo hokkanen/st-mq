@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { timingDisplay, timingPercent } from '../chart/timing-model.js';
+import { timingDisplay, timingExplanations, timingPercent } from '../chart/timing-model.js';
 
 const from = Date.parse('2026-09-08T00:00:00+03:00');
 const hour = 3_600_000;
@@ -19,11 +19,11 @@ test('today model-only zero comparison explicitly separates model basis from ela
   assert.equal(display.sources[0].percentage, '100%');
   assert.equal(display.coverageLabel, '7% of time included');
   assert.equal(display.periodLabel, 'Today so far');
-  assert.match(display.details.comparison.join(' '), /does not prove zero energy use/);
-  assert.match(display.details.comparison.join(' '), /not household consumption minus charger/);
-  assert.match(display.details.coverage.join(' '), /from Finnish midnight to the calculation time/);
-  assert.match(display.details.coverage.join(' '), /estimated and modelled power values/);
-  assert.match(display.details.coverage.join(' '), /out of 10 hours elapsed/);
+  assert.match(display.smallDifferenceExplanation, /does not prove zero energy use/);
+  assert.match(display.energyExplanation, /not household consumption minus charger/);
+  assert.match(timingExplanations.coverage.join(' '), /from Finnish midnight to the calculation time/);
+  assert.match(display.coverageExplanation, /Estimated and modelled power values/);
+  assert.match(display.coverageSummary, /out of 10 hours elapsed/);
   assert.match(display.sources[0].explanation, /do not establish that the heat pump actually ran/);
 });
 
@@ -35,10 +35,10 @@ test('included-time evidence shares preserve mixed assumptions and original samp
   assert.equal(display.basis, 'Mixed basis');
   assert.deepEqual(display.sources.map(source => source.percentage), Array(4).fill('25%'));
   assert.match(display.sources[0].dates, /7 Sept 2026, 23:50/);
-  assert.match(display.details.evidence.join(' '), /not percentages of readings, consumed energy, charging time or accuracy/);
-  assert.match(display.details.evidence.join(' '), /gaps can exist/);
-  assert.match(display.details.evidence.join(' '), /Auxiliary heater output was also assumed during 25%/);
-  assert.match(display.details.evidence.join(' '), /not recorded for 25%/);
+  assert.match(timingExplanations.evidence.join(' '), /not percentages of readings, consumed energy, charging time or accuracy/);
+  assert.match(timingExplanations.evidence.join(' '), /Gaps can exist/);
+  assert.match(display.auxiliaryNotes.join(' '), /Auxiliary heater output was also assumed during 25%/);
+  assert.match(display.auxiliaryNotes.join(' '), /not recorded for 25%/);
 });
 
 test('legacy estimates never acquire meter or model provenance from current live state', () => {
@@ -56,7 +56,7 @@ test('unavailable identifies missing power, incomplete prices and future time se
   assert.equal(unavailable({ powerMs: hour }).unavailableReason, 'Full-day prices missing');
   assert.equal(unavailable({ elapsedMs: 0 }).unavailableReason, 'No elapsed time in this selection');
   assert.equal(unavailable({ powerMs: 0 }).amount, null);
-  assert.match(unavailable({ powerMs: 0 }).details.unavailable.join(' '), /unavailable does not mean zero consumption/);
+  assert.match(timingExplanations.coverage.join(' '), /unavailable does not mean zero consumption/);
   assert.equal(timingDisplay('charger', null).available, false);
 });
 
@@ -66,10 +66,10 @@ test('rates explain historical spot prices and the included-time effect of an as
     priceAssumptions: { durationMs: hour / 2, share: 0.5, firstAt: from, lastAt: from + hour } }, payload);
   assert.equal(display.basis, 'Current estimate');
   assert.equal(display.assumedRates, true);
-  assert.match(display.details.rates.join(' '), /nearest known contract rates/);
-  assert.match(display.details.rates.join(' '), /historical spot prices are not replaced by today/);
-  assert.match(display.details.rates.join(' '), /50% of included time.*day’s comparison average/);
-  assert.match(display.details.rates.join(' '), /Affected included periods: 8 Sept 2026, 00:00/);
+  assert.match(timingExplanations.rates.join(' '), /nearest known contract rates/);
+  assert.match(timingExplanations.rates.join(' '), /historical spot prices are not replaced by today/);
+  assert.match(display.rateSummary, /50% of included time.*day’s comparison average/);
+  assert.match(display.ratePeriod, /Affected included periods: 8 Sept 2026, 00:00/);
   assert.equal(timingDisplay('charger', { ...result, value: null, assumedPrices: true }, payload).assumedRates, false);
 });
 
@@ -83,18 +83,23 @@ test('small included shares remain visible and near-complete coverage does not r
 });
 
 test('sub-cent differences preserve direction and cannot appear as a measured zero saving', () => {
-  assert.equal(timingDisplay('charger', { value: 0.004 }, payload).amount, '+<€0.01');
-  assert.equal(timingDisplay('charger', { value: -0.004 }, payload).amount, '−<€0.01');
+  for (const [value, amount] of [[0.004, '+<€0.01'], [-0.004, '−<€0.01']]) {
+    const display = timingDisplay('charger', { value }, payload);
+    assert.equal(display.amount, amount);
+    assert.match(display.smallDifferenceExplanation, /smaller than half a cent.*sign still shows/);
+    assert.doesNotMatch(display.smallDifferenceExplanation, /rounds to €0\.00/);
+  }
   assert.equal(timingDisplay('charger', { value: -0 }, payload).amount, '€0.00');
   assert.equal(timingDisplay('charger', { value: -12.34 }, payload).amount, '-€12.34');
+  assert.equal(timingDisplay('charger', { value: -12.34 }, payload).smallDifferenceExplanation, null);
 });
 
 test('completed history with missing periods says partial data without promising backfill', () => {
   const display = timingDisplay('heatPump', result, { ...payload, now: from + 48 * hour });
   assert.equal(display.periodLabel, 'Partial data');
-  assert.match(display.details.period.join(' '), /Historical gaps may remain permanently/);
-  assert.match(display.details.period.join(' '), /not extrapolated/);
-  assert.match(display.details.comparison.join(' '), /8 Sept 2026, 10:00/);
+  assert.match(timingExplanations.coverage.join(' '), /Historical gaps may remain permanently/);
+  assert.match(display.periodExplanation, /not extrapolated/);
+  assert.match(display.calculationPeriod, /8 Sept 2026, 10:00/);
   assert.equal(timingDisplay('heatPump', { ...result, value: null }, { ...payload, now: from + 48 * hour }).periodLabel, null);
 });
 
@@ -103,20 +108,20 @@ test('the evidence ladder keeps its ordering when the earliest contributing sour
   assert.deepEqual(display.sources.map(source => source.key), ['measured', 'observed', 'modelled', 'unknown']);
 });
 
-test('reconstructed heat-pump help describes recorded equipment and dated powers without suggesting a model fallback', () => {
+test('reconstructed heat-pump explanation describes recorded equipment and dated powers without suggesting a model fallback', () => {
   const display = timingDisplay('heatPump', { ...result, evidence: {
     energyBasis: 'reconstructed-equipment', timeBasis: 'recorded-interval-time',
     sources: [{ key: 'observed', durationMs: hour, share: 1, firstAt: from, lastAt: from + hour }],
   } }, payload);
   assert.equal(display.basis, 'Operation estimate');
   assert.match(display.sources[0].explanation, /verified auxiliary output.*dated nominal compressor/);
-  assert.match(display.sources[0].explanation, /domestic hot water/);
+  assert.match(display.energyExplanation, /space heating and domestic hot water/);
   assert.match(display.sources[0].dates, /Contributing intervals: 8 Sept 2026, 00:00/);
-  assert.match(display.details.evidence.join(' '), /original boundaries of contributing recorded intervals/);
-  assert.match(display.details.comparison.join(' '), /model predictions do not fill them/);
-  assert.match(display.details.coverage.join(' '), /recorded coverage and freshness/);
-  assert.doesNotMatch(display.details.coverage.join(' '), /30 minutes|estimated and modelled/);
-  assert.doesNotMatch(display.details.evidence.join(' '), /first uses dedicated power/);
+  assert.match(display.evidenceExplanation, /original boundaries of contributing recorded intervals/);
+  assert.match(display.energyExplanation, /Model predictions or a requested operating mode do not fill gaps/);
+  assert.match(display.coverageExplanation, /recorded coverage and freshness/);
+  assert.doesNotMatch(display.coverageExplanation, /30 minutes|estimated and modelled/);
+  assert.doesNotMatch(display.energyExplanation, /first uses dedicated power/);
 });
 
 test('unavailable reconstructed heat-pump energy still explains the required equipment evidence', () => {
@@ -125,8 +130,8 @@ test('unavailable reconstructed heat-pump energy still explains the required equ
     evidence: { energyBasis: 'reconstructed-equipment', sources: [] },
   }, payload);
   assert.equal(display.available, false);
-  assert.match(display.details.unavailable.join(' '), /Recorded compressor activity, verified auxiliary output and dated nominal power assumptions are needed/);
-  assert.doesNotMatch(display.details.unavailable.join(' '), /dedicated heat-pump power reading or a stored/);
+  assert.match(display.energyExplanation, /Recorded compressor activity, verified auxiliary output and dated nominal power assumptions are needed/);
+  assert.doesNotMatch(display.energyExplanation, /dedicated heat-pump power reading or a stored/);
 });
 
 test('recorded charger intervals retain their estimated energy basis and original interval dates', () => {
@@ -139,8 +144,8 @@ test('recorded charger intervals retain their estimated energy basis and origina
   assert.match(display.sources[0].explanation, /reported active power or recorded voltage and current/);
   assert.match(display.sources[0].explanation, /Cumulative meter checks do not correct/);
   assert.match(display.sources[0].dates, /Contributing intervals: 7 Sept 2026, 23:00/);
-  assert.match(display.details.coverage.join(' '), /saved interval without extending into gaps/);
-  assert.doesNotMatch(display.details.coverage.join(' '), /30 minutes|modelled power/);
+  assert.match(display.coverageExplanation, /saved interval without extending into gaps/);
+  assert.doesNotMatch(display.coverageExplanation, /30 minutes|modelled power/);
 });
 
 test('mixed charger history explains interval energy and the bounded legacy snapshot hold separately', () => {
@@ -153,7 +158,7 @@ test('mixed charger history explains interval energy and the bounded legacy snap
   assert.deepEqual(display.sources.map(source => source.key), ['recorded', 'currents']);
   assert.match(display.sources[0].dates, /Contributing intervals and samples/);
   assert.match(display.sources[1].explanation, /phase-current readings at 230 V/);
-  assert.match(display.details.coverage.join(' '), /saved interval without extending into gaps.*Older power snapshots are carried forward for at most 30 minutes/);
+  assert.match(display.coverageExplanation, /saved interval without extending into gaps.*Older power snapshots are carried forward for at most 30 minutes/);
 });
 
 test('simulated reconstructed intervals remain explicitly simulated', () => {
@@ -163,4 +168,24 @@ test('simulated reconstructed intervals remain explicitly simulated', () => {
   } }, payload);
   assert.equal(display.basis, 'Simulated');
   assert.match(display.sources[0].explanation, /do not represent measured household consumption/);
+});
+
+test('shared comparison copy preserves the daily baseline, sign and limits for both devices', () => {
+  assert.match(timingExplanations.comparison.join(' '), /same calculated device energy.*whole day’s time-weighted average all-in price/);
+  assert.match(timingExplanations.comparison.join(' '), /Positive means cheaper timing; negative means dearer timing/);
+  assert.match(timingExplanations.comparison.join(' '), /not scaled up.*does not prove savings caused by the controller/);
+  assert.match(timingExplanations.coverage.join(' '), /Valid zero-consumption values count/);
+  assert.match(timingExplanations.evidence.join(' '), /today’s sensors do not reclassify/);
+});
+
+test('unavailable rate metadata does not suggest a supported device comparison', () => {
+  const display = timingDisplay('charger', { value: null, assumedPrices: true,
+    coverageDetails: { elapsedMs: hour, includedMs: 0, powerMs: hour, firstPowerAt: from, lastPowerAt: from + hour },
+    priceAssumptions: { durationMs: hour, share: 1, firstAt: from, lastAt: from + hour },
+  }, payload);
+  assert.equal(display.assumedRates, false);
+  assert.equal(display.rateSummary, null);
+  assert.equal(display.ratePeriod, null);
+  assert.match(display.availablePowerPeriod, /Available power samples: 8 Sept 2026, 00:00.*Gaps may exist/);
+  assert.equal(display.smallDifferenceExplanation, null);
 });

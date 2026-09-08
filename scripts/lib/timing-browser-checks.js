@@ -51,179 +51,188 @@ export function seedTimingBrowserFixture(store) {
 }
 
 export async function checkTimingBrowser({ command, evaluate, until, capture, context }) {
-  const selector = (device, detail) => `.timing-device[data-device="${device}"] .timing-help[data-detail="${detail}"]`;
   const card = device => `.timing-device[data-device="${device}"]`;
+  const detail = device => `.timing-device-detail[data-device="${device}"]`;
   const text = css => evaluate(`document.querySelector(${JSON.stringify(css)})?.textContent ?? ''`);
-  const visible = "!!document.querySelector('.timing-popover:not([hidden])')";
-  const closed = "!document.querySelector('.timing-popover:not([hidden])')";
-  const click = css => evaluate(`document.querySelector(${JSON.stringify(css)}).click(); true`);
+  const expanded = "document.getElementById('timing-details').open";
+  const summary = '#timing-details > summary';
   const chooseDate = async date => {
-    // Date changes happen away from the help trigger. A stationary synthetic
-    // mouse could otherwise hover a newly rendered trigger after the old popup closes.
-    await command('input.performActions', { context, actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' },
-      actions: [{ type: 'pointerMove', x: 1, y: 1, duration: 0 }] }] });
     await evaluate(`document.getElementById('date-start').value=${JSON.stringify(date)}; document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(date)} && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(date)}`);
   };
-  const pointAt = async (css, pointerType = 'mouse', press = false) => {
+  const key = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'timing-keyboard',
+    actions: [{ type: 'keyDown', value }, { type: 'keyUp', value }] }] });
+  const tap = async css => {
     const point = JSON.parse(await evaluate(`(() => {
       const element = document.querySelector(${JSON.stringify(css)});
       element.scrollIntoView({ block: 'center', inline: 'nearest' });
       const r = element.getBoundingClientRect();
       return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
     })()`));
-    await command('input.performActions', { context, actions: [{ type: 'pointer', id: pointerType, parameters: { pointerType },
+    await command('input.performActions', { context, actions: [{ type: 'pointer', id: 'timing-touch', parameters: { pointerType: 'touch' },
       actions: [{ type: 'pointerMove', x: point.x, y: point.y, duration: 0 },
-        ...(press ? [{ type: 'pointerDown', button: 0 }, { type: 'pointerUp', button: 0 }] : [])] }] });
-  };
-  const escape = async () => {
-    await command('input.performActions', { context, actions: [{ type: 'key', id: 'keyboard',
-      actions: [{ type: 'keyDown', value: '\uE00C' }, { type: 'keyUp', value: '\uE00C' }] }] });
-    await until(closed);
+        { type: 'pointerDown', button: 0 }, { type: 'pointerUp', button: 0 }] }] });
   };
   const checkFits = async () => {
-    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Timing layout does not cause horizontal scrolling');
-    assert.equal(await evaluate(`(() => {
-      const popup = document.querySelector('.timing-popover:not([hidden])');
-      if (!popup) return true;
-      const r = popup.getBoundingClientRect();
-      return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
-    })()`), true, 'Timing explanation remains inside viewport');
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
+      'Timing layout does not cause horizontal scrolling');
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('#timing-details .timing-device, #timing-details .timing-device-detail, #timing-details .timing-explanations, #timing-details .timing-source')).every(element => {
+      const r = element.getBoundingClientRect();
+      return r.left >= 0 && r.right <= innerWidth && element.scrollWidth <= element.clientWidth + 1;
+    })`), true, 'Inline explanations wrap inside their cards and the viewport');
   };
+  const scrollTo = css => evaluate(`document.querySelector(${JSON.stringify(css)}).scrollIntoView({ block: 'start' }); true`);
+  const checkOpen = expected => evaluate(expanded).then(actual => assert.equal(actual, expected,
+    'Timing expansion follows the reader’s choice'));
 
+  assert.equal(await evaluate("document.getElementById('timing-details').tagName"), 'DETAILS');
+  assert.match(await text(summary), /Timing cost/i);
+  await checkOpen(false);
+  await evaluate(`window.timingFoldFixture = {
+    details: document.getElementById('timing-details'), summary: document.querySelector(${JSON.stringify(summary)})
+  }; true`);
   await chooseDate('2026-09-06');
-  await evaluate("document.getElementById('timing-benefit').scrollIntoView({ block: 'center' }); true");
-  await capture('home-energy-timing-historical-desktop');
+  await checkOpen(false);
+  await scrollTo(summary);
+  await capture('home-energy-timing-folded-desktop');
+  await evaluate(`document.querySelector(${JSON.stringify(summary)}).focus(); true`);
+  await key('\uE007');
+  await until(expanded);
+  await key(' ');
+  await until(`!${expanded}`);
+  await key('\uE007');
+  await until(expanded);
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.summary'), true,
+    'Native summary keeps keyboard focus while toggling');
+  assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button, #timing-benefit [role=dialog]').length"), 0,
+    'Timing results and explanations are ordinary text without popup controls');
+
   assert.match(await text(card('heatPump')), /unavailable/i);
-  assert.match(await text(card('charger')), /€[\d.]+/);
-  assert.match(await text(selector('charger', 'coverage')), /100% of time included/,
+  assert.match(await text(`${card('charger')} .timing-amount`), /€[\d.]+/);
+  assert.match(await text(`${card('charger')} .timing-coverage`), /100% of time included/,
     'Recorded zero current counts toward elapsed-time coverage');
-  assert.equal(await evaluate("document.querySelector('.timing-price-caution') === null"), true,
-    'Contract assumption explanation is in the contextual popup');
-  await pointAt(selector('charger', 'rates'));
-  await until(visible);
-  assert.match(await text('.timing-popover'), /nearest known contract rates/i);
-  assert.match(await text('.timing-popover'), /historical spot prices/i);
-  assert.match(await text('.timing-popover'), /100%/);
-  assert.match(await text('.timing-popover'), /2026/);
-  await escape();
-  await evaluate(`document.querySelector(${JSON.stringify(selector('charger', 'coverage'))}).focus(); true`);
-  await until(visible);
-  assert.match(await text('.timing-popover'), /zero/i);
-  assert.match(await text('.timing-popover'), /how often the device ran/i);
-  await escape();
-  await click(selector('heatPump', 'unavailable'));
-  await until(visible);
-  assert.match(await text('.timing-popover'), /power|energy/i);
+  assert.match(await text(`${card('charger')} .timing-assumed`), /assumed rates/i);
+  assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
+  assert.match(await text('.timing-rate-explanation'), /historical spot prices/i);
+  assert.match(await text(detail('charger')), /100%.*included time/i);
+  assert.match(await text(card('charger')), /2026/);
+  assert.match(await text('.timing-explanations'), /zero/i);
+  assert.match(await text('.timing-explanations'), /how often the device ran/i);
+  assert.match(await text('.timing-explanations'), /whole day|full.day|daily average/i);
+  assert.match(await text('.timing-explanations'), /does not prove|not proven/i);
+  assert.match(await text(card('heatPump')), /power|energy/i);
+  await checkFits();
+  await scrollTo(summary);
+  await capture('home-energy-timing-historical-desktop');
 
   await chooseDate('2026-09-05');
-  await until(closed);
-  assert.match(await text(selector('heatPump', 'evidence')), /operation estimate/i);
-  await click(selector('heatPump', 'evidence'));
-  await until(visible);
-  assert.match(await text('.timing-source[data-source="observed"]'), /100%/);
-  assert.match(await text('.timing-popover'), /reconstruct|recorded equipment/i);
-  await escape();
-  assert.match(await text(selector('charger', 'evidence')), /mixed/i);
-  await click(selector('charger', 'evidence'));
-  await until(visible);
-  for (const [key, share] of [['measured', '50%'], ['currents', '25%'], ['unknown', '25%']]) {
-    assert.ok((await text(`.timing-source[data-source="${key}"]`)).includes(share),
-      `${key} is weighted by included time, not observation count`);
+  await checkOpen(true);
+  assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details && document.querySelector('#timing-details > summary') === window.timingFoldFixture.summary"), true,
+    'Changing dates updates the contents without replacing the fold or its summary');
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.summary'), true,
+    'Changing data preserves focus on the native summary');
+  assert.match(await text(`${card('heatPump')} .timing-basis`), /operation estimate/i);
+  assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
+  assert.match(await text(detail('heatPump')), /reconstruct|recorded equipment/i);
+  assert.match(await text(`${card('charger')} .timing-basis`), /mixed/i);
+  for (const [source, share] of [['measured', '50%'], ['currents', '25%'], ['unknown', '25%']]) {
+    const sourceText = await text(`${detail('charger')} .timing-source[data-source="${source}"]`);
+    assert.ok(sourceText.includes(share), `${source} is weighted by included time, not observation count`);
+    assert.match(sourceText, /included time/i);
+    assert.match(sourceText, /2026/, 'Contributing dates remain next to each source explanation');
   }
-  assert.match(await text('.timing-popover'), /included time/i);
-  assert.match(await text('.timing-popover'), /2026/);
-  await checkFits();
-  await capture('home-energy-timing-evidence-desktop');
-  await escape();
+  assert.match(await text(`${detail('charger')} .timing-source[data-source="measured"]`), /dedicated power/i);
+  assert.match(await text(`${detail('charger')} .timing-source[data-source="currents"]`), /230 V/i);
+  assert.match(await text(`${detail('charger')} .timing-source[data-source="unknown"]`), /not recorded/i);
+  assert.equal(await evaluate(`(() => {
+    const cards = [...document.querySelectorAll('.timing-device')].map(element => element.getBoundingClientRect());
+    const note = document.querySelector('.timing-explanations').getBoundingClientRect();
+    const details = [...document.querySelectorAll('.timing-device-detail')].map(element => element.getBoundingClientRect());
+    return cards.every(box => note.top >= box.bottom - 1) && details.every(box => box.top >= note.bottom - 1);
+  })()`), true, 'Both results precede the shared explanations and the longer device details');
 
-  for (const theme of ['dark', 'light']) {
-    await evaluate(`if (document.documentElement.dataset.theme !== ${JSON.stringify(theme)}) document.getElementById('theme-toggle').click(); true`);
-    await evaluate("document.getElementById('timing-benefit').scrollIntoView({ block: 'center' }); true");
-    await capture(`home-energy-timing-${theme}-desktop`);
-    const positions = JSON.parse(await evaluate(`JSON.stringify(['heatPump', 'charger'].map(device => {
-      const r = document.querySelector('.timing-device[data-device="' + device + '"]').getBoundingClientRect();
-      return { top: r.top, left: r.left };
-    }))`));
-    assert.ok(Math.abs(positions[0].top - positions[1].top) < 1 && positions[0].left < positions[1].left,
-      'Desktop presents heat pump left and charger right');
-  }
-
-  for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 640 }]) {
+  for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 640 }]) {
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
     for (const theme of ['dark', 'light']) {
       await evaluate(`if (document.documentElement.dataset.theme !== ${JSON.stringify(theme)}) document.getElementById('theme-toggle').click(); true`);
-      await pointAt(selector('charger', 'evidence'), 'touch', true);
-      await until(visible);
+      await checkOpen(true);
       await checkFits();
-      await capture(`home-energy-timing-evidence-${theme}-${viewport.width}`);
-      // A real touch outside the popup dismisses it.
-      await command('input.performActions', { context, actions: [{ type: 'pointer', id: 'touch', parameters: { pointerType: 'touch' },
-        actions: [{ type: 'pointerMove', x: 1, y: 1, duration: 0 }, { type: 'pointerDown', button: 0 }, { type: 'pointerUp', button: 0 }] }] });
-      await until(closed);
-      await evaluate("document.getElementById('timing-benefit').scrollIntoView({ block: 'center' }); true");
-      await checkFits();
+      const positions = JSON.parse(await evaluate(`JSON.stringify(['heatPump', 'charger'].map(device => {
+        const r = document.querySelector('.timing-device[data-device="' + device + '"]').getBoundingClientRect();
+        return { top: r.top, left: r.left, bottom: r.bottom };
+      }))`));
+      if (viewport.width === 1440) {
+        assert.ok(Math.abs(positions[0].top - positions[1].top) < 1 && positions[0].left < positions[1].left,
+          'Desktop presents heat pump left and charger right');
+      } else if (viewport.width <= 390) {
+        assert.ok(positions[1].top >= positions[0].bottom && Math.abs(positions[0].left - positions[1].left) < 1,
+          'Narrow screens stack the device cards in reading order');
+      }
+      await scrollTo(summary);
       await capture(`home-energy-timing-${theme}-${viewport.width}`);
+      await scrollTo(`${detail('charger')} .timing-source`);
+      await capture(`home-energy-timing-evidence-${theme}-${viewport.width}`);
+      await scrollTo('.timing-explanations');
+      await capture(`home-energy-timing-explanations-${theme}-${viewport.width}`);
+      await tap(summary);
+      await until(`!${expanded}`);
+      await capture(`home-energy-timing-folded-${theme}-${viewport.width}`);
+      await tap(summary);
+      await until(expanded);
     }
   }
 
-  await evaluate(`document.querySelector(${JSON.stringify(selector('charger', 'evidence'))}).focus(); true`);
-  await command('input.performActions', { context, actions: [{ type: 'key', id: 'keyboard',
-    actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
-  await until("document.activeElement.classList.contains('timing-popover-content')");
-  await command('input.performActions', { context, actions: [{ type: 'key', id: 'keyboard',
-    actions: [{ type: 'keyDown', value: '\uE010' }, { type: 'keyUp', value: '\uE010' }] }] });
-  await until("document.querySelector('.timing-popover-content').scrollTop > 0");
-  await escape();
-  assert.equal(await evaluate(`document.activeElement.matches(${JSON.stringify(selector('charger', 'evidence'))})`), true,
-    'Escape returns keyboard focus to the explanation trigger');
-  await pointAt(selector('charger', 'evidence'), 'touch', true);
-  await until(visible);
-  await pointAt('.timing-popover-close', 'touch', true);
-  await until(closed);
-  await click(selector('charger', 'evidence'));
-  await until(visible);
-  await evaluate("document.getElementById('date-start').focus(); true");
-  await until(closed);
-
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await chooseDate('2026-09-04');
-  assert.match(await text(selector('heatPump', 'evidence')), /operation estimate/i);
-  assert.match(await text(selector('heatPump', 'coverage')), /25% of time included/);
-  await click(selector('heatPump', 'evidence'));
-  await until(visible);
-  assert.match(await text('.timing-source[data-source="observed"]'), /100%/);
-  assert.match(await text('.timing-popover'), /reconstruct|recorded equipment/i);
+  await checkOpen(true);
+  assert.match(await text(`${card('heatPump')} .timing-basis`), /operation estimate/i);
+  assert.match(await text(`${card('heatPump')} .timing-coverage`), /25% of time included/);
+  assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
+  assert.match(await text(detail('heatPump')), /reconstruct|recorded equipment/i);
+  await scrollTo(summary);
   await capture('home-energy-timing-reconstructed-desktop');
   await chooseDate('2026-09-03');
-  await until(closed);
+  await checkOpen(true);
   assert.equal(await evaluate("fetch('/api/chart?start=2026-09-03&end=2026-09-03').then(response => response.json()).then(data => data.meta.priceAssumptions.used)"), true);
   assert.match(await text(card('heatPump')), /unavailable/i);
   assert.match(await text(card('charger')), /unavailable/i);
+  assert.match(await text(card('charger')), /price/i);
   assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-assumed').length"), 1,
-    'The chart-level assumed-rate indication appears once when both device comparisons are unavailable');
-  assert.equal(await evaluate("document.querySelectorAll('.timing-chart-rates .timing-help').length"), 1);
-  await click(selector('charger', 'unavailable'));
-  await until(visible);
-  assert.match(await text('.timing-popover'), /price/i);
-  await escape();
-  await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
-  await pointAt('.timing-chart-rates .timing-help', 'touch', true);
-  await until(visible);
-  assert.match(await text('.timing-popover'), /nearest known contract rates/i);
-  assert.match(await text('.timing-popover'), /No device comparison.*includes affected time/i);
-  assert.doesNotMatch(await text('.timing-popover'), /0% of included time/,
+    'The chart-level assumed-rate indication appears once when both comparisons are unavailable');
+  assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
+  assert.match(await text('.timing-chart-rates'), /No device comparison.*includes affected time/i);
+  assert.doesNotMatch(await text('.timing-chart-rates'), /0% of included time/,
     'Chart-only assumptions do not present an irrelevant zero share of included device time');
+  await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await checkFits();
+  await scrollTo('.timing-chart-rates');
   await capture('home-energy-timing-chart-rates-mobile');
-  await pointAt('.timing-popover-close', 'touch', true);
-  await until(closed);
-  await pointAt('.timing-chart-rates .timing-help', 'touch', true);
-  await until(visible);
+  await tap(summary);
+  await until(`!${expanded}`);
   await evaluate("document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'");
-  await until(closed);
-  assert.equal(await evaluate("document.querySelector('.timing-chart-rates') === null"), true,
-    'Known-rate date selections remove the chart assumption indication');
+  await checkOpen(false);
+  assert.equal(await evaluate("document.querySelector('.timing-chart-rates') === null && document.querySelector('.timing-rate-explanation') === null"), true,
+    'Known-rate dates remove obsolete explanations about assumed contract rates');
+  await tap(summary);
+  await until(expanded);
+  // Wait for a real background status poll while the reader leaves the fold open.
+  await evaluate(`window.timingFoldFixture.fetch = window.fetch.bind(window);
+    window.timingFoldFixture.polls = 0;
+    window.fetch = async (...args) => {
+      const response = await window.timingFoldFixture.fetch(...args);
+      if (args[0] === '/api/status') window.timingFoldFixture.polls++;
+      return response;
+    }; true`);
+  try {
+    await until('window.timingFoldFixture.polls > 0', 650);
+    await until("document.getElementById('history').dataset.ready === 'true'");
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    await checkOpen(true);
+    assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details"), true,
+      'Background polling preserves the native fold');
+  } finally {
+    await evaluate('window.fetch = window.timingFoldFixture.fetch; delete window.timingFoldFixture; true');
+  }
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
 }
