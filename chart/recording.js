@@ -55,7 +55,6 @@ export function renderRecording(status, root) {
   description.textContent='Devices can be polled or streamed more often than values are recorded. Each new reading is compared with the last saved value. A shared learned tolerance adjusts the change thresholds toward the rolling storage target; fresh readings are recorded by the maximum interval even when unchanged. Equipment-state and quality changes are recorded immediately. Failed requests and old source timestamps are distinguished from fresh, unchanged readings.';
   const note=document.createElement('p');note.className='muted';
   note.textContent='These are achieved average intervals, not fixed schedules. Included measurements receive the same normalized accuracy treatment. Recording a parameter does not imply that it is used to fit the house model.';
-  const heading=document.createElement('h3');heading.className='recording-section-title';heading.textContent='Adaptive measurements';
   const table=document.createElement('table');table.className='recording-table';
   const head=document.createElement('thead'),headers=document.createElement('tr');
   for(const name of ['Parameter / source','Average · 1 h / 24 h / 7 d','Change threshold','Normalized error · 24 h','Status']) {
@@ -82,7 +81,7 @@ export function renderRecording(status, root) {
   }
   table.append(body);
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);
-  root.replaceChildren(heading,summary,description,note,wrap);
+  root.replaceChildren(summary,description,note,wrap);
 }
 
 const inventoryDateFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'medium',timeStyle:'short'});

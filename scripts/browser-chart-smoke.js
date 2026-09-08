@@ -104,11 +104,12 @@ try {
     return true;
   })()`);
   await evaluate("document.getElementById('recording-details').open=true; true");
+  await evaluate("document.getElementById('recording-adaptive-details').open=true; true");
   await until("document.querySelectorAll('#recording-content tbody tr').length>35");
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/rolling target/);
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Garage temperature/);
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
-  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-overview-details,energy-audit-details');
+  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,energy-audit-details,recording-overview-details');
   await evaluate("document.querySelector('#recording-overview-details > summary').focus(); true");
   await command('input.performActions',{context,actions:[{type:'key',id:'recording-keyboard',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
   await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");

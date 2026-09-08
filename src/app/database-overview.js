@@ -253,7 +253,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       fields: fields(['Scalar summary', 'First/last, minimum/maximum and missing-data boundary readings.'], ['Energy summary', 'Interval energy, covered duration, validity and contributing record count.']) }),
     item('snapshot-content', 'Shared provider snapshot content', 'Immutable deduplicated content shared by timestamped weather and market fetch references listed above.', contentCount ? { count: contentCount } : empty(), {
       countLabel: 'versions', writeBehavior: 'Once per new content digest.', fields: fields(['Content', 'Provider forecast/price intervals.'], ['Digest', 'Content identity used to reuse unchanged data.']) }),
-    item('meter-audits', 'Cumulative meter reference readings', 'Property import and charger lifetime counters plus their stored diagnostic metadata. The Meter accuracy checks panel below shows the latest comparison for each meter.', audits, {
+    item('meter-audits', 'Cumulative meter reference readings', 'Property import and charger lifetime counters plus their stored diagnostic metadata. The Meter accuracy checks panel above shows the latest comparison for each meter.', audits, {
       dateBasis: 'meter observation time', writeBehavior: 'When a changed cumulative counter is received; never used to correct estimates or train.',
       fields: fields(['Meter reading', 'Cumulative kWh, source and receipt timestamps, quality.'], ['Diagnostic context', 'Optional stored comparison metadata; current checks can also be calculated read-only from matching energy coverage.']) }),
     item('rollup-metadata', 'Chart summary bookkeeping', 'A single marker identifies observations predating chart-summary creation.', rollupMeta, {

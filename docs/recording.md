@@ -333,13 +333,13 @@ The left drawer lists historical axes in temperature, heating, hot-water,
 ground-loop, settings, equipment, runtime, electricity, weather and learning groups.
 Recorded and calculated roles are separate from model roles.
 
-**Recording details describes stored database contents.** The first table
-describes adaptive measurements: achieved intervals, learned thresholds,
+**Recording details describes stored database contents.** The first fold,
+**Adaptive measurements**, contains achieved intervals, learned thresholds,
 freshness and growth. Its explanation distinguishes fast acquisition from
 recording changes against the last saved value, and describes the shared rolling
 storage objective. An average recording interval is not a fixed poll schedule.
 
-The **Other recorded data** fold appears before **Meter accuracy checks**. It
+The **Other recorded data** fold appears after **Meter accuracy checks**. It
 describes the remaining datasets using field lists, counts, available dates and
 the way each dataset is updated. Groups cover:
 
