@@ -77,20 +77,45 @@ space heating is yellow, hot-water heating blue, DHWR brown and heat-off request
 use a light crossed hatch. Every series is initially visible except DHWR; saved
 legend choices persist. A separate strip shows observed native operating mode.
 
-The chart's daily HP and EV price-timing comparisons hold recorded energy fixed
-and compare its cost with each day's duration-weighted average all-in price.
+The chart's daily HP and EV price-timing comparisons hold the included daily
+energy fixed and compare its cost with each day's duration-weighted average
+all-in price. Heat pump appears on the left and charger on the right, with a
+shared explanation below; narrow screens stack the results. Underlined labels
+open explanations on hover, keyboard focus or tap. Escape or an outside tap
+closes the explanation.
+
+Each comparison identifies its energy basis: dedicated power readings, nominal
+power estimated from observed compressor operation, thermal-model predictions,
+charger phase-current estimates, simulation, or unrecorded provenance. The
+included-time mix is duration-weighted, not a percentage of samples, energy or
+accuracy. Auxiliary consumption may still be assumed within an operation-based
+estimate; its recorded assumption or unknown status is explained separately.
+Historical classification uses only metadata saved with those power samples.
+Missing old metadata stays unknown, and current sensors never upgrade old data.
+Source details report first and last contributing sample timestamps; these are
+not a claim of continuous observations between those times.
+
+Time included is the fraction of selected elapsed time used in the comparison,
+including valid zero-power readings and model predictions. For today it ends at
+the calculation time, not the following midnight. The details distinguish time
+without power inputs from power inputs excluded because a full day's prices are
+missing. The result is never extrapolated to excluded time. Power inputs are
+held for at most 30 minutes; these holds are not new measurements. An unfinished
+day is identified separately from incomplete historical coverage.
+
 Missing historical contract periods use the nearest known rates with historical
-spot prices, applying the rate schedule at the historical Finnish local time.
-With only today's rates recorded, earlier entries use those rates. Affected
-comparisons show **assumed rates**, and a caution appears whenever displayed
-prices or timing benefits use this assumption. Coverage continues to describe
-energy and price availability; it does not imply that assumed rates were verified.
+spot prices and the historical Finnish tariff hour. With only today's rates
+recorded, earlier entries use those rates. **Assumed rates** explains which
+included periods depend on that assumption, including the full-day average.
+This price-assumption share is separate from the energy evidence mix and does
+not imply a statistical confidence level.
 
 Historical scalar spot readings supply their containing 15-minute price slot,
 allowing for small logging delays. Missing slots stay missing, and a complete
 day's spot prices are still required for its daily average. Missing energy
 periods are excluded. Charger phase currents can provide older energy estimates;
-heat-pump comparisons still require dedicated power readings. These timing
+heat-pump history may contain measured, operation-based or modelled power, with
+its basis shown explicitly. These timing
 comparisons are distinct from the learning metrics' modelled full-cycle profit.
 Missing AUX routing, solar forecasts or complete recovery evidence stays unknown.
 Learning values are stored as learned; new forecasts and models do not rewrite

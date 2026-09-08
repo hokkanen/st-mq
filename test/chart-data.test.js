@@ -35,6 +35,10 @@ test('daily timing comparison uses exact local-day duration, including both DST 
     assert.equal(result.charger.actualCostEuro, -0.2);
     assert(Math.abs(result.charger.value - (2 * average / 100 + 0.2)) < 1e-10);
     assert.equal(result.charger.coverage, 1);
+    assert.equal(result.charger.coverageDetails.elapsedMs, hours * HOUR);
+    assert.equal(result.charger.coverageDetails.includedMs, hours * HOUR);
+    assert.equal(result.charger.coverageDetails.missingPowerMs, 0);
+    assert.equal(result.charger.evidence.sources[0].share, 1);
     assert.equal(result.charger.provisional, false);
     assert.equal(result.heatPump.value, null, 'No property-minus-charger proxy for heat pump energy');
   }
@@ -160,6 +164,10 @@ test('old charger timing uses current known rates and historical spot without ch
     assert(result.timingBenefit.charger.value > 0);
     assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);
     assert.equal(result.timingBenefit.charger.assumedPrices, true);
+    assert.equal(result.timingBenefit.charger.priceAssumptions.share, 1,
+      'Historical included time all uses assumed rates');
+    assert.equal(result.timingBenefit.charger.priceAssumptions.firstAt, from);
+    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + 90 * MINUTE);
     assert.equal(verified.timingBenefit.charger.assumedPrices, false);
     assert.equal(result.timingBenefit.heatPump.value, null);
     assert.equal(result.timingBenefit.heatPump.assumedPrices, false);
@@ -169,6 +177,126 @@ test('old charger timing uses current known rates and historical spot without ch
     const noContract = get(store, { market, now: current });
     assert.equal(noContract.timingBenefit.charger.value, null);
     assert.equal(noContract.meta.priceAssumptions.used, false);
+  } finally { store.close(); }
+});
+
+test('timing evidence follows each held sample, weights time rather than sample count, and includes zero power', () => {
+  const range = chartRange({ startDate: date, now });
+  const timing = new DailyTimingBenchmark(range, from + 2 * HOUR, [
+    { start: from, end: range.to, totalCtPerKwh: 20 },
+  ]);
+  timing.add('heatPump', from - 10 * MINUTE, 1, { key: 'measured' });
+  timing.add('heatPump', from + 10 * MINUTE, 2, { key: 'observed', auxiliaryAssumed: true });
+  timing.add('heatPump', from + 40 * MINUTE, 0, { key: 'modelled' });
+  timing.add('heatPump', from + 45 * MINUTE, 0, { key: 'modelled' });
+  timing.add('heatPump', from + 50 * MINUTE, 0, { key: 'modelled' });
+  timing.add('heatPump', from + 60 * MINUTE, 3, { key: 'unknown', auxiliaryUnknown: true });
+  timing.add('heatPump', from + 110 * MINUTE, null);
+  const result = timing.result().heatPump;
+  assert.deepEqual(result.coverageDetails, { elapsedMs: 120 * MINUTE, includedMs: 90 * MINUTE,
+    powerMs: 90 * MINUTE, missingPowerMs: 30 * MINUTE, incompletePriceMs: 0,
+    from, to: from + 2 * HOUR, firstPowerAt: from - 10 * MINUTE, lastPowerAt: from + HOUR });
+  const sources = Object.fromEntries(result.evidence.sources.map(source => [source.key, source]));
+  assert.equal(sources.measured.durationMs, 10 * MINUTE, 'A carried-in sample counts only its selected overlap');
+  assert.equal(sources.measured.firstAt, from - 10 * MINUTE, 'Show the captured sample time, not the clipped boundary');
+  assert.equal(sources.observed.durationMs, 30 * MINUTE);
+  assert.equal(sources.modelled.durationMs, 20 * MINUTE);
+  assert.equal(sources.modelled.energyKwh, 0, 'Zero is still evidence coverage');
+  assert.equal(sources.modelled.firstAt, from + 40 * MINUTE);
+  assert.equal(sources.modelled.lastAt, from + 50 * MINUTE);
+  assert.equal(sources.unknown.durationMs, 30 * MINUTE, 'Missing data after the 30-minute hold is excluded');
+  assert.equal(result.evidence.auxiliaryAssumedShare, 1 / 3);
+  assert.equal(result.evidence.auxiliaryUnknownShare, 1 / 3);
+  assert(Math.abs(result.evidence.sources.reduce((sum, source) => sum + source.share, 0) - 1) < 1e-12);
+  assert(Math.abs(result.evidence.sources.reduce((sum, source) => sum + source.energyKwh, 0) - result.energyKwh) < 1e-12);
+  assert.deepEqual(timing.result().heatPump, result, 'Reading results again cannot double count the final hold');
+});
+
+test('coverage explains missing power separately from incomplete full-day prices and clips future time', () => {
+  const range = chartRange({ startDate: date, endDate: '2026-01-16', now });
+  const next = from + 24 * HOUR;
+  const timing = new DailyTimingBenchmark(range, next + HOUR, [
+    { start: from, end: next, totalCtPerKwh: 10 },
+    { start: next, end: range.to - 15 * MINUTE, totalCtPerKwh: 20 },
+  ]);
+  timing.add('heatPump', from, 0, { key: 'measured' });
+  timing.add('heatPump', from + 30 * MINUTE, null);
+  timing.add('heatPump', next, 1, { key: 'modelled' });
+  timing.add('heatPump', next + 30 * MINUTE, null);
+  const result = timing.result().heatPump, details = result.coverageDetails;
+  assert.equal(details.elapsedMs, 25 * HOUR);
+  assert.equal(details.includedMs, 30 * MINUTE);
+  assert.equal(details.powerMs, HOUR);
+  assert.equal(details.incompletePriceMs, 30 * MINUTE, 'A missing future price slot excludes this whole day');
+  assert.equal(details.missingPowerMs, 24 * HOUR);
+  assert.equal(details.includedMs + details.incompletePriceMs + details.missingPowerMs, details.elapsedMs);
+  assert.deepEqual(result.evidence.sources.map(source => source.key), ['measured'], 'Excluded values are not part of the included evidence mix');
+  const future = new DailyTimingBenchmark(range, from - HOUR).result().heatPump;
+  assert.equal(future.coverageDetails.elapsedMs, 0);
+  assert.equal(future.coverageDetails.to, from);
+  assert.deepEqual(future.evidence.sources, []);
+});
+
+test('archived provenance is classified conservatively without consulting newer compressor telemetry', () => {
+  const store = new Store(':memory:');
+  try {
+    const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
+    const metadata = [
+      { basis: 'measured', compressorObserved: false, auxiliaryObserved: false },
+      { basis: 'estimated', compressorObserved: true, auxiliaryObserved: false },
+      { basis: 'estimated', compressorObserved: false, auxiliaryObserved: true },
+      { basis: 'estimated' },
+    ];
+    for (let index = 0; index < metadata.length; index++) put(store, 'heat_pump_power', index ? 0 : 2,
+      from + index * 30 * MINUTE, { unit: 'kW', quality: ['estimated'], raw: metadata[index] });
+    // A later sensor reading cannot retroactively upgrade the legacy unknown estimate.
+    put(store, 'compressor_active', 1, from + HOUR, { source: 'husdata-h66', unit: 'state', raw: { usableForControl: true } });
+    const result = get(store, { market, contract, now: from + 2 * HOUR }).timingBenefit.heatPump;
+    assert.deepEqual(result.evidence.sources.map(source => [source.key, source.share]),
+      [['measured', 0.25], ['observed', 0.25], ['modelled', 0.25], ['unknown', 0.25]]);
+    assert.equal(result.evidence.auxiliaryAssumedShare, 0.25, 'Metered whole-pump power does not assume auxiliary consumption');
+    assert.equal(result.evidence.auxiliaryUnknownShare, 0.25);
+    assert.equal(result.coverage, 1);
+    assert.equal(result.energyKwh, 1);
+  } finally { store.close(); }
+});
+
+test('charger current and legacy scalar evidence remain distinct and missing prices still report available power', () => {
+  const store = new Store(':memory:');
+  try {
+    for (let phase = 1; phase <= 3; phase++) put(store, `ev1_current_l${phase}`, 0, from);
+    put(store, 'charger_power', 0, from + 30 * MINUTE, { unit: 'kW', raw: {
+      basis: 'Three coherent phase currents × nominal 230 V; not an energy meter',
+    } });
+    put(store, 'charger_power', 0, from + HOUR, { unit: 'kW' });
+    const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
+    const included = get(store, { market, contract, now: from + 90 * MINUTE }).timingBenefit.charger;
+    assert.equal(included.coverage, 1);
+    assert.equal(included.value, 0);
+    assert.deepEqual(included.evidence.sources.map(source => [source.key, source.durationMs]),
+      [['currents', HOUR], ['unknown', 30 * MINUTE]]);
+    const excluded = get(store, { contract, now: from + 90 * MINUTE }).timingBenefit.charger;
+    assert.equal(excluded.value, null);
+    assert.equal(excluded.coverageDetails.powerMs, 90 * MINUTE, 'Historical phase values count even with no prices at all');
+    assert.equal(excluded.coverageDetails.incompletePriceMs, 90 * MINUTE);
+    assert.equal(excluded.coverageDetails.missingPowerMs, 0);
+    assert.deepEqual(excluded.evidence.sources, []);
+  } finally { store.close(); }
+});
+
+test('simulated timing evidence cannot inherit a physical-meter claim or enter household results', () => {
+  const store = new Store(':memory:');
+  try {
+    const prices = [{ start: from, end: from + 24 * HOUR, allInCentsPerKWh: 10 }];
+    put(store, 'heat_pump_power', 2, from, { source: 'controller-estimate', device: 'simulated', unit: 'kW',
+      raw: { basis: 'measured', powerBasis: 'measured', auxiliaryObserved: false } });
+    const simulated = get(store, { input: 'simulated', simulated: { prices }, now: from + 30 * MINUTE }).timingBenefit.heatPump;
+    assert.equal(simulated.evidence.sources[0].key, 'simulated');
+    assert.equal(simulated.evidence.sources[0].share, 1);
+    assert.equal(simulated.evidence.auxiliaryAssumedShare, 0);
+    const household = get(store, { market: { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] }, contract }).timingBenefit.heatPump;
+    assert.equal(household.value, null);
+    assert.equal(household.coverageDetails.powerMs, 0);
   } finally { store.close(); }
 });
 
@@ -220,6 +348,10 @@ test('rate assumptions in the daily baseline are flagged even when charging has 
     const result = get(store, { market, contract: partialContract });
     assert(Number.isFinite(result.timingBenefit.charger.value));
     assert.equal(result.timingBenefit.charger.assumedPrices, true);
+    assert.equal(result.timingBenefit.charger.priceAssumptions.share, 1,
+      'Assumed full-day baseline affects even the energy that has known rates');
+    assert.equal(result.timingBenefit.charger.priceAssumptions.firstAt, from + HOUR);
+    assert.equal(result.timingBenefit.charger.priceAssumptions.lastAt, from + 2 * HOUR);
     const verified = get(store, { market, contract });
     assert.equal(verified.timingBenefit.charger.assumedPrices, false);
     assert.equal(result.timingBenefit.charger.value, verified.timingBenefit.charger.value);

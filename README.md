@@ -117,7 +117,7 @@ directly below the current readings.
   is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
   charges. Explicit saved legend choices are preserved. All-in prices combine
   historical spot prices with the contract rates for that date, or the nearest
-  known rates when the date is uncovered. A caution identifies these assumptions;
+  known rates when the date is uncovered. An **Assumed rates** explanation identifies these assumptions;
   missing spot prices stay unavailable.
 - **Shading:** crosshatched **Heat Off** represents requested reduction; yellow
   **Compressor · house** and blue **Compressor · hot water** require concurrent
@@ -125,15 +125,26 @@ directly below the current readings.
   and starts hidden. A separate **Pump mode** strip shows categorical H66 readback.
   Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
   individual auxiliary episodes.
-- **Timing benefit:** below the chart, heat-pump and charger estimates compare
-  recorded energy at its actual times with the same daily energy at the whole
-  Finnish day's average all-in price. Coverage and provisional results are shown.
-  Missing historical contract rates use the nearest known rates with historical
-  spot prices; affected estimates show **assumed rates** and a caution. Missing
-  energy periods and days with incomplete spot prices are excluded. Older charger
-  phase-current readings can support this comparison; heat-pump energy still
-  requires its own power readings.
-  This is a timing comparison, not proof of controller savings.
+- **Timing comparison:** below the chart, each device compares the cost of its
+  included energy at the recorded timestamps with the same daily energy at the
+  whole Finnish day's average all-in price. The visible basis distinguishes
+  dedicated power readings, estimates from observed compressor operation,
+  thermal-model predictions, charger current estimates, simulation and older
+  records whose basis is unknown. Heat-pump power is never property consumption
+  minus charger consumption.
+  **Time included** describes the share of the selected elapsed time that enters
+  the calculation, including zero-power readings and model predictions. It is not
+  runtime, the share of charging days or a confidence score. The evidence mix
+  describes shares of that included time, so frequent samples do not receive
+  extra weight. Missing power periods and days with incomplete spot prices are
+  excluded; the result is not extrapolated to missing periods. For today, the
+  denominator runs from Finnish midnight to the calculation time.
+  Hover, focus or tap the underlined labels for the calculation, source mix,
+  timestamps, price assumptions and missing-time details. Missing historical
+  contract rates use the nearest known rates with historical spot prices;
+  **Assumed rates** includes assumptions affecting the daily average even when
+  the device ran during a period with known rates. This comparison does not
+  establish savings caused by the controller.
 
 Chart changes affect the display only. Viewing history neither polls providers
 nor sends equipment commands. Large ranges use bounded display resolution,

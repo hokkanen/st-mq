@@ -5,6 +5,7 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
+import { timingEvidenceSource, timingPowerEvidence } from './timing-evidence.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -285,6 +286,11 @@ function intervalPoints(intervals, key, envelope) {
 export class DailyTimingBenchmark {
   constructor(range, now, prices = []) {
     this.range = range; this.now = Math.min(now, range.to); this.previous = new Map();
+    this.details = Object.fromEntries(['heatPump', 'charger'].map(name => [name, {
+      powerMs: 0, firstPowerAt: null, lastPowerAt: null, sources: new Map(),
+      auxiliaryAssumedMs: 0, auxiliaryUnknownMs: 0,
+      priceAssumptions: { durationMs: 0, firstAt: null, lastAt: null, timeBasis: 'included-period' },
+    }]));
     this.prices = prices.filter(row => Number.isFinite(row.totalCtPerKwh)).sort((a, b) => a.start - b.start);
     this.days = [];
     let priceIndex = 0;
@@ -303,11 +309,17 @@ export class DailyTimingBenchmark {
         observedDuration: Math.max(0, Math.min(end, this.now) - Math.max(start, range.from)), heatPump: { energy: 0, cost: 0, covered: 0 }, charger: { energy: 0, cost: 0, covered: 0 } });
     }
   }
-  add(name, at, kw) {
+  add(name, at, kw, evidence = {}) {
     if (!['heatPump', 'charger'].includes(name) || !Number.isFinite(at)) return;
     const previous = this.previous.get(name);
     if (previous && at >= previous.at && Number.isFinite(previous.kw) && previous.kw >= 0) {
       let start = Math.max(previous.at, this.range.from), end = Math.min(at, previous.at + 30 * 60_000, this.now);
+      const details = this.details[name];
+      if (end > start) {
+        details.powerMs += end - start;
+        details.firstPowerAt ??= previous.at;
+        details.lastPowerAt = previous.at;
+      }
       // Binary lookup keeps long-range costs proportional to source observations.
       let lo = 0, hi = this.prices.length;
       while (lo < hi) { const mid = (lo + hi) >>> 1; if (this.prices[mid].end <= start) lo = mid + 1; else hi = mid; }
@@ -322,12 +334,24 @@ export class DailyTimingBenchmark {
           if (day.average !== null) {
             const energy = previous.kw * duration / HOUR;
             day[name].energy += energy; day[name].cost += energy * price.totalCtPerKwh / 100; day[name].covered += duration;
+            const key = timingEvidenceSource(previous.evidence?.key);
+            if (!details.sources.has(key)) details.sources.set(key, { key, durationMs: 0, energyKwh: 0,
+              firstAt: previous.at, lastAt: previous.at });
+            const source = details.sources.get(key);
+            source.durationMs += duration; source.energyKwh += energy; source.lastAt = previous.at;
+            if (previous.evidence?.auxiliaryAssumed) details.auxiliaryAssumedMs += duration;
+            if (previous.evidence?.auxiliaryUnknown) details.auxiliaryUnknownMs += duration;
+            if (day.assumedPrices || price.assumedPrice) {
+              details.priceAssumptions.durationMs += duration;
+              details.priceAssumptions.firstAt ??= a;
+              details.priceAssumptions.lastAt = until;
+            }
           }
           a = until;
         }
       }
     }
-    if (!previous || at >= previous.at) this.previous.set(name, { at, kw });
+    if (!previous || at >= previous.at) this.previous.set(name, { at, kw, evidence });
   }
   result() {
     for (const name of ['heatPump', 'charger']) this.add(name, this.now, null);
@@ -337,12 +361,23 @@ export class DailyTimingBenchmark {
       const energyKwh = this.days.reduce((sum, day) => sum + day[name].energy, 0);
       const actualCostEuro = this.days.reduce((sum, day) => sum + day[name].cost, 0);
       const uniformCostEuro = this.days.reduce((sum, day) => sum + day[name].energy * (day.average ?? 0) / 100, 0);
+      const details = this.details[name], share = ms => covered ? ms / covered : 0;
       return [name, { value: covered ? uniformCostEuro - actualCostEuro : null, energyKwh: covered ? energyKwh : null,
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
         coverage: duration ? Math.min(1, covered / duration) : 0, provisional: this.now < this.range.to || covered < duration,
-        basis: name === 'charger' ? 'Estimated from three phase-current snapshots' : 'Estimated heat-pump electrical power; no whole-property subtraction',
-        explanation: 'Recorded energy at its actual times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
+        coverageDetails: { elapsedMs: duration, includedMs: covered, powerMs: details.powerMs,
+          missingPowerMs: Math.max(0, duration - details.powerMs), incompletePriceMs: Math.max(0, details.powerMs - covered),
+          from: this.range.from, to: Math.max(this.range.from, this.now),
+          firstPowerAt: details.firstPowerAt, lastPowerAt: details.lastPowerAt },
+        evidence: { basis: 'included-time', timeBasis: 'power-sample-time',
+          sources: [...details.sources.values()].map(source => ({ ...source, share: share(source.durationMs) })),
+          auxiliaryAssumedMs: details.auxiliaryAssumedMs, auxiliaryAssumedShare: share(details.auxiliaryAssumedMs),
+          auxiliaryUnknownMs: details.auxiliaryUnknownMs, auxiliaryUnknownShare: share(details.auxiliaryUnknownMs) },
+        priceAssumptions: { ...details.priceAssumptions, share: share(details.priceAssumptions.durationMs) },
+        basis: name === 'charger' ? 'Charger power snapshots, with recorded evidence where available'
+          : 'Heat-pump power readings and estimates, with recorded evidence where available; no whole-property subtraction',
+        explanation: 'Energy calculated from saved power values at their recorded times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
     }));
   }
 }
@@ -369,7 +404,6 @@ function* mergedHistoryRows(store, nativeRows, from, to, requested) {
 }
 
 function addHistoricalChargerTiming(store, timing, range, now, input) {
-  if (!timing.days.some(day => day.average !== null)) return;
   const scope = input === 'simulated' ? "(o.source='simulation' OR o.source='controller-estimate' AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source='controller-estimate' AND o.device='simulated'))";
   const firstPower = store.db.prepare(`SELECT min(o.source_time) AS at FROM observations o
@@ -389,7 +423,8 @@ function addHistoricalChargerTiming(store, timing, range, now, input) {
     const candidates = [...groups.values()].sort((a, b) => b.priority - a.priority || b.id - a.id);
     if (candidates.length) {
       const values = candidates[0].values;
-      timing.add('charger', at, values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) * 0.23 : null);
+      timing.add('charger', at, values.every(Number.isFinite) ? values.reduce((sum, value) => sum + value, 0) * 0.23 : null,
+        { key: input === 'simulated' ? 'simulated' : 'currents' });
     }
     groups = new Map();
   };
@@ -447,7 +482,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'solar_forecast'].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
-    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
+    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
   const query = store.db.prepare(`SELECT ${columns}
@@ -534,8 +569,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
-        if (signal === 'heat_pump_power') timing.add('heatPump', time, row.unit === 'kW' ? value : null);
-        if (signal === 'charger_power') timing.add('charger', time, row.unit === 'kW' ? value : null);
+        if (signal === 'heat_pump_power') timing.add('heatPump', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
+        if (signal === 'charger_power') timing.add('charger', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
         if (LEARNING.includes(signal)) {
           try { const raw = JSON.parse(row.raw); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
         }

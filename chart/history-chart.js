@@ -2,6 +2,7 @@ import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
 import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
+import { createTimingBenefit } from './timing-benefit.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -32,6 +33,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const $ = id => document.getElementById(id);
   const canvas = $('history');
   const loader = createChartLoader({ api });
+  const timing = createTimingBenefit($('timing-benefit'));
   const preferences = loadPreferences();
   const listeners = [];
   let graph, payload, plottedSelection, fingerprint, status, initialized = false, closed = false;
@@ -132,25 +134,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     root.append(title, track);
   }
   function renderTiming() {
-    const root = $('timing-benefit'); if (!root) return;
-    root.replaceChildren();
-    const money = value => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(value);
-    for (const [key, name] of [['heatPump', 'Heat pump'], ['charger', 'Charger']]) {
-      const result = payload?.timingBenefit?.[key], row = document.createElement('p'), title = document.createElement('strong');
-      title.textContent = `${name}: `;
-      row.append(title, document.createTextNode(Number.isFinite(result?.value)
-        ? `${money(result.value)} timing benefit · estimated${result.assumedPrices ? ' · assumed rates' : ''}${result.provisional ? ' · provisional' : ''} · ${Math.round(result.coverage * 100)}% coverage`
-        : 'Timing comparison unavailable · energy and full-day prices needed'));
-      row.title = result?.basis ?? ''; root.append(row);
-    }
-    if (payload?.meta?.priceAssumptions?.used || Object.values(payload?.timingBenefit ?? {}).some(result => result.assumedPrices)) {
-      const caution = document.createElement('p'); caution.className = 'timing-explanation timing-price-caution';
-      caution.textContent = 'Some historical all-in prices use the nearest known contract rates. Estimated timing benefits depend on these assumed rates.';
-      root.append(caution);
-    }
-    const note = document.createElement('p'); note.className = 'timing-explanation';
-    note.textContent = 'Same recorded energy at each whole day’s average all-in price. Positive = cheaper timing; negative = dearer. Missing energy periods and days with incomplete spot prices are excluded. Not proven controller savings.';
-    root.append(note);
+    timing.render(payload);
   }
   function renderChart() {
     if (!payload) return;
@@ -292,5 +276,5 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
-  return { refresh, updateTheme, close() { closed = true; loader.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  return { refresh, updateTheme, close() { closed = true; loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

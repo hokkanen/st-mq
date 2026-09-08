@@ -525,7 +525,10 @@ export class Engine {
     // Historical values represent estimates as known then, never revised forecasts of past sunshine.
     const persist = (signal,value,unit,raw,quality=['estimated']) => this.store.observation({source:'controller-estimate',device:input,signal,value,unit,sourceTime:now,receivedAt:now,quality,raw});
     if (input !== 'offline') {
-      persist('heat_pump_power',sample.powerKw,'kW',{basis:sample.energyBasis, compressorObserved: Number.isFinite(equipment.compressorOn), auxiliaryObserved:sample.auxiliaryObserved});
+      persist('heat_pump_power',sample.powerKw,'kW',{basis:sample.energyBasis, powerBasis:sample.powerBasis,
+        powerSourceTime:sample.powerSourceTime, powerReceivedAt:sample.powerReceivedAt,
+        compressorObserved:sample.compressorActivityObserved, auxiliaryObserved:sample.auxiliaryObserved,
+        auxiliaryAssumed:sample.auxiliaryAssumed});
       if (sample.auxiliaryObserved) persist('auxiliary_power',sample.auxKw,'kW',{basis:sample.auxiliaryPowerBasis,
         nominalStage:sample.auxiliaryStage,ratedPowerKw:this.control.auxRatedKw,route:sample.auxRoute,verified:true,usableForControl:true});
       if (Number.isFinite(radiation)) {

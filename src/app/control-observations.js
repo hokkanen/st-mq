@@ -40,6 +40,10 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const auxKw = observations.actual?.source === 'simulation' ? observations.actual.auxKw ?? 0 : auxiliaryPower?.kw ?? null;
   // A dedicated power observation may replace nominal component estimates. Whole-house current never does.
   const meter = fresh('heat_pump_meter_power');
+  const simulation = observations.actual?.source === 'simulation';
+  const powerBasis = simulation ? 'simulated' : meter ? 'measured' : compressor !== null ? 'observed'
+    : finite(compressorDuty) ? 'modelled' : 'unknown';
+  const powerInput = meter ?? (powerBasis === 'observed' ? fresh('compressor_active') : null);
   const powerKw = meter ? meter.value : finite(compressorDuty) ? compressorDuty * checkpoint.model.energy.compressorKw
     + (auxKw ?? (currentMode === 2 ? 0 : (phase === 'recovery' ? 0.03 : 0.015) * config.auxRatedKw * (checkpoint.model.energy.auxiliaryRiskScale ?? 1)))
     + config.circulationKw * compressorDuty + (phase === 'preheat' ? config.dhwrKw : 0) : null;
@@ -48,6 +52,11 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const sample = { timestamp: now, indoorC, outdoorC, solarRadiationWm2: radiation, phase, roomBoostC,
     targetC: checkpoint.baselineC, quality: finite(indoorC) && finite(outdoorC) ? [] : ['missing'],
     powerKw: observations.actual?.source === 'simulation' ? observations.actual.powerKw : powerKw,
+    powerBasis, powerSourceTime: simulation || powerBasis === 'modelled' ? now
+      : powerInput?.sourceTime ?? null,
+    powerReceivedAt: simulation || powerBasis === 'modelled' ? now
+      : powerInput?.receivedAt ?? null,
+    auxiliaryAssumed: !simulation && !meter && auxKw === null,
     compressorPowerKw: checkpoint.model.energy.compressorKw, compressorDuty,
     thermalCompressorDuty: compressor !== null && route !== null ? (route === 0 ? compressor : 0) : null,
     thermalAuxKw: auxKw !== null && route !== null ? (route === 0 ? auxKw : 0) : null,
@@ -69,6 +78,6 @@ export function deriveChargerPower(latest, now) {
   if (Math.max(...rows.map(o => o.sourceTime)) - Math.min(...rows.map(o => o.sourceTime)) > 60000) return null;
   return { source: 'controller-estimate', device: 'ev1', signal: 'charger_power',
     value: rows.reduce((sum,o) => sum+o.value,0) * 230 / 1000, unit: 'kW', sourceTime: Math.min(...rows.map(o => o.sourceTime)),
-    receivedAt: now, quality: ['estimated'], raw: { basis: 'Three coherent phase currents × nominal 230 V; not an energy meter',
+    receivedAt: now, quality: ['estimated'], raw: { basis: 'Three coherent phase currents × nominal 230 V; not an energy meter', powerBasis: 'currents',
       phaseTimes: rows.map(o => o.sourceTime) } };
 }
