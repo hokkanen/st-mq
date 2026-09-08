@@ -26,14 +26,20 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+    assert.equal(actual.length, 15);
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
     assert.equal(overview.accounting.views[0].name, 'provider_snapshots');
-    assert.equal(overview.accounting.totalRows, 1, 'only the chart summary marker exists initially');
+    assert.equal(overview.accounting.totalRows, 0, 'fresh databases contain no synthetic chart bookkeeping records');
+    assert(!overview.accounting.tables.some(table => table.name.startsWith('chart_rollup')));
+    assert(!items(overview).has('chart-rollups'));
+    assert(!items(overview).has('rollup-metadata'));
+    assert.match(overview.groups.find(group => group.id === 'support').description, /original committed records/);
+    assert.match(overview.groups.find(group => group.id === 'support').description, /cached chart responses stay in memory/);
     for (const [id, item] of items(overview)) {
       assert(item.description && item.retentionDescription, id);
-      assert.equal(item.status, id === 'rollup-metadata' ? 'present' : 'empty', id);
+      assert.equal(item.status, 'empty', id);
     }
   } finally { store.close(); }
 });

@@ -234,9 +234,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const coverage = aggregate('recorder_coverage', 'start_at', 'end_at');
   const metrics = aggregate('recorder_metrics', 'bucket');
   const audits = aggregate('energy_audits', 'source_time');
-  const rollups = aggregate('chart_rollups', 'bucket');
-  const rollupMeta = db.prepare('SELECT COUNT(*) count FROM chart_rollup_meta').get();
-  add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Summaries and references are not extra independent readings.', [
+  add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read original committed records using SQLite indexes. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
     item('adaptive-observations', 'Adaptive observations', 'The recorded temperature, equipment and three-phase energy series listed in the main adaptive table above.', observations.get('adaptive'), {
       dateBasis: 'observation time', writeBehavior: 'When adaptive thresholds, maximum fresh-data spacing, state or quality changes require a record.', fields: observationFields }),
     item('coverage', 'Availability and verification coverage', 'Compact spans distinguish fresh unchanged readings from stale, failed or unavailable acquisition.', coverage, {
@@ -247,17 +245,11 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       countLabel: 'hourly buckets', dateBasis: 'bucket time', retention: 'rolling', retentionDescription: 'Hourly buckets updated in place; buckets older than seven days are pruned by the recorder.',
       writeBehavior: 'Each acquisition updates its current hourly bucket.',
       fields: fields(['Counts', 'Polls, saved records and stale/failed/unavailable acquisitions.'], ['Compression statistics', 'Approximate serialized observation bytes and accumulated normalized error/time; not per-table disk usage.']) }),
-    item('chart-rollups', 'Stored chart summaries', 'Hourly scalar endpoints/extrema/gap markers and 15-minute phase-energy sums speed up long historical charts.', rollups, {
-      countLabel: 'summaries', dateBasis: 'bucket time', retention: 'derived', retentionDescription: 'Stored calculated summaries, updated as source observations arrive. They do not train the model.',
-      writeBehavior: 'When eligible observations are committed.',
-      fields: fields(['Scalar summary', 'First/last, minimum/maximum and missing-data boundary readings.'], ['Energy summary', 'Interval energy, covered duration, validity and contributing record count.']) }),
     item('snapshot-content', 'Shared provider snapshot content', 'Immutable deduplicated content shared by timestamped weather and market fetch references listed above.', contentCount ? { count: contentCount } : empty(), {
       countLabel: 'versions', writeBehavior: 'Once per new content digest.', fields: fields(['Content', 'Provider forecast/price intervals.'], ['Digest', 'Content identity used to reuse unchanged data.']) }),
     item('meter-audits', 'Cumulative meter reference readings', 'Property import and charger lifetime counters plus their stored diagnostic metadata. The Meter accuracy checks panel above shows the latest comparison for each meter.', audits, {
       dateBasis: 'meter observation time', writeBehavior: 'When a changed cumulative counter is received; never used to correct estimates or train.',
       fields: fields(['Meter reading', 'Cumulative kWh, source and receipt timestamps, quality.'], ['Diagnostic context', 'Optional stored comparison metadata; current checks can also be calculated read-only from matching energy coverage.']) }),
-    item('rollup-metadata', 'Chart summary bookkeeping', 'A single marker identifies observations predating chart-summary creation.', rollupMeta, {
-      ...currentOptions, fields: fields(['Coverage marker', 'Observation identifier through which original rows remain authoritative.']) }),
   ]);
   if (snapshots.get('other')?.count) groups.at(-1).items.push(item('snapshot-other', 'Other provider fetch references',
     'Additional provider snapshot kinds present in the database.', snapshots.get('other'), { dateBasis: 'fetch time' }));
@@ -270,7 +262,6 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     provider_snapshot_fetches: sum([...snapshots.values()]).count, provider_snapshot_contents: contentCount,
     recorder_coverage: coverage.count, recorder_metrics: metrics.count, energy_audits: audits.count,
     learning_journal: sum([...journal.values()]).count, learning_samples: samples.count, learning_cycles: cycles.count,
-    chart_rollups: rollups.count, chart_rollup_meta: rollupMeta.count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
   const tables = actualTables.map(({ name }, index) => Object.hasOwn(tableCounts, name) ? { name, rows: tableCounts[name] }
@@ -282,7 +273,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`) : 0;
   return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
     database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
-      description: 'SQLite allocated pages include tables, indexes and reusable pages. Main-file plus WAL bytes are physical files and include temporary journal overhead; dataset sizes are not estimated.' },
+      description: 'SQLite allocated pages include recorded data, indexes that speed lookups and reusable pages. Chart responses and display-point reduction use memory, not additional database tables. Main-file plus WAL bytes are physical files and include temporary journal overhead; dataset sizes are not estimated.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),
       views: [{ name: 'provider_snapshots', description: 'Compatibility view joining fetch references with shared content; it stores no additional rows.' }],
       description: 'Each physical table is counted once here. Dataset counts above overlap where documents contain periods or fetches reference shared content; do not add those dataset counts together.' } };

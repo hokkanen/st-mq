@@ -2,9 +2,8 @@ import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
 import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { rollupSchema, updateChartRollup } from './chart-rollups.js';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -168,8 +167,10 @@ export class Store {
         if (version < 3) this.db.exec(easeeAcquisitionIndex);
         if (version < 4) this.db.exec(learningSchema);
         if (version < 5) this.db.exec(recorderSchema);
-        if (version < 6) this.db.exec(rollupSchema);
         if (version < 7) this.db.exec('CREATE INDEX IF NOT EXISTS events_type_time ON events(type,at,id)');
+        // Chart results are reconstructed from original history. Discard the
+        // obsolete display caches; their pages become available for reuse.
+        if (version < 8) this.db.exec('DROP TABLE IF EXISTS chart_rollups; DROP TABLE IF EXISTS chart_rollup_meta;');
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
@@ -410,7 +411,6 @@ export class Store {
     return this.transaction(() => {
       const id = Number(this.insertObservation.run(source, device, signal, value, unit, sourceTime, receivedAt,
         json(flags), raw === null ? null : json(raw), provenance?.importId ?? null, provenance?.rowNumber ?? null).lastInsertRowid);
-      updateChartRollup(this.db,{source,device,signal,value,unit,sourceTime,receivedAt,quality:flags,raw,provenance},id);
       return id;
     });
   }

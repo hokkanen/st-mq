@@ -1,5 +1,4 @@
 import { PHASE_ENERGY_SIGNALS } from '../domain/history-series.js';
-import { ENERGY_ROLLUP_MS, energyRollupRows, rollupWatermark } from '../storage/chart-rollups.js';
 
 const HOUR = 3_600_000;
 const invalid = new Set(['missing','invalid_numeric','invalid_unit','provider_error','integration_gap','unknown_phase_share']);
@@ -15,22 +14,40 @@ export function recordedEnergyStart(store, prefix, input) {
 
 /** Each phase query includes the first following interval. Reading just this
  * boundary instead of an entire extra day keeps sparse/fallback windows bounded. */
-function* rawRows(store, { from, to, now, input, prefix, source, device, beforeId, afterId }) {
-  const signals = prefix ? [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`) : PHASE_ENERGY_SIGNALS;
-  const clauses = [scope(input), 'received_at<=?'], values = [now];
-  if (source !== undefined) { clauses.push('source=?'); values.push(source); }
-  if (device !== undefined) { clauses.push('device=?'); values.push(device); }
-  if (beforeId !== undefined) { clauses.push('id<=?'); values.push(beforeId); }
-  if (afterId !== undefined) { clauses.push('id>?'); values.push(afterId); }
+function* rawRows(store, { from, to, now, input }) {
+  const signals = PHASE_ENERGY_SIGNALS;
   const columns = 'id,source,device,signal,value,unit,source_time,received_at,quality,raw';
-  const condition = clauses.join(' AND '), until = Math.min(to, now);
-  yield* store.db.prepare(`SELECT ${columns} FROM observations
-    WHERE signal IN (${signals.map(() => '?').join(',')}) AND source_time>=? AND source_time<=? AND ${condition}
-    ORDER BY source_time,id`).iterate(...signals, from, until, ...values);
+  const condition = `${scope(input)} AND received_at<=?`, until = Math.min(to, now);
+  // Six individually ordered index scans avoid sorting the whole selected energy
+  // history in SQLite. Merge only their current heads; source time and insertion
+  // ID preserve the original three-phase acquisition cohort order.
+  const heads = [], pending = new Set();
+  try {
+    for (const signal of signals) {
+      const iterator = store.db.prepare(`SELECT ${columns} FROM observations INDEXED BY observations_signal_time
+        WHERE signal=? AND source_time>=? AND source_time<=? AND ${condition}
+        ORDER BY source_time,id`).iterate(signal, from, until, now);
+      pending.add(iterator);
+      const next = iterator.next();
+      if (next.done) pending.delete(iterator); else heads.push({ iterator, next });
+    }
+    while (heads.length) {
+      let index = 0;
+      for (let i = 1; i < heads.length; i++) if (heads[i].next.value.source_time < heads[index].next.value.source_time
+        || heads[i].next.value.source_time === heads[index].next.value.source_time && heads[i].next.value.id < heads[index].next.value.id) index = i;
+      const head = heads[index]; yield head.next.value;
+      head.next = head.iterator.next();
+      if (head.next.done) { pending.delete(head.iterator); heads.splice(index, 1); }
+    }
+  } finally {
+    // A failed projection or later cursor initialization must release every
+    // already opened statement without replacing the original error.
+    for (const iterator of pending) try { iterator.return?.(); } catch { /* Best-effort cleanup. */ }
+  }
   if (now <= to) return;
-  const next = store.db.prepare(`SELECT ${columns} FROM observations
+  const next = store.db.prepare(`SELECT ${columns} FROM observations INDEXED BY observations_signal_time
     WHERE signal=? AND source_time>? AND source_time<=? AND ${condition} ORDER BY source_time,id LIMIT 1`);
-  yield* signals.map(signal => next.get(signal, to, Math.min(now, to + 24 * HOUR), ...values)).filter(Boolean)
+  yield* signals.map(signal => next.get(signal, to, Math.min(now, to + 24 * HOUR), now)).filter(Boolean)
     .sort((a, b) => a.source_time - b.source_time || a.id - b.id);
 }
 
@@ -53,27 +70,10 @@ function* rawGroups(rows, stats) {
   if (group) yield group;
 }
 
-function* rollupGroups(rows, stats) {
-  let key = null, group = null;
-  for (const row of rows) {
-    stats.rollupRows++;
-    const prefix = prefixOf(row.signal), next = JSON.stringify([row.bucket, row.source, row.device, prefix]);
-    if (next !== key) {
-      if (group) yield group;
-      key = next;
-      group = { prefix, source: row.source, device: row.device, bucket: row.bucket,
-        start: row.bucket, end: row.bucket + ENERGY_ROLLUP_MS, phases: [null, null, null] };
-    }
-    group.phases[Number(row.signal.at(-1)) - 1] = row;
-  }
-  if (group) yield group;
-}
-
-/** Complete 15-minute energy sums give equivalent cost for quarter-aligned
- * prices. Incomplete buckets, selection edges and finer tariff changes retain
- * raw intervals. Decimated drawing points never determine energy or cost. */
+/** Original three-phase intervals supply every history range. Drawing points
+ * may be reduced in memory, but never determine energy or tariff comparisons. */
 export function addRecordedEnergy({store,range,now,input,envelopes,timing}) {
-  const stats = {rows:0,intervals:0,rollupRows:0,aggregated:false,aggregationMinutes:null,rawFallbackBuckets:0};
+  const stats = {rows:0,intervals:0};
   const lastEnd = new Map();
   const project = (name,start,end,value,metadata) => {
     const line = envelopes[name]; if (!line) return;
@@ -91,8 +91,7 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing}) {
     stats.intervals++;
     const complete = values.length === 3 && values.every(Number.isFinite);
     const total = complete ? values.reduce((sum,value)=>sum+value,0) : null;
-    const metadata = {basis:'estimated',intervalStart:start,intervalEnd:end,source:group.source,fromEnergy:true,
-      ...(group.aggregated ? {aggregated:true,aggregationMinutes:15,basis:'estimated-quarter-hour-average'} : {})};
+    const metadata = {basis:'estimated',intervalStart:start,intervalEnd:end,source:group.source,fromEnergy:true};
     project(prefix === 'ev1' ? 'charger_power' : 'property_power',start,end,total === null ? null : total*HOUR/duration,metadata);
     for (let phase=0;phase<3;phase++) {
       const value = values[phase] ?? null, power = value === null ? null : value*HOUR/duration;
@@ -102,38 +101,7 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing}) {
     }
     if (prefix === 'ev1' && complete) timing.addEnergy('charger',start,end,total);
   };
-  const watermark = range.to-range.from > 7*24*HOUR ? rollupWatermark(store.db) : null;
-  const options = {from:range.from,to:range.to,now,input};
-  if (watermark === null) {
-    for (const group of rawGroups(rawRows(store,options),stats)) accept(group);
-  } else {
-    if (watermark>0) for (const group of rawGroups(rawRows(store,{...options,beforeId:watermark}),stats)) accept(group);
-    const preciseBuckets = new Set();
-    for (const price of timing.prices ?? []) for (const boundary of [price.start,price.end]) {
-      if (Number.isFinite(boundary) && boundary%ENERGY_ROLLUP_MS!==0)
-        preciseBuckets.add(Math.floor(boundary/ENERGY_ROLLUP_MS)*ENERGY_ROLLUP_MS);
-    }
-    for (const group of rollupGroups(energyRollupRows(store.db,{from:range.from,to:Math.min(range.to,now),input}),stats)) {
-      const complete = group.start>=range.from && group.end<=Math.min(range.to,now)
-        && !preciseBuckets.has(group.bucket) && group.phases.every(phase=>phase && phase.valid
-          && phase.row?.unit==='kWh' && phase.coveredMs===ENERGY_ROLLUP_MS
-          && phase.start===group.start && phase.end===group.end && phase.row.received_at<=now);
-      if (complete) {
-        stats.aggregated=true;stats.aggregationMinutes=15;
-        accept({...group,values:group.phases.map(phase=>phase.energy),aggregated:true});
-      } else {
-        stats.rawFallbackBuckets++;
-        const from=Math.max(group.start,range.from),to=Math.min(group.end,range.to,now);
-        const candidates=rawGroups(rawRows(store,{...options,from,to,source:group.source,device:group.device,
-          prefix:group.prefix,afterId:watermark}),stats);
-        for(const original of candidates) {
-          const start=Math.max(from,original.start),end=Math.min(to,original.end),duration=original.end-original.start;
-          if(end<=start || duration<=0 || duration>24*HOUR) continue;
-          accept({...original,start,end,values:original.values.map(value=>value===null?null:value*(end-start)/duration)});
-        }
-      }
-    }
-  }
+  for (const group of rawGroups(rawRows(store,{from:range.from,to:range.to,now,input}),stats)) accept(group);
   // Finish only after all adjacent intervals are projected, so a shared edge
   // does not acquire a spurious missing marker.
   for (const [name,end] of lastEnd) envelopes[name]?.add(end,null);

@@ -6,9 +6,8 @@ import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
-import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS, H66_HISTORY_SIGNALS } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS } from '../domain/history-series.js';
 import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
-import { ROLLUP_SIGNALS, chartRollupRows, rollupWatermark } from '../storage/chart-rollups.js';
 import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
 
@@ -377,10 +376,14 @@ function* mergedHistoryRows(store, nativeRows, from, to, requested) {
     }
   }
   const imports = imported(), native = nativeRows[Symbol.iterator]();
-  let a = imports.next(), b = native.next();
-  while (!a.done || !b.done) {
-    if (!a.done && (b.done || a.value.source_time <= b.value.source_time)) { yield a.value; a = imports.next(); }
-    else { yield b.value; b = native.next(); }
+  try {
+    let a = imports.next(), b = native.next();
+    while (!a.done || !b.done) {
+      if (!a.done && (b.done || a.value.source_time <= b.value.source_time)) { yield a.value; a = imports.next(); }
+      else { yield b.value; b = native.next(); }
+    }
+  } finally {
+    for (const iterator of [imports, native]) try { iterator.return?.(); } catch { /* Preserve the query error. */ }
   }
 }
 
@@ -463,37 +466,40 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
     ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'heat_pump_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
-  const watermark = range.to-range.from > 7*DAY ? rollupWatermark(store.db) : null;
-  const summarized = new Set(watermark === null ? [] : [...requested].filter(signal=>ROLLUP_SIGNALS.includes(signal)));
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
   // Read only the selected signals from their index. A chronological full-table
-  // scan still touches years of phase energy even when summaries replace it.
+  // scan still touches years of phase energy even when this axis needs only
+  // scalar measurements. Recorded energy has its own bounded iterator below.
   // Merge bounded iterators instead of sorting a large intermediate SQL result.
   function* nativeHistoryRows() {
-    const heads=[];
-    for(const signal of requested) {
-      const summarizedSignal=summarized.has(signal);
-      if(summarizedSignal && watermark===0 && compactImports)continue;
-      const query=store.db.prepare(`SELECT ${columns}
-        FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
-        WHERE o.signal=? AND o.source_time>=? AND o.source_time<?
-        ${summarizedSignal ? `AND (o.id<=${watermark}${compactImports?'':' OR o.import_id IS NOT NULL'})` : ''}
-        ${compactImports ? 'AND o.import_id IS NULL' : ''}
-        AND ${sourceScope} AND (o.import_id IS NULL OR i.status='complete')
-        AND COALESCE(json_extract(o.raw,'$.recorder.status'),'fresh')='fresh'
-        ORDER BY o.source_time,o.id`);
-      const iterator=query.iterate(signal,range.from-3*HOUR,Math.min(range.to,now+1));
-      const item=iterator.next();if(!item.done)heads.push({iterator,value:item.value});
-    }
-    while(heads.length) {
-      let index=0;
-      for(let i=1;i<heads.length;i++)if(heads[i].value.source_time<heads[index].value.source_time
-        ||heads[i].value.source_time===heads[index].value.source_time&&heads[i].value.id<heads[index].value.id)index=i;
-      const head=heads[index];yield head.value;
-      const next=head.iterator.next();if(next.done)heads.splice(index,1);else head.value=next.value;
+    const heads=[],pending=new Set();
+    try {
+      for(const signal of requested) {
+        const query=store.db.prepare(`SELECT ${columns}
+          FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
+          WHERE o.signal=? AND o.source_time>=? AND o.source_time<?
+          ${compactImports ? 'AND o.import_id IS NULL' : ''}
+          AND ${sourceScope} AND (o.import_id IS NULL OR i.status='complete')
+          AND COALESCE(json_extract(o.raw,'$.recorder.status'),'fresh')='fresh'
+          ORDER BY o.source_time,o.id`);
+        const iterator=query.iterate(signal,range.from-3*HOUR,Math.min(range.to,now+1));
+        pending.add(iterator);
+        const item=iterator.next();
+        if(item.done)pending.delete(iterator);else heads.push({iterator,value:item.value});
+      }
+      while(heads.length) {
+        let index=0;
+        for(let i=1;i<heads.length;i++)if(heads[i].value.source_time<heads[index].value.source_time
+          ||heads[i].value.source_time===heads[index].value.source_time&&heads[i].value.id<heads[index].value.id)index=i;
+        const head=heads[index];yield head.value;
+        const next=head.iterator.next();
+        if(next.done){pending.delete(head.iterator);heads.splice(index,1);}else head.value=next.value;
+      }
+    } finally {
+      for(const iterator of pending)try{iterator.return?.();}catch{/* Preserve the query/projection error. */}
     }
   }
   const flagsOf = qualityReader(); let rawRows = 0, invalidRows = 0, latestOutdoor = null;
@@ -612,16 +618,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     atRows = new Map(); phases = new Map();
   };
   const nativeRows = nativeHistoryRows();
-  const baseRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, Math.min(range.to, now + 1), requested) : nativeRows;
-  function* withSummaries() {
-    const a=baseRows[Symbol.iterator](), b=chartRollupRows(store.db,{from:range.from-3*HOUR,to:Math.min(range.to,now+1),signals:summarized,input})[Symbol.iterator]();
-    let x=a.next(),y=b.next();
-    while(!x.done||!y.done) {
-      if(!x.done&&(y.done||x.value.source_time<=y.value.source_time)){yield x.value;x=a.next();}
-      else {yield y.value;y=b.next();}
-    }
-  }
-  const historyRows = summarized.size ? withSummaries() : baseRows;
+  const historyRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, Math.min(range.to, now + 1), requested) : nativeRows;
   function* rowsWithPreviousReadings() {
     const earlier = [];
     // Learned estimates remain in effect until superseded, including past-day
@@ -774,12 +771,12 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, recordedEnergy, heatPumpEnergy, hourlySummaries: summarized.size>0,
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
     dhwrBasis: 'Historical ten-minute pulse requests, not verified pump feedback.',
-    decimation: 'Per time bucket: first, last, minimum, maximum and missing-data breaks. Long ranges use hourly summaries; costs use recorded energy intervals.' } };
+    decimation: 'Original recorded history, reduced in memory for display: first, last, minimum, maximum and missing-data breaks per time bucket. Costs use original energy intervals independently of drawing points.' } };
 }

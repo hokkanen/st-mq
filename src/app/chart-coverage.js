@@ -37,9 +37,13 @@ export function* chartCoverageRows(store,{from,to,input,signals}) {
 
 export function* mergeCoverageRows(rows,store,options) {
   const a=rows[Symbol.iterator](),b=chartCoverageRows(store,options)[Symbol.iterator]();
-  let x=a.next(),y=b.next();
-  while(!x.done||!y.done) {
-    if(!x.done&&(y.done||x.value.source_time<=y.value.source_time)) {yield x.value;x=a.next();}
-    else {yield y.value;y=b.next();}
+  try {
+    let x=a.next(),y=b.next();
+    while(!x.done||!y.done) {
+      if(!x.done&&(y.done||x.value.source_time<=y.value.source_time)) {yield x.value;x=a.next();}
+      else {yield y.value;y=b.next();}
+    }
+  } finally {
+    for(const iterator of [a,b])try{iterator.return?.();}catch{/* Preserve the original read/projection failure. */}
   }
 }

@@ -87,6 +87,8 @@ try {
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-yesterday,range-today,range-tomorrow');
   assert.equal(await evaluate("document.getElementById('left-axis').value"), 'power');
+  assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/original saved history.*stay in memory.*original recorded intervals/);
+  assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"),/hourly temperature extrema|15-minute energy sums|15-minute aggregate/);
   assert(await evaluate("document.querySelectorAll('#left-axis optgroup').length")>=10);
   for(const key of ['garage_temperature','brine_pump_speed','phase_energy','alarm_code'])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
@@ -118,6 +120,8 @@ try {
   assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Database snapshot:/);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=heat_pump_power]'))"),false,'calculated heat-pump power is not a separate stored series');
   assert(await evaluate("document.querySelectorAll('.recording-storage-accounting tbody tr').length")>10,'physical table accounting is available separately');
+  assert.equal(await evaluate("[...document.querySelectorAll('.recording-storage-accounting tbody th')].some(node=>/^chart_rollup/.test(node.textContent))"),false,'plot reduction does not create stored chart-summary tables');
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=chart-rollups], [data-dataset-id=rollup-metadata]'))"),false,'the database inventory contains no materialized chart summaries');
   for(const id of ['weather-snapshots','journal-context','state-settings']) {
     await evaluate(`(() => {const item=document.querySelector('[data-dataset-id="${id}"]');item.closest('.recording-data-group').open=true;item.open=true;return true;})()`);
     assert.equal(await evaluate(`document.querySelector('[data-dataset-id="${id}"] > summary').textContent.includes('No records yet')`),false,`${id} has actual stored records`);

@@ -47,8 +47,8 @@ test('failed overview refresh preserves the previous inventory and a retry recov
   fail=false;await view.refresh({force:true});assert.equal(view.renders.length,2);assert.equal(calls,4);
 });
 
-test('inventory distinguishes stored summaries, overwritten state and missing history, while excluding reconstructed heat power from adaptive records',()=>{
-  assert.equal(inventoryItemSummary({count:3,countLabel:'summaries',retention:'derived',status:'present'}),'3 summaries · Stored summaries');
+test('inventory distinguishes stored calculations, overwritten state and missing history, while excluding reconstructed heat power from adaptive records',()=>{
+  assert.equal(inventoryItemSummary({count:3,countLabel:'records',retention:'derived',status:'present'}),'3 records · Stored calculations');
   assert.equal(inventoryItemSummary({count:1,countLabel:'current entries',retention:'current',status:'present'}),'1 current entry · Current state · overwritten');
   assert.equal(inventoryItemSummary({count:0,retention:'history',status:'empty'}),'No records yet · Retained history');
   assert.equal(inventoryDateSpan({status:'empty'}),'No recorded dates yet');

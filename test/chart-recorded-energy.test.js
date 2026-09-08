@@ -10,9 +10,10 @@ const near = (actual, expected) => assert(Math.abs(actual - expected) < 1e-10, `
 const rates = { periods: [{ from: day.from - 24 * HOUR, marginCtPerKwh: 0, taxCtPerKwh: 0, vatRate: 0, tariff: 'day-night',
   transferRates: { vatIncluded: false, dayCtPerKwh: 0, nightCtPerKwh: 0, winterDayCtPerKwh: 0, otherCtPerKwh: 0 } }] };
 
-function interval(store, start, end, values, { prefix = 'ev1', quality = ['estimated', 'phase_allocation_estimated', 'reported_active_power'], unit = 'kWh' } = {}) {
-  store.transaction(() => values.forEach((value, phase) => store.observation({ source: 'easee', device: `invented-${prefix}`,
-    signal: `${prefix}_energy_l${phase + 1}`, value, unit, sourceTime: end, receivedAt: end, quality,
+function interval(store, start, end, values, { prefix = 'ev1', quality = ['estimated', 'phase_allocation_estimated', 'reported_active_power'], unit = 'kWh',
+  source = 'easee', device = `invented-${prefix}`, receivedAt = end } = {}) {
+  store.transaction(() => values.forEach((value, phase) => store.observation({ source, device,
+    signal: `${prefix}_energy_l${phase + 1}`, value, unit, sourceTime: end, receivedAt, quality,
     raw: { intervalStart: start, intervalEnd: end, durationMs: end - start, basis: 'integrated-power-phase-allocation' } })));
 }
 
@@ -110,7 +111,7 @@ test('legacy power stops at recorded energy handover and audit counters cannot c
   } finally { store.close(); }
 });
 
-test('long ranges use complete quarter-hour sums and fall back only for an incomplete bucket', () => {
+test('long ranges preserve original power peaks, interval provenance and gaps without stored summaries', () => {
   const store = new Store(':memory:');
   try {
     const start = day.from + HOUR;
@@ -120,19 +121,17 @@ test('long ranges use complete quarter-hour sums and fall back only for an incom
       interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [power / 60, 0, 0]);
     }
     const raw = project(store, day), long = project(store, { from: day.from, to: day.to + 8 * 24 * HOUR });
-    assert.equal(long.meta.aggregated, true);
-    assert.equal(long.meta.aggregationMinutes, 15);
-    assert.equal(long.meta.rawFallbackBuckets, 1);
-    assert.equal(long.meta.rollupRows, 6);
+    assert.deepEqual(long.meta, { rows: 87, intervals: 29 });
     near(long.timing.charger.energyKwh, raw.timing.charger.energyKwh);
     near(long.timing.charger.actualCostEuro, raw.timing.charger.actualCostEuro);
-    near(long.series.charger_power.find(row => row.aggregated && row.y !== null).y, (7 + 8 * 9) / 15);
+    near(Math.max(...long.series.charger_power.map(row => row.y ?? -Infinity)), 9);
+    assert(long.series.charger_power.filter(row => row.fromEnergy).every(row => row.intervalEnd - row.intervalStart === MINUTE));
+    assert(long.series.charger_power.every(row => !Object.hasOwn(row, 'aggregated')));
     assert(long.series.charger_power.some(row => row.y === null && row.x >= start + 20 * MINUTE && row.x < start + 21 * MINUTE));
-    assert(long.meta.rows < 90, 'healthy quarter never scans its minute rows');
   } finally { store.close(); }
 });
 
-test('a tariff change inside a quarter uses original intervals for cost, other quarters remain aggregated', () => {
+test('arbitrary tariff boundaries use original intervals for the same exact costs on every range', () => {
   const store = new Store(':memory:');
   try {
     const start = day.from + HOUR, boundary = start + 7 * MINUTE;
@@ -142,35 +141,75 @@ test('a tariff change inside a quarter uses original intervals for cost, other q
     }
     const prices = [{ start: day.from, end: boundary, totalCtPerKwh: 10 }, { start: boundary, end: day.to, totalCtPerKwh: 50 }];
     const raw = project(store, day, day.to, prices), long = project(store, { from: day.from, to: day.to + 8 * 24 * HOUR }, day.to, prices);
-    assert.equal(long.meta.aggregated, true); assert.equal(long.meta.rawFallbackBuckets, 1);
+    assert.deepEqual(long.meta, { rows: 90, intervals: 30 });
     near(long.timing.charger.actualCostEuro, raw.timing.charger.actualCostEuro);
     near(long.timing.charger.energyKwh, raw.timing.charger.energyKwh);
     near(long.timing.charger.actualCostEuro, 7 / 60 * 0.1 + (8 * 9 / 60 + 15 * 3 / 60) * 0.5);
   } finally { store.close(); }
 });
 
-test('legacy migration watermark retains old energy and avoids counting its first summarized neighbor twice', () => {
+test('mixed recording durations retain each original interval without double counting their shared boundary', () => {
   const store = new Store(':memory:');
   try {
     const start = day.from + HOUR;
     interval(store, start, start + 15 * MINUTE, [0.1, 0.2, 0.2]);
-    store.db.exec('UPDATE chart_rollup_meta SET legacy_through=(SELECT MAX(id) FROM observations); DELETE FROM chart_rollups;');
     for (let minute = 15; minute < 30; minute++) interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.01, 0.02, 0.02]);
     const result = project(store, { from: day.from, to: day.to + 8 * 24 * HOUR });
-    assert(result.meta.aggregated);
     near(result.timing.charger.energyKwh, 0.5 + 15 * 0.05);
-    assert.equal(result.meta.rollupRows, 3); assert.equal(result.meta.rawFallbackBuckets, 0);
+    assert.deepEqual(result.meta, { rows: 48, intervals: 16 });
+    assert(result.series.charger_power.some(row => row.intervalStart === start && row.intervalEnd === start + 15 * MINUTE));
+    assert(result.series.charger_power.some(row => row.intervalStart === start + 15 * MINUTE && row.intervalEnd === start + 16 * MINUTE));
   } finally { store.close(); }
 });
 
-test('partial selected edges fall back without losing or extrapolating recorded energy', () => {
+test('partial selected edges clip drawing and cost while retaining the original energy interval provenance', () => {
   const store = new Store(':memory:');
   try {
     const start = day.from + HOUR;
     for (let minute = 0; minute < 30; minute++) interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.1, 0, 0]);
     const result = project(store, { from: start + 90_000, to: day.to + 8 * 24 * HOUR });
-    assert.equal(result.meta.rawFallbackBuckets, 1); assert(result.meta.aggregated);
+    assert.deepEqual(result.meta, { rows: 87, intervals: 29 });
     near(result.timing.charger.energyKwh, 2.85);
     assert.equal(result.series.charger_power[0].x, start + 90_000);
+    assert.equal(result.series.charger_power[0].intervalStart, start + MINUTE);
+    assert.equal(result.series.charger_power[0].intervalEnd, start + 2 * MINUTE);
+  } finally { store.close(); }
+});
+
+test('energy index scans merge chronologically without a full-range SQL sort or mixing incomplete device cohorts', () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, now = start + 5 * MINUTE;
+    // Insertion order differs from observation time and alternates the property
+    // and charger cohorts. Index cursors must retain time/ID order together.
+    for (const minute of [2, 0, 1]) {
+      interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.3, 0.2, 0.1], { prefix: 'property' });
+      interval(store, start + minute * MINUTE, start + (minute + 1) * MINUTE, [0.1, 0.02, 0.03]);
+    }
+    for (const [phase, device, source] of [[1, 'invented-other-a', 'easee'], [2, 'invented-other-b', 'easee'], [3, 'invented-other-b', 'other-source']]) {
+      store.observation({ source, device, signal: `ev1_energy_l${phase}`, value: 10, unit: 'kWh',
+        sourceTime: start + 4 * MINUTE, receivedAt: start + 4 * MINUTE, quality: ['estimated'],
+        raw: { intervalStart: start + 3 * MINUTE, intervalEnd: start + 4 * MINUTE } });
+    }
+    interval(store, start, start + MINUTE, [99, 0, 0], { source: 'simulation' });
+    interval(store, start, start + MINUTE, [99, 0, 0], { device: 'invented-late', receivedAt: now + MINUTE });
+    const plans = [];
+    const facade = { db: { prepare(sql) {
+      const statement = store.db.prepare(sql);
+      if (!sql.includes('source_time>=?')) return statement;
+      return { iterate(...parameters) {
+        plans.push(store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters));
+        return statement.iterate(...parameters);
+      } };
+    } } };
+    const result = project(facade, day, now);
+    near(result.timing.charger.energyKwh, 0.45);
+    near(result.timing.charger.actualCostEuro, 0.09);
+    assert.equal(result.meta.rows, 21, 'Simulation and future receipt rows stay outside the physical query');
+    assert(result.series.charger_power.some(row => row.x === start + 3 * MINUTE && row.y === null));
+    assert(result.series.property_power.some(row => Math.abs(row.y - 36) < 1e-10));
+    assert.equal(plans.length, 6);
+    assert(plans.every(plan => plan.some(row => /SEARCH observations USING INDEX observations_signal_time/.test(row.detail))));
+    assert(plans.every(plan => plan.every(row => !/TEMP B-TREE/.test(row.detail))), 'The default original-energy path must not sort all selected rows');
   } finally { store.close(); }
 });

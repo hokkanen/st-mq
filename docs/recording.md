@@ -223,19 +223,25 @@ then; it is not duplicated as a synthetic one-minute solar observation and is no
 labelled as house-measured radiation. Later forecasts cannot replace the version
 used by an earlier learning sample.
 
-Long-range display summaries preserve representative scalar values and missing
-data information. Electrical summaries use 15-minute energy sums and coverage;
-their plotted power is labelled as a quarter-hour average. With complete coverage
-and quarter-aligned prices, those sums give the same timing cost as the original
-intervals. Incomplete buckets, partial selection edges and tariff changes within
-a quarter use the original intervals instead. Pre-migration energy stays on its
-original path, with a watermark preventing double counting.
+Charts are constructed from original committed history at every date range.
+The database does not store hourly scalar summaries or 15-minute chart-energy
+copies. Electrical power is calculated from each original recorded energy
+interval, and timing comparisons split that interval at the applicable price
+and day boundaries. Partial selection edges and missing periods retain their
+original meaning. Imported CSV history keeps its original timestamps, units,
+quality and provenance.
 
-These summaries serve chart queries only; training and audit calculations use
-their own committed source inputs. Summaries do not replace or delete original
-history. Existing observations are preserved through transactional
-schema migration. Actual annual size and year-query latency must be measured on
-the deployment; no Raspberry Pi 5 timing guarantee follows from desktop tests.
+Database indexes locate the required signals and periods. Phase-energy streams
+are merged in chronological order, avoiding a large intermediate SQL sort.
+Chart point reduction happens in memory: endpoints, extrema and gap markers
+keep the response bounded without determining energy or costs. The worker's
+bounded response cache also lives only in memory. Learning and meter-audit
+calculations continue to use their own committed source inputs.
+
+Schema 8 removes the obsolete chart-cache tables. Freed SQLite pages are
+available for reuse; the database file is not automatically vacuumed. Actual
+annual size and year-query latency must be measured on the deployment; no
+Raspberry Pi 5 timing guarantee follows from desktop tests.
 
 ## H66 dataset and model roles
 
@@ -349,7 +355,7 @@ the way each dataset is updated. Groups cover:
 - Learning samples, episodes, replay configuration and assessments.
 - Current settings and checkpoints, explicitly distinguished from retained history.
 - Easee/st-mq CSV imports, manual counters and historical annotations.
-- Availability coverage, recorder statistics, chart summaries and storage support.
+- Availability coverage, recorder statistics and storage support.
 
 An empty dataset is identified as empty rather than inferred to contain
 measurements. The overview does not expose configuration values, private device
@@ -357,6 +363,10 @@ identifiers, import paths or arbitrary event payloads. Storage support records
 explain database growth without presenting them as additional physical sensors
 or model inputs. Purely reconstructed chart values are not listed as independent
 stored series; persisted calculated learning results are described as such.
+The overview explains that chart point reduction and response caching use RAM,
+while the retained SQLite indexes support queries over original records. Storage
+accounting lists the 15 physical tables; there are no persisted chart summaries
+or chart-summary bookkeeping entries.
 
 Database inventory queries are read-only and requested when the other-data fold
 is open. A bounded worker query and cache keep large inventories out of the live
@@ -385,21 +395,29 @@ work only and reports the hottest functions. It also measures the uncached
 database overview and seeds nominal power assumptions to exercise heat-pump
 reconstruction from the synthetic H66 records.
 
-On the development Ryzen host with Node 22.19.0, six electrical series every minute
-plus all 30 H66 series every five minutes produced 6,307,200 observations and a
-4.02 GB database, including 15-minute energy and hourly scalar summaries. With
-heat-pump reconstruction enabled, the power chart took 197 ms for one day,
-1.87 seconds for a month, and 19.58 seconds for a year. The year response was
-about 1.45 MB and 11,537 points. The uncached database overview took 10.94 seconds
-to summarize all 17 tables and returned about 35 kB. Its worker caches the result
-for five minutes and reports the original snapshot time. Peak process RSS was
-176 MiB across population and queries.
+On the development Ryzen 5 1600 host with Node 22.19.0, six electrical series every
+minute plus all 30 H66 series every five minutes produced 6,307,200 observations
+and a 2.88 GB database using original history only. The previous equivalent
+workload with chart summaries occupied about 4.02 GB: removing those summaries
+saves approximately 1.15 GB, or 28%, at the same recording cadence.
+
+With heat-pump reconstruction enabled, one power-chart query took 208 ms for a
+day, 1.06 seconds for a week, 4.18 seconds for a month, and 48.71 seconds for a
+year. Queries bypassed the application response cache and used the worker's
+8 MiB SQLite cache and file-backed temporary storage settings. They ran in that
+order after population; operating-system cache state was not controlled, so
+these are single-run timings, not guaranteed cold-query latencies. The year
+response was about 1.21 MB and 12,512 points. The uncached database overview took
+8.60 seconds to summarize all 15 tables and returned about 38 kB. Its worker
+caches the result for five minutes and reports the original snapshot time. Peak
+process RSS was 186 MiB across population and queries, excluding the operating
+system's file cache.
 
 This measures the core observation workload, **not total application growth**:
 forecasts, learning journals, coverage, checkpoints and event logs add storage.
 Only one initial nominal-power configuration is included in this workload.
-Population uses bulk inserts with equivalent summary payloads, so its duration
-does not measure live recorder write throughput. The workload has no price data;
+Population uses bulk inserts of original observations, so its duration does not
+measure live recorder write throughput. The workload has no price data;
 tariff correctness is tested separately. These are host measurements, not Raspberry
 Pi 5 timings. Full-year cold queries remain substantial; the worker and slower
 long-view refresh keep them outside the control loop. The live optimizer measures

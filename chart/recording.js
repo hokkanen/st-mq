@@ -88,10 +88,10 @@ const inventoryDateFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Hels
 const inventoryDayFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'UTC',dateStyle:'medium'});
 const dateLabel=at=>Number.isFinite(at)?inventoryDateFormat.format(at):null;
 const integerLabel=value=>Number.isSafeInteger(value)&&value>=0?new Intl.NumberFormat('en-GB').format(value):'Unknown';
-const retentionLabels={history:'Retained history',current:'Current state · overwritten',derived:'Stored summaries',rolling:'Rolling records',mixed:'History and current state'};
+const retentionLabels={history:'Retained history',current:'Current state · overwritten',derived:'Stored calculations',rolling:'Rolling records',mixed:'History and current state'};
 const retentionDescriptions={
   history:'Records are retained as history.',current:'Each update replaces the current entry; this is not a sequence of historical samples.',
-  derived:'Calculated summaries are stored to support reading historical data.',rolling:'Only a rolling window of these records is retained.',
+  derived:'Calculated values are retained as records.',rolling:'Only a rolling window of these records is retained.',
   mixed:'This dataset contains both retained history and entries that are updated in place.',
 };
 const singularCountLabels={records:'record',fetches:'fetch',versions:'version',periods:'period','current entries':'current entry',summaries:'summary',cycles:'cycle','hourly buckets':'hourly bucket',imports:'import',spans:'span'};
@@ -173,7 +173,7 @@ export function renderRecordingOverview(overview,root) {
     const details=document.createElement('details');details.className='recording-storage-accounting';details.dataset.overviewKey='accounting';
     const summary=document.createElement('summary');summary.textContent='Storage accounting';details.append(summary);
     const description=document.createElement('p');description.className='muted';
-    description.textContent=overview.accounting.description??'Each physical table is counted once below. These technical counts include supporting records and are not a count of independent measurements.';details.append(description);
+    description.textContent=overview.accounting.description??'Each physical table is counted once below. Charts read original committed records. Point reduction and cached chart responses stay in memory. Database indexes store lookup structures for finding records; they do not store another history series.';details.append(description);
     const table=document.createElement('table'),head=document.createElement('thead'),titles=document.createElement('tr');
     for(const title of ['Database table','Rows']){const cell=document.createElement('th');cell.scope='col';cell.textContent=title;titles.append(cell);}head.append(titles);table.append(head);
     const body=document.createElement('tbody');

@@ -27,7 +27,8 @@ test('stale source values preserve their historical reading and create an availa
   assert.ok(rows.some(row=>row.x===start+6*MINUTE&&row.y===null));
   assert.ok(rows.some(row=>row.x===start+10*MINUTE&&row.y===21));
   const long=getChartData({store,input:'mqtt',startDate:'2026-01-01',endDate:date,now:start+HOUR,left:'indoor_temperature'});
-  assert.ok(long.series.indoor_temperature.some(row=>row.x===start&&row.y===20),'hourly summaries preserve the same original value');
+  assert.ok(long.series.indoor_temperature.some(row=>row.x===start&&row.y===20),'long views preserve the same original value');
+  assert.equal(long.meta.historyBasis,'original-recorded-history');
   assert.ok(long.series.indoor_temperature.some(row=>row.x===start+6*MINUTE&&row.y===null));
 });
 
