@@ -44,7 +44,15 @@ test('schema-v2 migration preserves observations and indexes complete Easee acqu
   store.close();
 
   const prior = new DatabaseSync(path);
-  prior.exec('DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles; PRAGMA user_version = 2');
+  prior.exec(`DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles;
+    DROP VIEW provider_snapshots;
+    DROP INDEX snapshots_content_fetch;
+    ALTER TABLE provider_snapshot_fetches DROP COLUMN content_id;
+    ALTER TABLE provider_snapshot_fetches DROP COLUMN fetch_metadata;
+    ALTER TABLE provider_snapshot_fetches RENAME TO provider_snapshots;
+    DROP TABLE provider_snapshot_contents; DROP TABLE recorder_coverage; DROP TABLE recorder_metrics;
+    DROP TABLE energy_audits; DROP TABLE learning_journal;
+    DROP TABLE chart_rollups; DROP TABLE chart_rollup_meta; PRAGMA user_version = 2`);
   prior.close();
   const migrated = new Store(path);
   try {

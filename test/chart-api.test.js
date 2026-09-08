@@ -37,6 +37,27 @@ test('chart API requires authentication and rejects malformed date/axis/point se
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
 });
+test('meter diagnostics are authenticated, bounded and omit private device identities',async t=>{
+  const {base,headers,store,now}=await fixture(t);
+  for(let i=0;i<25;i++)store.energyAudit({source:'easee',device:'invented-private-device',signal:'property_energy_counter',
+    sourceTime:now+i,receivedAt:now+i,value:i,quality:[]});
+  assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);
+  const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
+  const rows=await response.json();assert.equal(rows.length,20);assert.equal(rows[0].sourceTime,now+24);
+  assert(!JSON.stringify(rows).includes('invented-private-device'));assert(rows.every(row=>!Object.hasOwn(row,'device')));
+});
+test('every catalogue axis works, including historical meter references without learning use',async t=>{
+  const {base,headers,store,now}=await fixture(t);
+  store.energyAudit({source:'easee',device:'invented-device',signal:'ev1_lifetime_energy_counter',sourceTime:now-60000,receivedAt:now,value:123,quality:[]});
+  const {HISTORY_AXES}=await import('../src/domain/history-series.js');
+  for(const axis of HISTORY_AXES) {
+    const response=await fetch(`${base}/api/chart?left=${axis.key}`,{headers});
+    assert.equal(response.status,200,axis.key);
+    const chart=await response.json();
+    for(const signal of axis.signals)assert(Array.isArray(chart.series[signal]),signal);
+    if(axis.key==='ev1_lifetime_energy_counter')assert(chart.series.ev1_lifetime_energy_counter.some(row=>row.y===123&&row.auditOnly));
+  }
+});
 
 test('chart defaults to today in Finland and includes shared right-axis data for every left axis', async t => {
   const { base, headers, store, now } = await fixture(t);

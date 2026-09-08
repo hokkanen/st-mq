@@ -13,6 +13,17 @@ const CURRENT_DEVICES = [
   ['charger_id', [183, 184, 185], 'ev1_current'],
   ['equalizer_id', [31, 32, 33], 'property_current'],
 ];
+// Charger voltage IDs describe terminal pairs, not a guaranteed neutral/phase
+// mapping. They are acquired for inspection but require a verified installation
+// mapping before they can be used for phase weights or apparent-power fallback.
+export const ELECTRICITY_FIELDS = Object.freeze({
+  ev1: [[183, 'current_l1', 'A'], [184, 'current_l2', 'A'], [185, 'current_l3', 'A'],
+    [194, 'voltage_l1', 'V'], [195, 'voltage_l2', 'V'], [196, 'voltage_l3', 'V'],
+    [120, 'active_power', 'kW'], [124, 'lifetime_energy_counter', 'kWh'], [121, 'session_energy_counter', 'kWh']],
+  property: [[31, 'current_l1', 'A'], [32, 'current_l2', 'A'], [33, 'current_l3', 'A'],
+    [34, 'voltage_l1', 'V'], [35, 'voltage_l2', 'V'], [36, 'voltage_l3', 'V'],
+    [40, 'active_power', 'kW'], [45, 'import_energy_counter', 'kWh']],
+});
 const API = 'https://api.easee.com';
 
 function number(value) {
@@ -43,7 +54,7 @@ function sanitized(error, provider) {
 }
 function failureFlags(error) {
   const status = httpStatus(error);
-  return ['provider_error', ...(status === null ? [] : [`http_status_${status}`])];
+  return ['provider_error', ...(error?.code === 'EASEE_CONFIGURATION' ? ['missing_configuration'] : []), ...(status === null ? [] : [`http_status_${status}`])];
 }
 function validNow(now) {
   if (!Number.isSafeInteger(now) || Math.abs(now) > 8640000000000000) throw new TypeError('now must be a UTC timestamp in milliseconds');
@@ -99,16 +110,71 @@ function currentObservations(payload, device, ids, prefix, now) {
   });
 }
 
+function electricalObservations(payload, device, prefix, fields, now, voltageVerified = false) {
+  const list = Array.isArray(payload) ? payload : payload?.observations;
+  if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee observations');
+  return fields.map(([id, name, unit]) => {
+    const matches = list.filter(row => number(row?.id) === id)
+      .map(row => ({ row, at: sourceTime(row.timestamp) })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
+    const picked = matches[0], at = picked?.at ?? null, input = number(picked?.row.value);
+    let value = input;
+    const counter = name.endsWith('_counter');
+    const quality = counter ? [] : timeQuality(at, now, 5 * 60_000);
+    if (at === null && counter) quality.push('source_time_unknown');
+    if (at > now + 60_000 && counter) quality.push('future_source_time');
+    if (matches.length > 1) {
+      quality.push('duplicate_observation');
+      if (matches.some(row => row.at === at && number(row.row.value) !== input)) {
+        value = null; quality.push('conflicting_duplicate');
+      }
+    }
+    if (picked?.row.unit != null && picked.row.unit !== unit) { value = null; quality.push('invalid_unit'); }
+    if (value !== null && (value < 0 || (unit === 'A' && value > 1000) || (unit === 'V' && value > 500) || (unit === 'kW' && value > 1000))) {
+      value = null; quality.push('invalid_numeric');
+    }
+    if (value === null) quality.push('missing');
+    if (name.startsWith('current_')) quality.push('current_snapshot_not_energy');
+    return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at, receivedAt: now,
+      quality, raw: { observationId: id, acquisitionOnly: true, auditOnly: counter,
+        ...(unit === 'V' ? { voltageMapping: prefix === 'property' || voltageVerified ? 'phase-neutral' : 'terminal-pair-unverified' } : {}) } };
+  });
+}
+
+function annotateElectricalCurrents(rows) {
+  const currents = rows.filter(row => /_current_l[123]$/.test(row.signal));
+  const property = currents.filter(row => row.signal.startsWith('property_'));
+  const charger = currents.filter(row => row.signal.startsWith('ev1_'));
+  if (property.length === 3 && property.every(row => row.value === 0)) property.forEach(row => row.quality.push('all_zero_property_current'));
+  for (const group of [property, charger]) {
+    const times = group.map(row => row.sourceTime).filter(Number.isFinite);
+    if (times.length > 1 && Math.max(...times) - Math.min(...times) > 30_000) group.forEach(row => row.quality.push('asynchronous_snapshot'));
+  }
+  if (property.length === 3 && charger.length === 3 && currents.every(row => row.value !== null)
+    && charger.reduce((sum, row) => sum + row.value, 0) > property.reduce((sum, row) => sum + row.value, 0) + 0.5)
+    currents.forEach(row => row.quality.push('ev_exceeds_property_current'));
+  return rows;
+}
+
 /**
  * Inject bounded http.json(url, fetchOptions) and optional secret-only tokenStore.
  * Each call returns normalized observation arrays, including null error records for
  * configured devices. No provider is contacted until a returned method is invoked.
  */
-export function createDeviceProviders({ connections = {}, http, tokenStore } = {}) {
+export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const smartthings = { ...connections.smartthings }; const easee = { ...connections.easee };
   let tokens = { accessToken: easee.access_token ?? '', refreshToken: easee.refresh_token ?? '' };
   let loadFlight = null; let refreshFlight = null; let saveFlight = null; let dirtyTokens = false;
+  const requestTimes = [];
+  let blockedUntil = 0;
+
+  function admitRequest() {
+    const now = clock();
+    while (requestTimes.length && requestTimes[0] <= now - 300_000) requestTimes.shift();
+    const retryAt = Math.max(blockedUntil, requestTimes.length >= 90 ? requestTimes[0] + 300_000 : 0);
+    if (retryAt > now) throw Object.assign(new Error('Easee rate limit'), { status: 429, retryAfterMs: retryAt - now });
+    requestTimes.push(now); // Shared by devices and authentication retries, with margin below 100/5min.
+  }
 
   async function request(url, options, provider) {
     try { return await http.json(url, options); }
@@ -166,7 +232,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore } = {
           if (![400, 401, 403].includes(httpStatus(error))) throw error;
         }
       }
-      if (!supplied(easee.user) || !supplied(easee.pw)) throw new Error('Easee authentication requires credentials or a valid refresh token');
+      if (!supplied(easee.user) || !supplied(easee.pw)) throw Object.assign(new Error('Easee authentication requires credentials or a valid refresh token'), { code: 'EASEE_CONFIGURATION' });
       const payload = await request(`${API}/api/accounts/login`, {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' },
         body: JSON.stringify({ userName: easee.user, password: easee.pw }), signal,
@@ -181,7 +247,14 @@ export function createDeviceProviders({ connections = {}, http, tokenStore } = {
     if (!supplied(tokens.accessToken)) await refreshTokens({ attemptedToken: tokens.accessToken, signal });
     const url = `${API}/state/${encodeURIComponent(device)}/observations?ids=${ids.join(',')}`;
     const attemptedToken = tokens.accessToken;
-    const get = () => request(url, { method: 'GET', headers: { accept: 'application/json', Authorization: `Bearer ${tokens.accessToken}` }, signal }, 'Easee');
+    const get = async () => {
+      admitRequest();
+      try { return await request(url, { method: 'GET', headers: { accept: 'application/json', Authorization: `Bearer ${tokens.accessToken}` }, signal }, 'Easee'); }
+      catch (error) {
+        if (httpStatus(error) === 429) blockedUntil = Math.max(blockedUntil, clock() + (error.retryAfterMs ?? 300_000));
+        throw error;
+      }
+    };
     try { return await get(); }
     catch (error) {
       if (httpStatus(error) !== 401) throw error;
@@ -191,6 +264,24 @@ export function createDeviceProviders({ connections = {}, http, tokenStore } = {
   }
 
   return {
+    async electricity({ now = Date.now(), signal } = {}) {
+      validNow(now);
+      const jobs = [['charger_id', 'ev1'], ['equalizer_id', 'property']].filter(([key]) => supplied(easee[key]));
+      const results = await Promise.allSettled(jobs.map(async ([key, prefix]) => {
+        const voltageIds = easee.charger_voltage_ids;
+        const verified = prefix === 'ev1' && Array.isArray(voltageIds) && voltageIds.length === 3
+          && new Set(voltageIds).size === 3 && voltageIds.every(id => Number.isInteger(id) && id >= 190 && id <= 199);
+        const fields = ELECTRICITY_FIELDS[prefix].map(([id, name, unit]) =>
+          [verified && unit === 'V' ? voltageIds[Number(name.at(-1)) - 1] : id, name, unit]);
+        return electricalObservations(await easeeRequest(easee[key], fields.map(row => row[0]), signal), easee[key], prefix, fields, now, verified);
+      }));
+      return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : ELECTRICITY_FIELDS[jobs[index][1]].map(([id, name, unit]) => ({
+        ...baseObservation({ source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][1]}_${name}`, unit, now,
+          quality: failureFlags(result.reason) }),
+        raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'), retryAfterMs: result.reason?.retryAfterMs },
+      }))));
+    },
+
     async temperatures({ now = Date.now(), signal } = {}) {
       validNow(now);
       const jobs = TEMPERATURES.filter(([key]) => supplied(smartthings[key]));

@@ -10,7 +10,14 @@ const store = { db };
 const cache = new Map(); let cacheBytes = 0, version = null;
 parentPort.on('message', ({ id, args }) => {
   try {
-    const currentVersion = db.prepare('PRAGMA data_version').get().data_version;
+    // Acquisition checkpoints and rolling recorder metrics update frequently.
+    // They do not invalidate a completed historical plot. New observations,
+    // availability spans, forecast fetches and completed imports do.
+    const currentVersion = JSON.stringify(db.prepare(`SELECT
+      (SELECT MAX(id) FROM observations) observations,
+      (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
+      (SELECT MAX(id) FROM recorder_coverage) coverage,
+      (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get());
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.

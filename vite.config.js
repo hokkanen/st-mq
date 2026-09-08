@@ -32,6 +32,7 @@ export default defineConfig({
       allow: (() => { // Redefine accessible folders due to HASSIO symlink to outside dir
         const allow = [
           resolve(__dirname, 'chart'), // Root path (needed because this list overwrites defaults)
+          resolve(__dirname, 'src/domain'), // Shared, credential-free history catalogue.
         ];
         const sharePath = resolve(__dirname, 'share');
         if (fs.existsSync(sharePath) && fs.lstatSync(sharePath).isSymbolicLink()) {

@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { LEARNING_WINDOW_MS } from './committed-learning.js';
 
 export function startOnlineLearning({ store, input }) {
   const worker = new Worker(new URL('./online-learning-worker.js', import.meta.url));
@@ -12,6 +13,8 @@ export function startOnlineLearning({ store, input }) {
   return {
     sample(sample, now) {
       if (busy || closed) return;
+      if (sample?.provenance?.basis !== 'committed-history' || sample.timestamp % LEARNING_WINDOW_MS !== 0)
+        throw new TypeError('Online learning requires a committed UTC learning window');
       let checkpoint = null;
       try { checkpoint = store.getState(`learned:${input}`); } catch { /* Reconstruct conservatively. */ }
       busy = true;

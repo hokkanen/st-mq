@@ -147,3 +147,32 @@ test('a WAL backup includes every fetched forecast revision and its independent 
     ]);
   } finally { restored.close(); }
 });
+
+test('schema-v4 migration retains original snapshot bytes and IDs while new identical fetches share content',t=>{
+  const path=join(directory(t),'version-four.sqlite'), old=new DatabaseSync(path);
+  old.exec(V1_SCHEMA);
+  old.exec(`CREATE TABLE provider_snapshots(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,source TEXT NOT NULL,
+    issued_at INTEGER,fetched_at INTEGER NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,
+    UNIQUE(kind,source,fetched_at,digest));
+    CREATE INDEX snapshots_kind_time ON provider_snapshots(kind,fetched_at,id);
+    CREATE TABLE learning_samples(id INTEGER PRIMARY KEY,input TEXT NOT NULL,at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(input,at));
+    CREATE INDEX learning_samples_input_at ON learning_samples(input,at);
+    CREATE TABLE learning_cycles(id TEXT PRIMARY KEY,input TEXT NOT NULL,started_at INTEGER NOT NULL,ended_at INTEGER,status TEXT NOT NULL,payload TEXT NOT NULL);
+    CREATE INDEX learning_cycles_input_at ON learning_cycles(input,started_at);
+    CREATE INDEX observations_easee_acquisition ON observations(device,received_at,id) WHERE source='easee' AND import_id IS NULL;
+    PRAGMA user_version=4;`);
+  const encoded='{ "fetchedAt":1000, "issuedAt":null, "forecast":[{"outdoorC":4}] }';
+  old.prepare('INSERT INTO provider_snapshots VALUES(?,?,?,?,?,?,?)').run(42,'weather','fixture',null,1000,encoded,'legacy-digest');
+  old.close();
+  const store=new Store(path);
+  try {
+    assert.equal(store.snapshotById(42).payload.fetchedAt,1000);
+    assert.equal(store.db.prepare('SELECT payload FROM provider_snapshot_fetches WHERE id=42').get().payload,encoded);
+    assert.equal(store.db.prepare('SELECT digest FROM provider_snapshot_fetches WHERE id=42').get().digest,'legacy-digest');
+    for(const fetchedAt of [2000,3000]) store.snapshot({kind:'weather',source:'fixture',fetchedAt,
+      payload:{fetchedAt,issuedAt:null,forecast:[{outdoorC:4}]}});
+    assert.equal(store.snapshots().length,3);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM provider_snapshot_contents').get().n,1);
+    assert.deepEqual(store.snapshots().map(s=>s.id),[42,43,44]);
+  } finally {store.close();}
+});

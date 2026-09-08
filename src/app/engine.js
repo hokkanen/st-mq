@@ -1,8 +1,10 @@
 import { dhwrEligible } from '../control/index.js';
-import { restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveLearningBatch, updateAdaptiveEpisode } from '../control/adaptive-learning.js';
+import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../control/adaptive-learning.js';
 import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
-import { controlObservations, deriveChargerPower } from './control-observations.js';
+import { controlObservations } from './control-observations.js';
+import { Recorder } from '../storage/recorder.js';
+import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal } from './committed-learning.js';
 import { goodQuality } from '../control/learning.js';
 import { validateSettings, CONTROL_DEFAULTS } from './config.js';
 import { SimulatedPlant, simulatedOutlook } from './simulator.js';
@@ -30,10 +32,29 @@ function trustworthy(observation, now) {
   return true;
 }
 
+function availabilityTransition(observation) {
+  return observation?.value === null && observation.raw?.timeBasis === 'availability-transition';
+}
+
 function remember(latest, observation, now) {
   if (!observation || typeof observation.signal !== 'string') return;
   const prior = latest[observation.signal];
   const incomingValid = trustworthy(observation, now), priorValid = trustworthy(prior, now);
+  const sameSource = prior?.source === observation.source && prior?.device === observation.device;
+  const retained = observation.raw?.retained === true || observation.quality?.includes('retained');
+  if (availabilityTransition(observation)) {
+    // Explicit subscription/disconnection evidence ends this source's live
+    // availability immediately. A delayed or different-device failure cannot
+    // invalidate the currently selected reading.
+    if (!retained && Number.isFinite(observation.receivedAt) && observation.receivedAt <= now
+      && (!prior || sameSource && observation.receivedAt >= Math.max(prior.receivedAt ?? 0,
+        priorValid ? prior.sourceTime : 0))) latest[observation.signal] = observation;
+    return;
+  }
+  // Reconnect alone and delayed pre-disconnection values cannot restore a
+  // source. Recovery requires a live measurement at or after the transition.
+  if (sameSource && availabilityTransition(prior) && (retained
+    || observation.sourceTime < prior.receivedAt || (observation.receivedAt ?? 0) < prior.receivedAt)) return;
   // Old measurements remain useful history during outages, with their original age.
   // A bad/future measurement must never prevent a later trustworthy sample from recovering service.
   if (!prior || (incomingValid && (!priorValid || observation.sourceTime >= prior.sourceTime))
@@ -52,6 +73,7 @@ export class Engine {
     this.store = store;
     this.config = config;
     this.clock = clock;
+    this.recorder = new Recorder(store, { config: config.recording, clock });
     if (['mqtt', 'providers'].includes(config.input)) {
       const cachedWeather = store.getState('provider:weather'), health = store.getState('providers:health');
       const unsupported = value => typeof value?.source === 'string' && !WEATHER_SOURCES.includes(value.source);
@@ -75,6 +97,7 @@ export class Engine {
     this.settings = validateSettings({ ...config.settings, ...(occupancy ? { occupancy } : {}) });
     this.control = { ...CONTROL_DEFAULTS, ...config.control };
     this.cycles = new CycleTracker({ store, input: config.input, config: this.control });
+    this.cycles.learningSeed = () => this.checkpoint ?? null;
     if (config.priceSettings) {
       const contract = reconcileConfiguredContract(this.contract(), config.priceSettings, clock());
       if (JSON.stringify(contract) !== JSON.stringify(this.contract())) {
@@ -119,9 +142,12 @@ export class Engine {
     }
   }
   ingest(observation) {
-    this.store.observation(observation);
+    if (observation.raw?.auditOnly) return { saved: false, reason: 'audit-only' };
+    const result = observation.raw?.acquisitionOnly ? { saved: false, reason: 'acquisition-only' } : this.recorder.record(observation);
     this.rememberObservation(observation, this.clock());
+    return result;
   }
+  ingestEnergy(interval) { return this.recorder.recordEnergy(interval); }
   rememberObservation(observation, now) {
     if (['mqtt', 'providers'].includes(this.config.input) && observation?.signal === 'outdoor_temperature') {
       if (!OUTDOOR_SOURCES.includes(observation.source)) return;
@@ -130,7 +156,7 @@ export class Engine {
       remember(sourceLatest, observation, now);
       // A live sensor error makes H66 unavailable immediately. Broker-retained
       // messages cannot replace a usable publication from the current session.
-      if (observation.source === 'husdata-h66' && !observation.raw?.retained
+      if (observation.source === 'husdata-h66' && !availabilityTransition(observation) && !observation.raw?.retained
         && !observation.quality?.includes('retained') && (observation.receivedAt ?? 0) >= (prior?.receivedAt ?? 0)
         && (!trustworthy(observation, now) || observation.raw?.usableForControl !== true))
         sourceLatest.outdoor_temperature = observation;
@@ -290,6 +316,21 @@ export class Engine {
     return this.h66.test({ register: input.register, value: input.value, durationSeconds: minutes * 60, now: this.clock() });
   }
   readAdaptive(now) {
+    const journalExists = this.store.learningJournal({ input: this.config.input, limit: 1 }).length > 0;
+    if (journalExists) {
+      if (!this.checkpoint) {
+        let saved = null;
+        try { saved = this.store.getState(`adaptive:${this.config.input}`); }
+        catch { this.store.event('checkpoint-rebuild', { input: this.config.input, reason: 'corrupt-adaptive-checkpoint' }, now); }
+        const restored = saved ? restoreAdaptiveCheckpoint(saved, this.control) : null;
+        const matching = Number.isSafeInteger(saved?.journalCursor) && saved.journalCursor > 0
+          ? this.store.learningJournal({ input: this.config.input, after: saved.journalCursor - 1, limit: 1 })[0] : null;
+        this.checkpoint = saved?.algorithmVersion === LEARNING_ALGORITHM && matching?.id === saved.journalCursor
+          && Array.isArray(saved.samples) && restored?.health.reason !== 'invalid-checkpoint-model' ? saved : null;
+      }
+      this.checkpoint = replayLearningJournal(this.store, this.config.input, this.checkpoint);
+      return this.checkpoint;
+    }
     if (!this.checkpoint) {
       let saved = null;
       try { saved = this.store.getState(`adaptive:${this.config.input}`); }
@@ -323,7 +364,10 @@ export class Engine {
             this.checkpoint.baselineC = history.baselineC;
             this.checkpoint.comfortReference = history.comfortReference;
           }
-          if (!this.checkpoint.samples.length && !this.checkpoint.rebuildPending && !this.checkpoint.baselineResetAt) this.checkpoint = history;
+          if (!this.checkpoint.samples.length && !this.checkpoint.rebuildPending && !this.checkpoint.baselineResetAt) {
+            const { journalCursor, windowCursor, historyCursor, historyResampling, ...seed } = history;
+            this.checkpoint = seed;
+          }
           this.store.setState(`adaptive:${this.config.input}`, this.checkpoint);
           this.store.event('adaptive-history-seeded', { trainedAt: history.model.trainedAt, baselineC: history.baselineC }, now);
         }
@@ -338,6 +382,7 @@ export class Engine {
   }
   tick() {
     const now = this.clock(), input = this.config.input;
+    this.recorder.flush(now);
     const priorExecutor = this.executor.status?.();
     if (priorExecutor?.lastResult?.status === 'mqtt' && priorExecutor.lastResult.at > (this.applied.at ?? -Infinity)
       && ['normal','preheat','reduction','recovery'].includes(priorExecutor.phase)) {
@@ -358,6 +403,15 @@ export class Engine {
       for (const [key, signal] of [['indoor','indoor_temperature'],['outdoor','outdoor_temperature']])
         this.ingest({ source: 'simulation', device: 'test-house', signal, value: observations[key].value,
           unit: 'degC', sourceTime: now, receivedAt: now, quality: ['simulated'], raw: null });
+      // Synthetic operation is recorded through the same boundary as physical
+      // readbacks; the learner never consumes the plant object's hidden state.
+      for (const [signal, value, unit] of [
+        ['compressor_active', observations.actual.compressorDuty, 'state'],
+        ['auxiliary_output', observations.actual.auxKw * 100 / this.control.auxRatedKw, '%'],
+        ['dhw_routing', observations.actual.auxRoute === 'dhw' ? 1 : 0, 'state'],
+        ['alarm_active', 0, 'state'], ['operating_mode', 1, 'state'],
+      ]) this.ingest({ source: 'simulation', device: 'test-house', signal, value, unit,
+        sourceTime: now, receivedAt: now, quality: ['simulated'], raw: null });
     } else {
       const map = signal => { const o = this.latest[signal]; return o ? { value: o.value, observedAt: o.sourceTime, quality: o.quality, source: o.source } : null; };
       observations = { indoor: map('indoor_temperature'), outdoor: map('outdoor_temperature'),
@@ -372,16 +426,39 @@ export class Engine {
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
     let checkpoint = this.readAdaptive(now);
     const normalRoom = h66.readings?.['0203'];
+    const recordedRoom = this.recorder.committedAt('room_setting', now);
     if (!this.cycles.active() && ['normal','recovery'].includes(h66.phase) && normalRoom?.available
-      && !Object.keys(h66.obligations ?? {}).length && Number.isFinite(normalRoom.value)) {
+      && !Object.keys(h66.obligations ?? {}).length && Number.isFinite(recordedRoom?.value)) {
       const key = `native-room-reference:${input}`, previous = this.store.getState(key);
-      if (previous && Math.abs(previous.value-normalRoom.value) > 0.005) {
-        checkpoint = { ...checkpoint, baselineC:null, comfortReference:null, baselineResetAt:now, samples:[], sinceFit:0 };
-        this.checkpoint = checkpoint; this.pendingPlan = null;
-        this.store.setState(`adaptive:${input}`,checkpoint);
+      if (previous && Math.abs(previous.value-recordedRoom.value) > 0.005) {
+        this.store.setState(`learning:baseline-reset:${input}`, { at: now });
+        this.pendingPlan = null;
         this.store.event('indoor-baseline-reset',{reason:'native-room-setting-changed'},now);
       }
-      if (!previous || previous.value !== normalRoom.value) this.store.setState(key,{value:normalRoom.value,at:now});
+      if (!previous || previous.value !== recordedRoom.value) this.store.setState(key,{value:recordedRoom.value,at:now});
+    }
+    // Reference changes are durable ordered context, applied immediately without
+    // adding off-grid temperature samples or advancing the thermal cursor.
+    const reference = { timestamp: now };
+    const reset = this.store.getState(`learning:baseline-reset:${input}`)?.at;
+    if (Number.isFinite(reset) && reset <= now && reset > (checkpoint.baselineResetAt ?? -Infinity))
+      Object.assign(reference, { resetBaselineAt: reset, roomObservationId: recordedRoom?.id ?? null });
+    if (input !== 'simulated' && !this.cycles.active() && !reference.resetBaselineAt) {
+      let history;
+      try { history = this.store.getState('adaptive:history'); } catch { /* Background reconstruction can retry. */ }
+      const modelReady = history?.model?.validation && !checkpoint.model.validation;
+      const baselineReady = Number.isFinite(history?.baselineC) && !Number.isFinite(checkpoint.baselineC)
+        && (!checkpoint.baselineResetAt || Date.parse(history.comfortReference?.windowStart) >= checkpoint.baselineResetAt);
+      if (modelReady || baselineReady) reference.historySeed = {
+        ...(modelReady ? { model: history.model } : {}),
+        ...(baselineReady ? { baselineC: history.baselineC, comfortReference: history.comfortReference } : {}),
+        source: { input: 'history', algorithmVersion: history.algorithmVersion ?? 'legacy',
+          journalCursor: history.journalCursor ?? null, trainedAt: history.model?.trainedAt ?? null } };
+    }
+    if (reference.resetBaselineAt || reference.historySeed) {
+      appendLearningRecord(this.store, input, 'context', reference, { config: this.control, seed: checkpoint });
+      checkpoint = replayLearningJournal(this.store, input, checkpoint);
+      this.checkpoint = checkpoint;
     }
     const executorState = this.executor.status?.();
     const manual = executorState?.manualRequested;
@@ -398,21 +475,35 @@ export class Engine {
       equipment.supplyShortfallTrendPerHour = Number.isFinite(equipment.supplyShortfallC) && Number.isFinite(prev.supplyShortfallC) ? (equipment.supplyShortfallC-prev.supplyShortfallC)/hours : null;
     }
     sample.integral = equipment.integral; sample.supplyShortfallC = equipment.supplyShortfallC;
-    // Temperature fitting uses bounded 15-minute records. The full cycle meter keeps finer intervals.
-    if (!checkpoint.cursor || now-Date.parse(checkpoint.cursor) >= 900000) {
-      if (!checkpoint.rebuildPending) checkpoint = updateAdaptiveLearning(checkpoint, sample, { now, config: this.control });
-      this.store.transaction(() => {
-        this.store.learningSample(input, sample);
-        this.store.setState(`adaptive:${input}`, checkpoint);
-      });
+    const context = { phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0,
+      targetC: checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
+    const completedWindow = Math.floor(now / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS;
+    const lastWindow = checkpoint.windowCursor;
+    let windowAt = Number.isSafeInteger(lastWindow) ? lastWindow + LEARNING_WINDOW_MS : completedWindow;
+    for (let count = 0; windowAt <= completedWindow && count < 256; count++, windowAt += LEARNING_WINDOW_MS) {
+      const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context });
+      // A restart cannot reconstruct past user/controller context from today's
+      // mutable state. Record an explicit barrier until the current window.
+      if (windowAt < completedWindow) committed.quality = ['unavailable-controller-context'];
+      committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
+      appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
+      checkpoint = replayLearningJournal(this.store, input, checkpoint);
       this.checkpoint = checkpoint;
     }
-    const episode = this.cycles.record(sample, now, { thermalState: checkpoint.state, equipment });
+    const cycleSample = committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
+      windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000, now - (this.cycles.active()?.lastSample?.timestamp ?? now - 60_000))) });
+    const price = outlook.prices.find(row => row.start <= now && row.end > now);
+    Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
+    const priorCycleSample = this.cycles.active()?.lastSample;
+    if (Number.isFinite(priorCycleSample?.indoorC) && now > priorCycleSample.timestamp)
+      cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
+    const episode = this.cycles.record(cycleSample, now, { thermalState: checkpoint.state,
+      equipment: { integral: cycleSample.integral } });
     if (episode) {
       this.applied.phase = 'normal';
       if (this.plant) this.plant.state.phase = 'normal';
-      checkpoint = updateAdaptiveEpisode(checkpoint, episode, { config: this.control });
-      this.checkpoint = checkpoint; this.store.setState(`adaptive:${input}`, checkpoint);
+      checkpoint = replayLearningJournal(this.store, input, checkpoint);
+      this.checkpoint = checkpoint;
     }
     this.lastSample = sample;
     const targetC = this.settings.comfort.targetC ?? checkpoint.baselineC ?? (this.plant ? 21 : null);
@@ -498,7 +589,7 @@ export class Engine {
           plan.initialState = { indoorC: sample.indoorC, reserveC: checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral };
           plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,now);
           plan.generatedAt = now; plan.equipment = equipment;
-          this.cycles.start(plan, { ...sample, phase }, now, { executed: !this.plant });
+          this.cycles.start(plan, { ...cycleSample, phase }, now, { executed: !this.plant });
         }
         const old = this.store.getState(`phase-snapshot:${input}`);
         const expiresAt = execution.expiresAt ?? decision.expiresAt;
@@ -523,18 +614,11 @@ export class Engine {
       execution = { status:'pending', sent:false, actual:null };
     } else if (!this.dispatchPending) execution = onExecution(execution);
     // Historical values represent estimates as known then, never revised forecasts of past sunshine.
-    const persist = (signal,value,unit,raw,quality=['estimated']) => this.store.observation({source:'controller-estimate',device:input,signal,value,unit,sourceTime:now,receivedAt:now,quality,raw});
+    const persist = (signal,value,unit,raw,quality=['estimated']) => this.recorder.record({source:'controller-estimate',device:input,signal,value,unit,sourceTime:now,receivedAt:now,quality,raw});
     if (input !== 'offline') {
       persist('heat_pump_power',sample.powerKw,'kW',{basis:sample.energyBasis, compressorObserved: Number.isFinite(equipment.compressorOn), auxiliaryObserved:sample.auxiliaryObserved});
       if (sample.auxiliaryObserved) persist('auxiliary_power',sample.auxKw,'kW',{basis:sample.auxiliaryPowerBasis,
         nominalStage:sample.auxiliaryStage,ratedPowerKw:this.control.auxRatedKw,route:sample.auxRoute,verified:true,usableForControl:true});
-      if (Number.isFinite(radiation)) {
-        const solar = { ...weather, ...weather?.solar };
-        persist('solar_radiation',radiation,'W/m²',{basis:'Forecast valid now',source:solar.source,
-          issuedAt:solar.issuedAt,issuedAtBasis:solar.issuedAtBasis,fetchedAt:solar.fetchedAt,intervalBasis:solar.intervalBasis});
-      }
-      const charger = deriveChargerPower(this.latest,now);
-      if (charger && charger.sourceTime !== this.lastChargerAt) { this.store.observation(charger); this.lastChargerAt = charger.sourceTime; }
     }
     const metrics = this.cycles.metrics(checkpoint.baselineC);
     if (input !== 'offline') this.cycles.snapshot(metrics,now,checkpoint.model.trainedAt ?? 'prior-v1');
@@ -551,6 +635,7 @@ export class Engine {
       heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.store.getState('providers:health')??{},contract:this.contract(),configuredPrices:this.config.priceSettings??null,
+      recording:this.recorder.status(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         parameters:this.control,background:this.store.getState('learning:health')},
       savings:{status:'estimated',explanation:'Completed-cycle differences use a modelled alternative. Daily chart timing benchmarks keep the observed energy fixed.'} };

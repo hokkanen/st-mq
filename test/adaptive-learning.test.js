@@ -153,7 +153,7 @@ test('history worker reconstructs adaptive and legacy checkpoints independently 
   await run();
   const adaptive = store.getState('adaptive:history');
   assert.ok(adaptive?.model.validation?.accepted);
-  assert.equal(adaptive.samples.length, 144);
+  assert.equal(adaptive.samples.length, 573, 'Hourly imports become causal UTC quarter-hour windows');
   assert.ok(adaptive.samples.every(row => row.solarRadiationWm2 === null && row.actualModeKnown === false));
   assert.ok(store.getState('learning:history')?.checkpoint);
   assert.equal(store.getState('learned:mqtt'), null, 'History must not overwrite the active live checkpoint');

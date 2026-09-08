@@ -1,3 +1,4 @@
+import { HISTORY_AXES, SIGNAL_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -50,6 +51,7 @@ export function calendarTicks(range, maxTicks = 9) {
 
 export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, operatingMode: true, dhwr: false, spot_price: true });
 export const leftGroups = Object.freeze({
+  ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis.signals])),
   power: ['property_power', 'auxiliary_power', 'charger_power'],
   phases: ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'],
   integral: ['heating_integral'],
@@ -60,6 +62,7 @@ export const leftGroups = Object.freeze({
   solar_radiation: ['solar_radiation', 'solar_forecast'],
 });
 export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current · A', integral: 'Heating integral · °min',
+  ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, `${axis.label} · ${axis.unit}`])),
   learning_profit: 'Estimated profit after recovery · €/cycle', learning_aux_profit: 'Estimated profit with auxiliary recovery · €/cycle',
   learning_recovery_error: 'Recovery-cost prediction error · €/cycle', learning_indoor_temperature: 'Learned normal temperature · °C',
   solar_radiation: 'Solar radiation forecast · W/m²' });
@@ -76,8 +79,8 @@ export function visible(key, preferences = {}) {
 }
 
 const seriesInfo = {
-  property_power: ['Property', 'kW, estimated from phase currents', 'property'],
-  charger_power: ['Charger', 'kW, estimated from phase currents', 'ev', 'fill'],
+  property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
+  charger_power: ['Charger', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary', 'fill'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
@@ -99,6 +102,15 @@ const seriesInfo = {
   all_in_price: ['All-in price', 'c/kWh', 'price'],
   spot_price: ['Spot price', 'c/kWh · excludes VAT and other charges', 'spot'],
 };
+for (const [signal, info] of Object.entries(SIGNAL_INFO)) {
+  seriesInfo[signal] ??= [info.label, `${info.unit} · ${info.detail ?? info.kind.toLowerCase()}`,
+    PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : 'integral'];
+}
+Object.assign(seriesInfo, {
+  heat_pump_power: ['Heat pump', 'kW · estimated electrical input', 'auxiliary'],
+  controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
+  dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
+});
 const rightKeys = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
@@ -130,7 +142,7 @@ export function historySeriesAt(payload, now = payload.now) {
 
 export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
   if (!leftGroups[left]) throw new RangeError('Choose a valid left axis.');
-  return [...leftGroups[left], ...rightKeys].map(key => {
+  return [...new Set([...leftGroups[left], ...rightKeys])].map(key => {
     const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
     const isLeft = leftGroups[left].includes(key);
@@ -142,7 +154,7 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
-      borderDash: kind === 'forecast' ? [5, 4] : isPrice ? [1, 3] : [],
+      borderDash: kind === 'forecast' || PHASE_ENERGY_SIGNALS.includes(key) && key.startsWith('ev1') ? [5, 4] : isPrice ? [1, 3] : [],
       fill: kind === 'fill' ? 'origin' : false,
       order: key === 'auxiliary_power' ? 3 : kind === 'fill' ? 2 : 1,
       pointBackgroundColor: palette[colorKey], pointBorderColor: palette[colorKey],
@@ -151,7 +163,7 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
       pointHoverRadius: 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
-      stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral',
+      stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && !PHASE_ENERGY_SIGNALS.includes(key),
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),
     };
   });
@@ -176,7 +188,8 @@ export function createChartLoader({ api, now = Date.now, maxEntries = 6, liveTtl
     if (pending?.path === path && !force) return pending.promise;
     cancel();
     const entry = cache.get(path);
-    const ttl = selection.endDate >= today ? liveTtlMs : pastTtlMs;
+    const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
+    const ttl = selection.endDate >= today && !longRange ? liveTtlMs : pastTtlMs;
     if (!force && entry && now() - entry.at < ttl) {
       cache.delete(path); cache.set(path, entry);
       return Promise.resolve(entry.data);

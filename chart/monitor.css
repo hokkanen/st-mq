@@ -156,10 +156,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .mode-history p { font-size: 10px; margin: 3px 0; }
 .mode-track { height: 22px; position: relative; background: var(--surface-soft); border: 1px solid var(--border); overflow: hidden; }
 .mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); border-right: 1px solid var(--surface); }
-.timing-benefit { display: flex; justify-content: flex-end; gap: 8px 24px; flex-wrap: wrap; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.timing-benefit { display: flex; justify-content: space-between; gap: 8px 24px; flex-wrap: wrap; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 .timing-benefit p { margin: 0; font-size: 11px; }
 .timing-benefit strong { font-weight: 550; }
-.timing-benefit .timing-explanation { flex-basis: 100%; text-align: right; color: var(--muted); font-size: 10px; }
+.timing-benefit .timing-explanation { flex-basis: 100%; text-align: center; color: var(--muted); font-size: 10px; }
 .learning-metric { margin: 14px 0; }
 .learning-metric .detail { padding-bottom: 7px; }
 .learning-metric p { margin: 5px 0; }
@@ -284,3 +284,19 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
 @media (max-height: 550px) and (orientation: landscape) {
   .plot { height: 350px; }
 }
+
+.timing-device { flex: 1 1 300px; }
+.timing-charger { text-align: right; }
+.explain { display: inline; }
+.explain-trigger { display: inline; padding: 2px 0; border: 0; border-radius: 0; background: none; color: inherit; font: inherit; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+.explain-trigger:hover { background: none; }
+.explain-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.explain-popup { position: fixed; z-index: 30; box-sizing: border-box; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 4px 24px #0005; font-size: 12px; font-weight: 400; line-height: 1.5; text-align: left; }
+.recording-details { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.table-scroll { overflow-x: auto; }
+.recording-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+.recording-table td, .recording-table th { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; font-weight: 400; }
+.recording-table thead th { color: var(--muted); white-space: nowrap; }
+.recording-table th small, .recording-table td small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; font-weight: 400; }
+.recording-table .recording-group th { color: var(--accent); font-weight: 550; padding-top: 18px; }
+@media(max-width: 640px) { .timing-device { flex-basis: 100%; } .timing-charger { text-align: left; } .recording-table { min-width: 720px; } }

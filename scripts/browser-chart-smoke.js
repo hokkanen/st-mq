@@ -12,7 +12,7 @@ import { EventEmitter } from 'node:events';
 // creates its own temporary simulation, never reads household credentials.
 const directory = mkdtempSync(join(tmpdir(), 'stmq-browser-chart-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
-let app, ws;
+let app, ws, command, ownsBrowser=false;
 const pending = new Map(), errors = [], timings = [];
 let id = 0;
 try {
@@ -31,13 +31,13 @@ try {
       message.type === 'error' ? p.reject(new Error(JSON.stringify(message))) : p.resolve(message.result);
     } else if (message.method === 'log.entryAdded' && message.params.level === 'error') errors.push(message.params.text);
   };
-  const command = (method, params) => new Promise((resolve, reject) => {
+  command = (method, params) => new Promise((resolve, reject) => {
     const requestId = ++id;
     const timer = setTimeout(() => { pending.delete(requestId); reject(new Error(`Timeout: ${method}`)); }, 20_000);
     pending.set(requestId, { resolve, reject, timer });
     ws.send(JSON.stringify({ id: requestId, method, params }));
   });
-  await command('session.new', { capabilities: {} });
+  await command('session.new', { capabilities: {} }); ownsBrowser=true;
   await command('session.subscribe', { events: ['log.entryAdded'] });
   const { context } = await command('browsingContext.create', { type: 'tab' });
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
@@ -46,6 +46,12 @@ try {
     if (result.type === 'exception') throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
+  const openExplanation=async label=>evaluate(`(async()=>{
+    const button=[...document.querySelectorAll('.explain-trigger')].find(b=>b.textContent===${JSON.stringify(label)});
+    button.scrollIntoView({block:'center'});
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    button.focus();button.click();return true;
+  })()`);
   const browserTimeZone = await evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone');
   const until = async (expression, attempts = 150) => {
     for (let i = 0; i < attempts; i++) {
@@ -75,6 +81,20 @@ try {
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-yesterday,range-today,range-tomorrow');
   assert.equal(await evaluate("document.getElementById('left-axis').value"), 'power');
+  assert(await evaluate("document.querySelectorAll('#left-axis optgroup').length")>=10);
+  for(const key of ['garage_temperature','brine_pump_speed','phase_energy','alarm_code'])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
+  await evaluate("document.getElementById('recording-details').open=true; true");
+  await until("document.querySelectorAll('#recording-content tbody tr').length>35");
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/rolling target/);
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Garage temperature/);
+  await evaluate("document.getElementById('energy-audit-details').open=true; true");
+  await until("document.getElementById('energy-audit-content').textContent.includes('never change history')");
+  await evaluate("document.getElementById('recording-details').scrollIntoView(); true");
+  mkdirSync('var',{recursive:true});
+  const recordingShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+  writeFileSync('var/home-energy-recording.png',Buffer.from(recordingShot.data,'base64'));
+  await evaluate("document.getElementById('recording-details').open=false; window.scrollTo(0,0); true");
+
   assert.equal(await evaluate("document.body.textContent.includes('A comfortable home')"), false);
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   const legendState = text => evaluate(`Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))?.getAttribute('aria-pressed')`);
@@ -289,6 +309,10 @@ try {
     priceSettings: { ...config.priceSettings, effectiveDate: '2026-09-07' },
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } },
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
+  for(const [prefix,power] of [['property',6.9],['ev1',2.07]]) {
+    app.engine.ingestEnergy({source:'easee',device:`synthetic-${prefix}`,prefix,start:now-5*60_000,end:now,
+      energies:[power/36,power/36,power/36],powers:[power/3,power/3,power/3],quality:['estimated'],receivedAt:now});
+  }
   // Artificial legacy readings predate the only known contract period. Charger
   // phase currents and quarter-hour spot prices suffice; no HP power is invented.
   const historicalStart = Date.parse('2026-09-06T00:00:00+03:00');
@@ -318,10 +342,18 @@ try {
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-06'");
   assert.match(await evaluate("document.getElementById('timing-benefit').children[0].textContent"), /^Heat pump: Timing comparison unavailable/);
   assert.match(await evaluate("document.getElementById('timing-benefit').children[1].textContent"), /^Charger: €[\d.]+ timing benefit.*assumed rates.*100% coverage/);
-  assert.equal(await evaluate("document.querySelectorAll('.timing-price-caution').length"), 1);
-  assert.match(await evaluate("document.querySelector('.timing-price-caution').textContent"), /nearest known contract rates.*timing benefits depend on these assumed rates/);
+  assert.equal(await evaluate("document.querySelectorAll('.timing-price-caution').length"),0);
+  await openExplanation('assumed rates');
+  assert.match(await evaluate("document.querySelector('.explain-popup:not([hidden])').textContent"),/nearest known contract rates/i);
+  await evaluate("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); true");
+  assert.equal(await evaluate("document.querySelectorAll('.explain-popup:not([hidden])').length"),0);
+
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
-  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Historical price caution fits mobile');
+  await openExplanation('assumed rates');
+  assert.equal(await evaluate("(() => {const r=document.querySelector('.explain-popup:not([hidden])').getBoundingClientRect(); return r.left>=0&&r.right<=innerWidth&&r.top>=0;})()"),true,'Tapped explanation fits mobile');
+  await evaluate("document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); true");
+  await capture('home-energy-timing-mobile');
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Historical timing explanations fit mobile');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await evaluate("document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07'");
@@ -377,9 +409,10 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'conditional-price-caution', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
-  await command('browser.close', {});
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'hover-keyboard-mobile-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+  await command('browser.close', {}); ownsBrowser=false;
 } finally {
+  if(ownsBrowser) { try {await command('browser.close',{});}catch{} }
   ws?.close();
   for (const p of pending.values()) clearTimeout(p.timer);
   await app?.close(); rmSync(directory, { recursive: true, force: true });

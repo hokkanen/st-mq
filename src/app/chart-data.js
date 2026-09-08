@@ -1,10 +1,15 @@
 import moment from 'moment-timezone';
 import { validateContract } from '../domain/prices.js';
 import { assembleOutlook } from './contract.js';
+import { historicalSolar } from './chart-weather.js';
 import { createHistoricalPricing } from './chart-prices.js';
 import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
+import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS, H66_HISTORY_SIGNALS } from '../domain/history-series.js';
+import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
+import { ROLLUP_SIGNALS, chartRollupRows, rollupWatermark } from '../storage/chart-rollups.js';
+import { mergeCoverageRows } from './chart-coverage.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -329,6 +334,16 @@ export class DailyTimingBenchmark {
     }
     if (!previous || at >= previous.at) this.previous.set(name, { at, kw });
   }
+  addEnergy(name, start, end, kwh) {
+    if (!Number.isFinite(kwh) || kwh < 0 || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    // Reuse the exact tariff/day integration, without bridging gaps or applying
+    // the legacy snapshot hold cap to a known recorded energy interval.
+    const previous = this.previous.get(name), kw = kwh*HOUR/(end-start);
+    this.previous.delete(name);
+    this.add(name,start,kw);
+    for (let at=start;at<end;) { at=Math.min(end,at+30*60_000); this.add(name,at,at<end?kw:null); }
+    if (previous) this.previous.set(name,previous); else this.previous.delete(name);
+  }
   result() {
     for (const name of ['heatPump', 'charger']) this.add(name, this.now, null);
     return Object.fromEntries(['heatPump', 'charger'].map(name => {
@@ -341,7 +356,7 @@ export class DailyTimingBenchmark {
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
         coverage: duration ? Math.min(1, covered / duration) : 0, provisional: this.now < this.range.to || covered < duration,
-        basis: name === 'charger' ? 'Estimated from three phase-current snapshots' : 'Estimated heat-pump electrical power; no whole-property subtraction',
+        basis: name === 'charger' ? 'Estimated phase-energy intervals; older history uses phase-current snapshots' : 'Estimated heat-pump electrical power; no whole-property subtraction',
         explanation: 'Recorded energy at its actual times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
     }));
   }
@@ -368,14 +383,14 @@ function* mergedHistoryRows(store, nativeRows, from, to, requested) {
   }
 }
 
-function addHistoricalChargerTiming(store, timing, range, now, input) {
+function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = Infinity) {
   if (!timing.days.some(day => day.average !== null)) return;
   const scope = input === 'simulated' ? "(o.source='simulation' OR o.source='controller-estimate' AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source='controller-estimate' AND o.device='simulated'))";
   const firstPower = store.db.prepare(`SELECT min(o.source_time) AS at FROM observations o
     WHERE o.signal='charger_power' AND o.source_time>=? AND o.source_time<=? AND ${scope}`)
     .get(range.from - 30 * 60_000, Math.min(now, range.to)).at;
-  const until = firstPower ?? Math.min(now + 1, range.to);
+  const until = Math.min(cutoff, firstPower ?? Math.min(now + 1, range.to));
   if (until <= range.from - 30 * 60_000) return;
   const compact = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const native = store.db.prepare(`SELECT o.* FROM observations o INDEXED BY observations_time
@@ -422,13 +437,12 @@ export function getChartData({ store, input = 'offline', contract = null, market
   simulated = null, now = Date.now(), startDate, endDate, left = 'power', points = 800 }) {
   const started = performance.now();
   const range = chartRange({ startDate, endDate, now });
-  if (!['power', 'phases', 'integral', 'solar_radiation', ...LEARNING].includes(left)) throw new TypeError('Unknown left axis');
+  if (!HISTORY_AXIS_BY_KEY[left]) throw new TypeError('Unknown left axis');
   if (!Number.isInteger(points) || points < 100 || points > 2000) throw new RangeError('Chart points must be 100–2000');
   if (!['simulated', 'providers', 'mqtt', 'offline'].includes(input)) throw new TypeError('Unknown chart input');
   let rates = null;
   if (contract) { rates = validateContract(contract); if (rates.mode !== 'billing') throw new TypeError('Historical charts require dated billing rates'); }
-  const leftNames = left === 'power' ? ['property_power', 'charger_power', 'auxiliary_power'] : left === 'phases' ? PHASES
-    : left === 'solar_radiation' ? ['solar_radiation', 'solar_forecast'] : [left === 'integral' ? 'heating_integral' : left];
+  const leftNames = HISTORY_AXIS_BY_KEY[left].signals;
   const names = [...TEMPERATURES, 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames];
   const envelopes = Object.fromEntries(names.map(name => [name, new Envelope(range.from, range.to, points)]));
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) ? Infinity : name === 'auxiliary_power' ? 5 * 60_000 : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation'].includes(name))]));
@@ -439,23 +453,47 @@ export function getChartData({ store, input = 'offline', contract = null, market
     : historicalPricing?.intervals(marketIntervals) ?? [];
   const priceAssumptions = { used: priced.some(price => price.assumedPrice) };
   const timing = new DailyTimingBenchmark(range, now, priced);
-  addHistoricalChargerTiming(store, timing, range, now, input);
+  const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input)]));
+  addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
-    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'solar_forecast'].includes(name))]);
+    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
+  const watermark = range.to-range.from > 7*DAY ? rollupWatermark(store.db) : null;
+  const summarized = new Set(watermark === null ? [] : [...requested].filter(signal=>ROLLUP_SIGNALS.includes(signal)));
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
-  const query = store.db.prepare(`SELECT ${columns}
-    FROM observations o INDEXED BY observations_time LEFT JOIN imports i ON i.id=o.import_id
-    WHERE o.source_time>=? AND o.source_time<? AND o.signal IN (${[...requested].map(() => '?').join(',')})
-    AND ${sourceScope}
-    ${compactImports ? 'AND o.import_id IS NULL' : ''}
-    AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.source_time,o.id`);
+  // Read only the selected signals from their index. A chronological full-table
+  // scan still touches years of phase energy even when summaries replace it.
+  // Merge bounded iterators instead of sorting a large intermediate SQL result.
+  function* nativeHistoryRows() {
+    const heads=[];
+    for(const signal of requested) {
+      const summarizedSignal=summarized.has(signal);
+      if(summarizedSignal && watermark===0 && compactImports)continue;
+      const query=store.db.prepare(`SELECT ${columns}
+        FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
+        WHERE o.signal=? AND o.source_time>=? AND o.source_time<?
+        ${summarizedSignal ? `AND (o.id<=${watermark}${compactImports?'':' OR o.import_id IS NOT NULL'})` : ''}
+        ${compactImports ? 'AND o.import_id IS NULL' : ''}
+        AND ${sourceScope} AND (o.import_id IS NULL OR i.status='complete')
+        AND COALESCE(json_extract(o.raw,'$.recorder.status'),'fresh')='fresh'
+        ORDER BY o.source_time,o.id`);
+      const iterator=query.iterate(signal,range.from-3*HOUR,Math.min(range.to,now+1));
+      const item=iterator.next();if(!item.done)heads.push({iterator,value:item.value});
+    }
+    while(heads.length) {
+      let index=0;
+      for(let i=1;i<heads.length;i++)if(heads[i].value.source_time<heads[index].value.source_time
+        ||heads[i].value.source_time===heads[index].value.source_time&&heads[i].value.id<heads[index].value.id)index=i;
+      const head=heads[index];yield head.value;
+      const next=head.iterator.next();if(next.done)heads.splice(index,1);else head.value=next.value;
+    }
+  }
   const flagsOf = qualityReader(); let rawRows = 0, invalidRows = 0, latestOutdoor = null;
   let time = null, atRows = new Map(), phases = new Map();
   let previousHeat = null;
@@ -504,20 +542,26 @@ export function getChartData({ store, input = 'offline', contract = null, market
     flushTelemetry(time);
     for (const { row, value } of atRows.values()) {
       const signal = row.signal;
+      if (signal === 'charger_power' && time >= energyStarts.ev1) continue;
+      if (PHASES.includes(signal) && time >= energyStarts[signal.startsWith('ev1')?'ev1':'property']) continue;
       if (signal === 'requested_heat_mode') addState(row, value, 'heat');
       else if (signal === 'dhwr_request' && row.source === 'controller' && row.device === input && value === 1) {
+        lines[signal]?.add(time, value);
         let end = time + 10 * 60_000;
         try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt)) end = Math.min(end, raw.expiresAt); } catch { /* Ten-minute legacy pulse default. */ }
         shading.dhwr.add(time, Math.min(end, now));
       }
       else if (signal === 'controller_phase' && row.source === 'controller' && row.device === input) {
+        lines[signal]?.add(time, value);
         let until = time + 30 * 60_000;
         try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt) && raw.expiresAt > time) until = raw.expiresAt; } catch { /* Older requests retain a bounded lifetime. */ }
         telemetry.set(signal, { at: time, value, until });
       }
       else if (['compressor_active', 'dhw_routing', 'operating_mode'].includes(signal)) {
+        lines[signal]?.add(time, value);
         telemetry.set(signal, { at: time, value: verified(row) ? value : null });
       } else if (signal === 'auxiliary_output') {
+        lines[signal]?.add(time, value);
         if (!atRows.has('auxiliary_power') && lines.auxiliary_power) {
           let kw = null;
           try { const raw = JSON.parse(row.raw), capacity = raw?.ratedPowerKw ?? raw?.ratedKw ?? raw?.maxPowerKw;
@@ -558,6 +602,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
           candidates.set(group.prefix, { ...group, complete });
       }
       for (const [prefix, group] of candidates) {
+        if (time >= energyStarts[prefix]) continue;
         const power = group.complete ? group.values.reduce((sum, value) => sum + value, 0) * 0.23 : null;
         lines[prefix === 'property' ? 'property_power' : 'charger_power']?.add(time, power);
       }
@@ -565,8 +610,17 @@ export function getChartData({ store, input = 'offline', contract = null, market
     previousTelemetryAt = time;
     atRows = new Map(); phases = new Map();
   };
-  const nativeRows = query.iterate(range.from - 3 * HOUR, Math.min(range.to, now + 1), ...requested);
-  const historyRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, Math.min(range.to, now + 1), requested) : nativeRows;
+  const nativeRows = nativeHistoryRows();
+  const baseRows = compactImports ? mergedHistoryRows(store, nativeRows, range.from - 3 * HOUR, Math.min(range.to, now + 1), requested) : nativeRows;
+  function* withSummaries() {
+    const a=baseRows[Symbol.iterator](), b=chartRollupRows(store.db,{from:range.from-3*HOUR,to:Math.min(range.to,now+1),signals:summarized,input})[Symbol.iterator]();
+    let x=a.next(),y=b.next();
+    while(!x.done||!y.done) {
+      if(!x.done&&(y.done||x.value.source_time<=y.value.source_time)){yield x.value;x=a.next();}
+      else {yield y.value;y=b.next();}
+    }
+  }
+  const historyRows = summarized.size ? withSummaries() : baseRows;
   function* rowsWithPreviousReadings() {
     const earlier = [];
     // Learned estimates remain in effect until superseded, including past-day
@@ -600,7 +654,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     yield* earlier.sort((a, b) => a.source_time - b.source_time || a.id - b.id);
     yield* historyRows;
   }
-  const rows = rowsWithPreviousReadings();
+  const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:Math.min(range.to,now+1),input,signals:requested});
   for (const row of left === 'power' ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
     if (row.imported) {
       if (time !== null && time !== row.source_time) flushTime();
@@ -648,6 +702,16 @@ export function getChartData({ store, input = 'offline', contract = null, market
     } else rememberScalar(row, value);
   }
   if (time !== null) flushTime();
+  if (Number.isFinite(energyStarts.ev1)) timing.add('charger',energyStarts.ev1,null);
+  const recordedEnergy = addRecordedEnergy({store,range,now,input,envelopes,timing});
+  for(const signal of leftNames.filter(name=>AUDIT_SIGNALS.includes(name))) {
+    for(const row of store.db.prepare('SELECT value,source_time,quality FROM energy_audits WHERE signal=? AND source_time>=? AND source_time<=? ORDER BY source_time,id')
+      .iterate(signal,range.from,Math.min(range.to,now))) {
+      const quality=JSON.parse(row.quality);
+      envelopes[signal].add(row.source_time,quality.some(flag=>/reset|not.increasing|invalid/.test(flag))?null:row.value,{auditOnly:true});
+    }
+  }
+
   // A last command is only a bounded request; it is not indefinite confirmation.
   if (previousHeat) addState({ source_time: Math.min(now, range.to) }, null, 'heat');
   flushTelemetry(Math.min(now, range.to));
@@ -662,6 +726,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (previous.x < end) envelopes[name].add(end, previous.y, previous);
     if (end < nowEnd) envelopes[name].add(end + 1, null);
   }
+  if (input !== 'simulated' && envelopes.solar_radiation)
+    intervalPoints(historicalSolar(store,range,now),'solarRadiationWm2',envelopes.solar_radiation);
 
   if (input === 'simulated') {
     intervalPoints(simulated?.prices ?? [], 'allInCentsPerKWh', envelopes.all_in_price);
@@ -707,12 +773,12 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata,
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, recordedEnergy, hourlySummaries: summarized.size>0,
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
-    powerEstimate: left === 'power' ? '230 V × sum of three last-reported phase currents from one device acquisition; estimated kW, not metered power or energy.' : null,
+    powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
     dhwrBasis: 'Historical ten-minute pulse requests, not verified pump feedback.',
-    decimation: 'Per time bucket: first, last, minimum, maximum and missing-data breaks; all source rows scanned.' } };
+    decimation: 'Per time bucket: first, last, minimum, maximum and missing-data breaks. Long ranges use hourly summaries; costs use recorded energy intervals.' } };
 }

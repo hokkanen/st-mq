@@ -300,7 +300,7 @@ test('combined power requires all three phases from the same timestamp and acqui
     assert.equal(result.series.property_power[0].y, 13.8);
     assert(result.series.property_power.some(point => point.x === from + MINUTE && point.y === null));
     assert(result.series.charger_power.every(point => point.y === null));
-    assert.match(result.meta.powerEstimate, /estimated kW, not metered/);
+    assert.match(result.meta.powerEstimate, /Phase allocation and energy integration are estimates/);
     assert(!Object.hasOwn(result.series, 'property_current_l1'));
     const phaseView = get(store, { left: 'phases' });
     assert.equal(phaseView.series.property_current_l1[0].y, 10);
@@ -626,6 +626,8 @@ test('worker cache invalidates on new observations; aborts release the bounded q
     await assert.rejects(first, { name: 'AbortError' });
     assert.equal((await service.query(args)).series.indoor_temperature[0].y, 20);
     assert.equal((await service.query(args)).meta.cacheHit, true);
+    store.setState('synthetic-recorder-checkpoint',{polls:2});
+    assert.equal((await service.query(args)).meta.cacheHit,true,'Unrelated checkpoint writes retain the history cache');
     put(store, 'indoor_temperature', 22, from + HOUR);
     const refreshed = await service.query(args);
     assert.equal(refreshed.series.indoor_temperature.at(-1).y, 22);

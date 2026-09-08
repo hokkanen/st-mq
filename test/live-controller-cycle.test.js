@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
+import { replayLearningJournal } from '../src/app/committed-learning.js';
 import { Engine } from '../src/app/engine.js';
 import { validateSettings, CONTROL_DEFAULTS } from '../src/app/config.js';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
@@ -79,6 +80,8 @@ test('history baseline arriving after startup is adopted without replacing live 
   const history=restoreAdaptiveCheckpoint(null);history.baselineC=21.4;history.comfortReference={targetC:21.4};
   r.store.setState('adaptive:history',history);r.engine.tick();
   assert.equal(r.engine.checkpoint.baselineC,21.4);assert.equal(r.engine.checkpoint.cursor,cursor);
+  assert.equal(r.store.learningJournal({input:'mqtt'}).at(-1).kind,'context');
+  assert.deepEqual(replayLearningJournal(r.store,'mqtt',null,{rebuild:true}),r.engine.checkpoint);
 });
 
 test('corrupt checkpoint replays persisted samples and corrupt background JSON cannot break live status',async t=>{
@@ -100,6 +103,8 @@ test('manual ROOM change resets the indoor reference while preserving learned ph
   r.advance(60_000);native.receive('0203',18);r.engine.tick();
   assert.equal(r.engine.checkpoint.baselineC,null);assert.deepEqual(r.engine.checkpoint.model.parameters,parameters);
   r.engine.tick();assert.equal(r.engine.checkpoint.baselineC,null);
+  assert.equal(r.store.learningJournal({input:'mqtt'}).at(-1).kind,'context');
+  assert.deepEqual(replayLearningJournal(r.store,'mqtt',null,{rebuild:true}),r.engine.checkpoint);
 });
 
 test('near-third H66 output maps to nominal stages and other percentages stay explicitly proportional',()=>{

@@ -44,6 +44,11 @@ export function createAppServer({ engine, store, chartService, token = '', stati
         if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return json(403, { error: 'Cross-origin request rejected' });
         if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, engine.status());
+        if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
+          const last = store.db.prepare('SELECT MAX(id) AS id FROM energy_audits').get().id ?? 0;
+          const rows = store.energyAudits({ after: Math.max(0,last-20), limit:20 });
+          return json(200, rows.map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison})).reverse());
+        }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();
           const args = { input: engine.config.input, contract: engine.contract(),

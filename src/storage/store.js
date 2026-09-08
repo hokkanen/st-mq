@@ -2,8 +2,9 @@ import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
 import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { rollupSchema, updateChartRollup } from './chart-rollups.js';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -64,6 +65,65 @@ CREATE TABLE learning_cycles (
  status TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);`;
 
+// Existing payloads remain byte-for-byte intact. New fetches reference immutable
+// content; the compatibility view keeps historical SQL readers working.
+const recorderSchema = `
+ALTER TABLE provider_snapshots RENAME TO provider_snapshot_fetches;
+ALTER TABLE provider_snapshot_fetches ADD COLUMN content_id INTEGER REFERENCES provider_snapshot_contents(id);
+ALTER TABLE provider_snapshot_fetches ADD COLUMN fetch_metadata TEXT;
+CREATE INDEX snapshots_content_fetch ON provider_snapshot_fetches(content_id,kind,source,fetched_at);
+CREATE TABLE provider_snapshot_contents (
+ id INTEGER PRIMARY KEY, digest TEXT NOT NULL UNIQUE, payload TEXT NOT NULL);
+CREATE VIEW provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
+ COALESCE(c.payload,f.payload) AS payload,f.digest
+ FROM provider_snapshot_fetches f LEFT JOIN provider_snapshot_contents c ON c.id=f.content_id;
+CREATE TABLE recorder_coverage (
+ id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
+ status TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER NOT NULL,
+ source_time INTEGER, observation_id INTEGER REFERENCES observations(id), samples INTEGER NOT NULL);
+CREATE INDEX recorder_coverage_signal_time ON recorder_coverage(signal,end_at,id);
+CREATE INDEX recorder_coverage_stream ON recorder_coverage(source,device,signal,id);
+CREATE INDEX recorder_coverage_outages ON recorder_coverage(start_at,id) WHERE status<>'fresh';
+CREATE TABLE recorder_metrics (
+ key TEXT NOT NULL,bucket INTEGER NOT NULL,polls INTEGER NOT NULL,records INTEGER NOT NULL,
+ bytes INTEGER NOT NULL,error_squared_time REAL NOT NULL,error_time REAL NOT NULL,
+ stale INTEGER NOT NULL,failed INTEGER NOT NULL,unavailable INTEGER NOT NULL,
+ PRIMARY KEY(key,bucket)) WITHOUT ROWID;
+CREATE INDEX recorder_metrics_bucket ON recorder_metrics(bucket);
+CREATE TABLE energy_audits (
+ id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
+ source_time INTEGER NOT NULL, received_at INTEGER NOT NULL, value REAL NOT NULL,
+ quality TEXT NOT NULL, comparison TEXT,
+ UNIQUE(source,device,signal,source_time,value));
+CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
+CREATE TABLE learning_journal (
+ id INTEGER PRIMARY KEY, input TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL,
+ at INTEGER NOT NULL, algorithm_version TEXT NOT NULL, config_version TEXT,
+ forecast_version TEXT, payload TEXT NOT NULL, UNIQUE(input,key));
+CREATE INDEX learning_journal_input_id ON learning_journal(input,id);`;
+
+// Fetch timestamps describe acquisition, not forecast content. Keep them in a
+// small path map so mixed-source forecasts retain each source's original age.
+function snapshotContent(value, metadata, path = []) {
+  if (Array.isArray(value)) return value.map((v, i) => snapshotContent(v, metadata, [...path, i]));
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const key of Object.keys(value).sort()) {
+    if (key === 'fetchedAt' || key === 'snapshotId' || key === 'acquisition') metadata.push([[...path, key], value[key]]);
+    else result[key] = snapshotContent(value[key], metadata, [...path, key]);
+  }
+  return result;
+}
+export function restoreSnapshot(payload, metadata) {
+  const result = JSON.parse(payload);
+  for (const [path, value] of metadata ? JSON.parse(metadata) : []) {
+    let object = result;
+    for (const part of path.slice(0, -1)) object = object?.[part];
+    if (object && typeof object === 'object') object[path.at(-1)] = value;
+  }
+  return result;
+}
+
 function integer(value, name) {
   if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer`);
   return value;
@@ -107,6 +167,8 @@ export class Store {
         if (version < 2) this.db.exec(snapshotsSchema);
         if (version < 3) this.db.exec(easeeAcquisitionIndex);
         if (version < 4) this.db.exec(learningSchema);
+        if (version < 5) this.db.exec(recorderSchema);
+        if (version < 6) this.db.exec(rollupSchema);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
@@ -120,13 +182,26 @@ export class Store {
   close() { this.db.close(); }
 
   transaction(fn) {
+    // Acquisition and recorder methods deliberately compose atomic operations.
+    // SAVEPOINT keeps an inner failure from leaving half an interval behind.
+    if (this.transactionDepth) {
+      const savepoint = `nested_${++this.savepointSequence}`;
+      this.db.exec(`SAVEPOINT ${savepoint}`);
+      try {
+        const result = fn();
+        if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
+        this.db.exec(`RELEASE ${savepoint}`); return result;
+      } catch (error) { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); throw error; }
+    }
     this.db.exec('BEGIN IMMEDIATE');
+    this.transactionDepth = 1; this.savepointSequence ??= 0;
     try {
       const result = fn();
       if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
       this.db.exec('COMMIT');
       return result;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    finally { this.transactionDepth = 0; }
   }
 
   getState(key) {
@@ -136,7 +211,7 @@ export class Store {
 
   setState(key, value) {
     this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE state.value <> excluded.value`)
       .run(label(key, 'key'), json(value), Date.now());
   }
 
@@ -150,6 +225,100 @@ export class Store {
     return this.db.prepare('SELECT id,payload FROM learning_samples WHERE input=? AND id>? ORDER BY id LIMIT ?')
       .all(label(input, 'input'), integer(after, 'after'), limitValue(limit))
       .map(row => ({ id: row.id, ...JSON.parse(row.payload) }));
+  }
+
+  appendLearningJournal(input, { kind, at, algorithmVersion, configVersion = null, forecastVersion = null, payload, key }) {
+    if (!['sample', 'episode', 'context'].includes(kind)) throw new TypeError('Invalid learning journal kind');
+    label(input, 'input'); instant(at, 'journal timestamp'); label(algorithmVersion, 'algorithm version');
+    key ??= `${kind}:${kind === 'episode' ? payload.id ?? payload.episodeId ?? at : at}`;
+    label(key, 'journal key');
+    const encoded = json(payload), config = configVersion === null ? null : json(configVersion);
+    const forecast = forecastVersion === null ? null : json(forecastVersion);
+    this.db.prepare(`INSERT INTO learning_journal(input,key,kind,at,algorithm_version,config_version,forecast_version,payload)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(input,key) DO NOTHING`).run(input,key,kind,at,algorithmVersion,config,forecast,encoded);
+    const row = this.db.prepare('SELECT * FROM learning_journal WHERE input=? AND key=?').get(input,key);
+    if (row.kind !== kind || row.at !== at || row.algorithm_version !== algorithmVersion || row.payload !== encoded
+      || row.config_version !== config || row.forecast_version !== forecast) throw new Error('Conflicting immutable learning journal entry');
+    return row.id;
+  }
+
+  learningJournal({ input, after = 0, limit = 256 } = {}) {
+    return this.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? ORDER BY id LIMIT ?')
+      .all(label(input,'input'),integer(after,'after'),limitValue(limit)).map(row => ({ id:row.id,key:row.key,
+        kind:row.kind,at:row.at,algorithmVersion:row.algorithm_version,
+        configVersion:row.config_version === null ? null : JSON.parse(row.config_version),
+        forecastVersion:row.forecast_version === null ? null : JSON.parse(row.forecast_version),payload:JSON.parse(row.payload) }));
+  }
+
+  energyAudit({ source = 'easee', device, signal, sourceTime, receivedAt, value, quality = [], comparison = null }) {
+    label(source,'source'); label(device,'device'); label(signal,'signal'); instant(sourceTime,'sourceTime'); instant(receivedAt,'receivedAt');
+    if (!Number.isFinite(value) || value < 0) throw new TypeError('Invalid audit energy counter');
+    if (!Array.isArray(quality) || quality.some(q => typeof q !== 'string')) throw new TypeError('Invalid audit quality');
+    return Number(this.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality,comparison)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source,device,signal,source_time,value) DO NOTHING`)
+      .run(source,device,signal,sourceTime,receivedAt,value,json(quality),comparison === null ? null : json(comparison)).changes);
+  }
+
+  energyAudits({ device, from, to, after = 0, limit = 100 } = {}) {
+    const clauses = ['id>?'], params = [integer(after,'after')];
+    if (device !== undefined) { clauses.push('device=?'); params.push(label(device,'device')); }
+    if (from !== undefined) { clauses.push('source_time>=?'); params.push(instant(from,'from')); }
+    if (to !== undefined) { clauses.push('source_time<?'); params.push(instant(to,'to')); }
+    params.push(limitValue(limit));
+    return this.db.prepare(`SELECT * FROM energy_audits WHERE ${clauses.join(' AND ')} ORDER BY id LIMIT ?`).all(...params)
+      .map(row => {
+        const result = { id:row.id,source:row.source,device:row.device,signal:row.signal,sourceTime:row.source_time,
+          receivedAt:row.received_at,value:row.value,quality:JSON.parse(row.quality),
+          comparison:row.comparison === null ? null : JSON.parse(row.comparison) };
+        if (!result.comparison) {
+          const previous = this.db.prepare(`SELECT * FROM energy_audits WHERE source=? AND device=? AND signal=? AND id<?
+            ORDER BY source_time DESC,id DESC LIMIT 1`).get(row.source,row.device,row.signal,row.id);
+          if (previous) {
+            if (row.source_time <= previous.source_time) result.quality.push('out-of-order-counter');
+            else if (row.value < previous.value) result.quality.push('counter-reset');
+            else {
+              result.comparison = this.compareEnergyAudit(row,previous);
+              if (!result.comparison) result.quality.push('incomplete-estimated-coverage');
+            }
+          }
+        }
+        result.quality = [...new Set(result.quality)];
+        return result;
+      });
+  }
+
+  compareEnergyAudit(row,previous) {
+    const prefix = row.signal.startsWith('property_') ? 'property' : row.signal.startsWith('ev1_') ? 'ev1' : null;
+    if (!prefix) return null;
+    const start = previous.source_time, end = row.source_time;
+    const totals = []; let edgeEstimated = false;
+    for (let phase=1;phase<=3;phase++) {
+      const values = this.db.prepare(`SELECT value,raw,quality FROM observations WHERE device=? AND signal=?
+        AND source_time>? ORDER BY source_time,id`).iterate(row.device,`${prefix}_energy_l${phase}`,start);
+      let cursor = start, total = 0;
+      for (const value of values) {
+        const raw = value.raw ? JSON.parse(value.raw) : null, quality = JSON.parse(value.quality);
+        if (!raw || !Number.isSafeInteger(raw.intervalStart) || !Number.isSafeInteger(raw.intervalEnd)
+          || raw.intervalStart > cursor || raw.intervalStart < cursor && cursor !== start || raw.intervalEnd <= cursor
+          || !Number.isFinite(value.value) || value.value < 0
+          || quality.some(q => /missing|stale|unavailable|gap|failed/.test(q))) return null;
+        const until = Math.min(raw.intervalEnd,end);
+        edgeEstimated ||= cursor !== raw.intervalStart || until !== raw.intervalEnd;
+        total += value.value*(until-cursor)/(raw.intervalEnd-raw.intervalStart); cursor = until;
+        if (cursor === end) break;
+      }
+      if (cursor !== end) return null;
+      totals.push(total);
+    }
+    const estimatedKwh = totals.reduce((n,v)=>n+v,0), meteredKwh = row.value-previous.value;
+    return {start,end,estimatedKwh,meteredKwh,differenceKwh:estimatedKwh-meteredKwh,
+      differencePercent:meteredKwh>0 ? (estimatedKwh-meteredKwh)/meteredKwh*100 : null,
+      edgeEstimated,basis:edgeEstimated ? 'diagnostic-only-complete-coverage-with-average-power-at-edges'
+        : 'diagnostic-only-matching-complete-intervals'};
+  }
+
+  databaseBytes() {
+    return this.db.prepare('PRAGMA page_count').get().page_count * this.db.prepare('PRAGMA page_size').get().page_size;
   }
 
   cycle(input, cycle) {
@@ -170,12 +339,21 @@ export class Store {
     if (!['market', 'weather'].includes(kind)) throw new Error('Invalid provider snapshot kind');
     label(source, 'source'); instant(fetchedAt, 'fetchedAt');
     if (issuedAt !== null) instant(issuedAt, 'issuedAt');
-    const encoded = json(payload);
+    const metadata = [], encoded = json(snapshotContent(payload, metadata));
     if (Buffer.byteLength(encoded) > 2 * 1024 * 1024) throw new Error('Provider snapshot is too large');
-    const digest = createHash('sha256').update(encoded).digest('hex');
-    this.db.prepare(`INSERT INTO provider_snapshots (kind,source,issued_at,fetched_at,payload,digest)
-      VALUES (?,?,?,?,?,?) ON CONFLICT(kind,source,fetched_at,digest) DO NOTHING`).run(kind, source, issuedAt, fetchedAt, encoded, digest);
-    return this.db.prepare('SELECT id FROM provider_snapshots WHERE kind=? AND source=? AND fetched_at=? AND digest=?').get(kind, source, fetchedAt, digest).id;
+    const contentDigest = createHash('sha256').update(encoded).digest('hex');
+    // Include issuance and metadata in acquisition identity; equal content from
+    // a new run must not inherit the old run's availability or issue time.
+    const fetchMetadata = json(metadata);
+    const digest = createHash('sha256').update(json([contentDigest,issuedAt,fetchMetadata])).digest('hex');
+    return this.transaction(() => {
+      this.db.prepare('INSERT INTO provider_snapshot_contents(digest,payload) VALUES(?,?) ON CONFLICT(digest) DO NOTHING').run(contentDigest,encoded);
+      const contentId = this.db.prepare('SELECT id FROM provider_snapshot_contents WHERE digest=?').get(contentDigest).id;
+      this.db.prepare(`INSERT INTO provider_snapshot_fetches (kind,source,issued_at,fetched_at,payload,digest,content_id,fetch_metadata)
+        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(kind,source,fetched_at,digest) DO NOTHING`)
+        .run(kind,source,issuedAt,fetchedAt,'',digest,contentId,fetchMetadata);
+      return this.db.prepare('SELECT id FROM provider_snapshot_fetches WHERE kind=? AND source=? AND fetched_at=? AND digest=?').get(kind,source,fetchedAt,digest).id;
+    });
   }
 
   snapshots({ kind, afterId = 0, limit = 100 } = {}) {
@@ -183,8 +361,27 @@ export class Store {
     const params = [integer(afterId, 'afterId')];
     if (kind !== undefined) params.push(kind);
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT * FROM provider_snapshots WHERE id > ? ${kind === undefined ? '' : 'AND kind = ?'} ORDER BY id LIMIT ?`).all(...params)
-      .map(row => ({ id: row.id, kind: row.kind, source: row.source, issuedAt: row.issued_at, fetchedAt: row.fetched_at, payload: JSON.parse(row.payload) }));
+    return this.db.prepare(`SELECT v.*,f.fetch_metadata FROM provider_snapshots v JOIN provider_snapshot_fetches f ON f.id=v.id
+      WHERE v.id > ? ${kind === undefined ? '' : 'AND v.kind = ?'} ORDER BY v.id LIMIT ?`).all(...params)
+      .map(row => ({ id: row.id, kind: row.kind, source: row.source, issuedAt: row.issued_at, fetchedAt: row.fetched_at,
+        payload: restoreSnapshot(row.payload,row.fetch_metadata) }));
+  }
+
+  snapshotById(id) {
+    const row = this.db.prepare(`SELECT v.*,f.fetch_metadata,f.content_id FROM provider_snapshots v
+      JOIN provider_snapshot_fetches f ON f.id=v.id WHERE v.id=?`).get(integer(id,'snapshot id'));
+    if (!row) return null;
+    const first = row.content_id === null ? row.fetched_at : this.db.prepare(`SELECT MIN(fetched_at) AS at
+      FROM provider_snapshot_fetches WHERE content_id=? AND kind=? AND source=?`).get(row.content_id,row.kind,row.source).at;
+    return {id:row.id,kind:row.kind,source:row.source,issuedAt:row.issued_at,fetchedAt:row.fetched_at,
+      contentId:row.content_id,contentFirstFetchedAt:first,digest:row.digest,payload:restoreSnapshot(row.payload,row.fetch_metadata)};
+  }
+
+  latestSnapshot(kind,at) {
+    if (!['market','weather'].includes(kind)) throw new TypeError('Invalid snapshot kind');
+    const row = this.db.prepare('SELECT id FROM provider_snapshot_fetches WHERE kind=? AND fetched_at<=? ORDER BY fetched_at DESC,id DESC LIMIT 1')
+      .get(kind,instant(at,'snapshot as-of timestamp'));
+    return row ? this.snapshotById(row.id) : null;
   }
 
   event(type, payload, at = Date.now()) {
@@ -207,8 +404,12 @@ export class Store {
     if (value !== null && !Number.isFinite(value)) throw new TypeError('observation value must be finite or null');
     if (!Array.isArray(quality) || !quality.every(flag => typeof flag === 'string')) throw new TypeError('quality must be an array of string flags');
     const flags = [...new Set(value === null ? [...quality, 'missing'] : quality)];
-    return Number(this.insertObservation.run(source, device, signal, value, unit, sourceTime, receivedAt,
-      json(flags), raw === null ? null : json(raw), provenance?.importId ?? null, provenance?.rowNumber ?? null).lastInsertRowid);
+    return this.transaction(() => {
+      const id = Number(this.insertObservation.run(source, device, signal, value, unit, sourceTime, receivedAt,
+        json(flags), raw === null ? null : json(raw), provenance?.importId ?? null, provenance?.rowNumber ?? null).lastInsertRowid);
+      updateChartRollup(this.db,{source,device,signal,value,unit,sourceTime,receivedAt,quality:flags,raw,provenance},id);
+      return id;
+    });
   }
 
   /** Pages in ingestion/id order so incremental learning can resume without full-history scans. */

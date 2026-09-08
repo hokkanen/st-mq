@@ -10,13 +10,20 @@ preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/con
 **Default startup uses simulated devices in shadow mode.** With live input,
 configured transport and active mode, the controller can operate heating and
 supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
-Read-only market, weather, SmartThings and Easee providers plus dated contract
+Read-only market, weather, MQTT temperature and Easee providers plus dated contract
 setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
 the H66 sensor first, then FMI station observations, then Open-Meteo estimates. Offline
 regressions and a separate opt-in live suite verify the provider paths. See the
 [progress log](docs/PROGRESS.md) for actual live-check results and remaining limits.
 Physical equipment control has not been commissioned.
+
+An independent recording optimizer targets a configurable **10 GB/year** rolling
+growth rate with a **five-minute maximum interval when fresh measurements exist**.
+Electricity history stores three estimated phase-energy increments per device;
+occasional accumulated meter readings are audit-only. The house learner uses
+committed windows and a versioned replay journal. See
+[adaptive recording and migration](docs/recording.md), including SmartThings removal.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
@@ -104,14 +111,17 @@ directly below the current readings.
 - **Left axis:** **Power** shows combined property power as a line, estimated
   auxiliary power as a red fill and charger power as a fill over it. Fills overlap
   from zero; they are not stacked. **Phase currents** shows the three property phase lines
-  in amperes with corresponding charger fills. **Heating integral** selects the
-  integral instead. Four **Learning** choices show profit after recovery, profit
+  in amperes with corresponding charger fills. **Phase energy per interval** shows
+  the three saved kWh increments per device. The drawer groups all retained H66
+  parameters, garage temperature, control, weather and learning series. **Heating
+  integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
   with observed auxiliary recovery, recovery cost prediction error and learned
   normal indoor temperature. **Solar radiation** shows archived and future FMI
   forecasts in W/m², not a solar sensor. Only that group's legend items appear.
-  The property and charger power view estimates
-  kW as `230 × (L1 + L2 + L3) / 1000` from contemporaneous current readings; it is
-  not measured active power, metered energy or heat-pump consumption.
+  New property/charger power comes from phase-energy increments divided by their
+  actual intervals. Equivalent chart currents assume 230 V and unity power factor;
+  they are not the acquired current snapshots. Older current-only history retains
+  its `230 × (L1 + L2 + L3) / 1000` estimate. Neither path measures heat-pump consumption.
 - **Right axis:** indoor, garage and outdoor temperatures and electricity prices
   stay available with every left-axis selection. The dashed outdoor continuation
   is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
@@ -153,6 +163,10 @@ estimate assessed at the time and never rewrite old points using a later model.
 details**. The latter explains current parameters, temperature-validation evidence,
 completed-cycle counts and the four chartable metrics. See the detailed
 [learning and control explanation](docs/learning-and-control.md).
+**Recording details** lists achieved recording intervals, learned thresholds,
+freshness and storage growth independently of model importance. Its **Energy audit**
+compares occasional meter counters with integrated estimates without correcting
+history or training/calibrating the house model.
 
 ## Persistence and historical data
 
@@ -194,8 +208,9 @@ application is stopped; validate it before changing the configured path. Keep
 backups on separate storage. Schema upgrades run transactionally; newer unknown
 schemas are rejected. Raw observation queries are bounded to at most 5,000
 observations; `/api/history` limits a request to 31 days. The separate `/api/chart`
-endpoint accepts inclusive `start`/`end` calendar dates, `left=power|phases|integral`,
-`solar_radiation`, or the four `learning_*` signals described above,
+endpoint accepts inclusive `start`/`end` calendar dates and left-axis keys from
+the shared catalogue, including `power`, `phases`, `phase_energy`, `integral`,
+`solar_radiation`, individual H66 signals and the four `learning_*` signals,
 and a `points` resolution of 100–2,000 time buckets per series. It accepts at most
 3,660 calendar days and summarizes the full selected history into bounded drawing
 data. Source history is retained; there
@@ -231,7 +246,7 @@ API token in session storage for its tab. There is no internet exposure configur
 by this project.
 
 MQTT reuses the existing broker address/user/password and subscribes to
-`<device>/HP/+` alongside configured online providers. Supported active control and
+`<device>/HP/#` and configured indoor/garage temperature topics alongside online providers. Supported active control and
 explicit manual tests can publish SET requests. Plain H66 values lack a source
 measurement timestamp: non-retained receipt time is labeled as the communication
 freshness basis, with the source timestamp still unknown. Retained, duplicate and
@@ -244,35 +259,38 @@ Start read-only collection with:
 STMQ_INPUT=providers npm start
 ```
 
-This reuses `geoloc`, `entsoe`, `smartthings` and `easee` connection fields from
+This reuses `geoloc`, `entsoe`, `mqtt` and `easee` connection fields from
 the existing options JSON. FMI, Open-Meteo and Elering need no API key or additional
 provider configuration. Weather uses the configured latitude/longitude;
 Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO-E
-bidding zone. SmartThings indoor/garage sensors and Easee acquisition are optional.
-The garage is outside heating optimization. Provider input in shadow mode observes
+bidding zone. SmartThings acquisition is removed; its old configuration is ignored
+and historical readings are preserved. Indoor temperature can come from H66;
+replacement indoor/garage sensors can publish on configured MQTT topics. The garage
+is recorded independently of heating optimization. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
 | Data | Primary → backup | Normal collection interval |
 | --- | --- | --- |
-| Electricity prices | ENTSO-E → Elering's own public API | 1 hour |
-| Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 1 hour |
-| Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 10 minutes |
-| Indoor/garage temperatures | SmartThings | 5 minutes |
-| Property/charger currents | Easee | 5 minutes |
+| Electricity prices | ENTSO-E → Elering's own public API | 1 hour; 15-minute retry when next-day horizon is missing |
+| Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 30 minutes |
+| Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
+| Indoor/garage temperatures | H66 indoor; configured MQTT sensors | MQTT publications; H66 GETALL every 60 seconds |
+| Property/charger electrical observations | Easee REST | 15 seconds, one batched request per device |
 
 These are collection schedules, not guarantees that each provider publishes a new
 measurement that often. FMI and Open-Meteo forecasts use hourly valid times.
 Market prices retain each actual hourly or
-quarter-hour delivery interval. Source observations and downloaded forecast/market
-snapshots are saved when collected, with source timestamps kept separately from
-receipt time. Successful device downloads count even when values have not changed
+quarter-hour delivery interval. The recorder saves changed observations adaptively
+and deduplicates unchanged forecast/market payloads while preserving acquisition
+references. Source timestamps remain separate from receipt time. Successful device downloads count even when values have not changed
 or source timestamps are old. Reading-quality warnings remain visible without
-slowing the five-minute collection cadence; failed or malformed downloads still
+slowing the configured collection cadence; failed or malformed downloads still
 back off. Restarts preserve the last result and retry details.
 
 Market fallback starts on a failed request, missing current price, or incomplete
-current-day coverage. Tomorrow being unpublished is normal and does not itself
-trigger another request. Elering is contacted directly, with validated currency,
+current-day coverage. Tomorrow being unpublished is normal; it shortens the next
+scheduled check to the configured retry interval without forcing a backup request.
+Elering is contacted directly, with validated currency,
 VAT and terminal-interval semantics; no intermediary service is used. Neither
 source fills missing prices or extends them past the published horizon. See
 [the Elering verification evidence](test/fixtures/market-elering-evidence.md).
@@ -292,9 +310,7 @@ readings regain priority. FMI selects the nearest fresh station among up to thre
 returned candidates within 50 km. The station and model estimate describe the
 surrounding area. Weather forecasts and current-temperature acquisition are
 independent; an unavailable station therefore does not discard a good FMI forecast.
-With coordinates configured, SmartThings outdoor readings do not replace this
-chain; without coordinates, an existing SmartThings outdoor sensor can still be
-used when H66 is unavailable.
+No new SmartThings outdoor readings enter this chain.
 
 [Open-Meteo](https://open-meteo.com/en/docs/dwd-api) supplies DWD ICON forecasts
 without registration or a key for noncommercial use within the free API limits.
@@ -311,9 +327,13 @@ supply a documented forecast issuance timestamp, so that field remains unknown;
 its generation duration is not treated as an issuance time.
 Still-fresh near-term forecast blocks retain their original snapshot provenance.
 
-SmartThings and Easee readings retain their quality flags. Current snapshots are
-not metered energy or heat-pump power. Easee authentication can refresh tokens;
-it does not change charging settings.
+Easee readings retain original source ages. Reported active power is integrated
+between polls and allocated to three estimated phase energies; raw currents and
+voltages remain acquisition-only. Lifetime/session/import kWh counters are stored
+separately for accuracy diagnostics and never correct or calibrate those estimates.
+Charger voltage terminal mapping requires explicit verification before voltage
+weights are used. Easee authentication can refresh tokens; it does not change
+charging settings. See [recording configuration and limitations](docs/recording.md).
 
 Normal `npm test` and `npm run check` stay offline. To verify current service access
 and the configured keys explicitly, use the [bounded live test suite](docs/live-testing.md):
@@ -333,6 +353,12 @@ Edit add-on options in Home Assistant, or `data/options.json` on Linux, and rest
 credentials file. The dashboard reports the active values; Away/Pause and explicit
 timed tests are available there. Configuration takes precedence over old browser-saved mode/drop
 settings. `temp_to_hours` is obsolete and has been removed.
+
+`recording.max_interval_minutes` defaults to `5` and
+`recording.annual_budget_gb` to `10`. Acquisition intervals have separate options;
+the complete example and MQTT replacement sensor payloads are in
+[docs/recording.md](docs/recording.md). A storage target is not a calendar quota or
+an automatic deletion policy.
 
 All monetary options under `electricity` are **c/kWh excluding VAT**. VAT is entered
 as a percentage and applied once to spot, margin, tax and transfer. Default values:

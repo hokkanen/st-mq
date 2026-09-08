@@ -1,0 +1,201 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
+import { Engine } from '../src/app/engine.js';
+import { committedLearningSample, appendLearningRecord, replayLearningJournal, LEARNING_WINDOW_MS } from '../src/app/committed-learning.js';
+import { initialAdaptiveModel, updateAdaptiveLearning, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
+
+const MINUTE = 60_000, HOUR = 60 * MINUTE;
+const start = Date.parse('2026-01-01T00:00:00Z');
+const config = { heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025 };
+function record(store, signal, value, at, extra = {}) {
+  return store.observation({ source: 'husdata-h66', device: 'invented-gateway', signal, value,
+    unit: signal.endsWith('_temperature') ? 'degC' : signal.endsWith('_active') || signal === 'dhw_routing' ? 'state' : '%',
+    sourceTime: at, receivedAt: at, quality: [], raw: { usableForControl: true, retained: false }, ...extra });
+}
+function weather(store, at, value) {
+  return store.snapshot({ kind: 'weather', source: 'fmi', issuedAt: at, fetchedAt: at,
+    payload: { source: 'fmi', issuedAt: at, fetchedAt: at,
+      forecast: [{ start, end: start + 3 * HOUR, outdoorC: 0, solarRadiationWm2: value }] } });
+}
+
+test('causal windows use committed H66 heat inputs and frozen forecasts, never raw acquisition or audit values', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { config: { maxIntervalMs: 5 * MINUTE }, clock: () => start + 15 * MINUTE });
+  const forecastId = weather(store, start - HOUR, 120);
+  for (let minute = 0; minute <= 15; minute++) {
+    for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0],
+      ['compressor_active', 1], ['dhw_routing', 0], ['auxiliary_output', 0], ['alarm_active', 0], ['operating_mode', 1]]) {
+      recorder.record({ source: 'husdata-h66', device: 'invented-gateway', signal, value,
+        unit: signal.endsWith('_temperature') ? 'degC' : 'state', sourceTime: start + minute * MINUTE,
+        receivedAt: start + minute * MINUTE, quality: [], raw: { usableForControl: true, retained: false } });
+    }
+  }
+  const at = start + 15 * MINUTE;
+  const before = committedLearningSample({ store, input: 'mqtt', at, config });
+  assert.deepEqual(before.quality, []);
+  assert.equal(before.powerKw, 3.08);
+  assert.equal(before.thermalCompressorDuty, 1);
+  assert.equal(before.provenance.forecastVersion.id, forecastId);
+  assert.equal(before.solarRadiationWm2, 120);
+  // Late arrivals cannot rewrite what was known at the window boundary.
+  record(store, 'indoor_temperature', 30, at, { receivedAt: at + MINUTE });
+  record(store, 'compressor_active', 0, at, { receivedAt: at + MINUTE });
+  weather(store, at + MINUTE, 900);
+  assert.deepEqual(committedLearningSample({ store, input: 'mqtt', at, config }), before);
+  record(store, 'heat_pump_power', 99, at, { source: 'controller-estimate', unit: 'kW' });
+  record(store, 'heat_pump_meter_power', 99, at, { source: 'easee', unit: 'kW', raw: { auditOnly: true } });
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at, config }).powerKw, 3.08);
+});
+
+test('fast unsaved polls stay live while the house learner receives only recorded values', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const now = start + LEARNING_WINDOW_MS;
+  const engine = new Engine({ store, config: { input: 'mqtt', control: config,
+    settings: { mode: 'shadow' } }, clock: () => now });
+  for (const at of [start, now]) {
+    record(store, 'indoor_temperature', 21, at);
+    record(store, 'outdoor_temperature', 0, at);
+  }
+  const baseRows = store.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
+  engine.ingest({ source: 'smartthings', device: 'invented-room', signal: 'indoor_temperature', value: 28,
+    unit: 'degC', sourceTime: now, receivedAt: now, quality: [], raw: { acquisitionOnly: true } });
+  engine.ingest({ source: 'easee', device: 'invented-meter', signal: 'property_energy_total', value: 123456,
+    unit: 'kWh', sourceTime: now, receivedAt: now, quality: [], raw: { auditOnly: true } });
+  assert.equal(engine.latest.indoor_temperature.value, 28);
+  assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, baseRows);
+  const status = engine.tick();
+  assert.equal(status.observations.indoor.value, 28);
+  const entry = store.learningJournal({ input: 'mqtt' })[0];
+  assert.equal(entry.payload.value.indoorC, 21);
+  assert.equal(entry.payload.value.powerKw, null, 'No H66 compressor/output readings means no invented heat input');
+  assert.equal(entry.payload.value.electricalContext.property.phases[0].kwh, null);
+});
+
+test('phase energy remains separate context and cannot turn property consumption into heat-pump power', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const at = start + LEARNING_WINDOW_MS;
+  for (const point of [start, at]) for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0]]) record(store, signal, value, point);
+  for (const prefix of ['property', 'ev1']) for (const phase of [1, 2, 3]) record(store, `${prefix}_energy_l${phase}`, prefix === 'property' ? 2 : 0.5, at,
+    { source: 'easee', unit: 'kWh', raw: { intervalStart: start, intervalEnd: at } });
+  const result = committedLearningSample({ store, input: 'mqtt', at, config });
+  assert.equal(result.electricalContext.property.complete, true);
+  assert.equal(result.electricalContext.property.phases.reduce((sum, phase) => sum + phase.kwh, 0), 6);
+  assert.equal(result.powerKw, null);
+  assert.equal(result.compressorDuty, null);
+});
+
+test('committed coverage never renews a cached measurement beyond its source timestamp', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => start });
+  for (const minute of [0, 25]) recorder.record({ source: 'smartthings', device: 'invented-room',
+    signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: start,
+    receivedAt: start + minute * MINUTE, quality: [], raw: { cached: minute > 0 } });
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 30 * MINUTE, config }).indoorC, 21);
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 45 * MINUTE, config }).indoorC, null);
+});
+
+test('recorded outdoor windows preserve source priority and fall back only after the source expires', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (const minute of [0, 5, 10, 15]) record(store, 'outdoor_temperature', 0, start + minute * MINUTE);
+  for (const minute of [2, 7, 12]) record(store, 'outdoor_temperature', 10, start + minute * MINUTE,
+    { source: 'fmi', raw: null });
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config }).outdoorC, 0);
+  assert.ok(Math.abs(committedLearningSample({ store, input: 'mqtt', at: start + 30 * MINUTE, config }).outdoorC - 20 / 3) < 1e-10);
+});
+
+test('forecast provenance rejects stale issuance and solar fetched after the causal boundary', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const sample = () => committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config });
+  for (const [issuedAt, fetchedAt] of [[start - 7 * HOUR, start - HOUR], [start - HOUR, start + MINUTE]]) {
+    store.snapshot({ kind: 'weather', source: 'fmi', issuedAt: start - HOUR, fetchedAt: start,
+      payload: { forecast: [{ start, end: start + HOUR, solarRadiationWm2: 500,
+        solar: { source: 'openmeteo', issuedAt, fetchedAt } }] } });
+    assert.equal(sample().solarRadiationWm2, null);
+  }
+});
+
+test('re-fetching unchanged weather with unknown model issuance cannot renew its solar age', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (const fetchedAt of [start - 7 * HOUR, start - MINUTE]) store.snapshot({ kind: 'weather', source: 'openmeteo',
+    issuedAt: null, fetchedAt, payload: { source: 'openmeteo', issuedAt: null, fetchedAt,
+      forecast: [{ start, end: start + HOUR, solarRadiationWm2: 500,
+        solar: { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt } }] } });
+  const result = committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config });
+  assert.equal(result.solarRadiationWm2, null);
+});
+
+test('known phase energy crossing a window start contributes its interval overlap only', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (const phase of [1, 2, 3]) for (const [from, to, value] of [[-5, 5, 1], [5, 15, 1], [15, 18, 100]])
+    record(store, `property_energy_l${phase}`, value, start + to * MINUTE,
+      { source: 'easee', unit: 'kWh', raw: { intervalStart: start + from * MINUTE, intervalEnd: start + to * MINUTE } });
+  const result = committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config });
+  assert.equal(result.electricalContext.property.complete, true);
+  assert.deepEqual(result.electricalContext.property.phases.map(phase => phase.kwh), [1.5, 1.5, 1.5]);
+  assert.equal(result.powerKw, null);
+});
+
+test('a crash between journal commit and checkpoint preserves sample/episode ordering and deterministic rebuild', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'stmq-learning-journal-'));
+  const path = join(dir, 'synthetic.sqlite');
+  let store = new Store(path), checkpoint = null;
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  for (let i = 0; i < 768; i++) {
+    const at = start + i * LEARNING_WINDOW_MS;
+    const value = { timestamp: at, windowStart: at - LEARNING_WINDOW_MS, windowEnd: at,
+      indoorC: 21, outdoorC: 0, solarRadiationWm2: 0, phase: 'normal', roomBoostC: 0,
+      targetC: 21, regime: 'occupied', quality: [], energyBasis: 'estimated', actualModeKnown: false,
+      provenance: { basis: 'committed-history', forecastVersion: { id: Math.floor(i / 96) + 1 } } };
+    const configuration = i < 384 ? config : { ...config, heatPumpCompressorKw: 3.1 };
+    appendLearningRecord(store, 'mqtt', 'sample', value, { config: configuration, seed: checkpoint });
+    if (i === 384) {
+      const episode = { id: 'invented-complete-cycle', startedAt: at - 8 * HOUR, endedAt: at,
+        complete: true, recoveryComplete: true, phases: ['preheat', 'reduction', 'recovery'],
+        energyBasis: 'estimated', recoveryHours: 4, recoveryEnergyKwh: 8, recoveryAuxKwh: 1,
+        predictedRecoveryEnergyKwh: 6, predictedRecoveryAuxKwh: 1, compressorActivityObserved: true,
+        auxiliaryObserved: true, auxiliaryRouteKnown: true, spaceHeatingAuxKwh: 1, dhwAuxKwh: 0,
+        predictedSpaceHeatingAuxKwh: 0.5 };
+      appendLearningRecord(store, 'mqtt', 'episode', episode, { config: configuration, seed: checkpoint });
+      // The durable checkpoint still precedes BOTH journal entries.
+      const beforeCrash = store.getState('adaptive:mqtt').journalCursor;
+      store.close(); store = new Store(path);
+      assert.equal(store.getState('adaptive:mqtt').journalCursor, beforeCrash);
+      checkpoint = replayLearningJournal(store, 'mqtt', store.getState('adaptive:mqtt'));
+      assert.equal(checkpoint.model.energy.episodes, 1);
+    } else checkpoint = replayLearningJournal(store, 'mqtt', checkpoint);
+  }
+  assert.ok(checkpoint.model.validation.accepted);
+  assert.ok(checkpoint.model.validation.horizonHours >= 6);
+  const rebuilt = replayLearningJournal(store, 'mqtt', null, { rebuild: true });
+  assert.deepEqual(rebuilt, checkpoint);
+  assert.deepEqual(replayLearningJournal(store, 'mqtt', rebuilt), rebuilt);
+  const entries = store.learningJournal({ input: 'mqtt', limit: 1000 });
+  assert.equal(entries.filter(entry => entry.kind === 'episode').length, 1);
+  assert.equal(new Set(entries.map(entry => entry.configVersion)).size, 2);
+});
+
+test('rare-phase coefficients need distinct completed episodes, and older completed evidence survives the recent sample tail', () => {
+  let checkpoint = null;
+  for (let i = 0; i < 144; i++) checkpoint = updateAdaptiveLearning(checkpoint, { timestamp: start + i * HOUR,
+    indoorC: 21, outdoorC: 0, solarRadiationWm2: 0, phase: 'normal', roomBoostC: 0,
+    regime: 'occupied', quality: [], episodeId: i > 132 ? 'old-complete-cycle' : null }, { now: start + i * HOUR, config });
+  const prior = initialAdaptiveModel(config);
+  for (const name of ['reducedHeatCPerHour', 'preheatCPerHourPerDegree', 'memoryExchangePerHour', 'reserveTimeHours', 'auxiliaryCPerKwh']) {
+    assert.equal(checkpoint.model.parameters[name], prior.parameters[name]);
+    assert.equal(checkpoint.model.validation.fittedParameters.includes(name), false);
+  }
+  checkpoint = updateAdaptiveEpisode(checkpoint, { id: 'old-complete-cycle', startedAt: start + 133 * HOUR,
+    endedAt: start + 143 * HOUR, complete: true, recoveryComplete: true, phases: ['recovery'],
+    energyBasis: 'estimated', recoveryHours: 4, recoveryEnergyKwh: 3 }, { config });
+  const archived = structuredClone(checkpoint.episodeArchive);
+  checkpoint.samples = [];
+  checkpoint = updateAdaptiveLearning(checkpoint, { timestamp: start + 60 * 24 * HOUR, indoorC: 21, outdoorC: 0,
+    phase: 'normal', regime: 'occupied', quality: [] }, { now: start + 60 * 24 * HOUR, config });
+  assert.deepEqual(checkpoint.episodeArchive, archived);
+  assert.ok(checkpoint.episodeArchive[0].samples.length > 0);
+});

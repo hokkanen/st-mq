@@ -5,6 +5,7 @@ import { inferComfortReference, goodQuality } from './learning.js';
 const HOUR = 3_600_000;
 const MAX_SAMPLES = 1536;
 const REFIT_RECORDS = 12;
+const MIN_PHASE_EPISODES = 3;
 const finite = Number.isFinite;
 const time = value => typeof value === 'number' ? value : Date.parse(value);
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
@@ -94,7 +95,8 @@ export function predictThermalStep(model, state, inputs, dtHours) {
     remaining -= dt;
   }
   const phaseCoverage = model.validation?.phaseSamples?.[phase] ?? 0;
-  const checkedPhase = phaseCoverage >= 12 && (model.validation?.phaseValidationSamples?.[phase] ?? 0) >= 4;
+  const checkedPhase = phaseCoverage >= 12 && (model.validation?.phaseValidationSamples?.[phase] ?? 0) >= 4
+    && (phase === 'normal' || (model.validation?.phaseEpisodes?.[phase] ?? 0) >= MIN_PHASE_EPISODES);
   const unobservedAction = phase !== 'normal' && !checkedPhase ? 0.08 : 0;
   const solarChecked = (model.validation?.sunlitSamples ?? 0) >= 12 && (model.validation?.sunlitValidationSamples ?? 0) >= 4;
   const uncertainSolar = solarKnown ? solarChecked ? 0 : inputs.solarRadiationWm2 / 1000 * 0.15 : 0.08;
@@ -163,46 +165,85 @@ function sampleInputs(sample, targetC) {
     auxKw: Object.hasOwn(sample, 'thermalAuxKw') ? sample.thermalAuxKw : sample.auxKw };
 }
 
-/** Fit with observed temperatures at each interval; validate independent one-hour
- * rollouts, warming the latent reserve only with earlier observations. */
+function intervalInputs(a, b, targetC) {
+  return b.intervalInputs && b.windowStart === time(a.timestamp) ? { ...b.intervalInputs,
+    targetC: finite(b.intervalInputs.targetC) ? b.intervalInputs.targetC : targetC } : sampleInputs(a, targetC);
+}
+
+/** Validation runs through whole available day/episode blocks (6–24 hours),
+ * without resetting indoor temperature after every hour. Missing data breaks a
+ * block; a short surviving fragment cannot qualify a model. */
 function evaluate(model, samples, { targetC = 21, scoreFrom = 0, rollout = false } = {}) {
-  let state = null, rolloutHours = 0, persistenceStart = null;
+  let state = null, rolloutHours = 0, persistenceStart = null, lastIndoor = null, block = null;
   const squaredRates = [], errors = [], persistenceErrors = [];
+  const horizons = [];
+  const finish = () => {
+    if (rolloutHours >= 6 && state && finite(lastIndoor)) {
+      errors.push(Math.abs(lastIndoor - state.indoorC) / rolloutHours);
+      persistenceErrors.push(Math.abs(lastIndoor - persistenceStart) / rolloutHours);
+      horizons.push(rolloutHours);
+    }
+    rolloutHours = 0; block = null;
+  };
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1], b = samples[i], dt = (time(b.timestamp) - time(a.timestamp)) / HOUR;
     if (!validSample(a) || !validSample(b) || dt < 1 / 12 || dt > 2
-      || Math.abs((b.indoorC - a.indoorC) / dt) > 2) { state = null; rolloutHours = 0; continue; }
+      || Math.abs((b.indoorC - a.indoorC) / dt) > 2) { state = null; rolloutHours = 0; block = null; continue; }
     if (!state) state = { indoorC: a.indoorC, reserveC: a.indoorC };
     const scoring = i - 1 >= scoreFrom;
+    const group = a.episodeId ? `episode:${a.episodeId}` : `day:${Math.floor(time(a.timestamp) / (24 * HOUR))}`;
+    if (rollout && scoring && block !== null && group !== block) finish();
     if (!rollout || !scoring || rolloutHours === 0) {
       state.indoorC = a.indoorC;
       persistenceStart = a.indoorC;
+      if (scoring) block = group;
     }
-    state = predictThermalStep(model, state, sampleInputs(a, targetC), dt);
+    state = predictThermalStep(model, state, intervalInputs(a, b, targetC), dt);
     if (!scoring) continue;
     if (!rollout) squaredRates.push(((b.indoorC - state.indoorC) / dt) ** 2);
     else {
       rolloutHours += dt;
-      if (rolloutHours >= 1 - 1e-9) {
-        errors.push(Math.abs(b.indoorC - state.indoorC) / rolloutHours);
-        persistenceErrors.push(Math.abs(b.indoorC - persistenceStart) / rolloutHours);
-        rolloutHours = 0;
-      }
+      lastIndoor = b.indoorC;
+      if (rolloutHours >= 24) finish();
     }
   }
+  if (rollout) finish();
   return { mse: squaredRates.length ? mean(squaredRates) : Infinity,
     maeCPerHour: errors.length ? mean(errors) : Infinity,
     persistenceMaeCPerHour: persistenceErrors.length ? mean(persistenceErrors) : Infinity,
-    samples: errors.length, state };
+    samples: errors.length, horizons, state };
 }
 
 function fit(cp, config) {
-  const samples = cp.samples, split = Math.floor(samples.length * 0.7);
+  // Keep complete older episodes alongside the recent temperature window. The
+  // immutable journal remains the full archive; these bounded exemplars prevent
+  // a rare phase disappearing merely because normal operation filled the tail.
+  const byTime = new Map([...(cp.episodeArchive ?? []).flatMap(entry => entry.samples), ...cp.samples]
+    .map(sample => [time(sample.timestamp), sample]));
+  const samples = [...byTime.values()].sort((a, b) => time(a.timestamp) - time(b.timestamp));
+  let split = Math.floor(samples.length * 0.7);
+  const splitDay = Math.floor(time(samples[split]?.timestamp) / (24 * HOUR));
+  while (split > 0 && (Math.floor(time(samples[split - 1].timestamp) / (24 * HOUR)) === splitDay
+    || samples[split]?.episodeId && samples[split - 1].episodeId === samples[split].episodeId)) split--;
   if (split < 32) return { accepted: false, reason: 'collecting-temperature-intervals' };
   const validateAfter = time(samples[split - 1].timestamp) + 12 * HOUR;
   const scoreFrom = samples.findIndex((sample, i) => i >= split && time(sample.timestamp) >= validateAfter);
   if (scoreFrom < 0) return { accepted: false, reason: 'collecting-later-validation' };
   const training = samples.slice(0, split), prior = initialAdaptiveModel(config);
+  const trainingEnd = time(training.at(-1).timestamp);
+  const phaseEpisodes = Object.fromEntries(PHASES.map(phase => [phase, (cp.episodeArchive ?? [])
+    .filter(episode => episode.endedAt <= trainingEnd && episode.phases.includes(phase)).length]));
+  const tunable = new Set(['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2']);
+  if (phaseEpisodes.reduction >= MIN_PHASE_EPISODES) tunable.add('reducedHeatCPerHour');
+  if (phaseEpisodes.preheat >= MIN_PHASE_EPISODES) tunable.add('preheatCPerHourPerDegree');
+  if (phaseEpisodes.recovery >= MIN_PHASE_EPISODES) {
+    tunable.add('memoryExchangePerHour'); tunable.add('reserveTimeHours');
+  }
+  if ((cp.episodeArchive ?? []).filter(episode => episode.endedAt <= trainingEnd && episode.auxiliaryObserved).length >= MIN_PHASE_EPISODES)
+    tunable.add('auxiliaryCPerKwh');
+  const sunlitDays = new Set(training.filter(sample => sample.solarRadiationWm2 > 50)
+    .map(sample => Math.floor(time(sample.timestamp) / (24 * HOUR))));
+  if (sunlitDays.size < 3) tunable.delete('solarCPerHourPerKwM2');
   const targetC = cp.baselineC ?? (finite(config.targetC) ? config.targetC : 21);
   let candidate = structuredClone(cp.model);
   const objective = model => {
@@ -216,6 +257,7 @@ function fit(cp, config) {
   // A bounded coordinate search avoids an underdetermined inverse capacity fit.
   // Terms lacking evidence stay near explicit priors, including all-normal startup.
   for (const scale of [0.4, 0.2, 0.1]) for (const [key, bounds] of Object.entries(BOUNDS)) {
+    if (!tunable.has(key)) continue;
     const current = candidate.parameters[key], step = Math.max(prior.parameters[key], (bounds[1] - bounds[0]) * 0.025) * scale;
     for (const direction of [-1, 1]) {
       const attempt = structuredClone(candidate);
@@ -226,7 +268,7 @@ function fit(cp, config) {
     }
   }
   const validation = evaluate(candidate, samples, { targetC, scoreFrom, rollout: true });
-  if (validation.samples < 6) return { accepted: false, reason: 'collecting-later-validation' };
+  if (validation.samples < 2) return { accepted: false, reason: 'collecting-later-validation' };
   const previous = evaluate(cp.model, samples, { targetC, scoreFrom, rollout: true });
   if (validation.maeCPerHour > 0.35 || validation.maeCPerHour > previous.maeCPerHour * 1.05 + 0.01
     || validation.maeCPerHour > validation.persistenceMaeCPerHour * 1.1 + 0.03)
@@ -238,15 +280,16 @@ function fit(cp, config) {
   candidate.uncertaintyCPerHour = clamp(validation.maeCPerHour * 2, 0.04, 0.6);
   candidate.validation = { accepted: true, chronological: true, samples: validation.samples,
     maeCPerHour: validation.maeCPerHour, persistenceMaeCPerHour: validation.persistenceMaeCPerHour,
-    previousMaeCPerHour: previous.maeCPerHour, horizonHours: 1,
-    metric: 'hour-normalized temperature error over one-hour rollouts', embargoHours: 12,
+    previousMaeCPerHour: previous.maeCPerHour, horizonHours: Math.min(...validation.horizons),
+    maximumHorizonHours: Math.max(...validation.horizons),
+    metric: 'hour-normalized temperature error over independent day/episode blocks', embargoHours: 12,
     trainThrough: samples[split - 1].timestamp, validateFrom: samples[scoreFrom].timestamp,
-    phaseSamples,
+    phaseSamples, phaseEpisodes, fittedParameters: [...tunable],
     phaseValidationSamples: Object.fromEntries(PHASES.map(phase => [phase, holdout.filter(sample => validSample(sample) && sample.phase === phase).length])),
     solarSamples: training.filter(sample => finite(sample.solarRadiationWm2)).length,
     sunlitSamples: training.filter(sample => sample.solarRadiationWm2 > 50).length,
     sunlitValidationSamples: holdout.filter(sample => sample.solarRadiationWm2 > 50).length,
-    limitation: 'checks short thermal trajectories; full-cycle energy and unobserved actions remain uncertain' };
+    limitation: 'checks multi-hour thermal blocks; energy and phases without distinct completed episodes remain uncertain' };
   candidate.provenance.status = 'checked-thermal-estimates';
   return { accepted: true, model: candidate, state: validation.state };
 }
@@ -289,6 +332,9 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
     preheat: sample.phase === 'preheat' || sample.preheat === true,
     recovering: sample.phase === 'recovery' || sample.recovering === true,
     actualModeKnown: sample.actualModeKnown === true,
+    episodeId: sample.episodeId ?? null,
+    ...(sample.electricalContext ? { electricalContext: structuredClone(sample.electricalContext) } : {}),
+    ...(sample.intervalInputs ? { intervalInputs: structuredClone(sample.intervalInputs), windowStart: sample.windowStart } : {}),
   } : { timestamp: new Date(at).toISOString(), valid: false, quality: ['invalid-observation'] };
   const previous = cp.samples.at(-1);
   cp.samples.push(normalized);
@@ -298,7 +344,7 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
     const dt = previous ? (at - time(previous.timestamp)) / HOUR : Infinity;
     const predicted = validSample(previous) && dt >= 1 / 12 && dt <= 2
       ? predictThermalStep(cp.model, cp.state ?? { indoorC: previous.indoorC, reserveC: previous.indoorC },
-        sampleInputs(previous, cp.baselineC ?? 21), dt) : { reserveC: sample.indoorC };
+        intervalInputs(previous, normalized, cp.baselineC ?? 21), dt) : { reserveC: sample.indoorC };
     cp.state = { indoorC: sample.indoorC, reserveC: predicted.reserveC, observedAt: normalized.timestamp };
   } else cp.state = null;
   cp.sinceFit++;
@@ -394,6 +440,20 @@ export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
     }
   }
   if (!useful) return cp;
+  if (finite(time(episode.startedAt)) && time(episode.startedAt) < time(episode.endedAt)) {
+    const rows = cp.samples.filter(sample => validSample(sample)
+      && time(sample.timestamp) >= time(episode.startedAt) && time(sample.timestamp) <= time(episode.endedAt));
+    const stride = Math.max(1, Math.ceil(rows.length / 192));
+    const retained = rows.filter((sample, index) => index % stride === 0 || index === rows.length - 1);
+    const archive = [...(cp.episodeArchive ?? []), { id: episode.id, startedAt: time(episode.startedAt), endedAt: time(episode.endedAt),
+      phases: [...new Set(episode.phases ?? rows.map(sample => sample.phase))],
+      auxiliaryObserved: episode.auxiliaryObserved === true && (episode.spaceHeatingAuxKwh ?? 0) > 0,
+      samples: retained }];
+    // Retain early independent examples as well as recent cycles. Historical
+    // journal entries are never deleted by this bounded fitting cache.
+    const anchors = new Set(PHASES.flatMap(phase => archive.filter(row => row.phases.includes(phase)).slice(0, 3).map(row => row.id)));
+    cp.episodeArchive = archive.filter(row => anchors.has(row.id) || archive.indexOf(row) >= archive.length - 12);
+  }
   energy.episodes = priorCount + 1;
   energy.measuredEpisodes = (energy.measuredEpisodes ?? 0) + Number(measured);
   energy.basis = energy.measuredEpisodes >= 3 && measured ? 'calibrated-estimate' : 'estimated';

@@ -4,6 +4,7 @@ import { fileTokenStore } from './token-store.js';
 import { createDeviceProviders } from './devices.js';
 import { fetchMarket } from './market.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
+import { ElectricityAccumulator } from '../domain/electricity.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -154,26 +155,31 @@ function cacheWeather(previous, result, snapshotId, now) {
 /** Independent, read-only acquisition. A failed service retains the original age
  * of its last good data; it cannot postpone control or another provider's poll. */
 export function startProviders({ engine, store, config, clock = Date.now, http = createHttp(),
-  devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature, automatic = true } = {}) {
+  devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
+  temperatureProvider, automatic = true } = {}) {
   const connections = config.connections ?? {};
   const location = configuredLocation(connections);
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // selects a usable H66 reading before either weather source.
-  const deviceConnections = location ? { ...connections, smartthings: { ...connections.smartthings, outside_temp_dev_id: '' } } : connections;
-  devices ??= createDeviceProviders({ connections: deviceConnections, http, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
-  const smartthings = connections.smartthings ?? {}, easee = connections.easee ?? {};
+  devices ??= createDeviceProviders({ connections, http, clock, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
+  const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
+  const integrationOptions = { maxAgeMs: cadence.electricityMaxAgeMs ?? 5 * MINUTE,
+    maxGapMs: cadence.electricityMaxGapMs ?? MINUTE };
+  let electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: store.getState('electricity:acquisition') });
   const configuredCurrents = [['charger', 'charger_id'], ['property', 'equalizer_id']]
     .filter(([, key]) => present(easee[key])).map(([group]) => group);
   const definitions = {
-    temperatures: { enabled: ['inside_temp_dev_id', 'garage_temp_dev_id', ...(!location ? ['outside_temp_dev_id'] : [])].some(key => present(smartthings[key])),
-      period: 5 * MINUTE, run: args => devices.temperatures(args) },
+    // SmartThings is retired. The optional injected adapter is for alternative
+    // integrations; normal temperature acquisition is H66/generic MQTT.
+    temperatures: { enabled: typeof temperatureProvider === 'function',
+      period: 5 * MINUTE, run: args => temperatureProvider(args) },
     easee: { enabled: ['charger_id', 'equalizer_id'].some(key => present(easee[key])),
-      period: 5 * MINUTE, run: args => devices.easee(args) },
+      period: cadence.easeeIntervalMs ?? 15_000, run: args => (devices.electricity ?? devices.easee).call(devices, args) },
     market: { enabled: present(connections.entsoe?.token) || ['fi', 'ee', 'lv', 'lt'].includes(connections.geoloc?.country_code?.toLowerCase()) || Boolean(connections.elering),
-      period: 60 * MINUTE, run: args => market({ ...args, connections, http }), snapshot: true, sources: ['entsoe', 'elering'] },
+      period: cadence.marketIntervalMs ?? 60 * MINUTE, run: args => market({ ...args, connections, http }), snapshot: true, sources: ['entsoe', 'elering'] },
     weather: { enabled: location,
-      period: 60 * MINUTE, run: args => weather({ ...args, connections, http }), snapshot: true, sources: ['fmi', 'openmeteo'] },
-    outdoor: { enabled: location, period: 10 * MINUTE, run: args => outdoor({ ...args, connections, http }), sources: ['fmi', 'openmeteo'] },
+      period: cadence.weatherIntervalMs ?? 30 * MINUTE, run: args => weather({ ...args, connections, http }), snapshot: true, sources: ['fmi', 'openmeteo'] },
+    outdoor: { enabled: location, period: cadence.outdoorIntervalMs ?? 5 * MINUTE, run: args => outdoor({ ...args, connections, http }), sources: ['fmi', 'openmeteo'] },
   };
   const health = {}, pending = new Map(), cancellation = new AbortController();
   const saved = store.getState('providers:health') ?? {};
@@ -226,7 +232,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     const job = definitions[name], state = health[name], at = clock();
     Object.assign(state, { status: 'running', lastAttemptAt: at });
     store.setState('providers:health', health);
-    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings;
+    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false;
     try {
       // Forecast and current weather share provider hosts. A server's rate
       // limit or access denial applies to both routes, while a missing station
@@ -243,32 +249,59 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
       // SQLite rollback must also restore the in-memory view used by decisions.
       const latestBefore = Object.assign(Object.create(Object.getPrototypeOf(engine.latest)), engine.latest);
       const outdoorBefore = Object.assign(Object.create(null), engine.outdoorCandidates);
+      const electricityBefore = electricity.checkpoint();
       try { store.transaction(() => {
         if (job.snapshot) {
+          const previous = store.getState(`provider:${name}`);
           const snapshotId = store.snapshot({ kind: name, source: result.source, issuedAt: result.issuedAt,
             fetchedAt: result.fetchedAt, payload: result });
-          store.setState(`provider:${name}`, name === 'weather'
-            ? cacheWeather(store.getState('provider:weather'), result, snapshotId, clock()) : { ...result, snapshotId });
+          const priorSnapshot = previous?.snapshotId ? store.snapshotById(previous.snapshotId) : null;
+          const nextSnapshot = store.snapshotById(snapshotId);
+          const unchanged = name === 'weather' && priorSnapshot?.contentId != null
+            && priorSnapshot.contentId === nextSnapshot.contentId && priorSnapshot.source === nextSnapshot.source
+            && priorSnapshot.issuedAt === nextSnapshot.issuedAt;
+          // Successful re-download is availability evidence, not a new forecast
+          // issue. An unchanged forecast keeps its original unknown-issue age.
+          store.setState(`provider:${name}`, unchanged
+            ? { ...previous, snapshotId, acquisition: result.acquisition, lastCheckedAt: result.fetchedAt }
+            : name === 'weather' ? cacheWeather(previous, result, snapshotId, clock()) : { ...result, snapshotId });
           if (name === 'market' && result.coverage && (!result.coverage.completeToday || result.coverage.gaps)) failure = 'incomplete-market-coverage';
+          if (name === 'market' && Array.isArray(result.intervals)) {
+            missingTomorrow = Math.max(0, ...result.intervals.map(row => row.end)) < at + 24 * 60 * MINUTE;
+          }
         } else {
           if (!Array.isArray(result) || result.length > 20) throw new Error('Invalid observation batch');
+          if (name === 'easee') {
+            const sampled = electricity.sample(result, clock());
+            for (const interval of sampled.intervals) engine.ingestEnergy?.(interval);
+            for (const audit of sampled.audits) store.energyAudit?.(audit);
+            for (const gap of sampled.gaps) engine.recorder?.energyGap?.(gap);
+            store.setState('electricity:acquisition', electricity.checkpoint());
+          }
           for (const observation of result) {
             if (name === 'temperatures' && location && observation.signal === 'outdoor_temperature') continue;
-            engine.ingest(observation);
+            if (name === 'easee' && !/_current_l[123]$/.test(observation.signal)) continue;
+            engine.ingest(name === 'easee' ? { ...observation, raw: { ...observation.raw, acquisitionOnly: true } } : observation);
           }
           store.setState('provider:observations', engine.providerObservations()
             .filter(row => OBSERVATION_SOURCES.includes(row.source)));
           retryAfterMs = Math.max(0, ...result.map(row => boundedDelay(row.raw?.retryAfterMs)));
           // Last-reported values can stay unchanged while downloads succeed. Keep
           // their original source ages and warnings without slowing other devices.
-          ({ issues, staleSourceTimes } = observationQuality(name, result, clock()));
-          failure = observationFailure(result);
+          const requiredRows = name === 'easee' ? result.filter(row => /_current_l[123]$/.test(row.signal)) : result;
+          ({ issues, staleSourceTimes } = observationQuality(name, requiredRows, clock()));
+          failure = observationFailure(requiredRows);
           if (name === 'easee') {
             readings = currentReadings(result, configuredCurrents, state.currentReadings, clock());
             failure ??= Object.values(readings).find(row => row.error)?.error ?? null;
           }
         }
-      }); } catch (error) { engine.latest = latestBefore; engine.outdoorCandidates = outdoorBefore; throw error; }
+      }); } catch (error) {
+        engine.latest = latestBefore; engine.outdoorCandidates = outdoorBefore;
+        electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: electricityBefore });
+        engine.recorder?.reload?.();
+        throw error;
+      }
       state.qualityIssues = issues;
       state.staleSourceTimes = staleSourceTimes;
       if (readings) state.currentReadings = readings;
@@ -293,6 +326,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     // Only failed downloads back off. Successfully received older device state
     // stays on the normal cadence, including when an unused charger is stale.
     let delay = failure ? backoff(state.failures, failure, retryAfterMs) : job.period;
+    if (!failure && name === 'market' && missingTomorrow) delay = Math.min(delay, cadence.marketRetryIntervalMs ?? 15 * MINUTE);
     const sourceDelays = (state.acquisition?.attempts ?? []).filter(attempt => attempt.status !== 'not-configured')
       .map(attempt => state.sourceBackoff[attempt.source]?.nextAttemptAt - clock());
     if (failure && sourceDelays.length && sourceDelays.every(value => value > 0)) delay = Math.max(delay, Math.min(...sourceDelays));
@@ -312,7 +346,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
   if (automatic) {
     // Start after the HTTP listener is ready. Polls never execute equipment intents.
     void runDue();
-    timer = setInterval(() => { void runDue(); }, MINUTE);
+    timer = setInterval(() => { void runDue(); }, Math.min(1000, ...Object.values(definitions).filter(job => job.enabled).map(job => job.period)));
     timer.unref();
   }
   return {

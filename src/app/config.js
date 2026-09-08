@@ -26,6 +26,32 @@ export const CONTROL_DEFAULTS = Object.freeze({
   dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
 });
 
+function interval(value, fallback, minimum, maximum, name) {
+  const number = value ?? fallback;
+  if (!Number.isFinite(number) || number < minimum || number > maximum)
+    throw new Error(`Invalid acquisition/recording setting: ${name}`);
+  return number;
+}
+
+export function recordingConfiguration(input = {}) {
+  return {
+    maxIntervalMs: Math.round(interval(input.max_interval_minutes, 5, 0.25, 60, 'max_interval_minutes') * 60_000),
+    annualBudgetBytes: Math.round(interval(input.annual_budget_gb, 10, 0.01, 10000, 'annual_budget_gb') * 1_000_000_000),
+  };
+}
+
+export function acquisitionConfiguration(input = {}) {
+  return {
+    easeeIntervalMs: Math.round(interval(input.easee_poll_seconds, 15, 10, 3600, 'easee_poll_seconds') * 1000),
+    weatherIntervalMs: Math.round(interval(input.weather_poll_minutes, 30, 5, 360, 'weather_poll_minutes') * 60_000),
+    outdoorIntervalMs: Math.round(interval(input.outdoor_poll_minutes, 5, 1, 60, 'outdoor_poll_minutes') * 60_000),
+    marketIntervalMs: Math.round(interval(input.market_poll_minutes, 60, 15, 1440, 'market_poll_minutes') * 60_000),
+    marketRetryIntervalMs: Math.round(interval(input.market_retry_minutes, 15, 5, 60, 'market_retry_minutes') * 60_000),
+    electricityMaxAgeMs: Math.round(interval(input.electricity_source_max_age_seconds, 300, 15, 3600, 'electricity_source_max_age_seconds') * 1000),
+    electricityMaxGapMs: Math.round(interval(input.electricity_max_gap_seconds, 60, 15, 300, 'electricity_max_gap_seconds') * 1000),
+  };
+}
+
 export function controlConfiguration(input = {}) {
   const map = { aux_integral_a2: 'auxIntegralA2', aux_hysteresis_c: 'auxHysteresisC',
     compressor_integral_a1: 'compressorIntegralA1', compressor_hysteresis_c: 'compressorHysteresisC',
@@ -75,7 +101,21 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
     if (!existsSync(configPath)) throw new Error('Live input requires an existing STMQ_CONFIG/options.json file');
-    connections = options;
+    // SmartThings is no longer acquired. Existing private options remain readable
+    // while deployments move indoor/garage sensors to their own MQTT topics.
+    const { smartthings: _legacyTemperatures, ...providers } = options;
+    const mqtt = { ...(providers.mqtt ?? {}) };
+    mqtt.temperatureTopics = {
+      ...(mqtt.temperature_topics ?? {}),
+      ...(mqtt.temperatureTopics ?? {}),
+      ...(mqtt.indoor_temperature_topic ? { indoor_temperature: mqtt.indoor_temperature_topic } : {}),
+      ...(mqtt.garage_temperature_topic ? { garage_temperature: mqtt.garage_temperature_topic } : {}),
+    };
+    for (const [signal, topic] of Object.entries(mqtt.temperatureTopics)) {
+      if (!['indoor_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
+        || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
+    }
+    connections = { ...providers, mqtt };
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
     }
@@ -92,6 +132,8 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     host, port, token, connections, priceSettings: configuredPriceSettings(options.electricity),
     deviceId: env.STMQ_H66_DEVICE ?? options.controller?.h66_device,
     control: controlConfiguration(options.controller),
+    recording: recordingConfiguration(options.recording),
+    acquisition: acquisitionConfiguration(options.acquisition),
     h66: { enabled: Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: true,
       maxAgeMs: 300000, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },

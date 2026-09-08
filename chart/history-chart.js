@@ -2,6 +2,8 @@ import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
 import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
+import { populateHistoryAxes } from './recording.js';
+import { renderTimingBenefit } from './timing.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -31,6 +33,7 @@ function loadPreferences() {
 export function createHistoryChart({ api, getTheme = () => document.documentElement.dataset.theme }) {
   const $ = id => document.getElementById(id);
   const canvas = $('history');
+  populateHistoryAxes($('left-axis'));
   const loader = createChartLoader({ api });
   const preferences = loadPreferences();
   const listeners = [];
@@ -131,27 +134,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (!(payload?.operatingModes?.length)) title.textContent = 'Pump mode · no H66 readback in this period';
     root.append(title, track);
   }
-  function renderTiming() {
-    const root = $('timing-benefit'); if (!root) return;
-    root.replaceChildren();
-    const money = value => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(value);
-    for (const [key, name] of [['heatPump', 'Heat pump'], ['charger', 'Charger']]) {
-      const result = payload?.timingBenefit?.[key], row = document.createElement('p'), title = document.createElement('strong');
-      title.textContent = `${name}: `;
-      row.append(title, document.createTextNode(Number.isFinite(result?.value)
-        ? `${money(result.value)} timing benefit · estimated${result.assumedPrices ? ' · assumed rates' : ''}${result.provisional ? ' · provisional' : ''} · ${Math.round(result.coverage * 100)}% coverage`
-        : 'Timing comparison unavailable · energy and full-day prices needed'));
-      row.title = result?.basis ?? ''; root.append(row);
-    }
-    if (payload?.meta?.priceAssumptions?.used || Object.values(payload?.timingBenefit ?? {}).some(result => result.assumedPrices)) {
-      const caution = document.createElement('p'); caution.className = 'timing-explanation timing-price-caution';
-      caution.textContent = 'Some historical all-in prices use the nearest known contract rates. Estimated timing benefits depend on these assumed rates.';
-      root.append(caution);
-    }
-    const note = document.createElement('p'); note.className = 'timing-explanation';
-    note.textContent = 'Same recorded energy at each whole day’s average all-in price. Positive = cheaper timing; negative = dearer. Missing energy periods and days with incomplete spot prices are excluded. Not proven controller savings.';
-    root.append(note);
-  }
+  function renderTiming() { renderTimingBenefit(payload,$('timing-benefit')); }
   function renderChart() {
     if (!payload) return;
     // A theme or legend change can occur during a request. Keep the previous
@@ -193,7 +176,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                 title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
                 label: item => {
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
-                  return `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${source ? ` · ${source}` : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  const interval = item.raw?.fromEnergy ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}${item.raw.aggregated?' · 15-minute aggregate':''}` : '';
+                  return `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${source ? ` · ${source}` : ''}${interval}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -210,7 +194,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${hasValues ? '' : ' · No visible readings for these dates'}`;
     const notes = ['Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push('Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
-    if (plot.left === 'power') notes.push('Power is estimated at 230 V from all three phase currents; it is not measured active power.');
+    if (plot.left === 'power') notes.push(payload.meta?.powerEstimate ?? 'Power is an interval average derived from estimated energy.');
+    if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
+    if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
+    if (payload.meta?.hourlySummaries) notes.push('Long ranges use hourly temperature extrema and endpoints and refresh every five minutes.');
+    if (payload.meta?.recordedEnergy?.aggregated) notes.push('Long-range electricity uses 15-minute energy sums and average power. Gaps and finer price boundaries retain the original intervals for cost calculations.');
+    if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
     if (plot.left === 'power') notes.push('Auxiliary fill uses verified heater output and configured electrical capacity. Charger fill overlays it; fills are not stacked.');
     if (plot.left.startsWith('learning_')) {
       const metadata = payload.meta?.learning?.[plot.left];
@@ -231,11 +220,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
     previousToday = today;
     const contract = JSON.stringify(status.contract ?? null);
-    const liveRevision = JSON.stringify({ input: status.input, observations: status.observations,
+    const liveRevision = status.recording?.historyRevision ?? JSON.stringify({ input: status.input, observations: status.observations,
       metrics: status.learning?.metrics, h66Readings: status.h66?.readings,
       providers: Object.fromEntries(Object.entries(status.providers ?? {}).map(([key, value]) => [key, value?.lastSuccessAt ?? value?.lastSuccess])) });
     if (lastContract !== undefined && contract !== lastContract) { loader.invalidate(); force = true; }
-    if (lastLiveRevision !== undefined && liveRevision !== lastLiveRevision && selection.endDate >= today) force = true;
+    const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
+    if (!longRange && lastLiveRevision !== undefined && liveRevision !== lastLiveRevision && selection.endDate >= today) force = true;
     lastContract = contract; lastLiveRevision = liveRevision;
     const generation = ++selectionGeneration;
     if (!payload || payload.range.startDate !== selection.startDate || payload.range.endDate !== selection.endDate || canvas.dataset.left !== selection.left) {
