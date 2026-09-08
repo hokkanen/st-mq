@@ -4,7 +4,7 @@ import { timingDisplay, timingExplanations } from './timing-model.js';
 export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
-  let lastFingerprint, closed = false, notes;
+  let lastFingerprint, closed = false, notes, devices, overviewObserver, overviewHeight;
   const cards = new Map();
 
   function element(tag, className, text) {
@@ -23,22 +23,34 @@ export function createTimingBenefit(root) {
     parent.append(section);
     return section;
   }
+  function alignOverviews() {
+    if (closed) return;
+    // Measure only intrinsic summary content. Expanded details must never set
+    // the other card's height; observing the inner nodes also avoids feedback.
+    const height = Math.ceil(Math.max(...[...cards.values()].map(card => card.overview.getBoundingClientRect().height)));
+    if (height === overviewHeight) return;
+    overviewHeight = height;
+    devices.style.setProperty('--timing-overview-height', `${height}px`);
+  }
   function initialize(displays) {
     const intro = element('div', 'timing-intro');
     paragraph(intro, 'The same energy, priced at the recorded times and at each full day’s average all-in price.');
     paragraph(intro, 'Positive = cheaper timing · Negative = dearer timing', 'timing-sign-guide');
-    const devices = element('div', 'timing-devices');
+    devices = element('div', 'timing-devices');
     for (const display of displays) {
       const card = element('article', 'timing-card timing-device'); card.dataset.device = display.key;
-      const overview = element('div', 'timing-device-overview');
+      const overviewBox = element('div', 'timing-device-overview');
+      const overview = element('div', 'timing-overview-content'); overviewBox.append(overview);
       const details = element('details', 'timing-device-detail'); details.dataset.device = display.key;
-      details.append(element('summary', '', display.key === 'heatPump' ? 'Heating details' : 'Charger details'));
+      details.append(element('summary', '', `${display.name} details`));
       const content = element('div', 'timing-detail-content');
-      details.append(content); card.append(overview, details); devices.append(card);
+      details.append(content); card.append(overviewBox, details); devices.append(card);
       cards.set(display.key, { overview, content });
     }
     notes = element('div', 'timing-explanations');
     root.replaceChildren(intro, devices, notes);
+    overviewObserver = new document.defaultView.ResizeObserver(alignOverviews);
+    for (const card of cards.values()) overviewObserver.observe(card.overview);
   }
   function deviceOverview(display) {
     const overview = document.createDocumentFragment();
@@ -122,10 +134,10 @@ export function createTimingBenefit(root) {
         card.overview.replaceChildren(deviceOverview(display));
         card.content.replaceChildren(deviceDetail(display));
       }
+      alignOverviews();
       notes.replaceChildren();
       explanation(notes, 'How the comparison works', timingExplanations.comparison);
-      explanation(notes, 'What the percentages mean', timingExplanations.coverage);
-      explanation(notes, 'Where the energy figures come from', timingExplanations.evidence);
+      explanation(notes, 'What the percentages mean', [...timingExplanations.coverage, ...timingExplanations.evidence]);
       if (chartAssumedRates || displays.some(display => display.assumedRates)) {
         const rates = explanation(notes, 'When contract rates are assumed', timingExplanations.rates, 'timing-rate-explanation');
         if (chartAssumedRates) {
@@ -136,6 +148,6 @@ export function createTimingBenefit(root) {
         }
       }
     },
-    close() { closed = true; },
+    close() { closed = true; overviewObserver?.disconnect(); },
   };
 }

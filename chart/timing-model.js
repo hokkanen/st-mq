@@ -17,21 +17,19 @@ export const timingSources = {
 /** Explanations shared by both devices and shown below their results. */
 export const timingExplanations = {
   comparison: [
-    'Each day’s included energy is priced twice: at the times in its history, and at the full day’s time-weighted average all-in price. The daily differences are added together.',
-    'Positive means cheaper timing; negative means dearer timing. Gaps are excluded, and the amount is not scaled up to cover them. This comparison does not prove savings caused by the controller.',
+    'Each day’s included energy is priced twice: at the recorded times, and at the full day’s time-weighted average all-in price. The daily differences are added together.',
+    'Positive means cheaper timing; negative means dearer timing. The amount is not scaled up for gaps and does not prove savings caused by the controller.',
   ],
   coverage: [
-    'Heating coverage is the share of elapsed time included, including valid zero-use periods. Charger coverage is the share of detected charging included; idle periods are left out. Even 100% can have gaps in charger data: missing readings are unknown, not idle.',
-    'Today runs from Finnish midnight to the calculation time. Future hours do not reduce coverage, but the price average still covers the full day. It needs complete historical spot prices and recorded or assumed contract rates.',
-    'Assumed rates do not reduce coverage or fill gaps in energy and spot-price history. Unavailable means there is no supported total, not zero energy use or zero timing difference. Historical gaps may remain.',
+    '“Time included” is the share of elapsed time in the selection used for each comparison. Heating includes valid zero-use periods; charging excludes idle periods. Missing readings are unknown, not idle.',
+    'Today runs from Finnish midnight to the calculation time. Future hours do not reduce the percentage, but the price average still needs the full day’s prices. Unavailable means there is no supported total, not zero energy use.',
   ],
   evidence: [
-    'Energy sources here describe how consumption was measured or estimated. Their percentages are shares of included time (charging time for the charger), not shares of energy or measures of accuracy.',
-    'Historical values keep their recorded basis; today’s sensors do not reclassify them. Dates span contributing records and can contain gaps. Rounded shares may not add to 100%.',
+    'Energy-source and assumed-rate percentages are shares of included time, not energy or accuracy. Source labels keep their recorded basis; today’s sensors do not reclassify them. Date spans can contain gaps. Rounded shares may not add to 100%.',
   ],
   rates: [
-    'When dated contract rates are missing, the nearest known contract rates are used with the original historical spot prices. Dates before the first rate record use the earliest known rates, which may be today’s.',
-    'Contract charges and VAT may have differed. Assumed rates can affect both the included energy’s price and the full-day average.',
+    'When dated contract rates are missing, the nearest known contract rates are used with the original historical spot prices. Dates before the first rate record use the earliest known rates.',
+    'Historical charges and VAT may have differed. Assumed rates can affect both the included energy’s price and the full-day average, but do not fill gaps in energy or spot-price history.',
   ],
 };
 
@@ -40,14 +38,6 @@ export function timingPercent(share) {
   if (share < 0.01) return '<1%';
   if (share < 1 && Math.round(share * 100) === 100) return '>99%';
   return `${Math.round(Math.min(1, share) * 100)}%`;
-}
-
-function duration(ms) {
-  if (!finite(ms) || ms <= 0) return '0 minutes';
-  if (ms < 60_000) return 'less than a minute';
-  const unit = ms < 3_600_000 ? 'minute' : 'hour';
-  const amount = number.format(ms / (unit === 'minute' ? 60_000 : 3_600_000));
-  return `${amount} ${unit}${amount === '1' ? '' : 's'}`;
 }
 
 function span(from, to, prefix) {
@@ -68,8 +58,8 @@ function sourcesFor(result) {
 export function timingDisplay(key, result = {}, payload = {}) {
   result ??= {};
   const charger = key === 'charger';
-  const name = charger ? 'Charger' : 'Heat pump';
-  const includedTimeLabel = charger ? 'included charging time' : 'included time';
+  const name = charger ? 'Charging' : 'Heating';
+  const includedTimeLabel = 'included time';
   const available = finite(result.value);
   const coverage = result.coverageDetails ?? {};
   const sources = sourcesFor(result);
@@ -80,8 +70,9 @@ export function timingDisplay(key, result = {}, payload = {}) {
   const intervalTime = result.evidence?.timeBasis === 'recorded-interval-time' || reconstructed || recorded;
   const dateBasis = mixedTime ? 'Contributing intervals and samples' : intervalTime ? 'Contributing intervals' : 'Contributing samples';
   const included = coverage.includedMs, elapsed = coverage.elapsedMs;
-  const denominator = charger ? coverage.chargingMs : elapsed;
-  const ratio = finite(included) && denominator > 0 ? included / denominator : result.coverage ?? 0;
+  const ratio = finite(included) && finite(elapsed)
+    ? elapsed > 0 ? included / elapsed : 0
+    : result.coverage ?? 0;
   const now = payload.now, range = payload.range ?? {};
   const inProgress = finite(now) && finite(range.to) && now < range.to && (elapsed > 0 || now > range.from);
   const today = inProgress && range.startDate === date.format(now) && range.endDate === range.startDate;
@@ -122,17 +113,21 @@ export function timingDisplay(key, result = {}, payload = {}) {
   if (key === 'heatPump' && auxiliary.auxiliaryAssumedMs > 0) auxiliaryNotes.push(`Auxiliary heater output was assumed during ${timingPercent(auxiliary.auxiliaryAssumedShare)} of included time. This overlaps the sources above; do not add it to their shares.`);
   if (key === 'heatPump' && auxiliary.auxiliaryUnknownMs > 0) auxiliaryNotes.push(`The auxiliary heater’s observed or assumed basis was not recorded for ${timingPercent(auxiliary.auxiliaryUnknownShare)} of included time.`);
 
-  const chargingRule = charger ? `Charging means average power above ${number.format((coverage.minimumPowerKw ?? 0.1) * 1000)} W. ` : '';
+  const chargingRule = charger ? `Average power at or below ${number.format((coverage.minimumPowerKw ?? 0.1) * 1000)} W counts as idle and is excluded. ` : '';
   const coverageExplanation = reconstructed
     ? 'Includes periods with valid, fresh equipment observations, dated nominal powers and complete daily prices. Missing, stale or unverified equipment states are excluded.'
     : recorded
-      ? `${chargingRule}Includes ${charger ? 'detected charging' : 'usable recorded energy'} with complete daily prices. Saved energy intervals are used without extending into gaps.${energyBasis === 'recorded-and-legacy' ? ' Older power samples are held for at most 30 minutes.' : ''}`
-      : `${chargingRule}Includes ${charger ? 'detected charging' : 'usable recorded power'} with complete daily prices.${charger ? '' : ' Recorded estimates and modelled values count.'} Power samples are held for at most 30 minutes.`;
-  const coverageSummary = finite(included) && (charger ? finite(coverage.chargingMs) : elapsed >= 0)
-    ? charger
-      ? `Included: ${duration(included)} out of ${duration(coverage.chargingMs)} detected charging. Charging excluded for incomplete daily prices: ${duration(coverage.incompletePriceMs)}. Idle: ${duration(coverage.idleMs)}. Unknown (no usable readings): ${duration(coverage.missingPowerMs)}.`
-      : `Included: ${duration(included)} out of ${duration(elapsed)} elapsed. Missing power: ${duration(coverage.missingPowerMs)}. Power available, but full-day prices missing: ${duration(coverage.incompletePriceMs)}. These groups do not overlap.`
-    : null;
+      ? `${chargingRule}Includes ${charger ? 'charging periods' : 'usable recorded energy'} with complete daily prices. Saved energy intervals are used without extending into gaps.${energyBasis === 'recorded-and-legacy' ? ' Older power samples are held for at most 30 minutes.' : ''}`
+      : `${chargingRule}Includes ${charger ? 'charging periods' : 'usable recorded power'} with complete daily prices.${charger ? '' : ' Recorded estimates and modelled values count.'} Power samples are held for at most 30 minutes.`;
+  const missingHistory = coverage.missingPowerMs > 0;
+  const missingPrices = coverage.incompletePriceMs > 0;
+  const coverageSummary = missingHistory && missingPrices
+    ? 'Some periods are excluded because device history or daily prices are incomplete.'
+    : missingHistory
+      ? 'Some periods are excluded because device history is missing.'
+      : missingPrices
+        ? 'Some periods are excluded because daily prices are incomplete.'
+        : null;
 
   const assumptions = result.priceAssumptions ?? {};
   const assumedRates = available && Boolean(result.assumedPrices || assumptions.durationMs > 0);
@@ -159,9 +154,8 @@ export function timingDisplay(key, result = {}, payload = {}) {
     : 'The total covers only included periods. Missing history is not extrapolated.'
     : null;
   return { key, name, available, noChargingDetected, amount, outcome: 'timing difference', basis, sources: sourceDetails,
-    coverageLabel: charger && coverage.chargingMs === 0 ? 'No charging time to compare'
-      : `${timingPercent(ratio)} of ${charger ? 'detected charging' : 'time'} included`,
-    includedTimeLabel, coverageHeading: charger ? 'Charging included' : 'Time included', assumedRates,
+    coverageLabel: `${timingPercent(ratio)} of time included`,
+    includedTimeLabel, coverageHeading: 'Time included', assumedRates,
     periodLabel, unavailableReason, calculationPeriod, energyExplanation, coverageExplanation, coverageSummary,
     periodExplanation, smallDifferenceExplanation, availablePowerPeriod, auxiliaryNotes, evidenceExplanation,
     rateSummary, ratePeriod };

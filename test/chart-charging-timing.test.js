@@ -15,7 +15,7 @@ test('charger snapshots exclude zero, standby and exactly 100 W while heating ke
       timing.add(name, day.from + index * 30 * MINUTE, kw, { key: index < 3 ? 'measured' : 'currents' });
   }
   const { charger, heatPump } = timing.result();
-  assert.equal(charger.coverageDetails.coverageBasis, 'charging-time');
+  assert.equal(charger.coverageDetails.coverageBasis, 'elapsed-time');
   assert.equal(charger.coverageDetails.minimumPowerKw, 0.1);
   assert.equal(charger.coverageDetails.chargingMs, 30 * MINUTE);
   assert.equal(charger.coverageDetails.idleMs, 90 * MINUTE);
@@ -23,7 +23,7 @@ test('charger snapshots exclude zero, standby and exactly 100 W while heating ke
   assert.equal(charger.coverageDetails.missingPowerMs, 0);
   assert.equal(charger.coverageDetails.firstPowerAt, day.from + 90 * MINUTE);
   assert.equal(charger.coverageDetails.lastPowerAt, day.from + 90 * MINUTE);
-  assert.equal(charger.coverage, 1);
+  assert.equal(charger.coverage, 0.25);
   assert.equal(charger.provisional, false);
   near(charger.energyKwh, 0.1001 / 2);
   assert.deepEqual(charger.evidence.sources.map(source => [source.key, source.share]), [['currents', 1]]);
@@ -61,7 +61,52 @@ test('fully observed idle charging is unavailable rather than zero savings, even
   }
 });
 
-test('unknown history is kept separate from idle and does not dilute the detected charging percentages', () => {
+test('the same included duration gives heating and charging the same elapsed-time percentage', () => {
+  const timing = new DailyTimingBenchmark(day, day.to, prices);
+  for (const name of ['heatPump', 'charger'])
+    timing.addEnergy(name, day.from, day.from + HOUR, 6, { key: 'recorded' });
+  timing.addEnergy('charger', day.from + HOUR, day.to, 0, { key: 'recorded' });
+  const { heatPump, charger } = timing.result();
+  for (const result of [heatPump, charger]) {
+    assert.equal(result.coverageDetails.coverageBasis, 'elapsed-time');
+    assert.equal(result.coverageDetails.elapsedMs, 24 * HOUR);
+    assert.equal(result.coverageDetails.includedMs, HOUR);
+    assert.equal(result.coverage, 1 / 24);
+    assert.equal(result.evidence.sources[0].share, 1, 'Source shares still describe only the included time');
+    assert.equal(result.priceAssumptions.share, 1, 'Rate assumptions still describe only the included time');
+  }
+  assert.equal(heatPump.provisional, true, 'Missing history makes the heating result partial');
+  assert.equal(charger.provisional, false, 'Known idle time alone does not make the charging result partial');
+});
+
+test('both percentages count only elapsed selected time and exclude the future', () => {
+  const now = day.from + 2 * HOUR;
+  const timing = new DailyTimingBenchmark(day, now, prices);
+  for (const name of ['heatPump', 'charger']) {
+    timing.addEnergy(name, day.from - HOUR, day.from + HOUR, 12, { key: 'recorded' });
+    timing.addEnergy(name, day.from + HOUR, day.to, 0, { key: 'recorded' });
+  }
+  const result = timing.result();
+  for (const name of ['heatPump', 'charger']) {
+    assert.equal(result[name].coverageDetails.elapsedMs, 2 * HOUR);
+    assert.equal(result[name].coverageDetails.to, now);
+    assert.equal(result[name].coverageDetails.powerMs, 2 * HOUR);
+    assert.equal(result[name].energyKwh, 6, 'Energy before and after the elapsed selection is excluded');
+    assert.equal(result[name].provisional, true, 'A current period remains in progress');
+  }
+  assert.equal(result.heatPump.coverage, 1);
+  assert.equal(result.charger.coverage, 0.5);
+  assert.equal(result.charger.coverageDetails.idleMs, HOUR);
+
+  const future = new DailyTimingBenchmark(day, day.from - HOUR, prices).result();
+  for (const name of ['heatPump', 'charger']) {
+    assert.equal(future[name].coverageDetails.elapsedMs, 0);
+    assert.equal(future[name].coverageDetails.includedMs, 0);
+    assert.equal(future[name].coverage, 0);
+  }
+});
+
+test('unknown history and idle remain separate while coverage includes both in elapsed time', () => {
   const range = { from: day.from, to: day.from + 3 * HOUR };
   const timing = new DailyTimingBenchmark(range, range.to, prices);
   for (const [minutes, kw, key] of [[0, 6, 'measured'], [30, 0, 'measured'], [60, 0.05, 'measured'],
@@ -75,8 +120,8 @@ test('unknown history is kept separate from idle and does not dilute the detecte
   assert.equal(details.powerMs, 150 * MINUTE);
   assert.equal(details.incompletePriceMs, 0);
   assert.equal(details.includedMs + details.idleMs + details.missingPowerMs + details.incompletePriceMs, details.elapsedMs);
-  assert.equal(result.coverage, 1);
-  assert.equal(result.provisional, true, '100% of detected charging does not claim unknown time is idle');
+  assert.equal(result.coverage, 0.5);
+  assert.equal(result.provisional, true, 'Unknown time remains missing data, even when all charging has prices');
   near(result.energyKwh, 5);
   assert.deepEqual(result.evidence.sources.map(source => [source.key, source.share]), [['measured', 1 / 3], ['currents', 2 / 3]]);
   assert.equal(result.evidence.sources[0].lastAt, day.from, 'Idle readings cannot extend active evidence dates');
@@ -109,7 +154,7 @@ test('missing whole-day prices exclude only active time, including gaps outside 
   assert.equal(details.incompletePriceMs, 2 * HOUR);
   assert.equal(details.missingPowerMs, 0);
   assert.equal(details.powerMs, 48 * HOUR);
-  assert.equal(result.coverage, 1 / 3);
+  assert.equal(result.coverage, 1 / 48);
   assert.equal(result.provisional, true);
   assert.equal(result.energyKwh, 6);
   assert.equal(result.evidence.sources[0].durationMs, HOUR);

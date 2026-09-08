@@ -144,23 +144,22 @@ directly below the current readings.
   source details identify those estimates and simulation. Missing equipment data
   or dated heat-pump power assumptions leave gaps. Heat-pump power is never
   property consumption minus charger consumption.
-  Heating's **Time included** is the share of elapsed time covered by usable
-  energy and complete daily prices, including valid zero-power intervals.
-  The charger's percentage covers **detected charging** only: intervals with
-  average power above 100 W. Idle periods at or below 100 W contribute neither
-  energy nor time to the charger comparison or its source and assumed-rate shares.
+  Both **Heating** and **Charging** show **Time included** as a percentage of
+  the selected elapsed time. Heating includes valid zero-power intervals;
+  charging leaves out idle periods at or below 100 W. For example, one included
+  hour in a 24-hour selection is 4%, regardless of device. A low charging
+  percentage can therefore mean idle time, missing history, or incomplete prices.
   The full-day average price still includes every hour. Missing readings remain
-  unknown, separate from idle time; 100% of detected charging does not mean all
-  charging was recorded. With no detected charging, no comparison is shown.
+  unknown, separate from idle time. With no detected charging, no comparison is shown.
   The source mix is weighted by included time, not sample count, energy or
   accuracy. Missing history and charging periods with incomplete daily prices
   are excluded, without extrapolation. Future hours do not reduce coverage.
   Calculations use the underlying energy and equipment intervals independently
   of chart point reduction and the selected left axis.
   The fold starts closed, like **Recording details**, and stays as you set it
-  when the chart refreshes or dates change. Matching-height device boxes contain
-  their own **Heating details** and **Charger details** folds for source shares,
-  timestamps and missing-time information. Shared explanations come last, in a
+  when the chart refreshes or dates change. The **Heating** and **Charging** boxes
+  align when closed; each details fold expands independently. They show source
+  shares, timestamps and short notes about missing data. Shared explanations come last, in a
   centered column. Missing historical contract rates
   use the nearest known rates with historical spot prices;
   **Assumed rates** includes assumptions affecting the daily average even when

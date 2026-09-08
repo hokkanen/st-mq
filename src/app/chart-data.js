@@ -325,7 +325,7 @@ export class DailyTimingBenchmark {
       const firstAt = previous.evidence?.intervalStart ?? previous.at;
       const lastAt = previous.evidence?.intervalEnd ?? previous.at;
       // Standby readings establish known history, but only actual charging
-      // belongs in charger timing costs and their evidence percentages.
+      // contributes to charger timing costs and included time.
       // Reconstructing kW from phase energy can round an exact 100 W upward.
       const includedPower = name !== 'charger' || previous.kw > CHARGING_MIN_POWER_KW + Number.EPSILON;
       if (end > start) {
@@ -393,7 +393,6 @@ export class DailyTimingBenchmark {
       const actualCostEuro = this.days.reduce((sum, day) => sum + day[name].cost, 0);
       const uniformCostEuro = this.days.reduce((sum, day) => sum + day[name].energy * (day.average ?? 0) / 100, 0);
       const details = this.details[name], share = ms => covered ? ms / covered : 0;
-      const coverageDuration = name === 'charger' ? details.chargingMs : duration;
       const missingPowerMs = Math.max(0, duration - details.powerMs);
       const incompletePriceMs = Math.max(0, (name === 'charger' ? details.chargingMs : details.powerMs) - covered);
       const energyBasis = details.energyBases.size > 1 ? 'recorded-and-legacy'
@@ -403,13 +402,13 @@ export class DailyTimingBenchmark {
       return [name, { value: covered ? uniformCostEuro - actualCostEuro : null, energyKwh: covered ? energyKwh : null,
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
-        coverage: coverageDuration ? Math.min(1, covered / coverageDuration) : 0,
+        coverage: duration ? Math.min(1, covered / duration) : 0,
         provisional: this.now < this.range.to || (name === 'charger'
           ? missingPowerMs > 0 || incompletePriceMs > 0 : covered < duration),
-        coverageDetails: { elapsedMs: duration, includedMs: covered, powerMs: details.powerMs,
+        coverageDetails: { elapsedMs: duration, includedMs: covered, coverageBasis: 'elapsed-time', powerMs: details.powerMs,
           missingPowerMs, incompletePriceMs,
           ...(name === 'charger' ? { chargingMs: details.chargingMs, idleMs: details.idleMs,
-            minimumPowerKw: CHARGING_MIN_POWER_KW, coverageBasis: 'charging-time' } : {}),
+            minimumPowerKw: CHARGING_MIN_POWER_KW } : {}),
           from: this.range.from, to: Math.max(this.range.from, this.now),
           firstPowerAt: details.firstPowerAt, lastPowerAt: details.lastPowerAt },
         evidence: { basis: 'included-time', energyBasis, timeBasis,

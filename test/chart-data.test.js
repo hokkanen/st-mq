@@ -35,7 +35,7 @@ test('daily timing comparison uses exact local-day duration, including both DST 
     assert.equal(result.charger.energyKwh, 2);
     assert.equal(result.charger.actualCostEuro, -0.2);
     assert(Math.abs(result.charger.value - (2 * average / 100 + 0.2)) < 1e-10);
-    assert.equal(result.charger.coverage, 1);
+    assert.equal(result.charger.coverage, 1 / hours);
     assert.equal(result.charger.coverageDetails.elapsedMs, hours * HOUR);
     assert.equal(result.charger.coverageDetails.includedMs, HOUR);
     assert.equal(result.charger.coverageDetails.chargingMs, HOUR);
@@ -199,7 +199,7 @@ test('timing evidence follows each held sample, weights time rather than sample 
   timing.add('heatPump', from + 60 * MINUTE, 3, { key: 'unknown', auxiliaryUnknown: true });
   timing.add('heatPump', from + 110 * MINUTE, null);
   const result = timing.result().heatPump;
-  assert.deepEqual(result.coverageDetails, { elapsedMs: 120 * MINUTE, includedMs: 90 * MINUTE,
+  assert.deepEqual(result.coverageDetails, { elapsedMs: 120 * MINUTE, includedMs: 90 * MINUTE, coverageBasis: 'elapsed-time',
     powerMs: 90 * MINUTE, missingPowerMs: 30 * MINUTE, incompletePriceMs: 0,
     from, to: from + 2 * HOUR, firstPowerAt: from - 10 * MINUTE, lastPowerAt: from + HOUR });
   const sources = Object.fromEntries(result.evidence.sources.map(source => [source.key, source]));

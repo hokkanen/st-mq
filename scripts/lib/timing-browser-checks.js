@@ -90,12 +90,39 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).open`), expected,
       `${device} details follow the reader’s choice independently`);
   };
-  const checkEqualHeights = async () => {
-    assert.equal(await evaluate(`(() => {
-      const boxes = [...document.querySelectorAll('.timing-device')].map(element => element.getBoundingClientRect());
-      return boxes.length === 2 && Math.abs(boxes[0].top - boxes[1].top) < 1
-        && Math.abs(boxes[0].height - boxes[1].height) < 1;
-    })()`), true, 'Side-by-side cards stay the same height with unequal results or expanded details');
+  const layout = async () => {
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    return JSON.parse(await evaluate(`JSON.stringify(Object.fromEntries([...document.querySelectorAll('.timing-device')].map(card => {
+    const box = card.getBoundingClientRect();
+    return [card.dataset.device, {
+      height: box.height, top: box.top, left: box.left, bottom: box.bottom,
+      headingOffset: card.querySelector('.timing-device-heading').getBoundingClientRect().top - box.top,
+      summaryOffset: card.querySelector('.timing-device-detail > summary').getBoundingClientRect().top - box.top,
+    }];
+    })))`));
+  };
+  const checkClosedLayout = async () => {
+    for (const device of ['heatPump', 'charger']) await checkDetailOpen(device, false);
+    const { heatPump, charger } = await layout();
+    for (const key of ['top', 'height', 'headingOffset', 'summaryOffset']) {
+      assert.ok(Math.abs(heatPump[key] - charger[key]) < 1,
+        `Closed side-by-side cards have matching ${key}, including unequal available data`);
+    }
+  };
+  const checkToggle = async (device, open, toggle = () => tap(`${detail(device)} > summary`)) => {
+    const before = await layout();
+    await toggle();
+    await until(`${open ? '' : '!'}document.querySelector(${JSON.stringify(detail(device))}).open`);
+    const after = await layout();
+    const other = device === 'heatPump' ? 'charger' : 'heatPump';
+    assert.ok(Math.abs(before[other].height - after[other].height) < 1,
+      `Toggling ${device} details leaves the ${other} card height unchanged`);
+    assert.ok(open ? after[device].height > before[device].height + 1 : after[device].height < before[device].height - 1,
+      `Only the toggled ${device} card ${open ? 'expands' : 'contracts'}`);
+    for (const key of ['headingOffset', 'summaryOffset']) {
+      for (const device of ['heatPump', 'charger']) assert.ok(Math.abs(before[device][key] - after[device][key]) < 1,
+        `Toggling a detail preserves the ${device} ${key}`);
+    }
   };
   const checkContentOrder = async () => {
     assert.equal(await evaluate(`(() => {
@@ -131,9 +158,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     'Native summary keeps keyboard focus while toggling');
   assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button, #timing-benefit [role=dialog]').length"), 0,
     'Timing results and explanations are ordinary text without popup controls');
-  for (const [device, label] of [['heatPump', 'Heating details'], ['charger', 'Charger details']]) {
+  for (const [device, name] of [['heatPump', 'Heating'], ['charger', 'Charging']]) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).tagName`), 'DETAILS');
-    assert.equal((await text(`${detail(device)} > summary`)).trim(), label);
+    assert.equal((await text(`${detail(device)} > summary`)).trim(), `${name} details`);
+    assert.equal((await text(`${card(device)} .timing-device-name`)).trim(), name);
     await checkDetailOpen(device, false);
   }
   await evaluate(`window.timingFoldFixture.devices = Object.fromEntries(['heatPump', 'charger'].map(device => {
@@ -143,38 +171,53 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
 
   assert.match(await text(card('heatPump')), /unavailable/i);
   assert.match(await text(`${card('charger')} .timing-amount`), /€[\d.]+/);
-  assert.match(await text(`${card('charger')} .timing-coverage`), /100% of detected charging included/,
-    'Idle hours do not reduce or inflate the share of detected charging included');
+  assert.match(await text(`${card('charger')} .timing-coverage`), /4% of time included/,
+    'Charging coverage uses the elapsed period, just like heating coverage');
   assert.match(await text(`${card('charger')} .timing-assumed`), /assumed rates/i);
   assert.match(await text('.timing-rate-explanation'), /nearest known contract rates/i);
   assert.match(await text('.timing-rate-explanation'), /historical spot prices/i);
-  assert.match(await text(detail('charger')), /100%.*included charging time/i);
+  assert.match(await text(detail('charger')), /100%.*of included time/i);
   assert.match(await text(card('charger')), /2026/);
-  assert.match(await text('.timing-explanations'), /zero/i);
-  assert.match(await text('.timing-explanations'), /idle periods are left out/i);
-  assert.match(await text('.timing-explanations'), /missing readings are unknown/i);
+  assert.match(await text(detail('charger')), /100\s*W/i);
+  assert.match(await text('.timing-explanations'), /idle/i);
+  assert.match(await text('.timing-explanations'), /missing readings|missing data/i);
   assert.match(await text('.timing-explanations'), /whole day|full.day|daily average/i);
   assert.match(await text('.timing-explanations'), /does not prove|not proven/i);
   assert.match(await text(card('heatPump')), /power|energy/i);
-  await checkEqualHeights();
+  assert.doesNotMatch(await text('#timing-benefit'), /of detected charging included|out of .*detected charging|included charging time/i,
+    'Heating and charging use the same time terminology without a second detected-charging denominator');
+  await checkClosedLayout();
   await checkContentOrder();
   await checkFits();
   await scrollTo(summary);
   await capture('home-energy-timing-historical-desktop');
   await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
-  await key('\uE007');
-  await until(`document.querySelector(${JSON.stringify(detail('charger'))}).open`);
+  await checkToggle('charger', true, () => key('\uE007'));
   await checkDetailOpen('heatPump', false);
-  await checkEqualHeights();
-  await key(' ');
-  await until(`!document.querySelector(${JSON.stringify(detail('charger'))}).open`);
-  await key('\uE007');
-  await until(`document.querySelector(${JSON.stringify(detail('charger'))}).open`);
+  await checkToggle('charger', false, () => key(' '));
+  await checkClosedLayout();
+  await checkToggle('charger', true, () => key('\uE007'));
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.devices.charger.summary'), true,
     'Nested native summary keeps keyboard focus while toggling');
   await checkOpen(true);
   await scrollTo(summary);
   await capture('home-energy-timing-one-detail-desktop');
+
+  await command('browsingContext.setViewport', { context, viewport: { width: 844, height: 1100 }, devicePixelRatio: 1 });
+  await checkToggle('charger', false);
+  await checkClosedLayout();
+  await checkFits();
+  await scrollTo(summary);
+  await capture('home-energy-timing-unavailable-closed-844');
+  await checkToggle('heatPump', true);
+  await checkDetailOpen('charger', false);
+  await checkToggle('heatPump', false);
+  await checkToggle('charger', true);
+  await checkFits();
+  await scrollTo(summary);
+  await capture('home-energy-timing-unavailable-charging-open-844');
+  await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+  await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
 
   await chooseDate('2026-09-05');
   await checkOpen(true);
@@ -196,7 +239,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   for (const [source, share] of [['measured', '50%'], ['currents', '25%'], ['unknown', '25%']]) {
     const sourceText = await text(`${detail('charger')} .timing-source[data-source="${source}"]`);
     assert.ok(sourceText.includes(share), `${source} is weighted by active charging time, excluding standby readings`);
-    assert.match(sourceText, /included charging time/i);
+    assert.match(sourceText, /of included time/i);
     assert.match(sourceText, /2026/, 'Contributing dates remain next to each source explanation');
   }
   assert.match(await text(`${detail('charger')} .timing-source[data-source="measured"]`), /dedicated power/i);
@@ -206,10 +249,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.equal(coverage.chargingMs, 6 * 3_600_000);
   assert.equal(coverage.idleMs, 6 * 3_600_000);
   assert.equal(coverage.missingPowerMs, 12 * 3_600_000);
-  assert.match(await text(`${card('charger')} .timing-coverage`), /100% of detected charging included/);
+  assert.match(await text(`${card('heatPump')} .timing-coverage`), /100% of time included/);
+  assert.match(await text(`${card('charger')} .timing-coverage`), /25% of time included/);
   assert.match(await text(detail('charger')), /unknown|missing/i,
     'The charging detail still explains unrecorded time separately from idle time');
-  await checkEqualHeights();
   await checkContentOrder();
 
   for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 640 }]) {
@@ -225,7 +268,6 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       if (viewport.width > 800) {
         assert.ok(Math.abs(positions[0].top - positions[1].top) < 1 && positions[0].left < positions[1].left,
           'Desktop presents heat pump left and charger right');
-        await checkEqualHeights();
       } else if (viewport.width <= 390) {
         assert.ok(positions[1].top >= positions[0].bottom && Math.abs(positions[0].left - positions[1].left) < 1,
           'Narrow screens stack the device cards in reading order');
@@ -236,17 +278,22 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       await capture(`home-energy-timing-evidence-${theme}-${viewport.width}`);
       await scrollTo('.timing-explanations');
       await capture(`home-energy-timing-explanations-${theme}-${viewport.width}`);
-      await tap(`${detail('heatPump')} > summary`);
-      await until(`document.querySelector(${JSON.stringify(detail('heatPump'))}).open`);
+      await checkToggle('charger', false);
+      if (viewport.width > 800) await checkClosedLayout();
+      await scrollTo(summary);
+      await capture(`home-energy-timing-closed-${theme}-${viewport.width}`);
+      await checkToggle('heatPump', true);
+      await checkDetailOpen('charger', false);
+      await scrollTo(summary);
+      await capture(`home-energy-timing-heating-open-${theme}-${viewport.width}`);
+      await checkToggle('charger', true);
       await checkDetailOpen('charger', true);
       await checkOpen(true);
       await checkFits();
       await checkContentOrder();
-      if (viewport.width > 800) await checkEqualHeights();
       await scrollTo(summary);
       await capture(`home-energy-timing-both-details-${theme}-${viewport.width}`);
-      await tap(`${detail('heatPump')} > summary`);
-      await until(`!document.querySelector(${JSON.stringify(detail('heatPump'))}).open`);
+      await checkToggle('heatPump', false);
       await checkDetailOpen('charger', true);
       await tap(summary);
       await until(`!${expanded}`);
@@ -263,7 +310,6 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await checkOpen(true);
   await checkDetailOpen('heatPump', false);
   await checkDetailOpen('charger', true);
-  await checkEqualHeights();
   assert.match(await text(`${card('heatPump')} .timing-basis`), /operation estimate/i);
   assert.match(await text(`${card('heatPump')} .timing-coverage`), /25% of time included/);
   assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);

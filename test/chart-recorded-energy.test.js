@@ -60,7 +60,7 @@ test('recorded standby and threshold power stay visible on charts but only charg
     const charging = result.timing.charger;
     near(charging.energyKwh, (0.1001 + 6) / 60);
     near(charging.actualCostEuro, 0.1001 / 60 * 0.1 + 6 / 60 * 0.5);
-    assert.equal(charging.coverage, 1);
+    assert.equal(charging.coverage, 2 / 5);
     assert.equal(charging.coverageDetails.includedMs, 2 * MINUTE);
     assert.equal(charging.coverageDetails.chargingMs, 2 * MINUTE);
     assert.equal(charging.coverageDetails.idleMs, 3 * MINUTE);

@@ -161,10 +161,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
 .timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
-.timing-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; align-items: stretch; }
+.timing-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; align-items: start; }
 .timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
-.timing-device { display: grid; grid-row: span 2; grid-template-rows: subgrid; row-gap: 0; }
-.timing-device-overview { min-width: 0; }
+.timing-device-overview { min-width: 0; min-height: var(--timing-overview-height, 0px); }
+.timing-overview-content { display: flow-root; }
 .timing-card .timing-device-detail { margin-top: 20px; align-self: start; min-width: 0; }
 .timing-device-detail > summary { padding: 14px 0 0; font-weight: 550; }
 .timing-device-detail[open] > summary { padding-bottom: 18px; }
@@ -205,7 +205,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-chart-rates { margin-top: 16px; border-left: 3px solid var(--stale); padding-left: 16px; }
 @media (max-width: 800px) {
   .timing-devices { grid-template-columns: minmax(0, 1fr); gap: 18px; }
-  .timing-device { display: block; grid-row: auto; }
   .timing-card { padding: 20px; }
 }
 @media (max-width: 480px) {
