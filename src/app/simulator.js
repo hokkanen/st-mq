@@ -12,7 +12,8 @@ export class SimulatedPlant {
       const dt = Math.min(remaining, 1 / 60);
       // Restoring normal only restores the native thermostat's target.
       const thermostatDemand = s.indoorC < (s.action === 'normal' ? 21.2 + (s.phase === 'preheat' ? s.roomBoostC*0.4 : 0) : 19.6);
-      const auxKw = s.action === 'normal' && s.indoorC < 19.4 ? 3 : 0;
+      const auxKw = s.action === 'normal' && !(s.phase === 'recovery' && s.recoveryCompressorOnly)
+        && s.indoorC < 19.4 ? 3 : 0;
       const heatKw = (thermostatDemand ? 8 : 0) + auxKw + (s.phase === 'preheat' ? 0.8 : 0);
       s.compressorDuty = thermostatDemand ? 1 : 0; s.auxKw = auxKw;
       const exchangeKw = (s.slabC - s.indoorC) * 1.6;

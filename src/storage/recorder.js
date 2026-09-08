@@ -109,10 +109,12 @@ export class Recorder {
     const at = o.receivedAt, observed = Number.isFinite(o.sourceTime) ? o.sourceTime : null;
     // If recording is configured less often than source freshness, two fresh
     // polls can still surround an unobserved gap. Preserve separate spans even
-    // when both polls map to the same saved value. Use the source clock: delayed
-    // but still fresh asynchronous arrivals may have overlapping validity.
+    // when both polls map to the same saved value. Receipt must also precede
+    // expiry of the previous source reading: a later arrival cannot prove that
+    // an earlier controller already had fresh data. This makes every historical
+    // prefix of an extended span independently valid.
     const continuous = status !== 'fresh' || !Number.isFinite(state.lastSourceTime)
-      || observed - state.lastSourceTime <= sourceAge(o);
+      || observed - state.lastSourceTime <= sourceAge(o) && at - state.lastSourceTime <= sourceAge(o);
     if (state.coverageId && state.status === status && state.coverageObservationId === state.last?.id && continuous) {
       this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+1 WHERE id=?')
         .run(at, observed, state.coverageId);

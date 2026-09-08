@@ -25,6 +25,7 @@ function fixture(t, extra = {}) {
 const sample = (timestamp, changes = {}) => ({ timestamp, indoorC: 21.5, outdoorC: 0,
   solarRadiationWm2: 0, indoorTrendCPerHour: 0, phase: timestamp < schedule.reductionEnd ? 'reduction' : 'recovery',
   powerKw: 2, compressorDuty: 0.5, compressorPowerKw: 3, compressorActivityObserved: true,
+  thermalCompressorDuty:0.5,thermalAuxKw:0,
   auxiliaryObserved: true, auxiliaryRouteKnown: true, auxKw: 0, auxRoute: null, energyBasis: 'estimated',
   ...changes });
 function finish(tracker, changes = {}) {
@@ -48,7 +49,7 @@ test('recovery premium stops once the room and reserve regain comparable normal 
   assert.equal(expensive.recoveredAt, short.recoveredAt, 'Electrical inefficiency is not extra delivered heat');
 });
 
-test('bootstrap can select a bounded economic reduction and cannot manufacture warm-weather preheat demand', () => {
+test('unvalidated bootstrap cannot bypass disabled learning trials even with native controls', () => {
   const choose = (rows, equipment = {}) => chooseCycle({ now: start,
     observations: { indoor: { value: 21, observedAt: start } },
     prices: rows.map(x => ({ ...x, allInCentsPerKWh: x.price })),
@@ -56,10 +57,11 @@ test('bootstrap can select a bounded economic reduction and cannot manufacture w
     checkpoint: { model: initialAdaptiveModel(), baselineC: 21 },
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
     config: { learningTrials: false }, equipment });
-  const selected = choose(intervals(24));
-  assert.equal(selected.phase, 'reduction');
-  assert.ok(selected.plan.schedule.reductionEnd - selected.plan.schedule.reductionStart <= HOUR / 2);
-  assert.ok(selected.plan.estimatedBenefitCents > 0);
+  for (const equipment of [{},{h66Available:true,preheatAvailable:true}]) {
+    const selected = choose(intervals(24),equipment);
+    assert.equal(selected.phase,'normal');assert.equal(selected.plan,null);
+    assert.deepEqual(selected.reasons,['awaiting-tariff-response-evidence']);
+  }
   const warm = choose(intervals(8, { outdoorC: 30, price: i => i < 8 ? -100 : 100 }),
     { h66Available: true, preheatAvailable: true });
   assert.equal(warm.plan, null, 'ROOM boost must not create the demand used to justify DHWR heat credit');
@@ -80,14 +82,14 @@ test('missing solar over a 48-hour horizon still permits a bounded startup trial
   const decision = chooseCycle({ now: start, observations: { indoor: { value: 21, observedAt: start } },
     prices: rows.map(x => ({ ...x, allInCentsPerKWh: x.price })),
     forecast: rows.map(x => ({ ...x, issuedAt: start })),
-    checkpoint: { model: initialAdaptiveModel(), baselineC: 21 },
+    checkpoint: { model: initialAdaptiveModel(), baselineC: 21,health:{usableSamples:4} },
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
-    trialBudgetRemainingCents: 100 });
+    equipment:{compressorOn:1,dhwRouting:0},trialBudgetRemainingCents: 100 });
   assert.equal(decision.phase, 'reduction');
   assert.equal(decision.plan.trial, true);
   assert.ok(decision.plan.schedule.reductionEnd - decision.plan.schedule.reductionStart <= HOUR / 2);
   assert.ok(decision.plan.trialAllowanceCents <= 50);
-  assert.equal(decision.plan.prediction.severe, false);
+  assert.equal(decision.plan.trialSafety.comfortSafe,true);
 });
 
 test('cycle accounting splits published price boundaries without duplicating coverage or stored trajectories', t => {
@@ -112,35 +114,35 @@ function fixturePlan(rows) {
 }
 
 test('completed-cycle profit uses the same elapsed period and keeps DHW auxiliary outside the space-auxiliary subgroup', t => {
-  const { store, tracker, plan } = fixture(t);
-  const changes = { auxKw: 1, auxRoute: 'dhw', powerKw: 3 };
+  const { store, tracker, plan } = fixture(t,{intervals:intervals(8,{outdoorC:21})});
+  const changes = { outdoorC:21,auxKw: 1, auxRoute: 'dhw', powerKw: 3,thermalCompressorDuty:0,thermalAuxKw:0 };
   tracker.start(plan, sample(start, changes), start);
   const episode = finish(tracker, changes);
   assert.ok(episode?.complete);
   const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
   const samePeriod = cycle.observations.map(o => ({ ...o }));
   const reference = evaluateCycle({ ...common({ intervals: samePeriod }), includeTail: false });
-  assert.ok(Math.abs(cycle.assessment.profitCents - (reference.costCents - cycle.actual.costCents)) < 1e-8);
+  assert.ok(Math.abs(cycle.assessment.profitCents - (reference.spaceHeatingCostCents - cycle.actual.spaceHeatingCostCents)) < 1e-8);
+  assert.equal(cycle.assessment.wholeCycleProfitCents,null);
   assert.ok(episode.dhwAuxKwh > 0);
   assert.equal(episode.spaceHeatingAuxKwh, 0);
   assert.equal(tracker.metrics(21).auxProfit.count, 0);
   assert.equal(tracker.metrics(21).profit.count, 1);
   assert.equal(tracker.metrics(21).recoveryError.count, 1);
-  assert.equal(cycle.assessment.basis, 'estimated-execution-and-reference');
+  assert.equal(cycle.assessment.basis, 'estimated-space-heating-execution-and-reference');
   assert.ok(cycle.endedAt < plan.intervals.at(-1).end, 'Assessment must not include unused forecast hours');
 });
 
-test('unknown auxiliary evidence remains unknown and cannot calibrate its own estimated recovery', t => {
+test('unknown auxiliary evidence cannot establish a recovered reserve or calibrate itself', t => {
   const { tracker, plan } = fixture(t);
   const changes = { auxiliaryObserved: false, auxiliaryRouteKnown: false, compressorActivityObserved: false,
-    auxKw: null, auxRoute: null };
+    auxKw: null, auxRoute: null,thermalCompressorDuty:null,thermalAuxKw:null };
   tracker.start(plan, sample(start, changes), start);
   const episode = finish(tracker, changes);
-  assert.ok(episode.complete);
-  assert.equal(episode.auxiliaryObserved, false);
-  assert.equal(episode.auxiliaryRouteKnown, false);
+  assert.equal(episode,undefined);
+  assert.equal(tracker.active().stableSince,null);
   assert.equal(tracker.metrics(21).auxProfit.count, 0);
-  const cp = updateAdaptiveEpisode(null, episode);
+  const cp = updateAdaptiveEpisode(null, {complete:false});
   assert.equal(cp.model.energy.recoveryCalibrationEpisodes, 0);
   assert.equal(cp.model.energy.auxiliaryCalibrationEpisodes, 0);
 });

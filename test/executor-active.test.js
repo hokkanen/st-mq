@@ -43,6 +43,46 @@ test('active base control works without H66 and refreshes idempotently', async t
   assert.equal(r.executor.status().legacyOutstanding, false);
 });
 
+test('compressor recovery restores ROOM and DHW while retaining mode2 until fallback',async t=>{
+  const r=rig(t);
+  await r.run('reduction');
+  const first=r.log.length;
+  const result=await r.run('recovery',1800000,{recoveryCompressorOnly:true});
+  assert.equal(result.recoveryCompressorOnly,true);
+  assert.deepEqual(r.values,{'0203':19,'0212':47,'0208':62,'2201':2});
+  assert.deepEqual(r.log.at(-1).commands,['heaton15']);
+  assert.equal(r.log.slice(first).some(row=>row.native==='2201'&&row.value===1),false);
+  assert.ok(r.h66.status().obligations['2201']);
+  const before=r.log.length;
+  await r.run('recovery',1800000,{recoveryCompressorOnly:true});
+  assert.equal(r.log.length,before);
+  await r.run('recovery',1800000,{recoveryCompressorOnly:false,recoveryFallbackReason:'recovery-comfort-margin'});
+  assert.equal(r.values['2201'],1);assert.deepEqual(r.h66.status().obligations,{});
+});
+
+test('compressor recovery expires back to the captured native mode',async t=>{
+  const r=rig(t);
+  await r.run('reduction');await r.run('recovery',60000,{recoveryCompressorOnly:true});
+  r.advance(60000);await r.h66.reconcile({now:r.now});
+  assert.equal(r.values['2201'],1);assert.deepEqual(r.h66.status().obligations,{});
+});
+
+test('a coupled45-minute trial retains useful preheat exposure with acknowledgement latency',async t=>{
+  let r;
+  r=rig(t,{publishLegacy:async()=>{r.advance(1000);return{status:'mqtt',sent:true,actual:null};}});
+  const end=r.now+45*60000;let pulses=0;
+  for(let i=0;i<5;i++) {
+    const remaining=end-r.now;
+    if(remaining<=0)break;
+    const result=await r.run('preheat',remaining);
+    if(result.phase!=='preheat')break;
+    pulses++;
+    r.advance(600000);
+  }
+  assert.ok(pulses>=3);
+  assert.ok(r.log.filter(row=>row.commands?.includes('heaton60')).length>=3);
+});
+
 test('coupled preheat publishes pulse before ROOM and restores ROOM before waiting for reduction', async t => {
   const r = rig(t);
   const preheat = await r.run('preheat');

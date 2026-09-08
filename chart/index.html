@@ -39,9 +39,9 @@
             <option value="phases">Phase currents</option>
             <option value="integral">Heating integral</option>
             <optgroup label="Learning">
-              <option value="learning_profit">Profit after recovery</option>
-              <option value="learning_aux_profit">Profit with auxiliary recovery</option>
-              <option value="learning_recovery_error">Recovery-cost prediction error</option>
+              <option value="learning_profit">Space-heating benefit after recovery</option>
+              <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
+              <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
               <option value="learning_indoor_temperature">Learned normal temperature</option>
             </optgroup>
             <option value="solar_radiation">Solar radiation forecast</option>
@@ -115,7 +115,11 @@
             <p id="learning-detail" class="muted"></p>
             <p id="learning-process" class="muted"></p>
             <div id="learning-metrics"></div>
-            <p id="learning-evidence" class="muted"></p>
+            <div id="learning-evidence" class="muted"></div>
+            <details id="model-inputs-details">
+              <summary>Model inputs · Calculated</summary>
+              <div id="model-inputs-content"></div>
+            </details>
             <p id="savings" class="muted"></p>
           </details>
         </article>

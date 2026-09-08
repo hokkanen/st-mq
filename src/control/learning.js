@@ -28,7 +28,11 @@ function heatingEvidence(samples) {
   let verifiedHours = 0, activeHours = 0;
   const activeTimes = [];
   for (let i = 0; i < samples.length - 1; i++) {
-    const sample = samples[i], hours = (instant(samples[i + 1].timestamp) - instant(sample.timestamp)) / HOUR;
+    const previous = samples[i], next = samples[i + 1];
+    // Completed windows describe the interval ending at their timestamp. Legacy
+    // instantaneous observations describe the interval starting there instead.
+    const sample = next.windowStart === instant(previous.timestamp) ? next : previous;
+    const hours = (instant(next.timestamp) - instant(previous.timestamp)) / HOUR;
     totalHours += hours;
     outdoorDegreeHours += sample.outdoorC * hours;
     gapDegreeHours += (sample.indoorC - sample.outdoorC) * hours;
@@ -36,8 +40,12 @@ function heatingEvidence(samples) {
     if (heating?.verified === true && typeof heating.compressorActive === 'boolean'
       && ['space-heating', 'dhw', 'idle'].includes(heating.route) && goodQuality(heating.quality)) {
       verifiedHours += hours;
-      if (heating.compressorActive && heating.route === 'space-heating') {
-        activeHours += hours;
+      const measuredDuty = sample.thermalCompressorDuty ?? heating.compressorDuty
+        ?? sample.intervalInputs?.compressorDuty ?? sample.compressorDuty;
+      const duty = finite(measuredDuty) ? Math.min(1, Math.max(0, measuredDuty))
+        : sample.windowStart !== undefined || sample.inputSegments ? 0 : Number(heating.compressorActive);
+      if (duty > 0 && heating.route === 'space-heating') {
+        activeHours += hours * duty;
         activeTimes.push(instant(sample.timestamp));
       }
     }

@@ -7,7 +7,8 @@ import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { timingEvidenceSource, timingPowerEvidence } from './timing-evidence.js';
-import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS, MODEL_INPUT_INFO } from '../domain/history-series.js';
+import { addModelInputs } from './chart-model-inputs.js';
 import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
 import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
@@ -524,7 +525,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
-    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'heat_pump_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
+    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !['property_power', 'heat_pump_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
@@ -564,7 +565,17 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   const flagsOf = qualityReader(); let rawRows = 0, invalidRows = 0, latestOutdoor = null;
   let time = null, atRows = new Map(), phases = new Map();
-  let previousHeat = null;
+  let previousHeat = null, pendingPulse = null;
+  const flushPulse = () => {
+    if (!pendingPulse || !envelopes.dhwr_request) return;
+    const { start, end } = pendingPulse, until = Math.min(end, now, range.to);
+    if (until > Math.max(start, range.from)) {
+      envelopes.dhwr_request.add(Math.max(start, range.from), 1);
+      envelopes.dhwr_request.add(until - 1, 1);
+      envelopes.dhwr_request.add(until, null);
+    }
+    pendingPulse = null;
+  };
   const verified = row => {
     if (input === 'simulated' && row.source === 'simulation') return true;
     try { const raw = JSON.parse(row.raw); return row.source === 'husdata-h66' && Boolean(raw?.verified) && raw?.usableForControl !== false; } catch { return false; }
@@ -614,10 +625,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
       if (PHASES.includes(signal) && time >= energyStarts[signal.startsWith('ev1')?'ev1':'property']) continue;
       if (signal === 'requested_heat_mode') addState(row, value, 'heat');
       else if (signal === 'dhwr_request' && row.source === 'controller' && row.device === input && value === 1) {
-        lines[signal]?.add(time, value);
         let end = time + 10 * 60_000;
         try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt)) end = Math.min(end, raw.expiresAt); } catch { /* Ten-minute legacy pulse default. */ }
         shading.dhwr.add(time, Math.min(end, now));
+        if (envelopes.dhwr_request && end > time) {
+          if (pendingPulse && time > pendingPulse.end) flushPulse();
+          pendingPulse = pendingPulse ? { start: pendingPulse.start, end: Math.max(end, pendingPulse.end) } : { start: time, end };
+        }
       }
       else if (signal === 'controller_phase' && row.source === 'controller' && row.device === input) {
         lines[signal]?.add(time, value);
@@ -760,8 +774,11 @@ export function getChartData({ store, input = 'offline', contract = null, market
     } else rememberScalar(row, value);
   }
   if (time !== null) flushTime();
+  flushPulse();
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger',energyStarts.ev1,null);
   const recordedEnergy = addRecordedEnergy({store,range,now,input,envelopes,timing});
+  const modelInputs = addModelInputs({ store, range, now, input, envelopes });
+  if (left.startsWith('model_') && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
   for(const signal of leftNames.filter(name=>AUDIT_SIGNALS.includes(name))) {
     for(const row of store.db.prepare('SELECT value,source_time,quality FROM energy_audits WHERE signal=? AND source_time>=? AND source_time<=? ORDER BY source_time,id')
       .iterate(signal,range.from,Math.min(range.to,now))) {
@@ -831,7 +848,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,

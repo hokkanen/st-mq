@@ -183,7 +183,8 @@ test('all current sources unavailable remains missing for learning even when a t
   const sample = r.store.learningJournal({ input: 'mqtt' }).at(-1).payload.value;
   assert.equal(sample.outdoorC, null);
   assert.equal(sample.solarRadiationWm2, null, 'A mutable current forecast is not an archived forecast known before this completed window');
-  assert.deepEqual(sample.quality, ['missing']);
+  assert.deepEqual(sample.quality, ['unavailable-controller-context', 'missing'],
+    'Neither missing outdoor data nor the pre-startup control context can be invented');
 });
 
 test('archived mixed-source solar keeps its own provider in forecast versions without minute copies', async t => {

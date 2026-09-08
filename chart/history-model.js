@@ -1,4 +1,4 @@
-import { HISTORY_AXES, SIGNAL_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXES, SIGNAL_INFO, MODEL_INPUT_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -63,8 +63,8 @@ export const leftGroups = Object.freeze({
 });
 export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current · A', integral: 'Heating integral · °min',
   ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, `${axis.label} · ${axis.unit}`])),
-  learning_profit: 'Estimated profit after recovery · €/cycle', learning_aux_profit: 'Estimated profit with auxiliary recovery · €/cycle',
-  learning_recovery_error: 'Recovery-cost prediction error · €/cycle', learning_indoor_temperature: 'Learned normal temperature · °C',
+  learning_profit: 'Estimated space-heating benefit · €/cycle', learning_aux_profit: 'Space-heating benefit with auxiliary recovery · €/cycle',
+  learning_recovery_error: 'Space-heating recovery-cost prediction error · €/cycle', learning_indoor_temperature: 'Learned normal temperature · °C',
   solar_radiation: 'Solar radiation forecast · W/m²' });
 export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
@@ -89,9 +89,9 @@ const seriesInfo = {
   ev1_current_l2: ['Charger L2', 'A', 'phase2', 'fill'],
   ev1_current_l3: ['Charger L3', 'A', 'phase3', 'fill'],
   heating_integral: ['Heating integral', '°min', 'integral'],
-  learning_profit: ['Profit after recovery', '€/cycle · estimated mean for completed cycles', 'learning', 'learning'],
-  learning_aux_profit: ['Profit with auxiliary recovery', '€/cycle · observed space-heating auxiliary recovery cycles only', 'learning', 'learning'],
-  learning_recovery_error: ['Recovery-cost prediction error', '€/cycle · mean absolute error; lower is better', 'learning', 'learning'],
+  learning_profit: ['Space-heating benefit after recovery', '€/cycle · estimated completed-cycle mean; hot-water service excluded', 'learning', 'learning'],
+  learning_aux_profit: ['Space-heating benefit with auxiliary recovery', '€/cycle · observed space-heating auxiliary recovery cycles only', 'learning', 'learning'],
+  learning_recovery_error: ['Space-heating recovery-cost prediction error', '€/cycle · mean absolute error; lower is better', 'learning', 'learning'],
   learning_indoor_temperature: ['Learned normal temperature', '°C · learned reference, not a thermostat command', 'learning', 'learning'],
   solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
@@ -111,7 +111,27 @@ Object.assign(seriesInfo, {
   controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
   dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
 });
+for (const [signal, info] of Object.entries(MODEL_INPUT_INFO))
+  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color];
 const rightKeys = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
+
+/** Shared right-axis readings must not conceal an empty selected left axis. */
+export function leftAxisAvailability(datasets) {
+  const left = datasets.filter(dataset => dataset.yAxisID === 'left');
+  if (!left.some(dataset => dataset.data.some(point => Number.isFinite(point.y)))) return 'No recorded values for the selected left axis in these dates';
+  if (!left.some(dataset => !dataset.hidden && dataset.data.some(point => Number.isFinite(point.y)))) return 'Selected left-axis values are hidden in the legend';
+  return '';
+}
+
+export function historyStateLabel(key, value) {
+  if (key === 'operating_mode') return operationModes[value] ?? `Unknown mode (${value})`;
+  if (['controller_phase', 'model_controller_phase'].includes(key))
+    return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;
+  if (key === 'dhw_routing') return value === 0 ? 'Space heating' : value === 1 ? 'Hot water' : `Unknown route (${value})`;
+  if (['compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
+  if (key === 'dhwr_request') return value === 1 ? 'Pulse requested' : value === 0 ? 'Request expired' : `Unknown (${value})`;
+  return null;
+}
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
 const heldReadingKeys = ['property_power', 'charger_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
@@ -163,7 +183,7 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
       pointHoverRadius: 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
-      stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && !PHASE_ENERGY_SIGNALS.includes(key),
+      stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && key !== 'model_indoor_temperature' && !PHASE_ENERGY_SIGNALS.includes(key),
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),
     };
   });

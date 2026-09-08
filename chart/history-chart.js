@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyStateLabel } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
@@ -16,7 +16,7 @@ const paletteVariables = {
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
 };
 const shades = [
-  { key: 'heatOff', label: 'Heat Off', detail: 'Requested heating reduction; does not prove compressor stoppage' },
+  { key: 'heatOff', label: 'Tariff reduction requested', detail: 'Requested tariff reduction; compressor activity is shown separately' },
   { key: 'compressorSpace', label: 'Compressor · house', detail: 'Compressor reported on, valve routed to house heating' },
   { key: 'compressorDhw', label: 'Compressor · hot water', detail: 'Compressor reported on, valve routed to hot water' },
   { key: 'dhwr', label: 'DHWR', detail: 'Requested 10-minute hot-water recirculation pulses' },
@@ -102,14 +102,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       button.addEventListener('click', () => {
         preferences[key] = !visible(key, preferences); savePreferences();
         for (const dataset of graph.data.datasets) if (dataset.visibilityKey === key) dataset.hidden = !preferences[key];
-        button.setAttribute('aria-pressed', String(preferences[key])); graph.update('none'); renderModes();
+        button.setAttribute('aria-pressed', String(preferences[key])); graph.update('none'); renderModes(); renderStatus(graph.data.datasets);
       });
       group.append(button);
     }
     for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.key], shade.key === 'heatOff' ? 'pattern' : 'fill');
     add(groups[0], 'operatingMode', 'Pump mode', 'Configured operating mode from H66 readback; independent of compressor activity', palette.outdoor, 'fill');
     for (const dataset of datasets) {
-      if (dataset.key === 'outdoor_forecast') continue;
+      if (dataset.key === 'outdoor_forecast' && dataset.yAxisID !== 'left') continue;
       add(groups[dataset.yAxisID === 'left' ? 1 : 2], dataset.visibilityKey, dataset.label, dataset.unit, dataset.borderColor, dataset.kind);
     }
     $('chart-legend').replaceChildren(...groups);
@@ -137,6 +137,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   }
   function renderTiming() {
     timing.render(payload);
+  }
+  function renderStatus(datasets) {
+    const plot = plottedSelection;
+    const loading = selection.startDate !== plot.startDate || selection.endDate !== plot.endDate || selection.left !== plot.left;
+    const availability = leftAxisAvailability(datasets);
+    const simulated = payload.input === 'simulated' ? ' · simulated data' : '';
+    $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${availability ? ` · ${availability}` : ''}`;
   }
   function renderChart() {
     if (!payload) return;
@@ -179,9 +186,11 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                 title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
                 label: item => {
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
-                  const interval = item.raw?.fromEnergy ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
+                  const interval = item.raw?.fromEnergy || item.raw?.modelInput ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
                   const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
-                  return `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${source ? ` · ${source}` : ''}${interval}${reconstructed}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  const stateLabel = historyStateLabel(item.dataset.key, item.parsed.y);
+                  const value = stateLabel ?? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}`;
+                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${item.raw?.modelInput?` · ${item.raw.inputSource} · saved learning input`:''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -193,15 +202,18 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     renderModes(); renderTiming();
     const loading = selection.startDate !== plot.startDate || selection.endDate !== plot.endDate || selection.left !== plot.left;
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.left = plot.left; canvas.dataset.ready = String(!loading);
-    const hasValues = datasets.some(dataset => !dataset.hidden && dataset.data.some(point => Number.isFinite(point.y)));
-    const simulated = payload.input === 'simulated' ? ' · simulated data' : '';
-    $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${hasValues ? '' : ' · No visible readings for these dates'}`;
+    renderStatus(datasets);
     const notes = ['Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push('Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
     if (plot.left === 'power') notes.push(payload.meta?.powerEstimate ?? 'Power is an interval average derived from estimated energy.');
     if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
     if (plot.left === 'heat_pump_power') notes.push('Heat-pump electricity is reconstructed from saved equipment states and dated nominal power assumptions. It is an estimate; missing, stale or unverified source periods appear as gaps.');
+    if (plot.left.startsWith('model_')) {
+      notes.push('Model inputs are the values saved with completed learning intervals. They are not recalculated using today’s model or settings. Missing or rejected intervals appear as gaps; the indoor endpoint is the observed prediction target.');
+      if (payload.meta?.modelInputs?.rejectedIntervals) notes.push(`${payload.meta.modelInputs.rejectedIntervals} input segments were excluded by recorded quality checks.`);
+    }
+    if (plot.left === 'outdoor_forecast') notes.push('This view shows the forecast from now onward. It does not reconstruct past outdoor forecasts.');
     if (payload.meta?.historyBasis === 'original-recorded-history') notes.push('Charts read the original saved history. Point reduction for display and cached chart responses stay in memory; they create no additional database history. Energy and cost calculations use the original recorded intervals.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
     if (plot.left === 'power') notes.push('Auxiliary fill uses verified heater output and configured electrical capacity. Charger fill overlays it; fills are not stacked.');

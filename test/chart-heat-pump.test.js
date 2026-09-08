@@ -115,16 +115,19 @@ test('a silent acquisition gap remains a gap even when unchanged values share on
   near(at(result, start + 10 * MINUTE), 3.08);
 });
 
-test('delayed fresh arrivals with overlapping source validity need no artificial coverage gap', t => {
+test('a delayed fresh arrival retains the information gap before its receipt', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   recordHeatPumpConfiguration(store, 'mqtt', config, start);
   const recorder = new Recorder(store, { config: { maxIntervalMs: HOUR } });
   for (const [sourceMinute, receivedMinute] of [[0, 0], [4, 6]]) for (const signal of ['compressor_active', 'auxiliary_output'])
     recorder.record(observation(signal, signal === 'compressor_active' ? 1 : 0, start + sourceMinute * MINUTE,
       { receivedAt: start + receivedMinute * MINUTE }));
-  assert.equal(store.db.prepare('SELECT count(*) n FROM recorder_coverage').get().n, 2);
+  assert.equal(store.db.prepare('SELECT count(*) n FROM recorder_coverage').get().n, 4,
+    'The previous source expired before the later receipt even though source validity overlaps');
   const result = intervals(store, start + 8 * MINUTE);
-  near(energy(result), 3.08 * 8 / 60);
+  near(energy(result), 3.08 * 7 / 60);
+  assert.equal(at(result, start + 5 * MINUTE), null);
+  near(at(result, start + 6 * MINUTE), 3.08);
 });
 
 test('switching physical acquisition mode back restores that mode’s dated assumptions', t => {

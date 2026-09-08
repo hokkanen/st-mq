@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -171,6 +171,8 @@ export class Store {
         // Chart results are reconstructed from original history. Discard the
         // obsolete display caches; their pages become available for reuse.
         if (version < 8) this.db.exec('DROP TABLE IF EXISTS chart_rollups; DROP TABLE IF EXISTS chart_rollup_meta;');
+        if (version < 9) this.db.exec(`CREATE INDEX IF NOT EXISTS learning_journal_context_time ON learning_journal(input,kind,at,id);
+          CREATE INDEX IF NOT EXISTS learning_journal_algorithm ON learning_journal(input,algorithm_version,id);`);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
@@ -244,9 +246,12 @@ export class Store {
     return row.id;
   }
 
-  learningJournal({ input, after = 0, limit = 256 } = {}) {
-    return this.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? ORDER BY id LIMIT ?')
-      .all(label(input,'input'),integer(after,'after'),limitValue(limit)).map(row => ({ id:row.id,key:row.key,
+  learningJournal({ input, after = 0, limit = 256, algorithmVersion } = {}) {
+    const values = [label(input,'input'),integer(after,'after')];
+    if (algorithmVersion !== undefined) values.push(label(algorithmVersion,'algorithm version'));
+    values.push(limitValue(limit));
+    return this.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND id>?${algorithmVersion === undefined ? '' : ' AND algorithm_version=?'} ORDER BY id LIMIT ?`)
+      .all(...values).map(row => ({ id:row.id,key:row.key,
         kind:row.kind,at:row.at,algorithmVersion:row.algorithm_version,
         configVersion:row.config_version === null ? null : JSON.parse(row.config_version),
         forecastVersion:row.forecast_version === null ? null : JSON.parse(row.forecast_version),payload:JSON.parse(row.payload) }));
@@ -337,6 +342,21 @@ export class Store {
   cycles({ input, limit = 100, completedOnly = false } = {}) {
     return this.db.prepare(`SELECT payload FROM learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
       ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit)).map(row => JSON.parse(row.payload));
+  }
+
+  /** Dashboard/control summaries avoid materializing complete observation tapes. */
+  cycleSummaries({ input, limit = 100, completedOnly = false } = {}) {
+    return this.db.prepare(`SELECT id,status,started_at AS startedAt,ended_at AS endedAt,
+      json_extract(payload,'$.assessment.profitCents') AS profitCents,
+      json_extract(payload,'$.actual.costCents') AS actualCostCents,
+      json_extract(payload,'$.assessment.uncertaintyCents') AS uncertaintyCents,
+      json_extract(payload,'$.assessment.recoveryErrorCents') AS recoveryErrorCents,
+      json_extract(payload,'$.actual.missingHours') AS missingHours,
+      json_extract(payload,'$.actual.auxiliarySpaceObserved') AS auxiliarySpaceObserved,
+      json_extract(payload,'$.incompleteReason') AS incompleteReason
+      FROM learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
+      ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit))
+      .map(row => ({ ...row, auxiliarySpaceObserved: row.auxiliarySpaceObserved === 1 }));
   }
 
   snapshot({ kind, source, issuedAt = null, fetchedAt, payload }) {

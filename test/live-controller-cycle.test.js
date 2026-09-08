@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
-import { replayLearningJournal } from '../src/app/committed-learning.js';
+import { replayLearningJournal, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { Engine } from '../src/app/engine.js';
 import { validateSettings, CONTROL_DEFAULTS } from '../src/app/config.js';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
@@ -20,8 +20,8 @@ function setup(t, { mode = 'active', delayed = false, store = new Store(':memory
   } };
   const engine = new Engine({store,config,clock:()=>now,commandTransport:transport});
   const ingest = (signal,value) => engine.ingest({source:signal==='outdoor_temperature'?'fmi':'synthetic',device:'fixture',signal,value,unit:'degC',sourceTime:now,receivedAt:now,quality:[],raw:null});
-  const intervals = Array.from({length:24},(_,i)=>({start:now+i*900000,end:now+(i+1)*900000,outdoorC:10,price:20,solarRadiationWm2:0}));
-  store.setState('provider:market',{fetchedAt:now,intervals:[{start:now,end:now+6*HOUR,spotCtPerKwh:20,unit:'c/kWh',vatIncluded:false}]});
+  const intervals = Array.from({length:24},(_,i)=>({start:now+i*900000,end:now+(i+1)*900000,outdoorC:10,price:i===0?200:1,solarRadiationWm2:0}));
+  store.setState('provider:market',{fetchedAt:now,intervals:intervals.map(row=>({...row,spotCtPerKwh:row.price,unit:'c/kWh',vatIncluded:false}))});
   store.setState('provider:weather',{issuedAt:now,fetchedAt:now,forecast:[{start:now,end:now+6*HOUR,outdoorC:10,solarRadiationWm2:0,issuedAt:now,fetchedAt:now,source:'fixture'}]});
   store.setState('contract:mqtt',{mode:'billing',periods:[{from:0,to:null,marginCtPerKwh:0,taxCtPerKwh:0,vatRate:0,tariff:'day-night',transferRates:{vatIncluded:false,dayCtPerKwh:0,nightCtPerKwh:0,winterDayCtPerKwh:0,otherCtPerKwh:0}}]});
   ingest('indoor_temperature',21.2); ingest('outdoor_temperature',10);
@@ -30,6 +30,13 @@ function setup(t, { mode = 'active', delayed = false, store = new Store(':memory
     advance(ms){now+=ms;ingest('indoor_temperature',21.2);ingest('outdoor_temperature',10);},
     acknowledge(){acknowledge();},async settle(){await engine.dispatchPending;},
     plan(){ const model=initialAdaptiveModel(), schedule={preheatStart:now,preheatEnd:now,reductionStart:now,reductionEnd:now+900000,roomBoostC:0};
+      // Synthetic accepted evidence isolates delivery/restoration from model fitting.
+      model.validation={accepted:true,kind:'conditional-thermal',samples:3,
+        parameterEvidence:{lossPerHour:{status:'identified'},normalHeatCPerHour:{status:'identified'}}};
+      model.equipmentResponse={phases:{reduction:{ratio:.1,trainingEpisodes:3}},
+        validation:{phases:{reduction:{accepted:true,episodes:3,maeDuty:.05,maxDurationHours:.5}}}};
+      model.forecastValidation={accepted:true,episodes:3,maxReductionHours:.5};
+      engine.checkpoint=restoreAdaptiveCheckpoint(null);engine.checkpoint.model=model;
       const args={intervals,model,initialState:{indoorC:21.2,reserveC:21.2},targetC:21,config:CONTROL_DEFAULTS};
       engine.pendingPlan={schedule,model,initialState:args.initialState,targetC:21,intervals,reference:null,referenceLabel:'continuous normal operation',
         prediction:evaluateCycle({...args,schedule}),referencePrediction:evaluateCycle(args),trial:false}; return engine.pendingPlan; },
@@ -77,7 +84,7 @@ test('a restarted interrupted live cycle is incomplete while relay restoration r
 
 test('history baseline arriving after startup is adopted without replacing live temperature records',async t=>{
   const r=setup(t,{mode:'shadow'});r.engine.tick();const cursor=r.engine.checkpoint.cursor;
-  const history=restoreAdaptiveCheckpoint(null);history.baselineC=21.4;history.comfortReference={targetC:21.4};
+  const history=restoreAdaptiveCheckpoint(null);history.algorithmVersion=LEARNING_ALGORITHM;history.baselineC=21.4;history.comfortReference={targetC:21.4};
   r.store.setState('adaptive:history',history);r.engine.tick();
   assert.equal(r.engine.checkpoint.baselineC,21.4);assert.equal(r.engine.checkpoint.cursor,cursor);
   assert.equal(r.store.learningJournal({input:'mqtt'}).at(-1).kind,'context');

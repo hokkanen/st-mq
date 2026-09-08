@@ -13,23 +13,22 @@ const sample = (i, changes = {}) => ({ timestamp: start + i * HOUR, indoorC: 21,
   solarRadiationWm2: 0, phase: 'normal', roomBoostC: 0, regime: 'occupied', quality: [],
   actualModeKnown: false, powerKw: null, energyBasis: 'unknown', ...changes });
 
-test('normal-only startup learns usable thermal evidence without action or meter bootstrap deadlock', () => {
+test('normal-only requested-mode history establishes a reference without pretending to identify heat response', () => {
   let cp = null;
   for (let i = 0; i < 144; i++) cp = updateAdaptiveLearning(cp, sample(i), { now: start + i * HOUR });
-  assert.ok(cp.model.validation?.accepted);
-  assert.ok(cp.health.acceptedFits > 0);
-  assert.equal(cp.model.validation.phaseSamples.reduction, 0);
+  assert.equal(cp.model.validation, null);
+  assert.equal(cp.health.acceptedFits, 0);
+  assert.equal(cp.health.reason, 'insufficient-independent-observed-inputs');
   assert.equal(cp.model.energy.basis, 'estimated');
   assert.equal(cp.model.energy.measuredEpisodes, 0);
   assert.equal(cp.baselineC, 21);
   assert.equal(cp.health.evidence, 'includes-requested-modes');
-  assert.ok(Date.parse(cp.model.validation.validateFrom) - Date.parse(cp.model.validation.trainThrough) >= 12 * HOUR);
   const result = predictThermalStep(cp.model, cp.state, { outdoorC: 0, solarRadiationWm2: 0,
     phase: 'reduction', targetC: 21 }, 1);
   assert.equal(result.phaseEvidence, 'prior', 'An observed normal mode does not validate reduction');
 });
 
-test('solar, coupled preheat and thermal memory affect future temperature without an indoor upper clamp', () => {
+test('solar, preheat demand and charged thermal memory affect future temperature without an indoor upper clamp', () => {
   const model = initialAdaptiveModel(), state = { indoorC: 21, reserveC: 21 };
   const inputs = { outdoorC: 0, phase: 'normal', roomBoostC: 0, targetC: 21, solarRadiationWm2: 0 };
   const normal = predictThermalStep(model, state, inputs, 1);
@@ -40,8 +39,8 @@ test('solar, coupled preheat and thermal memory affect future temperature withou
   assert.ok(sunny.indoorC > normal.indoorC);
   assert.ok(preheat.indoorC > normal.indoorC);
   assert.ok(preheat.reserveC > normal.reserveC);
-  assert.ok(reduction.indoorC < normal.indoorC);
-  assert.ok(reduction.compressorDuty < normal.compressorDuty, 'Reduced heat must imply less compressor electricity');
+  assert.equal(reduction.indoorC, normal.indoorC);
+  assert.equal(reduction.compressorDuty, normal.compressorDuty, 'Unobserved tariff response cannot promise less compressor electricity');
   assert.ok(stored.indoorC > reduction.indoorC);
   assert.ok(preheat.compressorDuty >= normal.compressorDuty);
   const warm = predictThermalStep(model, { indoorC: 27, reserveC: 27 },
@@ -131,7 +130,7 @@ test('adaptive history pages are bounded, chronological, and retain a thermal pr
     { solarRadiationWm2: null })), { now: start + 144 * HOUR });
   assert.equal(cp.samples.length, 144);
   assert.equal(cp.health.solarSamples, 0);
-  assert.ok(cp.model.validation?.accepted);
+  assert.equal(cp.model.validation, null);
   assert.throws(() => updateAdaptiveLearningBatch(null, Array(513).fill(sample(0)), { now: start }), RangeError);
   assert.deepEqual(updateAdaptiveLearningBatch(cp, [sample(0)], { now: start + 144 * HOUR }), cp);
 });
@@ -152,7 +151,7 @@ test('history worker reconstructs adaptive and legacy checkpoints independently 
   });
   await run();
   const adaptive = store.getState('adaptive:history');
-  assert.ok(adaptive?.model.validation?.accepted);
+  assert.equal(adaptive?.model.validation, null);
   assert.equal(adaptive.samples.length, 573, 'Hourly imports become causal UTC quarter-hour windows');
   assert.ok(adaptive.samples.every(row => row.solarRadiationWm2 === null && row.actualModeKnown === false));
   assert.ok(store.getState('learning:history')?.checkpoint);

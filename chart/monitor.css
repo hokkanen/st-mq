@@ -216,6 +216,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .learning-metric { margin: 14px 0; }
 .learning-metric .detail { padding-bottom: 7px; }
 .learning-metric p { margin: 5px 0; }
+#model-inputs-content > details { margin-left: 12px; }
+#model-inputs-content > details > summary { font-size: 13px; padding: 12px 0; }
+#model-inputs-content p { line-height: 1.6; overflow-wrap: anywhere; }
 .h66-table { width: 100%; border-collapse: collapse; font-size: 11px; }
 .h66-table th, .h66-table td { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; }
 .h66-table td:nth-child(2) { white-space: nowrap; }

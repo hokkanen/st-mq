@@ -23,6 +23,7 @@ export const CONTROL_DEFAULTS = Object.freeze({
   maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
   maxPreheatHours: 2, maxRoomBoostC: 5, learningTrials: true, trialBudgetCentsPerDay: 100,
   maxTrialCostCents: 50, recoveryTimeoutHours: 48,
+  recoveryCompressorOnly: true, recoveryCompressorOnlyHours: 4, recoveryComfortMarginC: 0.5,
   dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
 });
 
@@ -60,15 +61,17 @@ export function controlConfiguration(input = {}) {
     max_away_reduction_hours: 'maxAwayReductionHours', max_unobserved_reduction_hours: 'maxUnobservedReductionHours',
     max_preheat_hours: 'maxPreheatHours', max_room_boost_c: 'maxRoomBoostC', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
-    recovery_timeout_hours: 'recoveryTimeoutHours' };
+    recovery_timeout_hours: 'recoveryTimeoutHours', recovery_compressor_only: 'recoveryCompressorOnly',
+    recovery_compressor_only_hours: 'recoveryCompressorOnlyHours', recovery_comfort_margin_c: 'recoveryComfortMarginC' };
   const result = { ...CONTROL_DEFAULTS };
   for (const [key, value] of Object.entries(input)) if (map[key]) result[map[key]] = value;
   for (const [key, value] of Object.entries(result)) {
-    if (['a2Basis', 'learningTrials'].includes(key)) continue;
+    if (['a2Basis', 'learningTrials', 'recoveryCompressorOnly'].includes(key)) continue;
     if (value === null && ['compressorIntegralA1', 'compressorHysteresisC'].includes(key)) continue;
     if (!Number.isFinite(value)) throw new Error(`Invalid controller setting: ${key}`);
   }
-  if (!['absolute', 'offset'].includes(result.a2Basis) || typeof result.learningTrials !== 'boolean') throw new Error('Invalid learning or integral configuration');
+  if (!['absolute', 'offset'].includes(result.a2Basis) || typeof result.learningTrials !== 'boolean'
+    || typeof result.recoveryCompressorOnly !== 'boolean') throw new Error('Invalid learning or integral configuration');
   if (result.auxIntegralA2 >= 0 || result.auxIntegralA2 < -5000 || result.auxHysteresisC <= 0 || result.auxHysteresisC > 50
     || !Number.isInteger(result.maxRoomBoostC) || result.maxRoomBoostC < 1 || result.maxRoomBoostC > 5 || result.maxPreheatHours <= 0 || result.maxPreheatHours > 6
     || result.maxReductionHours <= 0 || result.maxReductionHours > 12 || result.maxAwayReductionHours <= 0 || result.maxAwayReductionHours > 24
@@ -78,7 +81,9 @@ export function controlConfiguration(input = {}) {
     || result.compressorHysteresisC !== null && (result.compressorHysteresisC <= 0 || result.compressorHysteresisC > 50)
     || result.circulationKw < 0 || result.circulationKw > 1 || result.dhwrKw < 0 || result.dhwrKw > 1 || result.trialBudgetCentsPerDay < 0 || result.trialBudgetCentsPerDay > 1000
     || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
-    || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168)
+    || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168
+    || result.recoveryCompressorOnlyHours < 0.25 || result.recoveryCompressorOnlyHours > 12
+    || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1)
     throw new Error('Controller settings exceed supported bounds');
   return result;
 }

@@ -2,7 +2,7 @@ import { createHistoryChart } from './history-chart.js';
 import { describeProvider, outdoorSourceLabel, providerName } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { balanceControllerColumns } from './panel-layout.js';
-import { learningDisplay, h66Control, h66ReadingValue, h66Registers } from './learning-status.js';
+import { learningDisplay, h66Control, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 
 const $ = id => document.getElementById(id);
@@ -161,6 +161,7 @@ function renderLearning(s) {
   $('learning-title').textContent = display.title;
   $('learning-detail').textContent = display.message;
   $('learning-process').textContent = display.process;
+  renderModelInputs($('model-inputs-content'), display.inputs);
   $('learning-metrics').replaceChildren();
   for (const metric of display.metrics) {
     const card = document.createElement('div'); card.className = 'learning-metric';
@@ -263,6 +264,7 @@ function render(s) {
       : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites ? 'Active · applying the heating plan' : 'Shadow plan · no automatic commands';
   $('decision-title').textContent = ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
   $('reasons').textContent = (s.decision.reasons ?? []).map(r => reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code)).join('. ');
+  if (s.decision.phase === 'recovery') $('reasons').textContent += `${$('reasons').textContent ? '. ' : ''}${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.`;
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('dhwr').textContent = s.decision.dhwr?.requested ? '10-minute pulse requested' : 'No pulse requested';

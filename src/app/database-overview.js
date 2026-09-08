@@ -26,9 +26,9 @@ const episodeFields = fields(
 const nonAdaptive = [
   ['controller_phase', 'Requested controller phase', 'Normal, preheat, reduction or recovery requested by the controller.', 'When the requested phase changes or its recorded coverage is renewed.'],
   ['dhwr_request', 'Hot-water recirculation request', 'Requested circulation pulse and its expected duration; not proof of measured pump operation.', 'When a circulation pulse is requested.'],
-  ['learning_profit', 'Profit after recovery', 'Calculated mean profit for the latest completed cycles, with sample count and uncertainty.', 'When the set of learning metrics changes.'],
-  ['learning_aux_profit', 'Profit with auxiliary recovery', 'Calculated cycle profit for cycles with observed auxiliary space-heating output.', 'When the set of learning metrics changes.'],
-  ['learning_recovery_error', 'Recovery-cost prediction error', 'Calculated error between original recovery-cost predictions and assessed recovery.', 'When the set of learning metrics changes.'],
+  ['learning_profit', 'Space-heating benefit after recovery', 'Estimated mean space-heating benefit for comparable completed cycles, with sample count and uncertainty; excludes hot-water service changes and unfinished attempts.', 'When the set of learning metrics changes.'],
+  ['learning_aux_profit', 'Space-heating benefit with auxiliary recovery', 'The completed-cycle space-heating estimate for cycles with observed auxiliary space-heating output during recovery.', 'When the set of learning metrics changes.'],
+  ['learning_recovery_error', 'Space-heating recovery-cost prediction error', 'Calculated error between the original space-heating recovery-cost prediction and assessed space-heating recovery.', 'When the set of learning metrics changes.'],
   ['learning_indoor_temperature', 'Learned normal indoor temperature', 'The saved learned normal occupied temperature; a calculated result.', 'When the set of learning metrics changes.'],
 ];
 const importedSignals = {
@@ -181,7 +181,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     facts: [{ label: 'Completed cycles', value: cycleFacts.completed ?? 0 }, { label: 'Incomplete cycles', value: cycleFacts.incomplete ?? 0 },
       { label: 'Cycles with saved assessments', value: cycleFacts.assessed ?? 0 }],
     fields: fields(['Original plan', 'Schedule, frozen model and configuration, weather and price assumptions.'],
-      ['Execution', 'Committed observations, requested phases, adjustments and coverage.'], ['Assessment', 'Estimated energy, actual/reference cost, profit, recovery error and uncertainty.']) }));
+      ['Execution', 'Committed observations, requested phases, adjustments and coverage.'], ['Assessment', 'Recorded cycle cost, comparable space-heating cost and benefit, space-heating recovery error and uncertainty; hot-water service is excluded from benefit.']) }));
   add('learning', 'Learning history', 'These are stored model records and calculated results. Explaining or selecting the home model’s inputs is a separate feature.', learningItems);
 
   const stateCategories = [

@@ -23,12 +23,17 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const supply = connected ? value('supply_temperature') : null, targetSupply = connected ? value('heating_setpoint') : null;
   const currentMode = connected ? value('operating_mode') : null;
   const nativeMode = connected ? h.baseline?.['2201'] ?? currentMode : null;
-  const equipment = { h66Available: h.controlsReady === true && h.writesEnabled === true,
+  const equipment = { observedPhase: phase,externalChangeRevision:h.externalChangeRevision??0,
+    h66Available: h.controlsReady === true && h.writesEnabled === true,
     preheatAvailable: h.controlsReady === true && h.writesEnabled === true,
     nativeAuxAllowed: nativeMode === 2 ? false : nativeMode === 1 ? true : null,
     integral, supplyShortfallC: finite(supply) && finite(targetSupply) ? targetSupply - supply : null,
     compressorOn: compressor, dhwRouting: route, alarmActive: connected && value('alarm_active') === 1,
     operatingMode: connected ? value('operating_mode') : null };
+  if (observations.actual?.source === 'simulation') Object.assign(equipment, {
+    h66Available:true,preheatAvailable:true,compressorOn:observations.actual.compressorDuty,
+    dhwRouting:observations.actual.auxRoute==='dhw'?1:0,nativeAuxAllowed:true,
+  });
   let predicted = null;
   if (finite(indoorC) && finite(outdoorC)) predicted = predictThermalStep(checkpoint.model,
     { indoorC, reserveC: checkpoint.state?.reserveC ?? indoorC }, { outdoorC, solarRadiationWm2: radiation,

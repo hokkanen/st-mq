@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCycle, phaseAt } from '../control/planner.js';
+import { predictThermalStep } from '../control/adaptive-learning.js';
 import { CONTROL_DEFAULTS } from './config.js';
 
 const HOUR = 3600000;
@@ -15,9 +16,10 @@ const recoveryTotals = (trajectory, observations) => {
     for (const observed of observations) if (observed.phase === 'recovery') {
       const hours = Math.max(0, Math.min(step.at, observed.end) - Math.max(start, observed.start)) / HOUR;
       if (!hours) continue;
-      energyKwh += step.powerKw * hours;
+      energyKwh += (step.spaceHeatingPowerKw ?? step.powerKw) * hours;
       auxiliaryKwh += step.auxiliaryKw * hours;
-      costCents += step.costCents * hours / step.durationHours;
+      costCents += step.costCents * hours / step.durationHours
+        * (step.powerKw ? (step.spaceHeatingPowerKw ?? step.powerKw)/step.powerKw : 1);
     }
   }
   return { costCents, energyKwh, auxiliaryKwh };
@@ -30,7 +32,15 @@ export class CycleTracker {
   }
   active() { return this.store.getState(this.key); }
   save(cycle) { this.store.cycle(this.input, cycle); this.store.setState(this.key, cycle.status === 'completed' || cycle.status === 'incomplete' ? null : cycle); }
+  controlHold(now) {
+    const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
+    return previous?.status==='incomplete'&&number(previous.endedAt)&&now-previous.endedAt<24*HOUR
+      ? {until:previous.endedAt+24*HOUR,reason:previous.incompleteReason}:null;
+  }
   budget(now) {
+    const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
+    const cooldown=previous?.status==='incomplete'?24:6;
+    if (previous && (!previous.endedAt || now-previous.endedAt<cooldown*HOUR)) return 0;
     const state = this.store.getState(`trials:${this.input}`);
     return Math.max(0, this.config.trialBudgetCentsPerDay - (state?.date === dateKey(now) ? state.reservedCents : 0));
   }
@@ -43,9 +53,12 @@ export class CycleTracker {
     plan.referencePrediction = summary(evaluateCycle({ ...common, schedule: plan.reference }));
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', plan,
       executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...this.config }, observations: [], lastSample: sample,
+      observerState: { ...plan.initialState },
       actual: { costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
         compressorKwh: 0, compressorRunHours: 0, spaceHeatingAuxKwh: 0, dhwAuxKwh: 0,
-        compressorActivityObserved: true, auxiliarySpaceObserved: false, auxiliaryObserved: true, recoveryAuxKwh: 0, auxiliaryRouteKnown: true, metered: true, coveredHours: 0, missingHours: 0 },
+        compressorActivityObserved: true, auxiliarySpaceObserved: false, auxiliaryObserved: true, recoveryAuxKwh: 0, auxiliaryRouteKnown: true, metered: true, coveredHours: 0, missingHours: 0,
+        spaceHeatingCostCents:0,spaceHeatingKwh:0,spaceHeatingRecoveryCostCents:0,spaceHeatingRecoveryKwh:0,
+        dhwCostCents:0,dhwKwh:0,routeCoveredHours:0,routeMissingHours:0 },
       originalPrediction: { costCents: plan.prediction.costCents, recoveryCostCents: plan.prediction.recoveryCostCents,
         electricityKwh: plan.prediction.electricityKwh }, stableSince: null };
     if (plan.trial) {
@@ -78,43 +91,72 @@ export class CycleTracker {
     const schedule = cycle.executionSchedule ?? cycle.plan.schedule;
     if (!number(dt) || dt > 0.5) { this.cancel(now, 'cycle-observation-gap'); return null; }
     const a = cycle.actual;
-    const phase = previous.phase ?? phaseAt(schedule, previous.timestamp);
     let cursor = previous.timestamp;
     while (cursor < now) {
+      // The sample describes the completed interval ending now. Its power must
+      // never be projected into the following interval or the following tariff.
+      const segment = sample.inputSegments?.find(s => s.start <= cursor && s.end > cursor);
+      const values = segment ? { ...sample,...segment } : sample;
+      const phase = ['normal','preheat','reduction','recovery'].includes(values.phase)
+        ? values.phase : phaseAt(schedule,cursor);
       const frozen = cycle.plan.intervals.find(i => i.start <= cursor && i.end > cursor);
-      const currentQuote = number(previous.priceCents) && number(previous.priceStart) && number(previous.priceEnd)
-        && previous.priceStart <= cursor && previous.priceEnd > cursor;
-      const price = currentQuote ? previous.priceCents : frozen?.price;
-      const end = Math.min(now, currentQuote ? previous.priceEnd : frozen?.end ?? now);
+      const quote = sample.priceIntervals?.find(i => i.start <= cursor && i.end > cursor && number(i.price));
+      const pointQuote = [sample,previous].find(s => number(s.priceCents) && number(s.priceStart) && number(s.priceEnd)
+        && s.priceStart <= cursor && s.priceEnd > cursor);
+      const currentQuote = quote ?? (pointQuote ? {price:pointQuote.priceCents,end:pointQuote.priceEnd}:null);
+      const price = currentQuote?.price ?? frozen?.price;
+      const boundaries = [schedule.preheatStart,schedule.preheatEnd,schedule.reductionStart,schedule.reductionEnd,
+        ...(sample.inputSegments??[]).map(s => s.start)].filter(t => t > cursor);
+      const end = Math.min(now, segment?.end ?? now, currentQuote?.end ?? frozen?.end ?? now,...boundaries);
       const hours = (end - cursor) / HOUR;
-      const eligible = number(previous.indoorC) && number(sample.indoorC) && number(previous.powerKw)
-        && previous.powerKw >= 0 && number(price);
+      const eligible = number(previous.indoorC) && number(sample.indoorC) && number(values.powerKw)
+        && values.powerKw >= 0 && number(price) && (!sample.inputSegments || Boolean(segment))
+        && (!number(sample.windowStart) || cursor >= sample.windowStart);
       if (eligible) {
-      const energy = previous.powerKw * hours, cents = energy * price;
+      const energy = values.powerKw * hours, cents = energy * price;
       a.electricityKwh += energy; a.costCents += cents; a.coveredHours += hours;
       if (phase === 'recovery') { a.recoveryEnergyKwh += energy; a.recoveryCostCents += cents; }
-      if (number(previous.compressorDuty)) {
-        a.compressorRunHours += previous.compressorDuty * hours;
-        a.compressorKwh += (previous.compressorPowerKw ?? cycle.modelConfig?.heatPumpCompressorKw ?? this.config.heatPumpCompressorKw) * previous.compressorDuty * hours;
+      if (number(values.compressorDuty)) {
+        a.compressorRunHours += values.compressorDuty * hours;
+        a.compressorKwh += (values.compressorPowerKw ?? cycle.modelConfig?.heatPumpCompressorKw ?? this.config.heatPumpCompressorKw) * values.compressorDuty * hours;
       }
-      if (previous.compressorActivityObserved !== true) a.compressorActivityObserved = false;
-      if (previous.auxiliaryObserved !== true) a.auxiliaryObserved = false;
-      if (phase === 'recovery' && number(previous.auxKw)) a.recoveryAuxKwh += previous.auxKw * hours;
-      if (previous.auxiliaryRouteKnown !== true && !(previous.auxiliaryObserved === true && previous.auxKw === 0)) a.auxiliaryRouteKnown = false;
-      if (previous.auxRoute === 'space' && previous.auxKw > 0) {
-        a.spaceHeatingAuxKwh += previous.auxKw * hours;
-        if (phase === 'recovery' && previous.auxiliaryObserved === true) a.auxiliarySpaceObserved = true;
-      } else if (previous.auxRoute === 'dhw' && previous.auxKw > 0) a.dhwAuxKwh += previous.auxKw * hours;
-      if (previous.energyBasis !== 'measured') a.metered = false;
-      } else { a.missingHours += hours; a.compressorActivityObserved = false; a.auxiliaryObserved = false; a.auxiliaryRouteKnown = false; a.metered = false; }
-      cycle.observations.push({ start: cursor, end, outdoorC: previous.outdoorC,
-        solarRadiationWm2: previous.solarRadiationWm2, price: price ?? null,
+      if (values.compressorActivityObserved !== true) a.compressorActivityObserved = false;
+      if (values.auxiliaryObserved !== true) a.auxiliaryObserved = false;
+      if (phase === 'recovery' && number(values.thermalAuxKw)) a.recoveryAuxKwh += values.thermalAuxKw * hours;
+      if (values.auxiliaryRouteKnown !== true && !(values.auxiliaryObserved === true && values.auxKw === 0)) a.auxiliaryRouteKnown = false;
+      if (values.auxRoute === 'space' && values.auxKw > 0) {
+        a.spaceHeatingAuxKwh += values.auxKw * hours;
+        if (phase === 'recovery' && values.auxiliaryObserved === true) a.auxiliarySpaceObserved = true;
+      } else if (values.auxRoute === 'dhw' && values.auxKw > 0) a.dhwAuxKwh += values.auxKw * hours;
+      const routed = number(values.thermalCompressorDuty) && number(values.thermalAuxKw);
+      if (routed) {
+        const spaceKw=((values.compressorPowerKw??cycle.modelConfig.heatPumpCompressorKw)
+          +(values.circulationKw??cycle.modelConfig.circulationKw))*values.thermalCompressorDuty+values.thermalAuxKw;
+        const spaceKwh=spaceKw*hours, spaceCents=spaceKwh*price;
+        a.spaceHeatingKwh+=spaceKwh;a.spaceHeatingCostCents+=spaceCents;a.routeCoveredHours+=hours;
+        a.dhwKwh+=Math.max(0,energy-spaceKwh);a.dhwCostCents+=Math.max(0,energy-spaceKwh)*price;
+        if (phase==='recovery') {a.spaceHeatingRecoveryKwh+=spaceKwh;a.spaceHeatingRecoveryCostCents+=spaceCents;}
+        if (cycle.observerState && number(values.outdoorC)) {
+          const observer=predictThermalStep(cycle.plan.model,cycle.observerState,{outdoorC:values.outdoorC,
+            solarRadiationWm2:values.solarRadiationWm2,phase,targetC:cycle.plan.targetC,roomBoostC:values.roomBoostC??0,
+            compressorDuty:values.thermalCompressorDuty,auxKw:values.thermalAuxKw},hours);
+          cycle.observerState={indoorC:observer.indoorC,reserveC:observer.reserveC};
+        } else cycle.observerState=null;
+      } else {a.routeMissingHours+=hours;cycle.observerState=null;}
+      if (values.energyBasis !== 'measured') a.metered = false;
+      } else { a.missingHours += hours; a.compressorActivityObserved = false; a.auxiliaryObserved = false;
+        a.auxiliaryRouteKnown = false; a.metered = false; cycle.observerState=null; }
+      cycle.observations.push({ start: cursor, end, outdoorC: values.outdoorC,
+        solarRadiationWm2: values.solarRadiationWm2, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
-        phase, indoorC: sample.indoorC, powerKw: previous.powerKw, eligible,
-        provenance: previous.provenance ?? null });
+        phase, indoorC: sample.indoorC, powerKw: values.powerKw, eligible,
+        thermalCompressorDuty:values.thermalCompressorDuty??null,thermalAuxKw:values.thermalAuxKw??null,
+        compressorDuty:values.compressorDuty??null,auxKw:values.auxKw??null,
+        provenance: sample.provenance ?? null });
       cursor = end;
     }
     cycle.lastSample = sample;
+    if (cycle.observerState && number(sample.indoorC)) cycle.observerState.indoorC=sample.indoorC;
     if (cycle.observations.length > 3000) { this.cancel(now, 'cycle-observation-limit'); return null; }
     if (now - cycle.startedAt > this.config.recoveryTimeoutHours * HOUR) {
       this.cancel(now, 'recovery-not-established-before-timeout'); return null;
@@ -127,7 +169,7 @@ export class CycleTracker {
       initialState: cycle.plan.initialState, targetC: cycle.plan.targetC, config: cycle.modelConfig ?? this.config,
       occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC,
       equipment: cycle.plan.equipment ?? {}, includeTail: false });
-    const reserve = thermalState?.reserveC;
+    const reserve = cycle.observerState?.reserveC;
     const settled = sample.indoorC >= reference.endState.indoorC - 0.2
       && number(reserve) && reserve >= reference.endState.reserveC - 0.25
       && (sample.indoorTrendCPerHour ?? 0) >= -0.15
@@ -154,28 +196,45 @@ export class CycleTracker {
       const calibration = evaluateCycle({ ...common, schedule, intervals });
       const originalRecovery = predicted ? recoveryTotals(predicted.trajectory, cycle.observations) : null;
       const calibratedRecovery = recoveryTotals(calibration.trajectory, cycle.observations);
-      cycle.assessment = { profitCents: reference.costCents - a.costCents,
-        referenceCostCents: reference.costCents, actualCostCents: a.costCents,
-        recoveryErrorCents: originalRecovery ? Math.abs(originalRecovery.costCents - a.recoveryCostCents) : null,
+      const comparableSpace=a.routeMissingHours<=0.001 && a.routeCoveredHours>0;
+      const trajectoryErrors = predicted ? cycle.observations.map(o => {
+        const step=predicted.trajectory.find(row => row.at>=o.end && row.at-row.durationHours*HOUR<o.end);
+        return step && number(o.indoorC) ? {error:Math.abs(step.indoorC-o.indoorC),hours:(o.end-o.start)/HOUR}:null;
+      }).filter(Boolean):[];
+      const trajectoryHours=trajectoryErrors.reduce((s,r)=>s+r.hours,0);
+      cycle.assessment = { profitCents: comparableSpace ? reference.spaceHeatingCostCents - a.spaceHeatingCostCents : null,
+        wholeCycleProfitCents:null, wholeCycleProfitReason:'DHW demand, delivery and tank recovery are not counterfactually modelled.',
+        referenceCostCents: reference.spaceHeatingCostCents, actualCostCents: a.costCents,
+        actualSpaceHeatingCostCents:a.spaceHeatingCostCents,dhwCostCents:a.dhwCostCents,
+        recoveryErrorCents: originalRecovery && comparableSpace ? Math.abs(originalRecovery.costCents - a.spaceHeatingRecoveryCostCents) : null,
         uncertaintyCents: Math.max(5, reference.uncertaintyCents + (a.metered ? 0 : Math.abs(a.costCents) * 0.35)),
-        basis: a.metered ? 'metered-execution-modelled-reference' : 'estimated-execution-and-reference',
+        basis: comparableSpace ? 'estimated-space-heating-execution-and-reference' : 'unassessed-missing-space-heating-attribution',
         recoveryPredictionBasis: originalRecovery ? 'Frozen model and original forecast over the observed recovery period'
           : cycle.adjustments?.length ? 'Unavailable: executed schedule changed' : 'Unavailable: original forecast did not cover the complete cycle',
         calibrationBasis: 'Executed actions and contemporaneous weather estimates; frozen model',
-        recoveryBasis: 'Comparable room temperature and modelled heat reserve held for one hour',
+        recoveryBasis: 'Comparable room temperature and reserve reconstructed with the frozen cycle model, held for one hour; DHW service excluded',
         referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
       const episode = { id: cycle.id, complete: true, recoveryComplete: true, startedAt: cycle.startedAt, endedAt: now,
         energyBasis: a.metered ? 'measured' : 'estimated', compressorKwh: a.compressorKwh,
         compressorRunHours: a.compressorRunHours, recoveryHours: (now - schedule.reductionEnd) / HOUR,
-        recoveryEnergyKwh: a.recoveryEnergyKwh, spaceHeatingAuxKwh: a.spaceHeatingAuxKwh,
-        dhwAuxKwh: a.dhwAuxKwh, predictedEnergyKwh: calibration.electricityKwh,
-        actualEnergyKwh: a.electricityKwh,
+        recoveryEnergyKwh: a.spaceHeatingRecoveryKwh, spaceHeatingAuxKwh: a.spaceHeatingAuxKwh,
+        dhwAuxKwh: a.dhwAuxKwh, predictedEnergyKwh: calibration.spaceHeatingKwh,
+        actualEnergyKwh: a.spaceHeatingKwh,
         predictedRecoveryEnergyKwh: calibratedRecovery.energyKwh,
         predictedRecoveryAuxKwh: calibratedRecovery.auxiliaryKwh,
         predictedSpaceHeatingAuxKwh: calibration.auxiliaryKwh,
         recoveryAuxKwh: a.recoveryAuxKwh, compressorActivityObserved: a.compressorActivityObserved, auxiliaryObserved: a.auxiliaryObserved, auxiliaryRouteKnown: a.auxiliaryRouteKnown,
         frozenRecoveryMultiplier: cycle.plan.model.energy.recoveryMultiplier,
         frozenAuxiliaryRiskScale: cycle.plan.model.energy.auxiliaryRiskScale ?? 1,
+        forecastValidation:{eligible:Boolean(predicted && comparableSpace && trajectoryHours>0),
+          temperatureMaeC:trajectoryHours?trajectoryErrors.reduce((s,r)=>s+r.error*r.hours,0)/trajectoryHours:null,
+          minimumTemperatureErrorC:predicted?Math.abs(Math.min(...predicted.trajectory.map(r=>r.indoorC))-Math.min(...cycle.observations.map(r=>r.indoorC))):null,
+          energyRelativeError:predicted && a.spaceHeatingKwh>=.1?Math.abs(predicted.spaceHeatingKwh-a.spaceHeatingKwh)/a.spaceHeatingKwh:null,
+          costRelativeError:predicted?Math.abs(predicted.spaceHeatingCostCents-a.spaceHeatingCostCents)/Math.max(5,Math.abs(a.spaceHeatingCostCents)):null,
+          costAbsoluteErrorCents:predicted?Math.abs(predicted.spaceHeatingCostCents-a.spaceHeatingCostCents):null,
+          recoveryCostErrorCents:cycle.assessment.recoveryErrorCents,
+          reductionHours:(schedule.reductionEnd-schedule.reductionStart)/HOUR,
+          basis:'frozen-advance-forecast',adjusted:Boolean(cycle.adjustments?.length)},
         phases: [...new Set(cycle.observations.map(row => row.phase))],
         provenance: { basis: 'committed-history', forecastVersion: cycle.lastSample.provenance?.forecastVersion ?? null } };
       // Completion and calibration are one durable operation. A crash after
@@ -190,15 +249,24 @@ export class CycleTracker {
     this.save(cycle); return null;
   }
   metrics(baselineC) {
-    const cycles = this.store.cycles({ input: this.input, completedOnly: true, limit: 30 });
-    const aux = cycles.filter(c => c.actual.auxiliarySpaceObserved);
-    const metric = (rows, field) => { rows = rows.filter(c => number(c.assessment[field])); return { value: mean(rows.map(c => c.assessment[field] / 100)), count: rows.length,
-      basis: 'Estimated €/completed cycle; latest 30 completed cycles',
-      uncertainty: mean(rows.map(c => c.assessment.uncertaintyCents / 100)) }; };
+    const cycles = this.store.cycleSummaries({ input: this.input, completedOnly: true, limit: 30 });
+    const aux = cycles.filter(c => c.auxiliarySpaceObserved);
+    const metric = (rows, field) => { rows = rows.filter(c => number(c[field])); return { value: mean(rows.map(c => c[field] / 100)), count: rows.length,
+      basis: 'Estimated space-heating €/assessed completed cycle; latest 30 completed cycles. DHW service excluded.',
+      uncertainty: mean(rows.map(c => c.uncertaintyCents / 100)) }; };
     return { profit: metric(cycles, 'profitCents'), auxProfit: metric(aux, 'profitCents'),
       recoveryError: metric(cycles, 'recoveryErrorCents'),
       indoorTemperature: { value: number(baselineC) ? baselineC : null, count: number(baselineC) ? 1 : 0,
         basis: 'Learned normal occupied indoor temperature; held through preheat and recovery' } };
+  }
+  outcomes() {
+    const rows=this.store.cycleSummaries({input:this.input,limit:100});
+    return {attempted:rows.length,completed:rows.filter(c=>c.status==='completed').length,
+      incomplete:rows.filter(c=>c.status==='incomplete').length,inProgress:rows.filter(c=>c.status==='active').length,
+      assessed:rows.filter(c=>number(c.profitCents)).length,
+      observedCostCents:rows.reduce((sum,c)=>sum+(c.actualCostCents??0),0),
+      missingHours:rows.reduce((sum,c)=>sum+(c.missingHours??0),0),
+      basis:'Latest 100 attempts, including incomplete cycles. Observed covered costs use nominal power unless metered; unknown periods excluded.'};
   }
   snapshot(metrics, now, modelVersion) {
     const old = this.store.getState(`learning:metrics:${this.input}`);

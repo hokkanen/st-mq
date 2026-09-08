@@ -9,6 +9,7 @@ import { seedChartFixture } from './lib/chart-fixture.js';
 import { providerFixture } from './lib/provider-fixture.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
+import { appendLearningRecord } from '../src/app/committed-learning.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-learning-ui-'));
 let now = Date.parse('2026-09-07T12:00:00Z');
@@ -18,6 +19,14 @@ try {
   writeFileSync(join(directory, 'options.json'), '{}');
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   app = await start({ config, clock: () => now }); seedChartFixture(app.store, now);
+  const inputStart = now - 30 * 60_000, inputEnd = now - 15 * 60_000;
+  appendLearningRecord(app.store, 'simulated', 'sample', {
+    timestamp: inputEnd, windowStart: inputStart, windowEnd: inputEnd, indoorC: 21.2, quality: [],
+    inputSegments: [{ start: inputStart, end: inputStart + 5 * 60_000, outdoorC: 8, solarRadiationWm2: 300,
+      phase: 'normal', roomBoostC: 0, targetC: 21, thermalCompressorDuty: 0, thermalAuxKw: 0, quality: [] },
+    { start: inputStart + 5 * 60_000, end: inputEnd, outdoorC: 8, solarRadiationWm2: 300,
+      phase: 'reduction', roomBoostC: 0, targetC: 21, thermalCompressorDuty: 0.5, thermalAuxKw: 0, quality: [] }],
+  }, { config: app.engine.control });
   const endpoint = process.argv[2] ?? 'http://127.0.0.1:39125';
   const target = await fetch(`${endpoint}/json/new?about:blank`, { method: 'PUT' }).then(r => r.json());
   socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -61,6 +70,10 @@ try {
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
   assert.equal(await evaluate("document.querySelector('#data-details summary').textContent"), 'Connection & provider details');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning details');
+  assert.equal(await evaluate("document.querySelectorAll('#model-inputs-content details').length"), 8);
+  await evaluate("document.getElementById('learning-details').open = true; document.getElementById('model-inputs-details').open = true; document.querySelector('#model-inputs-content details').open = true");
+  assert.equal(await evaluate("document.getElementById('model-inputs-content').textContent.includes('recorded sensor')"), true);
+  assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Action prediction:')"), true);
   for (const key of ['auxiliary_power', 'charger_power']) {
     assert(await evaluate(`(async () => {
       const canvas = document.getElementById('history'), ctx = canvas.getContext('2d');
@@ -73,21 +86,36 @@ try {
   }
   assert(await evaluate("document.querySelectorAll('.mode-segment').length > 0"));
   await evaluate("document.querySelector('[data-chart-key=spot_price]').click()");
-  for (const left of ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature', 'solar_radiation', 'power']) {
+  for (const left of ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature', 'solar_radiation', 'model_compressor_duty', 'model_controller_phase', 'ev1_session_energy_counter', 'power']) {
     await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === '${left}'`);
     assert.equal(await evaluate("document.querySelector('[data-chart-key=spot_price]').getAttribute('aria-pressed')"), 'false');
+    if (left === 'ev1_session_energy_counter') assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values for the selected left axis')"), true);
+    if (left.startsWith('model_')) {
+      assert.equal(await evaluate("document.getElementById('chart-notes').textContent.includes('not recalculated using today')"), true);
+      assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false);
+      await evaluate(`document.querySelector('[data-chart-key=${left}]').click()`);
+      assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('hidden in the legend')"), true);
+      await evaluate(`document.querySelector('[data-chart-key=${left}]').click()`);
+    }
   }
   mkdirSync('var', { recursive: true });
   for (const width of [1440, 390]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
     await new Promise(resolve => setTimeout(resolve, 150));
-    for (const section of ['history-panel', 'learning-details', 'h66-test-details']) {
+    for (const section of ['history-panel', 'learning-details', 'model-inputs-details', 'h66-test-details']) {
       await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; element.scrollIntoView({block:'start'}); })()`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${section} fits ${width}px`);
       const shot = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(`var/learning-${section}-${width}.png`, Buffer.from(shot.data, 'base64'));
     }
+    await evaluate("document.getElementById('left-axis').value='model_compressor_duty'; document.getElementById('left-axis').dispatchEvent(new Event('change')); document.querySelector('.history-panel').scrollIntoView({block:'start'})");
+    await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === 'model_compressor_duty'");
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `model input chart fits ${width}px`);
+    const inputShot = await send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(`var/learning-model-input-chart-${width}.png`, Buffer.from(inputShot.data, 'base64'));
+    await evaluate("document.getElementById('left-axis').value='power'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
+    await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === 'power'");
   }
   // Exercise the real Engine/status/API/H66 controller with an in-memory MQTT
   // publication function. It has no broker address or physical connection.
@@ -117,7 +145,7 @@ try {
   assert.equal(publications.at(-1).value, '55');
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'mode strip', 'saved visibility', 'separate details', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'eight input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'separate details', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

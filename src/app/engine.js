@@ -1,11 +1,11 @@
 import { dhwrEligible } from '../control/index.js';
 import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../control/adaptive-learning.js';
-import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt } from '../control/planner.js';
+import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
-import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal } from './committed-learning.js';
+import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal, recordLearningContext } from './committed-learning.js';
 import { goodQuality } from '../control/learning.js';
 import { validateSettings, CONTROL_DEFAULTS } from './config.js';
 import { SimulatedPlant, simulatedOutlook } from './simulator.js';
@@ -352,7 +352,7 @@ export class Engine {
     if (this.config.input !== 'simulated' && !this.cycles.active()) {
       let saved;
       try { saved = this.store.getState('adaptive:history'); } catch { /* Background reconstruction may replace a corrupt checkpoint. */ }
-      if (saved?.version === 1) {
+      if (saved?.version === 1 && saved.algorithmVersion === LEARNING_ALGORITHM) {
         const history = restoreAdaptiveCheckpoint(saved, this.control);
         const modelReady = history.model.validation && !this.checkpoint.model.validation;
         const baselineReady = Number.isFinite(history.baselineC) && !Number.isFinite(this.checkpoint.baselineC)
@@ -448,8 +448,9 @@ export class Engine {
     if (input !== 'simulated' && !this.cycles.active() && !reference.resetBaselineAt) {
       let history;
       try { history = this.store.getState('adaptive:history'); } catch { /* Background reconstruction can retry. */ }
-      const modelReady = history?.model?.validation && !checkpoint.model.validation;
-      const baselineReady = Number.isFinite(history?.baselineC) && !Number.isFinite(checkpoint.baselineC)
+      const compatibleHistory=history?.algorithmVersion===LEARNING_ALGORITHM;
+      const modelReady = compatibleHistory && history?.model?.validation && !checkpoint.model.validation;
+      const baselineReady = compatibleHistory && Number.isFinite(history?.baselineC) && !Number.isFinite(checkpoint.baselineC)
         && (!checkpoint.baselineResetAt || Date.parse(history.comfortReference?.windowStart) >= checkpoint.baselineResetAt);
       if (modelReady || baselineReady) reference.historySeed = {
         ...(modelReady ? { model: history.model } : {}),
@@ -464,7 +465,8 @@ export class Engine {
     }
     const executorState = this.executor.status?.();
     const manual = executorState?.manualRequested;
-    const currentPhase = this.plant ? this.plant.state.phase ?? this.applied.phase : manual?.at > (this.applied.at ?? 0) ? manual.phase : this.applied.phase;
+    const currentPhase = this.plant ? this.plant.state.phase ?? this.applied.phase
+      : manual?.confirmed && manual.at > (this.applied.at ?? 0) ? manual.phase : this.applied.phase;
     const { sample, equipment, radiation, weather } = controlObservations({ latest: this.latest, now, observations, outlook,
       checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
     sample.regime = this.settings.occupancy.mode === 'occupied' ? 'occupied' : 'away';
@@ -478,15 +480,14 @@ export class Engine {
     }
     sample.integral = equipment.integral; sample.supplyShortfallC = equipment.supplyShortfallC;
     const context = { phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0,
-      targetC: checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
+      targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
+    recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
+    checkpoint=replayLearningJournal(this.store,input,checkpoint);this.checkpoint=checkpoint;
     const completedWindow = Math.floor(now / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS;
     const lastWindow = checkpoint.windowCursor;
     let windowAt = Number.isSafeInteger(lastWindow) ? lastWindow + LEARNING_WINDOW_MS : completedWindow;
     for (let count = 0; windowAt <= completedWindow && count < 256; count++, windowAt += LEARNING_WINDOW_MS) {
       const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context });
-      // A restart cannot reconstruct past user/controller context from today's
-      // mutable state. Record an explicit barrier until the current window.
-      if (windowAt < completedWindow) committed.quality = ['unavailable-controller-context'];
       committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
       appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
       checkpoint = replayLearningJournal(this.store, input, checkpoint);
@@ -496,6 +497,7 @@ export class Engine {
       windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000, now - (this.cycles.active()?.lastSample?.timestamp ?? now - 60_000))) });
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
     Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
+    cycleSample.priceIntervals = outlook.prices.map(row => ({ start:row.start,end:row.end,price:row.allInCentsPerKWh }));
     const priorCycleSample = this.cycles.active()?.lastSample;
     if (Number.isFinite(priorCycleSample?.indoorC) && now > priorCycleSample.timestamp)
       cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
@@ -513,7 +515,10 @@ export class Engine {
     const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
       comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
     let cycle = this.cycles.active(), decision;
-    const forceNormal = override ? 'temporary-normal-override' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
+    const controlHold=!cycle?this.cycles.controlHold(now):null;
+    const forceNormal = controlHold?'recent-cycle-incomplete'
+      : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
+      ? 'native-settings-changed' : override ? 'temporary-normal-override' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
         : this.settings.occupancy.mode === 'occupied' && targetC !== null && sample.indoorC <= targetC-2 ? 'hard-comfort-limit' : null;
     if (forceNormal) {
@@ -526,7 +531,7 @@ export class Engine {
       if (phase === 'preheat' && !equipment.preheatAvailable && !this.plant) {
         this.cycles.shorten(now, 'preheat-readback-unavailable'); phase = 'recovery'; reasons = ['preheat-readback-unavailable'];
       }
-      if (phase === 'reduction') {
+      if (phase === 'reduction' || phase === 'preheat') {
         const intervals = forecastIntervals(outlook.prices, outlook.forecast, now);
         const args = { intervals, model: checkpoint.model, initialState: { indoorC: sample.indoorC,
           reserveC: checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral },
@@ -535,20 +540,34 @@ export class Engine {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
         } else {
           const continued = evaluateCycle({ ...args, schedule });
-          const restored = evaluateCycle({ ...args, schedule: { ...schedule, reductionStart: Math.min(schedule.reductionStart,now), reductionEnd: now } });
-          if (continued.severe || continued.score > restored.score + Math.max(5, Math.abs(continued.costCents-restored.costCents)*0.5)) {
-            this.cycles.shorten(now, continued.severe ? 'predicted-comfort-limit' : 'recovery-cost-now-favours-ending');
-            phase = 'recovery'; reasons = [continued.severe ? 'predicted-comfort-limit' : 'recovery-cost-now-favours-ending'];
+          const restored = evaluateCycle({ ...args, schedule: { ...schedule,preheatEnd:Math.min(schedule.preheatEnd,now),
+            reductionStart: Math.min(schedule.reductionStart,now), reductionEnd: now } });
+          const stress=cycle.plan.trial?trialEnvelope({...args,schedule:{...schedule,
+            preheatStart:Math.max(now,schedule.preheatStart),reductionStart:Math.max(now,schedule.reductionStart)}}):null;
+          const unsafe=stress?!stress.comfortSafe:continued.severe;
+          const uneconomic=stress?stress.costExposureCents>cycle.plan.trialAllowanceCents
+            :continued.score>restored.score+Math.max(5,Math.abs(continued.costCents-restored.costCents)*0.5);
+          if (unsafe || uneconomic) {
+            const reason=unsafe?'predicted-comfort-limit':stress?'trial-exposure-now-exceeds-allowance':'recovery-cost-now-favours-ending';
+            this.cycles.shorten(now,reason);
+            phase = 'recovery'; reasons = [reason];
           }
         }
       }
       decision = { ...normal(reasons[0]), phase, action: phase === 'reduction' ? 'reduction' : 'normal', reasons, plan: cycle.plan };
     } else {
+      if (this.pendingPlan) {
+        const checked = revalidatePlan({plan:this.pendingPlan,now,observations,...outlook,checkpoint,settings,
+          config:this.control,thermalState:checkpoint.state,equipment,
+          trialBudgetRemainingCents:this.cycles.budget(now)});
+        this.pendingPlan = checked.valid ? checked.plan : null;
+        if (!checked.valid) this.store.event('scheduled-cycle-rejected',{reason:checked.reason},now);
+      }
       const due = this.pendingPlan && Math.min(this.pendingPlan.schedule.preheatStart,this.pendingPlan.schedule.reductionStart) <= now;
-      if (due && this.pendingPlan.schedule.reductionEnd > now && forecastIntervals(outlook.prices,outlook.forecast,now).length) {
-        decision = { ...normal('scheduled-full-cycle-plan'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
+      if (due) {
+        decision = { ...normal('revalidated-scheduled-cycle'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
-      } else if (!this.pendingPlan || this.pendingPlan.schedule.reductionEnd <= now) {
+      } else if (!this.pendingPlan) {
         decision = chooseCycle({ now, observations, ...outlook, checkpoint, settings, config: this.control,
           thermalState: checkpoint.state, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
           trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 });
@@ -557,11 +576,22 @@ export class Engine {
     }
     if (this.settings.mode !== 'active' && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
     const cycleSchedule = this.cycles.active()?.executionSchedule ?? decision.plan?.schedule;
+    if (decision.phase === 'recovery') {
+      const active = this.cycles.active();
+      Object.assign(decision,recoveryPolicy({now,reductionEnd:cycleSchedule?.reductionEnd ?? now,
+        indoorC:sample.indoorC,targetC,indoorTrendCPerHour:sample.indoorTrendCPerHour,occupancy:settings.occupancy,
+        equipment:this.plant?{...equipment,h66Available:true}:equipment,config:this.control,forced:Boolean(forceNormal),
+        fallbackAt:active?.recoveryFallbackAt ?? null}));
+      if (!decision.recoveryCompressorOnly && active && !active.recoveryFallbackAt) {
+        active.recoveryFallbackAt=now; active.recoveryFallbackReason=decision.recoveryFallbackReason;
+        this.cycles.save(active);
+      }
+    }
     decision.roomBoostC = decision.phase === 'preheat' ? decision.plan.schedule.roomBoostC : 0;
     decision.expiresAt = decision.phase === 'preheat' ? cycleSchedule.preheatEnd
       : decision.phase === 'reduction' ? cycleSchedule.reductionEnd : now+1800000;
     const lastPulseAt = this.store.getState(`dhwr:${input}`)?.lastPulseAt;
-    const pulse = !override && ['normal','recovery'].includes(decision.phase) && dhwrEligible(now,lastPulseAt,'normal');
+    const pulse = !override && decision.phase === 'normal' && dhwrEligible(now,lastPulseAt,'normal');
     decision.commands = decision.phase === 'reduction' ? ['heatoff'] : decision.phase === 'preheat' || pulse ? ['heaton60','heaton15'] : ['heaton15'];
     decision.dhwr = { requested: pulse || decision.phase === 'preheat', durationMinutes: 10, lastPulseAt: lastPulseAt ?? null,
       basis: 'Legacy ten-minute circulation request; no direct DHWR readback' };
@@ -574,7 +604,7 @@ export class Engine {
           && ['normal','preheat','reduction','recovery'].includes(execution.phase)) {
         const phase = ['normal','preheat','reduction','recovery'].includes(execution.phase) ? execution.phase : decision.phase;
         if (execution.restorationPending) return execution;
-        this.applied = { phase, at: execution.sent || execution.status === 'simulated' ? now : this.applied.at,
+        this.applied = { phase, at: execution.sent || execution.status === 'simulated' ? this.clock() : this.applied.at,
           roomBoostC: phase === 'preheat' ? decision.roomBoostC : 0, verified: Boolean(execution.actual?.verified) };
         this.store.setState(`applied:${input}`, this.applied);
         if (this.plant && decision.dhwr.requested) {
@@ -587,17 +617,23 @@ export class Engine {
             this.recordDhwr(execution.pulseUntil,executorStatus.requested.at);
           }
         if (decision.plan && ['preheat','reduction'].includes(phase) && !this.cycles.active()) {
+          const effectiveAt=this.clock();
           const plan = structuredClone(decision.plan);
           plan.initialState = { indoorC: sample.indoorC, reserveC: checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral };
-          plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,now);
-          plan.generatedAt = now; plan.equipment = equipment;
-          this.cycles.start(plan, { ...cycleSample, phase }, now, { executed: !this.plant });
+          plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,effectiveAt);
+          plan.executionStartedAt=effectiveAt;plan.initialObservationAt=now;plan.equipment=equipment;
+          this.cycles.start(plan,{...cycleSample,timestamp:effectiveAt,windowStart:effectiveAt,windowEnd:effectiveAt,phase},effectiveAt,{executed:!this.plant});
         }
+        recordLearningContext(this.store,input,{phase,roomBoostC:this.applied.roomBoostC,
+          targetC:this.settings.comfort.targetC??this.checkpoint?.baselineC??null,
+          regime:this.settings.occupancy.mode==='occupied'?'occupied':'away',
+          episodeId:this.cycles.active()?.id ?? null},this.clock(),{config:this.control,seed:checkpoint});
+        checkpoint=replayLearningJournal(this.store,input,checkpoint);this.checkpoint=checkpoint;
         const old = this.store.getState(`phase-snapshot:${input}`);
         const expiresAt = execution.expiresAt ?? decision.expiresAt;
         if ((old?.phase ?? old) !== phase || old?.expiresAt !== expiresAt) {
           this.store.observation({ source:'controller', device:input, signal:'controller_phase', value:['normal','preheat','reduction','recovery'].indexOf(phase),
-            unit:'state', sourceTime:now, receivedAt:now, quality:this.plant?['simulated']:['requested'], raw:{phase,expiresAt,verified:Boolean(execution.actual?.verified)} });
+            unit:'state', sourceTime:this.clock(), receivedAt:this.clock(), quality:this.plant?['simulated']:['requested'], raw:{phase,expiresAt,verified:Boolean(execution.actual?.verified)} });
           this.store.setState(`phase-snapshot:${input}`,{phase,expiresAt});
         }
       }
@@ -639,6 +675,8 @@ export class Engine {
       providers:this.store.getState('providers:health')??{},contract:this.contract(),configuredPrices:this.config.priceSettings??null,
       recording:this.recorder.status(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
+        readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
+        controlHold,outcomes:this.cycles.outcomes(),
         parameters:this.control,background:this.store.getState('learning:health')},
       savings:{status:'estimated',explanation:'Completed-cycle differences use a modelled alternative. Daily chart timing benchmarks keep the observed energy fixed.'} };
     return this.latestStatus;

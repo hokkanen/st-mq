@@ -36,3 +36,30 @@ test('H66 controls require a connected writable register and mode readbacks rema
   assert.equal(h66ReadingValue('3104', { value: null }), 'Unavailable');
   assert.equal(h66ReadingValue('0001', { value: 32, unit: '°C' }), '32 °C');
 });
+
+test('learning status separates conditional temperature skill from action evidence and all attempted outcomes', () => {
+  const display = learningDisplay({ readiness: { thermalValidated: true, responseValidated: true, advanceValidated: false, actionValidated: false, trialReady: false,
+    reasons: ['collecting-independent-equipment-episodes'] },
+    outcomes: { attempted: 5, completed: 2, incomplete: 2, inProgress: 1, assessed: 1, observedCostCents: 345, basis: 'estimated' },
+    adaptive: { model: { parameters: { lossPerHour: 0.02, normalHeatCPerHour: 0.7, reserveTimeHours: 12 },
+      validation: { accepted: true, kind: 'conditional-thermal', maeC: 0.25, maxErrorC: 0.8,
+        persistenceMaeC: 0.6, samples: 4, horizonHours: 6, maximumHorizonHours: 12,
+        fittedParameters: ['lossPerHour', 'normalHeatCPerHour'] },
+      equipmentResponse: { validation: { phases: { reduction: { episodes: 1, accepted: false, maeDuty: 0.2 } } } },
+      forecastValidation: { accepted: false, episodes: 2, temperatureMaeC: 0.35, energyRelativeError: 0.25, costRelativeError: 0.15 } } } });
+  const text = display.evidence.join(' ');
+  assert.match(text, /0.25 °C mean absolute trajectory error/);
+  assert.match(text, /4 later blocks of 6.0–12.0 hours/);
+  assert(!text.includes('one-hour'));
+  assert.match(text, /2 fitted in the accepted update; 1 fixed/);
+  assert.match(text, /Action prediction: awaiting independent episode evidence/);
+  assert.match(text, /Equipment response: validated on later episodes/);
+  assert.match(text, /Frozen advance forecast: awaiting independent outcome evidence/);
+  assert.match(text, /Frozen advance forecast: not established over 2 completed episodes; temperature error 0.35 °C; energy error 25.0%/);
+  assert.match(text, /space-heating cost error 15.0%/);
+  assert.match(text, /All attempted cycles: 5; completed 2, incomplete 2, in progress 1/);
+  assert.match(text, /€3.45/);
+  assert.match(text, /20.0 percentage points/);
+  assert.equal(display.inputs.length, 8);
+  assert(display.inputs.every(row => row.sources && row.detail));
+});

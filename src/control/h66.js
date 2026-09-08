@@ -131,11 +131,12 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   }
   async function apply(values, { now, reason, expiresAt, restoring = false }) {
     validateValues(values);
-    requireConnection(now);
+    const checkedAt=clock();
+    requireConnection(checkedAt);
     if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
     // Preflight all values before the first mutation or publish.
-    captureBaselines(Object.keys(values), now);
-    if (!restoring) state.expiresAt = deadline(now, expiresAt);
+    captureBaselines(Object.keys(values), checkedAt);
+    if (!restoring) state.expiresAt = deadline(checkedAt, expiresAt);
     const changes = [];
     for (const index of SETTINGS.filter(index => Object.hasOwn(values, index))) {
       const value = values[index];
@@ -213,9 +214,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       noteResult(result); return result;
     });
   }
-  async function setPhase({ phase, roomBoostC = 1, now = clock(), expiresAt } = {}) {
+  async function setPhase({ phase, roomBoostC = 1, compressorOnly = false, now = clock(), expiresAt } = {}) {
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw failure('H66_PHASE_INVALID', 'Unknown H66 control phase.');
-    if (['normal', 'recovery'].includes(phase)) return restore({ now, reason: phase, phase });
+    if (phase === 'normal' || phase === 'recovery' && !compressorOnly) return restore({ now, reason: phase, phase });
     return exclusive(async () => {
       requireConnection(now);
       if (restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
@@ -229,7 +230,13 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         persist();
       }
       let changed = [];
-      if (phase === 'preheat') {
+      if (phase === 'recovery') {
+        // End the tariff/DHW overrides while retaining ownership of mode2.
+        // Avoid briefly enabling AUX between reduction and compressor recovery.
+        for (const index of ['0203', '0212', '0208']) if (state.obligations[index])
+          changed.push(...await apply({ [index]: state.baseline[index] }, { now, reason: 'recovery', restoring: true }));
+        changed.push(...await apply({ '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'compressor-recovery', expiresAt }));
+      } else if (phase === 'preheat') {
         if (state.phase === 'reduction') throw failure('H66_PHASE_CONFLICT', 'Restore normal operation before starting preheat.');
         if (!Number.isFinite(roomBoostC) || roomBoostC < 1 || roomBoostC > 5) throw failure('H66_BOOST_INVALID', 'ROOM preheat boost must be 1–5°C.');
         changed = await apply({ '0203': state.baseline['0203'] + roomBoostC }, { now, reason: 'preheat', expiresAt });
@@ -260,6 +267,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (!waiter && reading.usableForControl && obligation?.confirmed && !equal(reading.value, obligation.expected)) {
       delete state.obligations[reading.register];
       state.baseline[reading.register] = reading.value;
+      state.externalChangeRevision=(state.externalChangeRevision??0)+1;
+      state.externalChangeAt=clock();
       state.phase = 'external-change'; restoreRequired = true;
       noteResult({ status: 'external-change', register: reading.register, restorationPending: true });
       event('h66-external-setting-preserved', { register: reading.register });
@@ -279,6 +288,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     const live = available(now);
     return { enabled: config.enabled !== false, available: live, connected: live, brokerConnected: connected,
       writesEnabled: config.writeEnabled === true, phase: state.phase,
+      externalChangeRevision:state.externalChangeRevision??0,externalChangeAt:state.externalChangeAt??null,
       lastPublicationAt, maxAgeMs, timeBasis: 'mqtt-received-unless-source-time-provided',
       sensorMeasurementTimeKnown: false, baseline: copy(state.baseline), requested: copy(state.requested),
       expiresAt: state.expiresAt, restorationPending: restoreRequired || state.phase === 'restoration-pending',

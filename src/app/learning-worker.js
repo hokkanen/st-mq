@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
 import { emptyCheckpoint, restoreCheckpoint, updateLearning } from '../control/learning.js';
-import { LEARNING_ALGORITHM, appendLearningRecord, applyLearningRecord, historicalLearningWindows } from './committed-learning.js';
+import { LEARNING_ALGORITHM, appendLearningRecord, applyLearningRecord, historicalLearningWindows, validLearningCheckpoint } from './committed-learning.js';
 
 // History runs off the command/UI thread. Only journal/checkpoint writes hold
 // SQLite's writer lock; fitting a page can take longer than the busy timeout.
@@ -15,7 +15,9 @@ try {
   let checkpoint = restoreCheckpoint(saved?.checkpoint, { now: Date.now() });
   let cursor = saved?.version === 1 && checkpoint.processedThrough && Number.isSafeInteger(saved.cursor) ? saved.cursor : 0;
   if (!cursor) checkpoint = emptyCheckpoint();
-  let adaptiveCursor = adaptive?.algorithmVersion === LEARNING_ALGORITHM && adaptive.cursor
+  const lastEntry = Number.isSafeInteger(adaptive?.journalCursor) && adaptive.journalCursor > 0
+    ? store.learningJournal({ input: 'history', after: adaptive.journalCursor - 1, limit: 1, algorithmVersion: LEARNING_ALGORITHM })[0] : null;
+  let adaptiveCursor = lastEntry && validLearningCheckpoint(adaptive, lastEntry) && adaptive.cursor
     && Number.isSafeInteger(adaptive.historyCursor) && adaptive.historyResampling ? adaptive.historyCursor : 0;
   if (!adaptiveCursor) adaptive = null;
   let processed = 0;
@@ -30,11 +32,11 @@ try {
     cursor = Math.max(cursor, rows.at(-1).id);
     adaptiveCursor = Math.max(adaptiveCursor, rows.at(-1).id);
     processed += rows.length;
-    const existingSample = store.db.prepare("SELECT id FROM learning_journal WHERE input='history' AND key=?");
+    const existingSample = store.db.prepare("SELECT id FROM learning_journal WHERE input='history' AND kind='sample' AND at=? AND algorithm_version=?");
     const entries = store.transaction(() => windows.samples.map(sample => {
       // An interrupted page may already have immutable entries. Their original
       // configuration stays authoritative even if settings changed on restart.
-      const id = existingSample.get(`sample:${sample.timestamp}`)?.id
+      const id = existingSample.get(sample.timestamp, LEARNING_ALGORITHM)?.id
         ?? appendLearningRecord(store, 'history', 'sample', sample, { config: workerData.config ?? {} });
       return store.learningJournal({ input: 'history', after: id - 1, limit: 1 })[0];
     }));

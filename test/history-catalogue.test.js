@@ -15,4 +15,6 @@ test('every retained H66 parameter and garage temperature is selectable independ
   const garage=rows.find(r=>r.signal==='garage_temperature');
   assert.equal(garage.role,'History only');assert.equal(garage.day.averageIntervalMs,180000);
   assert(rows.find(r=>r.signal==='brine_pump_speed'));
+  assert.equal(rows.find(r=>r.signal==='auxiliary_power').group,'Electricity');
+  assert(!rows.some(r=>r.signal.startsWith('model_')),'Calculated learning views do not create recorder channels');
 });

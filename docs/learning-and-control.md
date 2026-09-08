@@ -1,87 +1,122 @@
 # Learning, heating cycles and the chart
 
 The controller compares complete **preheat → reduction → recovery** cycles with
-the best feasible shorter-reduction alternative, including continuous normal
-heating. That reference is fixed when the cycle is planned. The comparison includes the cost of restoring the house's
-heat reserve. A low bill during a reduction is not, by itself, a successful cycle.
-The software has offline and synthetic browser checks; these do not commission
-the equipment, verify this installation's plumbing or establish actual savings.
+normal heating and feasible shorter reductions. The reference is fixed before
+execution. Cheap electricity during reduction alone does not establish a saving;
+recovery, comfort and comparable heating service matter too. Offline and synthetic
+checks do not establish savings on the installed equipment.
 
 ## What learns
 
-The adaptive model uses indoor and outdoor temperature, heating operation and
-the available **solar radiation forecast**. It estimates heat loss, effective
-heating response and a slow building-temperature memory. This memory is not a
-measurement of floor temperature, floor heat capacity or stored kWh. Heating
-response is not a measured compressor maximum output or a COP measurement.
-ROOM/DHWR response is coupled in the model, so it cannot identify the separate
-benefit of two actuators always operated together.
+The model has six thermal coefficients: heat loss, compressor response, solar
+response, auxiliary response, heat exchange and building memory time. Compressor
+and auxiliary gains remain separate. At most four coefficients are fitted; the two
+memory constants remain structural priors until independent state evidence can
+identify them. Heating enters the slow hydronic state before warming the room.
+That state is an effective temperature memory, not measured floor temperature or
+stored kWh. Effective heating response is not measured capacity or COP.
 
-Only outdoor temperature and solar radiation are weather inputs. Temperature and
-radiation forecasts use FMI first, with Open-Meteo ICON Seamless as backup. Solar
-values retain their own provider when missing FMI radiation is filled by
-Open-Meteo. Radiation is modeled global shortwave flux in W/m² on a horizontal
-surface, including cloud effects. Open-Meteo radiation covers the preceding hour
-and is aligned to that interval. Current outdoor temperature uses a fresh H66
-sensor first, then a fresh FMI station reading, then an Open-Meteo model estimate.
-Missing radiation remains
-unknown and increases uncertainty; cloud cover, wind and sun angle are not
-invented as substitute observations.
+Observed thermal drivers are outdoor temperature, archived solar radiation,
+space-heating compressor duty and space-heating auxiliary power. Indoor temperature
+is the measured state and prediction target. Requested phase, ROOM boost and comfort
+target describe control context; they do not create a direct heat credit. The eight
+**Model inputs · Calculated** axes include the indoor endpoint and these seven
+input/context values exactly as saved in the learning journal.
 
-Initial bounded parameters allow the controller to start with uncertain evidence.
-New temperature samples are processed chronologically, with invalid intervals
-kept as barriers. Model fitting checks later one-hour temperature trajectories,
-separated from the training period, against the previous model and holding the
-last temperature. A rejected fit keeps the existing parameters. A successful
-short temperature check does not validate electricity cost or an unobserved action.
-Completed cycles update recovery estimates separately; incomplete cycles do not
-strengthen that evidence.
+Only outdoor temperature and solar radiation are weather inputs. Current outdoor
+source priority remains H66, FMI station, then Open-Meteo. Solar remains an archived
+forecast from FMI with Open-Meteo backup, never a claimed radiation observation.
+The forecast available at the start of a completed interval supplies its solar
+input. Missing radiation remains unknown and adds uncertainty. No wind, cloud or
+sun-angle pseudo-observations are invented.
 
-The normal indoor reference comes from occupied, normally heated periods. It is
-held during preheat, reduction and recovery, so extra temporary warmth does not
-become a higher permanent comfort target. Away removes the normal occupied drop
-constraint while retaining a return-temperature requirement inside the known
-forecast horizon. The default preferred occupied drop is 1 °C.
+Fitting scores every temperature along later trajectories, separated from training
+by a 12-hour embargo. It compares the candidate with the previous model and holding
+the initial temperature. Missing intervals close and score preceding usable
+fragments; complete short cycles receive their own checks. A dip followed by a
+return to the initial temperature cannot score zero error. Coefficient eligibility
+requires independent observed variation and sensitivity, not merely many rows.
 
-## What the planner compares
+Three kinds of evidence remain distinct:
 
-Each candidate prices preheating, reduction, recovery and remaining heat debt
-under the same weather and tariff outlook. Normal native operation is one
-alternative; a shorter feasible reduction can be a cheaper comparison reference.
-Compressor electricity, auxiliary electricity, circulation and DHWR energy are
-counted with uncertainty. Electricity derived from nominal power and runtime
-remains estimated. Whole-property consumption minus EV charging is not treated
-as heat-pump electricity.
-When auxiliary observation is unavailable, the component model retains an
-uncertain auxiliary allowance instead of assuming auxiliary use was zero. That
-allowance is not evidence that a resistor actually ran, and it cannot qualify a
-cycle for the auxiliary-recovery metric.
+1. **Conditional thermal validation** supplies observed heat input and checks
+   temperature trajectories.
+2. **Equipment-response validation** checks compressor duty under requested modes
+   on distinct completed episodes. This check uses recorded room/weather context.
+3. **Advance cycle validation** compares frozen predictions with subsequent
+   temperature and attributable space-heating energy. It never substitutes actual
+   future compressor duty into an advance forecast.
 
-With little evidence, reductions are shorter and economic uncertainty is larger.
-Limited learning trials can accept a bounded estimated extra cost to collect
-evidence; the daily and per-trial budgets are configuration values. Such trials
-are not presented as predicted savings. Loss of usable temperature data, an
-override, a fault or an incomplete outlook prevents a new optimistic cycle.
-Recovery remains part of the cycle until temperature and reserve have recovered;
-a timeout or an observation gap leaves an incomplete assessment.
+Economic dispatch requires all three checks, within a duration supported by at
+least three training/held-out response and advance forecast episodes. Counterfactual
+savings still remain estimates. See [the audit and design decisions](learning-model-audit.md).
 
-## Four historical learning values
+The normal indoor reference comes from occupied, normally heated periods. Actual
+fractional compressor runtime contributes evidence; a brief run cannot count as
+an entire quarter-hour of heating. The reference is held through preheat, reduction
+and recovery. Away removes the usual occupied drop constraint but retains a return
+requirement inside the known forecast horizon.
 
-The Learning details section and the chart use the same assessments. Financial
-averages use the latest 30 completed cycles; the auxiliary subset is drawn from
-that window. A missing value is unavailable, not zero.
+## Planning and recovery
+
+Each candidate prices preheat, reduction, recovery and remaining heat debt under
+the same price/weather outlook. Electricity price belongs in this objective, not
+in the thermal coefficients. Nominal compressor/runtime and auxiliary estimates
+remain estimates; property consumption minus charging is never heat-pump metering.
+DHW is separately attributed where routing is known. Its demand and tank recovery
+are not counterfactually modeled, so the space-heating comparison cannot claim
+whole-cycle savings.
+
+Tariff reduction changes native demand; it does not stop the compressor or reduce
+its physical capacity. Observed native demand can imply full compressor duty during
+reduction. Current integral and supply-target readings apply only to the currently
+observed phase and a short projection. Unknown tariff response starts from unchanged
+normal demand with explicit uncertainty. Episode evidence can subsequently change
+that response. A stored pending schedule is re-evaluated before it starts.
+
+With little evidence, automatic action requires enabled learning trials, usable
+recorded temperature/equipment evidence and remaining allowance. Initial trials
+last at most half an hour. A no-heat cooling scenario and rated-power recovery
+scenario must fit comfort and cost allowances. These are stress estimates, not
+guarantees that fallback costs cannot exceed the allowance. Disabled trials cannot
+be bypassed by an unvalidated economic action. Trials pause for six hours after
+completion or 24 hours after an incomplete attempt; new automatic cycles also wait
+24 hours after an incomplete attempt. Occasional bounded trials can
+extend a tested duration; small preheat trials require thermal and reduction-response
+evidence. Unexecuted promises are not counted as learning episodes.
+
+Recovery defaults to compressor-only operation while restoring ROOM and DHW
+settings. `recovery_compressor_only_hours` defaults to four hours. Falling below
+target minus `recovery_comfort_margin_c` (default 0.5°C), a 30-minute trend towards
+that boundary, lost native control, forced restoration or the time limit restores
+the captured native mode. The fallback remains in effect for the rest of the cycle.
+`recovery_compressor_only: false` selects immediate native recovery. Restore
+obligations survive interruption and expire independently of planner ticks; separate
+transports do not guarantee atomic compressor switching.
+
+Completion requires comparable room temperature and the reserve reconstructed
+under the **frozen cycle model**, held for one hour. A newly fitted warmer reserve
+cannot make an older cycle complete. Missing thermal evidence prevents a reserve
+claim. Gaps/timeouts produce incomplete attempts, which remain visible with their
+covered costs and missing-data counts.
+
+## Historical learning values
+
+The chart and Learning details use the same assessments. Means cover the latest
+30 completed cycles with attributable space-heating evidence. A separate overview
+includes all of the latest 100 attempts, including incomplete and active cycles.
+A missing result is unavailable, not zero.
 
 | Chart choice | Meaning |
 | --- | --- |
-| Profit after recovery, €/cycle | Mean estimated cost of the best feasible shorter-reduction alternative (including normal heating), fixed when planned, minus completed full-cycle cost. A negative value means the assessed cycles cost more. |
-| Profit with auxiliary recovery, €/cycle | The same measure, restricted to completed cycles with observed **space-heating** auxiliary operation during recovery. DHW-only auxiliary use does not qualify. Pre-H66 or otherwise unknown attribution is excluded. |
-| Recovery cost prediction error, €/cycle | Mean absolute difference between the original recovery prediction and the eventual recovery cost estimate. Lower is better; zero requires completed evidence. |
-| Normal indoor temperature, °C | Learned occupied normal-heating reference, independent of a temporary ROOM boost. |
+| Assessed space-heating benefit, €/cycle | Modeled reference space-heating cost minus attributable execution cost including recovery. DHW service excluded; not a whole-cycle savings claim. |
+| Benefit with auxiliary recovery, €/cycle | The same estimate for completed cycles with observed space-heating AUX during recovery. DHW-only AUX and unknown routing do not qualify. |
+| Space-heating recovery prediction error, €/cycle | Original recovery forecast error over the observed recovery period. A changed schedule does not count as an error of the abandoned forecast. |
+| Normal indoor temperature, °C | Learned normal occupied heating reference, independent of temporary ROOM boosts. |
 
-History records the value **when assessed**, its cycle count, basis and model
-version. Later models do not replace earlier points with what they would predict
-today. The last assessed learning value remains in effect until superseded;
-there is no invented learning history before the first recorded assessment.
+Values retain assessment time, cycle count, basis and model version. Later model
+updates do not rewrite earlier chart points. Model input axes read saved journal
+intervals, preserve nulls and transitions, and do not rerun today's model on history.
 
 ## H66 readbacks and commands
 
@@ -131,9 +166,10 @@ become fresh merely because the application restarted. A documented register
 profile is distinct from verification of the installed pump and firmware.
 
 The legacy DHWR command pair is `heaton60`, then `heaton15`, with a ten-minute
-pulse. The model assumes circulation can contribute useful house heat while heat
-is demanded, and includes reheating/pump costs. Actual plumbing and flow can make
-that assumption inaccurate; the fitted response and cycle outcome remain estimates.
+pulse. The planner includes a nominal pulse-electricity allowance, but the thermal
+model does not invent extra delivered heat for the request. The coupled action
+cannot identify independent ROOM and DHWR effects. Tank service remains outside
+the space-heating benefit assessment.
 
 The native periodic high-temperature/14-day hygiene cycle is retained. The owner
 accepted that a temporary compressor-only strategy may delay the availability of
@@ -150,7 +186,7 @@ includes household loads. Auxiliary power expires after five minutes without an
 updated observation, rather than extending indefinitely.
 
 Yellow background means the compressor was reported running toward the house;
-blue means it was running toward DHW. Missing/stale routing leaves a gap. Heat Off
+blue means it was running toward DHW. Missing/stale routing leaves a gap. Tariff reduction
 is crosshatched and describes a reduction request, not proof of a stopped
 compressor. Brown DHWR shows ten-minute requests and starts hidden. Other series
 start visible, while explicit saved legend choices remain in effect.

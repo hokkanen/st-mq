@@ -67,7 +67,10 @@
       "learning_trials": true,
       "trial_budget_cents_per_day": 100,
       "max_trial_cost_cents": 50,
-      "recovery_timeout_hours": 48
+      "recovery_timeout_hours": 48,
+      "recovery_compressor_only": true,
+      "recovery_compressor_only_hours": 4,
+      "recovery_comfort_margin_c": 0.5
     },
     "electricity": {
       "margin_ct_per_kwh_ex_vat": 0.33,
@@ -146,7 +149,10 @@
       "learning_trials": "bool",
       "trial_budget_cents_per_day": "int(0,1000)",
       "max_trial_cost_cents": "int(0,1000)",
-      "recovery_timeout_hours": "int(4,168)"
+      "recovery_timeout_hours": "int(4,168)",
+      "recovery_compressor_only": "bool",
+      "recovery_compressor_only_hours": "float(0.25,12)",
+      "recovery_comfort_margin_c": "float(0,1)"
     },
     "electricity": {
       "margin_ct_per_kwh_ex_vat": "float(-20,100)",

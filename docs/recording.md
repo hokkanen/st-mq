@@ -289,12 +289,25 @@ overweight busy periods. A window records its resolved values, observation and
 coverage lineage, forecast version and controller context. It never uses a later
 sample to interpolate what the live learner knew earlier.
 
+Windows retain input segments at control, source, compressor, routing and AUX
+changes. Controller context is an immutable dated request, distinct from physical
+heat readback. Joint compressor/routing integration preserves mixed space-heating
+and DHW periods. Missing earlier context cannot be supplied by today's phase.
+Coverage prefixes remain stable when later polls extend a span; delayed arrivals
+do not retrospectively fill a period when no fresh information was available.
+
 Samples, complete episode updates and reference-context changes enter an immutable ordered `learning_journal`
 with algorithm version, configuration digest and configuration snapshot. Live
 updates and rebuilding use the same journal-entry function. The journal stores an
 explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
+
+The current algorithm is `committed-house-v3`. Configuration epochs retain power
+and control-policy interpretation; changed equipment assumptions invalidate old
+equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
+accidental corruption and trigger replay. They are integrity checks, not authentication.
+Older algorithm entries remain archival rather than being silently relabeled.
 
 Restart replays durable entries not yet applied to the checkpoint. The internal
 `replayLearningJournal(store, input, checkpoint, {rebuild: true})` path can rebuild

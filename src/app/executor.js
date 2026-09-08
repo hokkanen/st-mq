@@ -34,6 +34,7 @@ export class Executor {
     if (this.input === 'simulated') {
       this.plant.state.phase = decision.phase ?? decision.action;
       this.plant.state.roomBoostC = decision.roomBoostC ?? 0;
+      this.plant.state.recoveryCompressorOnly = decision.recoveryCompressorOnly === true;
       return this.sendCommands(decision.commands, { now });
     }
     if (!['mqtt', 'providers'].includes(this.input) || !this.commandTransport)
@@ -118,7 +119,20 @@ export class Executor {
       const restored = await this.restoreInternal({ now, reason: 'restart-or-interrupted-transition' });
       if (restored.restorationPending) return restored;
     }
-    if (phase === 'normal' || phase === 'recovery') return this.normal(now, phase, {}, decision.commands);
+    if (phase === 'recovery' && decision.recoveryCompressorOnly === true
+      && this.h66?.status(now).controlsReady && this.h66.status(now).writesEnabled === true) {
+      const native = await this.h66.setPhase({ phase, compressorOnly: true, now, expiresAt });
+      const refresh = this.state.phase !== phase || this.state.legacyOutstanding
+        || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
+      if (refresh) await this.publish(['heaton15'], now);
+      this.state.phase = phase; this.state.legacyOutstanding = false; this.state.expiresAt = expiresAt;
+      this.restartRestore = false;
+      return this.result(phase, refresh || native.changed?.length > 0, { native, recoveryCompressorOnly: true });
+    }
+    if (phase === 'normal' || phase === 'recovery') return this.normal(now, phase, {
+      ...(phase === 'recovery' ? { recoveryCompressorOnly: false, recoveryFallbackReason: decision.recoveryFallbackReason
+        ?? (decision.recoveryCompressorOnly ? 'native-settings-unavailable' : null) } : {}),
+    }, decision.commands);
     if (phase === 'preheat') {
       const status = this.h66?.status(now);
       if (!status?.controlsReady || status.writesEnabled !== true)
@@ -139,7 +153,7 @@ export class Executor {
         this.state.expiresAt = Math.min(expiresAt, this.state.pulseUntil); this.persist();
       }
       try {
-        const native = await this.h66.setPhase({ phase, roomBoostC: decision.roomBoostC ?? 1, now,
+        const native = await this.h66.setPhase({ phase, roomBoostC: decision.roomBoostC ?? 1, now:this.clock(),
           expiresAt: this.state.expiresAt });
         this.state.phase = phase; this.restartRestore = false;
         return this.result(phase, sent || native.changed?.length > 0, { native,

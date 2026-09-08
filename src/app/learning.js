@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { LEARNING_WINDOW_MS } from './committed-learning.js';
+import { LEARNING_WINDOW_MS, learningConfiguration } from './committed-learning.js';
 
 export function startOnlineLearning({ store, input }) {
   const worker = new Worker(new URL('./online-learning-worker.js', import.meta.url));
@@ -29,8 +29,7 @@ export function startHistoryLearning({ store, config = {} }) {
   const run = () => {
     if (worker || stopped) return;
     // Only model settings cross this boundary; provider credentials are irrelevant.
-    const modelConfig = Object.fromEntries(['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', 'dhwrKw', 'targetC', 'thermalPriors']
-      .filter(key => config[key] !== undefined).map(key => [key, config[key]]));
+    const modelConfig = learningConfiguration(config);
     worker = new Worker(new URL('./learning-worker.js', import.meta.url), { workerData: { dbPath: store.path, config: modelConfig } });
     worker.on('message', result => { if (result.error) store.event('learning-error', { message: result.error }); });
     worker.on('error', error => { store.event('learning-error', { message: error.message }); });

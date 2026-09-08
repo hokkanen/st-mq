@@ -39,21 +39,35 @@ export const AUDIT_SIGNALS = Object.freeze(['ev1_lifetime_energy_counter','ev1_s
 export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...h66.map(([signal, label, unit, group, role]) => [signal, { label, unit, group, role, kind: 'Recorded' }]),
   ['garage_temperature', { label: 'Garage temperature', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded' }],
+  ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
   ...AUDIT_SIGNALS.map(signal=>[signal,{label:signal.startsWith('property')?'Property meter counter':signal.includes('session')?'Charger session counter':'Charger lifetime counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),
 ]));
 
+// These describe values resolved for learning, not additional recorder channels.
+// Keep them separate from SIGNAL_INFO so Recording details remains a storage view.
+export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
+  ['model_indoor_temperature', 'Indoor temperature endpoint', '°C', 'indoor', 'Indoor temperature at the end of the completed learning interval. This is the observed prediction target, not another heat-input coefficient.'],
+  ['model_outdoor_temperature', 'Outdoor temperature input', '°C', 'outdoor', 'Recorded outdoor values used within the completed interval, split at source and value changes. Older learning records retain their saved interval mean.'],
+  ['model_solar_radiation', 'Solar radiation input', 'W/m²', 'solar', 'Radiation from the forecast available before the interval began. Missing forecasts remain unknown; later forecast updates do not rewrite this input.'],
+  ['model_compressor_duty', 'Space-heating compressor duty', '%', 'auxiliary', 'The fraction of the interval with observed compressor activity routed to space heating. Hot-water operation contributes zero; unavailable attribution remains unknown.'],
+  ['model_auxiliary_power', 'Space-heating auxiliary input', 'kW', 'auxiliary', 'Auxiliary electrical input attributed to space heating within the interval, estimated from recorded output and the rated capacity in effect. Changes retain their own segment boundaries.'],
+  ['model_controller_phase', 'Requested control phase input', 'state', 'learning', 'The controller phase saved with the interval: normal, preheat, tariff reduction or recovery. A reduction request does not prove that the compressor stopped.'],
+  ['model_room_boost', 'ROOM boost input', '°C', 'integral', 'The temporary room-setting increase saved with the learning interval. It describes requested control, not measured indoor warming.'],
+  ['model_target_temperature', 'Reference temperature input', '°C', 'indoor', 'The comfort reference saved when the interval was processed. Later changes do not rewrite the earlier reference.'],
+].map(([signal, label, unit, color, detail]) => [signal, { label, unit, color, detail, kind: 'Calculated', group: 'Model inputs' }])));
+
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power'], 'kW', 'Calculated'],
-  ['phases', 'Phase currents', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
+  ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
   ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],
-  ['outdoor_forecast', 'Outdoor temperature forecast', 'Weather', ['outdoor_forecast'], '°C', 'Forecast'],
+  ['outdoor_forecast', 'Outdoor forecast from now', 'Weather', ['outdoor_forecast'], '°C', 'Forecast'],
   ['spot_price','Spot price','Electricity',['spot_price'],'c/kWh','Recorded'],
   ['all_in_price','All-in price','Electricity',['all_in_price'],'c/kWh','Calculated'],
-  ['learning_profit', 'Profit after recovery', 'Learning', ['learning_profit'], '€/cycle', 'Calculated'],
-  ['learning_aux_profit', 'Profit with auxiliary recovery', 'Learning', ['learning_aux_profit'], '€/cycle', 'Calculated'],
-  ['learning_recovery_error', 'Recovery-cost prediction error', 'Learning', ['learning_recovery_error'], '€/cycle', 'Calculated'],
+  ['learning_profit', 'Space-heating benefit after recovery', 'Learning', ['learning_profit'], '€/cycle', 'Calculated'],
+  ['learning_aux_profit', 'Space-heating benefit with auxiliary recovery', 'Learning', ['learning_aux_profit'], '€/cycle', 'Calculated'],
+  ['learning_recovery_error', 'Space-heating recovery-cost prediction error', 'Learning', ['learning_recovery_error'], '€/cycle', 'Calculated'],
   ['learning_indoor_temperature', 'Learned normal temperature', 'Learning', ['learning_indoor_temperature'], '°C', 'Calculated'],
   ['heat_pump_power', 'Heat-pump power estimate', 'Electricity', ['heat_pump_power'], 'kW', 'Calculated'],
   ['controller_phase', 'Requested controller phase', 'Control', ['controller_phase'], 'state', 'Recorded'],
@@ -65,6 +79,7 @@ export const HISTORY_AXES = Object.freeze([
   ...Object.entries(SIGNAL_INFO).filter(([signal]) => !PHASE_ENERGY_SIGNALS.includes(signal)).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
+  ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Learning', 'Meter checks']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Learning', 'Meter checks']);
