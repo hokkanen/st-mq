@@ -69,6 +69,25 @@
       <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
       <p id="chart-notes" class="muted chart-notes"></p>
       <div id="timing-benefit" class="timing-benefit" aria-live="polite"></div>
+      <details id="recording-details" class="recording-details">
+        <summary>Recording details</summary>
+        <details id="recording-adaptive-details">
+          <summary>Adaptive measurements</summary>
+          <div id="recording-content"></div>
+        </details>
+        <details id="energy-audit-details">
+          <summary>Meter accuracy checks</summary>
+          <div id="energy-audit-content"></div>
+        </details>
+        <details id="recording-overview-details">
+          <summary>Other recorded data</summary>
+          <div class="recording-overview-toolbar">
+            <p id="recording-overview-message" class="muted" role="status" aria-live="polite">Open this section to inspect the database.</p>
+            <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh overview</button>
+          </div>
+          <div id="recording-overview-content"></div>
+        </details>
+      </details>
     </section>
 
     <section class="controller-panels" aria-label="Home controller">

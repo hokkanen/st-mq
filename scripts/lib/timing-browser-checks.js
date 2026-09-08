@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { recordHeatPumpConfiguration } from '../../src/app/chart-heat-pump.js';
 
 // Invented observations only. These days deliberately separate operating evidence,
 // missing telemetry, and incomplete prices without accessing a household database.
@@ -20,18 +21,28 @@ export function seedTimingBrowserFixture(store) {
         } else if (date === '2026-09-04' && slot <= 24) {
           add('heat_pump_power', slot < 24 ? 2 : null, 'kW', from + slot * quarter,
             { basis: 'estimated', powerBasis: 'modelled', compressorObserved: false, auxiliaryObserved: false, auxiliaryAssumed: true });
-        } else if (date === '2026-09-05') {
-          const metadata = [
-            { basis: 'measured', powerBasis: 'measured' },
-            { basis: 'estimated', compressorObserved: true, auxiliaryObserved: false },
-            { basis: 'estimated', powerBasis: 'modelled', compressorObserved: false, auxiliaryObserved: false, auxiliaryAssumed: true },
-            { basis: 'estimated' },
-          ][Math.floor(slot / 24)];
-          add('heat_pump_power', slot < 24 ? 3 : 1, 'kW', from + slot * quarter, metadata);
+        } else if (date === '2026-09-05' && slot < 24) {
+          const powerBasis = slot < 12 ? 'measured' : slot < 18 ? 'currents' : 'unknown';
+          add('charger_power', slot < 12 ? 3 : 1, 'kW', from + slot * quarter, { powerBasis });
         }
       }
-      // End the day explicitly so the next test day does not inherit power.
-      if (date === '2026-09-05') add('heat_pump_power', null, 'kW', from + 96 * quarter);
+      if (date !== '2026-09-03') {
+        recordHeatPumpConfiguration(store, 'providers', {
+          heatPumpCompressorKw: date === '2026-09-04' ? 2 : 3, circulationKw: 0.08, auxRatedKw: 9,
+        }, from);
+        // Fresh original equipment states supply six hours on the partial day
+        // and a complete day including valid zero consumption on the other.
+        const minutes = date === '2026-09-04' ? 360 : 1440;
+        for (let minute = 0; minute < minutes; minute += 5) {
+          for (const [signal, value, unit] of [
+            ['compressor_active', minute < 360 ? 1 : 0, 'state'], ['auxiliary_output', 0, '%'],
+          ]) store.observation({ source: 'husdata-h66', device: 'synthetic-timing-equipment', signal, value, unit,
+            sourceTime: from + minute * 60_000, receivedAt: from + minute * 60_000, quality: [],
+            raw: { fixture: true, verified: true, usableForControl: true } });
+        }
+      }
+      // Finish scalar power before the next day's independent current fixture.
+      if (date === '2026-09-05') add('charger_power', null, 'kW', from + 24 * quarter);
       if (date === '2026-09-03') {
         for (let phase = 1; phase <= 3; phase++) add(`ev1_current_l${phase}`, null, 'A', from + 96 * quarter);
       }
@@ -47,6 +58,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const closed = "!document.querySelector('.timing-popover:not([hidden])')";
   const click = css => evaluate(`document.querySelector(${JSON.stringify(css)}).click(); true`);
   const chooseDate = async date => {
+    // Date changes happen away from the help trigger. A stationary synthetic
+    // mouse could otherwise hover a newly rendered trigger after the old popup closes.
+    await command('input.performActions', { context, actions: [{ type: 'pointer', id: 'mouse', parameters: { pointerType: 'mouse' },
+      actions: [{ type: 'pointerMove', x: 1, y: 1, duration: 0 }] }] });
     await evaluate(`document.getElementById('date-start').value=${JSON.stringify(date)}; document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(date)} && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(date)}`);
   };
@@ -103,11 +118,17 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
 
   await chooseDate('2026-09-05');
   await until(closed);
-  assert.match(await text(selector('heatPump', 'evidence')), /mixed/i);
+  assert.match(await text(selector('heatPump', 'evidence')), /operation estimate/i);
   await click(selector('heatPump', 'evidence'));
   await until(visible);
-  for (const key of ['measured', 'observed', 'modelled', 'unknown']) {
-    assert.match(await text(`.timing-source[data-source="${key}"]`), /25%/,
+  assert.match(await text('.timing-source[data-source="observed"]'), /100%/);
+  assert.match(await text('.timing-popover'), /reconstruct|recorded equipment/i);
+  await escape();
+  assert.match(await text(selector('charger', 'evidence')), /mixed/i);
+  await click(selector('charger', 'evidence'));
+  await until(visible);
+  for (const [key, share] of [['measured', '50%'], ['currents', '25%'], ['unknown', '25%']]) {
+    assert.ok((await text(`.timing-source[data-source="${key}"]`)).includes(share),
       `${key} is weighted by included time, not observation count`);
   }
   assert.match(await text('.timing-popover'), /included time/i);
@@ -132,7 +153,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
     for (const theme of ['dark', 'light']) {
       await evaluate(`if (document.documentElement.dataset.theme !== ${JSON.stringify(theme)}) document.getElementById('theme-toggle').click(); true`);
-      await pointAt(selector('heatPump', 'evidence'), 'touch', true);
+      await pointAt(selector('charger', 'evidence'), 'touch', true);
       await until(visible);
       await checkFits();
       await capture(`home-energy-timing-evidence-${theme}-${viewport.width}`);
@@ -146,7 +167,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     }
   }
 
-  await evaluate(`document.querySelector(${JSON.stringify(selector('heatPump', 'evidence'))}).focus(); true`);
+  await evaluate(`document.querySelector(${JSON.stringify(selector('charger', 'evidence'))}).focus(); true`);
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'keyboard',
     actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
   await until("document.activeElement.classList.contains('timing-popover-content')");
@@ -154,26 +175,26 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     actions: [{ type: 'keyDown', value: '\uE010' }, { type: 'keyUp', value: '\uE010' }] }] });
   await until("document.querySelector('.timing-popover-content').scrollTop > 0");
   await escape();
-  assert.equal(await evaluate(`document.activeElement.matches(${JSON.stringify(selector('heatPump', 'evidence'))})`), true,
+  assert.equal(await evaluate(`document.activeElement.matches(${JSON.stringify(selector('charger', 'evidence'))})`), true,
     'Escape returns keyboard focus to the explanation trigger');
-  await pointAt(selector('heatPump', 'evidence'), 'touch', true);
+  await pointAt(selector('charger', 'evidence'), 'touch', true);
   await until(visible);
   await pointAt('.timing-popover-close', 'touch', true);
   await until(closed);
-  await click(selector('heatPump', 'evidence'));
+  await click(selector('charger', 'evidence'));
   await until(visible);
   await evaluate("document.getElementById('date-start').focus(); true");
   await until(closed);
 
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await chooseDate('2026-09-04');
-  assert.match(await text(selector('heatPump', 'evidence')), /model/i);
+  assert.match(await text(selector('heatPump', 'evidence')), /operation estimate/i);
   assert.match(await text(selector('heatPump', 'coverage')), /25% of time included/);
   await click(selector('heatPump', 'evidence'));
   await until(visible);
-  assert.match(await text('.timing-source[data-source="modelled"]'), /100%/);
-  assert.match(await text('.timing-popover'), /thermal model|predicted/i);
-  await capture('home-energy-timing-modelled-desktop');
+  assert.match(await text('.timing-source[data-source="observed"]'), /100%/);
+  assert.match(await text('.timing-popover'), /reconstruct|recorded equipment/i);
+  await capture('home-energy-timing-reconstructed-desktop');
   await chooseDate('2026-09-03');
   await until(closed);
   assert.equal(await evaluate("fetch('/api/chart?start=2026-09-03&end=2026-09-03').then(response => response.json()).then(data => data.meta.priceAssumptions.used)"), true);

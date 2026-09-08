@@ -39,11 +39,11 @@ configuration:
       Current outdoor temperature uses the H66 sensor first, then a fresh FMI
       nearby station reading, then an Open-Meteo model estimate.
   mqtt:
-    name: MQTT broker for H66 (optional)
+    name: MQTT broker and temperature sensors
     description: >-
       MQTT input subscribes to the installed H66 using this broker address,
       username and password. It does not send commands to the heat pump or
-      domestic hot-water circulation. Providers input does not need MQTT.
+      domestic hot-water circulation. Set indoor_temperature_topic and garage_temperature_topic to exact MQTT topics for replacement temperature sensors. Providers input can use these topics without an H66 device.
   entsoe:
     name: ENTSO-E API token (recommended)
     description: >-
@@ -51,18 +51,26 @@ configuration:
       are the backup and need no API key; supported countries are FI, EE, LV
       and LT. The optional domain overrides the country-derived bidding zone;
       omit it to use country_code. Elering only substitutes the same zone.
-  smartthings:
-    name: SmartThings temperature sensors (optional)
-    description: >-
-      Provide a SmartThings token and device IDs for indoor and garage
-      temperature readings. The optional outdoor sensor is retained as an
-      alternative reading; current outdoor temperature uses H66, then FMI,
-      then Open-Meteo when coordinates are configured.
-      Missing or stale indoor readings prevent live optimization.
   easee:
     name: Easee consumption readings (optional)
     description: >-
       Provide device IDs and either user/password or access_token/refresh_token
       to collect charger and Equalizer readings. Leave device IDs empty when
       unused. Readings are read-only; token renewals are cached privately and
-      options.json is not rewritten. Stale measurements remain marked stale.
+      options.json is not rewritten. Stale measurements remain marked stale. charger_voltage_ids may contain three verified phase-to-neutral observation IDs; leave empty to allocate by currents. Use [194, 195, 196] only after verifying the charger uses the documented TN terminal mapping. Cumulative kWh is diagnostic-only and never corrects or trains the model.
+  recording:
+    name: Historical recording
+    description: >-
+      max_interval_minutes is the maximum interval between fresh-data records
+      (default 5). annual_budget_gb is a soft rolling database-growth target in
+      decimal GB/year (default 10), not a calendar-year quota. The independent
+      recorder automatically adjusts a shared normalized accuracy target.
+      Source outages remain missing; no timer creates new measurements.
+  acquisition:
+    name: Provider acquisition intervals
+    description: >-
+      Easee polls every 15 seconds by default; outdoor weather every 5 minutes,
+      forecasts every 30 minutes and prices hourly. Missing next-day prices
+      are checked every 15 minutes. Source timestamps determine freshness.
+      electricity_source_max_age_seconds limits holding an old power estimate;
+      electricity_max_gap_seconds bounds integration across acquisition gaps.

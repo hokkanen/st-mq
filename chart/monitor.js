@@ -3,6 +3,7 @@ import { describeProvider, outdoorSourceLabel, providerName } from './provider-s
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { balanceControllerColumns } from './panel-layout.js';
 import { learningDisplay, h66Control, h66ReadingValue, h66Registers } from './learning-status.js';
+import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
@@ -133,7 +134,8 @@ function renderProviders(s) {
   $('weather-status').textContent = `${weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable'}${weatherSource ? ` · ${weatherSource}` : ''}`;
   $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
     : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Indoor measurements, electricity prices and weather forecasts are updated independently. Gaps remain visible in the chart.';
-  const entries = Object.entries(s.providers ?? {});
+  const entries = Object.entries(s.providers ?? {}).filter(([name,health])=>
+    !(['temperatures','smartthings'].includes(name)&&['not-configured','disabled'].includes(health?.status)));
   $('providers').replaceChildren();
   for (const [name, health] of entries) {
     if (!health || typeof health !== 'object') continue;
@@ -255,6 +257,7 @@ function render(s) {
   $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
   $('price-unit').textContent = s.input === 'simulated' ? 'c/kWh · synthetic simulation data' : current ? 'c/kWh · import, variable charges' : spot ? 'c/kWh · excludes VAT and other charges' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
   renderContract(s); renderProviders(s); renderH66(s);
+  if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   $('control-mode').textContent = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
       : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites ? 'Active · applying the heating plan' : 'Shadow plan · no automatic commands';
@@ -384,6 +387,24 @@ $('h66-test-form').addEventListener('submit', async event => {
   await refresh();
 });
 balanceControllerColumns(document.querySelector('.controller-panels'));
+const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
+  details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
+$('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
+$('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
+setInterval(refreshRecordingOverview,60_000);
+let auditFetchedAt = 0, auditBusy = false;
+async function refreshAudits() {
+  if (!$('recording-details').open || !$('energy-audit-details').open || auditBusy || Date.now()-auditFetchedAt<60_000) return;
+  auditBusy = true;
+  try { renderEnergyAudits(await api('/api/energy-audits'),$('energy-audit-content')); auditFetchedAt=Date.now(); }
+  catch (error) { $('energy-audit-content').textContent=error.message; }
+  finally { auditBusy=false; }
+}
+$('recording-details').addEventListener('toggle',()=>{
+  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview(); void refreshAudits(); }
+});
+$('energy-audit-details').addEventListener('toggle',refreshAudits);
+setInterval(refreshAudits,60_000);
 historyChart = createHistoryChart({ api: (path, options) => api(path, undefined, options) });
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 await refresh();

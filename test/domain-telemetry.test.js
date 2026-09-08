@@ -53,7 +53,7 @@ test('documented MQTT engineering units and receipt time work without installed 
 test('C60 settings and optional native pump readings are decoded distinctly', () => {
   const decoder = createH66Decoder({ deviceId: 'fixture-device' });
   for (const [register, value, signal] of [['0208', 60, 'dhw_stop_setting'], ['0212', 40, 'dhw_start_setting'],
-    ['1A04', 1, 'brine_pump_active'], ['1A06', 0, 'heating_pump_active'], ['3109', 70, 'heating_pump_speed']]) {
+    ['3110', 80, 'brine_pump_speed'], ['1A06', 0, 'heating_pump_active'], ['3109', 70, 'heating_pump_speed']]) {
     const reading = decoder.decode({ ...base, topic: `fixture-device/HP/${register}`, payload: String(value) });
     assert.equal(reading.signal, signal);
     assert.equal(reading.value, value);

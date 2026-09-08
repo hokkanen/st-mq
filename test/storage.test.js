@@ -44,7 +44,14 @@ test('schema-v2 migration preserves observations and indexes complete Easee acqu
   store.close();
 
   const prior = new DatabaseSync(path);
-  prior.exec('DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles; PRAGMA user_version = 2');
+  prior.exec(`DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles;
+    DROP VIEW provider_snapshots;
+    DROP INDEX snapshots_content_fetch;
+    ALTER TABLE provider_snapshot_fetches DROP COLUMN content_id;
+    ALTER TABLE provider_snapshot_fetches DROP COLUMN fetch_metadata;
+    ALTER TABLE provider_snapshot_fetches RENAME TO provider_snapshots;
+    DROP TABLE provider_snapshot_contents; DROP TABLE recorder_coverage; DROP TABLE recorder_metrics;
+    DROP TABLE energy_audits; DROP TABLE learning_journal; PRAGMA user_version = 2`);
   prior.close();
   const migrated = new Store(path);
   try {
@@ -59,6 +66,38 @@ test('schema-v2 migration preserves observations and indexes complete Easee acqu
       .some(row => /SEARCH observations USING INDEX observations_easee_acquisition/.test(row.detail)),
     'Acquisition lookup must use the migrated index instead of scanning observation history');
   } finally { migrated.close(); }
+});
+
+test('chart cache removal retains original history, checkpoints and lookup indexes', t => {
+  const { store, path } = fixture(t);
+  const cacheTables = db => db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('chart_rollups','chart_rollup_meta')").all();
+  assert.deepEqual(cacheTables(store.db), [], 'new databases contain no stored chart summaries');
+  store.observation({ source: 'synthetic', device: 'fixture', signal: 'indoor_temperature',
+    value: 21, unit: 'degC', sourceTime: 1000, receivedAt: 1000 });
+  store.setState('checkpoint', { cursor: 1 });
+  const before = store.observations();
+  assert.throws(() => store.transaction(() => {
+    store.observation({ source: 'synthetic', device: 'fixture', signal: 'garage_temperature',
+      value: 10, unit: 'degC', sourceTime: 2000, receivedAt: 2000 });
+    throw new Error('synthetic abort');
+  }), /synthetic abort/);
+  assert.deepEqual(store.observations(), before);
+  store.close();
+  const previous = new DatabaseSync(path);
+  previous.exec(`CREATE TABLE chart_rollups (bucket INTEGER, payload TEXT);
+    CREATE INDEX chart_rollups_time ON chart_rollups(bucket);
+    INSERT INTO chart_rollups VALUES(0,'{"synthetic":true}');
+    CREATE TABLE chart_rollup_meta (id INTEGER PRIMARY KEY, legacy_through INTEGER);
+    INSERT INTO chart_rollup_meta VALUES(1,1); PRAGMA user_version=7;`);
+  previous.close();
+  const reopened = new Store(path);
+  try {
+    assert.deepEqual(cacheTables(reopened.db), []);
+    assert.deepEqual(reopened.observations(), before);
+    assert.deepEqual(reopened.getState('checkpoint'), { cursor: 1 });
+    assert.equal(reopened.db.prepare("SELECT COUNT(*) n FROM sqlite_schema WHERE type='index' AND name='observations_signal_time'").get().n, 1);
+    assert.equal(reopened.summary().schemaVersion, SCHEMA_VERSION);
+  } finally { reopened.close(); }
 });
 
 test('events return a chronological tail and a cursor follows new events', t => {

@@ -27,16 +27,12 @@
     "mqtt": {
       "address": "mqtt://core-mosquitto",
       "user": "",
-      "pw": ""
+      "pw": "",
+      "indoor_temperature_topic": "",
+      "garage_temperature_topic": ""
     },
     "entsoe": {
       "token": ""
-    },
-    "smartthings": {
-      "token": "",
-      "inside_temp_dev_id": "",
-      "garage_temp_dev_id": "",
-      "outside_temp_dev_id": ""
     },
     "easee": {
       "user": "",
@@ -44,7 +40,8 @@
       "access_token": "",
       "refresh_token": "",
       "charger_id": "",
-      "equalizer_id": ""
+      "equalizer_id": "",
+      "charger_voltage_ids": []
     },
     "controller": {
       "input": "simulated",
@@ -82,6 +79,19 @@
       "winter_day_transfer_ct_per_kwh_ex_vat": 3.32,
       "other_transfer_ct_per_kwh_ex_vat": 1.65,
       "effective_date": ""
+    },
+    "recording": {
+      "max_interval_minutes": 5,
+      "annual_budget_gb": 10
+    },
+    "acquisition": {
+      "easee_poll_seconds": 15,
+      "weather_poll_minutes": 30,
+      "outdoor_poll_minutes": 5,
+      "market_poll_minutes": 60,
+      "market_retry_minutes": 15,
+      "electricity_source_max_age_seconds": 300,
+      "electricity_max_gap_seconds": 60
     }
   },
   "schema": {
@@ -93,17 +103,13 @@
     "mqtt": {
       "address": "str",
       "user": "str",
-      "pw": "password"
+      "pw": "password",
+      "indoor_temperature_topic": "str?",
+      "garage_temperature_topic": "str?"
     },
     "entsoe": {
       "token": "password?",
       "domain": "str?"
-    },
-    "smartthings": {
-      "token": "password?",
-      "inside_temp_dev_id": "str?",
-      "garage_temp_dev_id": "str?",
-      "outside_temp_dev_id": "str?"
     },
     "easee": {
       "user": "str?",
@@ -111,7 +117,10 @@
       "access_token": "password?",
       "refresh_token": "password?",
       "charger_id": "str?",
-      "equalizer_id": "str?"
+      "equalizer_id": "str?",
+      "charger_voltage_ids": [
+        "int(190,199)"
+      ]
     },
     "controller": {
       "input": "list(simulated|offline|mqtt|providers)",
@@ -149,6 +158,19 @@
       "winter_day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
       "other_transfer_ct_per_kwh_ex_vat": "float(0,100)",
       "effective_date": "str?"
+    },
+    "recording": {
+      "max_interval_minutes": "float(0.25,60)",
+      "annual_budget_gb": "float(0.01,10000)"
+    },
+    "acquisition": {
+      "easee_poll_seconds": "float(10,3600)",
+      "weather_poll_minutes": "float(5,360)",
+      "outdoor_poll_minutes": "float(1,60)",
+      "market_poll_minutes": "float(15,1440)",
+      "market_retry_minutes": "float(5,60)",
+      "electricity_source_max_age_seconds": "float(15,3600)",
+      "electricity_max_gap_seconds": "float(15,300)"
     }
   },
   "webui": "http://[HOST]:[PORT:1234]",

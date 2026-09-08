@@ -14,7 +14,17 @@ test('schema 3 upgrade retains observations and durable samples/cycle assessment
   store.observation({source:'synthetic',device:'fixture',signal:'indoor_temperature',value:21,unit:'degC',sourceTime:1000,receivedAt:1000,quality:[]});
   store.close();
   const old=new DatabaseSync(path);
-  old.exec('DROP TABLE learning_samples; DROP TABLE learning_cycles; PRAGMA user_version=3');old.close();
+  // Recreate the pre-recorder table layout rather than merely downgrading the
+  // version number of a newer schema (which leaves incompatible views behind).
+  old.exec(`DROP TABLE learning_samples; DROP TABLE learning_cycles;
+    DROP VIEW provider_snapshots;
+    DROP INDEX snapshots_content_fetch;
+    ALTER TABLE provider_snapshot_fetches DROP COLUMN content_id;
+    ALTER TABLE provider_snapshot_fetches DROP COLUMN fetch_metadata;
+    ALTER TABLE provider_snapshot_fetches RENAME TO provider_snapshots;
+    DROP TABLE provider_snapshot_contents; DROP TABLE recorder_coverage; DROP TABLE recorder_metrics;
+    DROP TABLE energy_audits; DROP TABLE learning_journal;
+    PRAGMA user_version=3`);old.close();
   store=new Store(path);
   const sample={timestamp:2000,indoorC:21,phase:'normal',solarRadiationWm2:null};
   assert.equal(store.learningSample('mqtt',sample),true);

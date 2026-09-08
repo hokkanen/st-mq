@@ -70,8 +70,10 @@ date to view one day; check **End date** to enable an inclusive date range. Date
 changes apply automatically. **Yesterday – today**, **Today**, **Today – tomorrow**
 shortcuts keep both observations and forecasts within the selected dates. The **Left axis** drawer offers Power, phase currents, live heating integral,
 solar radiation and all four historical learning metrics. Temperatures and prices
-remain available on the right. Whole-house and EV power estimates use nominal
-230 V and are labelled estimates. H66 AUX power is a red fill derived from the
+remain available on the right. Whole-house and EV power estimates use recorded
+phase-energy increments divided by their actual intervals. Equivalent chart
+currents assume 230 V and unity power factor; older current-only history uses
+the nominal 230 V power estimate. H66 AUX power is a red fill derived from the
 configured rated power (9 kW by default), with EV fill drawn above it. Compressor
 space heating is yellow, hot-water heating blue, DHWR brown and heat-off requests
 use a light crossed hatch. Every series is initially visible except DHWR; saved
@@ -84,24 +86,29 @@ shared explanation below; narrow screens stack the results. Underlined labels
 open explanations on hover, keyboard focus or tap. Escape or an outside tap
 closes the explanation.
 
-Each comparison identifies its energy basis: dedicated power readings, nominal
-power estimated from observed compressor operation, thermal-model predictions,
-charger phase-current estimates, simulation, or unrecorded provenance. The
+Each comparison identifies its energy basis. Heat-pump electricity is estimated
+from recorded compressor activity and auxiliary output using dated nominal
+compressor, circulation and auxiliary power assumptions. Charger electricity
+uses recorded phase-energy intervals, with a 230 V phase-current estimate for
+older current-only history. Simulation is identified separately. The
 included-time mix is duration-weighted, not a percentage of samples, energy or
-accuracy. Auxiliary consumption may still be assumed within an operation-based
-estimate; its recorded assumption or unknown status is explained separately.
-Historical classification uses only metadata saved with those power samples.
-Missing old metadata stays unknown, and current sensors never upgrade old data.
-Source details report first and last contributing sample timestamps; these are
-not a claim of continuous observations between those times.
+accuracy. Auxiliary consumption remains a nominal estimate even when its output
+is observed. Historical calculations use saved equipment readings and assumptions;
+missing inputs or dated power assumptions leave gaps, and current sensors or
+model predictions never fill them. Source details report the contributing input
+times; these are not a claim of continuous observations between those times.
 
 Time included is the fraction of selected elapsed time used in the comparison,
-including valid zero-power readings and model predictions. For today it ends at
+including valid zero-power intervals. For today it ends at
 the calculation time, not the following midnight. The details distinguish time
 without power inputs from power inputs excluded because a full day's prices are
-missing. The result is never extrapolated to excluded time. Power inputs are
-held for at most 30 minutes; these holds are not new measurements. An unfinished
-day is identified separately from incomplete historical coverage.
+missing. The result is never extrapolated to excluded time. Recorded energy
+retains its explicit interval bounds, and reconstructed heat-pump intervals are
+bounded by source freshness and availability. Older charger snapshots are held
+for at most 30 minutes; these holds are not new measurements. Calculations use
+the underlying intervals independently of chart point reduction and the selected
+left axis. An unfinished day is identified separately from incomplete historical
+coverage.
 
 Missing historical contract periods use the nearest known rates with historical
 spot prices and the historical Finnish tariff hour. With only today's rates
@@ -113,10 +120,10 @@ not imply a statistical confidence level.
 Historical scalar spot readings supply their containing 15-minute price slot,
 allowing for small logging delays. Missing slots stay missing, and a complete
 day's spot prices are still required for its daily average. Missing energy
-periods are excluded. Charger phase currents can provide older energy estimates;
-heat-pump history may contain measured, operation-based or modelled power, with
-its basis shown explicitly. These timing
-comparisons are distinct from the learning metrics' modelled full-cycle profit.
+periods are excluded. Imported CSV phase currents can provide older charger
+energy estimates, but those files lack the H66 equipment readings needed to
+reconstruct heat-pump consumption. These timing comparisons are distinct from
+the learning metrics' modelled full-cycle profit.
 Missing AUX routing, solar forecasts or complete recovery evidence stays unknown.
 Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig, validateSettings } from '../src/app/config.js';
+import { loadConfig, validateSettings, recordingConfiguration, acquisitionConfiguration } from '../src/app/config.js';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,25 @@ test('default startup is shadow with simulated devices, no provider connections 
   assert.equal(cfg.settings.comfort.targetC, null);
   assert.deepEqual(cfg.connections, {});
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
+});
+test('recording and acquisition options are independent, configurable and validated',()=>{
+  assert.deepEqual(recordingConfiguration(),{maxIntervalMs:300000,annualBudgetBytes:10000000000});
+  assert.deepEqual(recordingConfiguration({max_interval_minutes:2,annual_budget_gb:4}),{maxIntervalMs:120000,annualBudgetBytes:4000000000});
+  assert.equal(acquisitionConfiguration().easeeIntervalMs,15000);
+  assert.equal(acquisitionConfiguration({weather_poll_minutes:60}).weatherIntervalMs,3600000);
+  for(const options of [{max_interval_minutes:0},{annual_budget_gb:-1},{annual_budget_gb:'10'}])assert.throws(()=>recordingConfiguration(options));
+  assert.throws(()=>acquisitionConfiguration({easee_poll_seconds:1}));
+});
+test('replacement indoor and garage MQTT topics are exact and keep private configuration unchanged',t=>{
+  const directory=mkdtempSync(join(tmpdir(),'stmq-temperature-config-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const path=join(directory,'options.json');
+  const original=JSON.stringify({mqtt:{address:'mqtt://invented.invalid',indoor_temperature_topic:'invented/indoor',garage_temperature_topic:'invented/garage'}});
+  writeFileSync(path,original);
+  const config=loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory);
+  assert.deepEqual(config.connections.mqtt.temperatureTopics,{indoor_temperature:'invented/indoor',garage_temperature:'invented/garage'});
+  assert.equal(readFileSync(path,'utf8'),original);
+  writeFileSync(path,JSON.stringify({mqtt:{indoor_temperature_topic:'invented/#'}}));
+  assert.throws(()=>loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic/);
 });
 test('legacy write gate requires the exact separate acknowledgement', () => {
   for (const value of [undefined, '', 'true', '1']) assert.throws(() => requireLegacyLive({ STMQ_LEGACY_LIVE: value }));
@@ -43,7 +62,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
   assert.equal(config.input, 'providers');
   assert.equal(config.deviceId, undefined);
-  assert.equal(config.connections.smartthings.inside_temp_dev_id, 'fixture');
+  assert.equal(config.connections.smartthings, undefined, 'Legacy SmartThings credentials do not enable acquisition');
   assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
   assert.equal(config.settings.comfort.targetC, null);
   assert.equal(config.settings.comfort.maxDropC, 1);

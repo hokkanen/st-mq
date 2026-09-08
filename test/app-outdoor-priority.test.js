@@ -146,7 +146,9 @@ test('decoded Open-Meteo estimates are usable current fallback and retain proven
   assert.equal(status.observations.outdoor.stale, false);
   assert.equal(status.observations.outdoor.value, -2.5);
   assert.deepEqual(status.observations.outdoor.quality, ['estimated']);
-  assert.equal(r.store.learningSamples({ input: 'mqtt' }).at(-1).outdoorC, -2.5);
+  r.setTime(beginning + 15 * MINUTE);
+  r.engine.tick();
+  assert.equal(r.store.learningJournal({ input: 'mqtt' }).at(-1).payload.value.outdoorC, -2.5);
   r.store.setState('provider:observations', r.engine.providerObservations());
   const restarted = new Engine({ store: r.store, config: r.config, clock: r.engine.clock });
   assert.equal(restarted.tick().observations.outdoor.stale, false);
@@ -178,37 +180,39 @@ test('all current sources unavailable remains missing for learning even when a t
   const status = r.engine.tick();
   assert.equal(status.observations.outdoor.stale, true);
   assert.ok(status.decision.reasons.includes('missing-or-stale-observations'));
-  const sample = r.store.learningSamples({ input: 'mqtt' }).at(-1);
+  const sample = r.store.learningJournal({ input: 'mqtt' }).at(-1).payload.value;
   assert.equal(sample.outdoorC, null);
-  assert.equal(sample.solarRadiationWm2, 300);
+  assert.equal(sample.solarRadiationWm2, null, 'A mutable current forecast is not an archived forecast known before this completed window');
   assert.deepEqual(sample.quality, ['missing']);
 });
 
-test('archived mixed-source solar keeps its own provider and unknown issuance instead of FMI temperature metadata', async t => {
+test('archived mixed-source solar keeps its own provider in forecast versions without minute copies', async t => {
   const r = await setup(t);
   r.weather('fmi', 4);
   const row = { start: r.now, end: r.now + 60 * MINUTE, outdoorC: 4, solarRadiationWm2: 350,
     source: 'fmi', fetchedAt: r.now, issuedAt: r.now - 60 * MINUTE, issuedAtBasis: 'provider-result-time',
     solar: { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: r.now - MINUTE,
       intervalBasis: 'preceding-hour-mean' } };
-  r.store.setState('provider:weather', { fetchedAt: r.now, forecast: [row] });
+  const payload = { source: 'fmi', issuedAt: row.issuedAt, fetchedAt: r.now, forecast: [row] };
+  const originalId = r.store.snapshot({ kind: 'weather', source: 'fmi', issuedAt: row.issuedAt, fetchedAt: r.now, payload });
+  r.store.setState('provider:weather', payload);
   r.engine.tick();
-  let radiation = r.store.latestObservation('solar_radiation');
-  assert.equal(radiation.value, 350);
-  assert.equal(radiation.raw.source, 'openmeteo');
-  assert.equal(radiation.raw.issuedAt, null);
-  assert.equal(radiation.raw.issuedAtBasis, 'fetched-snapshot');
-  assert.equal(radiation.raw.fetchedAt, row.solar.fetchedAt);
-  assert.equal(radiation.raw.intervalBasis, 'preceding-hour-mean');
+  assert.equal(r.store.latestObservation('solar_radiation'), null);
+  assert.deepEqual(r.store.snapshotById(originalId).payload.forecast[0].solar, row.solar);
   r.setTime(r.now + MINUTE);
-  r.store.setState('provider:weather', { fetchedAt: r.now,
-    forecast: [{ ...row, solar: { intervalBasis: 'hourly-point-held-within-published-horizon' } }] });
+  const revised = { source: 'fmi', fetchedAt: r.now,
+    forecast: [{ ...row, solar: { intervalBasis: 'hourly-point-held-within-published-horizon' } }] };
+  r.store.snapshot({ kind: 'weather', source: 'fmi', issuedAt: row.issuedAt, fetchedAt: r.now, payload: revised });
+  r.store.setState('provider:weather', revised);
   r.engine.tick();
-  radiation = r.store.latestObservation('solar_radiation');
-  assert.equal(radiation.raw.source, 'fmi');
-  assert.equal(radiation.raw.issuedAt, row.issuedAt);
-  assert.equal(radiation.raw.issuedAtBasis, 'provider-result-time');
-  assert.equal(radiation.raw.fetchedAt, row.fetchedAt);
+  r.setTime(beginning + 15 * MINUTE);
+  r.engine.tick();
+  const sample = r.store.learningJournal({ input: 'mqtt' }).at(-1).payload.value;
+  assert.equal(sample.solarRadiationWm2, 350);
+  assert.equal(sample.provenance.forecastVersion.id, originalId, 'Use the version known at the start of the window');
+  assert.equal(sample.provenance.forecastVersion.solar[0].source, 'openmeteo');
+  assert.equal(sample.provenance.forecastVersion.solar[0].issuedAt, null);
+  assert.equal(r.store.latestObservation('solar_radiation'), null);
 });
 
 test('live restart discards retired weather runtime state before its first tick and preserves historical snapshots', async t => {

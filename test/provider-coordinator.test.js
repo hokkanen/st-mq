@@ -10,12 +10,14 @@ import { startProviders } from '../src/acquisition/providers.js';
 import { start } from '../src/main.js';
 import { assembleOutlook } from '../src/app/contract.js';
 import { describeProvider } from '../chart/provider-status.js';
+import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
 const initial = Date.parse('2026-09-06T09:00:00Z'), MINUTE = 60_000;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-providers-'));
   const config = { ...loadConfig({ STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
+    acquisition: { easeeIntervalMs: 5 * MINUTE, weatherIntervalMs: 60 * MINUTE, outdoorIntervalMs: 10 * MINUTE },
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' }, easee: { charger_id: 'fixture-ev' },
       entsoe: { token: 'fixture-not-a-real-token' }, geoloc: { latitude: 60, longitude: 25 } } };
   const store = new Store(config.dbPath);
@@ -34,8 +36,55 @@ function fixture(t) {
     value: 10, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const options = { config, store, engine, clock, http: { json() { throw new Error('Unexpected HTTP request'); }, close() {} },
     devices: { temperatures: async () => temperature(), easee: async () => current() }, market, weather, outdoor, automatic: false };
+  options.temperatureProvider = args => options.devices.temperatures(args);
   return { options, store, engine, config, temperature, setTime(at) { now = at; } };
 }
+test('unchanged forecast downloads share content and preserve unknown-issuance age',async t=>{
+  const f=fixture(t);f.config.acquisition.weatherIntervalMs=30*MINUTE;
+  f.options.weather=async({now})=>({source:'openmeteo',fetchedAt:now,issuedAt:null,
+    forecast:[{start:initial,end:initial+24*60*MINUTE,outdoorC:5,solarRadiationWm2:120,
+      source:'openmeteo',issuedAt:null,fetchedAt:now,issuedAtBasis:'fetched-snapshot'}]});
+  const providers=startProviders(f.options);
+  try {
+    await providers.runDue();const first=f.store.getState('provider:weather');
+    f.setTime(initial+30*MINUTE);await providers.runDue();
+    const latest=f.store.getState('provider:weather');
+    assert.notEqual(latest.snapshotId,first.snapshotId);assert.equal(latest.fetchedAt,initial);
+    assert.equal(latest.forecast[0].fetchedAt,initial);assert.equal(latest.lastCheckedAt,initial+30*MINUTE);
+    assert.equal(f.store.snapshotById(latest.snapshotId).contentId,f.store.snapshotById(first.snapshotId).contentId);
+  }finally{await providers.close();}
+});
+
+test('normal configuration retires SmartThings and acquires electricity every fifteen seconds with audit-only counters', async t => {
+  const f = fixture(t);
+  delete f.options.temperatureProvider;
+  f.config.acquisition = {};
+  f.config.connections = { smartthings: { inside_temp_dev_id: 'retired-sensor', token: 'fixture-unused-token' },
+    easee: { equalizer_id: 'invented-property' } };
+  let calls = 0;
+  f.options.devices.electricity = async ({ now }) => {
+    calls++;
+    return ELECTRICITY_FIELDS.property.map(([id, name, unit]) => ({ source: 'easee', device: 'invented-property',
+      signal: `property_${name}`, unit, value: unit === 'A' ? 10 : unit === 'V' ? 230 : unit === 'kW' ? 6.9 : 100 + calls,
+      sourceTime: now, receivedAt: now, quality: [], raw: { acquisitionOnly: true, auditOnly: unit === 'kWh', observationId: id } }));
+  };
+  f.options.devices.temperatures = () => { throw new Error('Retired SmartThings must never be contacted'); };
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.equal(f.store.getState('providers:health').temperatures.status, 'not-configured');
+    assert.equal(f.store.getState('providers:health').easee.nextAttemptAt, initial + 15_000);
+    assert.equal(f.store.observations().length, 0);
+    f.setTime(initial + 14_999); await providers.runDue(); assert.equal(calls, 1);
+    f.setTime(initial + 15_000); await providers.runDue(); assert.equal(calls, 2);
+    const rows = f.store.observations();
+    assert.deepEqual(rows.map(row => row.signal).sort(), ['property_energy_l1', 'property_energy_l2', 'property_energy_l3']);
+    assert(Math.abs(rows.reduce((sum, row) => sum + row.value, 0) - 6.9 * 15 / 3600) < 1e-12);
+    assert.equal(f.store.energyAudits().length, 2);
+    assert.equal(f.store.observations({ signal: 'property_import_energy_counter' }).length, 0);
+    assert.equal(f.engine.latest.property_current_l1.value, 10);
+  } finally { await providers.close(); }
+});
 
 test('independent polls stay nonblocking, do not overlap and preserve snapshot provenance', async t => {
   const f = fixture(t), held = deferred(); let calls = 0;
@@ -121,6 +170,7 @@ test('missing temperatures report outage separately from old readings and cancel
 test('unconfigured providers make no requests', async t => {
   const f = fixture(t);
   f.options.config.connections = {};
+  delete f.options.temperatureProvider;
   const providers = startProviders(f.options);
   try {
     await providers.runDue();
@@ -136,11 +186,11 @@ test('provider startup serves UI while a device request is pending and closes cl
   const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' } } };
   let pending = false, cancelled = false;
-  const app = await start({ config, clock: () => initial, providerOptions: { devices: {
-    temperatures: ({ signal }) => new Promise((resolve, reject) => {
+  const app = await start({ config, clock: () => initial, providerOptions: {
+    temperatureProvider: ({ signal }) => new Promise((resolve, reject) => {
       pending = true; signal.addEventListener('abort', () => { cancelled = true; reject(new Error('closed')); }, { once: true });
-    }), easee: async () => [],
-  } } });
+    }), devices: { easee: async () => [] },
+  } });
   try {
     assert.equal(pending, true);
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`);
@@ -199,6 +249,7 @@ test('a failed observation-cache transaction restores both SQLite history and in
 test('failed outdoor cache writes restore provider candidates while H66 remains the selected outdoor signal', async t => {
   const f = fixture(t);
   f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
+  delete f.options.temperatureProvider;
   const h66 = at => ({ source: 'husdata-h66', device: 'fixture-h66', signal: 'outdoor_temperature',
     value: 0, unit: 'degC', sourceTime: at, receivedAt: at, quality: [], raw: { usableForControl: true, retained: false } });
   f.engine.ingest(h66(initial));
@@ -242,6 +293,7 @@ test('failed outdoor cache writes restore provider candidates while H66 remains 
 test('weather candidates survive polling and restart while live H66 publications stay outside the provider cache', async t => {
   const f = fixture(t);
   f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
+  delete f.options.temperatureProvider;
   let source = 'fmi', now = initial;
   f.options.outdoor = async ({ now }) => [{ source, device: `fixture-${source}`, signal: 'outdoor_temperature',
     value: source === 'fmi' ? 12 : 13, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
@@ -327,7 +379,8 @@ test('all-zero and impossible relative currents need attention, while different 
       assert.equal(health.nextAttemptAt, initial + (i * 30 + 5) * MINUTE);
       assert.equal(health.failures, 0);
       assert.equal(health.error, null);
-      assert.equal(f.store.observations().at(-1).quality.includes(flag), true);
+      assert.equal(f.engine.latest.property_current_l1.quality.includes(flag), true);
+      assert.equal(f.store.observations({ signal: 'property_current_l1' }).length, 0, 'acquired currents remain live-only');
     }
   } finally { await providers.close(); }
 });
@@ -374,7 +427,8 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
           assert.doesNotMatch(description.detail, /different times/);
         }
       }
-      assert.equal(f.store.observations({ signal: 'property_current_l1' }).at(-1).value, 4 + i);
+      assert.equal(f.engine.latest.property_current_l1.value, 4 + i);
+      assert.equal(f.store.observations({ signal: 'property_current_l1' }).length, 0);
       assert.equal(f.engine.status().observations.indoor.stale, true);
       if (i === 3) {
         await providers.close(); providers = startProviders(f.options);
@@ -629,7 +683,7 @@ test('old timestamp attention starts at 30 minutes for currents and two hours fo
         assert.deepEqual(health[name].qualityIssues, temperaturesOld ? ['stale'] : []);
         assert.deepEqual(health[name].staleSourceTimes, temperaturesOld ? { stale: now - age } : {});
       }
-      assert.equal(f.store.observations({ signal: 'property_current_l1' }).at(-1).quality.includes('stale'), true,
+      assert.equal(f.engine.latest.property_current_l1.quality.includes('stale'), true,
         'attention thresholds must preserve control freshness flags');
       assert.equal(f.store.observations({ signal: 'indoor_temperature' }).at(-1).quality.includes('stale'), true);
     }

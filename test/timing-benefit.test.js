@@ -102,3 +102,65 @@ test('the evidence ladder keeps its ordering when the earliest contributing sour
   const display = timingDisplay('heatPump', { value: 1, evidence: { sources: ['unknown', 'modelled', 'measured', 'observed'].map(key => ({ key, durationMs: hour, share: 0.25 })) } }, payload);
   assert.deepEqual(display.sources.map(source => source.key), ['measured', 'observed', 'modelled', 'unknown']);
 });
+
+test('reconstructed heat-pump help describes recorded equipment and dated powers without suggesting a model fallback', () => {
+  const display = timingDisplay('heatPump', { ...result, evidence: {
+    energyBasis: 'reconstructed-equipment', timeBasis: 'recorded-interval-time',
+    sources: [{ key: 'observed', durationMs: hour, share: 1, firstAt: from, lastAt: from + hour }],
+  } }, payload);
+  assert.equal(display.basis, 'Operation estimate');
+  assert.match(display.sources[0].explanation, /verified auxiliary output.*dated nominal compressor/);
+  assert.match(display.sources[0].explanation, /domestic hot water/);
+  assert.match(display.sources[0].dates, /Contributing intervals: 8 Sept 2026, 00:00/);
+  assert.match(display.details.evidence.join(' '), /original boundaries of contributing recorded intervals/);
+  assert.match(display.details.comparison.join(' '), /model predictions do not fill them/);
+  assert.match(display.details.coverage.join(' '), /recorded coverage and freshness/);
+  assert.doesNotMatch(display.details.coverage.join(' '), /30 minutes|estimated and modelled/);
+  assert.doesNotMatch(display.details.evidence.join(' '), /first uses dedicated power/);
+});
+
+test('unavailable reconstructed heat-pump energy still explains the required equipment evidence', () => {
+  const display = timingDisplay('heatPump', { value: null,
+    coverageDetails: { elapsedMs: hour, includedMs: 0, powerMs: 0 },
+    evidence: { energyBasis: 'reconstructed-equipment', sources: [] },
+  }, payload);
+  assert.equal(display.available, false);
+  assert.match(display.details.unavailable.join(' '), /Recorded compressor activity, verified auxiliary output and dated nominal power assumptions are needed/);
+  assert.doesNotMatch(display.details.unavailable.join(' '), /dedicated heat-pump power reading or a stored/);
+});
+
+test('recorded charger intervals retain their estimated energy basis and original interval dates', () => {
+  const display = timingDisplay('charger', { ...result, evidence: {
+    energyBasis: 'recorded-intervals', timeBasis: 'recorded-interval-time',
+    sources: [{ key: 'recorded', durationMs: hour, share: 1, firstAt: from - hour, lastAt: from + hour }],
+  } }, payload);
+  assert.equal(display.basis, 'Recorded energy estimate');
+  assert.equal(display.sources[0].key, 'recorded');
+  assert.match(display.sources[0].explanation, /reported active power or recorded voltage and current/);
+  assert.match(display.sources[0].explanation, /Cumulative meter checks do not correct/);
+  assert.match(display.sources[0].dates, /Contributing intervals: 7 Sept 2026, 23:00/);
+  assert.match(display.details.coverage.join(' '), /saved interval without extending into gaps/);
+  assert.doesNotMatch(display.details.coverage.join(' '), /30 minutes|modelled power/);
+});
+
+test('mixed charger history explains interval energy and the bounded legacy snapshot hold separately', () => {
+  const display = timingDisplay('charger', { ...result, evidence: {
+    energyBasis: 'recorded-and-legacy', timeBasis: 'mixed-recorded-time',
+    sources: ['currents', 'recorded'].map(key => ({ key, durationMs: hour / 2, share: 0.5,
+      firstAt: from, lastAt: from + hour })),
+  } }, payload);
+  assert.equal(display.basis, 'Mixed basis');
+  assert.deepEqual(display.sources.map(source => source.key), ['recorded', 'currents']);
+  assert.match(display.sources[0].dates, /Contributing intervals and samples/);
+  assert.match(display.sources[1].explanation, /phase-current readings at 230 V/);
+  assert.match(display.details.coverage.join(' '), /saved interval without extending into gaps.*Older power snapshots are carried forward for at most 30 minutes/);
+});
+
+test('simulated reconstructed intervals remain explicitly simulated', () => {
+  const display = timingDisplay('heatPump', { ...result, evidence: {
+    energyBasis: 'reconstructed-equipment', timeBasis: 'recorded-interval-time',
+    sources: [{ key: 'simulated', durationMs: hour, share: 1 }],
+  } }, payload);
+  assert.equal(display.basis, 'Simulated');
+  assert.match(display.sources[0].explanation, /do not represent measured household consumption/);
+});

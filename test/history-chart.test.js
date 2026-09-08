@@ -111,6 +111,15 @@ test('cache coalesces duplicate polls, preserves fast return navigation and expi
   loader.invalidate();
   assert.deepEqual(await loader.load(past), { call: 4 });
 });
+test('a live year view refreshes at five-minute intervals to keep frequent status polling inexpensive',async()=>{
+  let time=Date.parse('2026-09-08T12:00Z'),calls=0;
+  const loader=createChartLoader({now:()=>time,api:async()=>({call:++calls})});
+  const year={startDate:'2025-09-09',endDate:'2026-09-08',left:'power'};
+  assert.equal((await loader.load(year)).call,1);
+  time+=60000;assert.equal((await loader.load(year)).call,1);
+  time+=240000;assert.equal((await loader.load(year)).call,2);
+  assert.equal((await loader.load(year,{force:true})).call,3);
+});
 
 test('bounded response cache evicts least recently used date/axis combinations', async () => {
   let calls = 0;

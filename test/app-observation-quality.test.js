@@ -143,3 +143,70 @@ test('current-not-energy provenance does not discard a valid current snapshot du
   assert.equal(engine.latest.ev1_current_l1.sourceTime, beginning);
   assert.deepEqual(engine.latest.ev1_current_l1.quality, ['current_snapshot_not_energy']);
 });
+
+for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} availability transitions immediately invalidate indoor and garage readings until live recovery`, t => {
+  const { engine, setTime } = setup(t, { input: 'mqtt' });
+  const disconnectedAt = beginning + MINUTE;
+  for (const signal of ['indoor_temperature', 'garage_temperature']) {
+    const device = source === 'mqtt-temperature' ? signal : 'invented-gateway';
+    engine.ingest({ ...reading({ source, signal }), device, raw: { usableForControl: true } });
+    setTime(disconnectedAt);
+    engine.rememberObservation({ ...reading({ source, signal, value: null, sourceTime: null,
+      receivedAt: disconnectedAt, quality: ['mqtt-disconnected'] }), device,
+      raw: { usableForControl: false, timeBasis: 'availability-transition' } }, disconnectedAt);
+    assert.equal(engine.latest[signal].value, null);
+    if (signal === 'indoor_temperature') {
+      assert.equal(engine.status().observations.indoor.stale, true);
+      assert.ok(engine.tick().decision.reasons.includes('missing-or-stale-observations'));
+    }
+    // A late pre-outage publication and retained reconnect data cannot revive it.
+    for (const [sourceTime, raw, quality] of [[beginning, {}, []], [disconnectedAt, { retained: true }, ['retained']]])
+      engine.ingest({ ...reading({ source, signal, sourceTime, receivedAt: disconnectedAt, quality }), device, raw });
+    assert.equal(engine.latest[signal].value, null);
+    setTime(disconnectedAt + MINUTE);
+    engine.ingest({ ...reading({ source, signal, value: 21.3, sourceTime: disconnectedAt + MINUTE,
+      receivedAt: disconnectedAt + MINUTE }), device, raw: { usableForControl: true } });
+    assert.equal(engine.latest[signal].value, 21.3);
+    if (signal === 'indoor_temperature') assert.equal(engine.status().observations.indoor.stale, false);
+    setTime(beginning);
+  }
+});
+
+test('delayed and unrelated availability failures cannot invalidate the current temperature source', t => {
+  const { engine, setTime } = setup(t, { input: 'mqtt' });
+  const at = beginning + 2 * MINUTE;
+  setTime(at);
+  engine.ingest({ ...reading({ source: 'mqtt-temperature', sourceTime: at, receivedAt: at }), device: 'selected-room' });
+  const failure = (extra = {}) => ({ ...reading({ source: 'mqtt-temperature', value: null, sourceTime: null,
+    receivedAt: at, quality: ['mqtt-subscription-failed'] }), device: 'selected-room',
+    raw: { usableForControl: false, timeBasis: 'availability-transition' }, ...extra });
+  for (const extra of [{ source: 'husdata-h66' }, { device: 'other-room' }, { receivedAt: beginning + MINUTE }, { receivedAt: at + MINUTE }]) {
+    engine.rememberObservation(failure(extra), at);
+    assert.equal(engine.latest.indoor_temperature.value, 21);
+  }
+  engine.rememberObservation(failure(), at);
+  assert.equal(engine.status().observations.indoor.stale, true);
+});
+
+
+test('explicit H66 outdoor outage falls back to FMI without accepting delayed failure or recovery', t => {
+  const { engine, setTime } = setup(t, { input: 'mqtt' });
+  const at = beginning + MINUTE;
+  engine.ingest(reading({ source: 'fmi', signal: 'outdoor_temperature', value: 4 }));
+  const h66 = { ...reading({ source: 'husdata-h66', signal: 'outdoor_temperature', value: 2 }),
+    raw: { usableForControl: true } };
+  engine.ingest(h66);
+  setTime(at);
+  const failure = { ...h66, value: null, sourceTime: null, receivedAt: at, quality: ['mqtt-disconnected'],
+    raw: { timeBasis: 'availability-transition', usableForControl: false } };
+  engine.rememberObservation({ ...failure, device: 'other-gateway' }, at);
+  assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+  engine.rememberObservation(failure, at);
+  assert.equal(engine.status().observations.outdoor.source, 'fmi');
+  engine.ingest({ ...h66, receivedAt: at });
+  assert.equal(engine.status().observations.outdoor.source, 'fmi');
+  engine.ingest({ ...h66, sourceTime: at, receivedAt: at });
+  assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+  engine.rememberObservation({ ...failure, receivedAt: beginning }, at);
+  assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+});

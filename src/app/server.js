@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { getChartData } from './chart-data.js';
 import { simulatedOutlook } from './simulator.js';
+import { createChartService } from './chart-service.js';
 
 function authorized(req, token) {
   if (!token) return true;
@@ -27,7 +28,8 @@ function numberParam(url, key, fallback, max) {
 }
 
 export function createAppServer({ engine, store, chartService, token = '', staticDir = resolve('dist') }) {
-  return createServer(async (req, res) => {
+  const overviewService = chartService?.overview ? chartService : createChartService({ store });
+  const server = createServer(async (req, res) => {
     const json = (code, value) => {
       res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(value));
@@ -44,6 +46,23 @@ export function createAppServer({ engine, store, chartService, token = '', stati
         if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return json(403, { error: 'Cross-origin request rejected' });
         if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, engine.status());
+        if (req.method === 'GET' && url.pathname === '/api/recording-overview') {
+          const cancellation = new AbortController();
+          const cancel = () => cancellation.abort();
+          res.once('close', cancel);
+          try {
+            const result = await overviewService.overview({ signal: cancellation.signal });
+            if (!res.destroyed) return json(200, result);
+          } finally { res.removeListener('close', cancel); }
+          return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
+          // One current check per cumulative meter. Select independently so a
+          // frequently updated charger cannot hide the property's older reading.
+          const rows = ['property_import_energy_counter','ev1_lifetime_energy_counter']
+            .flatMap(signal => store.energyAudits({ signal, newestFirst:true, limit:1 }));
+          return json(200, rows.map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison})));
+        }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();
           const args = { input: engine.config.input, contract: engine.contract(),
@@ -96,4 +115,6 @@ export function createAppServer({ engine, store, chartService, token = '', stati
       if (!res.destroyed) json(400, { error: error.message });
     }
   });
+  if (overviewService !== chartService) server.once('close', () => { void overviewService.close(); });
+  return server;
 }

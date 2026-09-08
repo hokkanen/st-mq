@@ -8,6 +8,7 @@ import { DailyTimingBenchmark, Envelope, chartRange, getChartData } from '../src
 import { createChartService } from '../src/app/chart-service.js';
 import { importCsv } from '../src/storage/history.js';
 import { historySeriesAt } from '../chart/history-model.js';
+import { recordHeatPumpConfiguration } from '../src/app/chart-heat-pump.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000;
 const from = Date.parse('2026-01-15T00:00:00+02:00');
@@ -120,8 +121,11 @@ test('timing estimates are independent of the selected axis and display decimati
   const store = new Store(':memory:');
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + 4 * HOUR, 0), interval(from + 4 * HOUR, from + 24 * HOUR, 20)] };
+    recordHeatPumpConfiguration(store, 'mqtt', { heatPumpCompressorKw: 3, circulationKw: 0, auxRatedKw: 9 }, from);
     for (let at = from; at <= now; at += 5 * MINUTE) {
-      put(store, 'heat_pump_power', at < from + 4 * HOUR ? 3 : 0, at, { unit: 'kW', quality: ['estimated'] });
+      const raw = { verified: true, usableForControl: true };
+      put(store, 'compressor_active', at < from + 4 * HOUR ? 1 : 0, at, { source: 'husdata-h66', unit: 'state', raw });
+      put(store, 'auxiliary_output', 0, at, { source: 'husdata-h66', unit: '%', raw });
       put(store, 'charger_power', at < from + 2 * HOUR ? 6 : 0, at, { unit: 'kW', quality: ['estimated'] });
     }
     const baseline = get(store, { market, contract, points: 100 }).timingBenefit;
@@ -237,7 +241,7 @@ test('coverage explains missing power separately from incomplete full-day prices
   assert.deepEqual(future.evidence.sources, []);
 });
 
-test('archived provenance is classified conservatively without consulting newer compressor telemetry', () => {
+test('legacy heat-pump estimates do not replace missing original equipment and dated power assumptions', () => {
   const store = new Store(':memory:');
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] };
@@ -249,15 +253,16 @@ test('archived provenance is classified conservatively without consulting newer 
     ];
     for (let index = 0; index < metadata.length; index++) put(store, 'heat_pump_power', index ? 0 : 2,
       from + index * 30 * MINUTE, { unit: 'kW', quality: ['estimated'], raw: metadata[index] });
-    // A later sensor reading cannot retroactively upgrade the legacy unknown estimate.
+    // A later sensor reading cannot retroactively supply missing auxiliary data or dated powers.
     put(store, 'compressor_active', 1, from + HOUR, { source: 'husdata-h66', unit: 'state', raw: { usableForControl: true } });
     const result = get(store, { market, contract, now: from + 2 * HOUR }).timingBenefit.heatPump;
-    assert.deepEqual(result.evidence.sources.map(source => [source.key, source.share]),
-      [['measured', 0.25], ['observed', 0.25], ['modelled', 0.25], ['unknown', 0.25]]);
-    assert.equal(result.evidence.auxiliaryAssumedShare, 0.25, 'Metered whole-pump power does not assume auxiliary consumption');
-    assert.equal(result.evidence.auxiliaryUnknownShare, 0.25);
-    assert.equal(result.coverage, 1);
-    assert.equal(result.energyKwh, 1);
+    assert.deepEqual(result.evidence.sources, []);
+    assert.equal(result.evidence.energyBasis, 'reconstructed-equipment', 'Unavailable explanations still identify required original history');
+    assert.equal(result.evidence.timeBasis, 'recorded-interval-time');
+    assert.equal(result.coverageDetails.powerMs, 0);
+    assert.equal(result.coverageDetails.missingPowerMs, 2 * HOUR);
+    assert.equal(result.coverage, 0);
+    assert.equal(result.energyKwh, null);
   } finally { store.close(); }
 });
 
@@ -290,10 +295,16 @@ test('simulated timing evidence cannot inherit a physical-meter claim or enter h
     const prices = [{ start: from, end: from + 24 * HOUR, allInCentsPerKWh: 10 }];
     put(store, 'heat_pump_power', 2, from, { source: 'controller-estimate', device: 'simulated', unit: 'kW',
       raw: { basis: 'measured', powerBasis: 'measured', auxiliaryObserved: false } });
+    recordHeatPumpConfiguration(store, 'simulated', { heatPumpCompressorKw: 3, circulationKw: 0, auxRatedKw: 9 }, from);
+    for (let minute = 0; minute < 30; minute += 5) {
+      for (const [signal, value, unit] of [['compressor_active', 0.5, 'state'], ['auxiliary_output', 0, '%']])
+        put(store, signal, value, from + minute * MINUTE, { source: 'simulation', device: 'synthetic-plant', unit, quality: ['simulated'] });
+    }
     const simulated = get(store, { input: 'simulated', simulated: { prices }, now: from + 30 * MINUTE }).timingBenefit.heatPump;
     assert.equal(simulated.evidence.sources[0].key, 'simulated');
     assert.equal(simulated.evidence.sources[0].share, 1);
     assert.equal(simulated.evidence.auxiliaryAssumedShare, 0);
+    assert.equal(simulated.energyKwh, 0.75, 'The old scalar meter claim cannot replace recorded simulated operation');
     const household = get(store, { market: { fetchedAt: from, intervals: [interval(from, from + 24 * HOUR, 10)] }, contract }).timingBenefit.heatPump;
     assert.equal(household.value, null);
     assert.equal(household.coverageDetails.powerMs, 0);
@@ -432,7 +443,7 @@ test('combined power requires all three phases from the same timestamp and acqui
     assert.equal(result.series.property_power[0].y, 13.8);
     assert(result.series.property_power.some(point => point.x === from + MINUTE && point.y === null));
     assert(result.series.charger_power.every(point => point.y === null));
-    assert.match(result.meta.powerEstimate, /estimated kW, not metered/);
+    assert.match(result.meta.powerEstimate, /Phase allocation and energy integration are estimates/);
     assert(!Object.hasOwn(result.series, 'property_current_l1'));
     const phaseView = get(store, { left: 'phases' });
     assert.equal(phaseView.series.property_current_l1[0].y, 10);
@@ -758,6 +769,8 @@ test('worker cache invalidates on new observations; aborts release the bounded q
     await assert.rejects(first, { name: 'AbortError' });
     assert.equal((await service.query(args)).series.indoor_temperature[0].y, 20);
     assert.equal((await service.query(args)).meta.cacheHit, true);
+    store.setState('synthetic-recorder-checkpoint',{polls:2});
+    assert.equal((await service.query(args)).meta.cacheHit,true,'Unrelated checkpoint writes retain the history cache');
     put(store, 'indoor_temperature', 22, from + HOUR);
     const refreshed = await service.query(args);
     assert.equal(refreshed.series.indoor_temperature.at(-1).y, 22);

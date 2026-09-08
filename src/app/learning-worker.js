@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
 import { emptyCheckpoint, restoreCheckpoint, updateLearning } from '../control/learning.js';
-import { updateAdaptiveLearningBatch } from '../control/adaptive-learning.js';
+import { LEARNING_ALGORITHM, appendLearningRecord, applyLearningRecord, historicalLearningWindows } from './committed-learning.js';
 
 // History runs in small pages off the command/UI thread. SQLite transactionally
 // stores each checkpoint together with the exact cursor that produced it.
@@ -15,7 +15,8 @@ try {
   let checkpoint = restoreCheckpoint(saved?.checkpoint, { now: Date.now() });
   let cursor = saved?.version === 1 && checkpoint.processedThrough && Number.isSafeInteger(saved.cursor) ? saved.cursor : 0;
   if (!cursor) checkpoint = emptyCheckpoint();
-  let adaptiveCursor = adaptive?.version === 1 && adaptive.cursor && Number.isSafeInteger(adaptive.historyCursor) ? adaptive.historyCursor : 0;
+  let adaptiveCursor = adaptive?.algorithmVersion === LEARNING_ALGORITHM && adaptive.cursor
+    && Number.isSafeInteger(adaptive.historyCursor) && adaptive.historyResampling ? adaptive.historyCursor : 0;
   if (!adaptiveCursor) adaptive = null;
   let processed = 0;
   while (!stopped) {
@@ -25,21 +26,19 @@ try {
       action: row.action, quality: row.quality, regime: row.regime === 'occupied' ? 'occupied' : 'absence' }));
     const sourceNow = Math.max(...rows.map(row => row.at));
     if (samples.length) checkpoint = updateLearning(checkpoint, samples, { now: sourceNow });
-    const adaptiveSamples = rows.filter(row => row.id > adaptiveCursor).map(row => ({
-      timestamp: row.at, indoorC: row.indoorC, outdoorC: row.outdoorC,
-      phase: row.action === 'reduction' ? 'reduction' : 'normal', roomBoostC: 0,
-      solarRadiationWm2: null, regime: row.regime === 'occupied' ? 'occupied' : 'away',
-      quality: row.quality, actualModeKnown: false, energyBasis: 'unknown', powerKw: null,
-      compressorDuty: null, heating: null,
-    }));
-    if (adaptiveSamples.length) adaptive = updateAdaptiveLearningBatch(adaptive, adaptiveSamples,
-      { now: sourceNow, config: workerData.config ?? {} });
+    const windows = historicalLearningWindows(rows.filter(row => row.id > adaptiveCursor), adaptive?.historyResampling);
     cursor = Math.max(cursor, rows.at(-1).id);
     adaptiveCursor = Math.max(adaptiveCursor, rows.at(-1).id);
     processed += rows.length;
     store.transaction(() => {
+      for (const sample of windows.samples) {
+        const id = appendLearningRecord(store, 'history', 'sample', sample, { config: workerData.config ?? {} });
+        const entry = store.learningJournal({ input: 'history', after: id - 1, limit: 1 })[0];
+        adaptive = applyLearningRecord(adaptive, entry);
+      }
       store.setState('learning:history', { version: 1, cursor, checkpoint });
-      store.setState('adaptive:history', { ...adaptive, historyCursor: adaptiveCursor,
+      adaptive = { ...adaptive, historyCursor: adaptiveCursor, historyResampling: windows.state };
+      store.setState('adaptive:history', { ...adaptive,
         reconstruction: { recordedAt: Date.now(), source: 'imported-requested-modes-and-temperatures',
           solar: 'unavailable; contemporary forecasts are never backfilled into history', energy: 'unverified' } });
       store.setState('learning:health', { status: 'rebuilding-history', processed, cursor,

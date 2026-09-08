@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCycle, phaseAt } from '../control/planner.js';
 import { CONTROL_DEFAULTS } from './config.js';
 
@@ -109,7 +110,8 @@ export class CycleTracker {
       cycle.observations.push({ start: cursor, end, outdoorC: previous.outdoorC,
         solarRadiationWm2: previous.solarRadiationWm2, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
-        phase, indoorC: sample.indoorC, powerKw: previous.powerKw, eligible });
+        phase, indoorC: sample.indoorC, powerKw: previous.powerKw, eligible,
+        provenance: previous.provenance ?? null });
       cursor = end;
     }
     cycle.lastSample = sample;
@@ -162,9 +164,7 @@ export class CycleTracker {
         calibrationBasis: 'Executed actions and contemporaneous weather estimates; frozen model',
         recoveryBasis: 'Comparable room temperature and modelled heat reserve held for one hour',
         referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
-      this.save(cycle);
-      this.store.event('cycle-completed', { id: cycle.id, assessment: cycle.assessment }, now);
-      return { id: cycle.id, complete: true, recoveryComplete: true, endedAt: now,
+      const episode = { id: cycle.id, complete: true, recoveryComplete: true, startedAt: cycle.startedAt, endedAt: now,
         energyBasis: a.metered ? 'measured' : 'estimated', compressorKwh: a.compressorKwh,
         compressorRunHours: a.compressorRunHours, recoveryHours: (now - schedule.reductionEnd) / HOUR,
         recoveryEnergyKwh: a.recoveryEnergyKwh, spaceHeatingAuxKwh: a.spaceHeatingAuxKwh,
@@ -175,7 +175,17 @@ export class CycleTracker {
         predictedSpaceHeatingAuxKwh: calibration.auxiliaryKwh,
         recoveryAuxKwh: a.recoveryAuxKwh, compressorActivityObserved: a.compressorActivityObserved, auxiliaryObserved: a.auxiliaryObserved, auxiliaryRouteKnown: a.auxiliaryRouteKnown,
         frozenRecoveryMultiplier: cycle.plan.model.energy.recoveryMultiplier,
-        frozenAuxiliaryRiskScale: cycle.plan.model.energy.auxiliaryRiskScale ?? 1 };
+        frozenAuxiliaryRiskScale: cycle.plan.model.energy.auxiliaryRiskScale ?? 1,
+        phases: [...new Set(cycle.observations.map(row => row.phase))],
+        provenance: { basis: 'committed-history', forecastVersion: cycle.lastSample.provenance?.forecastVersion ?? null } };
+      // Completion and calibration are one durable operation. A crash after
+      // this commit leaves an unapplied journal entry, not a lost episode.
+      this.store.transaction(() => {
+        this.save(cycle);
+        appendLearningRecord(this.store, this.input, 'episode', episode, { config: this.config, seed: this.learningSeed?.() ?? null });
+        this.store.event('cycle-completed', { id: cycle.id, assessment: cycle.assessment }, now);
+      });
+      return episode;
     }
     this.save(cycle); return null;
   }

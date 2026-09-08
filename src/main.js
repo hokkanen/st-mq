@@ -32,6 +32,7 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     await learning?.close();
     await chartService?.close();
     if (server?.listening) await new Promise(resolve => server.close(resolve));
+    engine?.recorder.flush(clock());
     store.close();
   }
   try {
@@ -41,10 +42,13 @@ export async function start({ config = loadConfig(), clock = Date.now, providerO
     engine = new Engine({ store, config, clock, commandTransport });
     // Load durable native-setting obligations before the first active dispatch.
     // MQTT connection and device publications remain asynchronous.
-    if (['mqtt','providers'].includes(config.input) && config.deviceId && config.connections.mqtt?.address) {
+    const hasMqttObservations = config.h66?.deviceId || config.deviceId
+      || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0;
+    if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
       const acquisition = await startMqtt({ ...mqttOptions, engine, store, config });
-      acquisitions.push(acquisition); engine.setH66(acquisition);
+      acquisitions.push(acquisition);
+      if (acquisition.h66) engine.setH66(acquisition);
     }
     engine.tick();
     chartService = createChartService({ store });

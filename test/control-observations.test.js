@@ -71,7 +71,7 @@ test('derived charger power carries explicit current-based evidence without chan
   assert.equal(deriveChargerPower(latest, now), null);
 });
 
-test('engine saves the evidence available with each power value for later timing explanations', t => {
+test('live model evidence remains available without persisting it as original power history', t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' } }, clock: () => now });
@@ -80,13 +80,12 @@ test('engine saves the evidence available with each power value for later timing
     unit: 'degC', sourceTime: now, receivedAt: now, quality: [],
   });
   engine.tick();
-  const recorded = store.latestObservation('heat_pump_power');
-  assert.equal(recorded.raw.powerBasis, 'modelled');
-  assert.equal(recorded.raw.compressorObserved, false);
-  assert.equal(recorded.raw.auxiliaryAssumed, true);
-  assert.equal(recorded.raw.powerSourceTime, now);
-  assert.equal(recorded.raw.powerReceivedAt, now);
-  assert.equal(timingPowerEvidence(recorded).key, 'modelled');
+  assert.equal(store.latestObservation('heat_pump_power'), null);
+  assert.equal(engine.lastSample.powerBasis, 'modelled');
+  assert.equal(engine.lastSample.compressorActivityObserved, false);
+  assert.equal(engine.lastSample.auxiliaryAssumed, true);
+  assert.equal(engine.lastSample.powerSourceTime, now);
+  assert.equal(engine.lastSample.powerReceivedAt, now);
 });
 
 test('invalid or incomplete legacy metadata cannot claim measured or observed energy', () => {

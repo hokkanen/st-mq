@@ -20,11 +20,11 @@ export const H66_REGISTERS = Object.freeze(Object.fromEntries([
   ['0001', 'return_temperature', '°C'], ['0002', 'supply_temperature', '°C'],
   ['0005', 'brine_in_temperature', '°C'], ['0006', 'brine_out_temperature', '°C'],
   ['0007', 'outdoor_temperature', '°C'], ['0008', 'indoor_temperature', '°C'],
-  ['0009', 'dhw_temperature', '°C'], ['0012', 'discharge_temperature', '°C'], ['0107', 'heating_setpoint', '°C'],
+  ['0009', 'dhw_temperature', '°C'], ['0107', 'heating_setpoint', '°C'],
   ['8105', 'integral', 'degree-minutes'], ['3104', 'auxiliary_output', '%'],
   ['6C60', 'compressor_hours', 'h'], ['6C63', 'auxiliary_3kw_hours', 'h'],
   ['6C66', 'auxiliary_6kw_hours', 'h'], ['6C64', 'dhw_hours', 'h'],
-  ['1A01', 'compressor_active', 'state'], ['1A04', 'brine_pump_active', 'state'],
+  ['1A01', 'compressor_active', 'state'],
   ['1A06', 'heating_pump_active', 'state'], ['1A07', 'dhw_routing', 'state'],
   ['3109', 'heating_pump_speed', '%'], ['3110', 'brine_pump_speed', '%'],
   ['0203', 'room_setting', '°C'], ['0208', 'dhw_stop_setting', '°C'],
@@ -34,6 +34,7 @@ export const H66_REGISTERS = Object.freeze(Object.fromEntries([
   ['0233', 'tariff_reduction_setting', '°C'],
   ['1A20', 'alarm_active', 'state'], ['2A91', 'alarm_code', 'code'],
 ].map(([index, signal, unit]) => [index, Object.freeze({ index, signal, unit })])));
+const OMITTED_REGISTERS = new Set(['0012', '1A04']);
 
 /** Read-only decoder: no MQTT connection, subscription side effects, or command encoding. */
 export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = 300_000,
@@ -46,10 +47,12 @@ export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = 
   const verification = new Map(Object.keys(H66_REGISTERS).map(index => [index,
     { scale: 1, offset: 0, evidence: 'documented-C60-MQTT-engineering-units', installed: false }]));
   for (const [index, scale] of Object.entries(mqttScaleByRegister)) {
+    if (OMITTED_REGISTERS.has(index.toUpperCase())) continue; // Preserve compatibility with existing installation metadata.
     if (!H66_REGISTERS[index] || !Number.isFinite(scale) || scale === 0) throw new TypeError(`Invalid MQTT scale for ${index}`);
     verification.set(index, { scale, offset: 0, evidence: 'configured-MQTT-scale', installed: false });
   }
   for (const [index, config] of Object.entries(verifiedRegisters)) {
+    if (OMITTED_REGISTERS.has(index.toUpperCase())) continue;
     if (!H66_REGISTERS[index] || !config || !Number.isFinite(config.scale) || config.scale === 0 ||
       !Number.isFinite(config.offset ?? 0) || typeof config.evidence !== 'string' || !config.evidence.trim()) {
       throw new TypeError(`Invalid installed-device verification for ${index}`);

@@ -1,4 +1,4 @@
-const POWER_SOURCES = new Set(['measured', 'observed', 'modelled', 'currents', 'unknown', 'simulated']);
+const POWER_SOURCES = new Set(['measured', 'observed', 'modelled', 'currents', 'recorded', 'unknown', 'simulated']);
 const CURRENT_BASIS = 'Three coherent phase currents × nominal 230 V; not an energy meter';
 
 /** Use only evidence saved with this power value. Today's telemetry cannot
