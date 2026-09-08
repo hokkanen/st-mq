@@ -1,15 +1,31 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { getChartData, chartRange } from './chart-data.js';
+import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
 
 // The chart worker owns a separate read-only SQLite connection. A large history
 // view cannot block control decisions or the application's HTTP event loop.
 const db = new DatabaseSync(workerData.dbPath, { readOnly: true });
-db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;');
-const store = { db };
+db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
+const store = { db, path: workerData.dbPath };
 const cache = new Map(); let cacheBytes = 0, version = null;
-parentPort.on('message', ({ id, args }) => {
+let overview = null;
+parentPort.on('message', ({ id, args, operation }) => {
   try {
+    if (operation === 'overview') {
+      const at = Date.now();
+      const hit = overview && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
+      if (!hit) {
+        // Consistent read snapshot across aggregate queries. WAL permits the
+        // controller's writer to continue while the worker builds the overview.
+        db.exec('BEGIN');
+        try { overview = getDatabaseOverview({ store, now: at }); db.exec('COMMIT'); }
+        catch (error) { db.exec('ROLLBACK'); throw error; }
+      }
+      parentPort.postMessage({ id, result: { ...overview,
+        cache: { hit: Boolean(hit), ageMs: at - overview.generatedAt, maxAgeMs: OVERVIEW_REFRESH_MS } } });
+      return;
+    }
     // Acquisition checkpoints and rolling recorder metrics update frequently.
     // They do not invalidate a completed historical plot. New observations,
     // availability spans, forecast fetches and completed imports do.
@@ -17,6 +33,7 @@ parentPort.on('message', ({ id, args }) => {
       (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
       (SELECT MAX(id) FROM recorder_coverage) coverage,
+      (SELECT MAX(id) FROM events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get());
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }
     // Historical views survive second-by-second clock movement. Current/future

@@ -8,6 +8,7 @@ import { DailyTimingBenchmark, Envelope, chartRange, getChartData } from '../src
 import { createChartService } from '../src/app/chart-service.js';
 import { importCsv } from '../src/storage/history.js';
 import { historySeriesAt } from '../chart/history-model.js';
+import { recordHeatPumpConfiguration } from '../src/app/chart-heat-pump.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000;
 const from = Date.parse('2026-01-15T00:00:00+02:00');
@@ -116,8 +117,11 @@ test('timing estimates are independent of the selected axis and display decimati
   const store = new Store(':memory:');
   try {
     const market = { fetchedAt: from, intervals: [interval(from, from + 4 * HOUR, 0), interval(from + 4 * HOUR, from + 24 * HOUR, 20)] };
+    recordHeatPumpConfiguration(store, 'mqtt', { heatPumpCompressorKw: 3, circulationKw: 0, auxRatedKw: 9 }, from);
     for (let at = from; at <= now; at += 5 * MINUTE) {
-      put(store, 'heat_pump_power', at < from + 4 * HOUR ? 3 : 0, at, { unit: 'kW', quality: ['estimated'] });
+      const raw = { verified: true, usableForControl: true };
+      put(store, 'compressor_active', at < from + 4 * HOUR ? 1 : 0, at, { source: 'husdata-h66', unit: 'state', raw });
+      put(store, 'auxiliary_output', 0, at, { source: 'husdata-h66', unit: '%', raw });
       put(store, 'charger_power', at < from + 2 * HOUR ? 6 : 0, at, { unit: 'kW', quality: ['estimated'] });
     }
     const baseline = get(store, { market, contract, points: 100 }).timingBenefit;

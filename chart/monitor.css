@@ -293,10 +293,38 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
 .explain-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .explain-popup { position: fixed; z-index: 30; box-sizing: border-box; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 4px 24px #0005; font-size: 12px; font-weight: 400; line-height: 1.5; text-align: left; }
 .recording-details { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+.recording-section-title { font-size: 14px; font-weight: 550; margin: 10px 0; }
+.recording-overview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 2px 0 14px; }
+.recording-overview-toolbar p { margin: 0; }
+.recording-overview-toolbar button { flex-shrink: 0; }
+.recording-overview-size { font-size: 12px; }
+.recording-data-group { margin-top: 12px; }
+.recording-data-group > summary { font-weight: 550; }
+.recording-data-group > p { margin: 0 0 14px; }
+.recording-dataset { margin: 0 0 0 18px; border-top: 1px solid var(--border); }
+.recording-dataset > summary { font-size: 13px; padding: 12px 0; }
+.recording-dataset > summary small { display: block; margin: 5px 0 0 17px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.recording-dataset > p { margin-top: 0; line-height: 1.6; }
+.recording-dataset h4 { margin: 18px 0 10px; font-size: 12px; font-weight: 550; }
+.recording-dataset-facts, .recording-dataset-fields { display: grid; grid-template-columns: minmax(110px,1fr) minmax(0,4fr); gap: 9px 18px; margin: 10px 0 18px; font-size: 12px; line-height: 1.5; }
+.recording-dataset dt { color: var(--muted); }
+.recording-dataset dd { margin: 0; }
+.recording-dataset dt, .recording-dataset dd, .recording-dataset p, .recording-data-group p { overflow-wrap: anywhere; }
+.recording-storage-accounting table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+.recording-storage-accounting th, .recording-storage-accounting td { padding: 8px 4px; border-bottom: 1px solid var(--border); font-weight: 400; }
+.recording-storage-accounting td { text-align: right; font-variant-numeric: tabular-nums; }
+.recording-storage-accounting dd { margin: 0; }
+.recording-storage-accounting dt { color: var(--muted); overflow-wrap: anywhere; }
 .table-scroll { overflow-x: auto; }
 .recording-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
 .recording-table td, .recording-table th { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; font-weight: 400; }
 .recording-table thead th { color: var(--muted); white-space: nowrap; }
 .recording-table th small, .recording-table td small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; font-weight: 400; }
 .recording-table .recording-group th { color: var(--accent); font-weight: 550; padding-top: 18px; }
-@media(max-width: 640px) { .timing-device { flex-basis: 100%; } .timing-charger { text-align: left; } .recording-table { min-width: 720px; } }
+@media(max-width: 640px) {
+  .timing-device { flex-basis: 100%; } .timing-charger { text-align: left; } .recording-table { min-width: 720px; }
+  .recording-overview-toolbar { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .recording-dataset { margin-left: 10px; }
+  .recording-dataset-facts, .recording-dataset-fields { grid-template-columns: minmax(0,1fr); gap: 3px; }
+  .recording-dataset dd { margin-bottom: 10px; }
+}

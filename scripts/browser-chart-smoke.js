@@ -21,6 +21,11 @@ try {
   config.priceSettings = { ...config.priceSettings, effectiveDate: '2020-01-01' };
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
+  app.store.snapshot({kind:'weather',source:'browser-fixture',fetchedAt:now-4*86400000,
+    payload:{forecast:[{start:now-4*86400000,end:now-4*86400000+3600000,outdoorC:5,solarRadiationWm2:100}]}});
+  app.store.appendLearningJournal('browser-fixture',{kind:'context',at:now-86400000,
+    algorithmVersion:'browser-fixture',key:'overview-context',payload:{baselineResetAt:now-86400000}});
+  app.store.setState('settings:browser-fixture',{input:'simulated'});
   ws = new WebSocket(process.argv[2] ?? 'ws://127.0.0.1:39124/session');
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   ws.onmessage = event => {
@@ -40,6 +45,7 @@ try {
   await command('session.new', { capabilities: {} }); ownsBrowser=true;
   await command('session.subscribe', { events: ['log.entryAdded'] });
   const { context } = await command('browsingContext.create', { type: 'tab' });
+  await command('browsingContext.activate',{context});
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   const evaluate = async expression => {
     const result = await command('script.evaluate', { expression, target: { context }, awaitPromise: true });
@@ -83,10 +89,64 @@ try {
   assert.equal(await evaluate("document.getElementById('left-axis').value"), 'power');
   assert(await evaluate("document.querySelectorAll('#left-axis optgroup').length")>=10);
   for(const key of ['garage_temperature','brine_pump_speed','phase_energy','alarm_code'])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
+  assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
+  await evaluate(`(() => {
+    window.recordingFixture={fetch:window.fetch.bind(window),requests:0,fail:false,hold:false};
+    window.fetch=(...args)=>{
+      const fixture=window.recordingFixture;
+      if(String(args[0]).includes('/api/recording-overview')){
+        fixture.requests++;
+        if(fixture.fail){fixture.fail=false;return Promise.reject(new Error('Synthetic overview failure'));}
+        if(fixture.hold){fixture.hold=false;return new Promise(resolve=>{fixture.release=()=>resolve(fixture.fetch(...args));});}
+      }
+      return fixture.fetch(...args);
+    };
+    return true;
+  })()`);
   await evaluate("document.getElementById('recording-details').open=true; true");
   await until("document.querySelectorAll('#recording-content tbody tr').length>35");
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/rolling target/);
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Garage temperature/);
+  assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
+  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-overview-details,energy-audit-details');
+  await evaluate("document.querySelector('#recording-overview-details > summary').focus(); true");
+  await command('input.performActions',{context,actions:[{type:'key',id:'recording-keyboard',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
+  await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");
+  assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),true,'native summary opens by keyboard');
+  assert.equal(await evaluate("window.recordingFixture.requests"),1);
+  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Database snapshot:/);
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=heat_pump_power]'))"),false,'calculated heat-pump power is not a separate stored series');
+  assert(await evaluate("document.querySelectorAll('.recording-storage-accounting tbody tr').length")>10,'physical table accounting is available separately');
+  for(const id of ['weather-snapshots','journal-context','state-settings']) {
+    await evaluate(`(() => {const item=document.querySelector('[data-dataset-id="${id}"]');item.closest('.recording-data-group').open=true;item.open=true;return true;})()`);
+    assert.equal(await evaluate(`document.querySelector('[data-dataset-id="${id}"] > summary').textContent.includes('No records yet')`),false,`${id} has actual stored records`);
+    assert(await evaluate(`document.querySelectorAll('[data-dataset-id="${id}"] .recording-dataset-fields dt').length`)>0,`${id} describes its stored fields`);
+  }
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=state-settings] > summary').textContent"),/Current state · overwritten/);
+  assert.match(await evaluate("document.querySelector('[data-dataset-id=csv-easee] > summary').textContent"),/No records yet/);
+  await evaluate("window.recordingFixture.hold=true; document.getElementById('recording-overview-refresh').click(); document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); true");
+  await until("Boolean(window.recordingFixture.release)");
+  await evaluate("window.recordingFixture.release(); true");
+  await until("!document.getElementById('recording-overview-refresh').disabled");
+  assert.equal(await evaluate("document.querySelector('[data-dataset-id=weather-snapshots]').open && document.querySelector('[data-dataset-id=weather-snapshots]').closest('.recording-data-group').open"),true,'refresh preserves nested expansion');
+  assert.equal(await evaluate("document.activeElement.closest('[data-dataset-id]')?.dataset.datasetId"),'weather-snapshots','refresh preserves keyboard focus');
+  await evaluate("window.recordingFixture.previous=document.getElementById('recording-overview-content').innerHTML; window.recordingFixture.fail=true; document.getElementById('recording-overview-refresh').click(); true");
+  await until("document.getElementById('recording-overview-message').textContent.includes('last successful overview')");
+  assert.equal(await evaluate("document.getElementById('recording-overview-content').innerHTML===window.recordingFixture.previous"),true,'failed refresh preserves the complete inventory');
+  await evaluate("document.getElementById('recording-overview-refresh').click(); true");
+  await until("!document.getElementById('recording-overview-refresh').disabled && !document.getElementById('recording-overview-message').classList.contains('form-error')");
+  await command('browsingContext.setViewport',{context,viewport:{width:390,height:844},devicePixelRatio:1});
+  await evaluate("document.querySelector('[data-dataset-id=state-settings] > summary').click(); document.querySelector('[data-dataset-id=state-settings] > summary').click(); document.querySelector('[data-dataset-id=state-settings]').scrollIntoView({block:'start'}); true");
+  assert.equal(await evaluate("document.querySelector('[data-dataset-id=state-settings]').open"),true,'mobile native details remains operable');
+  assert.equal(await evaluate("document.documentElement.scrollWidth<=window.innerWidth"),true,'recording inventory does not overflow the mobile page');
+  mkdirSync('var',{recursive:true});
+  const inventoryMobileShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+  writeFileSync('var/home-energy-recording-inventory-mobile.png',Buffer.from(inventoryMobileShot.data,'base64'));
+  await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
+  await evaluate("document.getElementById('recording-overview-details').scrollIntoView({block:'start'}); true");
+  const inventoryShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+  writeFileSync('var/home-energy-recording-inventory.png',Buffer.from(inventoryShot.data,'base64'));
+  await evaluate("window.fetch=window.recordingFixture.fetch; document.getElementById('recording-overview-details').open=false; true");
   await evaluate("document.getElementById('energy-audit-details').open=true; true");
   await until("document.getElementById('energy-audit-content').textContent.includes('never change history')");
   await evaluate("document.getElementById('recording-details').scrollIntoView(); true");
@@ -164,6 +224,7 @@ try {
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   await evaluate("Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes('spot')).click(); true");
   for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'],
+    ['heat_pump_power','heat_pump_power','property_power'],
     ...['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'].map(name => [name, name, 'property_power']),
     ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
@@ -171,6 +232,7 @@ try {
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
+    if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/reconstructed from saved equipment states.*gaps/);
     if (left === 'power') await checkPowerDrawn();
     timings.push({ action: left, elapsedMs: Math.round(performance.now() - began) });
   }
@@ -409,7 +471,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'hover-keyboard-mobile-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'hover-keyboard-mobile-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

@@ -31,6 +31,7 @@ export function recordingRows(status = {}) {
   const known = new Map(Object.entries(SIGNAL_INFO).filter(([,info])=>info.role!=='Audit only').map(([signal,info]) => [signal,{signal,...info}]));
   const result=[],seen=new Set();
   for (const parameter of status.parameters ?? []) {
+    if(parameter.signal==='heat_pump_power')continue;
     const signals = parameter.grouped && /^(ev1|property)_energy$/.test(parameter.signal)
       ? [1,2,3].map(phase=>`${parameter.signal}_l${phase}`) : [parameter.signal];
     for (const signal of signals) {
@@ -51,10 +52,13 @@ export function renderRecording(status, root) {
   summary.className='muted';
   summary.textContent=`${recording.measurementHours ? `${number(recording.projectedAnnualBytes/1e9)} GB/year projected` : 'Collecting growth measurements'} · ${number((recording.annualBudgetBytes ?? 1e10)/1e9)} GB/year rolling target · ${durationLabel(recording.maxIntervalMs ?? 300000)} maximum interval. ${number((recording.measuredDatabaseBytes ?? 0)/1e6)} MB database.`;
   const description=document.createElement('p');description.className='muted';
-  description.textContent='Intervals below are achieved averages, not fixed schedules. All recorded measurements share a normalized accuracy target. Model role does not affect recording priority. Forecasts are saved when their content changes; source outages remain missing.';
+  description.textContent='Devices can be polled or streamed more often than values are recorded. Each new reading is compared with the last saved value. A shared learned tolerance adjusts the change thresholds toward the rolling storage target; fresh readings are recorded by the maximum interval even when unchanged. Equipment-state and quality changes are recorded immediately. Failed requests and old source timestamps are distinguished from fresh, unchanged readings.';
+  const note=document.createElement('p');note.className='muted';
+  note.textContent='These are achieved average intervals, not fixed schedules. Included measurements receive the same normalized accuracy treatment. Recording a parameter does not imply that it is used to fit the house model.';
+  const heading=document.createElement('h3');heading.className='recording-section-title';heading.textContent='Adaptive measurements';
   const table=document.createElement('table');table.className='recording-table';
   const head=document.createElement('thead'),headers=document.createElement('tr');
-  for(const name of ['Parameter / model role','Average · 1 h / 24 h / 7 d','Change threshold','Normalized error · 24 h','Status']) {
+  for(const name of ['Parameter / source','Average · 1 h / 24 h / 7 d','Change threshold','Normalized error · 24 h','Status']) {
     const cell=document.createElement('th');cell.scope='col';cell.textContent=name;headers.append(cell);
   }
   head.append(headers);table.append(head);
@@ -62,7 +66,7 @@ export function renderRecording(status, root) {
   for(const row of recordingRows(recording)) {
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
-    const role=document.createElement('small');role.textContent=`${row.role}${row.source?` · ${readable(row.source)}`:''}`;title.append(role);tr.append(title);
+    if(row.source) {const source=document.createElement('small');source.textContent=readable(row.source);title.append(source);}tr.append(title);
     for(const text of [
       [row.hour,row.day,row.week].map(period=>durationLabel(period?.averageIntervalMs)).join(' / '),
       Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${row.thresholdUnit ?? row.unit ?? ''}${row.grouped?' (phase group)':''}`:'Event / collecting',
@@ -78,7 +82,141 @@ export function renderRecording(status, root) {
   }
   table.append(body);
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);
-  root.replaceChildren(summary,description,wrap);
+  root.replaceChildren(heading,summary,description,note,wrap);
+}
+
+const inventoryDateFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'medium',timeStyle:'short'});
+const inventoryDayFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'UTC',dateStyle:'medium'});
+const dateLabel=at=>Number.isFinite(at)?inventoryDateFormat.format(at):null;
+const integerLabel=value=>Number.isSafeInteger(value)&&value>=0?new Intl.NumberFormat('en-GB').format(value):'Unknown';
+const retentionLabels={history:'Retained history',current:'Current state · overwritten',derived:'Stored summaries',rolling:'Rolling records',mixed:'History and current state'};
+const retentionDescriptions={
+  history:'Records are retained as history.',current:'Each update replaces the current entry; this is not a sequence of historical samples.',
+  derived:'Calculated summaries are stored to support reading historical data.',rolling:'Only a rolling window of these records is retained.',
+  mixed:'This dataset contains both retained history and entries that are updated in place.',
+};
+const singularCountLabels={records:'record',fetches:'fetch',versions:'version',periods:'period','current entries':'current entry',summaries:'summary',cycles:'cycle','hourly buckets':'hourly bucket',imports:'import',spans:'span'};
+const inventoryCount=item=>{
+  const plural=item?.countLabel??'records',label=item?.count===1?singularCountLabels[plural]??plural:plural;
+  return `${integerLabel(item?.count)} ${label}`;
+};
+
+export function inventoryItemSummary(item) {
+  return `${item?.status==='empty'?'No records yet':inventoryCount(item)} · ${retentionLabels[item?.retention]??'Recorded data'}`;
+}
+
+export function inventoryDateSpan(item) {
+  const dateOnly=item?.datePrecision==='date';
+  const format=at=>dateOnly&&Number.isFinite(at)?inventoryDayFormat.format(at):dateLabel(at);
+  const first=format(item?.firstAt),last=format(item?.lastAt);
+  if(!first&&!last)return item?.status==='empty'?'No recorded dates yet':'Dates not recorded';
+  const dates=first&&last&&first!==last?`${first} – ${last}`:last??first;
+  return `${item?.dateBasis??'Recorded dates'}: ${dates} · ${dateOnly?'time not recorded':'Finnish time'}`;
+}
+
+/** Re-render the inventory without collapsing the user's chosen sections or
+ * losing keyboard focus. Data stays as text, including future dataset labels.
+ */
+export function renderRecordingOverview(overview,root) {
+  if(!root)return;
+  const expanded=new Map([...root.querySelectorAll('details[data-overview-key]')].map(details=>[details.dataset.overviewKey,details.open]));
+  const focused=document.activeElement;
+  const focusedKey=root.contains(focused)?focused.closest('[data-overview-key]')?.dataset.overviewKey:null;
+  const nodes=[];
+  const intro=document.createElement('p');intro.className='muted';
+  intro.textContent=overview.summary??'The database also keeps forecasts, control and learning records, settings, imported history and supporting data. Expand a dataset to see what is stored and when it changes.';
+  nodes.push(intro);
+  const size=overview.database?.allocatedBytes??overview.database?.bytes;
+  if(Number.isFinite(size)) {
+    const usage=document.createElement('p');usage.className='recording-overview-size muted';
+    usage.textContent=`Allocated database: ${number(size/1e6)} MB${Number.isFinite(overview.database?.totalFileBytes)?` · files on disk: ${number(overview.database.totalFileBytes/1e6)} MB`:''}${Number.isFinite(overview.database?.walBytes)?` · transaction log: ${number(overview.database.walBytes/1e6)} MB`:''}.`;
+    nodes.push(usage);
+    if(overview.database.description){const description=document.createElement('p');description.className='muted';description.textContent=overview.database.description;nodes.push(description);}
+  }
+  const accounting=document.createElement('p');accounting.className='muted';accounting.textContent='Dataset counts describe different kinds of records and may overlap; they should not be added together.';nodes.push(accounting);
+  for(const group of overview.groups??[]) {
+    const details=document.createElement('details');details.className='recording-data-group';details.dataset.overviewKey=`group:${group.id}`;
+    const summary=document.createElement('summary');summary.textContent=group.label;details.append(summary);
+    if(group.description){const description=document.createElement('p');description.className='muted';description.textContent=group.description;details.append(description);}
+    for(const item of group.items??[]) {
+      const dataset=document.createElement('details');dataset.className='recording-dataset';dataset.dataset.overviewKey=`item:${group.id}:${item.id}`;
+      dataset.dataset.datasetId=item.id;dataset.dataset.retention=item.retention??'';
+      const title=document.createElement('summary'),name=document.createElement('span'),state=document.createElement('small');
+      name.className='recording-dataset-name';name.textContent=item.label;state.textContent=inventoryItemSummary(item);
+      title.append(name,state);dataset.append(title);
+      if(item.description){const description=document.createElement('p');description.textContent=item.description;dataset.append(description);}
+      const behavior=document.createElement('dl');behavior.className='recording-dataset-facts';
+      const fact=(label,value)=>{
+        const key=document.createElement('dt'),text=document.createElement('dd');key.textContent=label;text.textContent=String(value);behavior.append(key,text);
+      };
+      fact('Recorded',inventoryCount(item));
+      if(item.writeBehavior)fact('When saved',item.writeBehavior);
+      fact('Retention',item.retentionDescription??retentionDescriptions[item.retention]??'Stored in the database.');
+      fact('Dates',inventoryDateSpan(item));
+      if(Number.isFinite(item.missingCount))fact('Missing values',integerLabel(item.missingCount));
+      for(const detail of item.facts??[])fact(detail.label,typeof detail.value==='number'?number(detail.value):detail.value);
+      dataset.append(behavior);
+      if(item.fields?.length) {
+        const label=document.createElement('h4');label.textContent='Stored fields';dataset.append(label);
+        const fields=document.createElement('dl');fields.className='recording-dataset-fields';
+        for(const field of item.fields) {
+          const name=document.createElement('dt'),description=document.createElement('dd');
+          name.textContent=field.name;description.textContent=field.description;fields.append(name,description);
+        }
+        dataset.append(fields);
+      }
+      dataset.open=expanded.get(dataset.dataset.overviewKey)??false;details.append(dataset);
+    }
+    details.open=expanded.get(details.dataset.overviewKey)??false;nodes.push(details);
+  }
+  if(!overview.groups?.length){const empty=document.createElement('p');empty.textContent='No dataset inventory is available yet.';nodes.push(empty);}
+  if(overview.accounting?.tables?.length) {
+    const details=document.createElement('details');details.className='recording-storage-accounting';details.dataset.overviewKey='accounting';
+    const summary=document.createElement('summary');summary.textContent='Storage accounting';details.append(summary);
+    const description=document.createElement('p');description.className='muted';
+    description.textContent=overview.accounting.description??'Each physical table is counted once below. These technical counts include supporting records and are not a count of independent measurements.';details.append(description);
+    const table=document.createElement('table'),head=document.createElement('thead'),titles=document.createElement('tr');
+    for(const title of ['Database table','Rows']){const cell=document.createElement('th');cell.scope='col';cell.textContent=title;titles.append(cell);}head.append(titles);table.append(head);
+    const body=document.createElement('tbody');
+    for(const item of overview.accounting.tables) {
+      const row=document.createElement('tr'),name=document.createElement('th'),count=document.createElement('td');
+      name.scope='row';name.textContent=item.name;count.textContent=integerLabel(item.rows);row.append(name,count);body.append(row);
+    }
+    table.append(body);
+    if(Number.isFinite(overview.accounting.totalRows)){
+      const foot=document.createElement('tfoot'),row=document.createElement('tr'),label=document.createElement('th'),total=document.createElement('td');
+      label.scope='row';label.textContent='Total physical rows';total.textContent=integerLabel(overview.accounting.totalRows);row.append(label,total);foot.append(row);table.append(foot);
+    }
+    const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);details.append(wrap);
+    if(overview.accounting.views?.length){
+      const description=document.createElement('p');description.className='muted';description.textContent='Views are queries over the tables above; their rows are not stored a second time.';details.append(description);
+      const views=document.createElement('dl');views.className='recording-dataset-fields';
+      for(const view of overview.accounting.views){const name=document.createElement('dt'),text=document.createElement('dd');name.textContent=view.name;text.textContent=view.description;views.append(name,text);}details.append(views);
+    }
+    details.open=expanded.get('accounting')??false;nodes.push(details);
+  }
+  root.replaceChildren(...nodes);
+  if(focusedKey) [...root.querySelectorAll('[data-overview-key]')].find(node=>node.dataset.overviewKey===focusedKey)?.querySelector('summary')?.focus({preventScroll:true});
+}
+
+export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview}) {
+  let fetchedAt=null,busy=false,loaded=false,refreshAfterMs=300000;
+  const refresh=async({force=false}={})=>{
+    if(busy||!details.open||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
+    busy=true;button.disabled=true;root.setAttribute('aria-busy','true');
+    message.classList.remove('form-error');message.textContent=loaded?'Refreshing recorded-data overview…':'Loading recorded-data overview…';
+    try {
+      const result=await request('/api/recording-overview');
+      if(!result||!Array.isArray(result.groups))throw new Error('Invalid recorded-data overview');
+      render(result,root);loaded=true;fetchedAt=clock();
+      refreshAfterMs=Number.isFinite(result.refreshAfterMs)&&result.refreshAfterMs>0?result.refreshAfterMs:300000;
+      message.textContent=`Database snapshot: ${dateLabel(result.generatedAt)??dateLabel(fetchedAt)} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while this section is open.`;
+    } catch {
+      message.classList.add('form-error');
+      message.textContent=loaded?'Could not refresh the overview. The last successful overview is still shown.':'The recorded-data overview could not be loaded. Use Refresh overview to try again.';
+    } finally {busy=false;button.disabled=false;root.removeAttribute('aria-busy');}
+  };
+  return refresh;
 }
 
 export function renderEnergyAudits(rows, root) {

@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { rollupSchema, updateChartRollup } from './chart-rollups.js';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -169,6 +169,7 @@ export class Store {
         if (version < 4) this.db.exec(learningSchema);
         if (version < 5) this.db.exec(recorderSchema);
         if (version < 6) this.db.exec(rollupSchema);
+        if (version < 7) this.db.exec('CREATE INDEX IF NOT EXISTS events_type_time ON events(type,at,id)');
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');

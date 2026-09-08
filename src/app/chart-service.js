@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { getChartData, chartRange } from './chart-data.js';
+import { getDatabaseOverview } from './database-overview.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
 
@@ -46,21 +47,23 @@ export function createChartService({ store, maxQueue = 8 } = {}) {
         }
       });
     }
-    worker.postMessage({ id: active.id, args: active.args });
+    worker.postMessage({ id: active.id, args: active.args, operation: active.operation });
   }
   return {
-    query(args, { signal } = {}) {
+    overview({ signal } = {}) { return this.query({}, { signal, operation: 'overview' }); },
+    query(args, { signal, operation = 'chart' } = {}) {
       if (closed) return Promise.reject(new Error('Chart service is closed'));
       if (signal?.aborted) return Promise.reject(aborted());
       args = { ...args, now: args?.now ?? Date.now() };
       // Validate dates before allocating a worker or queue slot.
-      try { chartRange(args); } catch (error) { return Promise.reject(error); }
+      try { if (operation !== 'overview') chartRange(args); } catch (error) { return Promise.reject(error); }
       if (store.path === ':memory:') {
-        try { return Promise.resolve(getChartData({ ...args, store })); } catch (error) { return Promise.reject(error); }
+        try { return Promise.resolve(operation === 'overview' ? getDatabaseOverview({ ...args, store }) : getChartData({ ...args, store })); }
+        catch (error) { return Promise.reject(error); }
       }
       if (queue.length + Number(Boolean(active)) >= maxQueue) return Promise.reject(new RangeError('Too many pending chart requests'));
       return new Promise((resolve, reject) => {
-        const entry = { id: nextId++, args, signal, resolve, reject, abort: null };
+        const entry = { id: nextId++, args, operation, signal, resolve, reject, abort: null };
         entry.abort = () => {
           if (active === entry) { active = null; reset(); }
           else { const index = queue.indexOf(entry); if (index < 0) return; queue.splice(index, 1); }

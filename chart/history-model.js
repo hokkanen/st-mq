@@ -107,7 +107,7 @@ for (const [signal, info] of Object.entries(SIGNAL_INFO)) {
     PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : 'integral'];
 }
 Object.assign(seriesInfo, {
-  heat_pump_power: ['Heat pump', 'kW · estimated electrical input', 'auxiliary'],
+  heat_pump_power: ['Heat pump', 'kW · reconstructed estimated electrical input', 'auxiliary'],
   controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
   dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
 });

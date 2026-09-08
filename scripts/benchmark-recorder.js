@@ -9,6 +9,8 @@ import { Store } from '../src/storage/store.js';
 import { ROLLUP_SIGNALS, ENERGY_ROLLUP_MS } from '../src/storage/chart-rollups.js';
 import { H66_HISTORY_SIGNALS, SIGNAL_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
 import { chartRange, getChartData } from '../src/app/chart-data.js';
+import { recordHeatPumpConfiguration } from '../src/app/chart-heat-pump.js';
+import { getDatabaseOverview } from '../src/app/database-overview.js';
 
 const args=process.argv.slice(2), number=(name,fallback)=>{
   const index=args.indexOf(name);return index<0 ? fallback : Number(args[index+1]);
@@ -33,6 +35,9 @@ function insert(o) {
     received_at:o.sourceTime,quality,raw,import_id:null,row_number:null,aggregated:true};
 }
 try {
+  recordHeatPumpConfiguration(store, 'providers', {
+    heatPumpCompressorKw: 3, circulationKw: 0.08, auxRatedKw: 9,
+  }, epoch);
   for(let day=0;day<requestedDays;day++) {
     for(let hour=0;hour<24;hour++) store.transaction(()=>{
       const at=epoch+day*DAY+hour*HOUR, summaries=new Map();
@@ -106,9 +111,13 @@ try {
     queries.push({range:label,days:length,elapsedMs,jsonBytes:Buffer.byteLength(JSON.stringify(result)),
       points:Object.values(result.series).reduce((n,list)=>n+list.length,0)});
   }
+  const overviewStarted = performance.now(), overview = getDatabaseOverview({ store, now: end });
+  const inventory = { elapsedMs: Math.round(performance.now() - overviewStarted),
+    jsonBytes: Buffer.byteLength(JSON.stringify(overview)), groups: overview.groups.length,
+    tables: overview.accounting.tables.length, totalRows: overview.accounting.totalRows };
   console.log(JSON.stringify({synthetic:true,hardware:cpus()[0]?.model,node:process.version,requestedDays,populatedDays:days,
     electricityIntervalMinutes:1,h66IntervalMinutes:h66Minutes,h66Signals:H66_HISTORY_SIGNALS.length,rows,
     databaseBytes:store.databaseBytes(),annualizedBytes:Math.round(store.databaseBytes()*365/days),
-    populationMs:Math.round(populatedMs),peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024),queries,...(cpuProfile?{cpuProfile}:{}),
-    limitations:'Bulk synthetic population; no provider/forecast/journal/coverage/state growth or live write-throughput measurement. Host results, not Raspberry Pi timings.'},null,2));
+    populationMs:Math.round(populatedMs),peakRssMiB:Math.round(process.resourceUsage().maxRSS/1024),queries,inventory,...(cpuProfile?{cpuProfile}:{}),
+    limitations:'Bulk synthetic population plus one nominal-power configuration; no representative provider/forecast/journal/coverage/state growth or live write-throughput measurement. Host results, not Raspberry Pi timings.'},null,2));
 } finally {cleanup();}

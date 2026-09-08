@@ -3,6 +3,7 @@ import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../contr
 import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
+import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal } from './committed-learning.js';
 import { goodQuality } from '../control/learning.js';
@@ -382,6 +383,7 @@ export class Engine {
   }
   tick() {
     const now = this.clock(), input = this.config.input;
+    recordHeatPumpConfiguration(this.store, input, this.control, now);
     this.recorder.flush(now);
     const priorExecutor = this.executor.status?.();
     if (priorExecutor?.lastResult?.status === 'mqtt' && priorExecutor.lastResult.at > (this.applied.at ?? -Infinity)
@@ -613,10 +615,10 @@ export class Engine {
       }).finally(() => { this.dispatchPending = null; this.onTemporaryChange?.(); });
       execution = { status:'pending', sent:false, actual:null };
     } else if (!this.dispatchPending) execution = onExecution(execution);
-    // Historical values represent estimates as known then, never revised forecasts of past sunshine.
+    // Heat-pump total power is reconstructed from committed equipment readings
+    // and dated nominal assumptions. Auxiliary power remains a separate estimate.
     const persist = (signal,value,unit,raw,quality=['estimated']) => this.recorder.record({source:'controller-estimate',device:input,signal,value,unit,sourceTime:now,receivedAt:now,quality,raw});
     if (input !== 'offline') {
-      persist('heat_pump_power',sample.powerKw,'kW',{basis:sample.energyBasis, compressorObserved: Number.isFinite(equipment.compressorOn), auxiliaryObserved:sample.auxiliaryObserved});
       if (sample.auxiliaryObserved) persist('auxiliary_power',sample.auxKw,'kW',{basis:sample.auxiliaryPowerBasis,
         nominalStage:sample.auxiliaryStage,ratedPowerKw:this.control.auxRatedKw,route:sample.auxRoute,verified:true,usableForControl:true});
     }

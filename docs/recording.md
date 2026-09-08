@@ -5,6 +5,12 @@ can be read frequently while history retains a compact approximation. Only
 committed history and its recorded interpretation feed the learner. Recording a
 garage temperature or a diagnostic does not make it a fitted model input.
 
+This version is still in development. Existing experimental SQLite contents do
+not require compatibility work. The eventual production migration starts from
+the old Easee and st-mq CSV exports; the existing 0.7.5 installation continues
+running independently until that migration. CSV parsing, source timestamps,
+units, quality flags and import provenance remain supported.
+
 ## Acquisition schedules
 
 | Source | Default acquisition | Important distinction |
@@ -104,6 +110,37 @@ they assume 230 V and unity power factor and are not the original current readin
 Older current-only history keeps its existing 230 V estimation basis. The new
 energy path takes over at its recorded boundary without double-counting the older
 path. Missing intervals remain missing in energy and timing comparisons.
+
+### Heat-pump power reconstructed from history
+
+The application no longer records a standalone `heat_pump_power` observation.
+Its chart and daily timing comparison reconstruct estimated electrical input
+from committed compressor activity and auxiliary output:
+
+`power kW = compressor activity × (nominal compressor kW + circulation kW) + auxiliary kW`
+
+Auxiliary output uses the same configured capacity and stage interpretation as
+the committed learning input. This is a nominal electrical estimate, not a heat
+meter, measured heat-pump consumption or property consumption minus charging.
+Requested hot-water circulation alone does not establish actual energy use.
+
+Power assumptions are recorded when first used and whenever they change, with
+an effective time and calculation version. Historical calculations use those
+saved assumptions instead of today's settings. Source verification, freshness
+and availability bound every reconstructed interval. Missing source data or
+missing historical power assumptions leave gaps; the chart does not fill them
+with live model predictions. The timing calculation uses the underlying
+intervals, independently of chart point reduction and the selected left axis.
+
+The imported CSV formats do not contain the necessary H66 equipment readings.
+They remain useful for their recorded temperatures, prices, requests and phase
+currents, but do not establish historical heat-pump consumption. The previous
+standalone controller-estimate curve is not required as a migration input.
+
+Learning samples and cycle records still contain their resolved power estimates
+and provenance for replay. They are documented as learning records in the
+database overview; they are not a second adaptive power series. Removing the
+standalone chart series does not change the house learner's input selection.
 
 ### Audit-only cumulative meters
 
@@ -294,10 +331,42 @@ failures are recorded separately from unchanged sensor values.
 
 The left drawer lists historical axes in temperature, heating, hot-water,
 ground-loop, settings, equipment, runtime, electricity, weather and learning groups.
-Recorded and calculated roles are separate from model roles. Recording details
-show achieved interval averages, current thresholds, freshness and storage growth;
-an average interval is not a fixed poll schedule. Energy-audit details show the
-occasional metered comparison without changing the learner.
+Recorded and calculated roles are separate from model roles.
+
+**Recording details describes stored database contents.** The first table
+describes adaptive measurements: achieved intervals, learned thresholds,
+freshness and growth. Its explanation distinguishes fast acquisition from
+recording changes against the last saved value, and describes the shared rolling
+storage objective. An average recording interval is not a fixed poll schedule.
+
+The **Other recorded data** fold appears before **Meter accuracy checks**. It
+describes the remaining datasets using field lists, counts, available dates and
+the way each dataset is updated. Groups cover:
+
+- Forecast temperature and radiation versions, shared content and fetch references.
+- Spot prices and dated contract components.
+- Recorded controller phases, circulation requests and learning chart metrics.
+- Learning samples, episodes, replay configuration and assessments.
+- Current settings and checkpoints, explicitly distinguished from retained history.
+- Easee/st-mq CSV imports, manual counters and historical annotations.
+- Availability coverage, recorder statistics, chart summaries and storage support.
+
+An empty dataset is identified as empty rather than inferred to contain
+measurements. The overview does not expose configuration values, private device
+identifiers, import paths or arbitrary event payloads. Storage support records
+explain database growth without presenting them as additional physical sensors
+or model inputs. Purely reconstructed chart values are not listed as independent
+stored series; persisted calculated learning results are described as such.
+
+Database inventory queries are read-only and requested when the other-data fold
+is open. A bounded worker query and cache keep large inventories out of the live
+control loop. Expand/collapse state survives updates. Meter-accuracy details
+continue to show the two cumulative-meter checks without changing the learner.
+
+Selecting the house model's inputs and explaining their source dependencies,
+transformations and averaging windows is a separate interface concern. The
+database inventory does not claim that recording a parameter makes it a fitted
+model input.
 
 Views longer than seven days refresh at five-minute intervals. Ordinary raw polls
 and recorder checkpoints do not force a history download. Short views react to
@@ -312,17 +381,23 @@ Meter checks, separately from estimated interval energy.
 Run `node scripts/benchmark-recorder.js --days 365 --max-seconds 180` for an
 isolated synthetic benchmark. It creates and removes its own temporary database;
 it does not open production history or configuration. `--profile` profiles query
-work only and reports the hottest functions.
+work only and reports the hottest functions. It also measures the uncached
+database overview and seeds nominal power assumptions to exercise heat-pump
+reconstruction from the synthetic H66 records.
 
 On the development Ryzen host with Node 22.19.0, six electrical series every minute
 plus all 30 H66 series every five minutes produced 6,307,200 observations and a
-4.02 GB database, including 15-minute energy and hourly scalar summaries. The
-power chart took 183 ms for one day, 2.30 seconds for a month, and 17.15 seconds
-for a year. The year response was about 1.45 MB and 11,537 points. Peak process RSS
-was 316 MiB across population and queries.
+4.02 GB database, including 15-minute energy and hourly scalar summaries. With
+heat-pump reconstruction enabled, the power chart took 197 ms for one day,
+1.87 seconds for a month, and 19.58 seconds for a year. The year response was
+about 1.45 MB and 11,537 points. The uncached database overview took 10.94 seconds
+to summarize all 17 tables and returned about 35 kB. Its worker caches the result
+for five minutes and reports the original snapshot time. Peak process RSS was
+176 MiB across population and queries.
 
 This measures the core observation workload, **not total application growth**:
 forecasts, learning journals, coverage, checkpoints and event logs add storage.
+Only one initial nominal-power configuration is included in this workload.
 Population uses bulk inserts with equivalent summary payloads, so its duration
 does not measure live recorder write throughput. The workload has no price data;
 tariff correctness is tested separately. These are host measurements, not Raspberry

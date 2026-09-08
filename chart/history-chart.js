@@ -177,7 +177,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                 label: item => {
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
                   const interval = item.raw?.fromEnergy ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}${item.raw.aggregated?' · 15-minute aggregate':''}` : '';
-                  return `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${source ? ` · ${source}` : ''}${interval}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
+                  return `${item.dataset.label}: ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}${source ? ` · ${source}` : ''}${interval}${reconstructed}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -197,6 +198,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (plot.left === 'power') notes.push(payload.meta?.powerEstimate ?? 'Power is an interval average derived from estimated energy.');
     if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
+    if (plot.left === 'heat_pump_power') notes.push('Heat-pump electricity is reconstructed from saved equipment states and dated nominal power assumptions. It is an estimate; missing, stale or unverified source periods appear as gaps.');
     if (payload.meta?.hourlySummaries) notes.push('Long ranges use hourly temperature extrema and endpoints and refresh every five minutes.');
     if (payload.meta?.recordedEnergy?.aggregated) notes.push('Long-range electricity uses 15-minute energy sums and average power. Gaps and finer price boundaries retain the original intervals for cost calculations.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');

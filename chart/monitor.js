@@ -3,7 +3,7 @@ import { describeProvider, outdoorSourceLabel, providerName } from './provider-s
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { balanceControllerColumns } from './panel-layout.js';
 import { learningDisplay, h66Control, h66ReadingValue, h66Registers } from './learning-status.js';
-import { renderRecording, renderEnergyAudits } from './recording.js';
+import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
@@ -387,6 +387,11 @@ $('h66-test-form').addEventListener('submit', async event => {
   await refresh();
 });
 balanceControllerColumns(document.querySelector('.controller-panels'));
+const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
+  details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
+$('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
+$('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
+setInterval(refreshRecordingOverview,60_000);
 let auditFetchedAt = 0, auditBusy = false;
 async function refreshAudits() {
   if (!$('recording-details').open || !$('energy-audit-details').open || auditBusy || Date.now()-auditFetchedAt<60_000) return;
@@ -396,7 +401,7 @@ async function refreshAudits() {
   finally { auditBusy=false; }
 }
 $('recording-details').addEventListener('toggle',()=>{
-  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshAudits(); }
+  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview(); void refreshAudits(); }
 });
 $('energy-audit-details').addEventListener('toggle',refreshAudits);
 setInterval(refreshAudits,60_000);

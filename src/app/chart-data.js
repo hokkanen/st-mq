@@ -10,13 +10,14 @@ import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS, H66_HISTORY_S
 import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
 import { ROLLUP_SIGNALS, chartRollupRows, rollupWatermark } from '../storage/chart-rollups.js';
 import { mergeCoverageRows } from './chart-coverage.js';
+import { addHistoricalHeatPump } from './chart-heat-pump.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
 const TEMPERATURES = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
 const PHASES = ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`));
 const LEARNING = ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'];
-const H66_SIGNALS = ['auxiliary_power', 'heat_pump_power', 'charger_power', 'compressor_active', 'dhw_routing', 'operating_mode', 'controller_phase', 'dhwr_request'];
+const H66_SIGNALS = ['auxiliary_power', 'charger_power', 'compressor_active', 'dhw_routing', 'operating_mode', 'controller_phase', 'dhwr_request'];
 const BAD = new Set(['missing', 'invalid_numeric', 'invalid_unit', 'invalid_value', 'invalid-value',
   'invalid-payload', 'suspect_zero_indoor', 'implausible_temperature', 'negative_current',
   'implausible_current', 'all_zero_property_current', 'conflicting_duplicate', 'future_source_time',
@@ -356,7 +357,7 @@ export class DailyTimingBenchmark {
         actualCostEuro: covered ? actualCostEuro : null, uniformCostEuro: covered ? uniformCostEuro : null,
         assumedPrices: this.days.some(day => day[name].covered > 0 && day.assumedPrices),
         coverage: duration ? Math.min(1, covered / duration) : 0, provisional: this.now < this.range.to || covered < duration,
-        basis: name === 'charger' ? 'Estimated phase-energy intervals; older history uses phase-current snapshots' : 'Estimated heat-pump electrical power; no whole-property subtraction',
+        basis: name === 'charger' ? 'Estimated phase-energy intervals; older history uses phase-current snapshots' : 'Reconstructed compressor and auxiliary electricity using recorded equipment states and dated nominal powers; no whole-property subtraction',
         explanation: 'Recorded energy at its actual times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
     }));
   }
@@ -453,13 +454,14 @@ export function getChartData({ store, input = 'offline', contract = null, market
     : historicalPricing?.intervals(marketIntervals) ?? [];
   const priceAssumptions = { used: priced.some(price => price.assumedPrice) };
   const timing = new DailyTimingBenchmark(range, now, priced);
+  const heatPumpEnergy = addHistoricalHeatPump({ store, range, now, input, envelope: envelopes.heat_pump_power, timing });
   const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input)]));
   addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
-    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
+    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !['property_power', 'heat_pump_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const watermark = range.to-range.from > 7*DAY ? rollupWatermark(store.db) : null;
   const summarized = new Set(watermark === null ? [] : [...requested].filter(signal=>ROLLUP_SIGNALS.includes(signal)));
@@ -578,7 +580,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
-        if (signal === 'heat_pump_power') timing.add('heatPump', time, row.unit === 'kW' ? value : null);
         if (signal === 'charger_power') timing.add('charger', time, row.unit === 'kW' ? value : null);
         if (LEARNING.includes(signal)) {
           try { const raw = JSON.parse(row.raw); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
@@ -773,7 +774,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, recordedEnergy, hourlySummaries: summarized.size>0,
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, recordedEnergy, heatPumpEnergy, hourlySummaries: summarized.size>0,
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
