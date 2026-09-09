@@ -26,7 +26,7 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    assert.equal(actual.length, 15);
+    assert.equal(actual.length, 16);
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
@@ -59,6 +59,9 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
       unit: 'degC', sourceTime: at, receivedAt: at, quality: [] });
     store.setState(`settings:${privateMarker}`, { credential: privateMarker });
     store.setState(`settings:${privateMarker}`, { credential: privateMarker, mode: 'observe' });
+    store.setState(`fireplace:rebuild:${privateMarker}`, { status: 'running', error: privateMarker });
+    store.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES(?,?,?,'load',?)")
+      .run(privateMarker, privateMarker, at, 8);
     store.setState(`heat-pump-power-config:${privateMarker}`, { version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 });
     store.setState(`contract:${privateMarker}`, { periods: [{ from: at - 86400000, marginCtPerKwh: 1 }, { from: at, marginCtPerKwh: 2 }] });
     store.event('heat-pump-power-config', { input: privateMarker, version: 1, heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 6 }, at);
@@ -104,6 +107,11 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     assert.equal(rows.get('state-contract').count, 1);
     assert.equal(rows.get('state-settings').count, 1, 'overwritten settings are not extra history');
     assert.equal(rows.get('state-settings').retention, 'current');
+    assert.equal(rows.get('fireplace-loads').count, 1);
+    assert.equal(rows.get('fireplace-loads').firstAt, at);
+    assert.equal(rows.get('fireplace-loads').lastAt, at);
+    assert.equal(rows.get('state-fireplace').count, 1);
+    assert.equal(rows.get('state-fireplace').retention, 'current');
     assert.equal(rows.get('events-heat-power-config').count, 1);
     for (const kind of ['sample', 'episode', 'context']) assert.equal(rows.get(`journal-${kind}`).count, 1);
     assert.equal(rows.get('learning-cycles').facts.find(fact => fact.label.includes('assessments')).value, 1);
@@ -117,6 +125,35 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     assert(!encoded.includes(directory));
     assert(!encoded.includes('invented-private-device'));
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('fireplace inventory separates retained loads, correction actions and current rebuild state without exposing entries', () => {
+  const store = new Store(':memory:');
+  const old = at - 10 * 86_400_000;
+  const insert = store.db.prepare('INSERT INTO fireplace_events(input,request_id,at,kind,kg,target_id) VALUES(?,?,?,?,?,?)');
+  try {
+    const first = Number(insert.run('providers', 'invented-private-old-load', old, 'load', 8, null).lastInsertRowid);
+    insert.run('providers', 'invented-private-top-up', at, 'load', 2, null);
+    insert.run('simulated', 'invented-private-simulation', at + 1_000, 'load', 10, null);
+    insert.run('providers', 'invented-private-correction-one', at + 2_000, 'remove', null, first);
+    insert.run('providers', 'invented-private-correction-two', at + 3_000, 'remove', null, first);
+    store.setState('fireplace:rebuild:providers', { status: 'pending', revision: 5 });
+    store.setState('fireplace:rebuild:providers', { status: 'running', revision: 5 });
+    store.db.exec('PRAGMA query_only=ON');
+    const overview = getDatabaseOverview({ store, now: at + 4_000 });
+    const rows = items(overview), loads = rows.get('fireplace-loads'), corrections = rows.get('fireplace-corrections');
+    assert.equal(loads.count, 3, 'full retained history includes additions older than the 48-hour UI window');
+    assert.equal(loads.firstAt, old); assert.equal(loads.lastAt, at + 1_000);
+    assert.equal(loads.retention, 'history');
+    assert.deepEqual(loads.facts, [{ label: 'Unretracted additions', value: 2 }, { label: 'Retracted additions', value: 1 }]);
+    assert.equal(corrections.count, 2, 'distinct correction actions are counted even when they target the same load');
+    assert.equal(corrections.firstAt, at + 2_000); assert.equal(corrections.lastAt, at + 3_000);
+    assert.equal(corrections.dateBasis, 'correction time');
+    assert.equal(rows.get('state-fireplace').count, 1, 'updated worker progress is current state, not duplicated historical records');
+    assert.equal(overview.accounting.tables.find(table => table.name === 'fireplace_events').rows, 5);
+    assert.equal(overview.accounting.totalRows, 6);
+    assert(!JSON.stringify(overview).includes('invented-private'));
+  } finally { store.close(); }
 });
 
 test('overview API is authenticated, worker-backed, cached and read-only', async t => {

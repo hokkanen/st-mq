@@ -184,12 +184,33 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       ['Execution', 'Committed observations, requested phases, adjustments and coverage.'], ['Assessment', 'Recorded cycle cost, comparable space-heating cost and benefit, space-heating recovery error and uncertainty; hot-water service is excluded from benefit.']) }));
   add('learning', 'Learning history', 'These are stored model records and calculated results. Explaining or selecting the home model’s inputs is a separate feature.', learningItems);
 
+  const fireplace = grouped('fireplace_events', "CASE WHEN kind IN ('load','remove') THEN kind ELSE 'other' END", 'at');
+  const retractedLoads = db.prepare(`SELECT COUNT(*) count FROM fireplace_events loads JOIN
+    (SELECT input,target_id FROM fireplace_events WHERE kind='remove' GROUP BY input,target_id) corrections
+    ON corrections.input=loads.input AND corrections.target_id=loads.id WHERE loads.kind='load'`).get().count;
+  add('fireplace', 'Fireplace history', 'Firewood additions and corrections are retained once. Delayed heat inputs are reconstructed from this history during learning; each correction does not store another copy of the training journal.', [
+    item('fireplace-loads', 'Recorded firewood additions', 'Reported loads for either fireplace and subsequent additions. This inventory includes retained mistaken entries as well as current entries, beyond the dashboard’s 48-hour list.', fireplace.get('load'), {
+      countLabel: 'additions', dateBasis: 'recording time', writeBehavior: 'Once per distinct submission; retrying the same request does not add another load.',
+      retentionDescription: 'Original additions remain in history, including entries later marked mistaken.',
+      facts: [{ label: 'Unretracted additions', value: (fireplace.get('load')?.count ?? 0) - retractedLoads },
+        { label: 'Retracted additions', value: retractedLoads }],
+      fields: fields(['Fuel addition', 'Whole kilograms of dry firewood and the server-recorded addition time; reported fuel is not measured delivered heat.'],
+        ['Recording identity', 'Input stream and unique submission identity used to distinguish additions from retries; identifiers are not displayed here.']) }),
+    item('fireplace-corrections', 'Mistaken-entry corrections', 'Retractions identify the original load and when the mistake was recorded. A correction changes effective learning inputs while retaining the original entry.', fireplace.get('remove'), {
+      countLabel: 'corrections', dateBasis: 'correction time', writeBehavior: 'When a saved entry is marked mistaken; retries of the same request reuse its correction.',
+      fields: fields(['Correction time', 'When the correction was received, separately from the original addition time.'],
+        ['Original entry reference', 'The load being retracted and the correction’s submission identity; identifiers are not displayed here.']) }),
+    ...(fireplace.get('other')?.count ? [item('fireplace-other', 'Additional fireplace records',
+      'Other fireplace record kinds retained in this database; original contents are not displayed here.', fireplace.get('other'))] : []),
+  ]);
+
   const stateCategories = [
     ['contract', "key LIKE 'contract:%'", 'Contract documents', 'Dated electricity rates; their periods are described above.'],
     ['heat-power', "key LIKE 'heat-pump-power-config:%'", 'Heat-pump power assumptions', 'Current nominal compressor, circulation and auxiliary power assumptions; historical changes are retained in configuration events.'],
     ['recorder', "key LIKE 'recorder:%'", 'Adaptive recorder checkpoints', 'Shared storage feedback, learned per-signal scales, last saved values, coverage cursors and pending phase-energy intervals.'],
     ['acquisition', "key LIKE 'provider:%' OR key='providers:health' OR key='electricity:acquisition'", 'Provider and electricity acquisition state', 'Latest provider responses, source health/backoff and unfinished electrical integration needed to resume acquisition.'],
     ['learning', "key LIKE 'learning:%' OR key LIKE 'adaptive:%' OR key LIKE 'learned:%'", 'Learning checkpoints and progress', 'Current fitted model, replay cursor, baseline, metrics and history rebuild progress.'],
+    ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%' OR key LIKE 'override:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and expiring manual overrides; credentials remain in external configuration.'],
     ['control', "key LIKE 'executor:%' OR key LIKE 'h66:%' OR key LIKE 'applied:%' OR key LIKE 'pending-plan:%' OR key LIKE 'phase-snapshot:%' OR key LIKE 'dhwr:%' OR key LIKE 'heating-test:%' OR key LIKE 'cycle:%' OR key LIKE 'trials:%' OR key LIKE 'native-room-reference:%'", 'Control execution and active plans', 'Execution/readback/restoration state, native room reference, active cycle, pending plan, phase coverage and bounded trial allowance.'],
     ['simulation', "key LIKE 'simulation:%'", 'Simulation state', 'Current simulated plant state for resuming a simulation.'],
@@ -262,6 +283,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     provider_snapshot_fetches: sum([...snapshots.values()]).count, provider_snapshot_contents: contentCount,
     recorder_coverage: coverage.count, recorder_metrics: metrics.count, energy_audits: audits.count,
     learning_journal: sum([...journal.values()]).count, learning_samples: samples.count, learning_cycles: cycles.count,
+    fireplace_events: sum([...fireplace.values()]).count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
   const tables = actualTables.map(({ name }, index) => Object.hasOwn(tableCounts, name) ? { name, rows: tableCounts[name] }

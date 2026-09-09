@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -173,6 +173,14 @@ export class Store {
         if (version < 8) this.db.exec('DROP TABLE IF EXISTS chart_rollups; DROP TABLE IF EXISTS chart_rollup_meta;');
         if (version < 9) this.db.exec(`CREATE INDEX IF NOT EXISTS learning_journal_context_time ON learning_journal(input,kind,at,id);
           CREATE INDEX IF NOT EXISTS learning_journal_algorithm ON learning_journal(input,algorithm_version,id);`);
+        if (version < 10) this.db.exec(`CREATE TABLE fireplace_events (
+          id INTEGER PRIMARY KEY, input TEXT NOT NULL, request_id TEXT NOT NULL,
+          at INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('load','remove')),
+          kg INTEGER, target_id INTEGER REFERENCES fireplace_events(id),
+          UNIQUE(input,request_id),
+          CHECK((kind='load' AND kg BETWEEN 2 AND 10 AND target_id IS NULL)
+            OR (kind='remove' AND kg IS NULL AND target_id IS NOT NULL)));
+          CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);`);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');

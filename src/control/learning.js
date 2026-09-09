@@ -80,7 +80,9 @@ export function inferComfortReference(previous, samples, { now = Date.now() } = 
   for (let i = sorted.length - 1; i >= 0; i--) {
     const sample = sorted[i], time = instant(sample.timestamp);
     if (!validSample(sample) || sample.action !== 'normal' || sample.regime !== 'occupied' || sample.preheat === true
-      || sample.recovering === true || nextTime - time > 2 * HOUR) break;
+      || sample.recovering === true || sample.fireplaceActive === true || sample.fireplaceKgPerHour > 0
+      || sample.inputSegments?.some(segment => segment.fireplaceActive === true || segment.fireplaceKgPerHour > 0)
+      || nextTime - time > 2 * HOUR) break;
     uninterrupted.unshift(sample);
     nextTime = time;
     if (instant(last.timestamp) - time >= 24 * HOUR) break;

@@ -51,7 +51,7 @@ test('schema-v2 migration preserves observations and indexes complete Easee acqu
     ALTER TABLE provider_snapshot_fetches DROP COLUMN fetch_metadata;
     ALTER TABLE provider_snapshot_fetches RENAME TO provider_snapshots;
     DROP TABLE provider_snapshot_contents; DROP TABLE recorder_coverage; DROP TABLE recorder_metrics;
-    DROP TABLE energy_audits; DROP TABLE learning_journal; PRAGMA user_version = 2`);
+    DROP TABLE energy_audits; DROP TABLE learning_journal; DROP TABLE fireplace_events; PRAGMA user_version = 2`);
   prior.close();
   const migrated = new Store(path);
   try {
@@ -88,7 +88,7 @@ test('chart cache removal retains original history, checkpoints and lookup index
     CREATE INDEX chart_rollups_time ON chart_rollups(bucket);
     INSERT INTO chart_rollups VALUES(0,'{"synthetic":true}');
     CREATE TABLE chart_rollup_meta (id INTEGER PRIMARY KEY, legacy_through INTEGER);
-    INSERT INTO chart_rollup_meta VALUES(1,1); PRAGMA user_version=7;`);
+    INSERT INTO chart_rollup_meta VALUES(1,1); DROP TABLE fireplace_events; PRAGMA user_version=7;`);
   previous.close();
   const reopened = new Store(path);
   try {

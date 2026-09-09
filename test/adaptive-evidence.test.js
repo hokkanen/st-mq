@@ -160,7 +160,7 @@ test('an independent slow-heating plant learns from application defaults without
   assert.deepEqual(result.model.validation.fittedParameters.sort(), ['lossPerHour', 'normalHeatCPerHour']);
   assert.equal(result.model.parameters.memoryExchangePerHour, prior.parameters.memoryExchangePerHour);
   assert.equal(result.model.parameters.reserveTimeHours, prior.parameters.reserveTimeHours);
-  assert.equal(Object.keys(result.model.parameters).length, 6);
+  assert.equal(Object.keys(result.model.parameters).length, 7);
   assert.ok(result.model.validation.maeC < 0.35);
   assert.ok(result.model.validation.maxErrorC < 0.75);
   assert.ok(result.model.validation.maeC < result.model.validation.previousMaeC);

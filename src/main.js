@@ -47,6 +47,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (engine) engine.onTemporaryChange = null;
     if (engine?.heatingTestBusy) await commandTransport?.close();
     await engine?.dispatchPending?.catch(() => {});
+    await engine?.closeFireplace();
     try { await engine?.executor?.close?.(); }
     catch { store.event('restoration-pending', { reason: 'application-shutdown' }, clock()); }
     await commandTransport?.close();

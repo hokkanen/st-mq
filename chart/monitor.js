@@ -4,6 +4,7 @@ import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
+import { createFireplacePanel } from './fireplace.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
@@ -48,13 +49,15 @@ const reasons = {
 };
 async function api(path, data, options = {}) {
   const response = await fetch(path, { signal: options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
-  if (response.status === 401) { $('auth').hidden = false; throw new Error('Enter your access token to view this installation.'); }
+  if (response.status === 401) { $('auth').hidden = false; const error = new Error('Enter your access token to view this installation.'); error.status = response.status; throw error; }
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? 'Request failed');
+  if (!response.ok) { const error = new Error(result.error ?? 'Request failed'); error.status = response.status; throw error; }
   $('auth').hidden = true;
   return result;
 }
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
+const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
+  beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
 function renderContract(s) {
   const current = activeRates(s);
   const period = current ?? s.configuredPrices;
@@ -372,6 +375,7 @@ function render(s) {
     group.append(heading, list); $('settings-reload-scope').append(group);
   }
   renderTemporary(s); renderHeatingTests(s);
+  fireplacePanel.update(s.fireplace, s.now);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
 async function events() {

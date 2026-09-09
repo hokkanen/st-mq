@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCycle, phaseAt } from '../control/planner.js';
-import { predictThermalStep } from '../control/adaptive-learning.js';
+import { predictThermalStep, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
+import { fireplaceRate, fireplaceIntegral } from '../domain/fireplace.js';
+import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { CONTROL_DEFAULTS } from './config.js';
 
 const HOUR = 3600000;
@@ -31,6 +33,38 @@ export class CycleTracker {
     this.key = `cycle:active:${input}`;
   }
   active() { return this.store.getState(this.key); }
+  correctFireplace(context, now) {
+    if (!context.fireplaceExcludedRanges?.length) { this.fireplaceContext = context; return; }
+    this.store.transaction(() => {
+      const from = Math.min(...context.fireplaceExcludedRanges.map(range => range.start));
+      const to = Math.max(...context.fireplaceExcludedRanges.map(range => range.end));
+      for (const row of this.store.db.prepare('SELECT payload FROM learning_cycles WHERE input=? AND started_at<? AND COALESCE(ended_at,?)>?')
+        .all(this.input, to, now, from)) {
+        const cycle = JSON.parse(row.payload);
+        if (!fireplaceEpisodeAffected({ ...cycle, endedAt: cycle.endedAt ?? now }, context)) continue;
+        cycle.fireplaceCorrectionRevision = context.fireplaceRevision;
+        if (cycle.assessment) cycle.assessment = { ...cycle.assessment, profitCents: null, recoveryErrorCents: null,
+          basis: 'unassessed-corrected-fireplace-history' };
+        // Rebuild this observer under its original frozen model using actual
+        // temperatures/equipment and corrected fireplace inputs, never new coefficients.
+        if (cycle.status === 'active') {
+          let state = { ...cycle.plan.initialState };
+          for (const row of cycle.observations) {
+            if (![row.outdoorC, row.thermalCompressorDuty, row.thermalAuxKw].every(number)) { state = null; break; }
+            state = predictThermalStep(cycle.plan.model, state, { outdoorC: row.outdoorC,
+              solarRadiationWm2: row.solarRadiationWm2, compressorDuty: row.thermalCompressorDuty,
+              auxKw: row.thermalAuxKw, fireplaceKgPerHour: fireplaceRate(context.fireplaceEvents, row.start, row.end) }, (row.end - row.start) / HOUR);
+            if (row.indoorEndpoint !== false) state.indoorC = row.indoorC;
+          }
+          cycle.observerState = state && { indoorC: state.indoorC, reserveC: state.reserveC };
+          cycle.stableSince = null;
+        }
+        this.store.cycle(this.input, cycle);
+        if (cycle.status === 'active') this.store.setState(this.key, cycle);
+      }
+    });
+    this.fireplaceContext = context;
+  }
   save(cycle) { this.store.cycle(this.input, cycle); this.store.setState(this.key, cycle.status === 'completed' || cycle.status === 'incomplete' ? null : cycle); }
   controlHold(now) {
     const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
@@ -139,14 +173,15 @@ export class CycleTracker {
         if (cycle.observerState && number(values.outdoorC)) {
           const observer=predictThermalStep(cycle.plan.model,cycle.observerState,{outdoorC:values.outdoorC,
             solarRadiationWm2:values.solarRadiationWm2,phase,targetC:cycle.plan.targetC,roomBoostC:values.roomBoostC??0,
-            compressorDuty:values.thermalCompressorDuty,auxKw:values.thermalAuxKw},hours);
+            compressorDuty:values.thermalCompressorDuty,auxKw:values.thermalAuxKw,
+            fireplaceKgPerHour: fireplaceRate(this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [], cursor, end)},hours);
           cycle.observerState={indoorC:observer.indoorC,reserveC:observer.reserveC};
         } else cycle.observerState=null;
       } else {a.routeMissingHours+=hours;cycle.observerState=null;}
       if (values.energyBasis !== 'measured') a.metered = false;
       } else { a.missingHours += hours; a.compressorActivityObserved = false; a.auxiliaryObserved = false;
         a.auxiliaryRouteKnown = false; a.metered = false; cycle.observerState=null; }
-      cycle.observations.push({ start: cursor, end, outdoorC: values.outdoorC,
+      cycle.observations.push({ start: cursor, end, ...(end !== now ? { indoorEndpoint: false } : {}), outdoorC: values.outdoorC,
         solarRadiationWm2: values.solarRadiationWm2, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
         phase, indoorC: sample.indoorC, powerKw: values.powerKw, eligible,
@@ -168,7 +203,7 @@ export class CycleTracker {
     const reference = evaluateCycle({ schedule: cycle.plan.reference, intervals, model: cycle.plan.model,
       initialState: cycle.plan.initialState, targetC: cycle.plan.targetC, config: cycle.modelConfig ?? this.config,
       occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC,
-      equipment: cycle.plan.equipment ?? {}, includeTail: false });
+      equipment: { ...cycle.plan.equipment, fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [] }, includeTail: false });
     const reserve = cycle.observerState?.reserveC;
     const settled = sample.indoorC >= reference.endState.indoorC - 0.2
       && number(reserve) && reserve >= reference.endState.reserveC - 0.25
@@ -193,10 +228,13 @@ export class CycleTracker {
       // Parameter calibration uses the actually executed actions and the same
       // contemporaneous weather/solar estimates as the assessment. A shortened
       // action is not falsely labelled an error in the original prediction.
-      const calibration = evaluateCycle({ ...common, schedule, intervals });
+      const calibration = evaluateCycle({ ...common, equipment: { ...common.equipment,
+        fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? common.equipment.fireplaceEvents ?? [] }, schedule, intervals });
       const originalRecovery = predicted ? recoveryTotals(predicted.trajectory, cycle.observations) : null;
       const calibratedRecovery = recoveryTotals(calibration.trajectory, cycle.observations);
-      const comparableSpace=a.routeMissingHours<=0.001 && a.routeCoveredHours>0;
+      const firePresent = fireplaceIntegral(this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [], cycle.startedAt, now) > 0;
+      const comparableSpace=a.routeMissingHours<=0.001 && a.routeCoveredHours>0
+        && !cycle.fireplaceCorrectionRevision && (!firePresent || fireplaceEvidenceReady(cycle.plan.model));
       const trajectoryErrors = predicted ? cycle.observations.map(o => {
         const step=predicted.trajectory.find(row => row.at>=o.end && row.at-row.durationHours*HOUR<o.end);
         return step && number(o.indoorC) ? {error:Math.abs(step.indoorC-o.indoorC),hours:(o.end-o.start)/HOUR}:null;
@@ -208,7 +246,9 @@ export class CycleTracker {
         actualSpaceHeatingCostCents:a.spaceHeatingCostCents,dhwCostCents:a.dhwCostCents,
         recoveryErrorCents: originalRecovery && comparableSpace ? Math.abs(originalRecovery.costCents - a.spaceHeatingRecoveryCostCents) : null,
         uncertaintyCents: Math.max(5, reference.uncertaintyCents + (a.metered ? 0 : Math.abs(a.costCents) * 0.35)),
-        basis: comparableSpace ? 'estimated-space-heating-execution-and-reference' : 'unassessed-missing-space-heating-attribution',
+        basis: comparableSpace ? 'estimated-space-heating-execution-and-reference'
+          : cycle.fireplaceCorrectionRevision ? 'unassessed-corrected-fireplace-history'
+          : firePresent && !fireplaceEvidenceReady(cycle.plan.model) ? 'unassessed-fireplace-response' : 'unassessed-missing-space-heating-attribution',
         recoveryPredictionBasis: originalRecovery ? 'Frozen model and original forecast over the observed recovery period'
           : cycle.adjustments?.length ? 'Unavailable: executed schedule changed' : 'Unavailable: original forecast did not cover the complete cycle',
         calibrationBasis: 'Executed actions and contemporaneous weather estimates; frozen model',
@@ -237,6 +277,11 @@ export class CycleTracker {
           basis:'frozen-advance-forecast',adjusted:Boolean(cycle.adjustments?.length)},
         phases: [...new Set(cycle.observations.map(row => row.phase))],
         provenance: { basis: 'committed-history', forecastVersion: cycle.lastSample.provenance?.forecastVersion ?? null } };
+      if (cycle.fireplaceCorrectionRevision || firePresent && !fireplaceEvidenceReady(cycle.plan.model)) {
+        // Keep the attempt and actual observations, without letting assumed wood
+        // heat calibrate recovery energy or certify advance control performance.
+        episode.complete = false;
+      }
       // Completion and calibration are one durable operation. A crash after
       // this commit leaves an unapplied journal entry, not a lost episode.
       this.store.transaction(() => {

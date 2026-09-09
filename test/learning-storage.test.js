@@ -23,7 +23,7 @@ test('schema 3 upgrade retains observations and durable samples/cycle assessment
     ALTER TABLE provider_snapshot_fetches DROP COLUMN fetch_metadata;
     ALTER TABLE provider_snapshot_fetches RENAME TO provider_snapshots;
     DROP TABLE provider_snapshot_contents; DROP TABLE recorder_coverage; DROP TABLE recorder_metrics;
-    DROP TABLE energy_audits; DROP TABLE learning_journal;
+    DROP TABLE energy_audits; DROP TABLE learning_journal; DROP TABLE fireplace_events;
     PRAGMA user_version=3`);old.close();
   store=new Store(path);
   const sample={timestamp:2000,indoorC:21,phase:'normal',solarRadiationWm2:null};

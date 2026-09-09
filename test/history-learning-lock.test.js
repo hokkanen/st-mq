@@ -82,6 +82,7 @@ test('journal replay permits a concurrent writer during model computation', t =>
     phase: 'normal', regime: 'occupied', quality: [] });
   let checked = false;
   const facade = {
+    db: store.db,
     transaction: store.transaction.bind(store), setState: store.setState.bind(store),
     learningJournal(...args) {
       return store.learningJournal(...args).map(entry => {

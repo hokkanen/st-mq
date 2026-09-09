@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveEpisode } from '../control/adaptive-learning.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { CONTROL_DEFAULTS } from './config.js';
+import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected } from './fireplace-inputs.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v3';
+export const LEARNING_ALGORITHM = 'committed-house-v4-fireplace';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -347,7 +348,7 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
       : first ? { seed: seed ? structuredClone(seed) : null } : {}) } });
 }
 
-export function applyLearningRecord(checkpoint, entry) {
+export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
   if (entry.algorithmVersion !== LEARNING_ALGORITHM) throw new Error('Unsupported learning journal algorithm');
   if (entry.configVersion !== learningVersion(entry.payload.configuration)) throw new Error('Learning journal configuration version mismatch');
   if ((checkpoint?.journalCursor ?? 0) >= entry.id) return checkpoint;
@@ -388,15 +389,17 @@ export function applyLearningRecord(checkpoint, entry) {
     initial.model.equipmentResponse = { phases: {}, validation: null };
     initial.model.forecastValidation = null;
   }
+  const value = entry.kind === 'sample' ? withFireplaceInputs(entry.payload.value, fireplaceContext) : entry.payload.value;
   const next = entry.kind === 'sample'
-    ? updateAdaptiveLearning(initial, entry.payload.value, { now: entry.at, config: configuration })
-    : entry.kind === 'episode' ? updateAdaptiveEpisode(initial, entry.payload.value, { config: configuration })
+    ? updateAdaptiveLearning(initial, value, { now: entry.at, config: configuration })
+    : entry.kind === 'episode' && !fireplaceEpisodeAffected(value, fireplaceContext) ? updateAdaptiveEpisode(initial, value, { config: configuration })
       : restoreAdaptiveCheckpoint(initial, configuration);
   const journalEntryHash = learningVersion(entry);
   const result = { ...next, ...(entry.kind === 'sample' ? { windowCursor: entry.payload.value.windowEnd ?? entry.at } : {}),
     journalCursor: entry.id, algorithmVersion: LEARNING_ALGORITHM,
     journalEntryHash, journalHash: learningVersion({ previous: checkpoint?.journalCursor ? checkpoint.journalHash ?? null : null, entry: journalEntryHash }),
-    configVersion: entry.configVersion, learningConfiguration: structuredClone(configuration), forecastVersion: entry.forecastVersion };
+    configVersion: entry.configVersion, learningConfiguration: structuredClone(configuration), forecastVersion: entry.forecastVersion,
+    ...(fireplaceContext.fireplaceRevision ? { fireplaceRevision: fireplaceContext.fireplaceRevision } : {}) };
   result.checkpointDigest = learningCheckpointDigest(result);
   return result;
 }
@@ -405,8 +408,10 @@ export function applyLearningRecord(checkpoint, entry) {
  * The checkpoint and its cursor are one atomic state update after computation.
  * A crash before that update replays the same entries from the saved cursor.
  * Rebuild uses precisely this same ordered entry function. */
-export function replayLearningJournal(store, input, checkpoint = null, { rebuild = false } = {}) {
+export function replayLearningJournal(store, input, checkpoint = null, { rebuild = false, fireplaceRevision } = {}) {
+  const fireplaceContext = fireplaceLearningContext(store, input, fireplaceRevision);
   let next = rebuild || checkpoint?.algorithmVersion && checkpoint.algorithmVersion !== LEARNING_ALGORITHM ? null : checkpoint;
+  if (next && (next.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision) next = null;
   if (next?.journalCursor) {
     const last = store.learningJournal({ input, after: next.journalCursor - 1, limit: 1, algorithmVersion: LEARNING_ALGORITHM })[0];
     if (!last || !validLearningCheckpoint(next, last)) next = null;
@@ -414,7 +419,7 @@ export function replayLearningJournal(store, input, checkpoint = null, { rebuild
   for (;;) {
     const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: 256, algorithmVersion: LEARNING_ALGORITHM });
     if (!entries.length) break;
-    for (const entry of entries) next = applyLearningRecord(next, entry);
+    for (const entry of entries) next = applyLearningRecord(next, entry, fireplaceContext);
     store.setState(`adaptive:${input}`, next);
   }
   return next ?? restoreAdaptiveCheckpoint(null);

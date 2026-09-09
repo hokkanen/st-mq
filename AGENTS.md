@@ -14,6 +14,24 @@
   disposable-database assumption into production. The secret-handling rules
   below apply to development data and CSV imports throughout.
 
+## Model reconstruction and versioning contract
+
+- Respect [docs/reconstruction-and-versioning.md](docs/reconstruction-and-versioning.md)
+  unless the owner explicitly agrees to change that contract.
+- Preserve deterministic model replay from the committed journal, saved seed and
+  configuration, selected manual-event revision and matching algorithm. Use the
+  same ordered update function for live learning and rebuilding.
+- Keep manual loads and corrections as compact source events; never silently
+  rewrite telemetry or reinterpret an old learning algorithm as a new one.
+- Version changes to learning semantics explicitly. Preserve an honest archival
+  boundary and a documented seed/epoch; old runtime code need not run in parallel.
+- Background correction rebuilds must keep control available, reject stale results
+  and atomically publish a complete, caught-up checkpoint. Keep original observed
+  behavior and frozen forecasts distinct from corrected model assessments.
+- This contract does not require exact replay of every historical control choice
+  or guarantee heat-pump receipt of attempted commands. Do not expand storage into
+  per-minute model snapshots or full decision-input archives without agreement.
+
 ## Required commits for AI tasks
 
 - Every AI task that changes repository files must commit its completed changes

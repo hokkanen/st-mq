@@ -102,10 +102,32 @@
             <h2 id="control-title">Home &amp; heating</h2>
             <span class="control-badge"><span>Price control</span><strong id="control-price">—</strong></span>
           </div>
-          <div class="control-summary" role="status">
-            <p id="decision-title" class="control-decision">Waiting for a decision</p>
-            <p id="reasons" class="muted"></p>
-            <p id="control-mode" class="control-mode">Waiting for controller status</p>
+          <div class="control-fireplace">
+            <div class="control-summary" role="status">
+              <p id="decision-title" class="control-decision">Waiting for a decision</p>
+              <p id="reasons" class="muted"></p>
+              <p id="control-mode" class="control-mode">Waiting for controller status</p>
+            </div>
+            <details id="fireplace-details" class="dashboard-disclosure fireplace-details">
+              <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
+              <div id="fireplace-content" class="fireplace-content">
+                <form id="fireplace-form">
+                  <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
+                  <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
+                  <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
+                  <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
+                  <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
+                </form>
+                <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
+                <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+                <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
+                <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
+                <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
+                <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
+                <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
+                <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
+              </div>
+            </details>
           </div>
           <div class="comfort-overview">
             <div class="comfort-reference">

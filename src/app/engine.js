@@ -5,7 +5,11 @@ import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
-import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal, recordLearningContext } from './committed-learning.js';
+import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
+import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
+import { fireplaceLearningContext, withFireplaceInputs } from './fireplace-inputs.js';
+import { evaluateThermalModel, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
+import { fireplaceActive, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 import { goodQuality } from '../control/learning.js';
 import { validateSettings, CONTROL_DEFAULTS } from './config.js';
 import { SimulatedPlant, simulatedOutlook } from './simulator.js';
@@ -70,6 +74,75 @@ function decorate(reading, signal, now) {
 }
 
 export class Engine {
+  fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
+  replayLearning(checkpoint) {
+    const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
+    const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
+    return replayCommittedLearning(this.store, this.config.input, checkpoint,
+      updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0 } : {});
+  }
+  fireplaceManager() {
+    return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input });
+  }
+  reconcileFireplace() {
+    if (!['mqtt', 'providers', 'simulated'].includes(this.config.input)) return;
+    const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
+    if (['pending', 'running', 'ready'].includes(job?.status) || job?.status === 'failed' && !this.fireplaceRebuild) {
+      const manager = this.fireplaceManager();
+      manager.start();
+      const ready = manager.takeReady();
+      if (ready) {
+        this.store.transaction(() => {
+          this.store.setState(`adaptive:${this.config.input}`, ready.checkpoint);
+          this.store.setState(`fireplace:rebuild:${this.config.input}`, { ...manager.status(),
+            status: 'current', revision: ready.revision, requiresRebuild: false });
+          this.store.setState(`pending-plan:${this.config.input}`, null);
+        });
+        // Publish process state only after the durable transaction succeeds.
+        manager.complete(ready.checkpoint, { persist: false });
+        this.checkpoint = ready.checkpoint;
+        this.fireplaceReserveOverride = null;
+        this.pendingPlan = null;
+      }
+    }
+  }
+  changeFireplace(payload, removing = false) {
+    const now = this.clock(), input = this.config.input;
+    this.readAdaptive(now);
+    const result = removing ? removeFireplace(this.store, input, payload, now) : addFireplace(this.store, input, payload, now);
+    try {
+      this.pendingPlan = null;
+      this.store.setState(`pending-plan:${input}`, null);
+      const context = fireplaceLearningContext(this.store, input);
+      if (removing) {
+        this.cycles.correctFireplace(context, now);
+        if (this.checkpoint?.samples?.length) {
+          const corrected = this.checkpoint.samples.map(sample => withFireplaceInputs(sample, context));
+          const state = evaluateThermalModel(this.checkpoint.model, corrected, { rollout: false, observedOnly: false }).state;
+          this.fireplaceReserveOverride = state?.reserveC ?? null;
+        }
+      }
+      this.cycles.fireplaceContext = context;
+      const job = this.store.getState(`fireplace:rebuild:${input}`);
+      if (result.requiresRebuild || ['pending', 'running', 'ready', 'failed'].includes(job?.status)) this.fireplaceManager().start();
+      else if (this.checkpoint) {
+        // New loads after the consumed history cannot change already fitted inputs.
+        this.fireplaceReserveOverride = null;
+        this.checkpoint.fireplaceRevision = fireplaceRevision(this.store, input);
+        this.checkpoint.checkpointDigest = learningCheckpointDigest(this.checkpoint);
+        this.store.setState(`adaptive:${input}`, this.checkpoint);
+      }
+      this.onTemporaryChange?.();
+      return this.fireplaceStatus();
+    } catch {
+      // The event is durable. Keep the request ID retryable even if a follow-up
+      // fails, so a lost response cannot turn one load into two.
+      const error = new Error('Fireplace save could not be confirmed. Retry the same request.');
+      error.statusCode = 503;
+      throw error;
+    }
+  }
+  async closeFireplace() { await this.fireplaceRebuild?.close(); }
   constructor({ store, config, clock = Date.now, commandTransport = null }) {
     this.store = store;
     this.config = config;
@@ -317,6 +390,7 @@ export class Engine {
     return this.h66.test({ register: input.register, value: input.value, durationSeconds: minutes * 60, now: this.clock() });
   }
   readAdaptive(now) {
+    this.reconcileFireplace();
     const journalExists = this.store.learningJournal({ input: this.config.input, limit: 1 }).length > 0;
     if (journalExists) {
       if (!this.checkpoint) {
@@ -329,7 +403,7 @@ export class Engine {
         this.checkpoint = saved?.algorithmVersion === LEARNING_ALGORITHM && matching?.id === saved.journalCursor
           && Array.isArray(saved.samples) && restored?.health.reason !== 'invalid-checkpoint-model' ? saved : null;
       }
-      this.checkpoint = replayLearningJournal(this.store, this.config.input, this.checkpoint);
+      this.checkpoint = this.replayLearning(this.checkpoint);
       return this.checkpoint;
     }
     if (!this.checkpoint) {
@@ -461,7 +535,7 @@ export class Engine {
     }
     if (reference.resetBaselineAt || reference.historySeed) {
       appendLearningRecord(this.store, input, 'context', reference, { config: this.control, seed: checkpoint });
-      checkpoint = replayLearningJournal(this.store, input, checkpoint);
+      checkpoint = this.replayLearning(checkpoint);
       this.checkpoint = checkpoint;
     }
     const executorState = this.executor.status?.();
@@ -470,6 +544,12 @@ export class Engine {
       : manual?.confirmed && manual.at > (this.applied.at ?? 0) ? manual.phase : this.applied.phase;
     const { sample, equipment, radiation, weather } = controlObservations({ latest: this.latest, now, observations, outlook,
       checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
+    const fireplaceContext = fireplaceLearningContext(this.store, input);
+    equipment.fireplaceEvents = fireplaceContext.fireplaceEvents.filter(event => event.at <= now && event.at + FIREPLACE_HORIZON_MS > now);
+    equipment.fireplaceActive = fireplaceActive(equipment.fireplaceEvents, now);
+    if (this.cycles.fireplaceContext?.fireplaceRevision !== fireplaceContext.fireplaceRevision)
+      this.cycles.correctFireplace(fireplaceContext, now);
+    this.cycles.fireplaceContext = fireplaceContext;
     sample.regime = this.settings.occupancy.mode === 'occupied' ? 'occupied' : 'away';
     sample.actualModeKnown = this.plant !== null;
     const prev = this.lastSample;
@@ -483,7 +563,7 @@ export class Engine {
     const context = { phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0,
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
     recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
-    checkpoint=replayLearningJournal(this.store,input,checkpoint);this.checkpoint=checkpoint;
+    checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
     const completedWindow = Math.floor(now / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS;
     const lastWindow = checkpoint.windowCursor;
     let windowAt = Number.isSafeInteger(lastWindow) ? lastWindow + LEARNING_WINDOW_MS : completedWindow;
@@ -491,23 +571,29 @@ export class Engine {
       const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context });
       committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
       appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
-      checkpoint = replayLearningJournal(this.store, input, checkpoint);
+      checkpoint = this.replayLearning(checkpoint);
       this.checkpoint = checkpoint;
     }
-    const cycleSample = committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
-      windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000, now - (this.cycles.active()?.lastSample?.timestamp ?? now - 60_000))) });
+    if ((checkpoint.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision && fireplaceContext.fireplaceExcludedRanges.length) {
+      const corrected = checkpoint.samples.map(row => withFireplaceInputs(row, fireplaceContext));
+      this.fireplaceReserveOverride = evaluateThermalModel(checkpoint.model, corrected,
+        { rollout: false, observedOnly: false }).state?.reserveC ?? null;
+    }
+    const cycleSample = withFireplaceInputs(committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
+      windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000, now - (this.cycles.active()?.lastSample?.timestamp ?? now - 60_000))) }), fireplaceContext);
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
     Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
     cycleSample.priceIntervals = outlook.prices.map(row => ({ start:row.start,end:row.end,price:row.allInCentsPerKWh }));
     const priorCycleSample = this.cycles.active()?.lastSample;
     if (Number.isFinite(priorCycleSample?.indoorC) && now > priorCycleSample.timestamp)
       cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
-    const episode = this.cycles.record(cycleSample, now, { thermalState: checkpoint.state,
+    const episode = this.cycles.record(cycleSample, now, { thermalState: this.fireplaceReserveOverride == null
+      ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride },
       equipment: { integral: cycleSample.integral } });
     if (episode) {
       this.applied.phase = 'normal';
       if (this.plant) this.plant.state.phase = 'normal';
-      checkpoint = replayLearningJournal(this.store, input, checkpoint);
+      checkpoint = this.replayLearning(checkpoint);
       this.checkpoint = checkpoint;
     }
     this.lastSample = sample;
@@ -518,6 +604,7 @@ export class Engine {
     let cycle = this.cycles.active(), decision;
     const controlHold=!cycle?this.cycles.controlHold(now):null;
     const forceNormal = controlHold?'recent-cycle-incomplete'
+      : cycle && fireplaceActive(equipment.fireplaceEvents, now) && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
       : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
       ? 'native-settings-changed' : override ? 'temporary-normal-override' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
@@ -535,7 +622,7 @@ export class Engine {
       if (phase === 'reduction' || phase === 'preheat') {
         const intervals = forecastIntervals(outlook.prices, outlook.forecast, now);
         const args = { intervals, model: checkpoint.model, initialState: { indoorC: sample.indoorC,
-          reserveC: checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral },
+          reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral },
           targetC, config: this.control, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC };
         if (!intervals.length || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > this.control.maxUnobservedReductionHours*3600000) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
@@ -559,7 +646,7 @@ export class Engine {
     } else {
       if (this.pendingPlan) {
         const checked = revalidatePlan({plan:this.pendingPlan,now,observations,...outlook,checkpoint,settings,
-          config:this.control,thermalState:checkpoint.state,equipment,
+          config:this.control,thermalState:this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC:this.fireplaceReserveOverride },equipment,
           trialBudgetRemainingCents:this.cycles.budget(now)});
         this.pendingPlan = checked.valid ? checked.plan : null;
         if (!checked.valid) this.store.event('scheduled-cycle-rejected',{reason:checked.reason},now);
@@ -570,7 +657,7 @@ export class Engine {
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
       } else if (!this.pendingPlan) {
         decision = chooseCycle({ now, observations, ...outlook, checkpoint, settings, config: this.control,
-          thermalState: checkpoint.state, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
+          thermalState: this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
           trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 });
         if (decision.plan && decision.phase === 'normal') this.pendingPlan = decision.plan;
       } else decision = { ...normal('waiting-for-scheduled-cycle'), plan: this.pendingPlan };
@@ -620,7 +707,7 @@ export class Engine {
         if (decision.plan && ['preheat','reduction'].includes(phase) && !this.cycles.active()) {
           const effectiveAt=this.clock();
           const plan = structuredClone(decision.plan);
-          plan.initialState = { indoorC: sample.indoorC, reserveC: checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral };
+          plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral };
           plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,effectiveAt);
           plan.executionStartedAt=effectiveAt;plan.initialObservationAt=now;plan.equipment=equipment;
           this.cycles.start(plan,{...cycleSample,timestamp:effectiveAt,windowStart:effectiveAt,windowEnd:effectiveAt,phase},effectiveAt,{executed:!this.plant});
@@ -629,7 +716,7 @@ export class Engine {
           targetC:this.settings.comfort.targetC??this.checkpoint?.baselineC??null,
           regime:this.settings.occupancy.mode==='occupied'?'occupied':'away',
           episodeId:this.cycles.active()?.id ?? null},this.clock(),{config:this.control,seed:checkpoint});
-        checkpoint=replayLearningJournal(this.store,input,checkpoint);this.checkpoint=checkpoint;
+        checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
         const old = this.store.getState(`phase-snapshot:${input}`);
         const expiresAt = execution.expiresAt ?? decision.expiresAt;
         if ((old?.phase ?? old) !== phase || old?.expiresAt !== expiresAt) {
@@ -674,7 +761,7 @@ export class Engine {
       heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.store.getState('providers:health')??{},contract:this.contract(),configuredPrices:this.config.priceSettings??null,
-      recording:this.recorder.status(),
+      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
         controlHold,outcomes:this.cycles.outcomes(),
@@ -691,6 +778,7 @@ export class Engine {
     const now = this.clock();
     result.now = now;
     result.heatingTests = this.heatingTests();
+    result.fireplace = this.fireplaceStatus();
     if (this.h66Status) result.h66 = this.h66Status();
     result.providers = this.store.getState('providers:health') ?? {};
     for (const [key, signal] of [['indoor', 'indoor_temperature'], ['garage', 'garage_temperature'], ['outdoor', 'outdoor_temperature']]) {

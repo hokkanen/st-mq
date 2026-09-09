@@ -487,3 +487,7 @@ Run `scripts/test-addon-container.sh st-mq:development` to check a local image.
 is an example standalone systemd unit to adapt to an installation; it has not been
 installed or enabled by development. Stop the old command owner before any future
 live migration. [Legacy documentation](docs/LEGACY.md) is retained for reference.
+
+Firewood loads and mistaken-entry corrections are described in
+[Fireplace logging](docs/fireplace.md). The [model reconstruction and versioning
+contract](docs/reconstruction-and-versioning.md) defines the retained replay scope.

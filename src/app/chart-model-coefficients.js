@@ -1,5 +1,6 @@
 import { MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { applyLearningRecord, LEARNING_ALGORITHM } from './committed-learning.js';
+import { fireplaceLearningContext } from './fireplace-inputs.js';
 
 const sources = { simulated: 'Simulation', history: 'Imported history', mqtt: 'Recorded MQTT inputs', providers: 'Recorded provider inputs' };
 // Derived timelines and resumable replay state stay private to this connection.
@@ -8,18 +9,20 @@ const caches = new WeakMap();
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 
 function replay(store, input, through) {
+  const fireplaceContext = fireplaceLearningContext(store, input);
   const bounds = store.db.prepare(`SELECT MAX(id) lastId,
     MIN(CASE WHEN at>? THEN id END) futureId FROM learning_journal WHERE input=?`).get(through, input);
   const lastId = bounds.futureId === null ? bounds.lastId ?? 0 : bounds.futureId - 1;
   let cache = caches.get(store.db);
   if (!cache) { cache = new Map(); caches.set(store.db, cache); }
-  const key = JSON.stringify([input, lastId, LEARNING_ALGORITHM]);
+  const key = JSON.stringify([input, lastId, LEARNING_ALGORITHM, fireplaceContext.fireplaceRevision]);
   if (cache.has(key)) {
     const hit = cache.get(key); cache.delete(key); cache.set(key, hit); return hit.result;
   }
   // Advancing the clock does not change an immutable journal prefix. New
   // entries resume its cached state instead of refitting all earlier samples.
-  const base = [...cache.values()].filter(entry => entry.input === input && entry.lastId < lastId)
+  const base = [...cache.values()].filter(entry => entry.input === input && entry.lastId < lastId
+    && entry.fireplaceRevision === fireplaceContext.fireplaceRevision)
     .sort((a, b) => b.lastId - a.lastId)[0];
   const result = base ? { ...base.result, events: [...base.result.events] }
     : { events: [], records: 0, replayedRecords: 0, unsupportedRecords: 0, invalidRecords: 0 };
@@ -56,7 +59,7 @@ function replay(store, input, through) {
         emit(null); continue;
       }
       const priorCheckpoint = blocked ? null : checkpoint;
-      const next = applyLearningRecord(priorCheckpoint, entry);
+      const next = applyLearningRecord(priorCheckpoint, entry, fireplaceContext);
       const validation = next.model.validation;
       const seeded = !priorCheckpoint || Boolean(entry.payload.value.historySeed?.model);
       const accepted = next.health?.acceptedFits > (priorCheckpoint?.health?.acceptedFits ?? 0)
@@ -94,7 +97,8 @@ function replay(store, input, through) {
       result.invalidRecords++; blocked = true; checkpoint = null; learned.clear(); fitted.clear(); emit(null);
     }
   }
-  const cached = { input, lastId, result, checkpoint, at, blocked, learned: [...learned], fitted: [...fitted] };
+  const cached = { input, lastId, result, checkpoint, at, blocked, learned: [...learned], fitted: [...fitted],
+    fireplaceRevision: fireplaceContext.fireplaceRevision };
   const bytes = Buffer.byteLength(JSON.stringify(cached));
   if (bytes <= MAX_CACHE_BYTES) {
     let used = [...cache.values()].reduce((sum, entry) => sum + entry.bytes, 0);

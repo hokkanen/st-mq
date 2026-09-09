@@ -13,11 +13,11 @@ function authorized(req, token) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 async function body(req) {
-  if (!req.headers['content-type']?.startsWith('application/json')) throw new Error('JSON content type required');
+  if (!req.headers['content-type']?.startsWith('application/json')) throw Object.assign(new Error('JSON content type required'), { statusCode: 400 });
   let data = '';
   for await (const chunk of req) {
     data += chunk;
-    if (Buffer.byteLength(data) > 8192) throw new Error('Request too large');
+    if (Buffer.byteLength(data) > 8192) throw Object.assign(new Error('Request too large'), { statusCode: 400 });
   }
   return JSON.parse(data);
 }
@@ -63,6 +63,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return action(getEngine(), input);
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
+        if (req.method === 'GET' && url.pathname === '/api/fireplace') return json(200, engine.fireplaceStatus());
+        if (req.method === 'POST' && url.pathname === '/api/fireplace')
+          return await mutate((current, input) => json(200, current.changeFireplace(input)));
+        if (req.method === 'POST' && url.pathname === '/api/fireplace/remove')
+          return await mutate((current, input) => json(200, current.changeFireplace(input, true)));
         if (req.method === 'POST' && url.pathname === '/api/settings/reload') {
           return await mutate(async (_engine, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
@@ -138,7 +143,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         json(404, { error: 'UI build not found. Run npm run build.' });
       }
     } catch (error) {
-      if (!res.destroyed) json(400, { error: error.message });
+      if (!res.destroyed) {
+        const fireplaceWrite = req.method === 'POST' && /^\/api\/fireplace(?:\/remove)?(?:\?|$)/.test(req.url);
+        const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
+        json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.' : error.message });
+      }
     }
   });
   if (overviewService !== chartService) server.once('close', () => { void overviewService.close(); });

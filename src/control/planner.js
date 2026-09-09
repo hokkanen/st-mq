@@ -1,6 +1,7 @@
-import { initialAdaptiveModel, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC } from './adaptive-learning.js';
+import { initialAdaptiveModel, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady } from './adaptive-learning.js';
 import { comfortPenalty } from './index.js';
 import { CONTROL_DEFAULTS } from '../app/config.js';
+import { fireplaceActive, fireplaceIntegral, fireplaceRate } from '../domain/fireplace.js';
 
 const HOUR = 3600000, STEP = 900000;
 const number = Number.isFinite;
@@ -16,14 +17,18 @@ export function learningReadiness(checkpoint, config = {}, equipment = {}) {
   const c = { ...CONTROL_DEFAULTS, ...config }, model = checkpoint?.model;
   const thermalValidated = thermalEvidenceReady(model), responseValidated = actionEvidenceReady(model, 'reduction');
   const advanceValidated = model?.forecastValidation?.accepted === true;
-  const actionValidated = responseValidated && advanceValidated;
+  const fireplaceValidated = fireplaceEvidenceReady(model);
+  const fireplacePending = equipment.fireplaceActive === true && !fireplaceValidated;
+  const actionValidated = responseValidated && advanceValidated && !fireplacePending;
   const trialReady = c.learningTrials && (checkpoint?.health?.usableSamples ?? 0) >= 4
     && number(equipment.compressorOn) && number(equipment.dhwRouting)
+    && !fireplacePending
     && (!number(equipment.trialBudgetRemainingCents)||equipment.trialBudgetRemainingCents>0);
-  return { thermalValidated, responseValidated, advanceValidated, actionValidated, trialReady,
+  return { thermalValidated, responseValidated, advanceValidated, fireplaceValidated, actionValidated, trialReady,
     reasons: [!thermalValidated && 'awaiting-held-out-thermal-trajectories',
       !actionValidated && 'awaiting-held-out-tariff-response',
       !advanceValidated && 'awaiting-frozen-advance-cycle-predictions',
+      fireplacePending && 'awaiting-fireplace-response-evidence',
       !trialReady && 'trials-require-enabled-budget-and-observed-equipment'].filter(Boolean),
     basis: 'Thermal and equipment-response checks are separate; counterfactual savings remain estimates.' };
 }
@@ -108,8 +113,10 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
         : compressorIntegralDemand === false && compressorHysteresisDemand === false ? false : null };
   };
   const predict = (before, phase, boost, interval, dt, projected, native = false) => {
+    const stepStart = intervals[0].start + elapsed * HOUR;
     const inputs = { outdoorC: interval.outdoorC, solarRadiationWm2: interval.solarRadiationWm2,
-      phase, roomBoostC: boost, targetC };
+      phase, roomBoostC: boost, targetC,
+      fireplaceKgPerHour: fireplaceRate(equipment.fireplaceEvents ?? [], stepStart, stepStart + dt * HOUR) };
     // Current native integral/target readings describe the currently applied
     // phase only. They are not evidence about an unexecuted tariff threshold.
     const nativeCompressorDemand = equipment.observedPhase === phase ? projected.nativeCompressorDemand : null;
@@ -161,7 +168,8 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
       indoorTrendCPerHour=(prediction.indoorC-state.indoorC)/dt;
       state = { indoorC: prediction.indoorC, reserveC: prediction.reserveC };
       elapsed += dt;
-      uncertaintyC = thermalUncertaintyC(model, elapsed, { phase,solarRadiationWm2: interval.solarRadiationWm2 });
+      uncertaintyC = thermalUncertaintyC(model, elapsed, { phase, solarRadiationWm2: interval.solarRadiationWm2,
+        fireplaceKgPerHour: fireplaceRate(equipment.fireplaceEvents ?? [], intervals[0].start, end) });
       const duty = prediction.compressorDuty, auxKw = prediction.auxKw;
       const compressorKw = model.energy?.compressorKw ?? c.heatPumpCompressorKw;
       const recoveryMultiplier = phase === 'recovery' ? model.energy?.recoveryMultiplier ?? 1.15 : 1;
@@ -259,6 +267,9 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   const c = { ...CONTROL_DEFAULTS, ...config }, model = checkpoint?.model;
   const rejected = reason => ({ valid:false, reason });
   if (!plan?.schedule || plan.schedule.reductionEnd <= now) return rejected('scheduled-cycle-expired');
+  if (!fireplaceEvidenceReady(model) && (fireplaceActive(equipment.fireplaceEvents ?? [], now)
+    || fireplaceIntegral(equipment.fireplaceEvents ?? [], now, plan.schedule.reductionEnd + 2 * HOUR) > 0))
+    return rejected('awaiting-fireplace-response-evidence');
   if ((equipment.externalChangeRevision??0)!==(plan.equipment?.externalChangeRevision??0))
     return rejected('scheduled-cycle-native-settings-changed');
   if (!number(observations.indoor?.value) || observations.indoor.stale
@@ -308,6 +319,8 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     || observations.indoor.observedAt > now) return normal('missing-or-stale-indoor');
   if (observations.indoor.stale === true) return normal('missing-or-stale-indoor');
   if (!number(targetC)) return normal('awaiting-normal-temperature-reference');
+  if (!fireplaceEvidenceReady(model) && fireplaceActive(equipment.fireplaceEvents ?? [], now))
+    return normal('awaiting-fireplace-response-evidence');
   const intervals = forecastIntervals(prices, forecast, now);
   if (!intervals.length || intervals.at(-1).end - now < 4 * HOUR) return normal('missing-or-incomplete-price-weather-horizon');
   const initialState = { indoorC: observations.indoor.value, reserveC: thermalState?.reserveC ?? observations.indoor.value,

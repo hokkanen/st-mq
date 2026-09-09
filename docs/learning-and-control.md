@@ -6,11 +6,14 @@ execution. Cheap electricity during reduction alone does not establish a saving;
 recovery, comfort and comparable heating service matter too. Offline and synthetic
 checks do not establish savings on the installed equipment.
 
+Firewood can be logged through the fold beside the heating status. See
+[fireplace logging](fireplace.md) for corrections, delayed heat and validation gates.
+
 ## What learns
 
-The model has six thermal coefficients: heat loss, compressor response, solar
-response, auxiliary response, heat exchange and building memory time. Compressor
-and auxiliary gains remain separate. At most four coefficients are fitted; the two
+The model has seven thermal coefficients: heat loss, compressor response, solar
+response, auxiliary response, fireplace response, heat exchange and building memory time. Compressor
+and auxiliary gains remain separate. At most five coefficients are fitted; the two
 memory constants remain structural priors until independent state evidence can
 identify them. Heating enters the slow hydronic state before warming the room.
 That state is an effective temperature memory, not measured floor temperature or
@@ -29,7 +32,7 @@ loss, compressor response, solar response and auxiliary response. The two fixed
 building assumptions remain informational values only.
 
 Coefficient charts replay the immutable learning journal in memory with the matching
-algorithm, saved configuration and initial seed. Replay preserves journal order,
+algorithm, saved configuration, initial seed and current corrected fireplace revision. Replay preserves journal order,
 including late episodes, and uses earlier entries to establish the model at the
 selected range's start. Each coefficient is a stepped line with initial, fitted or
 retained status in its tooltip. Unsupported or incomplete replay prefixes leave

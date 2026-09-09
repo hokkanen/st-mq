@@ -34,6 +34,7 @@ parentPort.on('message', ({ id, args, operation }) => {
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
       (SELECT MAX(id) FROM recorder_coverage) coverage,
       (SELECT MAX(id) FROM learning_journal) learningJournal,
+      (SELECT MAX(id) FROM fireplace_events) fireplaceRevision,
       (SELECT MAX(id) FROM events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get());
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }

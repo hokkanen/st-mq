@@ -333,7 +333,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v3`. Configuration epochs retain power
+The current algorithm is `committed-house-v4-fireplace`. Configuration epochs retain power
 and control-policy interpretation; changed equipment assumptions invalidate old
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
 accidental corruption and trigger replay. They are integrity checks, not authentication.
@@ -346,6 +346,13 @@ the supported recorded algorithm version. A future algorithm upgrade must keep
 that version interpretable or explicitly migrate it, rather than pretending new
 code reproduces an old model exactly. Later edits to forecast or coverage data do
 not change already resolved journal inputs.
+
+The fireplace source is a compact immutable load/removal log. Its selected revision
+is also required for replay; resolved fireplace inputs are derived without copying
+the log into each learning entry. Corrections rebuild in a worker and publish a
+complete caught-up checkpoint. See [the mandatory reconstruction and versioning
+contract](reconstruction-and-versioning.md) and [fireplace behavior](fireplace.md).
+This does not expand the storage contract to full control-choice replay.
 
 ## SmartThings migration and interface
 
