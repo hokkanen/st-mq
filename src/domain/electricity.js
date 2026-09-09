@@ -62,7 +62,11 @@ export class ElectricityAccumulator {
         continue;
       }
       this.availability[key] = true;
-      if (previous && now > previous.at && now - previous.at <= this.maxGapMs && previous.sourceTime <= snapshot.sourceTime
+      // Reported power and VI inputs have independent clocks; changing the
+      // estimation basis is not a reversal of the same source measurement.
+      const sameBasis = previous?.quality.includes('reported_active_power') === snapshot.quality.includes('reported_active_power');
+      const sourceRolledBack = previous && sameBasis && snapshot.sourceTime < previous.sourceTime;
+      if (previous && now > previous.at && now - previous.at <= this.maxGapMs && !sourceRolledBack
         && now - previous.sourceTime <= this.maxAgeMs) {
         const hours = (now - previous.at) / HOUR;
         const energies = snapshot.powers.map((power, index) => (previous.powers[index] + power) * 0.5 * hours);
@@ -73,7 +77,7 @@ export class ElectricityAccumulator {
           force: snapshot.powers.some((power, index) => (power === 0) !== (previous.powers[index] === 0)) });
       } else if (previous && now !== previous.at) {
         gaps.push({ device: group.device, prefix: group.prefix, start: Math.min(previous.at, now), end: Math.max(previous.at, now),
-          quality: [now < previous.at ? 'clock_rollback' : snapshot.sourceTime < previous.sourceTime ? 'source_time_rollback' : 'electricity_gap'] });
+          quality: [now < previous.at ? 'clock_rollback' : sourceRolledBack ? 'source_time_rollback' : 'electricity_gap'] });
       }
       if (!previous || now >= previous.at) this.devices[key] = snapshot;
       else delete this.devices[key];
@@ -89,28 +93,29 @@ export class ElectricityAccumulator {
     const currents = [1, 2, 3].map(phase => get(`current_l${phase}`));
     const voltages = [1, 2, 3].map(phase => get(`voltage_l${phase}`));
     const power = get('active_power');
+    const reportedPower = usable(power);
     let used, powers;
     const quality = ['estimated', 'phase_allocation_estimated'];
-    if (usable(power) && power.value === 0) {
+    if (reportedPower && power.value === 0) {
       used = [power]; powers = [0, 0, 0]; quality.push('reported_active_power');
     } else {
-      // Easee may retain old timestamps for unused phases. An old exact zero
-      // can estimate that phase's share only when fresh reported total power
-      // anchors consumption and every nonzero phase current is still fresh.
-      // It cannot establish fresh measurements or support VI-only integration.
-      const staleZeros = currents.filter(row => !usable(row) && valid(row) && row.value === 0);
-      if (!currents.every(row => usable(row) || usable(power) && staleZeros.includes(row))) return null;
+      // Last-reported phase values can remain unchanged while total power is
+      // updated. Older valid currents may estimate phase shares when fresh
+      // total power anchors consumption; they cannot supply VI-only energy.
+      const heldCurrents = currents.filter(row => !usable(row) && valid(row));
+      if (!currents.every(row => usable(row) || reportedPower && heldCurrents.includes(row))) return null;
       const haveVoltage = voltages.every(row => usable(row) && row.raw?.voltageMapping !== 'terminal-pair-unverified');
       const weights = currents.map((row, index) => row.value * (haveVoltage ? voltages[index].value : 1));
       const sum = weights.reduce((total, value) => total + value, 0);
-      if (usable(power)) {
+      if (reportedPower) {
         if (sum <= 0) return null; // Positive total with unknown phase split is a gap, not invented phase energy.
         powers = weights.map(value => power.value * value / sum);
         // Assign the rounding remainder to the last phase so total power is conserved.
         powers[2] = Math.max(0, power.value - powers[0] - powers[1]);
-        used = [power, ...currents.filter(row => !staleZeros.includes(row)), ...(haveVoltage ? voltages : [])];
+        used = [power, ...currents, ...(haveVoltage ? voltages : [])];
         quality.push('reported_active_power', haveVoltage ? 'voltage_current_phase_weights' : 'current_phase_weights');
-        if (staleZeros.length) quality.push('last_reported_zero_phase_weights');
+        if (heldCurrents.some(row => row.value === 0)) quality.push('last_reported_zero_phase_weights');
+        if (heldCurrents.some(row => row.value !== 0)) quality.push('last_reported_phase_weights');
       } else if (haveVoltage) {
         powers = weights.map(value => value / 1000);
         used = [...currents, ...voltages];
@@ -120,6 +125,8 @@ export class ElectricityAccumulator {
     const times = used.map(row => row.sourceTime);
     if (Math.max(...times) - Math.min(...times) > 30_000) quality.push('asynchronous_snapshot');
     if (used.some(row => row.sourceTime < now)) quality.push('last_reported_observations');
-    return { device, prefix, at: now, sourceTime: Math.min(...times), powers, quality };
+    // Only the total-power reading establishes freshness on this path. The
+    // original current timestamps remain intact as phase-allocation evidence.
+    return { device, prefix, at: now, sourceTime: reportedPower ? power.sourceTime : Math.min(...times), powers, quality };
   }
 }

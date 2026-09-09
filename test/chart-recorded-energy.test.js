@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
+import { ElectricityAccumulator } from '../src/domain/electricity.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
 import { DailyTimingBenchmark, Envelope, chartRange, getChartData } from '../src/app/chart-data.js';
 
@@ -24,6 +26,88 @@ function project(store, range, now = day.to + HOUR, prices = [{ start: day.from,
   const meta = addRecordedEnergy({ store, range, now, input: 'providers', envelopes, timing });
   return { series: Object.fromEntries(names.map(name => [name, envelopes[name].values()])), timing: timing.result(), meta };
 }
+
+function liveElectricity(store, start) {
+  const recorder = new Recorder(store), accumulator = new ElectricityAccumulator();
+  const devices = [
+    { prefix: 'property', power: 2.3, currents: [2, 3, 5] },
+    { prefix: 'ev1', power: 4.6, currents: [4, 4, 2] },
+  ];
+  return { recorder, devices, poll(at, failed = false) {
+    const rows = devices.flatMap(({ prefix, power, currents }) => [
+      { signal: `${prefix}_active_power`, value: power, unit: 'kW', sourceTime: at },
+      ...currents.map((value, index) => ({ signal: `${prefix}_current_l${index + 1}`, value, unit: 'A', sourceTime: start })),
+    ].map(row => ({ ...row, source: 'easee', device: `invented-${prefix}`, receivedAt: at,
+      quality: at - row.sourceTime > 5 * MINUTE ? ['stale'] : [],
+      ...(failed ? { value: null, sourceTime: null, quality: ['provider_error'] } : {}),
+    })));
+    const result = accumulator.sample(rows, at);
+    for (const row of rows) recorder.record(row);
+    for (const gap of result.gaps) recorder.energyGap(gap);
+    for (const interval of result.intervals) recorder.recordEnergy(interval);
+    return result;
+  } };
+}
+
+test('fresh Easee total power keeps stable old phase weights continuous through recorder coalescing', () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, end = start + 20 * MINUTE;
+    const { recorder, devices, poll } = liveElectricity(store, start);
+    for (let at = start; at <= end; at += 15_000) {
+      const result = poll(at);
+      assert.equal(result.gaps.length, 0, 'Unchanged phase event clocks cannot discard freshly reported total power');
+      assert.equal(result.intervals.length, at === start ? 0 : devices.length);
+    }
+    recorder.flush(end, { force: true });
+    const recorded = store.observations().filter(row => /_energy_l[123]$/.test(row.signal));
+    assert(recorded.length < 80 * devices.length * 3 / 2, 'Stable acquisitions must still coalesce into fewer stored energy intervals');
+    assert(recorded.every(row => Number.isFinite(row.value)));
+    assert(recorded.some(row => row.raw.durationMs >= 5 * MINUTE));
+    const options = { store, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', now: end + MINUTE };
+    const power = getChartData({ ...options, left: 'power' }), phases = getChartData({ ...options, left: 'phases' });
+    for (const { prefix, power: kw, currents } of devices) {
+      const curves = [[power.series[prefix === 'property' ? 'property_power' : 'charger_power'], kw],
+        ...currents.map((weight, index) => [phases.series[`${prefix}_current_l${index + 1}`], kw * weight / 10 / 0.23])];
+      for (const [rows, expected] of curves) {
+        assert.equal(rows[0].x, start);
+        assert.equal(rows.at(-2).x, end - 1);
+        assert.deepEqual(rows.at(-1), { x: end, y: null }, 'Recorded history ends at the last acquired interval');
+        assert(rows.filter(row => row.x < end).every(row => Number.isFinite(row.y)), 'Constant intervals draw an unbroken line');
+        for (const row of rows.filter(row => row.y !== null)) near(row.y, expected);
+      }
+    }
+  } finally { store.close(); }
+});
+
+test('failed Easee acquisition still breaks derived power and currents until fresh total power recovers', () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, failedAt = start + 10 * MINUTE, recoveredAt = failedAt + 2 * MINUTE;
+    const end = recoveredAt + 5 * MINUTE, lastGoodAt = failedAt - 15_000;
+    const { recorder, devices, poll } = liveElectricity(store, start);
+    for (let at = start; at < failedAt; at += 15_000) poll(at);
+    assert.equal(poll(failedAt, true).gaps.length, devices.length);
+    for (let at = recoveredAt; at <= end; at += 15_000) poll(at);
+    recorder.flush(end, { force: true });
+    const options = { store, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', now: end + MINUTE };
+    const power = getChartData({ ...options, left: 'power' }), phases = getChartData({ ...options, left: 'phases' });
+    for (const { prefix, power: kw } of devices) {
+      const curves = [power.series[prefix === 'property' ? 'property_power' : 'charger_power'],
+        ...[1, 2, 3].map(phase => phases.series[`${prefix}_current_l${phase}`])];
+      for (const rows of curves) {
+        assert(rows.some(row => row.y !== null && row.x < lastGoodAt));
+        assert(rows.some(row => row.y === null && row.x >= lastGoodAt && row.x < recoveredAt));
+        assert(!rows.some(row => row.y !== null && row.x >= lastGoodAt && row.x < recoveredAt), 'The chart cannot bridge failed acquisition');
+        assert(rows.some(row => row.y !== null && row.x === recoveredAt), 'Fresh total power resumes the plot with the older phase weights');
+        assert.equal(rows.at(-2).x, end - 1);
+      }
+      const l1 = store.observations().filter(row => row.signal === `${prefix}_energy_l1` && Number.isFinite(row.value));
+      assert(l1.every(row => row.raw.intervalEnd <= lastGoodAt || row.raw.intervalStart >= recoveredAt));
+      near(l1.reduce((sum, row) => sum + row.value, 0), kw * (prefix === 'property' ? 0.2 : 0.4) * (lastGoodAt - start + end - recoveredAt) / HOUR);
+    }
+  } finally { store.close(); }
+});
 
 test('phase kWh produces average real power without 230 V and explicitly equivalent chart currents', () => {
   const store = new Store(':memory:');

@@ -95,12 +95,59 @@ test('fresh single-phase active power can use explicitly estimated old zero phas
     assert.equal(interval.sourceTime, now, 'Old zero weights do not age the fresh active-power measurement');
     assert(interval.quality.includes('last_reported_zero_phase_weights'));
   }
-  for (const options of [{ power: null }, { inactiveValue: 1 }, { inactiveQuality: ['provider_error'] }, { inactiveTime: initial + 1000 }]) {
+  for (const options of [{ power: null }, { inactiveQuality: ['provider_error'] }, { inactiveTime: initial + 1000 }]) {
     const rejected = new ElectricityAccumulator().sample(singlePhase(initial, options), initial);
-    assert.equal(rejected.gaps.length, 1, 'Stale nonzero currents, failed/future zero readings and VI-only fallback remain unavailable');
+    assert.equal(rejected.gaps.length, 1, 'Failed/future zero readings and stale VI-only inputs remain unavailable');
   }
   const stalePower = singlePhase(initial).map(row => row.signal.endsWith('active_power') ? { ...row, sourceTime: initial - 600_000 } : row);
   assert.equal(new ElectricityAccumulator().sample(stalePower, initial).gaps.length, 1);
+});
+
+test('fresh total power permits older valid nonzero phase shares without changing their timestamps', () => {
+  const rows = sample(initial).map(row => row.signal.includes('current_')
+    ? { ...row, sourceTime: initial - 600_000, quality: ['stale'] } : row);
+  const before = structuredClone(rows), accumulator = new ElectricityAccumulator();
+  assert.equal(accumulator.sample(rows, initial).gaps.length, 0);
+  const next = rows.map(row => ({ ...row, receivedAt: initial + 15_000,
+    sourceTime: row.signal.endsWith('active_power') ? initial + 15_000 : row.sourceTime }));
+  const [interval] = accumulator.sample(next, initial + 15_000).intervals;
+  near(interval.energies.reduce((a, b) => a + b), 3.5 * 15 / 3600);
+  near(interval.energies[0], 2.4 * 15 / 3600);
+  near(interval.energies[1], 1.1 * 15 / 3600);
+  assert.equal(interval.sourceTime, initial + 15_000);
+  assert(interval.quality.includes('last_reported_phase_weights'));
+  assert(interval.quality.includes('asynchronous_snapshot'));
+  assert.deepEqual(rows, before, 'Allocation never freshens the original observations');
+  for (const flag of ['provider_error', 'invalid_numeric', 'invalid_unit', 'conflicting_duplicate', 'future_source_time']) {
+    const failed = rows.map(row => row.signal.endsWith('current_l1') ? { ...row, quality: [flag] } : row);
+    assert.equal(new ElectricityAccumulator().sample(failed, initial).gaps.length, 1, flag);
+  }
+});
+
+test('phase and voltage timestamps aging past the limit do not expire fresh reported power', () => {
+  const rows = now => sample(now, { timestamp: initial - 295_000 }).map(row => row.signal.endsWith('active_power')
+    ? { ...row, sourceTime: now } : row);
+  const accumulator = new ElectricityAccumulator();
+  accumulator.sample(rows(initial), initial);
+  const result = accumulator.sample(rows(initial + 15_000), initial + 15_000);
+  assert.equal(result.gaps.length, 0);
+  assert.equal(result.intervals.length, 1);
+  near(result.intervals[0].energies.reduce((a, b) => a + b), 3.5 * 15 / 3600);
+});
+
+test('power and VI freshness clocks may differ across a basis change, while same-basis rollback still breaks coverage', () => {
+  const rows = (now, powerTime) => sample(now, { timestamp: initial - 15_000, power: powerTime === null ? null : 3.5 })
+    .map(row => row.signal.endsWith('active_power') ? { ...row, sourceTime: powerTime } : row);
+  const accumulator = new ElectricityAccumulator();
+  accumulator.sample(rows(initial, initial), initial);
+  for (const [elapsed, powerTime] of [[15_000, null], [30_000, initial - 20_000]]) {
+    const result = accumulator.sample(rows(initial + elapsed, powerTime), initial + elapsed);
+    assert.equal(result.gaps.length, 0);
+    assert.equal(result.intervals.length, 1);
+  }
+  const rollback = accumulator.sample(rows(initial + 45_000, initial - 30_000), initial + 45_000);
+  assert.equal(rollback.intervals.length, 0);
+  assert.deepEqual(rollback.gaps[0].quality, ['source_time_rollback']);
 });
 
 test('counter audits are deduplicated and resets never change integrated phase energies', () => {

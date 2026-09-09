@@ -81,11 +81,15 @@ apparent power; that assumption can be wrong. Positive total power with no usabl
 phase shares is missing data, not an invented equal split. Fresh zero total power
 can produce three zero increments without requiring phase shares.
 
-An unused phase may keep an old zero-current timestamp. With fresh reported total
-power and fresh currents for every nonzero phase, those old valid zeros may supply
-estimated zero shares, labelled `last_reported_zero_phase_weights`. They do not
-renew measurement freshness. Old nonzero currents, failed or future readings, and
-voltage × current fallback cannot use this exception.
+Phase currents may keep older timestamps while reported total power continues
+updating. With fresh reported total power, older valid currents may supply
+estimated phase shares, labelled `last_reported_phase_weights` for nonzero values
+and `last_reported_zero_phase_weights` for zeros. The total-power timestamp anchors
+energy freshness; an aging allocation weight or voltage must not discard fresh
+aggregate consumption. Original phase timestamps remain unchanged, and
+asynchronous inputs stay labelled. Failed, invalid or future readings cannot
+supply shares. Voltage × current fallback still requires fresh currents and
+verified voltages because those measurements establish consumption themselves.
 
 Equalizer IDs `31–33` are phase currents and `34–36` are phase-neutral voltages.
 Charger current IDs are `183–185`. Charger voltage IDs describe terminal pairs;
@@ -98,9 +102,12 @@ different grid or installation without checking it.
 Current, voltage and power snapshots remain acquisition-only. Current snapshots
 can appear in live status, but are not new historical or training signals.
 Restart state does not authorize integration over a long outage: the default
-maximum gap between usable polls is 60 seconds, and the power/current measurements
-anchoring integration expire after five minutes. Repeated cached API values keep their original source
-age. Failures, expiry, backwards timestamps and recovery leave explicit gaps;
+maximum gap between usable polls is 60 seconds, and the measurements anchoring
+integration expire after five minutes: reported total power, or all currents and
+voltages on the VI fallback path. Repeated cached API values keep their original
+source age; successful HTTP polling alone cannot extend an old total-power
+reading, including zero while idle. Failures, expiry, backwards timestamps within
+the same measurement basis and recovery leave explicit gaps;
 there is no unbounded last-value hold. Pump/phase zero transitions bypass the
 numerical change threshold.
 
