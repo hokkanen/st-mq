@@ -37,6 +37,7 @@
       "home_geofence": "Home",
       "namespace": "",
       "charger_assignment": "auto",
+      "charger_identification": false,
       "max_age_seconds": 180
     },
     "entsoe": {
@@ -124,6 +125,7 @@
       "home_geofence": "str",
       "namespace": "str?",
       "charger_assignment": "list(auto|bmw|easee)",
+      "charger_identification": "bool",
       "max_age_seconds": "int(30,600)"
     },
     "entsoe": {

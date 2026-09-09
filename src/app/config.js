@@ -66,11 +66,13 @@ export function teslamateConfiguration(input = {}) {
   const homeGeofence = input.homeGeofence ?? input.home_geofence ?? 'Home';
   const namespace = input.namespace ?? '';
   const chargerAssignment = input.chargerAssignment ?? input.charger_assignment ?? 'auto';
+  const chargerIdentification = input.chargerIdentification ?? input.charger_identification ?? false;
+  if (typeof chargerIdentification !== 'boolean') throw new Error('TeslaMate charger identification must be a boolean');
   if (!/^[1-9]\d{0,8}$/.test(carId) || typeof homeGeofence !== 'string' || !homeGeofence.trim()
     || homeGeofence.length > 100 || typeof namespace !== 'string' || namespace.length > 100
     || /[\/+#\u0000]/.test(namespace) || !['auto', 'bmw', 'easee'].includes(chargerAssignment)) throw new Error('Invalid TeslaMate car, geofence, assignment or MQTT namespace');
   if (input.max_age_seconds !== undefined && !Number.isFinite(input.max_age_seconds)) throw new Error('Invalid TeslaMate maximum age');
-  return { enabled, carId, homeGeofence, namespace, chargerAssignment,
+  return { enabled, carId, homeGeofence, namespace, chargerAssignment, chargerIdentification,
     maxAgeMs: Math.round(interval(input.maxAgeMs ?? (input.max_age_seconds == null ? undefined : input.max_age_seconds * 1000),
       180_000, 30_000, 600_000, 'teslamate.max_age_seconds')),
     propertyMaxAgeMs: 60_000, settleMs: 5000, powerToleranceKw: 1 };

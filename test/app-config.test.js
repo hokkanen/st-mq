@@ -28,6 +28,10 @@ test('recording and acquisition options are independent, configurable and valida
 test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/namespace settings', t => {
   assert.equal(teslamateConfiguration().enabled, false);
   assert.equal(teslamateConfiguration().homeGeofence, 'Home');
+  assert.equal(teslamateConfiguration().chargerIdentification, false);
+  assert.equal(teslamateConfiguration({ charger_identification: true }).chargerIdentification, true);
+  assert.equal(teslamateConfiguration({ chargerIdentification: true }).chargerIdentification, true);
+  assert.throws(() => teslamateConfiguration({ charger_identification: 'true' }));
   assert.equal(teslamateConfiguration({ car_id: 2, charger_assignment: 'easee', max_age_seconds: 120 }).carId, '2');
   assert.equal(teslamateConfiguration({ charger_assignment: 'easee' }).chargerAssignment, 'easee');
   for (const input of [{ car_id: '1/#' }, { home_geofence: '' }, { namespace: '#' }, { enabled: 'true' },

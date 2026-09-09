@@ -18,7 +18,8 @@ function retryDelay(value) {
 
 /** Finite requests with sanitized errors: URLs, authorization and response bodies
  * are deliberately excluded because providers sometimes echo credentials. */
-export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, maxBytes = 2 * 1024 * 1024 } = {}) {
+export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, maxBytes = 2 * 1024 * 1024,
+  allowChargerIdentification = false } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error('Invalid provider timeout');
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) throw new Error('Invalid provider response limit');
   const pending = new Set();
@@ -29,7 +30,19 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     if (url.protocol !== 'https:' || !ALLOWED_HOSTS.has(url.hostname) || url.username || url.password || (url.port && url.port !== '443')) throw new ProviderError('provider-origin-not-allowed');
     const method = options.method ?? 'GET';
     const authentication = url.hostname === 'api.easee.com' && ['/api/accounts/login', '/api/accounts/refresh_token'].includes(url.pathname);
-    if (method !== 'GET' && !(method === 'POST' && authentication)) throw new ProviderError('device-writes-not-allowed');
+    // Deliberate, opt-in exception for one bounded identification perturbation.
+    // Circuit limits, permanent settings, start/resume and unbounded TTLs remain
+    // inaccessible even to the opted-in transport.
+    let identification = false;
+    if (allowChargerIdentification === true && method === 'POST' && url.hostname === 'api.easee.com'
+      && /^\/api\/chargers\/[^/]+\/commands\/set_dynamic_charger_current$/.test(url.pathname) && !url.search && !url.hash) {
+      let body;
+      try { body = typeof options.body === 'string' && options.body.length <= 100 ? JSON.parse(options.body) : null; } catch { body = null; }
+      identification = body !== null && typeof body === 'object' && !Array.isArray(body)
+        && Object.keys(body).length === 2 && body.minutes === 1 && Number.isInteger(body.amps)
+        && (body.amps === 0 || body.amps >= 6 && body.amps <= 32);
+    }
+    if (method !== 'GET' && !(method === 'POST' && (authentication || identification))) throw new ProviderError('device-writes-not-allowed');
     if (closed) throw new ProviderError('provider-client-closed');
     const controller = new AbortController();
     pending.add(controller);
@@ -42,7 +55,10 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
         retryDelay(response.headers.get('retry-after')));
       const declared = Number(response.headers.get('content-length'));
       if (Number.isFinite(declared) && declared > maxBytes) throw new ProviderError('provider-response-too-large');
-      if (!response.body) throw new ProviderError('empty-provider-response');
+      if (!response.body) {
+        if (identification) return '';
+        throw new ProviderError('empty-provider-response');
+      }
       reader = response.body.getReader();
       const chunks = []; let bytes = 0;
       while (true) {

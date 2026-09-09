@@ -1,9 +1,10 @@
 import { teslamateConfiguration } from '../app/config.js';
 import { recordChargingSessionCheck } from '../app/charging-session-checks.js';
 import { compareEaseeSessionEnergy } from './easee-session-checks.js';
+import { comparableElectricitySnapshot, settledElectricitySnapshot } from './electricity-comparison.js';
 
 const HOUR = 3_600_000;
-const FIELDS = new Set(['charger_power', 'charge_energy_added', 'charging_state', 'state', 'since', 'geofence', 'healthy']);
+const FIELDS = new Set(['charger_power', 'charger_actual_current', 'charge_energy_added', 'charging_state', 'state', 'since', 'geofence', 'healthy']);
 const positive = value => Number.isFinite(value) && value >= 0;
 const validTime = value => Number.isSafeInteger(value) && value >= 0;
 const unique = values => [...new Set(values)];
@@ -14,10 +15,10 @@ export function decodeTeslaMateField(field, payload) {
   if (!FIELDS.has(field)) return undefined;
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
   if (text.length > 200) return undefined;
-  if (['charger_power', 'charge_energy_added'].includes(field)) {
+  if (['charger_power', 'charger_actual_current', 'charge_energy_added'].includes(field)) {
     if (!/^\d+(?:\.\d+)?$/.test(text.trim())) return null;
     const value = Number(text);
-    return positive(value) && value <= (field === 'charger_power' ? 350 : 500) ? value : null;
+    return positive(value) && value <= (field === 'charger_power' ? 350 : field === 'charger_actual_current' ? 100 : 500) ? value : null;
   }
   if (field === 'healthy') return text === 'true' ? true : text === 'false' ? false : null;
   if (field === 'since') {
@@ -40,6 +41,12 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
   if (state?.version !== 1) state = { version: 1, cursor: null, session: null, finalizedSince: null, suppression: null, sequence: 0 };
   let cache = {}, connected = false, healthyAt = null, evidenceAt = null, powerChangedAt = null;
   let livePowerAt = null, liveStartAt = null, sawIdle = false, lastGapReason = null, messageSequence = 0;
+  // Identification is deliberately absent from `state`: no command, verdict,
+  // timer, sample buffer or pause bookkeeping survives in the database.
+  let pendingEnergy = [], sessionAssignment = null, pauseSeen = false, resumedSince = null;
+  let referenceOffset = 0, previousReference = null, pauseCounterReset = false, pauseZeroReference = null;
+  const identificationEnabled = config.chargerIdentification && config.chargerAssignment === 'auto';
+  const identification = () => identificationEnabled ? engine.chargerIdentification?.status() ?? {} : {};
   // A restart can recover the audit accumulator, never the old live power.
   if (state.session) {
     state.session.complete = false;
@@ -47,10 +54,12 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
   }
   const save = () => store.setState(checkpointKey, state);
   const transaction = run => {
-    const before = structuredClone({ state, cache, connected, healthyAt, evidenceAt, powerChangedAt, livePowerAt, liveStartAt, sawIdle, lastGapReason, messageSequence });
+    const before = structuredClone({ state, cache, connected, healthyAt, evidenceAt, powerChangedAt, livePowerAt, liveStartAt, sawIdle, lastGapReason, messageSequence,
+      pendingEnergy, sessionAssignment, pauseSeen, resumedSince, referenceOffset, previousReference, pauseCounterReset, pauseZeroReference });
     try { return store.transaction(() => { const result = run(); save(); return result; }); }
     catch (error) {
-      ({ state, cache, connected, healthyAt, evidenceAt, powerChangedAt, livePowerAt, liveStartAt, sawIdle, lastGapReason, messageSequence } = before);
+      ({ state, cache, connected, healthyAt, evidenceAt, powerChangedAt, livePowerAt, liveStartAt, sawIdle, lastGapReason, messageSequence,
+        pendingEnergy, sessionAssignment, pauseSeen, resumedSince, referenceOffset, previousReference, pauseCounterReset, pauseZeroReference } = before);
       throw error;
     }
   };
@@ -71,6 +80,7 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
   const recent = (at, now, maximum = config.maxAgeMs) => validTime(at) && at <= now && now - at <= maximum;
   const power = () => cache.charger_power?.value;
   function gap(now, reason) {
+    if (pendingEnergy.length) { pendingEnergy = []; markIncomplete('incomplete-coverage'); }
     if (lastGapReason !== reason && state.cursor !== null) engine.recorder.energyGap({ source: 'teslamate', device, prefix: 'ev2',
       start: Math.min(state.cursor, now), end: now, quality: [reason] });
     lastGapReason = reason; state.cursor = now;
@@ -78,6 +88,7 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
   function finish(now) {
     const session = state.session;
     if (!session) return;
+    if (pendingEnergy.length) { pendingEnergy = []; markIncomplete('incomplete-coverage'); }
     const end = Math.max(session.start + 1, session.end ?? now);
     // Tesla can publish zero as the terminal counter. TeslaMate retains the
     // preceding maximum for that case; a decreasing nonzero counter is unknown.
@@ -89,32 +100,36 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       if (!comparison) markIncomplete('incomplete-coverage');
       else if (comparison.edgeEstimated) session.quality = unique([...session.quality, 'estimated-boundary']);
     }
-    recordChargingSessionCheck(store, { source: 'teslamate', sessionKey: session.key, start: session.start, end,
+    // A car on Charger 1 does not create another Charger 2 session comparison.
+    // The normal Charger 1 provider session already supplies its reference.
+    if (sessionAssignment !== 'easee') recordChargingSessionCheck(store, { source: 'teslamate', sessionKey: session.key, start: session.start, end,
       estimatedKwh: session.estimatedKwh, referenceKwh: session.referenceKwh,
       complete: session.complete && session.referenceKwh !== null && session.referenceAt >= end - 5000,
       quality: unique(session.quality) });
     state.finalizedSince = session.since;
     state.session = null;
+    sessionAssignment = null; pauseSeen = false; resumedSince = null;
+    referenceOffset = 0; previousReference = null; pauseCounterReset = false; pauseZeroReference = null;
   }
   function sourceSnapshot(group, now) {
     const snapshot = engine.electricitySnapshot?.[group];
-    if (!snapshot || !positive(snapshot.powerKw) || !recent(snapshot.sourceTime, now, config.propertyMaxAgeMs)
-      || !recent(snapshot.receivedAt, now, config.propertyMaxAgeMs)) return null;
+    if (!comparableElectricitySnapshot(snapshot, now, { maxAgeMs: config.propertyMaxAgeMs })) return null;
     return snapshot;
   }
   function propertyComparable(now) {
     const property = sourceSnapshot('property', now);
-    return property && powerChangedAt !== null && property.sourceTime >= powerChangedAt + config.settleMs;
+    return settledElectricitySnapshot(property, now, powerChangedAt, { settleMs: config.settleMs });
   }
   function limitViolation(now) {
     if (!positive(power()) || power() === 0 || powerChangedAt === null) return null;
     const property = sourceSnapshot('property', now);
     // Do not compare a new charging ramp with a preceding grid measurement.
-    if (!property || property.sourceTime < powerChangedAt + config.settleMs) return null;
+    if (!settledElectricitySnapshot(property, now, powerChangedAt, { settleMs: config.settleMs })) return null;
     if (power() > property.powerKw + config.powerToleranceKw) return 'property-power-impossible';
     if (config.chargerAssignment === 'easee') return null;
     const easee = sourceSnapshot('charger', now);
-    if (!easee || easee.sourceTime < powerChangedAt - config.settleMs || easee.powerKw <= 0) return null;
+    if (!easee || easee.powerKw <= 0 || easee.sourceTime < powerChangedAt - config.settleMs
+      && !settledElectricitySnapshot(easee, now, powerChangedAt, { settleMs: config.settleMs })) return null;
     if (power() + easee.powerKw <= property.powerKw + config.powerToleranceKw) return null;
     return Math.abs(power() - easee.powerKw) <= config.powerToleranceKw ? 'duplicate-suspected' : 'assignment-uncertain';
   }
@@ -123,6 +138,17 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
     if (state.cursor !== null && now < state.cursor) {
       markIncomplete('out-of-order'); return;
     }
+    const check = identification();
+    const preservePause = check.pauseExpected === true && connected && atHome();
+    if (preservePause) {
+      if (!pauseSeen) { pauseCounterReset = false; pauseZeroReference = null; }
+      pauseSeen = true;
+    }
+    else if (pauseSeen) {
+      if (state.session && !isCharging()) state.session.end ??= now;
+      pauseSeen = false;
+    }
+    if (state.session && check.verdict) sessionAssignment = check.verdict;
     if (state.session?.end != null) {
       if (allowFinalize && now - state.session.end >= 45_000) finish(now);
       state.cursor = now; return;
@@ -138,13 +164,27 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       return;
     }
     const incomingSince = cache.since?.value;
+    if (preservePause && validTime(incomingSince)) resumedSince = incomingSince;
     if (state.session && isCharging() && validTime(incomingSince) && state.session.since !== null
-      && incomingSince !== state.session.since && incomingSince > state.session.start) {
+      && incomingSince !== state.session.since && incomingSince !== resumedSince && !preservePause && incomingSince > state.session.start) {
       markIncomplete('missing-end'); state.session.end = Math.min(now, incomingSince); finish(now);
       state.cursor = now;
     }
     const charging = isCharging(), home = atHome();
-    const violation = connected && charging && home ? limitViolation(now) : null;
+    const charger = sourceSnapshot('charger', now);
+    // The remembered session attribution is only for its final comparison.
+    // Recording always uses the live verdict, which can be invalidated by a
+    // connection change or a new explicit test.
+    const assignment = check.verdict;
+    const defer = identificationEnabled && !assignment
+      && (check.assignmentPending || check.active || !charger || charger.powerKw > 0);
+    // A known command transition must not turn independently delayed MQTT
+    // fields into a permanent missing-end diagnosis. Unresolved energy stays
+    // in RAM until it can be attributed; ordinary physical bounds still apply
+    // to recording after the transition.
+    const settling = check.active && Number.isFinite(check.settlingUntil) && now < check.settlingUntil;
+    const violation = connected && charging && home && !defer && !settling && assignment !== 'easee' ? limitViolation(now) : null;
+    if (assignment === 'easee' || defer || settling) state.suppression = null;
     if (violation && state.suppression?.reason !== violation) {
       state.suppression = { at: now, powerAt: livePowerAt, reason: violation };
       markIncomplete(violation === 'property-power-impossible' ? 'missing-end' : violation);
@@ -170,6 +210,11 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       }
       return;
     }
+    if (preservePause && (!charging || power() === 0)) {
+      // Zero comes from observed power/state; never substitute the command as
+      // a measurement. The pause remains within the physical charging session.
+      state.cursor = now; return;
+    }
     if (!charging || !home || !positive(power()) || power() === 0) {
       if (state.session && !home) { markIncomplete('assignment-uncertain'); state.session.end = now; }
       gap(now, !home ? 'away-or-unknown-location' : 'not-charging'); return;
@@ -189,18 +234,45 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
         lastEvidenceAt: evidenceAt,
         complete, quality: complete ? ['estimated-boundary'] : ['missing-start'] };
       state.cursor = now; sawIdle = false;
+      sessionAssignment = check.verdict ?? null;
+      previousReference = reference;
     }
     if (state.cursor === null) state.cursor = now;
     state.session.lastEvidenceAt = evidenceAt;
     if (config.chargerAssignment === 'easee') {
       gap(now, 'assigned-to-easee'); return;
     }
+    if (assignment === 'easee') {
+      pendingEnergy = [];
+      // Charger 2 has no consumption in this connection. Do not archive the
+      // identification decision as a gap reason or a session-quality flag.
+      state.cursor = now; lastGapReason = 'not-charging'; return;
+    }
+    if (!defer && !settling && pendingEnergy.length) {
+      if (assignment === 'bmw') {
+        for (const interval of pendingEnergy) {
+          const result = engine.recorder.recordEnergy({ ...interval, receivedAt: now });
+          if (result.reason !== 'duplicate-interval') state.session.estimatedKwh += interval.energies[0];
+        }
+        pendingEnergy = [];
+      } else {
+        // Charger 1 becoming idle cannot identify where the car charged during
+        // the preceding overlap. Never turn that ambiguous buffer into energy.
+        gap(now, 'assignment-uncertain');
+      }
+    }
     if (now > state.cursor) {
       if (now - state.cursor > config.maxAgeMs) { markIncomplete('stale'); gap(now, 'teslamate-gap'); return; }
       const kwh = power() * (now - state.cursor) / HOUR;
-      const result = engine.recorder.recordEnergy({ source: 'teslamate', device, prefix: 'ev2', start: state.cursor, end: now,
-        energies: [kwh], powers: [power()], quality: ['estimated', 'reported_active_power', 'mqtt_receive_time', 'held_source_values'], receivedAt: now });
-      if (result.reason !== 'duplicate-interval') state.session.estimatedKwh += kwh;
+      const interval = { source: 'teslamate', device, prefix: 'ev2', start: state.cursor, end: now,
+        energies: [kwh], powers: [power()], quality: ['estimated', 'reported_active_power', 'mqtt_receive_time', 'held_source_values'], receivedAt: now };
+      if (defer || settling) {
+        pendingEnergy.push(interval);
+        if (pendingEnergy.length > 1024 || now - pendingEnergy[0].start > 240_000) gap(now, 'assignment-uncertain');
+      } else {
+        const result = engine.recorder.recordEnergy(interval);
+        if (result.reason !== 'duplicate-interval') state.session.estimatedKwh += kwh;
+      }
     }
     state.cursor = now; lastGapReason = null;
   }
@@ -216,6 +288,9 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       const previous = cache[field], retained = packet.retain === true;
       if (retained && previous && !previous.retained) return;
       cache[field] = { value, at: now, retained, sequence: ++messageSequence };
+      const preservePause = identification().pauseExpected === true && connected && atHome();
+      if (preservePause) pauseSeen = true;
+      if (preservePause && field === 'since' && validTime(value)) resumedSince = value;
       if (field === 'charger_power' && value !== previous?.value) powerChangedAt = now;
       if (!retained) {
         if (field === 'healthy' && value === true) healthyAt = now;
@@ -223,30 +298,51 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
         if (field === 'charge_energy_added' && positive(value) && (positive(previous?.value) && value > previous.value
           || previous == null && liveStartAt !== null && value > 0)) evidenceAt = now;
         if ((field === 'charging_state' && value === 'Charging' || field === 'state' && value === 'charging') && value !== previous?.value) {
-          if (state.session?.end != null) {
+          if (!preservePause && state.session?.end != null) {
             if (now - state.session.end < 45_000) markIncomplete('incomplete-coverage');
             finish(now);
           }
-          liveStartAt = now;
+          if (!preservePause) liveStartAt = now;
           // The last run's retained cumulative value is not the new baseline.
           // Wait for this run's counter before opening another session.
-          if (cache.charge_energy_added?.at < now && cache.charge_energy_added.value > 0) delete cache.charge_energy_added;
+          if (!preservePause && cache.charge_energy_added?.at < now && cache.charge_energy_added.value > 0) delete cache.charge_energy_added;
         }
         if (field === 'charging_state' && ['Complete', 'Stopped', 'Disconnected', 'NoPower'].includes(value)) {
-          sawIdle = true;
-          if (state.session && state.session.end == null) state.session.end = now;
+          if (!preservePause || ['Complete', 'Disconnected'].includes(value)) {
+            sawIdle = true; pauseSeen = false;
+            if (state.session && state.session.end == null) state.session.end = now;
+          }
           state.suppression = null;
         }
         if (field === 'state' && ['online', 'asleep', 'offline', 'driving'].includes(value)) {
-          sawIdle = true;
-          if (state.session && previous?.value === 'charging') {
+          if (!preservePause || ['offline', 'driving'].includes(value)) sawIdle = true;
+          if ((!preservePause || ['offline', 'driving'].includes(value)) && state.session && previous?.value === 'charging') {
             if (value === 'offline') markIncomplete('missing-end');
             state.session.end ??= now;
           }
         }
       }
       if (field === 'charge_energy_added' && positive(value) && state.session && !retained) {
-        if (state.session.referenceKwh !== null && value < state.session.referenceKwh) {
+        if (preservePause && value === 0 && previousReference > 0 && !pauseCounterReset) {
+          // A stop may publish a transient zero and later return the continuing
+          // counter. Wait for a positive value before deciding it restarted.
+          pauseZeroReference = previousReference;
+          state.session.referenceAt = now;
+          return;
+        }
+        if (pauseZeroReference !== null && value > 0) {
+          if (value >= pauseZeroReference) markIncomplete('counter-reset');
+          pauseZeroReference = null;
+        }
+        if (preservePause && previousReference !== null && value < previousReference && !pauseCounterReset) {
+          // Some cars reset the session counter across a pause. Combine those
+          // normal segments once, in RAM, while retaining a single reference.
+          referenceOffset = state.session.referenceKwh ?? 0;
+          pauseCounterReset = true;
+        }
+        const reference = value + referenceOffset;
+        previousReference = value;
+        if (state.session.referenceKwh !== null && reference < state.session.referenceKwh) {
           if (value === 0 && state.session.end != null) state.session.referenceAt = now;
           else {
             state.session.pendingReset ??= { at: now, value };
@@ -255,7 +351,7 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
           }
         } else {
           if (state.session.pendingReset) { markIncomplete('counter-reset'); delete state.session.pendingReset; }
-          state.session.referenceKwh = value; state.session.referenceAt = now;
+          state.session.referenceKwh = reference; state.session.referenceAt = now;
         }
       }
       // Do not start or finalize on individual messages: the maintenance tick
@@ -275,7 +371,14 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
     });
   }
   return { topic: `${root}#`, receive, tick, setConnected,
+    identificationSnapshot: () => ({ connected, home: cache.geofence ? atHome() : undefined, charging: isCharging(),
+      plugged: isCharging() ? true : cache.charging_state?.value === 'Disconnected' || cache.state?.value === 'driving' ? false : undefined,
+      healthy: cache.healthy?.value === true, healthyAt,
+      powerKw: power(), powerAt: cache.charger_power?.retained ? null : cache.charger_power?.at ?? null,
+      currentA: cache.charger_actual_current?.value, currentAt: cache.charger_actual_current?.retained ? null : cache.charger_actual_current?.at ?? null,
+      energyKwh: cache.charge_energy_added?.value, energyAt: cache.charge_energy_added?.retained ? null : cache.charge_energy_added?.at ?? null,
+      sessionKey: cache.since?.value ?? null }),
     close: () => setConnected(false),
     status: () => ({ connected, charging: isCharging(), home: atHome(), suppressed: state.suppression?.reason ?? null,
-      recording: connected && lastGapReason === null && Boolean(state.session), sessionOpen: Boolean(state.session) }) };
+      recording: connected && lastGapReason === null && !pendingEnergy.length && Boolean(state.session), sessionOpen: Boolean(state.session) }) };
 }

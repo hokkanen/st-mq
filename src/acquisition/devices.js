@@ -1,9 +1,16 @@
-// Read-only API boundary. No charger or SmartThings device commands exist here.
+// Observation boundary, with a separately opted-in, one-minute charger
+// identification control. No circuit, permanent or SmartThings writes exist.
 // Protocol sources checked 2026-09-06:
 // https://developer.smartthings.com/docs/service-integrations/query-and-list-devices
 // https://developer.easee.com/reference/getobservations
 // https://developer.easee.com/reference/account_refreshtoken
 // https://developer.easee.com/docs/charger-observation-ids
+// Identification control checked 2026-09-09:
+// https://developer.easee.com/reference/charger_set_dynamic_charger_current
+// https://developer.easee.com/docs/amqp-commands
+// https://developer.easee.com/docs/enumerations
+// https://developer.easee.com/docs/load-balancing
+// https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
 
 const TEMPERATURES = [
@@ -31,6 +38,8 @@ export const ELECTRICITY_FIELDS = Object.freeze({
     [40, 'active_power', 'kW'], [45, 'import_energy_counter', 'kWh']],
 });
 const API = 'https://api.easee.com';
+const IDENTIFICATION_IDS = [47, 48, 109, 111, 112, 113, 114, 120, 183, 184, 185, 230, 231, 232, 250,
+  ...CHARGER_TELEMETRY.map(row => row[0])];
 
 function number(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -234,6 +243,60 @@ function annotateElectricalCurrents(rows) {
   return rows;
 }
 
+// This projection is intentionally not an observation array: control metadata
+// stays in RAM and can never enter ordinary acquisition/storage accidentally.
+function identificationSnapshot(payload, now) {
+  const list = Array.isArray(payload) ? payload : payload?.observations;
+  if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee control observations');
+  const pick = (id, unit, maximum = 1000, integer = false) => {
+    const matches = list.filter(row => number(row?.id) === id).map(row => ({
+      value: number(row.value), at: sourceTime(row.timestamp), unit: row.unit,
+    })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
+    const row = matches[0];
+    if (!row || row.value === null || row.value < 0 || row.value > maximum || integer && !Number.isInteger(row.value)
+      || row.at === null || row.at < 0 || row.at > now || row.unit != null && row.unit !== unit
+      || matches.some(candidate => candidate.at === row.at && (candidate.value !== row.value || candidate.unit != null && candidate.unit !== unit)))
+      return { value: null, at: null };
+    return { value: row.value, at: row.at };
+  };
+  const max = pick(47, 'A', 80), dynamic = pick(48, 'A', 80), mode = pick(109, undefined, 10, true);
+  const output = pick(114, 'A', 80), power = pick(120, 'kW');
+  const currents = [183, 184, 185].map(id => pick(id, 'A', 80));
+  const circuit = [111, 112, 113].map(id => pick(id, 'A'));
+  const equalizer = [230, 231, 232].map(id => pick(id, 'A'));
+  const connection = deviceConnection(list, now);
+  const telemetryAt = chargerTelemetryAt(list, now);
+  // An old timestamp on a change-reported setting is valid state, not a fresh
+  // electrical measurement. Missing limits must never be interpreted as clear.
+  // Only an unrestricted per-charger cap may be replaced: after TTL expiry the
+  // existing static, circuit, Equalizer and car limits still apply.
+  const safeToProbe = connection.connected === true && max.value !== null && max.value >= 6 && max.value <= 32
+    && dynamic.value !== null && dynamic.value >= 32;
+  const recent = (at, maximumAge) => at !== null && now - at <= maximumAge;
+  const electrical = [power, ...currents];
+  const baselineHeld = electrical.some(row => !recent(row.at, 60_000));
+  // The observations endpoint returns last reported values, not a new sample
+  // on each GET. An unchanged charging baseline can be held within the same
+  // 17-minute device-activity bound used by ordinary acquisition (Easee's
+  // documented online detection also uses TempMax/RSSI within 17 minutes).
+  // This only permits a bounded reduction; proving its effect/recovery still
+  // requires NEW electrical source timestamps after the command/expiry.
+  const baselineUsable = connection.connected === true && mode.value === 3 && power.value > 0
+    && electrical.every(row => row.value !== null && recent(row.at, 17 * 60_000))
+    && (!baselineHeld || recent(telemetryAt, 17 * 60_000));
+  return {
+    receivedAt: now, connected: connection.connected, connectedAt: connection.observedAt, telemetryAt,
+    mode: mode.value, modeAt: mode.at, powerKw: power.value, powerAt: power.at,
+    currents: currents.map(row => row.value), currentTimes: currents.map(row => row.at),
+    dynamicChargerCurrent: dynamic.value, dynamicChargerCurrentAt: dynamic.at,
+    maxChargerCurrent: max.value, maxChargerCurrentAt: max.at,
+    outputCurrent: output.value, outputCurrentAt: output.at,
+    dynamicCircuitCurrents: circuit.map(row => row.value), dynamicCircuitCurrentTimes: circuit.map(row => row.at),
+    equalizerCurrents: equalizer.map(row => row.value), equalizerCurrentTimes: equalizer.map(row => row.at),
+    safeToProbe, baselineUsable, baselineHeld, minCurrentA: 7,
+  };
+}
+
 /**
  * Inject bounded http.json(url, fetchOptions) and optional secret-only tokenStore.
  * Each call returns normalized observation arrays, including null error records for
@@ -255,9 +318,17 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     requestTimes.push(now); // Shared by devices and authentication retries, with margin below 100/5min.
   }
 
-  async function request(url, options, provider) {
-    try { return await http.json(url, options); }
+  async function request(url, options, provider, responseText = false) {
+    try { return await (responseText ? http.text(url, options) : http.json(url, options)); }
     catch (error) { throw sanitized(error, provider); }
+  }
+  async function easeeTransport(url, options, responseText = false) {
+    admitRequest();
+    try { return await request(url, options, 'Easee', responseText); }
+    catch (error) {
+      if (httpStatus(error) === 429) blockedUntil = Math.max(blockedUntil, clock() + (error.retryAfterMs ?? 300_000));
+      throw error;
+    }
   }
   function loadTokens() {
     if (!loadFlight) {
@@ -301,10 +372,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     refreshFlight = (async () => {
       if (supplied(tokens.refreshToken)) {
         try {
-          const payload = await request(`${API}/api/accounts/refresh_token`, {
+          const payload = await easeeTransport(`${API}/api/accounts/refresh_token`, {
             method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', Authorization: `Bearer ${tokens.accessToken}` },
             body: JSON.stringify({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken }), signal,
-          }, 'Easee');
+          });
           await saveTokens(payload); return;
         } catch (error) {
           // Rate limiting/outages do not justify password retries or account pressure.
@@ -312,37 +383,74 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         }
       }
       if (!supplied(easee.user) || !supplied(easee.pw)) throw Object.assign(new Error('Easee authentication requires credentials or a valid refresh token'), { code: 'EASEE_CONFIGURATION' });
-      const payload = await request(`${API}/api/accounts/login`, {
+      const payload = await easeeTransport(`${API}/api/accounts/login`, {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' },
         body: JSON.stringify({ userName: easee.user, password: easee.pw }), signal,
-      }, 'Easee');
+      });
       await saveTokens(payload);
     })();
     try { await refreshFlight; } finally { refreshFlight = null; }
   }
-  async function easeeRequest(device, ids, signal) {
+  async function easeeAuthenticated(url, options, responseText = false) {
+    const { signal } = options;
     await loadTokens();
     await persistTokens();
     if (!supplied(tokens.accessToken)) await refreshTokens({ attemptedToken: tokens.accessToken, signal });
-    const url = `${API}/state/${encodeURIComponent(device)}/observations?ids=${ids.join(',')}`;
     const attemptedToken = tokens.accessToken;
-    const get = async () => {
-      admitRequest();
-      try { return await request(url, { method: 'GET', headers: { accept: 'application/json', Authorization: `Bearer ${tokens.accessToken}` }, signal }, 'Easee'); }
-      catch (error) {
-        if (httpStatus(error) === 429) blockedUntil = Math.max(blockedUntil, clock() + (error.retryAfterMs ?? 300_000));
-        throw error;
-      }
-    };
-    try { return await get(); }
+    const send = () => easeeTransport(url, { ...options,
+      headers: { accept: 'application/json', ...options.headers, Authorization: `Bearer ${tokens.accessToken}` } }, responseText);
+    try { return await send(); }
     catch (error) {
       if (httpStatus(error) !== 401) throw error;
       await refreshTokens({ attemptedToken, signal });
-      return get(); // Exactly one data retry after authentication; never a retry loop.
+      return send(); // Only a known authentication rejection permits one retry.
     }
   }
+  async function easeeRequest(device, ids, signal) {
+    return easeeAuthenticated(`${API}/state/${encodeURIComponent(device)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
+  }
+  let identificationFlight = false;
+  let identificationUntil = 0;
+  const identificationControl = {
+    async read({ signal } = {}) {
+      if (!supplied(easee.charger_id)) throw new Error('Easee charger identification is not configured');
+      const payload = await easeeRequest(easee.charger_id, IDENTIFICATION_IDS, signal);
+      return identificationSnapshot(payload, clock());
+    },
+    async limit({ amps, minutes, signal } = {}) {
+      if (!Number.isInteger(amps) || !(amps === 0 || amps >= 6 && amps <= 32) || minutes !== 1)
+        throw new TypeError('Charger identification requires 0 or 6..32 amps and a one-minute expiry');
+      if (typeof http.text !== 'function') throw new Error('Easee charger identification transport is unavailable');
+      if (identificationFlight || clock() < identificationUntil) throw new Error('Easee charger identification is already active');
+      identificationFlight = true;
+      let attempted = false;
+      try {
+        // Re-read immediately before mutation, so a competing controller's newly
+        // applied cap is not knowingly replaced by an expiring diagnostic limit.
+        const snapshot = await identificationControl.read({ signal });
+        const active = snapshot.currents.filter(value => value !== null && value > 1);
+        if (!snapshot.safeToProbe || !snapshot.baselineUsable || !active.length || amps >= Math.min(...active))
+          throw new Error('Easee charger identification control is not currently safe');
+        const requestedAt = clock();
+        attempted = true;
+        identificationUntil = requestedAt + 60_000;
+        await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/commands/set_dynamic_charger_current`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amps, minutes }), signal,
+        }, true);
+        // HTTP acceptance is not evidence the charger acted; callers must observe
+        // actual current/power. No response bodies or remote identifiers escape.
+        return { accepted: true, requestedAt, expiresAfterMs: 60_000 };
+      } finally {
+        // An ambiguous timeout must not trigger another write. Include request
+        // duration because the device's TTL starts after delivery, not dispatch.
+        if (attempted) identificationUntil = Math.max(identificationUntil, clock() + 60_000);
+        identificationFlight = false;
+      }
+    },
+  };
 
   return {
+    chargerIdentificationControl() { return identificationControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);
       const jobs = [['charger_id', 'ev1'], ['equalizer_id', 'property']].filter(([key]) => supplied(easee[key]));

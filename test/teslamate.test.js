@@ -55,7 +55,7 @@ test('steady changed-only MQTT power becomes scalar energy and one terminal sess
   assert(Math.abs(f.checks()[0].estimatedKwh - f.energy()) < 1e-10);
   assert.deepEqual(f.store.db.prepare("SELECT DISTINCT signal FROM observations WHERE source='teslamate'").all().map(row => row.signal), ['ev2_energy']);
   assert.equal(f.capture.receive('teslamate/cars/2/charger_power', '100'), false);
-  assert.equal(f.capture.receive('teslamate/cars/1/charger_actual_current', '16'), false);
+  assert.equal(f.capture.receive('teslamate/cars/1/charger_actual_current', '16'), true);
 });
 
 test('retained state and a healthy heartbeat cannot by themselves start charging energy', t => {
@@ -127,7 +127,8 @@ test('invalid values and unknown raw fields cannot become energy input', () => {
   for (const value of ['', '-1', 'NaN', 'Infinity', '{}', '351']) assert.equal(decodeTeslaMateField('charger_power', value), null);
   assert.equal(decodeTeslaMateField('charger_power', '11'), 11);
   assert.equal(decodeTeslaMateField('since', '2026-01-01 12:00:00'), null);
-  assert.equal(decodeTeslaMateField('charger_actual_current', '16'), undefined);
+  assert.equal(decodeTeslaMateField('charger_actual_current', '16'), 16);
+  assert.equal(decodeTeslaMateField('charger_actual_current', '101'), null);
 });
 
 test('only exact Home geofence records; unknown or away charging is excluded', t => {
@@ -283,4 +284,165 @@ test('an inferred impossible-power pause can resume the same session after a lon
   f.send('charge_energy_added', 0.1); f.send('charging_state', 'Complete');
   f.at(170_000); f.tick();
   assert.equal(f.checks().length, 1); assert.equal(f.checks()[0].complete, false);
+});
+
+function identificationFixture(t) {
+  const f = setup(t, { charger_identification: true });
+  const status = { active: false, assignmentPending: true, phase: 'baseline', verdict: null, pauseExpected: false };
+  f.engine.chargerIdentification = { status: () => ({ ...status }) };
+  f.property(25); f.easee(11); begin(f);
+  return { f, status };
+}
+
+test('unknown overlap buffers ordinary intervals in memory, then records them once for Charger 2', t => {
+  const { f, status } = identificationFixture(t);
+  for (let n = 1; n <= 4; n++) {
+    f.at(n * 15_000); f.property(25); f.easee(11);
+    f.send('healthy', true); f.send('charge_energy_added', n * 0.04); f.tick();
+  }
+  assert.equal(f.energy(), 0);
+  const checkpoint = f.store.getState('teslamate:acquisition:1');
+  assert.equal(checkpoint.session.assignment, 'auto');
+  assert.equal(checkpoint.session.estimatedKwh, 0);
+  assert.equal(checkpoint.suppression, null);
+  for (const word of ['baseline', 'verdict', 'pendingEnergy', 'targetAmps', 'identification'])
+    assert(!JSON.stringify(checkpoint).includes(word));
+  Object.assign(status, { assignmentPending: false, verdict: 'bmw', phase: 'identified' });
+  f.tick(); f.tick();
+  assert(Math.abs(f.energy() - 11 * 60 / 3600) < 1e-10);
+  assert.deepEqual(f.store.db.prepare("SELECT DISTINCT signal FROM observations WHERE source='teslamate' AND value IS NOT NULL").all().map(row => row.signal), ['ev2_energy']);
+});
+
+test('identifying Charger 1 discards ambiguous duplicate energy and creates no Charger 2 session check', t => {
+  const { f, status } = identificationFixture(t);
+  f.at(30_000); f.send('healthy', true); f.send('charge_energy_added', 0.08); f.tick();
+  Object.assign(status, { verdict: 'easee', assignmentPending: false, phase: 'identified' });
+  f.tick(); f.at(60_000); f.send('healthy', true); f.send('charge_energy_added', 0.16); f.tick();
+  f.send('charging_state', 'Complete');
+  // The connection verdict can be forgotten before the ordinary terminal settle.
+  status.verdict = null;
+  f.at(110_000); f.tick();
+  assert.equal(f.energy(), 0); assert.equal(f.checks().length, 0);
+  const text = f.store.db.prepare('SELECT value FROM state').all().map(row => row.value).join('\n');
+  for (const word of ['matching-drop', 'targetAmps', 'pauseExpected', 'pendingEnergy', 'sessionAssignment']) assert(!text.includes(word));
+});
+
+test('owned pause preserves a session through stopped, online, changed since and counter reset', t => {
+  const { f, status } = identificationFixture(t);
+  f.at(20_000); f.send('charge_energy_added', 0.05); f.tick();
+  Object.assign(status, { active: true, pauseExpected: true, settlingUntil: initial + 200_000 });
+  f.at(25_000); f.send('charger_power', 0); f.send('charging_state', 'Stopped'); f.send('state', 'online');
+  f.send('since', new Date(f.now).toISOString()); f.send('charge_energy_added', 0);
+  f.at(85_000); f.send('healthy', true); f.tick();
+  assert.equal(f.checks().length, 0); assert.equal(f.capture.status().sessionOpen, true);
+  f.at(90_000); f.send('charging_state', 'Charging'); f.send('state', 'charging');
+  f.send('since', new Date(f.now).toISOString()); f.send('charger_power', 11); f.send('charge_energy_added', 0.02);
+  f.at(100_000); f.send('healthy', true); f.property(25); f.easee(11);
+  Object.assign(status, { active: false, pauseExpected: false, settlingUntil: null, verdict: 'bmw', assignmentPending: false });
+  f.tick(); assert.equal(f.checks().length, 0);
+  f.at(110_000); f.send('charge_energy_added', 0.05); f.send('charging_state', 'Complete');
+  f.at(160_000); f.tick();
+  assert.equal(f.checks().length, 1);
+  assert(Math.abs(f.checks()[0].referenceKwh - 0.1) < 1e-10);
+  assert(!f.checks()[0].quality.includes('counter-reset'));
+  assert(!f.checks()[0].quality.includes('missing-end'));
+});
+
+test('actual disconnection still ends a session during an owned pause and restart loses identification', t => {
+  const { f, status } = identificationFixture(t);
+  f.at(10_000); Object.assign(status, { active: true, pauseExpected: true, settlingUntil: initial + 200_000 });
+  f.send('charger_power', 0); f.send('charging_state', 'Disconnected');
+  f.at(70_000); f.tick();
+  assert.equal(f.capture.status().sessionOpen, false);
+  assert.equal(f.checks().length, 1);
+  f.engine.chargerIdentification = null;
+  f.restart(); begin(f, { since: f.now }); f.at(90_000); f.tick();
+  assert.equal(f.energy(), 0, 'No verdict or deferred intervals survive restart');
+});
+
+test('current used by identification stays in RAM and retained values carry no live timestamp', t => {
+  const f = setup(t); begin(f, { retained: true });
+  f.send('charger_actual_current', 16, true);
+  assert.equal(f.capture.identificationSnapshot().currentA, 16);
+  assert.equal(f.capture.identificationSnapshot().currentAt, null);
+  f.at(10_000); f.send('charger_actual_current', 10);
+  assert.equal(f.capture.identificationSnapshot().currentAt, f.now);
+  assert(!f.store.db.prepare("SELECT 1 FROM observations WHERE signal LIKE '%current%' AND source='teslamate'").get());
+});
+
+test('passive guardrail rejects 22 kW chargers against 12 kW property with supported held Easee readings', t => {
+  const f = setup(t); begin(f);
+  const held = powerKw => ({ powerKw, sourceTime: initial - 8 * 60_000, receivedAt: f.now,
+    telemetryAt: initial - 20_000, telemetryConfirmed: true, device: 'invented-charger' });
+  f.at(10_000); f.engine.electricitySnapshot = { property: held(12), charger: held(11) }; f.tick();
+  assert.equal(f.capture.status().suppressed, null, 'A new Tesla value gets bounded settling time');
+  f.at(25_000); f.engine.electricitySnapshot = { property: held(12), charger: held(11) }; f.tick();
+  const before = f.energy();
+  assert.equal(f.capture.status().suppressed, 'duplicate-suspected');
+  f.at(40_000); f.send('healthy', true); f.send('charge_energy_added', 0.12); f.tick();
+  assert.equal(f.energy(), before);
+});
+
+test('supported held property power also stops an impossible Tesla value by itself', t => {
+  const f = setup(t); begin(f);
+  f.at(25_000);
+  f.engine.electricitySnapshot.property = { powerKw: 2, sourceTime: initial - 120_000,
+    receivedAt: f.now, telemetryAt: initial, telemetryConfirmed: true };
+  f.tick();
+  assert.equal(f.capture.status().suppressed, 'property-power-impossible');
+});
+
+test('deferred energy survives a failed flush in RAM and retry commits it exactly once', t => {
+  const { f, status } = identificationFixture(t);
+  f.at(30_000); f.send('healthy', true); f.send('charge_energy_added', 0.08); f.tick();
+  const original = f.store.observation.bind(f.store);
+  f.store.observation = () => { throw new Error('invented write failure'); };
+  Object.assign(status, { verdict: 'bmw', assignmentPending: false });
+  assert.throws(() => f.tick(), /invented write failure/);
+  f.store.observation = original;
+  assert.equal(f.store.getState('teslamate:acquisition:1').session.estimatedKwh, 0);
+  f.tick(); f.tick();
+  assert(Math.abs(f.energy() - 11 * 30 / 3600) < 1e-10);
+});
+
+test('unresolved buffering is bounded and a lost verdict never continues counting both chargers', t => {
+  const { f, status } = identificationFixture(t);
+  for (let n = 1; n <= 18; n++) {
+    f.at(n * 15_000); f.property(25); f.easee(11);
+    f.send('healthy', true); f.send('charge_energy_added', n * 0.04); f.tick();
+  }
+  assert.equal(f.energy(), 0);
+  assert.equal(f.store.getState('teslamate:acquisition:1').session.complete, false);
+  Object.assign(status, { verdict: 'bmw', assignmentPending: false }); f.tick();
+  const before = f.energy(); assert(before < 11 * 60 / 3600, 'Expired unresolved coverage was discarded');
+  Object.assign(status, { verdict: null, assignmentPending: true });
+  f.at(285_000); f.send('healthy', true); f.send('charge_energy_added', 0.8); f.tick();
+  assert.equal(f.energy(), before, 'Historical session attribution cannot override a revoked live verdict');
+});
+
+test('Charger 1 becoming idle cannot release preceding ambiguous overlap as Charger 2 energy', t => {
+  const { f, status } = identificationFixture(t);
+  f.at(30_000); f.send('healthy', true); f.send('charge_energy_added', 0.08); f.tick();
+  f.at(60_000); f.property(15); f.easee(0);
+  Object.assign(status, { assignmentPending: false, phase: 'inconclusive' });
+  f.tick();
+  assert.equal(f.energy(), 0, 'Earlier ambiguous intervals require a positive Charger 2 verdict');
+  assert.equal(f.store.getState('teslamate:acquisition:1').session.complete, false);
+  f.at(70_000); f.send('charger_power', 11); f.send('healthy', true); f.send('charge_energy_added', 0.12); f.tick();
+  assert(f.energy() <= 11 * 10 / 3600 + 1e-10, 'Only coverage after Charger 1 stopped can subsequently count');
+});
+
+test('a transient zero during an owned pause never doubles a continuing Tesla counter', t => {
+  const { f, status } = identificationFixture(t);
+  f.at(20_000); f.send('charge_energy_added', 0.1);
+  Object.assign(status, { active: true, pauseExpected: true, settlingUntil: initial + 200_000 });
+  f.at(25_000); f.send('charger_power', 0); f.send('charging_state', 'Stopped'); f.send('charge_energy_added', 0);
+  f.at(90_000); f.send('healthy', true); f.send('charging_state', 'Charging'); f.send('charger_power', 11);
+  f.send('charge_energy_added', 0.12);
+  Object.assign(status, { active: false, pauseExpected: false, verdict: 'bmw', assignmentPending: false });
+  f.at(100_000); f.property(25); f.easee(11); f.tick();
+  f.send('charging_state', 'Complete'); f.at(150_000); f.tick();
+  assert.equal(f.checks().length, 1);
+  assert.equal(f.checks()[0].referenceKwh, 0.12);
+  assert.equal(f.checks()[0].complete, false, 'A reset that catches up cannot be distinguished from a transient zero');
 });

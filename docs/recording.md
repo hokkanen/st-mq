@@ -188,6 +188,7 @@ same broker credentials already configured under `mqtt`:
     "home_geofence": "Home",
     "namespace": "",
     "charger_assignment": "auto",
+    "charger_identification": false,
     "max_age_seconds": 180
   }
 }
@@ -220,21 +221,81 @@ gaps rather than invented zero power. Each tooltip shows the load's own kW.
 
 The installation currently has no solar or battery. Fresh, comparable property
 import bounds Tesla power and the combined separately counted chargers, allowing
-1 kW for rounded Tesla power and five seconds after a power change for source
-settling. An impossible overlap immediately suppresses new Tesla energy and
+1 kW for rounded Tesla power. New source measurements need five seconds after a
+Tesla power change to settle. Unchanged power is also comparable when the same
+device has confirmed telemetry within 17 minutes and the latest successful poll
+is within 60 seconds; this preserves the original power timestamp. Such held
+power requires a successful poll at least 20 seconds after the Tesla power change
+before comparison. A recent HTTP receipt alone cannot make old power usable.
+An impossible overlap immediately suppresses new Tesla energy and
 records an uncertain gap. A later increase in household power cannot on its own
 revive the suppressed Tesla reading. Stale, disconnected and missing-stop periods
 remain incomplete; restart does not integrate across downtime.
 
-`auto` suppresses a matching Easee/Tesla overlap when their sum cannot fit the
+With `charger_identification` disabled, `auto` retains passive detection only:
+it suppresses a matching Easee/Tesla overlap when their sum cannot fit the
 fresh property reading, while allowing two cars when their sum does fit. Power
 and location cannot identify the physical connector in every case: high household
 load or missing comparable property/Easee measurements can leave attribution
 ambiguous. Set `charger_assignment` to `easee` for a Tesla session known to use
-Easee; it then creates no charger-2 consumption, and its diagnostic uses matching
-recorded Easee energy when full coverage exists. `bmw` identifies intended portable
+Charger 1; it then creates no Charger 2 consumption. `bmw` identifies intended portable
 charging but retains the physical-overlap safeguards. A future solar/battery
 installation requires revisiting the import-power bound before using it.
+
+Set `charger_identification` to `true` to allow active identification. This is an
+explicit opt-in to **real Charger 1 control**, independent of the heat-pump
+controller's monitoring, shadow or active mode. It requires the configured Easee
+credentials and a live provider connection. No charging commands are sent when
+this option is disabled.
+
+When the Tesla is charging at Home and Charger 1 is also delivering power, an
+unknown connection is checked after both readings become fresh and stable. The
+check does not require an impossible property-power overlap: unrelated household
+consumption can hide double counting. The preferred test substantially reduces
+Charger 1's current for one minute, for example from 16 A to approximately 10 A.
+If actual charging current is already too close to minimum for a useful reduction,
+the test instead applies a temporary 0 A limit for one minute. It never raises
+current to make a test possible. The pause fallback is selected from the initial
+current and expected reduction. An unexpectedly weak measured response, missing
+telemetry or conflicting control leaves the test inconclusive; it does not
+automatically trigger a second pause. Another test on that connection requires an
+explicit request.
+
+Only a charger-level dynamic limit with a finite expiry is used. Existing lower
+dynamic charger limits prevent the test, and unstable load balancing or stale
+readings defer it. Static limits, circuit limits and load balancing are not
+changed. Expiry clears the temporary charger restriction; it does not restore an
+earlier dynamic restriction, which is why another controller's lower limit must
+not be overwritten. Charging recovery remains subject to the available current
+and the car. See [Easee's temporary-current command](https://developer.easee.com/reference/charger_set_dynamic_charger_current)
+and [current-limit hierarchy](https://developer.easee.com/docs/current-limits-and-control).
+
+An accepted command alone is insufficient. Charger 1 must actually reduce power,
+and fresh Tesla current and power must follow both the drop and the recovery to
+identify Charger 1. Conversely, continued Tesla charging and fresh energy
+progression while Charger 1 responds support Charger 2. Missing messages, failed
+recovery or inconsistent responses leave identification unknown. The Tesla
+current used for this comparison comes from the documented
+[`charger_actual_current` MQTT topic](https://docs.teslamate.org/docs/integrations/mqtt/).
+
+Test stages, command bookkeeping, identification results and the bounded buffer
+of unresolved ordinary energy intervals stay in memory. Once identified as
+Charger 2, buffered intervals can enter the normal recorder; if identified as
+Charger 1, they are discarded to prevent double counting. Unresolved coverage
+remains a gap if it cannot be resolved within the buffer bound. Silence never
+becomes evidence for Charger 2. Identification is remembered for the current
+connection and cleared on disconnection, departure, a new Tesla charging session,
+MQTT reconnection or restart. An MQTT interruption clears the verdict but retains
+the in-memory attempt limit for the existing connection, avoiding repeated tests
+when the broker is unstable.
+An intentional test pause and its recovery remain within the existing session.
+
+No probe records, confidence scores, command history, extra observations or raw
+current archive are written to the database. Ordinary measured power, integrated
+energy and finalized session references continue through their existing recording
+paths, including the real dip caused by the test. No artificial values hide that
+dip. A Tesla identified on Charger 1 does not create an additional Charger 2
+session comparison; Charger 1's normal finalized session check covers that charge.
 
 ### Diagnostic meter and session checks
 

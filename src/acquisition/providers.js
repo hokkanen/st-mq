@@ -6,6 +6,7 @@ import { fetchMarket } from './market.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
 import { ElectricityAccumulator } from '../domain/electricity.js';
 import { recordEaseeSessionChecks } from './easee-session-checks.js';
+import { createChargerIdentification } from './charger-identification.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -155,14 +156,29 @@ function cacheWeather(previous, result, snapshotId, now) {
 
 /** Independent, read-only acquisition. A failed service retains the original age
  * of its last good data; it cannot postpone control or another provider's poll. */
-export function startProviders({ engine, store, config, clock = Date.now, http = createHttp(),
+export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true } = {}) {
   const connections = config.connections ?? {};
+  const identifyCharger = connections.teslamate?.enabled === true
+    && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
+  http ??= createHttp({ allowChargerIdentification: identifyCharger });
   const location = configuredLocation(connections);
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // selects a usable H66 reading before either weather source.
   devices ??= createDeviceProviders({ connections, http, clock, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
+  const identification = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
+    ? createChargerIdentification({ control: devices.chargerIdentificationControl(), clock }) : null;
+  if (identification) engine.chargerIdentification = identification;
+  let identificationTimer;
+  const runIdentification = async () => {
+    if (!identification) return;
+    try {
+      await identification.tick({ tesla: engine.teslamate?.identificationSnapshot(),
+        charger: engine.electricitySnapshot?.charger }, clock());
+      engine.teslamate?.tick(clock());
+    } catch { /* Only transient status, never a database experiment/error log. */ }
+  };
   const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
   const integrationOptions = { maxAgeMs: cadence.electricityMaxAgeMs ?? 5 * MINUTE,
     maxTelemetryAgeMs: cadence.electricityTelemetryMaxAgeMs ?? 17 * MINUTE,
@@ -314,9 +330,17 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
           const group = row.prefix === 'ev1' ? 'charger' : 'property';
           const sessionStart = result.find(observation => observation.device === row.device
             && observation.signal === 'ev1_active_power')?.raw?.chargingSessionStart?.start;
+          const currents = [1, 2, 3].map(phase => result.find(observation => observation.device === row.device
+            && observation.signal === `${row.prefix}_current_l${phase}`));
+          const activeCurrents = currents.filter(observation => Number.isFinite(observation?.value) && observation.value > 1);
           snapshot[group] = { device: row.device, powerKw: row.powers.reduce((sum, value) => sum + value, 0),
             sourceTime: row.sourceTime, receivedAt: row.at, telemetryAt: row.telemetryAt,
+            telemetryConfirmed: row.quality.includes('device_telemetry_confirmed'),
+            currentA: currents.every(observation => Number.isFinite(observation?.value))
+              ? activeCurrents.length ? Math.min(...activeCurrents.map(observation => observation.value)) : 0 : null,
+            currentAt: activeCurrents.length ? Math.min(...activeCurrents.map(observation => observation.sourceTime)) : row.sourceTime,
             ...(Number.isSafeInteger(sessionStart) ? { sessionStart } : {}) };
+          if (group === 'charger') snapshot[group].sessionKey = sessionStart ?? null;
         }
         // Publish availability only after the complete acquisition transaction.
         // Missing device samples clear prior snapshots instead of renewing them.
@@ -356,6 +380,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     if (electricityCommitted) {
       try { engine.teslamate?.tick(clock()); }
       catch { store.event('teslamate-acquisition-error', { reason: 'property-check-failed' }, clock()); }
+      void runIdentification();
     }
   }
 
@@ -369,16 +394,25 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     return Promise.allSettled([...pending.values()]);
   }
   if (automatic) {
-    // Start after the HTTP listener is ready. Polls never execute equipment intents.
+    // Ordinary acquisition stays read-only. The separately enabled, RAM-only
+    // identification coordinator owns the bounded charger control capability.
     void runDue();
     timer = setInterval(() => { void runDue(); }, Math.min(1000, ...Object.values(definitions).filter(job => job.enabled).map(job => job.period)));
     timer.unref();
+    if (identification) {
+      identificationTimer = setInterval(() => { void runIdentification(); }, 5000);
+      identificationTimer.unref();
+    }
   }
   return {
     runDue,
+    runIdentification,
     async close() {
       if (closed) return;
-      closed = true; clearInterval(timer); cancellation.abort(); http.close?.();
+      closed = true; clearInterval(timer); clearInterval(identificationTimer);
+      identification?.stop();
+      if (engine.chargerIdentification === identification) engine.chargerIdentification = null;
+      cancellation.abort(); http.close?.();
       await Promise.allSettled([...pending.values()]);
     },
   };

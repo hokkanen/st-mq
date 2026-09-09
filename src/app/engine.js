@@ -781,6 +781,7 @@ export class Engine {
     const now = this.clock();
     result.now = now;
     result.heatingTests = this.heatingTests();
+    result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();
     if (this.h66Status) result.h66 = this.h66Status();
     result.providers = this.store.getState('providers:health') ?? {};
