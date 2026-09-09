@@ -416,12 +416,13 @@ export class Engine {
         sourceTime: now, receivedAt: now, quality: ['simulated'], raw: null });
     } else {
       const map = signal => { const o = this.latest[signal]; return o ? { value: o.value, observedAt: o.sourceTime, quality: o.quality, source: o.source } : null; };
-      observations = { indoor: map('indoor_temperature'), outdoor: map('outdoor_temperature'),
+      observations = { indoor: map('indoor_temperature'), garage: map('garage_temperature'), outdoor: map('outdoor_temperature'),
         actual: { mode: this.applied.at === null ? 'unknown' : this.applied.phase === 'reduction' ? 'reduction' : 'normal',
           phase: this.applied.phase, verified: false, source: 'mqtt-request', observedAt: this.applied.at } };
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
     observations.indoor = decorate(observations.indoor, 'indoor_temperature', now);
+    observations.garage = decorate(observations.garage, 'garage_temperature', now);
     observations.outdoor = decorate(observations.outdoor, 'outdoor_temperature', now);
     if (['mqtt', 'providers'].includes(input)) observations.outdoor = this.outdoorObservation(now);
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
@@ -692,13 +693,13 @@ export class Engine {
     result.heatingTests = this.heatingTests();
     if (this.h66Status) result.h66 = this.h66Status();
     result.providers = this.store.getState('providers:health') ?? {};
-    for (const [key, signal] of [['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature']]) {
+    for (const [key, signal] of [['indoor', 'indoor_temperature'], ['garage', 'garage_temperature'], ['outdoor', 'outdoor_temperature']]) {
       result.observations[key] = decorate(result.observations[key], signal, now);
     }
     if (!this.plant) {
       const outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
       Object.assign(result, outlook);
-      for (const [key, signal] of [['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature']]) {
+      for (const [key, signal] of [['indoor', 'indoor_temperature'], ['garage', 'garage_temperature'], ['outdoor', 'outdoor_temperature']]) {
         const obs = this.latest[signal];
         if (obs) result.observations[key] = decorate({ value: obs.value, observedAt: obs.sourceTime, quality: obs.quality, source: obs.source }, signal, now);
       }

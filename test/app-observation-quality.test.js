@@ -22,6 +22,20 @@ function reading({ signal = 'indoor_temperature', value = 21, sourceTime = begin
   return { source, device: 'fixture-house', signal, value, unit: 'degC', sourceTime, receivedAt, quality };
 }
 
+test('garage status projects the existing reading and source without exposing device data or creating history', t => {
+  const { engine, store, setTime } = setup(t, { input: 'mqtt' });
+  assert.deepEqual(engine.tick().observations.garage, { value: null, stale: true });
+  const observation = reading({ signal: 'garage_temperature', value: 16, source: 'mqtt-temperature' });
+  engine.ingest(observation);
+  const recorded = store.observations().length;
+  const expected = { value: 16, observedAt: beginning, quality: [], source: 'mqtt-temperature', stale: false };
+  assert.deepEqual(engine.status().observations.garage, expected);
+  assert.deepEqual(engine.tick().observations.garage, expected);
+  assert.equal(store.observations().length, recorded);
+  setTime(beginning + 31 * MINUTE);
+  assert.deepEqual(engine.status().observations.garage, { ...expected, stale: true });
+});
+
 test('status and decision use the same 30-minute observation freshness boundary', t => {
   const { engine, setTime } = setup(t);
   engine.ingest(reading());
@@ -155,6 +169,7 @@ for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} availa
       receivedAt: disconnectedAt, quality: ['mqtt-disconnected'] }), device,
       raw: { usableForControl: false, timeBasis: 'availability-transition' } }, disconnectedAt);
     assert.equal(engine.latest[signal].value, null);
+    assert.equal(engine.status().observations[signal === 'indoor_temperature' ? 'indoor' : 'garage'].stale, true);
     if (signal === 'indoor_temperature') {
       assert.equal(engine.status().observations.indoor.stale, true);
       assert.ok(engine.tick().decision.reasons.includes('missing-or-stale-observations'));
@@ -167,7 +182,7 @@ for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} availa
     engine.ingest({ ...reading({ source, signal, value: 21.3, sourceTime: disconnectedAt + MINUTE,
       receivedAt: disconnectedAt + MINUTE }), device, raw: { usableForControl: true } });
     assert.equal(engine.latest[signal].value, 21.3);
-    if (signal === 'indoor_temperature') assert.equal(engine.status().observations.indoor.stale, false);
+    assert.equal(engine.status().observations[signal === 'indoor_temperature' ? 'indoor' : 'garage'].stale, false);
     setTime(beginning);
   }
 });

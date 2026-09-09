@@ -56,6 +56,19 @@ try {
     for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
+  const checkNestedFolds = async selector => {
+    const folds = await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)}), fold => {
+      const summary = fold.querySelector(':scope > summary');
+      const parent = fold.parentElement.closest('details')?.querySelector(':scope > summary');
+      return { label: summary.textContent.trim(), visible: summary.checkVisibility(),
+        indent: parent ? summary.getBoundingClientRect().left - parent.getBoundingClientRect().left : 0 };
+    })`);
+    assert.ok(folds.length > 0, `Nested disclosures exist for ${selector}`);
+    for (const fold of folds) {
+      assert.equal(fold.visible, true, `${fold.label} is visible inside its expanded parent`);
+      assert.ok(fold.indent >= 16, `${fold.label} is visibly indented from its parent (${fold.indent}px)`);
+    }
+  };
   await send('Runtime.enable'); await send('Page.enable'); await send('Page.bringToFront');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
@@ -177,6 +190,7 @@ try {
   for (const width of [1440, 390]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
     await new Promise(resolve => setTimeout(resolve, 150));
+    await checkNestedFolds('#learning-details, #learning-validation-details, #model-inputs-details, #model-inputs-content > details, #model-coefficients-details');
     for (const section of ['history-panel', 'learning-details', 'model-inputs-details', 'model-coefficients-details', 'providers-controls', 'h66-test-details']) {
       await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; for (let parent = element.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; element.scrollIntoView({block:'start'}); })()`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${section} fits ${width}px`);
@@ -195,6 +209,11 @@ try {
   // publication function. It has no broker address or physical connection.
   await app.close(); app = null;
   const fixture = providerFixture(now), publications = [], deviceId = 'synthetic-browser-h66';
+  const fixtureTemperatures = fixture.providerOptions.devices.temperatures;
+  fixture.providerOptions.temperatureProvider = async () => {
+    const observations = await fixtureTemperatures();
+    return [...observations, { ...observations[0], signal: 'garage_temperature', value: 16.4 }];
+  };
   app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'providers.sqlite'), connections: fixture.connections },
     clock: () => now, providerOptions: fixture.providerOptions });
   const decoder = createH66Decoder({ deviceId });
@@ -212,6 +231,13 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=dhw]').textContent.includes('40–55 °C')"), true);
   assert.equal(await evaluate("document.getElementById('home-tariff-status').textContent.includes('Unknown · no device readback')"), true);
   assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · SmartThings, FMI');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
+    ['Indoor temperature · °C', 'Garage temperature · °C', 'Outdoor temperature · °C']);
+  assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
+  assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'The closed provider overview has the same weather-last order');
+  assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
+    'The temperature catalogue receives the actual garage observation');
   for (const width of [1440, 390]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
@@ -222,6 +248,7 @@ try {
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    await checkNestedFolds('#h66-provider-details, #h66-readings-details, #providers .provider-fold, #controls-details, #electricity-details');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");

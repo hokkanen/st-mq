@@ -1,11 +1,100 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeProvider, outdoorSourceLabel, providerName, providerSeries } from '../chart/provider-status.js';
+import { dashboardProviders, describeProvider, outdoorSourceLabel, providerName, providerSeries } from '../chart/provider-status.js';
 import { H66_REGISTERS } from '../src/domain/telemetry.js';
 import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
 const now = Date.parse('2026-09-07T10:00:00Z');
 const options = { now, formatTime: value => new Date(value).toISOString().slice(11, 16) };
+const temperature = (source, value = 21, extra = {}) => ({ source, value, observedAt: now, stale: false, ...extra });
+
+test('dashboard groups measured temperature channels under their actual sources and puts forecast last', () => {
+  const entries = dashboardProviders({ input: 'providers', observations: {
+    indoor: temperature('smartthings'), garage: temperature('smartthings', 16), outdoor: temperature('fmi', 4),
+  }, providers: { temperatures: { source: 'smartthings', status: 'ok', lastSuccessAt: now },
+    easee: { status: 'ok' }, market: { status: 'ok', source: 'entsoe' },
+    weather: { status: 'ok', source: 'fmi' }, outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
+  assert.deepEqual(entries.map(row => row.key), ['easee', 'market', 'main-temperatures', 'weather']);
+  const grouped = entries[2];
+  assert.equal(grouped.display.title, 'Main temperatures · SmartThings, FMI');
+  assert.equal(grouped.display.state, 'Available');
+  assert.equal(grouped.source, 'SmartThings, FMI');
+  assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
+  assert.match(grouped.series[1].detail, /Optional garage sensor, recorded for history/);
+  assert.match(grouped.display.detail, /Temperature downloads · SmartThings: Last successful download 10:00/);
+  assert.match(grouped.display.detail, /Outdoor downloads · FMI: Observed at a nearby weather station. Last successful download 10:00/);
+});
+
+test('selected live temperatures take precedence over downloaded provider source without requiring a garage sensor', () => {
+  const status = { input: 'mqtt', observations: {
+    indoor: temperature('mqtt-temperature'), outdoor: temperature('husdata-h66', 4), garage: { value: null, stale: true },
+  }, providers: { temperatures: { status: 'disabled' }, outdoor: { source: 'openmeteo', status: 'fallback' } } };
+  const [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.title, 'Main temperatures · MQTT temperature sensor, H66');
+  assert.equal(grouped.display.state, 'Available');
+  assert.equal(grouped.display.attention, false);
+  assert.equal(grouped.backup, false);
+  assert.equal(grouped.series[1].source, null);
+  assert.match(grouped.series[1].detail, /No current reading received/);
+  assert.equal(grouped.series[2].source, 'H66');
+  status.observations.garage = temperature('mqtt-temperature', 16, { stale: true });
+  assert.equal(dashboardProviders(status, options)[0].display.state, 'Available');
+});
+
+test('failed downloads stay actionable for selected temperatures while unrelated H66 backup diagnostics stay scoped', () => {
+  const status = { input: 'providers', observations: {
+    indoor: temperature('smartthings'), outdoor: temperature('fmi', 4),
+  }, providers: { temperatures: { source: 'smartthings', status: 'degraded', qualityIssues: ['missing'] },
+    outdoor: { source: 'fmi', status: 'error', error: 'HTTP-503' } } };
+  let [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Needs attention');
+  assert.match(grouped.display.detail, /Outdoor downloads · FMI:.*Download failed \(HTTP 503\)/);
+  status.observations.outdoor = temperature('husdata-h66', 4);
+  [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Available');
+  assert.equal(grouped.series[2].source, 'H66');
+  assert.match(grouped.display.detail, /Outdoor downloads · FMI:.*Download failed \(HTTP 503\)/);
+  status.providers.temperatures.error = 'HTTP-401';
+  assert.equal(dashboardProviders(status, options)[0].display.state, 'Needs attention');
+});
+
+test('unusable required temperatures cannot inherit an Available state from successful downloads', () => {
+  for (const key of ['indoor', 'outdoor']) {
+    for (const unavailable of [null, { value: null, stale: true }, temperature('fmi', 4, { stale: true }),
+      temperature('fmi', 4, { observedAt: now + 1 }), temperature('fmi', 4, { observedAt: now - 31 * 60_000 })]) {
+      const observations = { indoor: temperature('mqtt-temperature'), outdoor: temperature('fmi', 4), [key]: unavailable };
+      const [grouped] = dashboardProviders({ input: 'providers', observations,
+        providers: { outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
+      assert.equal(grouped.display.state, 'Needs attention');
+      assert.equal(grouped.display.attention, true);
+    }
+  }
+  const [waiting] = dashboardProviders({ input: 'mqtt' }, options);
+  assert.equal(waiting.display.state, 'Waiting for readings');
+  assert.equal(waiting.display.attention, false);
+});
+
+test('temperature group retains outdoor fallback diagnostics without exposing unknown source data', () => {
+  const secret = 'https://provider.example/?token=private-secret';
+  const status = { input: 'providers', observations: {
+    indoor: temperature(secret), garage: temperature(secret, 16), outdoor: temperature('openmeteo', 4),
+  }, providers: { outdoor: { status: 'fallback', source: 'openmeteo',
+    acquisition: { primary: 'fmi', selected: 'openmeteo', attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429' }] },
+    nextAttemptAt: now + 300_000, device: secret, body: secret } } };
+  const [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.title, 'Main temperatures · Open-Meteo');
+  assert.equal(grouped.display.state, 'Using backup');
+  assert.equal(grouped.backup, true);
+  assert.match(grouped.display.detail, /FMI: rate limited \(HTTP 429\).*Next FMI try 10:05/);
+  assert.match(grouped.series[2].detail, /H66.*first.*FMI.*then.*Open-Meteo/);
+  assert.doesNotMatch(JSON.stringify(grouped), /private-secret|provider\.example|https:/);
+});
+
+test('offline and simulated dashboards do not invent live temperature providers', () => {
+  for (const input of ['offline', 'simulated']) {
+    assert.deepEqual(dashboardProviders({ input, providers: { temperatures: { status: 'disabled' } } }, options), []);
+  }
+});
 
 test('H66 provider catalogue covers every decoded register without claiming tariff readback', () => {
   const series = providerSeries('h66');

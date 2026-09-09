@@ -106,6 +106,69 @@ export function providerSeries(job, health = {}) {
   return [];
 }
 
+const temperatureJobs = ['temperatures', 'smartthings', 'mqtt-temperature', 'outdoor'];
+const indoorSources = ['husdata-h66', 'mqtt-temperature', 'smartthings'];
+const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
+const temperatureAvailable = (reading, now) => Number.isFinite(reading?.value) && reading.stale !== true
+  && Number.isFinite(reading.observedAt) && reading.observedAt <= now && now - reading.observedAt <= 30 * 60_000;
+
+function temperatureDisplay(status, entries, options) {
+  const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];
+  const rows = ['indoor', 'garage', 'outdoor'].map(key => {
+    const reading = observations[key], allowed = key === 'outdoor' ? outdoorSources : indoorSources;
+    // The selected observation is authoritative: H66 can take over while the
+    // weather provider's most recent successful download still names FMI.
+    const source = reading?.source ?? (key === 'outdoor' ? outdoorHealth?.source ?? outdoorHealth?.acquisition?.selected : null);
+    const label = allowed.includes(source) ? providerName(source) : null;
+    const available = temperatureAvailable(reading, options.now);
+    const age = Number.isFinite(reading?.observedAt) && reading.observedAt > 0 && reading.observedAt <= options.now
+      ? `Latest reading ${options.formatTime(reading.observedAt)}${available ? '.' : ' is out of date or unusable.'}`
+      : 'No current reading received.';
+    const detail = key === 'indoor' ? 'Measured indoor temperature, used by the home model when usable.'
+      : key === 'garage' ? 'Optional garage sensor, recorded for history.'
+        : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
+    return seriesRow([`${key}_temperature`], SIGNAL_INFO[`${key}_temperature`].label, '°C', `${detail} ${age}`, label);
+  });
+  const sources = [...new Set(rows.map(row => row.source).filter(Boolean))].join(', ');
+  const required = [observations.indoor, observations.outdoor];
+  const available = required.every(reading => temperatureAvailable(reading, options.now));
+  const downloadFailure = entries.some(([key, health]) => (health.error || health.status === 'error')
+    && (key === 'outdoor' ? observations.outdoor?.source !== 'husdata-h66'
+      : !health.source || required.some(reading => reading?.source === health.source)));
+  const attention = Boolean(downloadFailure || !available && (required.some(reading => Number.isFinite(reading?.value))
+    || entries.some(([key, health]) => describeProvider(key, health, options).attention)));
+  const backup = outdoorHealth?.status === 'fallback' && observations.outdoor?.source !== 'husdata-h66';
+  const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
+  const details = ['Indoor and outdoor readings support home control. Garage readings are optional history.'];
+  for (const [key, health] of entries) {
+    const scope = key === 'outdoor' ? 'Outdoor downloads' : 'Temperature downloads';
+    const source = providerName(health.source ?? health.acquisition?.selected);
+    details.push(`${scope}${source ? ` · ${source}` : ''}: ${describeProvider(key, health, options).detail}`);
+  }
+  return { key: 'main-temperatures', overviewTitle: 'Main temperatures', source: sources || 'Awaiting readings', backup,
+    display: { title: `Main temperatures${sources ? ` · ${sources}` : ''}`, state, attention, detail: details.join(' ') }, series: rows };
+}
+
+/** Present current temperature sources together while keeping each provider's
+ * acquisition diagnostics. No device identifiers or arbitrary source strings
+ * enter these descriptors, and forecast data remains a separate final entry. */
+export function dashboardProviders(status, options) {
+  const entries = Object.entries(status.providers ?? {}).filter(([key, health]) => health && typeof health === 'object'
+    && !(['temperatures', 'smartthings'].includes(key) && ['not-configured', 'disabled'].includes(health.status)));
+  const temperatures = entries.filter(([key]) => temperatureJobs.includes(key));
+  const describe = ([key, health]) => {
+    const display = describeProvider(key, health, options);
+    return { key, display, series: providerSeries(key, health), backup: health.status === 'fallback',
+      overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast', easee: 'Meter & charger' })[key] ?? 'Data source',
+      source: providerName(health.source ?? health.acquisition?.selected) ?? (key === 'easee' ? 'Easee' : display.title) };
+  };
+  return [
+    ...entries.filter(([key]) => !temperatureJobs.includes(key) && key !== 'weather').map(describe),
+    ...(temperatures.length || ['mqtt', 'providers'].includes(status.input) ? [temperatureDisplay(status, temperatures, options)] : []),
+    ...entries.filter(([key]) => key === 'weather').map(describe),
+  ];
+}
+
 function failureLabel(value) {
   const code = typeof value === 'object' ? value?.code : value;
   if (typeof code === 'string' && /^HTTP-[1-5][0-9]{2}$/.test(code)) {

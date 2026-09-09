@@ -231,7 +231,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .settings-actions button { margin: 0; }
 .settings-actions p { flex: 1 1 180px; margin: 0; }
-#model-inputs-content > details { margin-left: 12px; }
 #model-inputs-content > details > summary { font-size: 13px; padding: 12px 0; }
 #model-inputs-content p { line-height: 1.6; overflow-wrap: anywhere; }
 .h66-table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -254,6 +253,8 @@ footer a { color: inherit; text-underline-offset: 2px; }
 [hidden] { display: none !important; }
 summary { cursor: pointer; font-size: 14px; padding: 14px 0; color: var(--text); }
 details { border-top: 1px solid var(--border); margin-top: 18px; }
+/* Each disclosure level keeps its own inset, including folds inside content wrappers. */
+details details { margin-inline-start: 24px; }
 .control-summary { margin: 18px 0; }
 .control-mode { margin: 8px 0 0; font-size: 11px; color: var(--muted); }
 .control-decision { margin: 0 0 6px; font-size: 22px; line-height: 1.4; font-weight: 550; letter-spacing: -.35px; }
@@ -440,7 +441,7 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
 .recording-data-group { margin-top: 12px; }
 .recording-data-group > summary { font-weight: 550; }
 .recording-data-group > p { margin: 0 0 14px; }
-.recording-dataset { margin: 0 0 0 18px; border-top: 1px solid var(--border); }
+.recording-dataset { margin-block: 0; border-top: 1px solid var(--border); }
 .recording-dataset > summary { font-size: 13px; padding: 12px 0; }
 .recording-dataset > summary small { display: block; margin: 5px 0 0 17px; color: var(--muted); font-size: 11px; font-weight: 400; }
 .recording-dataset > p { margin-top: 0; line-height: 1.6; }
@@ -461,9 +462,9 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
 .recording-table th small, .recording-table td small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; font-weight: 400; }
 .recording-table .recording-group th { color: var(--accent); font-weight: 550; padding-top: 18px; }
 @media(max-width: 640px) {
+  details details { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }
   .recording-overview-toolbar { align-items: flex-start; flex-direction: column; gap: 10px; }
-  .recording-dataset { margin-left: 10px; }
   .recording-dataset-facts, .recording-dataset-fields { grid-template-columns: minmax(0,1fr); gap: 3px; }
   .recording-dataset dd { margin-bottom: 10px; }
 }

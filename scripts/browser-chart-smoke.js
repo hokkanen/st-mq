@@ -70,6 +70,21 @@ try {
         && getComputedStyle(start).fontSize === getComputedStyle(end).fontSize;
     })()`), true, 'Date fields have matching widths, heights, alignment and text size');
   };
+  const checkRecordingHierarchy = async () => {
+    const folds = JSON.parse(await evaluate(`JSON.stringify(Array.from(document.querySelectorAll(
+      '#recording-overview-details, .recording-data-group, [data-dataset-id="weather-snapshots"], [data-dataset-id="journal-context"], [data-dataset-id="state-settings"], .recording-storage-accounting'
+    ), fold => {
+      const summary = fold.querySelector(':scope > summary');
+      const parent = fold.parentElement.closest('details')?.querySelector(':scope > summary');
+      return { label: summary.textContent.trim(), visible: summary.checkVisibility(),
+        indent: parent ? summary.getBoundingClientRect().left - parent.getBoundingClientRect().left : 0 };
+    }))`));
+    assert.ok(folds.length >= 13, 'Recording hierarchy covers the overview, groups, datasets and storage accounting');
+    for (const fold of folds) {
+      assert.equal(fold.visible, true, `${fold.label} is visible inside its expanded parent`);
+      assert.ok(fold.indent >= 16, `${fold.label} is visibly indented from its parent (${fold.indent}px)`);
+    }
+  };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });
   await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.title'), 'Home Energy');
@@ -122,6 +137,7 @@ try {
     assert.equal(await evaluate(`document.querySelector('[data-dataset-id="${id}"] > summary').textContent.includes('No records yet')`),false,`${id} has actual stored records`);
     assert(await evaluate(`document.querySelectorAll('[data-dataset-id="${id}"] .recording-dataset-fields dt').length`)>0,`${id} describes its stored fields`);
   }
+  await checkRecordingHierarchy();
   assert.match(await evaluate("document.querySelector('[data-dataset-id=state-settings] > summary').textContent"),/Current state · overwritten/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=csv-easee] > summary').textContent"),/No records yet/);
   await evaluate("window.recordingFixture.hold=true; document.getElementById('recording-overview-refresh').click(); document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); true");
@@ -139,6 +155,7 @@ try {
   await evaluate("document.querySelector('[data-dataset-id=state-settings] > summary').click(); document.querySelector('[data-dataset-id=state-settings] > summary').click(); document.querySelector('[data-dataset-id=state-settings]').scrollIntoView({block:'start'}); true");
   assert.equal(await evaluate("document.querySelector('[data-dataset-id=state-settings]').open"),true,'mobile native details remains operable');
   assert.equal(await evaluate("document.documentElement.scrollWidth<=window.innerWidth"),true,'recording inventory does not overflow the mobile page');
+  await checkRecordingHierarchy();
   mkdirSync('var',{recursive:true});
   const inventoryMobileShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
   writeFileSync('var/home-energy-recording-inventory-mobile.png',Buffer.from(inventoryMobileShot.data,'base64'));
@@ -369,6 +386,7 @@ try {
   }
   await app.close();
   const fixture = providerFixture(now);
+  fixture.providerOptions.temperatureProvider = fixture.providerOptions.devices.temperatures;
   const fixtureCurrents = fixture.providerOptions.devices.easee;
   // Equalizer phases share an acquisition but retain independent source clocks.
   // This used to leave property power empty while charger power still rendered.
@@ -426,6 +444,11 @@ try {
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · SmartThings, FMI');
+  assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
+    'Indoor temperature · °C,Garage temperature · °C,Outdoor temperature · °C');
+  assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast is the final provider');
+  assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'Weather forecast is last in the closed overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
   assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);

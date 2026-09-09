@@ -1,5 +1,5 @@
 import { createHistoryChart } from './history-chart.js';
-import { describeProvider, outdoorSourceLabel, providerName, providerSeries } from './provider-status.js';
+import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
@@ -149,22 +149,18 @@ function renderProviders(s) {
   $('weather-status').textContent = `${weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable'}${weatherSource ? ` · ${weatherSource}` : ''}`;
   $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
     : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Indoor measurements, electricity prices and weather forecasts are updated independently. Gaps remain visible in the chart.';
-  const entries = Object.entries(s.providers ?? {}).filter(([name,health])=>
-    health && typeof health === 'object' && !(['temperatures','smartthings'].includes(name)&&['not-configured','disabled'].includes(health.status)));
+  const entries = dashboardProviders(s, { now: s.now, formatTime: time });
   $('provider-overview').replaceChildren();
   let attentionCount = 0, backupCount = 0;
-  for (const [name, health] of entries) {
-    const display = describeProvider(name, health, { now: s.now, formatTime: time });
+  for (const { display, backup, overviewTitle, source: sourceLabel } of entries) {
     if (display.attention) attentionCount++;
-    if (health.status === 'fallback') backupCount++;
+    if (backup) backupCount++;
     const item = document.createElement('div'); item.className = 'source-overview';
-    item.dataset.state = display.attention ? 'attention' : health.status === 'fallback' ? 'backup'
+    item.dataset.state = display.attention ? 'attention' : backup ? 'backup'
       : display.state === 'Available' ? 'available' : 'pending';
-    const title = document.createElement('span'); title.textContent = ({ market: 'Electricity prices', weather: 'Weather forecast',
-      outdoor: 'Outdoor temperature', easee: 'Meter & charger', temperatures: 'Temperature sensors', smartthings: 'Temperature sensors' })[name] ?? 'Data source';
+    const title = document.createElement('span'); title.textContent = overviewTitle;
     const state = document.createElement('strong'); state.textContent = display.state;
-    const source = document.createElement('small'); source.textContent = providerName(health.source ?? health.acquisition?.selected)
-      ?? (name === 'easee' ? 'Easee' : display.title);
+    const source = document.createElement('small'); source.textContent = sourceLabel;
     item.append(title, state, source); $('provider-overview').append(item);
   }
   $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
@@ -177,10 +173,9 @@ function renderProviders(s) {
       : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : 'Waiting for provider status.';
     $('provider-overview').append(note);
   }
-  const retained = new Set(entries.map(([name]) => name));
+  const retained = new Set(entries.map(({ key }) => key));
   for (const row of [...$('providers').children]) if (!retained.has(row.dataset.provider)) row.remove();
-  for (const [name, health] of entries) {
-    const display = describeProvider(name, health, { now: s.now, formatTime: time });
+  for (const [index, { key: name, display, series }] of entries.entries()) {
     let row = [...$('providers').children].find(row => row.dataset.provider === name);
     if (!row) {
       row = document.createElement('li'); row.dataset.provider = name;
@@ -190,14 +185,15 @@ function renderProviders(s) {
       heading.append(document.createElement('strong'), document.createElement('span')); summary.append(heading);
       const detail = document.createElement('p'); detail.className = 'muted provider-health';
       const series = document.createElement('div'); series.className = 'provider-series-content';
-      fold.append(summary, detail, series); row.append(fold); $('providers').append(row);
+      fold.append(summary, detail, series); row.append(fold);
     }
+    if ($('providers').children[index] !== row) $('providers').insertBefore(row, $('providers').children[index] ?? null);
     row.querySelector('strong').textContent = display.title;
     const state = row.querySelector('.provider-heading > span');
     state.textContent = display.state;
     state.className = display.attention ? 'stale' : 'muted';
     row.querySelector('.provider-health').textContent = display.detail;
-    renderProviderSeries(row.querySelector('.provider-series-content'), providerSeries(name, health));
+    renderProviderSeries(row.querySelector('.provider-series-content'), series);
   }
 }
 function renderLearning(s) {
