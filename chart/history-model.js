@@ -71,8 +71,8 @@ export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
   property: '#e98576', ev: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
   indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
-  heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#99704e', learning: '#baa0de', solar: '#e4ca67',
-  firewood: '#d8aa75',
+  heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#e05555', learning: '#baa0de', solar: '#e4ca67',
+  firewood: '#d8aa75', fireplace: '#b79b28',
 });
 
 export function visible(key, preferences = {}) {

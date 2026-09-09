@@ -14,7 +14,7 @@ const paletteVariables = {
   property: '--chart-property', ev: '--chart-ev', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
   indoor: '--chart-indoor', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
-  firewood: '--chart-firewood',
+  firewood: '--chart-firewood', fireplace: '--chart-fireplace',
 };
 const shades = [
   { key: 'heatOff', label: 'Tariff reduction requested', detail: 'Requested tariff reduction; compressor activity is shown separately' },
@@ -24,7 +24,7 @@ const shades = [
 const activityTracks = [
   { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', detail: 'Configured operating mode from H66 readback; independent of compressor activity', color: 'outdoor' },
   { key: 'dhwr', label: 'DHWR', detail: 'Requested 10-minute hot-water recirculation pulses' },
-  { key: 'fireplace', label: 'Fireplace', detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward', color: 'firewood' },
+  { key: 'fireplace', label: 'Fireplace', detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward' },
 ];
 
 function loadPreferences() {
@@ -113,7 +113,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       group.append(button);
     }
     for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.key], shade.key === 'heatOff' ? 'pattern' : 'fill');
-    for (const track of activityTracks) add(groups[0], track.key, track.label, track.detail, palette[track.color ?? track.key], 'fill');
+    for (const track of activityTracks) add(groups[0], track.key, track.label, `${track.detail} · Striped activity below the chart`, palette[track.color ?? track.key], 'strip');
     for (const dataset of datasets) {
       if (dataset.key === 'outdoor_forecast' && dataset.yAxisID !== 'left') continue;
       add(groups[dataset.yAxisID === 'left' ? 1 : 2], dataset.visibilityKey, dataset.label, dataset.unit, dataset.borderColor, dataset.kind);

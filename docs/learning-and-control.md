@@ -244,6 +244,8 @@ uses the same recorded additions and burn duration as the model, currently two h
 overlapping periods merge, and corrections update the strip. This duration marks
 the burn timescale, while masonry heat release continues afterward. Explicit saved
 legend choices remain in effect.
+Horizontal stripes in the activity strips and their matching legend swatches
+distinguish them from the main plot. DHWR is red and Fireplace is dark yellow.
 
 Solar history is a forecast archived at its valid time. Its dashed continuation
 is the currently available future forecast. Neither is a solar observation.
