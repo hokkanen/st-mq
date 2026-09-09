@@ -97,102 +97,128 @@
 
     <section class="controller-panels" aria-label="Home controller">
       <div class="controller-column">
-        <article class="panel data-panel" aria-labelledby="data-title">
-          <p class="eyebrow">DATA &amp; LEARNING</p><h2 id="data-title">Prices, weather &amp; the house</h2>
-          <div class="detail"><span>Electricity prices</span><span id="price-status">Waiting for status</span></div>
-          <div class="detail"><span>Weather outlook</span><span id="weather-status">Waiting for status</span></div>
+        <article id="home-control" class="panel home-control" aria-labelledby="control-title">
+          <h2 id="control-title">Home status &amp; learning</h2>
+          <div class="control-summary" role="status">
+            <p id="control-mode" class="control-mode">Waiting for controller status</p>
+            <p id="decision-title" class="control-decision">Waiting for a decision</p><p id="reasons" class="muted"></p>
+          </div>
           <div class="detail"><span>House model</span><span id="learning-title">Building a baseline</span></div>
-          <div class="detail"><span>Husdata H66</span><span id="h66-status">Not connected</span></div>
-          <details id="data-details">
-            <summary>Connection &amp; provider details</summary>
-            <p id="provider-context" class="muted"></p><ul id="providers" class="provider-list"></ul>
-            <p id="h66-context" class="muted"></p>
-            <div id="h66-readings"></div>
-            <p class="muted">Reading times and receipt times have different meanings. A successful download does not make an old sensor reading fresh.</p>
-          </details>
-          <details id="learning-details">
-            <summary>Learning details</summary>
-            <p id="learning-detail" class="muted"></p>
-            <p id="learning-process" class="muted"></p>
-            <div id="learning-metrics"></div>
-            <div id="learning-evidence" class="muted"></div>
+          <div class="detail"><span>Price control</span><span id="control-price">—</span></div>
+          <div class="detail"><span>Comfort reference</span><span id="reference">Learning normal temperature</span></div>
+          <div class="detail"><span>Maximum drop when home</span><span id="drop">—</span></div>
+          <div class="detail"><span>Recirculation</span><span id="dhwr">—</span></div>
+          <div id="home-h66-summary" class="home-h66-summary"></div>
+          <div class="learning-groups">
+            <p class="eyebrow">LEARNING DETAILS</p>
+            <details id="learning-details">
+              <summary>Calculated learning outcomes · 4</summary>
+              <p id="learning-detail" class="muted"></p>
+              <div id="learning-metrics"></div>
+              <p id="learning-history" class="muted"></p>
+              <p id="savings" class="muted"></p>
+              <details id="learning-validation-details">
+                <summary>How learning is progressing</summary>
+                <p id="learning-process" class="muted"></p>
+                <div id="learning-evidence" class="muted"></div>
+              </details>
+            </details>
             <details id="model-inputs-details">
               <summary>Model inputs · Calculated</summary>
               <div id="model-inputs-content"></div>
             </details>
-            <p id="savings" class="muted"></p>
-          </details>
-        </article>
-
-        <article class="panel temporary-panel" aria-labelledby="temporary-title">
-          <p class="eyebrow">TEMPORARY CONTROLS</p><h2 id="temporary-title">Away &amp; pause</h2>
-          <form id="temporary-form" class="temporary-form">
-            <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-            <div class="temporary-field">
-              <label for="away-until">Away until</label>
-              <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-              <p id="away-status" class="temporary-status">At home.</p>
-              <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
-            </div>
-            <div class="temporary-field">
-              <label for="pause-until">Pause until</label>
-              <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-              <p id="override-status" class="temporary-status">Price control is not paused.</p>
-              <p id="pause-help" class="muted">Pause price-based reductions. The heat pump follows its own controls; monitoring and learning continue.</p>
-            </div>
-            <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-            <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-          </form>
-          <details id="heating-test-details" class="heating-test-details">
-            <summary>Test heating commands</summary>
-            <p id="heating-test-help" class="muted">Each button immediately sends one real MQTT command to the configured control devices. Normal heating follows the heat pump’s own controls.</p>
-            <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Send a test heating command" aria-describedby="heating-test-help heating-test-status">
-              <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>heatoff</span><small>Tariff reduction</small></button>
-              <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>heaton15</span><small>Normal heating</small></button>
-              <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>heaton60</span><small>Recirculation pulse</small></button>
-            </div>
-            <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
-            <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-          </details>
-          <details id="h66-test-details" class="heating-test-details">
-            <summary>Test H66 controls</summary>
-            <p class="muted">Apply a temporary setting to the heat pump. The test checks readback and restores the previous setting when its duration ends.</p>
-            <form id="h66-test-form" class="h66-test-form">
-              <label>Setting<select id="h66-test-register">
-                <option value="0203">Room setting · 0203</option>
-                <option value="0212">Hot water start · 0212</option>
-                <option value="0208">Hot water stop · 0208</option>
-                <option value="2201">Operating mode · 2201</option>
-              </select></label>
-              <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-              <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
-              <label>Duration · minutes<input id="h66-test-duration" type="number" min="1" max="15" step="1" value="5" required></label>
-              <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply temporary test</button>
-            </form>
-            <p id="h66-test-status" class="muted">H66 is not connected.</p>
-            <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-          </details>
+            <details id="model-coefficients-details">
+              <summary>Model coefficients · Current values</summary>
+              <p id="coefficient-context" class="muted"></p>
+              <div id="model-coefficients-content"></div>
+            </details>
+          </div>
         </article>
       </div>
 
       <div class="controller-column">
-        <article id="home-control" class="panel home-control" aria-labelledby="control-title">
-          <p class="eyebrow">HOME CONTROL</p><h2 id="control-title">Heating &amp; comfort</h2>
-          <div class="control-summary">
-            <p id="control-mode" class="control-mode">Waiting for controller status</p>
-            <p id="decision-title" class="control-decision">Waiting for a decision</p><p id="reasons" class="muted"></p>
+        <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
+          <h2 id="providers-title">Providers &amp; controls</h2>
+          <p id="provider-context" class="muted"></p>
+          <div class="detail"><span>Electricity prices</span><span id="price-status">Waiting for status</span></div>
+          <div class="detail"><span>Weather outlook</span><span id="weather-status">Waiting for status</span></div>
+          <div id="data-details" class="provider-details">
+            <ul id="providers" class="provider-list"></ul>
+            <details id="h66-provider-details" class="provider-fold">
+              <summary><span class="provider-heading"><strong>Husdata H66</strong><span id="h66-status" class="muted">Not connected</span></span></summary>
+              <p id="h66-context" class="muted"></p>
+              <div id="h66-series"></div>
+              <details id="h66-readings-details">
+                <summary>Current heat-pump readbacks</summary>
+                <div id="h66-readings"></div>
+              </details>
+              <p class="muted">Reading times and receipt times have different meanings. A successful download does not make an old sensor reading fresh.</p>
+            </details>
           </div>
-          <div class="detail"><span>Price control</span><span id="control-price">—</span></div>
-          <div class="detail"><span>Comfort reference</span><span id="reference">Learning normal temperature</span></div>
-          <div class="detail"><span>Maximum drop when home</span><span id="drop">1 °C</span></div>
-          <div class="detail"><span>Recirculation</span><span id="dhwr">—</span></div>
-        </article>
-
-        <article class="panel electricity-panel" aria-labelledby="electricity-title">
-          <p class="eyebrow">ELECTRICITY</p><h2 id="electricity-title">Configured rates</h2>
-          <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
-          <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
-          <p class="muted">Rates and the temperature-drop limit are set in the configuration.</p>
+          <details id="controls-details" class="controller-fold">
+            <summary>Controls &amp; settings</summary>
+            <p class="muted">Edit permanent settings in options/config, then update this installation to apply them.</p>
+            <div class="settings-actions">
+              <button id="settings-reload" class="secondary-button" type="button" disabled>Update settings</button>
+              <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
+            </div>
+            <p id="settings-reload-help" class="muted">Checking settings reload availability…</p>
+            <details id="heating-test-details" class="heating-test-details">
+              <summary>Test heating commands</summary>
+              <p id="heating-test-help" class="muted">Each button immediately sends one real MQTT command to the configured control devices. Normal heating follows the heat pump’s own controls.</p>
+              <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Send a test heating command" aria-describedby="heating-test-help heating-test-status">
+                <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>heatoff</span><small>Tariff reduction</small></button>
+                <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>heaton15</span><small>Normal heating</small></button>
+                <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>heaton60</span><small>Recirculation pulse</small></button>
+              </div>
+              <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
+              <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+            </details>
+            <details id="h66-test-details" class="heating-test-details">
+              <summary>Test H66 controls</summary>
+              <p class="muted">Apply a temporary setting to the heat pump. The test checks readback and restores the previous setting when its duration ends.</p>
+              <form id="h66-test-form" class="h66-test-form">
+                <label>Setting<select id="h66-test-register">
+                  <option value="0203">Room setting · 0203</option>
+                  <option value="0212">Hot water start · 0212</option>
+                  <option value="0208">Hot water stop · 0208</option>
+                  <option value="2201">Operating mode · 2201</option>
+                </select></label>
+                <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                <label>Duration · minutes<input id="h66-test-duration" type="number" min="1" max="15" step="1" value="5" required></label>
+                <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply temporary test</button>
+              </form>
+              <p id="h66-test-status" class="muted">H66 is not connected.</p>
+              <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+            </details>
+          </details>
+          <details id="temporary-details" class="controller-fold temporary-panel">
+            <summary>Temporary controls · Away &amp; pause</summary>
+            <form id="temporary-form" class="temporary-form">
+              <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+              <div class="temporary-field">
+                <label for="away-until">Away until</label>
+                <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                <p id="away-status" class="temporary-status">At home.</p>
+                <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+              </div>
+              <div class="temporary-field">
+                <label for="pause-until">Pause until</label>
+                <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                <p id="override-status" class="temporary-status">Price control is not paused.</p>
+                <p id="pause-help" class="muted">Pause price-based reductions. The heat pump follows its own controls; monitoring and learning continue.</p>
+              </div>
+              <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+              <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+            </form>
+          </details>
+          <details id="electricity-details" class="controller-fold electricity-panel">
+            <summary>Electricity rates</summary>
+            <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+            <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+            <p class="muted">Rates and the temperature-drop limit are set in the configuration.</p>
+          </details>
         </article>
       </div>
     </section>

@@ -27,7 +27,9 @@ function numberParam(url, key, fallback, max) {
   return n;
 }
 
-export function createAppServer({ engine, store, chartService, token = '', staticDir = resolve('dist') }) {
+export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
+  reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
+    reason: 'This instance has no reloadable options/config source.' }), staticDir = resolve('dist') }) {
   const overviewService = chartService?.overview ? chartService : createChartService({ store });
   const server = createServer(async (req, res) => {
     const json = (code, value) => {
@@ -45,7 +47,31 @@ export function createAppServer({ engine, store, chartService, token = '', stati
         // loopback installation where no bearer token is configured.
         if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return json(403, { error: 'Cross-origin request rejected' });
         if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
-        if (req.method === 'GET' && url.pathname === '/api/status') return json(200, engine.status());
+        const unavailable = () => {
+          const state = settingsReloadStatus();
+          if (state.unavailable) return state.reason;
+          return state.busy ? 'Settings are being updated. Retry shortly.' : null;
+        };
+        if (unavailable()) return json(503, { error: unavailable() });
+        const engine = getEngine();
+        const status = () => ({ ...getEngine().status(), settingsReload: settingsReloadStatus() });
+        const mutate = async action => {
+          const input = await body(req);
+          // A slow JSON body can span a complete reload. Resolve the engine only
+          // after parsing, and never dispatch while a replacement is in progress.
+          if (unavailable()) return json(503, { error: unavailable() });
+          return action(getEngine(), input);
+        };
+        if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
+        if (req.method === 'POST' && url.pathname === '/api/settings/reload') {
+          return await mutate(async (_engine, input) => {
+            if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+              throw new Error('Update settings reads options/config; send an empty JSON object.');
+            if (!reloadSettings) return json(409, { error: settingsReloadStatus().reason });
+            await reloadSettings();
+            return json(200, status());
+          });
+        }
         if (req.method === 'GET' && url.pathname === '/api/recording-overview') {
           const cancellation = new AbortController();
           const cancel = () => cancellation.abort();
@@ -81,10 +107,10 @@ export function createAppServer({ engine, store, chartService, token = '', stati
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
-        if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates are configured in options/config. Restart after editing them.' });
-        if (req.method === 'POST' && url.pathname === '/api/temporary') return json(200, engine.setTemporary(await body(req)));
-        if (req.method === 'POST' && url.pathname === '/api/test/h66') return json(200, await engine.testH66(await body(req)));
-        if (req.method === 'POST' && url.pathname === '/api/heating-test') return json(200, await engine.testHeating(await body(req)));
+        if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates are configured in options/config. Use Update settings after editing them.' });
+        if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate((current, input) => json(200, current.setTemporary(input)));
+        if (req.method === 'POST' && url.pathname === '/api/test/h66') return await mutate(async (current, input) => json(200, await current.testH66(input)));
+        if (req.method === 'POST' && url.pathname === '/api/heating-test') return await mutate(async (current, input) => json(200, await current.testHeating(input)));
         if (req.method === 'GET' && url.pathname === '/api/events') return json(200, store.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();
@@ -95,7 +121,7 @@ export function createAppServer({ engine, store, chartService, token = '', stati
           if (!/^[a-z0-9_]{1,64}$/.test(signal)) throw new Error('Invalid signal');
           return json(200, store.observations({ signal, from, to, limit: numberParam(url, 'limit', 1000, 5000) }));
         }
-        if (req.method === 'POST' && url.pathname === '/api/override') return json(200, engine.setOverride((await body(req)).minutes));
+        if (req.method === 'POST' && url.pathname === '/api/override') return await mutate((current, input) => json(200, current.setOverride(input.minutes)));
         return json(404, { error: 'Unknown endpoint' });
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(405, { error: 'Method not allowed' });

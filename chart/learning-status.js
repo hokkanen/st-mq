@@ -15,6 +15,16 @@ const coefficientLabels = {
   auxiliaryCPerKwh: 'Auxiliary heating response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
   reducedHeatCPerHour: 'Legacy reduced-mode allowance', preheatCPerHourPerDegree: 'Legacy preheat allowance',
 };
+const coefficientInfo = {
+  lossPerHour: { unit: '1/h', digits: 4, detail: 'Heat loss per degree of indoor–outdoor temperature difference. Multiply by that difference to get the modeled cooling contribution in °C/h.' },
+  normalHeatCPerHour: { unit: '°C/h', digits: 3, detail: 'Effective heating contribution at full observed space-heating compressor duty. Building heat storage delays the room response; this is not measured compressor output or COP.' },
+  solarCPerHourPerKwM2: { unit: '°C/h per kW/m²', digits: 3, detail: 'Temperature response to forecast solar radiation. Radiation forecasts enter in W/m² and are converted to kW/m²; no house radiation sensor is implied.' },
+  auxiliaryCPerKwh: { unit: '°C/kWh', digits: 3, detail: 'Effective heating contribution per estimated auxiliary electricity input during space heating. Stored heat affects when the indoor temperature responds.' },
+  memoryExchangePerHour: { unit: '1/h', digits: 4, fixed: true, detail: 'Exchange rate between the modeled building heat reserve and indoor air. The slow reserve is unmeasured, so this remains a fixed structural assumption.' },
+  reserveTimeHours: { unit: 'h', digits: 1, fixed: true, detail: 'Time scale of the modeled building heat reserve. This is temperature memory, not a measured floor temperature or storage capacity.' },
+  reducedHeatCPerHour: { unit: '°C/h', digits: 3, legacy: true, detail: 'Reduced-mode heating allowance carried by a legacy model. The current observed-input model does not fit this coefficient.' },
+  preheatCPerHourPerDegree: { unit: '1/h', digits: 4, legacy: true, detail: 'Legacy heating allowance per degree of requested preheat boost. The current model treats boost as control context, without a direct unmeasured heat contribution.' },
+};
 const inputSources = {
   model_indoor_temperature: 'Recorded indoor sensor readings and their availability. The endpoint is compared with the predicted temperature after each completed interval.',
   model_outdoor_temperature: 'H66 outdoor sensor, then FMI station, then Open-Meteo estimate when the preceding source is unavailable. Source validity is checked at each segment.',
@@ -31,6 +41,23 @@ export function modelInputDescriptions() {
     detail: info.detail, sources: inputSources[key] }));
 }
 
+/** Current model state only: no new historical series or coefficient storage. */
+export function modelCoefficientDescriptions(learning = {}) {
+  const adaptive = learning.adaptive ?? {}, model = adaptive.model ?? {}, validation = model.validation;
+  const fitted = new Set(validation?.accepted === true ? validation.fittedParameters ?? [] : []);
+  return Object.entries(coefficientInfo).filter(([key]) => Object.hasOwn(model.parameters ?? {}, key)).map(([key, info]) => {
+    const rawValue = model.parameters[key], available = finite(rawValue);
+    const evidence = validation?.parameterEvidence?.[key];
+    const learned = available && fitted.has(key) && !info.fixed && !info.legacy;
+    return { key, title: coefficientLabels[key], unit: info.unit, available,
+      value: available ? `${number(rawValue, info.digits)} ${info.unit}` : 'Unavailable',
+      provenance: !available ? 'Unavailable' : info.legacy ? 'Legacy model value' : info.fixed ? 'Fixed building assumption'
+        : learned ? 'Fitted in the accepted model' : validation?.accepted === true ? 'Retained value / awaiting evidence' : 'Initial estimate / awaiting evidence',
+      detail: info.detail,
+      evidence: evidence ? [words(evidence.status), words(evidence.reason)].filter(Boolean).join(' · ') : '' };
+  });
+}
+
 export function learningDisplay(learning = {}) {
   const adaptive = learning.adaptive ?? {}, model = adaptive.model ?? {}, health = adaptive.health ?? {};
   const validation = model.validation, p = model.parameters ?? {}, energy = model.energy ?? {};
@@ -39,7 +66,7 @@ export function learningDisplay(learning = {}) {
     : status === 'retained-previous' ? 'Keeping the previous model'
       : status === 'learning' ? 'Learning from observed temperatures' : words(status || 'Collecting observations');
   const process = 'The house model learns from completed 15-minute intervals of recorded temperatures, solar forecasts and observed space-heating input. Changes within an interval retain their own timing. Later temperature trajectories check proposed updates. A separate equipment-response check asks whether requested actions predict compressor use. Passing the temperature check alone does not validate a savings decision.';
-  const evidence = [];
+  const evidence = [], coefficientEvidence = [];
   if (finite(health.usableSamples)) evidence.push(`${health.usableSamples} usable temperature observations; ${health.acceptedFits ?? 0} accepted model updates and ${health.rejectedFits ?? 0} attempts without an accepted update.`);
   if (health.phaseSamples) evidence.push(`Observation coverage: ${Object.entries(health.phaseSamples).map(([phase, count]) => `${words(phase)} ${count}`).join(', ')}. Actions with little evidence still rely on initial estimates.`);
   const horizon = finite(validation?.horizonHours) ? `${number(validation.horizonHours, 1)}${finite(validation.maximumHorizonHours) && validation.maximumHorizonHours !== validation.horizonHours ? `–${number(validation.maximumHorizonHours, 1)}` : ''} hours` : 'the saved forecast horizon';
@@ -47,16 +74,16 @@ export function learningDisplay(learning = {}) {
   else if (validation?.accepted && finite(validation.maeCPerHour)) evidence.push(`Legacy temperature validation: ${number(validation.maeCPerHour)} °C/h over ${validation.samples ?? 0} saved checks of ${horizon}. This rate-normalized legacy score does not validate full-cycle cost or current action readiness.`);
   if (health.reason) evidence.push(`Latest update: ${words(health.reason)}.`);
   if (health.evidence === 'includes-requested-modes') evidence.push('Some heating observations describe requested operation. Device readback is used where available.');
-  if (finite(p.lossPerHour)) evidence.push(`Current model: with the house 10 °C warmer than outdoors, heat loss contributes about ${number(p.lossPerHour * 10)} °C/h before heating, sunshine and stored heat. This is a model estimate, not a direct cooling measurement.`);
-  if (finite(p.normalHeatCPerHour)) evidence.push(`Compressor heating response: ${number(p.normalHeatCPerHour)} °C/h at full modeled space-heating duty. Actual compressor duty, heat loss and the building’s stored heat determine the temperature change. Replacing the heat pump requires equipment recalibration.`);
-  if (finite(p.reserveTimeHours)) evidence.push(`Slow heat reserve adjusts over about ${number(p.reserveTimeHours, 1)} hours. This represents the building’s temperature memory; it is not a measured floor temperature or storage capacity.`);
-  if (finite(energy.compressorKw)) evidence.push(`Electricity basis: compressor ${number(energy.compressorKw)} kW, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}. Solar input uses FMI radiation forecasts with Open-Meteo as backup. It is modeled radiation.`);
-  if (finite(energy.relativeUncertainty)) evidence.push(`Electricity uncertainty allowance: ${number(energy.relativeUncertainty * 100, 0)}%. It describes the model's uncertainty budget, not a meter's accuracy or a statistical confidence interval.`);
+  if (finite(p.lossPerHour)) coefficientEvidence.push(`Current model: with the house 10 °C warmer than outdoors, heat loss contributes about ${number(p.lossPerHour * 10)} °C/h before heating, sunshine and stored heat. This is a model estimate, not a direct cooling measurement.`);
+  if (finite(p.normalHeatCPerHour)) coefficientEvidence.push(`Compressor heating response: ${number(p.normalHeatCPerHour)} °C/h at full modeled space-heating duty. Actual compressor duty, heat loss and the building’s stored heat determine the temperature change. Replacing the heat pump requires equipment recalibration.`);
+  if (finite(p.reserveTimeHours)) coefficientEvidence.push(`Slow heat reserve adjusts over about ${number(p.reserveTimeHours, 1)} hours. This represents the building’s temperature memory; it is not a measured floor temperature or storage capacity.`);
+  if (finite(energy.compressorKw)) coefficientEvidence.push(`Electricity basis: compressor ${number(energy.compressorKw)} kW, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}. Solar input uses FMI radiation forecasts with Open-Meteo as backup. It is modeled radiation.`);
+  if (finite(energy.relativeUncertainty)) coefficientEvidence.push(`Electricity uncertainty allowance: ${number(energy.relativeUncertainty * 100, 0)}%. It describes the model's uncertainty budget, not a meter's accuracy or a statistical confidence interval.`);
   const coefficientNames = Object.keys(p).filter(key => coefficientLabels[key]);
-  const fitted = new Set(validation?.fittedParameters ?? []);
-  if (coefficientNames.length) evidence.push(`Thermal coefficients: ${coefficientNames.filter(key => fitted.has(key)).length} fitted in the accepted update; ${coefficientNames.filter(key => !fitted.has(key)).length} fixed or awaiting evidence. ${coefficientNames.map(key => `${coefficientLabels[key]}: ${fitted.has(key) ? 'fitted' : 'fixed / awaiting evidence'}`).join('; ')}.`);
+  const fitted = new Set(validation?.accepted === true ? validation.fittedParameters ?? [] : []);
+  if (coefficientNames.length) coefficientEvidence.push(`Thermal coefficients: ${coefficientNames.filter(key => fitted.has(key)).length} fitted in the accepted update; ${coefficientNames.filter(key => !fitted.has(key)).length} fixed or awaiting evidence. ${coefficientNames.map(key => `${coefficientLabels[key]}: ${fitted.has(key) ? 'fitted' : 'fixed / awaiting evidence'}`).join('; ')}.`);
   for (const [key, info] of Object.entries(validation?.parameterEvidence ?? {})) {
-    if (coefficientLabels[key] && info?.reason) evidence.push(`${coefficientLabels[key]} evidence: ${words(info.status)} · ${words(info.reason)}.`);
+    if (coefficientLabels[key] && info?.reason) coefficientEvidence.push(`${coefficientLabels[key]} evidence: ${words(info.status)} · ${words(info.reason)}.`);
   }
   const actionChecks = model.equipmentResponse?.validation?.phases;
   if (actionChecks) for (const [phase, result] of Object.entries(actionChecks)) {
@@ -73,7 +100,7 @@ export function learningDisplay(learning = {}) {
   if (outcomes) evidence.push(`All attempted cycles: ${outcomes.attempted ?? 0}; completed ${outcomes.completed ?? 0}, incomplete ${outcomes.incomplete ?? 0}${finite(outcomes.aborted) ? `, aborted ${outcomes.aborted}` : ''}, in progress ${outcomes.inProgress ?? 0}. ${outcomes.assessed ?? 0} have a comparable space-heating assessment.${finite(outcomes.observedCostCents) ? ` Recorded cycle electricity cost: €${number(outcomes.observedCostCents / 100)} (${words(outcomes.basis ?? 'estimated')}).` : ''} Completed-subset benefits exclude unfinished attempts; hot-water service changes prevent a whole-cycle savings claim.`);
   const configured = learning.parameters;
   if (finite(learning.controlHold?.until)) evidence.push(`Automatic cycles wait until ${new Date(learning.controlHold.until).toLocaleString('en-GB', { dateStyle:'medium',timeStyle:'short' })} after an incomplete attempt (${words(learning.controlHold.reason)}). Recording and passive learning continue.`);
-  if (configured) evidence.push(`Configured native-control assumptions: auxiliary integral A2 ${number(configured.auxIntegralA2, 0)} (${configured.a2Basis === 'offset' ? 'relative to A1' : 'absolute'}); auxiliary hysteresis ${number(configured.auxHysteresisC, 0)} °C. Compressor A1 ${finite(configured.compressorIntegralA1) ? number(configured.compressorIntegralA1, 0) : 'unknown'}; compressor hysteresis ${finite(configured.compressorHysteresisC) ? `${number(configured.compressorHysteresisC, 0)} °C` : 'unknown'}. These come from configuration; the current integral reading does not expose those settings.`);
+  if (configured) coefficientEvidence.push(`Configured native-control assumptions: auxiliary integral A2 ${number(configured.auxIntegralA2, 0)} (${configured.a2Basis === 'offset' ? 'relative to A1' : 'absolute'}); auxiliary hysteresis ${number(configured.auxHysteresisC, 0)} °C. Compressor A1 ${finite(configured.compressorIntegralA1) ? number(configured.compressorIntegralA1, 0) : 'unknown'}; compressor hysteresis ${finite(configured.compressorHysteresisC) ? `${number(configured.compressorHysteresisC, 0)} °C` : 'unknown'}. These come from configuration; the current integral reading does not expose those settings.`);
   const metrics = metricDefinitions.map(([key, title, unit, explanation]) => {
     const metric = learning.metrics?.[key] ?? {};
     const value = key === 'indoorTemperature' ? metric.value ?? adaptive.baselineC : metric.value;
@@ -84,7 +111,9 @@ export function learningDisplay(learning = {}) {
   const episode = learning.episode;
   if (episode) evidence.push(`Current cycle: ${words(episode.phase ?? episode.status ?? 'in progress')}. Space-heating benefit is assessed only after recovery is complete; an unfinished cycle does not enter the averages.`);
   return { title, message: learning.message ?? learning.reason ?? (validation?.accepted ? 'The current model has passed later temperature checks. Action prediction and economic readiness are assessed separately.' : 'Initial estimates remain in use while independent evidence is collected.'),
-    process, metrics, evidence, inputs: modelInputDescriptions(), history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
+    process, metrics, evidence, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
+    coefficientHistory: 'These are current values from the latest retained model. The chart shows assessed learning outcomes and resolved model inputs. Coefficient history is not plotted; today’s values are not applied to earlier intervals.',
+    history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
 }
 
 /** Static definitions stay mounted during status refreshes, preserving open
@@ -92,7 +121,7 @@ export function learningDisplay(learning = {}) {
 export function renderModelInputs(root, rows = modelInputDescriptions()) {
   if (!root || root.childElementCount) return;
   const intro = document.createElement('p'); intro.className = 'muted';
-  intro.textContent = 'These are resolved learning inputs, the observed temperature target and control context. They do not add recorder priorities or one coefficient per recorded sensor. Select Model inputs · Calculated on the chart to see saved values. Unknown and rejected intervals remain gaps.';
+  intro.textContent = 'These are the saved inputs used to learn the house model, including recorded sensor readings, the temperature target and control context. Select Model inputs · Calculated on the chart to inspect them. Unknown and rejected intervals remain gaps.';
   root.append(intro);
   for (const row of rows) {
     const fold = document.createElement('details'); fold.dataset.modelInput = row.key;
@@ -113,7 +142,38 @@ export const h66Registers = {
   '0208': { label: 'DHW stop temperature', unit: '°C', min: 30, max: 65 },
   '2201': { label: 'Operating mode', unit: '' }, '1A01': { label: 'Compressor', unit: '' },
   '1A07': { label: 'Heating destination', unit: '' }, '3104': { label: 'Auxiliary output', unit: '%' },
+  '0233': { label: 'Tariff reduction setting', unit: '°C' },
 };
+
+/** Compact readbacks must never turn a stale value or sent request into a
+ * current device confirmation. The tariff relay has no H66 status register. */
+export function h66HomeSummary(status = {}) {
+  const h66 = status.h66 ?? {}, readings = h66.readings ?? {};
+  const unavailable = reading => h66.connected !== true ? 'Unavailable · H66 disconnected'
+    : reading?.stale ? 'Unavailable · stale readback' : 'Unavailable · no current readback';
+  const current = register => h66.connected === true && finite(readings[register]?.value)
+    && readings[register].available === true && !readings[register].stale && readings[register].usableForControl !== false;
+  const readingRow = (key, title, register) => ({ key, title, available: current(register),
+    value: current(register) ? h66ReadingValue(register, readings[register]) : unavailable(readings[register]),
+    detail: 'Current H66 device readback.' });
+  const start = readings['0212'], stop = readings['0208'], rangeAvailable = current('0212') && current('0208');
+  const rows = [readingRow('mode', 'Heat pump mode', '2201'), readingRow('room', 'Heat pump ROOM setting', '0203'),
+    { key: 'dhw', title: 'DHW target range', available: rangeAvailable,
+      value: rangeAvailable ? `${number(start.value, Number.isInteger(start.value) ? 0 : 1)}–${number(stop.value, Number.isInteger(stop.value) ? 0 : 1)} °C`
+        : unavailable(start?.stale ? start : stop), detail: 'Current H66 start–stop temperature settings for domestic hot water.' }];
+  const actual = status.observations?.actual;
+  const knownMode = ['normal', 'reduction'].includes(actual?.mode);
+  const confirmed = knownMode && actual.verified === true && actual.stale !== true;
+  const requested = knownMode && actual.source === 'mqtt-request' && actual.stale !== true;
+  rows.push({ key: 'tariff', title: 'Tariff control', available: confirmed,
+    value: confirmed ? `${actual.mode === 'reduction' ? 'Reduction' : 'Normal heating'}${status.input === 'simulated' ? ' · simulated' : ' · confirmed'}`
+      : requested ? `${actual.mode === 'reduction' ? 'Reduction' : 'Normal heating'} requested · unverified` : 'Unknown · no device readback',
+    detail: 'The tariff relay is separate from H66. A sent request, operating mode or compressor reading does not confirm its state.' });
+  rows.push(readingRow('compressor', 'Compressor', '1A01'), readingRow('destination', 'Heating destination', '1A07'),
+    readingRow('aux', 'Auxiliary output', '3104'), readingRow('alarm', 'Heat pump alarm', '1A20'));
+  if (readings['0233']) rows.push(readingRow('tariffSetting', 'Tariff reduction setting', '0233'));
+  return rows;
+}
 
 export function h66ReadingValue(register, reading) {
   if (!finite(reading?.value)) return 'Unavailable';

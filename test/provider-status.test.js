@@ -1,9 +1,73 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { describeProvider, outdoorSourceLabel, providerName } from '../chart/provider-status.js';
+import { describeProvider, outdoorSourceLabel, providerName, providerSeries } from '../chart/provider-status.js';
+import { H66_REGISTERS } from '../src/domain/telemetry.js';
+import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
 const now = Date.parse('2026-09-07T10:00:00Z');
 const options = { now, formatTime: value => new Date(value).toISOString().slice(11, 16) };
+
+test('H66 provider catalogue covers every decoded register without claiming tariff readback', () => {
+  const series = providerSeries('h66');
+  const decoded = Object.values(H66_REGISTERS).map(({ signal }) => signal === 'integral' ? 'heating_integral' : signal);
+  assert.deepEqual(series.flatMap(row => row.signals).sort(), decoded.sort());
+  assert.deepEqual(providerSeries('husdata-h66'), series);
+  assert.ok(series.every(row => row.source === 'H66' && row.label && row.unit && row.detail));
+  assert.match(series.find(row => row.signals.includes('tariff_reduction_setting')).detail,
+    /does not confirm that tariff control is active/);
+});
+
+test('Easee provider catalogue includes all acquired fields and separates phase energy from meter counters', () => {
+  const series = providerSeries('easee');
+  const signals = series.flatMap(row => row.signals);
+  for (const [prefix, fields] of Object.entries(ELECTRICITY_FIELDS)) {
+    for (const [, name] of fields) assert.ok(signals.includes(`${prefix}_${name}`), `${prefix}_${name}`);
+    for (const phase of [1, 2, 3]) assert.ok(signals.includes(`${prefix}_energy_l${phase}`));
+  }
+  assert.ok(series.filter(row => row.signals.some(signal => signal.endsWith('_counter')))
+    .every(row => /does not correct recorded energy or train/.test(row.detail)));
+  assert.ok(series.filter(row => row.signals.some(signal => /_energy_l[123]$/.test(signal)))
+    .every(row => row.source === 'Calculated from Easee' && /derives power/.test(row.detail)));
+  assert.match(series.find(row => row.signals.includes('ev1_voltage_l1')).detail, /verified phase mapping/);
+});
+
+test('provider catalogue preserves market fallback and the separate weather solar source', () => {
+  const market = providerSeries('market', { source: 'elering' });
+  assert.equal(market[0].source, 'Elering');
+  assert.match(market[0].detail, /excluding VAT.*ENTSO-E.*primary.*Elering.*backup/);
+  assert.match(market[1].source, /^Calculated/);
+  const weather = providerSeries('weather', { source: 'fmi', acquisition: { solarSource: 'openmeteo' } });
+  assert.equal(weather[0].source, 'FMI');
+  assert.equal(weather[1].source, 'Open-Meteo');
+  assert.match(weather[1].detail, /earlier forecast publications, not measured sunshine/);
+  assert.equal(providerSeries('weather', { acquisition: { selected: 'fmi', solarSource: 'mixed' } })[1].source,
+    'FMI + Open-Meteo');
+  assert.match(providerSeries('outdoor', { source: 'openmeteo' })[0].detail, /H66.*first.*FMI.*then.*Open-Meteo/);
+});
+
+test('temperature catalogue distinguishes the optional adapter and MQTT sensor history from live outdoor selection', () => {
+  assert.equal(providerSeries('temperatures')[0].source, 'Configured temperature adapter');
+  assert.equal(providerSeries('smartthings')[0].source, 'SmartThings');
+  const mqtt = providerSeries('mqtt-temperature');
+  assert.equal(mqtt[0].source, 'MQTT temperature sensor');
+  assert.deepEqual(mqtt.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
+  assert.match(mqtt.find(row => row.signals.includes('outdoor_temperature')).detail,
+    /recorded for history.*Live outdoor control selects H66, FMI or Open-Meteo/);
+});
+
+test('catalogue rejects unknown names and never includes provider bodies or identifiers', () => {
+  const untrusted = 'https://provider.example/?token=private-secret';
+  const health = { source: untrusted, device: untrusted, body: untrusted,
+    acquisition: { selected: untrusted, primary: untrusted, solarSource: untrusted } };
+  for (const job of ['market', 'weather', 'outdoor', 'easee', 'h66', 'temperatures', 'mqtt-temperature', untrusted,
+    'constructor', '__proto__']) {
+    assert.doesNotMatch(JSON.stringify(providerSeries(job, health)), /private-secret|provider\.example|https:|constructor|__proto__/);
+  }
+  assert.deepEqual(providerSeries(untrusted, health), []);
+  for (const job of ['market', 'weather', 'outdoor', 'temperatures']) {
+    assert.doesNotThrow(() => providerSeries(job, null));
+  }
+});
 
 test('healthy backup is named and its primary retry respects both cooldown and polling schedule', () => {
   const health = { status: 'fallback', source: 'elering', lastSuccessAt: now, nextAttemptAt: now + 3_600_000,

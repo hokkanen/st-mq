@@ -9,6 +9,7 @@ import { seedChartFixture } from './lib/chart-fixture.js';
 import { providerFixture } from './lib/provider-fixture.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
+import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-learning-ui-'));
@@ -18,15 +19,18 @@ const pending = new Map(), errors = [];
 try {
   writeFileSync(join(directory, 'options.json'), '{}');
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
-  app = await start({ config, clock: () => now }); seedChartFixture(app.store, now);
+  const seededStore = new Store(config.dbPath);
+  seedChartFixture(seededStore, now);
   const inputStart = now - 30 * 60_000, inputEnd = now - 15 * 60_000;
-  appendLearningRecord(app.store, 'simulated', 'sample', {
+  appendLearningRecord(seededStore, 'simulated', 'sample', {
     timestamp: inputEnd, windowStart: inputStart, windowEnd: inputEnd, indoorC: 21.2, quality: [],
     inputSegments: [{ start: inputStart, end: inputStart + 5 * 60_000, outdoorC: 8, solarRadiationWm2: 300,
       phase: 'normal', roomBoostC: 0, targetC: 21, thermalCompressorDuty: 0, thermalAuxKw: 0, quality: [] },
     { start: inputStart + 5 * 60_000, end: inputEnd, outdoorC: 8, solarRadiationWm2: 300,
       phase: 'reduction', roomBoostC: 0, targetC: 21, thermalCompressorDuty: 0.5, thermalAuxKw: 0, quality: [] }],
-  }, { config: app.engine.control });
+  }, { config: config.control });
+  seededStore.close();
+  app = await start({ config, clock: () => now });
   const endpoint = process.argv[2] ?? 'http://127.0.0.1:39125';
   const target = await fetch(`${endpoint}/json/new?about:blank`, { method: 'PUT' }).then(r => r.json());
   socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -59,8 +63,8 @@ try {
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
   const actualStatus = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json());
-  assert.equal(await evaluate(`document.getElementById('learning-evidence').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
-  assert.equal(await evaluate(`document.getElementById('learning-evidence').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);
+  assert.equal(await evaluate(`document.getElementById('model-coefficients-content').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
+  assert.equal(await evaluate(`document.getElementById('model-coefficients-content').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);
   assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
   await evaluate("document.getElementById('h66-test-register').value='2201'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-mode-field').hidden"), false);
@@ -68,9 +72,28 @@ try {
   await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-temperature-field').hidden"), false);
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
-  assert.equal(await evaluate("document.querySelector('#data-details summary').textContent"), 'Connection & provider details');
-  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning details');
+  assert.equal(await evaluate("document.querySelector('#h66-provider-details summary strong').textContent"), 'Husdata H66');
+  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Calculated learning outcomes · 4');
   assert.equal(await evaluate("document.querySelectorAll('#model-inputs-content details').length"), 8);
+  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 2);
+  assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home status & learning');
+  assert.equal(await evaluate("document.getElementById('providers-title').textContent"), 'Providers & controls');
+  assert.equal(await evaluate("[...document.querySelectorAll('.controller-panels details')].every(fold => !fold.open)"), true);
+  assert.equal(await evaluate("Math.abs(document.getElementById('home-control').getBoundingClientRect().height - document.getElementById('providers-controls').getBoundingClientRect().height) < 1"), true, 'Closed desktop panels have equal heights');
+  assert.equal(await evaluate("document.querySelectorAll('.model-coefficient').length >= 6"), true);
+  assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Thermal coefficients:')"), false);
+  assert.equal(await evaluate("document.getElementById('home-h66-summary').textContent.includes('Unavailable · H66 disconnected')"), true);
+  mkdirSync('var', { recursive: true });
+  await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
+  writeFileSync('var/home-panels-closed-desktop.png', Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  await evaluate("document.getElementById('controls-details').open=true; document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input'))");
+  writeFileSync(join(directory, 'options.json'), JSON.stringify({ controller: { max_drop_c: 0.7 } }));
+  await evaluate("document.getElementById('settings-reload').click()");
+  await until("document.getElementById('settings-reload-message').textContent === 'Settings updated.' && !document.getElementById('settings-reload').disabled");
+  assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00', 'Settings refresh preserves unsaved temporary drafts');
+  assert.equal(await evaluate("document.getElementById('controls-details').open"), true, 'Settings refresh preserves open controls');
+  assert.equal(await evaluate("document.getElementById('drop').textContent"), '0.7 °C', 'Settings reload applies options from disk');
+  await evaluate("document.getElementById('controls-details').open=false");
   await evaluate("document.getElementById('learning-details').open = true; document.getElementById('model-inputs-details').open = true; document.querySelector('#model-inputs-content details').open = true");
   assert.equal(await evaluate("document.getElementById('model-inputs-content').textContent.includes('recorded sensor')"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Action prediction:')"), true);
@@ -103,8 +126,8 @@ try {
   for (const width of [1440, 390]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
     await new Promise(resolve => setTimeout(resolve, 150));
-    for (const section of ['history-panel', 'learning-details', 'model-inputs-details', 'h66-test-details']) {
-      await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; element.scrollIntoView({block:'start'}); })()`);
+    for (const section of ['history-panel', 'learning-details', 'model-inputs-details', 'model-coefficients-details', 'providers-controls', 'h66-test-details']) {
+      await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; for (let parent = element.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; element.scrollIntoView({block:'start'}); })()`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${section} fits ${width}px`);
       const shot = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(`var/learning-${section}-${width}.png`, Buffer.from(shot.data, 'base64'));
@@ -134,6 +157,27 @@ try {
   await until("document.getElementById('h66-status')?.textContent === 'H66 connected'");
   await until("document.getElementById('h66-test-submit')?.disabled === false");
   assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
+  assert.equal(await evaluate("document.querySelector('[data-h66-summary=mode]').textContent.includes('Auto')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-h66-summary=dhw]').textContent.includes('40–55 °C')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-h66-summary=tariff]').textContent.includes('Unknown · no device readback')"), true);
+  assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
+  for (const width of [1440, 390]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
+    await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider summary fits ${width}px`);
+    if (width === 1440) assert.equal(await evaluate("Math.abs(document.getElementById('home-control').getBoundingClientRect().height - document.getElementById('providers-controls').getBoundingClientRect().height) < 1"), true, 'Closed provider panels have equal heights');
+    writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    await evaluate("document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
+    writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+    await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");
+  }
+  await evaluate("document.querySelector('#providers .provider-fold').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
+  await evaluate("document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input')); document.getElementById('temporary-form').requestSubmit()");
+  await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
+  assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
+  assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
+  assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
   await evaluate("document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-duration').value='1'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
   assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
@@ -145,7 +189,7 @@ try {
   assert.equal(publications.at(-1).value, '55');
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'eight input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'separate details', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'eight input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'two balanced home panels', 'provider folds preserve focus', 'settings reload preserves drafts', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

@@ -69,7 +69,8 @@ restarts, expire at their deadlines and can be cancelled independently.
 Live active mode applies the plan; monitoring and shadow show it without automatic
 equipment commands.
 
-Under **Away & pause**, the **Test heating commands** section starts closed. With
+Under **Providers & controls → Controls & settings**, the **Test heating commands**
+section starts closed. With
 `providers` or `mqtt` input and an existing `mqtt.address` configuration, its
 `heatoff`, `heaton15` and `heaton60` buttons send the selected real command to
 `from_stmq/heat/action`, using the controller's executor and QoS 1 without retain.
@@ -180,10 +181,21 @@ prices, forecasts and equipment-state shading keep their recorded time bounds.
 Auxiliary output has a five-minute freshness bound. Learning histories keep the
 estimate assessed at the time and never rewrite old points using a later model.
 
-**Data & learning** separates **Connection & provider details** from **Learning
-details**. The latter explains current parameters, temperature-validation evidence,
-completed-cycle counts and the four chartable metrics. See the detailed
+Below the chart, **Home status & learning** shows the heating decision, house-model
+status, price control, comfort reference, occupied drop limit and recirculation
+request. It also summarizes the heat-pump mode, ROOM setting and DHW target range.
+Tariff requests remain explicitly unverified when relay readback is unavailable;
+stale H66 readings are not presented as current settings. Three closed learning
+sections separate the **four calculated outcomes**, **model inputs** and **current
+model coefficients**. Coefficients show values, units and fitted/fixed provenance
+from the existing learning state, without additional storage or reconstructed
+historical coefficient traces. See the detailed
 [learning and control explanation](docs/learning-and-control.md).
+
+**Providers & controls** keeps provider status visible, with a fold for each
+provider's data series and details. **Controls & settings**, **Temporary controls ·
+Away & pause** and **Electricity rates** follow. The two panels share a height when
+closed on wide screens and stack on narrow screens; the event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,
 freshness and storage growth independently of model importance. Its **Energy audit**
 compares occasional meter counters with integrated estimates without correcting
@@ -369,7 +381,17 @@ a rejected key. The suite uses no MQTT and sends no equipment commands.
 
 ## Permanent configuration and prices
 
-Edit add-on options in Home Assistant, or `data/options.json` on Linux, and restart.
+Edit add-on options in Home Assistant, or `data/options.json` on Linux, then choose
+**Providers & controls → Controls & settings → Update settings**. The button
+re-reads the configured options/config source, applies supported settings and
+reconnects providers. Input mode, listener address/port, web access token and
+storage-path changes require a restart; if any of those changed, the update is
+rejected without applying other settings. Finish ongoing equipment tests first.
+The update restores owned equipment settings before reconnecting; if restoration
+is pending, retry after the equipment becomes available. An in-progress automatic
+heating cycle ends during the update; Away/Pause deadlines and learning history
+remain. Startup environment overrides still apply. Instances without a
+reloadable configuration source show the button as unavailable.
 `config.json` defines add-on metadata, defaults and schema; it is not the owner's
 credentials file. The dashboard reports the active values; Away/Pause and explicit
 timed tests are available there. Configuration takes precedence over old browser-saved mode/drop

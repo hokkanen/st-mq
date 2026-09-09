@@ -34,8 +34,9 @@ for the algorithm, native-setting restoration and equipment testing limits.
    documented settings. Native baselines are read before each cycle. Optional
    `controller.h66_verification_file` overrides documented engineering-unit scaling.
    A missing gateway still permits conservative tariff reduction, without ROOM
-   preheat or claimed compressor-only protection. The Data & learning panel shows
-   the connection, current readings, native settings and model evidence.
+   preheat or claimed compressor-only protection. **Home status & learning** shows
+   the current native settings and model evidence. The **Husdata H66** provider
+   fold in **Providers & controls** lists its series and current readbacks.
 
    Existing coordinates and market country enable FMI, Open-Meteo and Elering
    without new keys. ENTSO-E is primary for prices and Elering is the backup.
@@ -54,9 +55,20 @@ for the algorithm, native-setting restoration and equipment testing limits.
    selected. All four amounts and the tariff are configurable.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
-   change them in options and restart. Old browser-saved values cannot override
+   change them in options, then use **Controls & settings → Update settings**.
+   Old browser-saved values cannot override
    these settings. `temp_to_hours` is no longer used; remove it from saved add-on
    options if an upgrade still displays the old key.
+
+**Update settings** re-reads options/config and reconnects providers. Changes to
+the input mode, listener address/port, web access token or storage paths require a
+restart; the button rejects the entire update if one of these changed. Wait for
+ongoing heating operations and native setting tests to finish. Existing equipment
+overrides are restored before reconnecting; pending restoration blocks the update
+until equipment is available. An in-progress automatic heating cycle ends, while
+Away/Pause deadlines and learning history remain. Startup environment overrides
+still apply. Edit Supervisor-owned options through the add-on
+configuration, not inside the running container.
 
 The optional `electricity.effective_date` schedules rates at Finnish midnight.
 Without a date, first-use rates start today; later rate changes start when loaded.
@@ -129,7 +141,12 @@ Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.
 
 A blank network-access token prevents startup with a clear configuration error.
-Home Assistant options own permanent settings. The **Away until** and **Pause
+Home Assistant options own permanent settings. Beneath the chart, **Home status &
+learning** separates the four learning outcomes, model inputs and current
+coefficients into closed sections. Coefficients come from existing learning state;
+the UI adds no coefficient storage and does not reconstruct historical values.
+**Providers & controls** contains provider series/details, settings and tests,
+temporary controls and electricity rates. The **Away until** and **Pause
 until** controls use Finnish time even when the remote browser is in another
 timezone. Apply changes saves them together; **Home now** and **Resume now** cancel
 them independently. They persist in the database and expire at their deadlines,

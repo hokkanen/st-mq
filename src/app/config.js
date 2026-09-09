@@ -2,6 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
 
+// Keep the configuration source private and out of status/serialized settings.
+// Programmatically constructed configurations have no implicit disk source.
+const configurationReaders = new WeakMap();
+export function configurationReader(config) { return configurationReaders.get(config) ?? null; }
+
 export function validateSettings(input = {}) {
   const settings = {
     mode: input.mode ?? 'shadow',
@@ -132,7 +137,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   if (!['127.0.0.1', '::1', 'localhost'].includes(host) && token.length < 24) throw new Error('Network listening requires STMQ_API_TOKEN with at least 24 characters');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
-  return { addon, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
+  const config = { addon, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
     legacyDbPath: resolve(dataDir, databaseName),
     host, port, token, connections, priceSettings: configuredPriceSettings(options.electricity),
     deviceId: env.STMQ_H66_DEVICE ?? options.controller?.h66_device,
@@ -145,4 +150,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     h66Verification: verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ mode: env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
+  const sourceEnvironment = { ...env };
+  configurationReaders.set(config, () => loadConfig(sourceEnvironment, cwd));
+  return config;
 }

@@ -1,8 +1,7 @@
 import { createHistoryChart } from './history-chart.js';
-import { describeProvider, outdoorSourceLabel, providerName } from './provider-status.js';
+import { describeProvider, outdoorSourceLabel, providerName, providerSeries } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
-import { balanceControllerColumns } from './panel-layout.js';
-import { learningDisplay, h66Control, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
+import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 
 const $ = id => document.getElementById(id);
@@ -13,6 +12,7 @@ let historyChart;
 let temporaryBusy = false;
 let heatingTestBusy = false;
 let h66TestBusy = false;
+let settingsReloadBusy = false;
 let lastHeatingTestResult;
 let refreshSequence = 0;
 const dirtyTemporary = new Set();
@@ -90,13 +90,14 @@ function renderContract(s) {
   list.append(heading, table, tariff);
 }
 function updateTemporaryButtons() {
-  const busy = temporaryBusy || heatingTestBusy || h66TestBusy;
+  const busy = temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy;
   $('temporary-submit').disabled = busy || dirtyTemporary.size === 0;
   const saved = lastStatus ? temporaryValues(lastStatus) : {};
   $('home-now').disabled = busy || !($('away-until').value || saved.awayUntilLocal);
   $('resume-now').disabled = busy || !($('pause-until').value || saved.pauseUntilLocal);
   for (const button of heatingTestButtons) button.disabled = busy || !lastStatus?.heatingTests?.available;
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
+  $('settings-reload').disabled = busy || !lastStatus?.settingsReload?.available;
 }
 function renderTemporary(s) {
   const saved = temporaryValues(s);
@@ -128,6 +129,16 @@ function renderHeatingTests(s) {
   if (!heatingTestBusy && capability?.lastResult
     && JSON.stringify(capability.lastResult) !== lastHeatingTestResult) showHeatingTestResult(capability.lastResult);
 }
+function renderProviderSeries(root, rows) {
+  const list = document.createElement('ul'); list.className = 'provider-series';
+  for (const row of rows) {
+    const item = document.createElement('li'), title = document.createElement('strong'), detail = document.createElement('span');
+    title.textContent = `${row.label}${row.unit ? ` · ${row.unit}` : ''}`;
+    detail.textContent = `${row.detail}${row.source ? ` Source: ${row.source}.` : ''}`;
+    item.append(title, document.createElement('br'), detail); list.append(item);
+  }
+  root.replaceChildren(list);
+}
 function renderProviders(s) {
   const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
   $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
@@ -135,25 +146,28 @@ function renderProviders(s) {
   $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
     : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Indoor measurements, electricity prices and weather forecasts are updated independently. Gaps remain visible in the chart.';
   const entries = Object.entries(s.providers ?? {}).filter(([name,health])=>
-    !(['temperatures','smartthings'].includes(name)&&['not-configured','disabled'].includes(health?.status)));
-  $('providers').replaceChildren();
+    health && typeof health === 'object' && !(['temperatures','smartthings'].includes(name)&&['not-configured','disabled'].includes(health.status)));
+  const retained = new Set(entries.map(([name]) => name));
+  for (const row of [...$('providers').children]) if (!retained.has(row.dataset.provider)) row.remove();
   for (const [name, health] of entries) {
-    if (!health || typeof health !== 'object') continue;
     const display = describeProvider(name, health, { now: s.now, formatTime: time });
-    const row = document.createElement('li');
-    const heading = document.createElement('div'); heading.className = 'provider-heading';
-    const title = document.createElement('strong'); title.textContent = display.title;
-    const state = document.createElement('span');
+    let row = [...$('providers').children].find(row => row.dataset.provider === name);
+    if (!row) {
+      row = document.createElement('li'); row.dataset.provider = name;
+      const fold = document.createElement('details'); fold.className = 'provider-fold';
+      const summary = document.createElement('summary');
+      const heading = document.createElement('span'); heading.className = 'provider-heading';
+      heading.append(document.createElement('strong'), document.createElement('span')); summary.append(heading);
+      const detail = document.createElement('p'); detail.className = 'muted provider-health';
+      const series = document.createElement('div'); series.className = 'provider-series-content';
+      fold.append(summary, detail, series); row.append(fold); $('providers').append(row);
+    }
+    row.querySelector('strong').textContent = display.title;
+    const state = row.querySelector('.provider-heading > span');
     state.textContent = display.state;
     state.className = display.attention ? 'stale' : 'muted';
-    heading.append(title, state);
-    const detail = document.createElement('p'); detail.className = 'muted';
-    detail.textContent = display.detail;
-    row.append(heading, detail); $('providers').append(row);
-  }
-  if (!entries.length) {
-    const empty = document.createElement('li'); empty.className = 'muted';
-    empty.textContent = 'No provider downloads recorded in this installation.'; $('providers').append(empty);
+    row.querySelector('.provider-health').textContent = display.detail;
+    renderProviderSeries(row.querySelector('.provider-series-content'), providerSeries(name, health));
   }
 }
 function renderLearning(s) {
@@ -172,8 +186,25 @@ function renderLearning(s) {
     card.append(title, value, detail, evidence); $('learning-metrics').append(card);
   }
   $('learning-evidence').replaceChildren();
-  for (const text of [...display.evidence, display.history]) {
+  for (const text of display.evidence) {
     const paragraph = document.createElement('p'); paragraph.textContent = text; $('learning-evidence').append(paragraph);
+  }
+  $('learning-history').textContent = display.history;
+  $('coefficient-context').textContent = display.coefficientHistory;
+  $('model-coefficients-content').replaceChildren();
+  for (const row of display.coefficients) {
+    const card = document.createElement('div'); card.className = 'model-coefficient';
+    const title = document.createElement('h3'); title.textContent = row.title;
+    const value = document.createElement('strong'); value.textContent = row.value;
+    const provenance = document.createElement('p'); provenance.className = 'muted'; provenance.textContent = row.provenance;
+    const detail = document.createElement('p'); detail.className = 'muted'; detail.textContent = row.detail;
+    card.append(title, value, provenance, detail);
+    if (row.evidence) { const evidence = document.createElement('p'); evidence.className = 'muted'; evidence.textContent = row.evidence; card.append(evidence); }
+    $('model-coefficients-content').append(card);
+  }
+  for (const text of display.coefficientEvidence) {
+    const paragraph = document.createElement('p'); paragraph.className = 'muted'; paragraph.textContent = text;
+    $('model-coefficients-content').append(paragraph);
   }
   $('savings').textContent = s.savings?.explanation ?? 'Cycle profit is a model comparison after recovery; electricity bills alone cannot isolate what normal heating would have cost.';
 }
@@ -206,7 +237,18 @@ function showH66Test(result) {
 }
 function renderH66(s) {
   const h66 = s.h66 ?? {};
-  $('h66-status').textContent = h66.connected ? 'H66 connected' : h66.reason ?? 'H66 readings unavailable';
+  $('home-h66-summary').replaceChildren();
+  for (const row of h66HomeSummary(s).filter(row => ['mode', 'room', 'dhw', 'tariff'].includes(row.key)
+    || row.key === 'alarm' && row.available && row.value === 'Alarm active')) {
+    const detail = document.createElement('div'); detail.className = 'detail'; detail.dataset.h66Summary = row.key;
+    const title = document.createElement('span'); title.textContent = row.title;
+    const value = document.createElement('span'); value.textContent = row.value; value.title = row.detail;
+    if (!row.available) value.className = 'muted';
+    if (row.key === 'alarm') value.className = 'stale';
+    detail.append(title, value); $('home-h66-summary').append(detail);
+  }
+  $('h66-status').textContent = h66.connected ? 'H66 connected' : 'Not connected';
+  if (!$('h66-series').childElementCount) renderProviderSeries($('h66-series'), providerSeries('h66'));
   $('h66-context').textContent = h66.restorationPending ? 'Restoring previous H66 settings. Outstanding settings remain pending until fresh device readback confirms their state.' : h66.reason ?? (h66.connected
     ? 'Heat pump readback supplies compressor operation, heating destination and auxiliary output. Electrical power is estimated from configured equipment capacity.'
     : 'Controls become available after the H66 connection and current readbacks are ready.');
@@ -273,6 +315,7 @@ function render(s) {
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C · demo only` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C · ${referenceSource}` : 'Learning normal temperature';
   $('drop').textContent = `${s.settings.comfort.maxDropC} °C${s.decision.comfort?.maxDropApplies === false ? ' · inactive while away' : ''}`;
   renderLearning(s);
+  $('settings-reload-help').textContent = s.settingsReload?.reason ?? 'Restart after editing options/config; this instance cannot reload settings.';
   renderTemporary(s); renderHeatingTests(s);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
@@ -289,7 +332,7 @@ async function events() {
   while ($('events').children.length > 100) $('events').lastChild.remove();
 }
 async function refresh({ forceChart = false } = {}) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy) return;
   const sequence = ++refreshSequence;
   try {
     const s = await api('/api/status');
@@ -298,6 +341,26 @@ async function refresh({ forceChart = false } = {}) {
     await Promise.all([historyChart.refresh(s, { force: forceChart }), events()]);
   } catch (error) { if (sequence === refreshSequence) showError(error); }
 }
+$('settings-reload').addEventListener('click', async () => {
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !lastStatus?.settingsReload?.available) return;
+  settingsReloadBusy = true; ++refreshSequence;
+  updateTemporaryButtons();
+  $('settings-reload').setAttribute('aria-busy', 'true');
+  $('settings-reload-message').classList.remove('form-error');
+  $('settings-reload-message').textContent = 'Updating settings and reconnecting providers…';
+  try {
+    render(await api('/api/settings/reload', {}));
+    $('settings-reload-message').textContent = 'Settings updated.';
+  } catch (error) {
+    $('settings-reload-message').classList.add('form-error');
+    $('settings-reload-message').textContent = error.message;
+  } finally {
+    settingsReloadBusy = false;
+    $('settings-reload').removeAttribute('aria-busy');
+    updateTemporaryButtons();
+  }
+  await refresh({ forceChart: true });
+});
 $('auth').addEventListener('submit', event => { event.preventDefault(); token = $('token').value; sessionStorage.setItem('stmq-token', token); $('token').value = ''; refresh(); });
 for (const [field, id] of Object.entries(temporaryFields)) {
   const changed = () => {
@@ -311,7 +374,7 @@ for (const [field, id] of Object.entries(temporaryFields)) {
   $(id).addEventListener('change', changed);
 }
 async function applyTemporary(values) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy) return;
   temporaryBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();
@@ -343,7 +406,7 @@ $('temporary-form').addEventListener('submit', event => {
 $('home-now').addEventListener('click', () => applyTemporary({ awayUntilLocal: null }));
 $('resume-now').addEventListener('click', () => applyTemporary({ pauseUntilLocal: null }));
 async function testHeating(command) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || !lastStatus?.heatingTests?.available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !lastStatus?.heatingTests?.available) return;
   heatingTestBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();
@@ -370,7 +433,7 @@ $('h66-test-register').addEventListener('change', () => updateH66Selector({ useR
 $('h66-test-form').addEventListener('submit', async event => {
   event.preventDefault();
   const register = $('h66-test-register').value;
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || !h66Control(lastStatus?.h66, register).available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !h66Control(lastStatus?.h66, register).available) return;
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('h66-test-form').setAttribute('aria-busy', 'true');
   $('h66-test-message').classList.remove('form-error');
@@ -388,7 +451,6 @@ $('h66-test-form').addEventListener('submit', async event => {
   }
   await refresh();
 });
-balanceControllerColumns(document.querySelector('.controller-panels'));
 const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
   details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
 $('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());

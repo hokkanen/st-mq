@@ -16,6 +16,14 @@ identify them. Heating enters the slow hydronic state before warming the room.
 That state is an effective temperature memory, not measured floor temperature or
 stored kWh. Effective heating response is not measured capacity or COP.
 
+The dashboard's **Home status & learning** panel separates **Calculated learning
+outcomes**, **Model inputs** and **Model coefficients** into closed sections.
+Current coefficients include their value, unit, explanation and provenance:
+fitted in the accepted model, retained while awaiting evidence, initial estimate
+or fixed building assumption. They use the existing learning state; this display
+adds no database records or historical coefficient reconstruction. Earlier chart
+intervals never receive today's coefficient values.
+
 Observed thermal drivers are outdoor temperature, archived solar radiation,
 space-heating compressor duty and space-heating auxiliary power. Indoor temperature
 is the measured state and prediction target. Requested phase, ROOM boost and comfort
@@ -102,7 +110,7 @@ covered costs and missing-data counts.
 
 ## Historical learning values
 
-The chart and Learning details use the same assessments. Means cover the latest
+The chart and **Calculated learning outcomes** use the same assessments. Means cover the latest
 30 completed cycles with attributable space-heating evidence. A separate overview
 includes all of the latest 100 attempts, including incomplete and active cycles.
 A missing result is unavailable, not zero.

@@ -282,12 +282,12 @@ try {
     await evaluate('scrollTo(0, 0); true');
   }
   // Home controls use Finnish wall times even in a browser running in another zone.
-  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 4);
+  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 2);
   assert.equal(await evaluate("document.getElementById('home-control').textContent.includes('Household')"), false);
   assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
   assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
-  assert.equal(await evaluate("document.getElementById('data-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('h66-provider-details').open"), false);
   assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
   assert.equal(await evaluate("document.querySelector('.controller-column .temporary-panel') !== null && document.querySelector('.controller-column:nth-child(2) .electricity-panel') !== null"), true);
@@ -439,18 +439,18 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('data-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('h66-provider-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-mobile');
-  await evaluate("document.getElementById('data-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('h66-provider-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'four-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'two-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

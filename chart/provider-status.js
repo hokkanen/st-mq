@@ -1,3 +1,5 @@
+import { H66_HISTORY_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
+
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
   openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', smartthings: 'SmartThings', easee: 'Easee' });
 const jobs = Object.freeze({ temperatures: 'SmartThings temperatures', smartthings: 'SmartThings temperatures',
@@ -28,6 +30,81 @@ export const providerName = source => Object.hasOwn(names, source) ? names[sourc
 export const outdoorSourceLabel = source => source === 'husdata-h66' ? 'H66 outdoor sensor'
   : source === 'fmi' ? 'FMI nearby station'
     : source === 'openmeteo' ? 'Open-Meteo model estimate' : providerName(source);
+
+const phaseSignals = prefix => [1, 2, 3].map(phase => `${prefix}_l${phase}`);
+const seriesRow = (signals, label, unit, detail, source) => ({ signals, label, unit, detail, source });
+const selectedSource = (health, allowed, fallback) => {
+  const source = health?.source ?? health?.acquisition?.selected;
+  return allowed.includes(source) ? providerName(source) : fallback;
+};
+
+/** Catalogue text comes from known definitions, never device identifiers or provider response bodies.
+ * Derived chart series are identified here without adding recorder channels or stored values. */
+export function providerSeries(job, health = {}) {
+  if (job === 'h66' || job === 'husdata-h66') {
+    return H66_HISTORY_SIGNALS.map(signal => {
+      const { label, unit, group, role } = SIGNAL_INFO[signal];
+      const detail = signal === 'tariff_reduction_setting'
+        ? 'Configured temperature reduction; this setting does not confirm that tariff control is active.'
+        : signal === 'auxiliary_output' ? 'Reported heater output; rated capacity converts it to the auxiliary power estimate.'
+          : role === 'House input' ? 'Measured temperature, used by the home model when selected and usable.'
+            : ['Settings', 'Hot water'].includes(group) && signal.endsWith('_setting')
+              ? 'Current setting reported by the heat pump.' : `${group}; reported by the heat pump.`;
+      return seriesRow([signal], label, unit, detail, 'H66');
+    });
+  }
+  if (job === 'easee') {
+    return [['property', 'Property', 'Equalizer'], ['ev1', 'Charger', 'charger']].flatMap(([prefix, label, device]) => [
+      seriesRow(phaseSignals(`${prefix}_current`), `${label} phase currents L1–L3`, 'A',
+        `Latest ${device} readings; historical chart currents are interval estimates reconstructed from saved energy.`, 'Easee'),
+      seriesRow(phaseSignals(`${prefix}_voltage`), `${label} phase voltages L1–L3`, 'V',
+        prefix === 'ev1' ? 'Acquired for energy estimation; charger terminal voltages need a verified phase mapping before use.'
+          : 'Acquired for phase allocation and the voltage/current power fallback.', 'Easee'),
+      seriesRow([`${prefix}_active_power`], `${label} active power`, 'kW',
+        'Reported total power used to estimate phase energy over each recorded interval.', 'Easee'),
+      seriesRow([`${prefix}_${prefix === 'ev1' ? 'lifetime' : 'import'}_energy_counter`], `${label} meter counter`, 'kWh',
+        'Cumulative reading for meter checks; it does not correct recorded energy or train the model.', 'Easee'),
+      seriesRow(phaseSignals(`${prefix}_energy`), `${label} phase energy L1–L3`, 'kWh',
+        'Estimated from acquired electrical readings and saved per interval. The chart derives power and interval current estimates from these records.', 'Calculated from Easee'),
+    ]);
+  }
+  if (job === 'market') {
+    const source = selectedSource(health, ['entsoe', 'elering'], 'ENTSO-E / Elering');
+    return [
+      seriesRow(['spot_price'], 'Day-ahead spot price', 'c/kWh',
+        'Published delivery intervals, excluding VAT. ENTSO-E is the primary source; Elering supplies the backup.', source),
+      seriesRow(['all_in_price'], 'All-in electricity price', 'c/kWh',
+        'Calculated using the electricity contract, VAT and transfer rates that apply to each interval.', 'Calculated from contract and market'),
+    ];
+  }
+  if (job === 'weather') {
+    const source = selectedSource(health, ['fmi', 'openmeteo'], 'FMI / Open-Meteo');
+    const solar = health?.acquisition?.solarSource;
+    const solarSource = solar === 'mixed' ? 'FMI + Open-Meteo'
+      : ['fmi', 'openmeteo'].includes(solar) ? providerName(solar) : source;
+    return [
+      seriesRow(['outdoor_forecast'], 'Outdoor temperature forecast', '°C',
+        'FMI forecast with Open-Meteo as backup. Forecast temperatures are distinct from measured outdoor readings.', source),
+      seriesRow(['solar_radiation', 'solar_forecast'], 'Solar radiation forecast and history', 'W/m²',
+        'Forecast radiation; Open-Meteo can fill missing FMI intervals. The historical chart uses earlier forecast publications, not measured sunshine.', solarSource),
+    ];
+  }
+  if (job === 'outdoor') {
+    const source = selectedSource(health, ['husdata-h66', 'fmi', 'openmeteo'], 'H66 / FMI / Open-Meteo');
+    return [seriesRow(['outdoor_temperature'], 'Outdoor temperature', '°C',
+      'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.', source)];
+  }
+  if (['temperatures', 'smartthings', 'mqtt-temperature'].includes(job)) {
+    const source = job === 'mqtt-temperature' ? 'MQTT temperature sensor'
+      : job === 'smartthings' || health?.source === 'smartthings' ? 'SmartThings' : 'Configured temperature adapter';
+    return ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
+      seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
+        ? 'Optional configured sensor, recorded for history.' : signal === 'outdoor_temperature'
+          ? 'Optional configured sensor, recorded for history. Live outdoor control selects H66, FMI or Open-Meteo.'
+          : 'Configured indoor sensor, used by the home model when selected and usable.', source));
+  }
+  return [];
+}
 
 function failureLabel(value) {
   const code = typeof value === 'object' ? value?.code : value;
