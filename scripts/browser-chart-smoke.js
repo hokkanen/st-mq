@@ -255,14 +255,25 @@ try {
   assert.ok(populated.operatingModes.length > 0);
   assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));
   assert.equal(await evaluate("document.getElementById('learning-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('learning-panel-details').open"), false);
   assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
   assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
-  await evaluate("document.getElementById('learning-details').open = true; document.getElementById('learning-details').scrollIntoView(); true");
   mkdirSync('var', { recursive: true });
   const capture = async name => {
     const shot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });
     writeFileSync(`var/${name}.png`, Buffer.from(shot.data, 'base64'));
   };
+  assert.equal(await evaluate("document.querySelectorAll('.controller-column > article').length"), 3);
+  assert.equal(await evaluate("[...document.querySelectorAll('.controller-panels details')].every(fold => !fold.open)"), true);
+  await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'}); true");
+  await capture('home-energy-dashboard-closed-desktop');
+  await evaluate("document.getElementById('theme-toggle').click(); true");
+  await capture('home-energy-dashboard-closed-light');
+  await evaluate("document.getElementById('theme-toggle').click(); document.querySelector('#learning-panel-details > summary').focus(); true");
+  await command('input.performActions', { context, actions: [{ type: 'key', id: 'learning-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
+  assert.equal(await evaluate("document.getElementById('learning-panel-details').open"), true, 'Learning overview opens by keyboard');
+  await evaluate("document.querySelector('#learning-details > summary').click(); document.getElementById('learning-details').scrollIntoView(); true");
+  assert.equal(await evaluate("document.getElementById('learning-details').open && document.getElementById('learning-metrics').getBoundingClientRect().height > 0"), true, 'Nested learning outcomes are visible');
   await capture('home-energy-dark-desktop');
   await evaluate("document.getElementById('theme-toggle').click(); true");
   await capture('home-energy-light-desktop');
@@ -282,7 +293,7 @@ try {
     await evaluate('scrollTo(0, 0); true');
   }
   // Home controls use Finnish wall times even in a browser running in another zone.
-  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 2);
+  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
   assert.equal(await evaluate("document.getElementById('home-control').textContent.includes('Household')"), false);
   assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
@@ -290,22 +301,27 @@ try {
   assert.equal(await evaluate("document.getElementById('h66-provider-details').open"), false);
   assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
-  assert.equal(await evaluate("document.querySelector('.controller-column .temporary-panel') !== null && document.querySelector('.controller-column:nth-child(2) .electricity-panel') !== null"), true);
-  await evaluate(`document.getElementById('away-until').value = '2026-09-09T18:00';
+  assert.equal(await evaluate("document.getElementById('home-control').contains(document.getElementById('temporary-details')) && document.getElementById('providers-controls').contains(document.getElementById('electricity-details'))"), true);
+  await evaluate(`document.getElementById('temporary-details').open = true;
+    document.getElementById('away-until').value = '2026-09-09T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input'));
     document.getElementById('pause-until').value = '2026-09-07T18:00';
     document.getElementById('pause-until').dispatchEvent(new Event('input'));
     document.getElementById('temporary-form').requestSubmit(); true`);
   await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
   assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Paused', 'A pause takes precedence over away mode');
+  assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Paused until/);
   assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z');
   assert.equal(app.engine.status().override.expiresAt, Date.parse('2026-09-07T15:00:00Z'));
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('away-until').value === '2026-09-09T18:00'");
   assert.equal(await evaluate("document.getElementById('pause-until').value"), '2026-09-07T18:00');
+  assert.equal(await evaluate("document.getElementById('temporary-details').open"), false);
+  assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Paused until/, 'Closed controls still show active away and pause deadlines');
   assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), true);
   // Pending edits survive blur and an actual background status poll.
-  await evaluate(`window.__statusPolls = 0; const originalFetch = window.fetch;
+  await evaluate(`document.getElementById('temporary-details').open = true;
+    window.__statusPolls = 0; const originalFetch = window.fetch;
     window.fetch = (...args) => { if (args[0] === '/api/status') window.__statusPolls++; return originalFetch(...args); };
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input'));
@@ -339,13 +355,15 @@ try {
   await until("document.getElementById('events').children.length > 0");
   for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
-    await evaluate("document.getElementById('home-control').scrollIntoView(); true");
+    await evaluate("document.getElementById('temporary-details').open=false; document.getElementById('home-control').scrollIntoView(); true");
     await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Home controls fit desktop and mobile');
+    await capture(`home-energy-dashboard-closed-${viewport.width}`);
+    await evaluate("document.querySelector('#temporary-details > summary').click(); true");
     assert.equal(await evaluate(`(() => {
       const a = document.getElementById('away-until').getBoundingClientRect();
       const b = document.getElementById('pause-until').getBoundingClientRect();
-      return Math.abs(a.width-b.width) < 1 && Math.abs(a.height-b.height) < 1;
+      return a.width > 0 && a.height > 0 && Math.abs(a.width-b.width) < 1 && Math.abs(a.height-b.height) < 1;
     })()`), true, 'Temporary date fields match');
     await capture(`home-energy-controls-${viewport.width}`);
   }
@@ -411,7 +429,9 @@ try {
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
   assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
-  await evaluate(`document.getElementById('heating-test-details').open = true;
+  await evaluate(`document.getElementById('equipment-details').open = true;
+    document.getElementById('heating-test-details').open = true;
+    document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input')); true`);
   for (const command of ['heatoff', 'heaton15', 'heaton60']) {
@@ -439,18 +459,18 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('h66-provider-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-mobile');
-  await evaluate("document.getElementById('h66-provider-details').open = true; document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'two-controller-panels', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

@@ -16,8 +16,11 @@ identify them. Heating enters the slow hydronic state before warming the room.
 That state is an effective temperature memory, not measured floor temperature or
 stored kWh. Effective heating response is not measured capacity or COP.
 
-The dashboard's **Home status & learning** panel separates **Calculated learning
-outcomes**, **Model inputs** and **Model coefficients** into closed sections.
+The dashboard's **House model** card summarizes the learning state and reported
+counts of usable observations and accepted model updates. These counts describe
+current evidence; missing values remain unknown and no completion percentage is
+inferred. **Explore learning** separates **Calculated learning outcomes**, **Model
+inputs** and **Model coefficients** into closed sections.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
 or fixed building assumption. They use the existing learning state; this display
@@ -127,6 +130,11 @@ updates do not rewrite earlier chart points. Model input axes read saved journal
 intervals, preserve nulls and transitions, and do not rerun today's model on history.
 
 ## H66 readbacks and commands
+
+In the dashboard, **Home & heating** summarizes native settings. Its **Equipment
+details** fold contains the **Husdata H66** series and readbacks, **Test heating
+commands** and **Test H66 controls**. A tariff request remains unverified without
+relay readback; stale H66 readings are not shown as current settings.
 
 The integration uses the documented Thermia/Danfoss C60 register profile. For a
 standard DHP-H installation, the reversing valve routes the inline auxiliary

@@ -3,6 +3,7 @@ import { describeProvider, outdoorSourceLabel, providerName, providerSeries } fr
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
+import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 
 const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem('stmq-token') ?? '';
@@ -40,6 +41,7 @@ const reasons = {
   'thermal-state-reconciliation': 'Checking thermal reserve after startup',
   'reconciling-thermal-reserve': 'Allowing time to establish the current heat reserve',
   'learning-normal-comfort-reference': 'Learning the temperature achieved with normal heating',
+  'awaiting-tariff-response-evidence': 'Learning how the heat pump responds to tariff control',
   'timed-normal-override': 'A timed normal-heating override is in effect',
   'missing-or-stale-observations': 'Waiting for fresh temperature observations',
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
@@ -97,7 +99,7 @@ function updateTemporaryButtons() {
   $('resume-now').disabled = busy || !($('pause-until').value || saved.pauseUntilLocal);
   for (const button of heatingTestButtons) button.disabled = busy || !lastStatus?.heatingTests?.available;
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
-  $('settings-reload').disabled = busy || !lastStatus?.settingsReload?.available;
+  $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
 }
 function renderTemporary(s) {
   const saved = temporaryValues(s);
@@ -107,6 +109,8 @@ function renderTemporary(s) {
   $('away-status').textContent = saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}.` : 'At home.';
   $('override-status').textContent = saved.pauseUntilLocal
     ? `Price control paused until ${time(s.override.expiresAt)}.` : 'Price control is not paused.';
+  $('temporary-overview').textContent = [saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}` : 'At home',
+    saved.pauseUntilLocal ? `Paused until ${time(s.override.expiresAt)}` : 'No pause'].join(' · ');
   $('override-scope').textContent = s.input === 'simulated'
     ? 'These changes apply to the simulation only.'
     : s.liveWrites ? 'Away and pause update the active heating plan. Pause restores normal heating for the selected time.'
@@ -147,6 +151,32 @@ function renderProviders(s) {
     : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Indoor measurements, electricity prices and weather forecasts are updated independently. Gaps remain visible in the chart.';
   const entries = Object.entries(s.providers ?? {}).filter(([name,health])=>
     health && typeof health === 'object' && !(['temperatures','smartthings'].includes(name)&&['not-configured','disabled'].includes(health.status)));
+  $('provider-overview').replaceChildren();
+  let attentionCount = 0, backupCount = 0;
+  for (const [name, health] of entries) {
+    const display = describeProvider(name, health, { now: s.now, formatTime: time });
+    if (display.attention) attentionCount++;
+    if (health.status === 'fallback') backupCount++;
+    const item = document.createElement('div'); item.className = 'source-overview';
+    item.dataset.state = display.attention ? 'attention' : health.status === 'fallback' ? 'backup'
+      : display.state === 'Available' ? 'available' : 'pending';
+    const title = document.createElement('span'); title.textContent = ({ market: 'Electricity prices', weather: 'Weather forecast',
+      outdoor: 'Outdoor temperature', easee: 'Meter & charger', temperatures: 'Temperature sensors', smartthings: 'Temperature sensors' })[name] ?? 'Data source';
+    const state = document.createElement('strong'); state.textContent = display.state;
+    const source = document.createElement('small'); source.textContent = providerName(health.source ?? health.acquisition?.selected)
+      ?? (name === 'easee' ? 'Easee' : display.title);
+    item.append(title, state, source); $('provider-overview').append(item);
+  }
+  $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
+    : backupCount ? `${backupCount} using backup` : entries.length ? `${entries.length} data feeds`
+      : s.input === 'simulated' ? 'Simulation' : 'No live sources';
+  $('provider-overview-state').classList.toggle('stale', attentionCount > 0 || backupCount > 0);
+  if (!entries.length) {
+    const note = document.createElement('p'); note.className = 'muted';
+    note.textContent = s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
+      : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : 'Waiting for provider status.';
+    $('provider-overview').append(note);
+  }
   const retained = new Set(entries.map(([name]) => name));
   for (const row of [...$('providers').children]) if (!retained.has(row.dataset.provider)) row.remove();
   for (const [name, health] of entries) {
@@ -172,7 +202,15 @@ function renderProviders(s) {
 }
 function renderLearning(s) {
   const display = learningDisplay(s.learning);
-  $('learning-title').textContent = display.title;
+  const overview = learningOverview(s.learning);
+  $('learning-title').textContent = overview.title;
+  $('learning-overview').textContent = overview.summary;
+  $('learning-progress').replaceChildren();
+  for (const [value, label] of [[overview.usableSamples, 'usable observations'], [overview.acceptedFits, 'accepted updates']]) {
+    if (value === null) continue;
+    const item = document.createElement('p'), count = document.createElement('strong'); count.textContent = decimal(value);
+    item.append(count, document.createTextNode(label)); $('learning-progress').append(item);
+  }
   $('learning-detail').textContent = display.message;
   $('learning-process').textContent = display.process;
   renderModelInputs($('model-inputs-content'), display.inputs);
@@ -237,16 +275,25 @@ function showH66Test(result) {
 }
 function renderH66(s) {
   const h66 = s.h66 ?? {};
+  const summary = h66HomeSummary(s);
   $('home-h66-summary').replaceChildren();
-  for (const row of h66HomeSummary(s).filter(row => ['mode', 'room', 'dhw', 'tariff'].includes(row.key)
-    || row.key === 'alarm' && row.available && row.value === 'Alarm active')) {
-    const detail = document.createElement('div'); detail.className = 'detail'; detail.dataset.h66Summary = row.key;
-    const title = document.createElement('span'); title.textContent = row.title;
-    const value = document.createElement('span'); value.textContent = row.value; value.title = row.detail;
+  for (const key of ['mode', 'dhw', 'room']) {
+    const row = summary.find(row => row.key === key);
+    const detail = document.createElement('div'); detail.className = 'equipment-value'; detail.dataset.h66Summary = row.key;
+    const title = document.createElement('span'); title.textContent = ({ mode: 'Operating mode', dhw: 'Hot water target', room: 'ROOM setting' })[key];
+    const value = document.createElement('strong'); value.textContent = row.available ? row.value : 'Unavailable';
+    value.title = row.available ? row.detail : row.value;
     if (!row.available) value.className = 'muted';
-    if (row.key === 'alarm') value.className = 'stale';
     detail.append(title, value); $('home-h66-summary').append(detail);
   }
+  const alarm = summary.find(row => row.key === 'alarm');
+  if (alarm?.available && alarm.value === 'Alarm active') {
+    const notice = document.createElement('p'); notice.className = 'equipment-alarm'; notice.textContent = 'Heat-pump alarm active';
+    $('home-h66-summary').append(notice);
+  }
+  const tariff = summary.find(row => row.key === 'tariff');
+  $('home-tariff-status').textContent = tariff.value; $('home-tariff-status').title = tariff.detail;
+  $('home-tariff-status').dataset.h66Summary = 'tariff';
   $('h66-status').textContent = h66.connected ? 'H66 connected' : 'Not connected';
   if (!$('h66-series').childElementCount) renderProviderSeries($('h66-series'), providerSeries('h66'));
   $('h66-context').textContent = h66.restorationPending ? 'Restoring previous H66 settings. Outstanding settings remain pending until fresh device readback confirms their state.' : h66.reason ?? (h66.connected
@@ -309,13 +356,25 @@ function render(s) {
   if (s.decision.phase === 'recovery') $('reasons').textContent += `${$('reasons').textContent ? '. ' : ''}${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.`;
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
+  $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
   $('dhwr').textContent = s.decision.dhwr?.requested ? '10-minute pulse requested' : 'No pulse requested';
   const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
-  $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C · demo only` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C · ${referenceSource}` : 'Learning normal temperature';
-  $('drop').textContent = `${s.settings.comfort.maxDropC} °C${s.decision.comfort?.maxDropApplies === false ? ' · inactive while away' : ''}`;
+  $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
+  $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
+  $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : Number.isFinite(reference) ? `${referenceSource === 'learned' ? 'Learned' : 'Configured'} normal temperature` : 'Normal temperature not established';
+  $('drop').textContent = `${s.settings.comfort.maxDropC} °C`;
+  $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   renderLearning(s);
-  $('settings-reload-help').textContent = s.settingsReload?.reason ?? 'Restart after editing options/config; this instance cannot reload settings.';
+  const scope = settingsReloadScope(s);
+  $('settings-reload-help').textContent = scope.message;
+  $('settings-reload-scope').replaceChildren();
+  for (const [title, items] of [['Reloads without restart', scope.reloadable], ['Requires restart', scope.restartRequired]]) {
+    const group = document.createElement('div'), heading = document.createElement('h3'), list = document.createElement('ul');
+    heading.textContent = title;
+    for (const text of items) { const item = document.createElement('li'); item.textContent = text; list.append(item); }
+    group.append(heading, list); $('settings-reload-scope').append(group);
+  }
   renderTemporary(s); renderHeatingTests(s);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
@@ -342,7 +401,7 @@ async function refresh({ forceChart = false } = {}) {
   } catch (error) { if (sequence === refreshSequence) showError(error); }
 }
 $('settings-reload').addEventListener('click', async () => {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !lastStatus?.settingsReload?.available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !settingsReloadScope(lastStatus).available) return;
   settingsReloadBusy = true; ++refreshSequence;
   updateTemporaryButtons();
   $('settings-reload').setAttribute('aria-busy', 'true');

@@ -69,7 +69,7 @@ restarts, expire at their deadlines and can be cancelled independently.
 Live active mode applies the plan; monitoring and shadow show it without automatic
 equipment commands.
 
-Under **Providers & controls → Controls & settings**, the **Test heating commands**
+Under **Home & heating → Equipment**, the **Test heating commands**
 section starts closed. With
 `providers` or `mqtt` input and an existing `mqtt.address` configuration, its
 `heatoff`, `heaton15` and `heaton60` buttons send the selected real command to
@@ -85,7 +85,7 @@ DNS, login or TLS problems and report that no command was sent. If a connection
 fails after publishing begins, check device state before retrying because delivery
 is unconfirmed.
 
-**Test H66 settings** offers timed ROOM (`0203`), DHW start (`0212`), DHW stop
+**Test H66 controls** offers timed ROOM (`0203`), DHW start (`0212`), DHW stop
 (`0208`) and operating-mode (`2201`) tests when the connection and fresh writable
 readbacks are ready. The current baseline is saved and restored after expiry.
 The UI distinguishes a sent request from device readback and a pending restore.
@@ -181,21 +181,26 @@ prices, forecasts and equipment-state shading keep their recorded time bounds.
 Auxiliary output has a five-minute freshness bound. Learning histories keep the
 estimate assessed at the time and never rewrite old points using a later model.
 
-Below the chart, **Home status & learning** shows the heating decision, house-model
-status, price control, comfort reference, occupied drop limit and recirculation
-request. It also summarizes the heat-pump mode, ROOM setting and DHW target range.
-Tariff requests remain explicitly unverified when relay readback is unavailable;
-stale H66 readings are not presented as current settings. Three closed learning
-sections separate the **four calculated outcomes**, **model inputs** and **current
-model coefficients**. Coefficients show values, units and fitted/fixed provenance
-from the existing learning state, without additional storage or reconstructed
-historical coefficient traces. See the detailed
+Below the chart, **Home & heating** shows the heating decision, price control,
+comfort reference, occupied drop limit and recirculation request, together with
+the heat-pump mode and DHW target range. **Away & pause** contains temporary
+controls; **Equipment** contains H66 series, current readbacks and manual
+test controls. Tariff requests remain explicitly unverified when relay readback
+is unavailable; stale H66 readings are not presented as current settings.
+
+**House model** gives a short learning status and the reported counts of usable
+observations and accepted model updates. Missing counts remain unknown.
+**Explore learning** opens separate sections for the **four calculated outcomes**,
+**model inputs** and **current model coefficients**. Coefficients show values,
+units and fitted/fixed provenance from the existing learning state, without
+additional storage or reconstructed historical coefficient traces. See the detailed
 [learning and control explanation](docs/learning-and-control.md).
 
-**Providers & controls** keeps provider status visible, with a fold for each
-provider's data series and details. **Controls & settings**, **Temporary controls ·
-Away & pause** and **Electricity rates** follow. The two panels share a height when
-closed on wide screens and stack on narrow screens; the event log follows them.
+**Data & settings** shows a compact provider-health overview. **Connections &
+settings** opens each provider's data series and details, **Reload configuration**
+and **Electricity rates**. On wide screens, the home card sits beside the stacked
+model and data cards, with both columns aligned when closed. The three cards stack
+on narrow screens; the event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,
 freshness and storage growth independently of model importance. Its **Energy audit**
 compares occasional meter counters with integrated estimates without correcting
@@ -382,11 +387,16 @@ a rejected key. The suite uses no MQTT and sends no equipment commands.
 ## Permanent configuration and prices
 
 Edit add-on options in Home Assistant, or `data/options.json` on Linux, then choose
-**Providers & controls → Controls & settings → Update settings**. The button
-re-reads the configured options/config source, applies supported settings and
-reconnects providers. Input mode, listener address/port, web access token and
-storage-path changes require a restart; if any of those changed, the update is
-rejected without applying other settings. Finish ongoing equipment tests first.
+**Data & settings → Connections & settings → Reload configuration → Reload
+supported settings**. The **Reloads without restart** list covers price-control
+mode, comfort limits, learning settings, electricity rates, recording interval
+and storage budget. With live input it also includes provider connections,
+location, sensor topics, polling intervals, H66 device selection and its
+verification file. The button re-reads the saved options file and reconnects
+providers. The separate **Requires restart** list covers input mode, web
+address/port/access token, data and database locations, and environment variables.
+Changed input, web-access or storage settings reject the reload without applying
+other settings. Finish ongoing equipment tests and setting changes first.
 The update restores owned equipment settings before reconnecting; if restoration
 is pending, retry after the equipment becomes available. An in-progress automatic
 heating cycle ends during the update; Away/Pause deadlines and learning history

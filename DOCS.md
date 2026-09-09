@@ -34,9 +34,10 @@ for the algorithm, native-setting restoration and equipment testing limits.
    documented settings. Native baselines are read before each cycle. Optional
    `controller.h66_verification_file` overrides documented engineering-unit scaling.
    A missing gateway still permits conservative tariff reduction, without ROOM
-   preheat or claimed compressor-only protection. **Home status & learning** shows
-   the current native settings and model evidence. The **Husdata H66** provider
-   fold in **Providers & controls** lists its series and current readbacks.
+   preheat or claimed compressor-only protection. **Home & heating** summarizes
+   current native settings; its **Equipment → Husdata H66** fold lists
+   series and current readbacks. **House model → Explore learning** contains
+   model evidence.
 
    Existing coordinates and market country enable FMI, Open-Meteo and Elering
    without new keys. ENTSO-E is primary for prices and Elering is the backup.
@@ -55,17 +56,23 @@ for the algorithm, native-setting restoration and equipment testing limits.
    selected. All four amounts and the tariff are configurable.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
-   change them in options, then use **Controls & settings → Update settings**.
+   change them in options, then use **Data & settings → Connections & settings →
+   Reload configuration → Reload supported settings**.
    Old browser-saved values cannot override
    these settings. `temp_to_hours` is no longer used; remove it from saved add-on
    options if an upgrade still displays the old key.
 
-**Update settings** re-reads options/config and reconnects providers. Changes to
-the input mode, listener address/port, web access token or storage paths require a
-restart; the button rejects the entire update if one of these changed. Wait for
-ongoing heating operations and native setting tests to finish. Existing equipment
-overrides are restored before reconnecting; pending restoration blocks the update
-until equipment is available. An in-progress automatic heating cycle ends, while
+**Reload supported settings** re-reads the saved options file and reconnects
+providers. **Reloads without restart** lists price-control mode, comfort limits,
+learning settings, electricity rates, recording interval and storage budget.
+With live input, provider connections, location, sensor topics, polling intervals,
+H66 device selection and its verification file are included. **Requires restart**
+lists input mode, web address/port/access token, data and database locations, and
+environment variables. Changed input, web-access or storage settings reject the
+entire reload. Wait for ongoing heating operations and native setting tests to
+finish. Existing equipment overrides are restored before reconnecting; pending
+restoration blocks the update until equipment is available. An in-progress
+automatic heating cycle ends, while
 Away/Pause deadlines and learning history remain. Startup environment overrides
 still apply. Edit Supervisor-owned options through the add-on
 configuration, not inside the running container.
@@ -141,14 +148,17 @@ Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.
 
 A blank network-access token prevents startup with a clear configuration error.
-Home Assistant options own permanent settings. Beneath the chart, **Home status &
-learning** separates the four learning outcomes, model inputs and current
-coefficients into closed sections. Coefficients come from existing learning state;
-the UI adds no coefficient storage and does not reconstruct historical values.
-**Providers & controls** contains provider series/details, settings and tests,
-temporary controls and electricity rates. The **Away until** and **Pause
-until** controls use Finnish time even when the remote browser is in another
-timezone. Apply changes saves them together; **Home now** and **Resume now** cancel
+Home Assistant options own permanent settings. Beneath the chart, **Home &
+heating** summarizes the current decision and equipment settings, with **Away &
+pause** and **Equipment** for temporary controls, readbacks and manual
+tests. **House model** summarizes learning evidence; **Explore learning** separates
+the four learning outcomes, model inputs and current coefficients. Coefficients
+come from existing learning state; the UI adds no coefficient storage and does
+not reconstruct historical values. **Data & settings** summarizes provider health;
+its **Connections & settings** fold contains provider series/details, configuration
+reload and electricity rates. The **Away until** and **Pause until** controls use
+Finnish time even when the remote browser is in another timezone. Apply changes
+saves them together; **Home now** and **Resume now** cancel
 them independently. They persist in the database and expire at their deadlines,
 including after a restart. Nonexistent or repeated clock-change times require
 another picker time; the API also accepts an explicit UTC offset.
