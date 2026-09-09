@@ -56,7 +56,7 @@ is the measured state and prediction target. Requested phase, ROOM boost and com
 target describe control context; they do not create a direct heat credit. The eight
 **Model inputs · Calculated** axes include the indoor endpoint and these seven
 input/context values exactly as saved in the learning journal.
-Manual **Recorded firewood additions** markers and calculated **Fireplace release input** provide
+**Manually recorded firewood additions** markers and calculated **Fireplace release input** provide
 two additional input views from the corrected source-event history. Fireplace
 response evidence appears alongside the coefficient. Daily estimated firewood cost
 and electricity savings are available under **Learning outcomes · Calculated**;
@@ -224,17 +224,26 @@ not rewrite the native hygiene schedule or claim a software-verified hygiene res
 
 ## Reading the power chart
 
-**Power** shows the property estimate as a line, auxiliary power as a red fill
-and charger power as a fill drawn over it. Both fills start at zero: they overlap
-and are not stacked. They must not be added to the property line, which already
-includes household loads. Auxiliary power expires after five minutes without an
-updated observation, rather than extending indefinitely.
+**Power** shows the property estimate as a line, auxiliary power as the bottom red
+fill and charger power stacked above it. The combined height is auxiliary plus
+charger power; tooltips still show each component's own power. These components
+must not be added to the property line, which already includes household loads.
+The fills align their observation intervals and retain missing-data gaps.
+If no auxiliary and charger readings overlap, charging remains visible from zero.
+For a partially covered stack, hiding auxiliary shows the original charger history
+through periods where the auxiliary baseline is unknown.
+Auxiliary power expires after five minutes without an updated observation,
+rather than extending indefinitely.
 
 Yellow background means the compressor was reported running toward the house;
 blue means it was running toward DHW. Missing/stale routing leaves a gap. Tariff reduction
 is crosshatched and describes a reduction request, not proof of a stopped
-compressor. Brown DHWR shows ten-minute requests and starts hidden. Other series
-start visible, while explicit saved legend choices remain in effect.
+compressor. **DHWR** shows ten-minute requests in its own strip below the chart,
+alongside **Pump mode** and **Fireplace**. These strips start visible. **Fireplace**
+uses the same recorded additions and burn duration as the model, currently two hours;
+overlapping periods merge, and corrections update the strip. This duration marks
+the burn timescale, while masonry heat release continues afterward. Explicit saved
+legend choices remain in effect.
 
 Solar history is a forecast archived at its valid time. Its dashed continuation
 is the currently available future forecast. Neither is a solar observation.

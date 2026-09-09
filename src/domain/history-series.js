@@ -55,7 +55,7 @@ export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_controller_phase', 'Requested control phase input', 'state', 'learning', 'The controller phase saved with the interval: normal, preheat, tariff reduction or recovery. A reduction request does not prove that the compressor stopped.'],
   ['model_room_boost', 'ROOM boost input', '°C', 'integral', 'The temporary room-setting increase saved with the learning interval. It describes requested control, not measured indoor warming.'],
   ['model_target_temperature', 'Reference temperature input', '°C', 'indoor', 'The comfort reference saved when the interval was processed. Later changes do not rewrite the earlier reference.'],
-  ['firewood_load', 'Recorded firewood additions', 'kg', 'firewood', 'Manually reported additions of dry firewood, shown as events; additions at exactly the same time are grouped. Mistaken entries are excluded after correction; each point is fuel added, not delivered heat.', 'Recorded manual'],
+  ['firewood_load', 'Manually recorded firewood additions', 'kg', 'firewood', 'Manually reported additions of dry firewood, shown as events; additions at exactly the same time are grouped. Mistaken entries are excluded after correction; each point is fuel added, not delivered heat.', 'Recorded manual'],
   ['model_fireplace_release', 'Fireplace release input', 'kg/h', 'firewood', 'The delayed response to recorded firewood, expressed as fuel-equivalent kilograms per hour. This is a calculated input to the thermal model, not a measured burn rate or heat output.'],
 ].map(([signal, label, unit, color, detail, kind = 'Calculated']) => [signal, { label, unit, color, detail, kind, group: 'Model inputs' }])));
 

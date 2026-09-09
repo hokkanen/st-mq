@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel } from '../chart/history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries } from '../chart/history-model.js';
 import { MODEL_COEFFICIENT_INFO, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { Envelope } from '../src/app/chart-data.js';
 
 test('calendar controls use Finnish dates across UTC midnight, leap days and both clock changes', () => {
   assert.equal(finnishDate(Date.parse('2026-09-07T21:30:00Z')), '2026-09-08');
@@ -25,7 +26,9 @@ test('left axis groups remain exclusive while all shared temperatures and prices
     assert.equal(datasets.find(dataset => dataset.key === 'all_in_price').hidden, false);
     assert.equal(datasets.find(dataset => dataset.key === 'spot_price').hidden, false);
   }
-  assert.equal(visible('dhwr'), false);
+  assert.equal(visible('dhwr'), true);
+  assert.equal(visible('fireplace'), true);
+  assert.equal(visible('dhwr', { dhwr: false }), false);
   assert.equal(visible('heatOff'), true);
   assert.equal(visible('compressorSpace'), true);
   assert.equal(visible('compressorDhw'), true);
@@ -56,9 +59,10 @@ test('charger fills and shared outdoor visibility retain exact missing and negat
   const preferences = { outdoor_temperature: false, spot_price: true };
   const power = historyDatasets(series, 'power', preferences);
   assert.equal(power.find(dataset => dataset.key === 'charger_power').fill, 'origin');
+  assert.equal(power.find(dataset => dataset.key === 'charger_power').powerStacked, false);
   assert.equal(power.find(dataset => dataset.key === 'auxiliary_power').fill, 'origin');
-  assert(power.find(dataset => dataset.key === 'auxiliary_power').order > power.find(dataset => dataset.key === 'charger_power').order, 'Chart.js draws auxiliary first, then overlays charger');
-  assert(power.every(dataset => !dataset.stack), 'Power fills use independent zero baselines');
+  assert(power.find(dataset => dataset.key === 'auxiliary_power').order > power.find(dataset => dataset.key === 'charger_power').order, 'Chart.js draws auxiliary before the cumulative charger fill');
+  assert(power.every(dataset => !dataset.stack), 'Explicit cumulative coordinates keep unrelated totals and right-axis readings out of the stack');
   assert.equal(power.find(dataset => dataset.key === 'charger_power').stepped, true);
   assert.equal(power.find(dataset => dataset.key === 'property_power').stepped, true);
   assert.equal(power.find(dataset => dataset.key === 'property_power').fill, false);
@@ -70,6 +74,113 @@ test('charger fills and shared outdoor visibility retain exact missing and negat
   assert.equal(historyDatasets(series, 'integral', preferences)[0].data[0].y, -300);
   assert.deepEqual(power.find(dataset => dataset.key === 'all_in_price').data, series.all_in_price);
   assert.ok(power.every(dataset => !dataset.spanGaps && dataset.tension === 0));
+});
+
+test('power fills align independent step times and show component readings above auxiliary', () => {
+  const series = { auxiliary_power: [{ x: 0, y: 2 }, { x: 10, y: 3 }, { x: 20, y: 3 }],
+    charger_power: [{ x: 0, y: 5, source: 'simulation' }, { x: 5, y: 4, source: 'simulation' }, { x: 20, y: 4, source: 'simulation' }],
+    property_power: [{ x: 0, y: 12 }, { x: 20, y: 12 }] };
+  const before = structuredClone(series);
+  const datasets = historyDatasets(series);
+  const auxiliary = datasets.find(dataset => dataset.key === 'auxiliary_power');
+  const charger = datasets.find(dataset => dataset.key === 'charger_power');
+  assert.equal(charger.fill, datasets.indexOf(auxiliary));
+  assert.equal(charger.powerStacked, true);
+  assert.deepEqual(auxiliary.data.map(({ x, y }) => [x, y]), [[0, 2], [5, 2], [10, 3], [20, 3]]);
+  assert.deepEqual(charger.data.map(({ x, y, componentValue }) => [x, y, componentValue]), [[0, 7, 5], [5, 6, 4], [10, 7, 4], [20, 7, 4]]);
+  assert.equal(charger.data[2].source, 'simulation');
+  assert.equal(datasets.find(dataset => dataset.key === 'property_power').data, series.property_power);
+  assert.equal(datasets.find(dataset => dataset.key === 'property_power').fill, false);
+  assert.deepEqual(series, before, 'Stack coordinates never overwrite source power observations');
+  const onlyCharger = historyDatasets(series, 'power', { auxiliary_power: false });
+  assert.equal(onlyCharger.find(dataset => dataset.key === 'charger_power').data, series.charger_power);
+  assert.equal(onlyCharger.find(dataset => dataset.key === 'charger_power').fill, 'origin');
+  assert.equal(onlyCharger.find(dataset => dataset.key === 'charger_power').powerStacked, false);
+  assert.equal(onlyCharger.find(dataset => dataset.key === 'auxiliary_power').hidden, true);
+  const onlyAuxiliary = historyDatasets(series, 'power', { charger_power: false });
+  assert.equal(onlyAuxiliary.find(dataset => dataset.key === 'auxiliary_power').data, series.auxiliary_power);
+  assert.equal(onlyAuxiliary.find(dataset => dataset.key === 'auxiliary_power').fill, 'origin');
+  assert.equal(onlyAuxiliary.find(dataset => dataset.key === 'charger_power').hidden, true);
+});
+
+test('power histories without shared auxiliary observations keep both original components visible', () => {
+  const charger = [{ x: 0, y: 5, source: 'simulation' }, { x: 10, y: 5, source: 'simulation' }];
+  for (const auxiliary of [[], [{ x: 30, y: 2 }]]) {
+    const datasets = historyDatasets({ auxiliary_power: auxiliary, charger_power: charger });
+    const chargerDataset = datasets.find(dataset => dataset.key === 'charger_power');
+    const auxiliaryDataset = datasets.find(dataset => dataset.key === 'auxiliary_power');
+    assert.equal(chargerDataset.powerStacked, false, 'No shared observation can support a cumulative position');
+    assert.equal(chargerDataset.fill, 'origin');
+    assert.equal(chargerDataset.data, charger, 'Known charger history remains visible at its own recorded power');
+    assert.equal(chargerDataset.hidden, false);
+    assert.equal(auxiliaryDataset.data, auxiliary);
+    assert.equal(auxiliaryDataset.fill, 'origin');
+    assert.equal(auxiliaryDataset.hidden, false);
+  }
+});
+
+test('stack alignment retains duplicate interval edges and their original tooltip provenance', () => {
+  const auxiliary = [{ x: 0, y: 2 }, { x: 10, y: 3 }, { x: 20, y: 3 }];
+  const charger = [{ x: 0, y: 5, intervalStart: 0, intervalEnd: 10 }, { x: 10, y: 5, intervalStart: 0, intervalEnd: 10 },
+    { x: 10, y: 4, intervalStart: 10, intervalEnd: 20 }, { x: 20, y: 4, intervalStart: 10, intervalEnd: 20 }];
+  const aligned = stackedPowerSeries(auxiliary, charger);
+  assert.deepEqual(aligned.auxiliary.map(({ x, y }) => [x, y]), [[0, 2], [10, 2], [10, 3], [20, 3]]);
+  assert.deepEqual(aligned.charger.map(({ x, y, componentValue }) => [x, y, componentValue]), [[0, 7, 5], [10, 7, 5], [10, 7, 4], [20, 7, 4]]);
+  assert.deepEqual(aligned.charger.map(({ intervalStart, intervalEnd }) => [intervalStart, intervalEnd]), [[0, 10], [0, 10], [10, 20], [10, 20]]);
+  const withBreak = stackedPowerSeries(auxiliary, [charger[0], { x: 10, y: 5 }, { x: 10, y: null }, { x: 10, y: 4 }, charger.at(-1)]);
+  assert.deepEqual(withBreak.charger.filter(point => point.x === 10).map(point => point.y), [7, null, 7], 'A same-timestamp break must survive');
+});
+
+test('stack alignment never invents a baseline outside auxiliary coverage or across either data gap', () => {
+  const auxiliary = [{ x: 5, y: 2 }, { x: 10, y: 2 }, { x: 11, y: null }, { x: 20, y: 3 }, { x: 30, y: 3 }];
+  const charger = [{ x: 0, y: 5 }, { x: 7, y: 5 }, { x: 15, y: 4 }, { x: 25, y: 4 }, { x: 40, y: 4 }];
+  const aligned = stackedPowerSeries(auxiliary, charger);
+  const at = x => aligned.charger.find(point => point.x === x);
+  assert.equal(at(0).y, null);
+  assert.equal(at(7).y, 7);
+  assert.equal(at(11).y, null);
+  assert.equal(at(15).y, null);
+  assert.equal(at(25).y, 7);
+  assert.equal(at(40).y, null);
+  assert.equal(at(15).componentValue, 4, 'Unavailable stacked position does not reinterpret the recorded charger reading');
+  const gap = stackedPowerSeries([{ x: 0, y: 2 }, { x: 10, y: 2 }, { x: 20, y: 2 }], [{ x: 0, y: 5 }, { x: 15, y: null }, { x: 20, y: 4 }]);
+  assert.equal(gap.charger.find(point => point.x === 10).y, null, 'Adding an auxiliary boundary must not bridge a charger gap');
+  assert(stackedPowerSeries([], charger).charger.every(point => point.y === null));
+});
+
+test('stack alignment preserves continuous energy coverage after the API envelope reduces interval points', () => {
+  const envelope = new Envelope(0, 100, 1);
+  for (const [index, y] of [5, 5, 1, 1, 9, 9, 4, 4, 4, 4].entries()) {
+    const start = index * 10, end = start + 10;
+    const detail = { intervalStart: start, intervalEnd: end, fromEnergy: true };
+    envelope.add(start, y, detail); envelope.add(end - 1, y, detail);
+  }
+  envelope.add(100, null);
+  const reduced = envelope.values();
+  assert(reduced.length < 21, 'Exercise actual API point reduction');
+  const auxiliary = [0, 10, 30, 50, 80, 100].map(x => ({ x, y: 2 }));
+  const aligned = stackedPowerSeries(auxiliary, reduced);
+  assert(aligned.charger.filter(point => point.x < 100).every(point => Number.isFinite(point.y)), 'Retained interval metadata must not fabricate gaps between continuous display segments');
+  assert.deepEqual(aligned.charger.filter(point => point.y === null).map(point => point.x), [100]);
+  assert.equal(aligned.charger.find(point => point.x === 10).intervalEnd, 10, 'Tooltip provenance survives even where intervening intervals were reduced');
+  assert.equal(aligned.charger.find(point => point.x === 10).componentValue, 5);
+});
+
+test('stacked energy gaps follow explicit missing markers while held tails retain their status', () => {
+  const auxiliary = [{ x: 0, y: 2 }, { x: 15, y: 2 }, { x: 30, y: 2 }];
+  const interval = { x: 0, y: 5, intervalStart: 0, intervalEnd: 10, fromEnergy: true };
+  const aligned = stackedPowerSeries(auxiliary, [interval, { ...interval, x: 9 }, { x: 10, y: null }, { x: 19, y: null },
+    { x: 20, y: 4, intervalStart: 20, intervalEnd: 30 }, { x: 29, y: 4, intervalStart: 20, intervalEnd: 30 }, { x: 30, y: null }]);
+  assert.equal(aligned.charger.find(point => point.x === 10).y, null);
+  assert.equal(aligned.charger.find(point => point.x === 15).y, null);
+  assert.equal(aligned.charger.find(point => point.x === 30).y, null);
+  const held = stackedPowerSeries(auxiliary, [interval, { ...interval, x: 30, carriedForward: true, observedAt: 0 }]);
+  const midpoint = held.charger.find(point => point.x === 15);
+  assert.equal(midpoint.y, 7);
+  assert.equal(midpoint.componentValue, 5);
+  assert.equal(midpoint.carriedForward, true);
+  assert.equal(midpoint.observedAt, 0);
+  assert.equal(midpoint.intervalEnd, 10, 'Held display tails do not rewrite the measurement interval');
 });
 
 test('chart queries preserve selected dates without expanding to forecast horizon', () => {

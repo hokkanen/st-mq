@@ -1,6 +1,6 @@
 import moment from 'moment-timezone';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
-import { fireplaceRate, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
+import { fireplaceRate, FIREPLACE_HORIZON_MS, FIREPLACE_RESPONSE } from '../domain/fireplace.js';
 
 const WINDOW = 15 * 60_000;
 export const FIREPLACE_INPUT_NAMES = ['firewood_load', 'model_fireplace_release'];
@@ -10,14 +10,19 @@ const sourceLabel = input => input === 'simulated' ? 'Simulated fireplace record
 /** Manual fuel is retained once. Plot its current corrected interpretation in
  * memory, including tails from loads before the selected dates. No telemetry or
  * learner snapshots are manufactured for these derived inputs. */
-export function addFireplaceInputs({ store, input, range, now, envelopes }) {
+export function addFireplaceInputs({ store, input, range, now, envelopes, shading }) {
   const end = Math.min(now, range.to), source = input === 'offline' ? 'history' : input;
   const context = fireplaceLearningContext(store, source, undefined, now);
   const events = context.fireplaceEvents.filter(event => event.at <= end && event.at + FIREPLACE_HORIZON_MS > range.from)
     .sort((a, b) => a.at - b.at || a.id - b.id);
   const metadata = { inputSource: sourceLabel(input), fireplaceRevision: context.fireplaceRevision };
   const stats = { records: 0, releaseIntervals: 0, revision: context.fireplaceRevision,
+    burnHours: FIREPLACE_RESPONSE.burnHours, responseVersion: FIREPLACE_RESPONSE.version,
     basis: 'corrected-manual-fireplace-history', loggingStartedAt: context.fireplaceStartedAt };
+  // The strip uses the model's burn timescale and corrected ignition timestamps.
+  // Heat release continues beyond this window; this is not the five-day tail.
+  for (const event of events) shading?.fireplace?.add(event.at,
+    Math.min(end, event.at + FIREPLACE_RESPONSE.burnHours * 3_600_000));
   if (envelopes.firewood_load) {
     const loads = new Map();
     for (const event of events) if (event.at >= range.from && event.at <= end) {

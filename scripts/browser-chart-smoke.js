@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
+import { addFireplace } from '../src/app/fireplace.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -45,6 +46,8 @@ try {
   } finally { fixtureStore.close(); }
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
+  addFireplace(app.store, 'simulated', { kg: 8, requestId: 'synthetic-browser-fire' }, now - 3 * 3600000);
+  addFireplace(app.store, 'simulated', { kg: 4, requestId: 'synthetic-browser-topup' }, now - 2 * 3600000);
   app.store.snapshot({kind:'weather',source:'browser-fixture',fetchedAt:now-4*86400000,
     payload:{forecast:[{start:now-4*86400000,end:now-4*86400000+3600000,outdoorC:5,solarRadiationWm2:100}]}});
   app.store.appendLearningJournal('browser-fixture',{kind:'context',at:now-86400000,
@@ -92,6 +95,15 @@ try {
       return ['top', 'height', 'width'].every(key => Math.abs(a[key] - b[key]) < 1)
         && getComputedStyle(start).fontSize === getComputedStyle(end).fontSize;
     })()`), true, 'Date fields have matching widths, heights, alignment and text size');
+  };
+  const checkActivityTracks = async () => {
+    assert.equal(await evaluate(`(() => {
+      const canvas = document.getElementById('history').getBoundingClientRect();
+      const rows = ['operating-modes', 'dhwr-history', 'fireplace-history'].map(id => document.getElementById(id));
+      const tracks = rows.map(row => row.querySelector('.mode-track').getBoundingClientRect());
+      return rows.every(row => !row.hidden) && tracks.every(track => track.width > 0 && track.top >= canvas.bottom
+        && Math.abs(track.left - tracks[0].left) < 1 && Math.abs(track.right - tracks[0].right) < 1);
+    })()`), true, 'Activity strips stay below the plot and aligned after theme/viewport changes');
   };
   const checkRecordingHierarchy = async () => {
     const folds = JSON.parse(await evaluate(`JSON.stringify(Array.from(document.querySelectorAll(
@@ -234,7 +246,22 @@ try {
   await checkPowerDrawn();
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
-  assert.equal(await legendState('dhwr'), 'false');
+  assert.equal(await legendState('dhwr'), 'true');
+  assert.equal(await legendState('fireplace'), 'true');
+  assert.equal(await evaluate("document.querySelector('#left-axis option[value=firewood_load]').textContent"), 'Manually recorded firewood additions');
+  await checkActivityTracks();
+  for (const key of ['dhwr', 'fireplace']) {
+    assert.equal(await evaluate(`(async () => {
+      const canvas = document.getElementById('history'), ctx = canvas.getContext('2d');
+      const before = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      document.querySelector('[data-chart-key="${key}"]').click();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const after = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const hidden = document.getElementById('${key}-history').hidden;
+      document.querySelector('[data-chart-key="${key}"]').click();
+      return hidden && before.every((value, i) => value === after[i]);
+    })()`), true, `${key} toggles its strip without changing plot shading`);
+  }
   await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
   await evaluate("localStorage.setItem('home-energy-theme', 'light'); true");
@@ -313,7 +340,12 @@ try {
   await evaluate("document.getElementById('range-yesterday').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-06' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
   const populated = await fetch(`${base}/api/chart?start=2026-09-06&end=2026-09-07`).then(r => r.json());
-  for (const key of ['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr']) assert.ok(populated.shading[key].length > 0, `Synthetic ${key} shading is available`);
+  for (const key of ['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr', 'fireplace']) assert.ok(populated.shading[key].length > 0, `Synthetic ${key} activity is available`);
+  assert.deepEqual(populated.shading.fireplace, [{ start: now - 3 * 3600000, end: now }], 'Overlapping additions use the model burn window');
+  await checkActivityTracks();
+  assert.equal(await evaluate("document.querySelectorAll('#fireplace-history .mode-segment').length"), 1);
+  assert.equal(await evaluate("document.querySelectorAll('#dhwr-history .mode-segment').length > 0"), true);
+  await checkSeriesDrawn(['auxiliary_power', 'charger_power', 'compressorSpace', 'compressorDhw'], 'power');
   assert.ok(populated.operatingModes.length > 0);
   assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));
   assert.equal(await evaluate("document.getElementById('learning-details').open"), false);
@@ -325,6 +357,12 @@ try {
     const shot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });
     writeFileSync(`var/${name}.png`, Buffer.from(shot.data, 'base64'));
   };
+  await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
+  await capture('home-energy-activity-dark');
+  await evaluate("document.getElementById('theme-toggle').click(); true");
+  await checkActivityTracks();
+  await capture('home-energy-activity-light');
+  await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate("document.querySelectorAll('.controller-column > article').length"), 3);
   assert.equal(await evaluate("[...document.querySelectorAll('.controller-panels details')].every(fold => !fold.open)"), true);
   await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'}); true");
@@ -345,6 +383,7 @@ try {
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
     await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Mobile layout fits screen');
+    await checkActivityTracks();
     await checkDateAlignment();
     await evaluate("document.getElementById('date-range-enabled').click(); true");
     await checkDateAlignment();

@@ -20,7 +20,11 @@ const shades = [
   { key: 'heatOff', label: 'Tariff reduction requested', detail: 'Requested tariff reduction; compressor activity is shown separately' },
   { key: 'compressorSpace', label: 'Compressor · house', detail: 'Compressor reported on, valve routed to house heating' },
   { key: 'compressorDhw', label: 'Compressor · hot water', detail: 'Compressor reported on, valve routed to hot water' },
+];
+const activityTracks = [
+  { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', detail: 'Configured operating mode from H66 readback; independent of compressor activity', color: 'outdoor' },
   { key: 'dhwr', label: 'DHWR', detail: 'Requested 10-minute hot-water recirculation pulses' },
+  { key: 'fireplace', label: 'Fireplace', detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward', color: 'firewood' },
 ];
 
 function loadPreferences() {
@@ -92,7 +96,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   function renderLegend(datasets) {
     const groups = [document.createElement('div'), document.createElement('div'), document.createElement('div')];
     groups.forEach(group => { group.className = 'chart-legend-group'; });
-    groups[0].setAttribute('aria-label', 'Activity shading'); groups[1].setAttribute('aria-label', 'Left axis'); groups[2].setAttribute('aria-label', 'Right axis');
+    groups[0].setAttribute('aria-label', 'Activity shading and strips'); groups[1].setAttribute('aria-label', 'Left axis'); groups[2].setAttribute('aria-label', 'Right axis');
     function add(group, key, label, detail, swatchColor, kind) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'chart-legend-button';
       button.dataset.chartKey = key; button.setAttribute('aria-pressed', String(visible(key, preferences))); button.title = detail;
@@ -102,39 +106,62 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       button.append(swatch, document.createTextNode(label));
       button.addEventListener('click', () => {
         preferences[key] = !visible(key, preferences); savePreferences();
-        for (const dataset of graph.data.datasets) if (dataset.visibilityKey === key) dataset.hidden = !preferences[key];
-        button.setAttribute('aria-pressed', String(preferences[key])); graph.update('none'); renderModes(); renderStatus(graph.data.datasets);
+        const focused = document.activeElement === button;
+        renderChart();
+        if (focused) $('chart-legend').querySelector(`[data-chart-key="${key}"]`)?.focus({ preventScroll: true });
       });
       group.append(button);
     }
     for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.key], shade.key === 'heatOff' ? 'pattern' : 'fill');
-    add(groups[0], 'operatingMode', 'Pump mode', 'Configured operating mode from H66 readback; independent of compressor activity', palette.outdoor, 'fill');
+    for (const track of activityTracks) add(groups[0], track.key, track.label, track.detail, palette[track.color ?? track.key], 'fill');
     for (const dataset of datasets) {
       if (dataset.key === 'outdoor_forecast' && dataset.yAxisID !== 'left') continue;
       add(groups[dataset.yAxisID === 'left' ? 1 : 2], dataset.visibilityKey, dataset.label, dataset.unit, dataset.borderColor, dataset.kind);
     }
     $('chart-legend').replaceChildren(...groups);
   }
-  function renderModes() {
-    const root = $('operating-modes'); if (!root) return;
-    root.replaceChildren(); root.hidden = !visible('operatingMode', preferences);
-    const title = document.createElement('p'); title.textContent = 'Pump mode · readback (blank intervals: unknown)';
-    const track = document.createElement('div'); track.className = 'mode-track';
-    const chartWidth = graph?.width, area = graph?.chartArea;
-    if (area && chartWidth) { root.style.paddingLeft = `${area.left}px`; root.style.paddingRight = `${chartWidth - area.right}px`; }
-    for (const interval of payload?.operatingModes ?? []) {
-      const item = document.createElement('span'); item.className = 'mode-segment';
-      const name = operationModes[interval.value] ?? 'Unknown';
-      item.style.left = `${100 * (interval.start - payload.range.from) / (payload.range.to - payload.range.from)}%`;
-      item.style.width = `${100 * (interval.end - interval.start) / (payload.range.to - payload.range.from)}%`;
-      item.style.opacity = String((interval.aggregated ? interval.fraction : 1) * 0.7);
-      if (interval.aggregated) { item.style.top = `${interval.value * 20}%`; item.style.height = '20%'; }
-      item.style.backgroundColor = [palette.muted, palette.indoor, palette.outdoor, palette.auxiliary, palette.compressorDhw][interval.value];
-      item.title = `${name} · ${dateTime.format(interval.start)} – ${dateTime.format(interval.end)}${interval.aggregated ? ` · ${Math.round(interval.fraction * 100)}% of this display interval` : ''}`;
-      item.setAttribute('aria-label', item.title); track.append(item);
+  function alignActivityTracks(chart) {
+    const { width, chartArea } = chart;
+    if (!chartArea || !width) return;
+    for (const descriptor of activityTracks) {
+      const root = $(descriptor.id ?? `${descriptor.key}-history`);
+      if (!root) continue;
+      root.style.paddingLeft = `${chartArea.left}px`; root.style.paddingRight = `${width - chartArea.right}px`;
     }
-    if (!(payload?.operatingModes?.length)) title.textContent = 'Pump mode · no H66 readback in this period';
-    root.append(title, track);
+  }
+  function renderModes() {
+    for (const descriptor of activityTracks) {
+      const root = $(descriptor.id ?? `${descriptor.key}-history`); if (!root) continue;
+      root.replaceChildren(); root.hidden = !visible(descriptor.key, preferences);
+      const isMode = descriptor.key === 'operatingMode';
+      const intervals = (isMode ? payload?.operatingModes : payload?.shading?.[descriptor.key]) ?? [];
+      const title = document.createElement('p');
+      title.textContent = isMode ? 'Pump mode · readback (blank intervals: unknown)'
+        : descriptor.key === 'dhwr' ? 'DHWR · requested recirculation'
+          : `Fireplace · model burn window${Number.isFinite(payload.meta?.fireplaceInputs?.burnHours) ? ` · ${payload.meta.fireplaceInputs.burnHours} h after each addition` : ''}`;
+      root.title = descriptor.detail;
+      const track = document.createElement('div'); track.className = 'mode-track';
+      for (const interval of intervals) {
+        const from = Math.max(interval.start, payload.range.from), to = Math.min(interval.end, payload.range.to);
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) continue;
+        const item = document.createElement('span'); item.className = 'mode-segment';
+        const name = isMode ? operationModes[interval.value] ?? 'Unknown' : descriptor.label;
+        const fraction = interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1;
+        item.style.left = `${100 * (from - payload.range.from) / (payload.range.to - payload.range.from)}%`;
+        item.style.width = `${100 * (to - from) / (payload.range.to - payload.range.from)}%`;
+        item.style.opacity = String(fraction * 0.7);
+        if (isMode && interval.aggregated) { item.style.top = `${interval.value * 20}%`; item.style.height = '20%'; }
+        item.style.backgroundColor = isMode
+          ? [palette.muted, palette.indoor, palette.outdoor, palette.auxiliary, palette.compressorDhw][interval.value]
+          : palette[descriptor.color ?? descriptor.key];
+        item.title = `${name} · ${dateTime.format(from)} – ${dateTime.format(to)}${interval.aggregated ? ` · ${Math.round(fraction * 100)}% of this display interval` : ''}`;
+        item.setAttribute('aria-label', item.title); track.append(item);
+      }
+      if (!track.children.length) title.textContent += isMode ? ' · no H66 readback in this period'
+        : descriptor.key === 'dhwr' ? ' · no requests recorded in this period' : ' · no burn windows from recorded additions in this period';
+      root.append(title, track);
+    }
+    alignActivityTracks(graph);
   }
   function renderTiming() {
     timing.render(payload);
@@ -174,7 +201,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       graph.update('none');
     } else {
       graph = new Chart(canvas, {
-        type: 'line', data: { datasets }, plugins: [{ id: 'activityShading', beforeDatasetsDraw: paintShading }],
+        type: 'line', data: { datasets }, plugins: [{ id: 'activityShading', beforeDatasetsDraw: paintShading, afterLayout: alignActivityTracks }],
         options: {
           animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: false,
           interaction: { mode: 'nearest', axis: 'x', intersect: false }, scales,
@@ -189,7 +216,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
                   const interval = Number.isFinite(item.raw?.intervalStart) && Number.isFinite(item.raw?.intervalEnd) ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
                   const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
-                  const value = historyValueLabel(item.dataset.key, item.parsed.y, item.dataset.unit);
+                  const value = historyValueLabel(item.dataset.key, item.raw?.componentValue ?? item.parsed.y, item.dataset.unit);
                   const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
                   const firewood = firewoodPointDetail(item.dataset.key, item.raw);
                   return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
@@ -224,7 +251,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (plot.left === 'outdoor_forecast') notes.push('This view shows the forecast from now onward. It does not reconstruct past outdoor forecasts.');
     if (payload.meta?.historyBasis === 'original-recorded-history') notes.push('Charts read the original saved history. Point reduction for display and cached chart responses stay in memory; they create no additional database history. Energy and cost calculations use the original recorded intervals.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
-    if (plot.left === 'power') notes.push('Auxiliary fill uses verified heater output and configured electrical capacity. Charger fill overlays it; fills are not stacked.');
+    if (plot.left === 'power') {
+      notes.push('Auxiliary fill uses verified heater output and configured electrical capacity.');
+      const charger = datasets.find(dataset => dataset.key === 'charger_power');
+      if (charger.powerStacked) notes.push('Charger power is stacked above auxiliary power; tooltips show each load’s own kW. Missing auxiliary readings leave gaps in the combined fill; hiding auxiliary shows charger power from zero.');
+      else if (!charger.hidden) notes.push(visible('auxiliary_power', preferences)
+        ? 'No overlapping auxiliary and charger readings are available to stack. Charger power is shown from zero.'
+        : 'Charger power is shown from zero while auxiliary power is hidden.');
+    }
     if (plot.left.startsWith('learning_')) {
       const metadata = payload.meta?.learning?.[plot.left];
       if (metadata) notes.push(`Latest assessment: ${dateTime.format(metadata.at)}${Number.isFinite(metadata.count) ? ` · ${metadata.count} contributing cycles/observations` : ''}${metadata.basis ? ` · ${metadata.basis}` : ''}.`);

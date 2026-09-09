@@ -49,7 +49,7 @@ export function calendarTicks(range, maxTicks = 9) {
   return ticks.map(value => ({ value }));
 }
 
-export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, operatingMode: true, dhwr: false, spot_price: true });
+export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
 export const leftGroups = Object.freeze({
   ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis.signals])),
   power: ['property_power', 'auxiliary_power', 'charger_power'],
@@ -69,7 +69,7 @@ export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current
 export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
-  property: '#e98576', ev: '#64bbc0', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
+  property: '#e98576', ev: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
   indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#99704e', learning: '#baa0de', solar: '#e4ca67',
   firewood: '#d8aa75',
@@ -183,23 +183,74 @@ export function historySeriesAt(payload, now = payload.now) {
   return projected;
 }
 
+/** Align displayed step segments, preserving both sides of duplicate edges and
+ * explicit gaps. This changes presentation only; original readings and interval
+ * provenance remain attached to every point used in the cumulative fill. */
+export function stackedPowerSeries(auxiliary = [], charger = []) {
+  const group = points => {
+    const groups = [];
+    for (const point of points.filter(point => Number.isFinite(point.x)).sort((a, b) => a.x - b.x)) {
+      if (groups.at(-1)?.x !== point.x) groups.push({ x: point.x, points: [] });
+      groups.at(-1).points.push(point);
+    }
+    return { groups, index: 0 };
+  };
+  const sources = [group(auxiliary), group(charger)];
+  const times = new Set(sources.flatMap(source => source.groups.map(group => group.x)));
+  const result = [[], []];
+  for (const x of [...times].sort((a, b) => a - b)) {
+    for (const source of sources) while (source.groups[source.index]?.x < x) source.index++;
+    const count = Math.max(1, ...sources.map(source => source.groups[source.index]?.x === x ? source.groups[source.index].points.length : 0));
+    for (let edge = 0; edge < count; edge++) {
+      const aligned = sources.map(source => {
+        const next = source.groups[source.index];
+        const exact = next?.x === x ? next.points : [];
+        const exactIndex = edge - (count - exact.length);
+        if (exactIndex >= 0) return { ...exact[exactIndex], x };
+        const previous = source.groups[source.index - 1]?.points.at(-1);
+        const following = next?.points[0];
+        // A line ending at a missing sample or its final timestamp has no
+        // supported segment to interpolate. Unknown auxiliary is never zero.
+        if (!Number.isFinite(previous?.y) || !Number.isFinite(following?.y)) return { x, y: null };
+        const held = following.carriedForward && previous.y === following.y ? following : previous;
+        // The API's envelope may omit intervening valid energy intervals.
+        // Their retained interval metadata is tooltip provenance, while null
+        // points and the displayed endpoints delimit actual gaps.
+        return { ...held, x, y: previous.y };
+      });
+      result[0].push(aligned[0]);
+      result[1].push({ ...aligned[1], componentValue: aligned[1].y,
+        y: Number.isFinite(aligned[0].y) && Number.isFinite(aligned[1].y) ? aligned[0].y + aligned[1].y : null });
+    }
+  }
+  return { auxiliary: result[0], charger: result[1] };
+}
+
 export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
   if (!leftGroups[left]) throw new RangeError('Choose a valid left axis.');
-  return [...new Set([...leftGroups[left], ...RIGHT_AXIS_SIGNALS])].map(key => {
+  const keys = [...new Set([...leftGroups[left], ...RIGHT_AXIS_SIGNALS])];
+  const candidate = left === 'power' && visible('auxiliary_power', preferences) && visible('charger_power', preferences)
+    ? stackedPowerSeries(series.auxiliary_power, series.charger_power) : null;
+  // A range with no shared observations cannot show a combined fill. Keep its
+  // separate recorded components visible; the chart explains this fallback.
+  const stacked = candidate?.charger.some(point => Number.isFinite(point.y)) ? candidate : null;
+  return keys.map(key => {
     const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
     const isLeft = leftGroups[left].includes(key);
     const isPrice = key.endsWith('_price');
-    const data = series[key] ?? [];
+    const data = stacked && key === 'auxiliary_power' ? stacked.auxiliary
+      : stacked && key === 'charger_power' ? stacked.charger : series[key] ?? [];
     return {
       key, visibilityKey, unit, kind, label,
       data,
+      ...(key === 'charger_power' ? { powerStacked: Boolean(stacked) } : {}),
       showLine: !['event', 'daily'].includes(kind),
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
       borderDash: kind === 'forecast' || PHASE_ENERGY_SIGNALS.includes(key) && key.startsWith('ev1') ? [5, 4] : isPrice ? [1, 3] : [],
-      fill: kind === 'fill' ? 'origin' : false,
+      fill: stacked && key === 'charger_power' ? keys.indexOf('auxiliary_power') : kind === 'fill' ? 'origin' : false,
       order: key === 'auxiliary_power' ? 3 : kind === 'fill' ? 2 : 1,
       pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
       pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : 'circle',

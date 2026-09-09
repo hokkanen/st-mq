@@ -7,7 +7,9 @@ export const FIREPLACE_RESPONSE = Object.freeze({ version: 1, burnHours: 2, rele
  * still contributes heat; these only decide when it matters for evidence/control. */
 export const FIREPLACE_RELEVANCE = Object.freeze({ remainingC: 0.1, nextHourC: 0.02, cleanRateKgPerHour: 0.02 });
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
-const rawCumulative = hours => 1 - (18 * Math.exp(-hours / 18) - 2 * Math.exp(-hours / 2)) / 16;
+const rawCumulative = hours => 1 - (FIREPLACE_RESPONSE.releaseHours * Math.exp(-hours / FIREPLACE_RESPONSE.releaseHours)
+  - FIREPLACE_RESPONSE.burnHours * Math.exp(-hours / FIREPLACE_RESPONSE.burnHours))
+  / (FIREPLACE_RESPONSE.releaseHours - FIREPLACE_RESPONSE.burnHours);
 const normalization = rawCumulative(FIREPLACE_RESPONSE.horizonHours);
 const cumulative = hours => hours <= 0 ? 0 : hours >= FIREPLACE_RESPONSE.horizonHours ? 1 : rawCumulative(hours) / normalization;
 const valid = event => event && Number.isFinite(instant(event.litAt ?? event.at))

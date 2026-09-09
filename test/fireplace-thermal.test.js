@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FIREPLACE_HORIZON_MS, fireplaceActive, fireplaceIntegral, fireplaceRate, fireplaceBurnGroups,
+import { FIREPLACE_HORIZON_MS, FIREPLACE_RESPONSE, fireplaceActive, fireplaceIntegral, fireplaceRate, fireplaceBurnGroups,
   fireplaceInfluence, fireplaceAffectsLearning } from '../src/domain/fireplace.js';
 import { initialAdaptiveModel, predictThermalStep, restoreAdaptiveCheckpoint, evaluateThermalModel,
   fitAdaptiveModel, fireplaceEvidenceReady, thermalEvidenceReady, fireplaceGainUncertainty, actionEvidenceReady } from '../src/control/adaptive-learning.js';
@@ -10,6 +10,17 @@ import { evaluateCycle, chooseCycle, learningReadiness, revalidatePlan } from '.
 const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
 const event = (id, hours = 0, kg = 8) => ({ id, litAt: start + hours * HOUR, kg });
 const input = { outdoorC: 10, solarRadiationWm2: 0, phase: 'normal', targetC: 21, compressorDuty: 0.4, auxKw: 0 };
+
+test('shared response constants preserve version 1 numerical release exactly', () => {
+  assert.equal(FIREPLACE_RESPONSE.version, 1);
+  // Golden integrals from the original fixed 2 h / 18 h response, including the
+  // normalized tail boundary. Presentation must not change journal replay.
+  for (const [from, to, expected] of [[0, 0.25, 0.0066423618453288775],
+    [1.1, 1.7, 0.12821253399534283], [4, 5, 0.3366822183837146],
+    [18, 24, 0.939768941344937], [48, 49, 0.033842756557000975],
+    [119.75, 120, 0.00016041874785788224]])
+    assert.equal(fireplaceIntegral([event('reference')], start + from * HOUR, start + to * HOUR), expected);
+});
 
 test('pooled fireplace release rises gradually, adds simultaneous loads and retains a normalized five-day tail', () => {
   const first = event('first'), second = event('second'), reload = event('reload', 3, 2);

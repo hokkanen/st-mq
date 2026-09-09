@@ -516,7 +516,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const names = [...TEMPERATURES, 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames];
   const envelopes = Object.fromEntries(names.map(name => [name, new Envelope(range.from, range.to, points)]));
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) ? Infinity : name === 'auxiliary_power' ? 5 * 60_000 : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation'].includes(name))]));
-  const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
+  const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
   const marketIntervals = input === 'simulated' ? [] : knownIntervals(market, store, range, now);
   const historicalPricing = rates ? createHistoricalPricing(rates) : null;
   const priced = input === 'simulated' ? (simulated?.prices ?? []).map(row => ({ ...row, totalCtPerKwh: row.allInCentsPerKWh }))
@@ -784,7 +784,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const recordedEnergy = addRecordedEnergy({store,range,now,input,envelopes,timing});
   const modelInputs = addModelInputs({ store, range, now, input, envelopes });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
-  const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes });
+  const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const outlookForFirewood = input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);
   const firewood = getFirewoodBenefit({ store, input, range, now,
     priceIntervals: priced.map(row => ({ ...row, price: row.totalCtPerKwh })),
@@ -879,5 +879,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
     dhwrBasis: 'Historical ten-minute pulse requests, not verified pump feedback.',
+    fireplaceBasis: 'Corrected manual additions over the model burn timescale; heat release continues afterward.',
     decimation: 'Original recorded history, reduced in memory for display: first, last, minimum, maximum and missing-data breaks per time bucket. Costs use original energy intervals independently of drawing points.' } };
 }

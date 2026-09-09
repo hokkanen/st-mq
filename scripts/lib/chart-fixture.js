@@ -9,18 +9,19 @@ export function seedChartFixture(store, now) {
   store.transaction(() => {
     for (let at = start, i = 0; at <= now; at += 5 * minute, i++) {
       const cycle = i % 48, charging = cycle >= 12 && cycle < 24;
+      const auxiliaryKw = cycle >= 20 && cycle < 24 || cycle >= 30 && cycle <= 33 ? 3 : 0;
       const currents = [4 + 2 * Math.sin(i / 7), 5 + Math.sin(i / 9), 3 + 2 * Math.cos(i / 10)];
       for (let phase = 0; phase < 3; phase++) {
         const charger = charging ? 8 + phase : 0;
         add(`ev1_current_l${phase + 1}`, charger, 'A', at, 'simulation', 'visual-test-charger');
-        add(`property_current_l${phase + 1}`, currents[phase] + charger, 'A', at, 'simulation', 'visual-test-property');
+        add(`property_current_l${phase + 1}`, currents[phase] + charger + auxiliaryKw / (3 * 0.23), 'A', at, 'simulation', 'visual-test-property');
       }
       add('indoor_temperature', 21.1 + Math.sin(i / 15) * 0.25, 'degC', at);
       add('garage_temperature', 13.2 + Math.sin(i / 20) * 0.6, 'degC', at);
       add('outdoor_temperature', 2 + Math.sin(i / 28) * 4, 'degC', at);
       add('heating_integral', -40 - (i % 30) * 5, 'degree-minutes', at);
-      add('auxiliary_output', cycle >= 30 && cycle <= 33 ? 33 : 0, '%', at);
-      add('auxiliary_power', cycle >= 30 && cycle <= 33 ? 3 : 0, 'kW', at);
+      add('auxiliary_output', auxiliaryKw ? 33 : 0, '%', at);
+      add('auxiliary_power', auxiliaryKw, 'kW', at);
       add('compressor_active', cycle < 40 ? 1 : 0, 'state', at);
       add('dhw_routing', cycle >= 34 ? 1 : 0, 'state', at);
       add('operating_mode', cycle >= 18 && cycle < 27 ? 4 : 1, 'state', at);

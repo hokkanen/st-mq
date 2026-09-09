@@ -41,7 +41,7 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   assert(choices.has('model_indoor_temperature') && choices.has('model_outdoor_temperature'), 'Saved learning inputs remain inspectable');
   for (const key of ['firewood_load', 'model_fireplace_release', 'firewood_savings', 'firewood_electricity_avoided']) assert(choices.has(key));
   const manual = select.children.flatMap(group => group.children).find(option => option.value === 'firewood_load');
-  assert.match(manual.textContent, /Recorded manual/);
+  assert.equal(manual.textContent, 'Manually recorded firewood additions');
   assert(!recordingRows().some(row => row.group === 'Model coefficients'), 'Replay does not add recorder channels');
   select.value = 'spot_price'; populateHistoryAxes(select);
   assert.equal(select.value, 'power', 'An unavailable old choice falls back to the default');
