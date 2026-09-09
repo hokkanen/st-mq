@@ -131,10 +131,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
     if (!existsSync(configPath)) throw new Error('Live input requires an existing STMQ_CONFIG/options.json file');
-    // SmartThings is no longer acquired. Existing private options remain readable
-    // while deployments move indoor/garage sensors to their own MQTT topics.
-    const { smartthings: _legacyTemperatures, ...providers } = options;
-    const mqtt = { ...(providers.mqtt ?? {}) };
+    const mqtt = { ...(options.mqtt ?? {}) };
     mqtt.temperatureTopics = {
       ...(mqtt.temperature_topics ?? {}),
       ...(mqtt.temperatureTopics ?? {}),
@@ -145,7 +142,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
       if (!['indoor_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
-    connections = { ...providers, mqtt, teslamate: teslamateConfiguration(providers.teslamate) };
+    connections = { ...options, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');

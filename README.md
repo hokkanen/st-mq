@@ -24,7 +24,7 @@ Electricity history stores three estimated phase-energy increments for Easee and
 property import, plus one total-energy increment for TeslaMate portable charging.
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
-[adaptive recording and migration](docs/recording.md), including SmartThings removal.
+[adaptive recording and migration](docs/recording.md), including SmartThings and MQTT temperature sensors.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
@@ -311,13 +311,14 @@ Start read-only collection with:
 STMQ_INPUT=providers npm start
 ```
 
-This reuses `geoloc`, `entsoe`, `mqtt` and `easee` connection fields from
+This reuses `geoloc`, `entsoe`, `mqtt`, `smartthings` and `easee` connection fields from
 the existing options JSON. FMI, Open-Meteo and Elering need no API key or additional
 provider configuration. Weather uses the configured latitude/longitude;
 Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO-E
-bidding zone. SmartThings acquisition is removed; its old configuration is ignored
-and historical readings are preserved. Indoor temperature can come from H66;
-replacement indoor/garage sensors can publish on configured MQTT topics. The garage
+bidding zone. SmartThings polls configured indoor and garage sensors using the existing
+`smartthings.token`, `inside_temp_dev_id` and `garage_temp_dev_id` fields in both
+`providers` and `mqtt` input modes. Indoor temperature can also come from H66;
+indoor/garage sensors can publish on configured MQTT topics. The garage
 is recorded independently of heating optimization. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
@@ -326,7 +327,7 @@ and plans; active mode can use a configured command transport.
 | Electricity prices | ENTSO-E → Elering's own public API | 1 hour; 15-minute retry when next-day horizon is missing |
 | Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 30 minutes |
 | Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
-| Indoor/garage temperatures | H66 indoor; configured MQTT sensors | MQTT publications; H66 GETALL every 60 seconds |
+| Indoor/garage temperatures | SmartThings; H66 indoor; configured MQTT sensors | SmartThings every 5 minutes; MQTT publications; H66 GETALL every 60 seconds |
 | Property/charger electrical observations | Easee REST | 15 seconds, one batched request per device |
 | Portable-charger total energy | TeslaMate MQTT | Changed fields and live health; integration checked every 5 seconds |
 

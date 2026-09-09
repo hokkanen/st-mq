@@ -179,7 +179,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       engine.teslamate?.tick(clock());
     } catch { /* Only transient status, never a database experiment/error log. */ }
   };
-  const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
+  const smartthings = connections.smartthings ?? {}, easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
+  const readTemperatures = typeof temperatureProvider === 'function' ? temperatureProvider
+    : args => devices.temperatures({ ...args, signals: ['indoor_temperature', 'garage_temperature'] });
   const integrationOptions = { maxAgeMs: cadence.electricityMaxAgeMs ?? 5 * MINUTE,
     maxTelemetryAgeMs: cadence.electricityTelemetryMaxAgeMs ?? 17 * MINUTE,
     maxGapMs: cadence.electricityMaxGapMs ?? MINUTE };
@@ -187,10 +189,11 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const configuredCurrents = [['charger', 'charger_id'], ['property', 'equalizer_id']]
     .filter(([, key]) => present(easee[key])).map(([group]) => group);
   const definitions = {
-    // SmartThings is retired. The optional injected adapter is for alternative
-    // integrations; normal temperature acquisition is H66/generic MQTT.
-    temperatures: { enabled: typeof temperatureProvider === 'function',
-      period: 5 * MINUTE, run: args => temperatureProvider(args) },
+    // SmartThings supplies indoor/garage readings alongside MQTT. Outdoor
+    // acquisition keeps the H66 → FMI → Open-Meteo selection.
+    temperatures: { enabled: typeof temperatureProvider === 'function'
+        || ['inside_temp_dev_id', 'garage_temp_dev_id'].some(key => present(smartthings[key])),
+      period: 5 * MINUTE, run: readTemperatures },
     easee: { enabled: ['charger_id', 'equalizer_id'].some(key => present(easee[key])),
       period: cadence.easeeIntervalMs ?? 15_000, run: args => (devices.electricity ?? devices.easee).call(devices, args) },
     market: { enabled: present(connections.entsoe?.token) || ['fi', 'ee', 'lv', 'lt'].includes(connections.geoloc?.country_code?.toLowerCase()) || Boolean(connections.elering),

@@ -80,17 +80,22 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
-  const original = JSON.stringify({ options: { smartthings: { token: 'synthetic', inside_temp_dev_id: 'fixture' },
-    geoloc: { latitude: 60, longitude: 25, country_code: 'fi' } } });
-  writeFileSync(path, original);
-  const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
-  assert.equal(config.input, 'providers');
-  assert.equal(config.deviceId, undefined);
-  assert.equal(config.connections.smartthings, undefined, 'Legacy SmartThings credentials do not enable acquisition');
-  assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
-  assert.equal(config.settings.comfort.targetC, null);
-  assert.equal(config.settings.comfort.maxDropC, 1);
-  assert.equal(readFileSync(path, 'utf8'), original);
+  const options = { smartthings: { token: 'synthetic', inside_temp_dev_id: 'fixture-room', garage_temp_dev_id: 'fixture-garage' },
+    mqtt: { address: 'mqtt://invented.invalid', garage_temperature_topic: 'invented/garage' },
+    geoloc: { latitude: 60, longitude: 25, country_code: 'fi' } };
+  for (const contents of [options, { options }]) for (const input of ['providers', 'mqtt']) {
+    const original = JSON.stringify(contents);
+    writeFileSync(path, original);
+    const config = loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
+    assert.equal(config.input, input);
+    assert.equal(config.deviceId, undefined);
+    assert.deepEqual(config.connections.smartthings, options.smartthings);
+    assert.deepEqual(config.connections.mqtt.temperatureTopics, { garage_temperature: 'invented/garage' });
+    assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
+    assert.equal(config.settings.comfort.targetC, null);
+    assert.equal(config.settings.comfort.maxDropC, 1);
+    assert.equal(readFileSync(path, 'utf8'), original);
+  }
   assert.throws(() => loadConfig({ STMQ_INPUT: 'simulated', STMQ_CONFIG: '/missing/credentials.json' }), /existing/);
 });
 
@@ -157,6 +162,8 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.options.controller.max_drop_c, 1);
   assert.equal(addon.options.easee.charger_id, '');
   assert.equal(addon.schema.easee.charger_id, 'str?');
+  assert.deepEqual(addon.options.smartthings, { token: '', inside_temp_dev_id: '', garage_temp_dev_id: '' });
+  assert.deepEqual(addon.schema.smartthings, { token: 'password?', inside_temp_dev_id: 'str?', garage_temp_dev_id: 'str?' });
 });
 
 test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {

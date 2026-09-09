@@ -34,6 +34,41 @@ test('SmartThings reads status with encoded IDs, converts units and preserves so
   assert(!JSON.stringify(rows).includes(smartthings.token));
 });
 
+test('SmartThings indoor and garage selection excludes the configured outdoor device before HTTP', async () => {
+  const calls = []; const controller = new AbortController();
+  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, garage_temp_dev_id: 'garage/device' } }, http: { async json(url, options) {
+    calls.push({ url, options });
+    return url.includes('garage%2Fdevice') ? fixtures.smartthingsF : fixtures.smartthingsC;
+  } } });
+  const signals = ['indoor_temperature', 'garage_temperature'];
+  const rows = await providers.temperatures({ now, signal: controller.signal, signals });
+  assert.deepEqual(rows.map(row => row.signal), signals);
+  assert.equal(rows[0].value, 21.75);
+  assert.equal(rows[1].device, 'garage/device'); assert.equal(rows[1].value, 20);
+  assert.equal(rows[1].source, 'smartthings'); assert.equal(rows[1].unit, 'degC');
+  assert.equal(rows[1].sourceTime, Date.parse('2026-09-06T12:01:00Z'));
+  assert(rows[1].quality.includes('converted_fahrenheit'));
+  assert.deepEqual(calls.map(call => call.url), [
+    'https://api.smartthings.com/v1/devices/indoor%2Fdevice/status',
+    'https://api.smartthings.com/v1/devices/garage%2Fdevice/status',
+  ]);
+  assert(calls.every(call => call.options.method === 'GET' && call.options.signal === controller.signal));
+  assert.deepEqual(await providers.temperatures({ now, signals: [] }), []);
+  assert.equal(calls.length, 2);
+});
+
+test('SmartThings garage outage preserves indoor observations and sanitized failure quality', async () => {
+  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, garage_temp_dev_id: 'garage-device' } }, http: { async json(url) {
+    if (url.includes('garage')) throw httpError(503);
+    return fixtures.smartthingsC;
+  } } });
+  const rows = await providers.temperatures({ now, signals: ['indoor_temperature', 'garage_temperature'] });
+  assert.equal(rows.length, 2); assert.equal(rows[0].value, 21.75);
+  assert.equal(rows[1].signal, 'garage_temperature'); assert.equal(rows[1].value, null);
+  assert.equal(rows[1].sourceTime, null); assert(rows[1].quality.includes('http_status_503'));
+  assert(!JSON.stringify(rows).includes('synthetic-secret'));
+});
+
 test('temperature outage affects only its device and never yields false zero or leaks errors', async () => {
   const providers = createDeviceProviders({ connections: { smartthings }, http: { async json(url) {
     if (url.includes('indoor')) throw httpError(401);

@@ -36,7 +36,6 @@ function fixture(t) {
     value: 10, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const options = { config, store, engine, clock, http: { json() { throw new Error('Unexpected HTTP request'); }, close() {} },
     devices: { temperatures: async () => temperature(), easee: async () => current() }, market, weather, outdoor, automatic: false };
-  options.temperatureProvider = args => options.devices.temperatures(args);
   return { options, store, engine, config, temperature, setTime(at) { now = at; } };
 }
 test('unchanged forecast downloads share content and preserve unknown-issuance age',async t=>{
@@ -55,12 +54,10 @@ test('unchanged forecast downloads share content and preserve unknown-issuance a
   }finally{await providers.close();}
 });
 
-test('normal configuration retires SmartThings and acquires electricity every fifteen seconds with audit-only counters', async t => {
+test('normal configuration acquires electricity every fifteen seconds with audit-only counters', async t => {
   const f = fixture(t);
-  delete f.options.temperatureProvider;
   f.config.acquisition = {};
-  f.config.connections = { smartthings: { inside_temp_dev_id: 'retired-sensor', token: 'fixture-unused-token' },
-    easee: { equalizer_id: 'invented-property' } };
+  f.config.connections = { easee: { equalizer_id: 'invented-property' } };
   let calls = 0;
   f.options.devices.electricity = async ({ now }) => {
     calls++;
@@ -68,7 +65,7 @@ test('normal configuration retires SmartThings and acquires electricity every fi
       signal: `property_${name}`, unit, value: unit === 'A' ? 10 : unit === 'V' ? 230 : unit === 'kW' ? 6.9 : 100 + calls,
       sourceTime: now, receivedAt: now, quality: [], raw: { acquisitionOnly: true, auditOnly: unit === 'kWh', observationId: id } }));
   };
-  f.options.devices.temperatures = () => { throw new Error('Retired SmartThings must never be contacted'); };
+  f.options.devices.temperatures = () => { throw new Error('Unconfigured SmartThings must never be contacted'); };
   const providers = startProviders(f.options);
   try {
     await providers.runDue();
@@ -83,6 +80,75 @@ test('normal configuration retires SmartThings and acquires electricity every fi
     assert.equal(f.store.energyAudits().length, 2);
     assert.equal(f.store.observations({ signal: 'property_import_energy_counter' }).length, 0);
     assert.equal(f.engine.latest.property_current_l1.value, 10);
+  } finally { await providers.close(); }
+});
+
+test('normal configuration polls SmartThings indoor and garage every five minutes without requesting the legacy outdoor sensor', async t => {
+  const f = fixture(t);
+  delete f.options.devices;
+  f.config.connections = { smartthings: { token: 'synthetic-smartthings-token', inside_temp_dev_id: 'invented/room',
+    garage_temp_dev_id: 'invented-garage', outside_temp_dev_id: 'invented-outdoor' } };
+  const calls = [], sourceTime = initial - MINUTE;
+  f.options.http.json = async (url, options) => {
+    calls.push(url);
+    assert.equal(options.method, 'GET');
+    assert.equal(options.headers.Authorization, 'Bearer synthetic-smartthings-token');
+    assert.equal(options.signal.aborted, false);
+    return { components: { main: { temperatureMeasurement: { temperature: {
+      value: url.includes('invented%2Froom') ? 21.3 : 16.4, unit: 'C', timestamp: new Date(sourceTime).toISOString(),
+    } } } } };
+  };
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.deepEqual(calls, ['https://api.smartthings.com/v1/devices/invented%2Froom/status',
+      'https://api.smartthings.com/v1/devices/invented-garage/status']);
+    const { observations } = f.engine.status();
+    assert.equal(observations.indoor.value, 21.3);
+    assert.equal(observations.garage.value, 16.4);
+    assert.equal(observations.indoor.source, 'smartthings');
+    assert.equal(observations.garage.source, 'smartthings');
+    assert.equal(observations.indoor.observedAt, sourceTime);
+    assert.equal(f.engine.latest.outdoor_temperature, undefined);
+    assert.equal(f.store.getState('providers:health').temperatures.status, 'ok');
+    assert.equal(f.store.getState('providers:health').temperatures.nextAttemptAt, initial + 5 * MINUTE);
+    f.setTime(initial + 5 * MINUTE - 1); await providers.runDue(); assert.equal(calls.length, 2);
+    f.setTime(initial + 5 * MINUTE); await providers.runDue(); assert.equal(calls.length, 4);
+    assert.equal(f.engine.status().observations.indoor.observedAt, sourceTime);
+  } finally { await providers.close(); }
+});
+
+test('a garage sensor alone enables SmartThings while an outdoor-only configuration stays disabled', async t => {
+  for (const [key, enabled] of [['garage_temp_dev_id', true], ['outside_temp_dev_id', false]]) {
+    await t.test(key, async t => {
+      const f = fixture(t);
+      f.config.connections = { smartthings: { token: 'synthetic-smartthings-token', [key]: 'invented-sensor' } };
+      let calls = 0;
+      f.options.devices.temperatures = async ({ signals }) => {
+        calls++;
+        assert.deepEqual(signals, ['indoor_temperature', 'garage_temperature']);
+        return f.temperature().map(row => ({ ...row, signal: 'garage_temperature' }));
+      };
+      const providers = startProviders(f.options);
+      try {
+        await providers.runDue();
+        assert.equal(calls, enabled ? 1 : 0);
+        assert.equal(f.store.getState('providers:health').temperatures.status, enabled ? 'ok' : 'not-configured');
+      } finally { await providers.close(); }
+    });
+  }
+});
+
+test('an injected temperature provider remains usable without SmartThings configuration', async t => {
+  const f = fixture(t);
+  f.config.connections = {};
+  f.options.devices.temperatures = () => { throw new Error('The injected temperature provider takes precedence'); };
+  f.options.temperatureProvider = async () => f.temperature();
+  const providers = startProviders(f.options);
+  try {
+    await providers.runDue();
+    assert.equal(f.store.getState('providers:health').temperatures.status, 'ok');
+    assert.equal(f.engine.status().observations.indoor.value, 21.1);
   } finally { await providers.close(); }
 });
 

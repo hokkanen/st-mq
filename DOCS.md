@@ -185,8 +185,9 @@ The outdoor card labels **H66 outdoor sensor**, **FMI nearby station**, or
 the house sensor reading when fresh. The station and model fallback describe the
 surrounding area. Missing or stale H66 readings fall back automatically; a fresh
 H66 reading regains priority. With valid configured coordinates, this chain owns
-outdoor temperature and an optional SmartThings outdoor sensor does not overwrite
-it. FMI requires a fresh station reading within 50 km. Open-Meteo needs no key or
+outdoor temperature. SmartThings polls only configured indoor and garage sensors;
+its legacy outdoor device setting is ignored by automatic acquisition. FMI requires
+a fresh station reading within 50 km. Open-Meteo needs no key or
 registration for noncommercial use within the free API limits; no weather token
 setting is needed. **Connection & provider details** names each selected provider and shows
 **Using backup**, a concise primary error and the next scheduled primary retry.

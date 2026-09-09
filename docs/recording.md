@@ -518,12 +518,21 @@ complete caught-up checkpoint. See [the mandatory reconstruction and versioning
 contract](reconstruction-and-versioning.md) and [fireplace behavior](fireplace.md).
 This does not expand the storage contract to full control-choice replay.
 
-## SmartThings migration and interface
+## SmartThings, MQTT temperature sensors and interface
 
-Automatic SmartThings acquisition is removed, and old SmartThings connection
-options are ignored. Its existing indoor/garage history remains available. H66 can
-provide indoor temperature when installed and representative; garage and optional
-indoor replacement sensors can publish to exact MQTT topics on the existing broker.
+SmartThings indoor and garage acquisition is available in both `providers` and
+`mqtt` input modes. Set `smartthings.token`, `smartthings.inside_temp_dev_id` and/or
+`smartthings.garage_temp_dev_id` in the private options file or add-on configuration.
+Existing configured credentials and device IDs are reused. Each configured sensor
+is queried every five minutes through the read-only
+[device status API](https://developer.smartthings.com/docs/service-integrations/query-and-list-devices).
+Source timestamps, units and quality flags are preserved; polling unchanged device
+state does not make it fresh. Failed requests back off through the provider scheduler.
+SmartThings outdoor acquisition remains disabled in the running application.
+
+Its existing temperature history remains available. H66 can provide indoor
+temperature when installed and representative; garage and optional indoor sensors
+can also publish to exact MQTT topics on the existing broker.
 These temperature subscriptions also work without an H66 device configured.
 For example, these invented topic names illustrate the configuration shape:
 

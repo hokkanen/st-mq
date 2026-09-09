@@ -470,9 +470,9 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       }))));
     },
 
-    async temperatures({ now = Date.now(), signal } = {}) {
+    async temperatures({ now = Date.now(), signal, signals = TEMPERATURES.map(([, name]) => name) } = {}) {
       validNow(now);
-      const jobs = TEMPERATURES.filter(([key]) => supplied(smartthings[key]));
+      const jobs = TEMPERATURES.filter(([key, name]) => signals.includes(name) && supplied(smartthings[key]));
       const results = await Promise.allSettled(jobs.map(async ([key, name]) => {
         if (!supplied(smartthings.token)) return baseObservation({ source: 'smartthings', device: smartthings[key], signal: name, unit: 'degC', now, quality: ['missing_configuration'] });
         const payload = await request(`https://api.smartthings.com/v1/devices/${encodeURIComponent(smartthings[key])}/status`, {
