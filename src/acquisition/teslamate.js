@@ -100,6 +100,7 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       if (!comparison) markIncomplete('incomplete-coverage');
       else if (comparison.edgeEstimated) session.quality = unique([...session.quality, 'estimated-boundary']);
     }
+    if (session.referenceKwh === null || !(session.referenceAt >= end - 5000)) markIncomplete('missing-final-reference');
     // A car on Charger 1 does not create another Charger 2 session comparison.
     // The normal Charger 1 provider session already supplies its reference.
     if (sessionAssignment !== 'easee') recordChargingSessionCheck(store, { source: 'teslamate', sessionKey: session.key, start: session.start, end,

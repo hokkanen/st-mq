@@ -86,7 +86,7 @@ try {
   await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-temperature-field').hidden"), false);
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
-  assert.equal(await evaluate("document.querySelector('#h66-provider-details summary strong').textContent"), 'Husdata H66');
+  assert.equal(await evaluate("document.querySelector('#h66-provider-details > summary').textContent"), 'Husdata H66 data guide');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
   assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
@@ -249,7 +249,16 @@ try {
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
-    await checkNestedFolds('#h66-provider-details, #h66-readings-details, #providers .provider-fold, #controls-details, #electricity-details');
+    await checkNestedFolds('#providers .provider-fold, #controls-details, #electricity-details');
+    assert.equal(await evaluate(`(() => {
+      const folds = ['h66-readings-details', 'h66-provider-details', 'h66-test-details', 'heating-test-details'].map(id => document.getElementById(id));
+      const left = folds[0].querySelector('summary').getBoundingClientRect().left;
+      return folds.every(fold => {
+        const summary = fold.querySelector('summary');
+        return summary.checkVisibility() && fold.parentElement.closest('details').id === 'equipment-details'
+          && Math.abs(summary.getBoundingClientRect().left - left) < 1;
+      });
+    })()`), true, 'Equipment readings, data guide and tests are visible, aligned peer folds');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");

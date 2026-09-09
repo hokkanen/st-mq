@@ -29,6 +29,7 @@ test('empty summaries have no invented sessions or percentages and ignore cumula
     assert.equal(summary.recordedSessions, 0);
     assert.equal(summary.comparedSessions, 0);
     assert.equal(summary.excludedSessions, 0);
+    assert.deepEqual(summary.exclusionReasons, {});
     assert.equal(summary.differenceKwh, null);
     assert.equal(summary.differencePercent, null);
     assert.equal(summary.start, null);
@@ -51,12 +52,37 @@ test('all-session comparison is energy weighted and excludes incomplete, zero-re
   const { differencePercent, ...easeeTotals } = easee.summary;
   assert(Math.abs(differencePercent - -7) < 1e-10);
   assert.deepEqual(easeeTotals, { basis: 'electricity-meter', recordedSessions: 6, comparedSessions: 2,
-    excludedSessions: 4, estimatedKwh: 93, referenceKwh: 100, differenceKwh: -7,
+    excludedSessions: 4, exclusionReasons: { 'comparison-incomplete': 1, 'zero-reference': 1, stale: 1, 'missing-estimate': 1 },
+    estimatedKwh: 93, referenceKwh: 100, differenceKwh: -7,
     start: 1000, end: 131000, lastSessionEnd: 131000 });
   assert.equal(tesla.summary.comparedSessions, 1);
   assert.equal(tesla.summary.differencePercent, 12.5);
   assert.deepEqual({ events: store.events().length, states: store.db.prepare('SELECT count(*) AS n FROM state').get().n }, before);
   assert(!JSON.stringify([easee, tesla]).includes('invented-'));
+});
+
+test('exclusion reasons count affected sessions without implying their existing references are missing', t => {
+  const { store } = fixture(t);
+  recordChargingSessionCheck(store, session({ complete: false, estimatedKwh: null, quality: ['estimated', 'incomplete-coverage'] }));
+  recordChargingSessionCheck(store, session({ source: 'teslamate', sessionKey: 'invented-interrupted', complete: false,
+    quality: ['missing-start', 'stale', 'disconnected', 'stale'] }));
+  recordChargingSessionCheck(store, session({ source: 'teslamate', sessionKey: 'invented-uncertain', complete: false,
+    quality: ['estimated-boundary', 'duplicate-suspected', 'missing-end', 'stale', 'disconnected'] }));
+  const [easee, tesla] = chargingSessionCheckSummaries(store);
+  assert.deepEqual(easee.summary.exclusionReasons, { 'incomplete-coverage': 1 });
+  assert.deepEqual(tesla.summary.exclusionReasons, { disconnected: 2, 'missing-start': 1, stale: 2,
+    'duplicate-suspected': 1, 'missing-end': 1 });
+  assert.equal(tesla.summary.excludedSessions, 2);
+  assert.equal(tesla.summary.comparedSessions, 0);
+});
+
+test('missing references and unconfirmed terminal references remain distinct from zero references', t => {
+  const { store } = fixture(t);
+  recordChargingSessionCheck(store, session({ sessionKey: 'invented-no-reference', referenceKwh: null }));
+  recordChargingSessionCheck(store, session({ sessionKey: 'invented-old-reference', complete: false, quality: ['missing-final-reference'] }));
+  recordChargingSessionCheck(store, session({ sessionKey: 'invented-zero-reference', referenceKwh: 0 }));
+  assert.deepEqual(chargingSessionCheckSummaries(store)[0].summary.exclusionReasons,
+    { 'missing-reference': 1, 'missing-final-reference': 1, 'zero-reference': 1 });
 });
 
 test('finalized checks are durable, source-scoped, idempotent and reject conflicting retries without storing identifiers', t => {

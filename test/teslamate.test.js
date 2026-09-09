@@ -242,6 +242,7 @@ test('missing terminal counter cannot be averaged as a complete session using an
   f.at(60_000); f.send('charging_state', 'Complete');
   f.at(110_000); f.tick();
   assert.equal(f.checks().length, 1); assert.equal(f.checks()[0].complete, false);
+  assert(f.checks()[0].quality.includes('missing-final-reference'));
 });
 
 test('new charging start waits for its own reference instead of opening a fake session from the old counter', t => {

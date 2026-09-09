@@ -215,7 +215,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   })); true`);
   await evaluate(`window.timingFoldFixture.comparisons = Object.fromEntries([...document.querySelectorAll('.timing-comparison-option')]
     .map(button => [button.dataset.mode, button])); true`);
-  await checkComparison('timing');
+  await checkComparison('model');
+  await switchComparison('timing');
   await evaluate(`document.querySelector(${JSON.stringify(comparison('model'))}).focus(); true`);
   await switchComparison('model', () => key('\uE007'));
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.comparisons.model'), true,

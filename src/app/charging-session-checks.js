@@ -7,7 +7,7 @@ const SOURCES = Object.freeze({
   teslamate: { signal: 'tesla_session_energy_check', basis: 'energy-added' },
 });
 const QUALITY = new Set(['estimated', 'estimated-boundary', 'incomplete-coverage', 'missing-start', 'missing-end',
-  'counter-reset', 'out-of-order', 'stale', 'disconnected', 'assignment-uncertain', 'duplicate-suspected']);
+  'counter-reset', 'out-of-order', 'stale', 'disconnected', 'assignment-uncertain', 'duplicate-suspected', 'missing-final-reference']);
 const COMPARABLE_QUALITY = new Set(['estimated', 'estimated-boundary']);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const instant = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
@@ -18,6 +18,19 @@ export function comparableChargingSession(check) {
     && Number.isFinite(check.estimatedKwh) && check.estimatedKwh >= 0
     && Number.isFinite(check.referenceKwh) && check.referenceKwh > 0
     && Array.isArray(check.quality) && check.quality.every(flag => COMPARABLE_QUALITY.has(flag));
+}
+
+// Only public reason codes leave this summary. Count each reason once per
+// session; a session can have several reasons, so the counts need not add up to
+// excludedSessions. Old checks without a specific diagnosis remain honest.
+function exclusionReasons(check) {
+  const reasons = new Set((Array.isArray(check.quality) ? check.quality : [])
+    .filter(flag => QUALITY.has(flag) && !COMPARABLE_QUALITY.has(flag)));
+  if ((!Number.isFinite(check.estimatedKwh) || check.estimatedKwh < 0) && !reasons.has('incomplete-coverage')) reasons.add('missing-estimate');
+  if (!Number.isFinite(check.referenceKwh) || check.referenceKwh < 0) reasons.add('missing-reference');
+  else if (check.referenceKwh === 0) reasons.add('zero-reference');
+  if (!reasons.size) reasons.add('comparison-incomplete');
+  return reasons;
 }
 
 /** Finalized session checks only. The producer must establish actual session
@@ -60,7 +73,7 @@ export function recordChargingSessionCheck(store, input) {
 export function chargingSessionCheckSummaries(store) {
   const rows = Object.entries(SOURCES).map(([source, descriptor]) => ({ kind: 'charging-session-summary', source,
     signal: descriptor.signal, summary: { basis: descriptor.basis, recordedSessions: 0, comparedSessions: 0,
-      excludedSessions: 0, estimatedKwh: 0, referenceKwh: 0, differenceKwh: null, differencePercent: null,
+      excludedSessions: 0, exclusionReasons: {}, estimatedKwh: 0, referenceKwh: 0, differenceKwh: null, differencePercent: null,
       start: null, end: null, lastSessionEnd: null } }));
   const bySource = new Map(rows.map(row => [row.source, row.summary]));
   // Store.events() has a page limit. Iteration deliberately includes all history
@@ -72,6 +85,7 @@ export function chargingSessionCheckSummaries(store) {
     summary.lastSessionEnd = Math.max(summary.lastSessionEnd ?? check.end, check.end);
     if (!comparableChargingSession(check)) {
       summary.excludedSessions++;
+      for (const reason of exclusionReasons(check)) summary.exclusionReasons[reason] = (summary.exclusionReasons[reason] ?? 0) + 1;
       continue;
     }
     summary.comparedSessions++;

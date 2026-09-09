@@ -120,8 +120,8 @@ function dom(storage = new Map()) {
   return { root: new Element('div'), document, disconnected: () => disconnected };
 }
 
-test('three cost cards retain their folds and focus across updates and keep the timing baselines scoped', () => {
-  const { root, document, disconnected } = dom();
+test('three cost cards retain their folds and focus across updates and keep the saved timing baseline scoped', () => {
+  const { root, document, disconnected } = dom(new Map([['stmq.heatingSavingMode', 'timing']]));
   const panel = createTimingBenefit(root);
   const data = { ...payload, firewoodBenefit: estimate, timingBenefit: { heatPump: { value: 1 }, charger: { value: 2 } } };
   panel.render(data);
@@ -152,6 +152,12 @@ test('heating choice changes its amount and details while preserving focus, fold
   const overview = heating.children[0].children[0];
   const [modelButton, timingButton] = overview.children[1].children;
   const fold = heating.children[1]; fold.open = true;
+  assert.equal(modelButton.attributes['aria-pressed'], 'true');
+  assert.match(heating.textContent, /Model-estimated saving.*€3.50/);
+  timingButton.focus(); timingButton.click();
+  assert.equal(timingButton.attributes['aria-pressed'], 'true');
+  assert.equal(document.activeElement, timingButton); assert.equal(fold.open, true);
+  assert.match(heating.textContent, /Timing cost saving.*€1.00/);
   modelButton.focus(); modelButton.click();
   assert.equal(modelButton.attributes['aria-pressed'], 'true');
   assert.equal(timingButton.attributes['aria-pressed'], 'false');
@@ -169,17 +175,21 @@ test('heating choice changes its amount and details while preserving focus, fold
   const reload = dom(storage), reloaded = createTimingBenefit(reload.root); reloaded.render(data);
   assert.match(reload.root.children[1].children[0].textContent, /Model-estimated saving.*€3.50/);
   timingButton.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  const timingReload = dom(storage), reloadedTiming = createTimingBenefit(timingReload.root); reloadedTiming.render(data);
+  assert.match(timingReload.root.children[1].children[0].textContent, /Timing cost saving.*€1.00/);
   panel.close(); modelButton.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
-  reloaded.close();
+  reloaded.close(); reloadedTiming.close();
 });
 
-test('heating selector works when browser preferences are blocked or invalid', () => {
-  for (const storage of [new Map([['stmq.heatingSavingMode', 'invalid']]), {
+test('heating defaults to the model estimate with missing, blocked or invalid browser preferences', () => {
+  for (const storage of [new Map(), new Map([['stmq.heatingSavingMode', 'invalid']]), {
     get() { throw new Error('Storage unavailable'); }, set() { throw new Error('Storage unavailable'); },
   }]) {
     const { root } = dom(storage), panel = createTimingBenefit(root);
     panel.render(payload);
     const heating = root.children[1].children[0];
+    assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
+    heating.children[0].children[0].children[1].children[1].click();
     assert.match(heating.textContent, /Timing cost saving/);
     heating.children[0].children[0].children[1].children[0].click();
     assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);

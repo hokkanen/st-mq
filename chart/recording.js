@@ -228,12 +228,33 @@ export function energyAuditRow(item) {
     timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value) : '—';
   if (item.kind==='charging-session-summary') {
     const s=item.summary ?? {}, tesla=item.source==='teslamate', count=s.comparedSessions ?? 0;
+    const reasonLabels={
+      'incomplete-coverage':'recorded energy does not cover the whole session',
+      'missing-start':'charging start was not fully recorded',
+      'missing-end':'charging end could not be confirmed',
+      'disconnected':'recording was interrupted by a disconnect or restart',
+      'stale':'charging data stopped updating',
+      'duplicate-suspected':'possible overlap with Charger 1 energy',
+      'assignment-uncertain':'charger assignment could not be confirmed',
+      'counter-reset':'session energy counter reset',
+      'out-of-order':'session order or boundaries conflict',
+      'missing-final-reference':'final energy-added reading was not confirmed',
+      'missing-estimate':'recorded energy total is unavailable',
+      'missing-reference':`${tesla?'energy-added':'session-meter'} reference is unavailable`,
+      'zero-reference':`${tesla?'energy-added':'session-meter'} reference is zero`,
+      'comparison-incomplete':'complete recording or final reference could not be confirmed',
+    };
+    const reasons=Object.entries(reasonLabels).filter(([key])=>Number.isSafeInteger(s.exclusionReasons?.[key])&&s.exclusionReasons[key]>0)
+      .map(([key,label])=>`${s.exclusionReasons[key]} × ${label}`);
     return { title:tesla?'Charger 2':'Charger 1', subtitle:'Completed-session averages',
       when:Number.isFinite(s.lastSessionEnd)?`Last session: ${date(s.lastSessionEnd)}`:'No completed sessions recorded yet',
       value:count>0?`${number(s.differencePercent)}% energy-weighted difference · ${number(s.differenceKwh/count)} kWh average difference`
-        :'Session comparison pending: complete recording and a session reference needed',
+        :s.excludedSessions>0?'No sessions qualify for comparison yet.'
+          :'Session comparison pending: waiting for a completed session with full recording and a final reference.',
       details:[...(count>0?[`${number(s.estimatedKwh/count)} kWh recorded / ${number(s.referenceKwh/count)} kWh ${tesla?'added by car':'metered'} per session`]:[]),
         `${count} compared · ${s.excludedSessions ?? 0} excluded · ${s.recordedSessions ?? 0} recorded sessions`,
+        ...(reasons.length?[`Excluded because: ${reasons.join('; ')}.`,
+          'A session can have several reasons. Excluded sessions stay recorded and do not affect the averages.']:[]),
         ...(count>0?[`Compared sessions: ${date(s.start)} – ${date(s.end)}`]:[]),
         tesla?'Recorded input minus energy added. Includes charging losses; not a meter-accuracy percentage.':'Recorded estimate minus Charger 1 session meter.'] };
   }

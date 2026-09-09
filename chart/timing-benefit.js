@@ -7,9 +7,9 @@ export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
   let lastFingerprint, closed = false, notes, devices, overviewObserver, overviewHeight;
-  let latestPayload, modeStatus, heatingMode = 'timing';
+  let latestPayload, modeStatus, heatingMode = 'model';
   const preferenceKey = 'stmq.heatingSavingMode';
-  try { if (document.defaultView.localStorage?.getItem(preferenceKey) === 'model') heatingMode = 'model'; } catch {}
+  try { if (document.defaultView.localStorage?.getItem(preferenceKey) === 'timing') heatingMode = 'timing'; } catch {}
   const cards = new Map();
   const modeButtons = [];
 

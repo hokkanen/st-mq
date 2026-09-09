@@ -66,3 +66,24 @@ test('same meter panel presents per-session means without turning Tesla added-en
   assert.match(empty.value,/pending/);assert(!empty.value.includes('0%'));
   assert.equal(energyAuditRow({signal:'property_import_energy_counter',sourceTime:start}).subtitle,'Cumulative import meter');
 });
+
+test('excluded charger sessions explain known reasons instead of asking for references already recorded',()=>{
+  const display=energyAuditRow({kind:'charging-session-summary',source:'teslamate',summary:{
+    recordedSessions:2,comparedSessions:0,excludedSessions:2,
+    exclusionReasons:{disconnected:2,stale:2,'missing-start':1,'missing-end':1,'duplicate-suspected':1,
+      'invented-private-payload':1},
+  }});
+  assert.equal(display.value,'No sessions qualify for comparison yet.');
+  const details=display.details.join(' ');
+  assert.match(details,/2 × recording was interrupted by a disconnect or restart/);
+  assert.match(details,/2 × charging data stopped updating/);
+  assert.match(details,/1 × possible overlap with Charger 1 energy/);
+  assert.match(details,/A session can have several reasons/);
+  assert(!details.includes('reference is unavailable'));
+  assert(!details.includes('invented-private-payload'));
+  const easee=energyAuditRow({kind:'charging-session-summary',source:'easee',summary:{
+    recordedSessions:1,comparedSessions:0,excludedSessions:1,exclusionReasons:{'incomplete-coverage':1},
+  }});
+  assert.match(easee.details.join(' '),/recorded energy does not cover the whole session/);
+  assert(!easee.value.includes('reference needed'));
+});

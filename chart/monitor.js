@@ -146,6 +146,21 @@ function renderProviderSeries(root, rows) {
   }
   root.replaceChildren(list);
 }
+function renderH66Series(root) {
+  const groups = new Map();
+  for (const row of providerSeries('h66')) {
+    if (!groups.has(row.group)) groups.set(row.group, []);
+    groups.get(row.group).push(row);
+  }
+  const sections = [];
+  for (const [group, rows] of groups) {
+    const section = document.createElement('section'); section.className = 'equipment-series-group';
+    const heading = document.createElement('h4'); heading.textContent = group;
+    const list = document.createElement('div'); renderProviderSeries(list, rows);
+    section.append(heading, list); sections.push(section);
+  }
+  root.replaceChildren(...sections);
+}
 function renderProviders(s) {
   const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
   $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
@@ -294,14 +309,14 @@ function renderH66(s) {
   $('home-tariff-status').textContent = tariff.value; $('home-tariff-status').title = tariff.detail;
   $('home-tariff-status').dataset.h66Summary = 'tariff';
   $('h66-status').textContent = h66.connected ? 'H66 connected' : 'Not connected';
-  if (!$('h66-series').childElementCount) renderProviderSeries($('h66-series'), providerSeries('h66'));
-  $('h66-context').textContent = h66.restorationPending ? 'Restoring previous H66 settings. Outstanding settings remain pending until fresh device readback confirms their state.' : h66.reason ?? (h66.connected
-    ? 'Heat pump readback supplies compressor operation, heating destination and auxiliary output. Electrical power is estimated from configured equipment capacity.'
-    : 'Controls become available after the H66 connection and current readbacks are ready.');
+  if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
+  $('h66-context').textContent = h66.restorationPending ? 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.' : h66.reason ?? (h66.connected
+    ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
+    : 'Waiting for a live H66 connection and fresh values from the heat pump.');
   const table = document.createElement('table'); table.className = 'h66-table';
-  const caption = document.createElement('caption'); caption.textContent = 'Current heat pump readbacks'; table.append(caption);
+  const caption = document.createElement('caption'); caption.textContent = 'Latest values reported through H66'; table.append(caption);
   const head = document.createElement('thead'), header = document.createElement('tr');
-  for (const text of ['Reading', 'Value', 'Received / observed']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
+  for (const text of ['Reading', 'Value', 'Received']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
   head.append(header); table.append(head);
   const body = document.createElement('tbody');
   const readings = h66.readings ?? {};
@@ -313,7 +328,7 @@ function renderH66(s) {
     if (Number.isFinite(reading?.requested)) value.textContent += ` · requested ${h66ReadingValue(register, { ...reading, value: reading.requested })}`;
     if (Number.isFinite(reading?.baseline)) value.textContent += ` · original ${h66ReadingValue(register, { ...reading, value: reading.baseline })}`;
     if (reading?.stale || reading?.available === false || reading?.usableForControl === false) { value.className = 'stale'; value.textContent += ' · unavailable for control'; }
-    const at = document.createElement('td'), timestamp = reading?.at ?? reading?.receivedAt ?? reading?.sourceTime;
+    const at = document.createElement('td'), timestamp = reading?.receivedAt ?? reading?.at;
     at.textContent = timestamp && Number.isFinite(new Date(timestamp).getTime()) ? time(timestamp) : '—';
     row.append(title, value, at); body.append(row);
   }

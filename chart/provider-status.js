@@ -50,7 +50,7 @@ export function providerSeries(job, health = {}) {
           : role === 'House input' ? 'Measured temperature, used by the home model when selected and usable.'
             : ['Settings', 'Hot water'].includes(group) && signal.endsWith('_setting')
               ? 'Current setting reported by the heat pump.' : `${group}; reported by the heat pump.`;
-      return seriesRow([signal], label, unit, detail, 'H66');
+      return { ...seriesRow([signal], label, unit, detail, 'H66'), group };
     });
   }
   if (job === 'easee') {

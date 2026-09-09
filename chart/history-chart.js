@@ -137,7 +137,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       const intervals = (isMode ? payload?.operatingModes : payload?.shading?.[descriptor.key]) ?? [];
       const title = document.createElement('p');
       title.textContent = isMode ? 'Pump mode · readback (blank intervals: unknown)'
-        : descriptor.key === 'dhwr' ? 'DHWR · requested recirculation'
+        : descriptor.key === 'dhwr' ? 'DHWR · requested recirculation · 10 minutes after each addition'
           : `Fireplace · model burn window${Number.isFinite(payload.meta?.fireplaceInputs?.burnHours) ? ` · ${payload.meta.fireplaceInputs.burnHours} h after each addition` : ''}`;
       root.title = descriptor.detail;
       const track = document.createElement('div'); track.className = 'mode-track';

@@ -129,6 +129,7 @@ try {
     })()`), true, 'Accessible one-day arrows are compact and flank the shortcuts in one aligned row');
   };
   const checkActivityTracks = async () => {
+    assert.match(await evaluate("document.querySelector('#dhwr-history > p').textContent"), /DHWR · requested recirculation · 10 minutes after each addition/);
     assert.equal(await evaluate(`(() => {
       const canvas = document.getElementById('history').getBoundingClientRect();
       const rows = ['operating-modes', 'dhwr-history', 'fireplace-history'].map(id => document.getElementById(id));
@@ -529,6 +530,32 @@ try {
     const shot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });
     writeFileSync(`var/${name}.png`, Buffer.from(shot.data, 'base64'));
   };
+  const checkEquipment = async () => {
+    await evaluate("document.querySelector('#equipment-details > summary').focus(); true");
+    await command('input.performActions', { context, actions: [{ type: 'key', id: 'equipment-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
+    assert.equal(await evaluate("document.getElementById('equipment-details').open"), true, 'Equipment opens by keyboard');
+    const folds = ['h66-readings-details', 'h66-provider-details', 'h66-test-details', 'heating-test-details'];
+    assert.equal(await evaluate(`(${JSON.stringify(folds)}).every(id => {
+      const fold = document.getElementById(id);
+      return !fold.open && fold.parentElement.closest('details').id === 'equipment-details'
+        && fold.querySelector('summary').checkVisibility();
+    })`), true, 'Readings, data guide and tests are directly accessible peer folds');
+    for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
+      await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
+      await evaluate("document.getElementById('equipment-details').scrollIntoView({block:'start'}); true");
+      await capture(`home-energy-equipment-${viewport.width}`);
+      for (const id of ['h66-readings-details', 'h66-provider-details']) {
+        await evaluate(`document.querySelector('#${id} > summary').click(); document.getElementById('${id}').scrollIntoView({block:'start'}); true`);
+        assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
+        assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded equipment content fits the viewport');
+        await capture(`home-energy-${id}-${viewport.width}`);
+        await evaluate(`document.querySelector('#${id} > summary').click(); true`);
+      }
+      await evaluate("document.getElementById('theme-toggle').click(); true");
+    }
+    await evaluate("document.getElementById('equipment-details').open = false; true");
+    await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+  };
   await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
   await capture('home-energy-activity-dark');
   await evaluate("document.getElementById('theme-toggle').click(); true");
@@ -562,6 +589,8 @@ try {
     await checkDateAlignment();
     await evaluate("document.getElementById('date-range-enabled').click(); true");
     await capture(`home-energy-dark-${viewport.width}`);
+    await evaluate("document.querySelector('.control-fireplace').scrollIntoView({block:'start'}); true");
+    await capture(`home-energy-fireplace-${viewport.width}`);
     await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
     await capture(`home-energy-chart-${viewport.width}`);
     await evaluate('scrollTo(0, 0); true');
@@ -687,6 +716,7 @@ try {
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
   await until("document.getElementById('outdoor-age')?.textContent.includes('FMI nearby station')");
   await until("document.getElementById('history').dataset.ready === 'true'");
+  await checkEquipment();
   const providerChart = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?start=2026-09-07&end=2026-09-07&left=power`).then(response => response.json());
   for (const [key, expected] of [['property_power', 6.9], ['charger_power', 2.07]]) {
     assert.ok(providerChart.series[key].some(point => Number.isFinite(point.y) && Math.abs(point.y - expected) < 1e-9),
