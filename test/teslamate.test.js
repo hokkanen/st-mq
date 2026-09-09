@@ -67,12 +67,60 @@ test('retained state and a healthy heartbeat cannot by themselves start charging
   assert(Math.abs(f.energy() - 11 * 10 / 3600) < 1e-10, 'Only live-evidence coverage after startup contributes');
 });
 
+test('connection status distinguishes retained startup from live charging and expires before the maintenance tick', t => {
+  const f = setup(t, { max_age_seconds: 30 });
+  assert.equal(f.capture.status().reason, 'awaiting-readings');
+  begin(f, { retained: true });
+  assert.equal(f.capture.status().reason, 'awaiting-health');
+  f.send('healthy', true);
+  assert.equal(f.capture.status().reason, 'awaiting-charging-evidence');
+  f.send('charger_power', 11); f.tick();
+  assert.equal(f.capture.status().status, 'ok');
+  assert.equal(f.capture.status().recording, true);
+  const checkpoint = f.store.getState('teslamate:acquisition:1');
+  f.at(31_000);
+  assert.equal(f.capture.status().status, 'degraded');
+  assert.equal(f.capture.status().reason, 'teslamate-stale');
+  assert.equal(f.capture.status().recording, false);
+  assert.deepEqual(f.store.getState('teslamate:acquisition:1'), checkpoint, 'Reading status never saves new acquisition state');
+  f.capture.setConnected(false);
+  assert.equal(f.capture.status().reason, 'mqtt-disconnected');
+  assert.equal(f.capture.status().lastMessageAt, null);
+});
+
+test('idle, asleep and away status does not require changing charging evidence', t => {
+  const f = setup(t, { max_age_seconds: 30 });
+  f.send('healthy', true); f.send('state', 'asleep');
+  f.at(120_000);
+  assert.equal(f.capture.status().status, 'ok');
+  assert.equal(f.capture.status().reason, 'not-charging');
+  f.send('geofence', 'Invented away location'); f.send('state', 'charging');
+  assert.equal(f.capture.status().status, 'ok');
+  assert.equal(f.capture.status().reason, 'away-or-unknown-location');
+  f.send('healthy', false);
+  assert.equal(f.capture.status().status, 'degraded');
+  assert.equal(f.capture.status().reason, 'teslamate-unhealthy');
+});
+
+test('connection status exposes only safe descriptors and explains Charger 1 assignment', t => {
+  const f = setup(t, { charger_assignment: 'easee', namespace: 'invented-private-namespace', home_geofence: 'Invented home geofence' });
+  begin(f); f.send('geofence', 'Invented home geofence'); f.tick();
+  const status = f.capture.status();
+  assert.equal(status.reason, 'assigned-to-easee');
+  assert.equal(status.recording, false);
+  assert.deepEqual(Object.keys(status).sort(), ['charging', 'connected', 'healthy', 'home', 'lastMessageAt', 'reason', 'recording', 'sessionOpen', 'status', 'suppressed']);
+  assert(!JSON.stringify(status).includes('invented-private-namespace'));
+  assert(!JSON.stringify(status).includes('Invented home geofence'));
+});
+
 test('fresh comparable property impossibility suspends immediately and house load cannot revive stale Tesla power', t => {
   const f = setup(t); begin(f);
   f.at(10_000); f.property(13); f.tick();
   const before = f.energy();
   f.at(20_000); f.property(2); f.tick();
   assert.equal(f.capture.status().suppressed, 'property-power-impossible');
+  assert.equal(f.capture.status().status, 'degraded');
+  assert.equal(f.capture.status().reason, 'property-power-impossible');
   assert.equal(f.energy(), before);
   f.at(30_000); f.property(15); f.send('healthy', true); f.send('charge_energy_added', 0.2); f.tick();
   assert.equal(f.energy(), before);
@@ -302,6 +350,8 @@ test('unknown overlap buffers ordinary intervals in memory, then records them on
     f.send('healthy', true); f.send('charge_energy_added', n * 0.04); f.tick();
   }
   assert.equal(f.energy(), 0);
+  assert.equal(f.capture.status().reason, 'charger-identification-pending');
+  assert.equal(f.capture.status().recording, false);
   const checkpoint = f.store.getState('teslamate:acquisition:1');
   assert.equal(checkpoint.session.assignment, 'auto');
   assert.equal(checkpoint.session.estimatedKwh, 0);
@@ -311,6 +361,7 @@ test('unknown overlap buffers ordinary intervals in memory, then records them on
   Object.assign(status, { assignmentPending: false, verdict: 'bmw', phase: 'identified' });
   f.tick(); f.tick();
   assert(Math.abs(f.energy() - 11 * 60 / 3600) < 1e-10);
+  assert.equal(f.capture.status().reason, 'recording');
   assert.deepEqual(f.store.db.prepare("SELECT DISTINCT signal FROM observations WHERE source='teslamate' AND value IS NOT NULL").all().map(row => row.signal), ['ev2_energy']);
 });
 

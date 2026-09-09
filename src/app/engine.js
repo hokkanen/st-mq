@@ -74,6 +74,17 @@ function decorate(reading, signal, now) {
 }
 
 export class Engine {
+  providerStatus() {
+    const providers = { ...(this.store.getState('providers:health') ?? {}) };
+    if (this.teslamate) providers.teslamate = { source: 'teslamate', enabled: true, ...this.teslamate.status() };
+    else if (['mqtt', 'providers'].includes(this.config.input)) {
+      const enabled = this.config.connections?.teslamate?.enabled === true;
+      providers.teslamate = { source: 'teslamate', enabled, status: enabled ? 'waiting' : 'disabled',
+        reason: enabled ? 'awaiting-mqtt' : 'not-enabled', connected: false, charging: false, home: false,
+        healthy: false, lastMessageAt: null, suppressed: null, recording: false, sessionOpen: false };
+    } else delete providers.teslamate;
+    return providers;
+  }
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
   replayLearning(checkpoint) {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
@@ -763,7 +774,7 @@ export class Engine {
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
       heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
-      providers:this.store.getState('providers:health')??{},contract:this.contract(),configuredPrices:this.config.priceSettings??null,
+      providers:this.providerStatus(),contract:this.contract(),configuredPrices:this.config.priceSettings??null,
       recording:this.recorder.status(),fireplace:this.fireplaceStatus(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
@@ -784,7 +795,7 @@ export class Engine {
     result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();
     if (this.h66Status) result.h66 = this.h66Status();
-    result.providers = this.store.getState('providers:health') ?? {};
+    result.providers = this.providerStatus();
     for (const [key, signal] of [['indoor', 'indoor_temperature'], ['garage', 'garage_temperature'], ['outdoor', 'outdoor_temperature']]) {
       result.observations[key] = decorate(result.observations[key], signal, now);
     }

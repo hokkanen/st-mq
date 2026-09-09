@@ -214,6 +214,13 @@ estimate, receipt-time and held-value quality. No raw power/current MQTT archive
 is created. The power chart derives **Charger 2** kW from those intervals.
 There is no separate total-interval-energy selector or phase-current series for
 Charger 2. The existing Charger 1 timing comparison retains its original scope.
+**Data & settings → Connections & settings → Electricity consumption · Easee,
+Teslamate** includes these total power and energy series alongside the Charger 2
+session check. The source overview uses the same combined electricity group,
+while diagnostics identify Easee property/Charger 1 readings separately from
+TeslaMate Charger 2 capture. Charger 2's session reference is battery energy
+added, not an input electricity meter. Grouping these sources changes neither
+capture, integration, recording nor model-learning semantics.
 Power fills stack auxiliary heating, Charger 1 and Charger 2 in that order.
 Charger 1 uses the total-property-power color, and Charger 2 uses violet in both
 themes. Hiding a load removes it from the stack; unavailable lower readings leave

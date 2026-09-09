@@ -14,7 +14,7 @@ test('dashboard groups measured temperature channels under their actual sources 
   }, providers: { temperatures: { source: 'smartthings', status: 'ok', lastSuccessAt: now },
     easee: { status: 'ok' }, market: { status: 'ok', source: 'entsoe' },
     weather: { status: 'ok', source: 'fmi' }, outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
-  assert.deepEqual(entries.map(row => row.key), ['easee', 'market', 'main-temperatures', 'weather']);
+  assert.deepEqual(entries.map(row => row.key), ['electricity', 'market', 'main-temperatures', 'weather']);
   const grouped = entries[2];
   assert.equal(grouped.display.title, 'Main temperatures · SmartThings, FMI');
   assert.equal(grouped.display.state, 'Available');
@@ -104,6 +104,78 @@ test('H66 provider catalogue covers every decoded register without claiming tari
   assert.ok(series.every(row => row.source === 'H66' && row.label && row.unit && row.detail));
   assert.match(series.find(row => row.signals.includes('tariff_reduction_setting')).detail,
     /does not confirm that tariff control is active/);
+});
+
+test('electricity groups both connections and exposes Charger 2 totals without inventing phase measurements', () => {
+  const entries = dashboardProviders({ providers: { easee: { status: 'ok', lastSuccessAt: now },
+    market: { status: 'ok' }, teslamate: { status: 'ok', reason: 'recording', lastMessageAt: now } } }, options);
+  assert.deepEqual(entries.map(row => row.key), ['electricity', 'market']);
+  const [grouped] = entries;
+  assert.equal(grouped.display.title, 'Electricity consumption · Easee, Teslamate');
+  assert.equal(grouped.overviewTitle, 'Electricity consumption');
+  assert.equal(grouped.source, 'Easee, Teslamate');
+  assert.equal(grouped.display.state, 'Available');
+  assert.match(grouped.display.detail, /Property & Charger 1 · Easee: Available.*Last successful download 10:00/);
+  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Available.*Recording Charger 2.*Last MQTT message 10:00/);
+  const tesla = providerSeries('teslamate');
+  assert.deepEqual(tesla.flatMap(row => row.signals), ['charger2_power', 'ev2_energy', 'tesla_session_energy_check']);
+  assert.deepEqual(grouped.series.filter(row => row.label.startsWith('Charger 2')), tesla);
+  assert.match(tesla[0].detail, /interval-average.*recorded total energy.*Phase distribution is unknown/);
+  assert.match(tesla[1].detail, /at home.*gap.*Charger 1.*double counting/);
+  assert.match(tesla[2].detail, /battery.*electrical input.*charging losses.*does not correct recorded energy or train/);
+});
+
+test('either electricity source can request attention without hiding the other source diagnostics', () => {
+  const status = { providers: { easee: { status: 'ok' }, teslamate: { status: 'error', reason: 'mqtt-disconnected' } } };
+  let [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Needs attention');
+  assert.equal(grouped.display.attention, true);
+  assert.match(grouped.display.detail, /Property & Charger 1 · Easee: Available/);
+  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Needs attention.*MQTT connection is unavailable/);
+  status.providers.easee = { status: 'error', error: 'HTTP-429', nextAttemptAt: now + 300_000 };
+  status.providers.teslamate = { status: 'ok', reason: 'not-charging' };
+  [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.attention, true);
+  assert.match(grouped.display.detail, /Rate limited \(HTTP 429\).*Next try 10:05/);
+  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Available.*recording is idle/);
+  status.providers.easee = { status: 'ok' };
+  status.providers.teslamate = { status: 'degraded', reason: 'teslamate-stale' };
+  assert.match(dashboardProviders(status, options)[0].display.detail, /Live charging readings are out of date/);
+  status.providers.teslamate.reason = 'duplicate-suspected';
+  assert.match(dashboardProviders(status, options)[0].display.detail, /Possible overlap with Charger 1/);
+});
+
+test('electricity distinguishes waiting from idle, optional disabled sources and TeslaMate-only operation', () => {
+  const status = { providers: { easee: { status: 'ok' }, teslamate: { status: 'waiting', reason: 'awaiting-readings' } } };
+  let [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Partly available');
+  assert.equal(grouped.display.attention, false);
+  for (const reason of ['not-charging', 'away-or-unknown-location', 'assigned-to-easee']) {
+    status.providers.teslamate = { status: 'ok', reason };
+    [grouped] = dashboardProviders(status, options);
+    assert.equal(grouped.display.state, 'Available');
+    assert.equal(grouped.display.attention, false);
+  }
+  status.providers.teslamate = { status: 'disabled', reason: 'not-enabled' };
+  [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Available');
+  assert.match(grouped.display.detail, /Charger 2 · Teslamate: Not enabled/);
+  delete status.providers.easee;
+  status.providers.teslamate = { status: 'ok', reason: 'recording' };
+  [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.key, 'electricity');
+  assert.equal(grouped.display.state, 'Available');
+  assert.match(grouped.display.detail, /Property & Charger 1 · Easee: Not configured/);
+});
+
+test('electricity descriptions never include arbitrary MQTT identifiers or diagnostic content', () => {
+  const untrusted = 'invented-private-device';
+  for (const reason of [untrusted, 'constructor', '__proto__']) {
+    const [grouped] = dashboardProviders({ providers: { teslamate: { status: 'degraded', reason,
+      suppressed: untrusted, source: untrusted, device: untrusted, topic: untrusted, body: untrusted } } }, options);
+    assert.equal(grouped.display.attention, true);
+    assert.doesNotMatch(JSON.stringify(grouped), /invented-private-device|constructor|__proto__/);
+  }
 });
 
 test('Easee provider catalogue includes acquired fields and one Charger 1 session check without a lifetime counter', () => {

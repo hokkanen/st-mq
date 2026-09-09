@@ -208,7 +208,11 @@ additional storage or reconstructed historical coefficient traces. See the detai
 
 **Data & settings** shows a compact provider-health overview. **Connections &
 settings** opens each provider's data series and details, **Reload configuration**
-and **Electricity rates**. On wide screens, the home card sits beside the stacked
+and **Electricity rates**. **Electricity consumption · Easee, Teslamate** groups
+property import, Charger 1 and Charger 2 in both the source overview and the
+connection details. Easee and TeslaMate keep separate acquisition diagnostics;
+Charger 2 lists total power, estimated interval energy and its session check.
+On wide screens, the home card sits beside the stacked
 model and data cards, with both columns aligned when closed. The three cards stack
 on narrow screens; the event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,

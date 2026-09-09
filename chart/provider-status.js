@@ -1,9 +1,10 @@
 import { H66_HISTORY_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', smartthings: 'SmartThings', easee: 'Easee' });
+  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', smartthings: 'SmartThings', easee: 'Easee', teslamate: 'Teslamate' });
 const jobs = Object.freeze({ temperatures: 'SmartThings temperatures', smartthings: 'SmartThings temperatures',
-  easee: 'Easee electricity', market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
+  easee: 'Property & Charger 1 · Easee', teslamate: 'Charger 2 · Teslamate',
+  market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
 const states = Object.freeze({ ok: 'Available', healthy: 'Available', available: 'Available', success: 'Available',
   fallback: 'Using backup', running: 'Updating', fetching: 'Updating', error: 'Needs attention', degraded: 'Needs attention',
   disabled: 'Not enabled', unconfigured: 'Not configured', 'not-configured': 'Not configured', waiting: 'Waiting', pending: 'Waiting' });
@@ -70,6 +71,16 @@ export function providerSeries(job, health = {}) {
       seriesRow(phaseSignals(`${prefix}_energy`), `${label} phase energy L1–L3`, 'kWh',
         'Estimated from acquired electrical readings and saved per interval. The chart derives power and interval current estimates from these records.', 'Calculated from Easee'),
     ]);
+  }
+  if (job === 'teslamate') {
+    return [
+      seriesRow(['charger2_power'], 'Charger 2 total power', 'kW',
+        'The chart derives interval-average power from recorded total energy. Phase distribution is unknown.', 'Calculated from Teslamate'),
+      seriesRow(['ev2_energy'], 'Charger 2 total energy', 'kWh',
+        'Estimated from Tesla charging power over each recorded interval at home. Missing or uncertain coverage remains a gap; charging attributed to Charger 1 is excluded to prevent double counting.', 'Calculated from Teslamate'),
+      seriesRow(['tesla_session_energy_check'], 'Charger 2 session check', 'kWh',
+        'Finalized energy added to the battery, compared with recorded electrical input. The difference includes charging losses; this check does not correct recorded energy or train the model.', 'Teslamate'),
+    ];
   }
   if (job === 'market') {
     const source = selectedSource(health, ['entsoe', 'elering'], 'ENTSO-E / Elering');
@@ -152,21 +163,44 @@ function temperatureDisplay(status, entries, options) {
     display: { title: `Main temperatures${sources ? ` · ${sources}` : ''}`, state, attention, detail: details.join(' ') }, series: rows };
 }
 
-/** Present current temperature sources together while keeping each provider's
+const electricityJobs = ['easee', 'teslamate'];
+const inactiveStates = ['Not configured', 'Not enabled'];
+
+function electricityDisplay(entries, options) {
+  const displays = electricityJobs.map(key => {
+    const health = entries.find(([job]) => job === key)?.[1];
+    return health ? describeProvider(key, health, options)
+      : { title: jobs[key], state: 'Not configured', attention: false, detail: 'No connection configured.' };
+  });
+  const active = displays.filter(display => !inactiveStates.includes(display.state));
+  const attention = active.some(display => display.attention);
+  const available = active.filter(display => display.state === 'Available').length;
+  const state = attention ? 'Needs attention' : active.length && available === active.length ? 'Available'
+    : available ? 'Partly available' : active.some(display => display.state === 'Updating') ? 'Updating'
+      : active.length ? 'Waiting for readings' : displays.every(display => display.state === 'Not enabled') ? 'Not enabled' : 'Not configured';
+  return { key: 'electricity', overviewTitle: 'Electricity consumption', source: 'Easee, Teslamate', backup: false,
+    display: { title: 'Electricity consumption · Easee, Teslamate', state, attention,
+      detail: displays.map(display => `${display.title}: ${display.state}. ${display.detail}`).join(' ') },
+    series: electricityJobs.flatMap(key => providerSeries(key)) };
+}
+
+/** Present electricity and current temperature sources together while keeping each provider's
  * acquisition diagnostics. No device identifiers or arbitrary source strings
  * enter these descriptors, and forecast data remains a separate final entry. */
 export function dashboardProviders(status, options) {
   const entries = Object.entries(status.providers ?? {}).filter(([key, health]) => health && typeof health === 'object'
     && !(['temperatures', 'smartthings'].includes(key) && ['not-configured', 'disabled'].includes(health.status)));
   const temperatures = entries.filter(([key]) => temperatureJobs.includes(key));
+  const electricity = entries.filter(([key]) => electricityJobs.includes(key));
   const describe = ([key, health]) => {
     const display = describeProvider(key, health, options);
     return { key, display, series: providerSeries(key, health), backup: health.status === 'fallback',
-      overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast', easee: 'Property & Charger 1' })[key] ?? 'Data source',
-      source: providerName(health.source ?? health.acquisition?.selected) ?? (key === 'easee' ? 'Easee' : display.title) };
+      overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast' })[key] ?? 'Data source',
+      source: providerName(health.source ?? health.acquisition?.selected) ?? display.title };
   };
   return [
-    ...entries.filter(([key]) => !temperatureJobs.includes(key) && key !== 'weather').map(describe),
+    ...entries.filter(([key]) => !temperatureJobs.includes(key) && key !== 'weather').flatMap(entry =>
+      electricityJobs.includes(entry[0]) ? entry === electricity[0] ? [electricityDisplay(electricity, options)] : [] : [describe(entry)]),
     ...(temperatures.length || ['mqtt', 'providers'].includes(status.input) ? [temperatureDisplay(status, temperatures, options)] : []),
     ...entries.filter(([key]) => key === 'weather').map(describe),
   ];
@@ -259,9 +293,41 @@ function describeEasee(health, { now, formatTime }) {
   return { title: jobs.easee, state, attention, detail: [...new Set(sentences)].join(' ') };
 }
 
+const teslamateReasons = Object.freeze({
+  'not-enabled': 'Charger 2 recording is not enabled.',
+  'awaiting-mqtt': 'Waiting for the MQTT connection.',
+  'mqtt-disconnected': 'The MQTT connection is unavailable. Charger 2 recording is interrupted.',
+  'awaiting-readings': 'Waiting for Tesla charging readings over MQTT.',
+  'teslamate-unhealthy': 'Teslamate reports unhealthy vehicle telemetry.',
+  'not-charging': 'The car is not charging; Charger 2 recording is idle.',
+  'away-or-unknown-location': 'Home charging is not confirmed; no Charger 2 consumption is recorded.',
+  'assigned-to-easee': 'Charging is attributed to Charger 1 and excluded from Charger 2 to prevent double counting.',
+  'awaiting-health': 'Waiting for live vehicle health before recording Charger 2.',
+  'awaiting-charging-evidence': 'Waiting for live charging evidence before recording Charger 2.',
+  'teslamate-stale': 'Live charging readings are out of date. Charger 2 recording is interrupted.',
+  'charger-identification-pending': 'Waiting for charger identification; uncertain energy is held out of Charger 2 history.',
+  'awaiting-session-reference': 'Waiting for the charging session reference before recording Charger 2.',
+  'awaiting-recording': 'Waiting for usable charging readings before recording Charger 2.',
+  recording: 'Recording Charger 2 consumption from Tesla charging power at home.',
+  'property-power-impossible': 'Tesla charging power exceeds comparable property power; Charger 2 recording is suspended.',
+  'duplicate-suspected': 'Possible overlap with Charger 1; Charger 2 recording is suspended to prevent double counting.',
+  'assignment-uncertain': 'Charger attribution is uncertain; Charger 2 recording is suspended.',
+});
+
+function describeTeslaMate(health, { now, formatTime }) {
+  const reason = Object.hasOwn(teslamateReasons, health.reason) ? teslamateReasons[health.reason] : 'Waiting for Charger 2 recording status.';
+  const messages = [reason];
+  if (Number.isFinite(health.lastMessageAt) && health.lastMessageAt > 0 && health.lastMessageAt <= now) {
+    messages.push(`Last MQTT message ${formatTime(health.lastMessageAt)}. Message receipt time is not a vehicle measurement timestamp.`);
+  }
+  return { title: jobs.teslamate, state: states[health.status] ?? 'Status pending',
+    attention: ['error', 'degraded'].includes(health.status), detail: messages.join(' ') };
+}
+
 /** Only known source names, failure codes and quality flags enter display text; provider bodies never do. */
 export function describeProvider(job, health, { now, formatTime }) {
   if (job === 'easee') return describeEasee(health, { now, formatTime });
+  if (job === 'teslamate') return describeTeslaMate(health, { now, formatTime });
   const source = health.source ?? health.acquisition?.selected;
   const selected = providerName(source);
   const base = jobs[job] ?? 'Data provider';

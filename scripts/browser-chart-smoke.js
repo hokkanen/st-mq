@@ -693,6 +693,12 @@ try {
     priceSettings: { ...config.priceSettings, effectiveDate: '2026-09-07' },
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } },
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
+  // Supply capture health independently of the manual-command broker fixture.
+  // No MQTT connection, household identifiers or raw TeslaMate fields are used.
+  let charger2Status = { source: 'teslamate', enabled: true, status: 'ok', reason: 'recording',
+    connected: true, charging: true, home: true, suppressed: null, recording: true,
+    sessionOpen: true, healthy: true, lastMessageAt: now };
+  app.engine.teslamate = { status: () => ({ ...charger2Status }), tick() {} };
   seedChargingFixture(app.store,'teslamate');
   for(const [prefix,power] of [['property',6.9],['ev1',2.07]]) {
     app.engine.ingestEnergy({source:'easee',device:`synthetic-${prefix}`,prefix,start:now-5*60_000,end:now,
@@ -736,6 +742,45 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · SmartThings, FMI');
   assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
     'Indoor temperature · °C,Garage temperature · °C,Outdoor temperature · °C');
+  assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-heading > strong').textContent"),
+    'Electricity consumption · Easee, Teslamate');
+  assert.equal(await evaluate("document.querySelectorAll('[data-provider=easee], [data-provider=teslamate]').length"), 0,
+    'Both electricity acquisitions appear in one connection card');
+  const electricitySeries = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll(
+    '[data-provider=electricity] .provider-series > li > strong')].map(row => row.textContent))`));
+  assert.deepEqual(electricitySeries.filter(label => label.startsWith('Charger 2')), [
+    'Charger 2 total power · kW', 'Charger 2 total energy · kWh', 'Charger 2 session check · kWh',
+  ], 'Charger 2 exposes total quantities and the audit reference without invented phase readings');
+  for (const label of ['Property phase energy L1–L3 · kWh', 'Charger 1 phase energy L1–L3 · kWh'])
+    assert.ok(electricitySeries.includes(label), `${label} remains in the combined catalogue`);
+  const electricityOverview = () => evaluate(`JSON.stringify((() => {
+    const row = [...document.querySelectorAll('#provider-overview > .source-overview')]
+      .find(item => item.querySelector('span').textContent === 'Electricity consumption');
+    return row ? { title: row.querySelector('span').textContent, source: row.querySelector('small').textContent,
+      state: row.querySelector('strong').textContent, attention: row.dataset.state === 'attention' } : null;
+  })())`);
+  assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
+    source: 'Easee, Teslamate', state: 'Available', attention: false });
+  await evaluate(`document.getElementById('connections-details').open = true;
+    document.querySelector('[data-provider=electricity] summary').focus(); true`);
+  await command('input.performActions', { context, actions: [{ type: 'key', id: 'electricity-keyboard',
+    actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
+  assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
+    'The combined electricity connection opens with the keyboard');
+  charger2Status = { ...charger2Status, status: 'error', reason: 'mqtt-disconnected',
+    connected: false, recording: false, healthy: false };
+  await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
+  await until("document.querySelector('[data-provider=electricity] .provider-heading > span').textContent === 'Needs attention'");
+  assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
+    source: 'Easee, Teslamate', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
+  assert.match(await evaluate("document.querySelector('[data-provider=electricity] .provider-health').textContent"),
+    /Charger 2.*MQTT connection is unavailable/i, 'The connection failure identifies Charger 2');
+  assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
+    'Updating capture health preserves the expanded connection');
+  charger2Status = { ...charger2Status, status: 'ok', reason: 'recording',
+    connected: true, recording: true, healthy: true };
+  await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
+  await until("document.querySelector('[data-provider=electricity] .provider-heading > span').textContent === 'Available'");
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast is the final provider');
   assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'Weather forecast is last in the closed overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
@@ -782,6 +827,8 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+    electricityConnections: ['combined-source-overview-and-connection', 'charger2-total-series-and-session-check',
+      'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
     checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;

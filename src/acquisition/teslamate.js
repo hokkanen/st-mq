@@ -371,6 +371,36 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       else state.cursor = now;
     });
   }
+  function status(now = clock()) {
+    const charging = Boolean(isCharging()), home = atHome(), check = identification();
+    const healthy = cache.healthy?.value === true && recent(healthyAt, now);
+    let status = 'ok', reason = 'awaiting-recording';
+    const waiting = value => { status = 'waiting'; reason = value; };
+    const degraded = value => { status = 'degraded'; reason = value; };
+    if (!connected) { status = 'error'; reason = 'mqtt-disconnected'; }
+    else if (cache.healthy?.value === false) degraded('teslamate-unhealthy');
+    else if (typeof cache.state?.value !== 'string' && typeof cache.charging_state?.value !== 'string') waiting('awaiting-readings');
+    // Idle/asleep and away cars legitimately hold unchanged MQTT power fields.
+    // Fresh charging evidence is required only when recording home charging.
+    else if (!charging) reason = 'not-charging';
+    else if (!cache.geofence) waiting('awaiting-readings');
+    else if (!home) reason = 'away-or-unknown-location';
+    else if (config.chargerAssignment === 'easee' || check.verdict === 'easee') reason = 'assigned-to-easee';
+    else if (state.suppression) degraded(state.suppression.reason);
+    else if (!healthy) healthyAt === null ? waiting('awaiting-health') : degraded('teslamate-stale');
+    else if (!recent(evidenceAt, now)) evidenceAt === null ? waiting('awaiting-charging-evidence') : degraded('teslamate-stale');
+    else if (identificationEnabled && !check.verdict && (check.active || check.assignmentPending || pendingEnergy.length)) waiting('charger-identification-pending');
+    else if (!positive(power()) || power() === 0) waiting('awaiting-charging-evidence');
+    else if (!state.session && !positive(cache.charge_energy_added?.value)) waiting('awaiting-session-reference');
+    else if (lastGapReason === null && !pendingEnergy.length && state.session && state.session.end == null) reason = 'recording';
+    else waiting('awaiting-recording');
+    const messageTimes = Object.values(cache).map(field => field.at).filter(validTime);
+    // Keep configuration, MQTT topics, raw fields and device identifiers private.
+    // These descriptors are calculated on demand and never enter the checkpoint.
+    return { status, reason, connected, charging, home, healthy,
+      lastMessageAt: messageTimes.length ? Math.max(...messageTimes) : null,
+      suppressed: state.suppression?.reason ?? null, recording: reason === 'recording', sessionOpen: Boolean(state.session) };
+  }
   return { topic: `${root}#`, receive, tick, setConnected,
     identificationSnapshot: () => ({ connected, home: cache.geofence ? atHome() : undefined, charging: isCharging(),
       plugged: isCharging() ? true : cache.charging_state?.value === 'Disconnected' || cache.state?.value === 'driving' ? false : undefined,
@@ -380,6 +410,5 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       energyKwh: cache.charge_energy_added?.value, energyAt: cache.charge_energy_added?.retained ? null : cache.charge_energy_added?.at ?? null,
       sessionKey: cache.since?.value ?? null }),
     close: () => setConnected(false),
-    status: () => ({ connected, charging: isCharging(), home: atHome(), suppressed: state.suppression?.reason ?? null,
-      recording: connected && lastGapReason === null && !pendingEnergy.length && Boolean(state.session), sessionOpen: Boolean(state.session) }) };
+    status };
 }
