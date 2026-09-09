@@ -82,12 +82,11 @@ phase shares is missing data, not an invented equal split. Fresh zero total powe
 can produce three zero increments without requiring phase shares.
 
 Phase currents may keep older timestamps while reported total power continues
-updating. With fresh reported total power, older valid currents may supply
+updating. With usable reported total power, older valid currents may supply
 estimated phase shares, labelled `last_reported_phase_weights` for nonzero values
-and `last_reported_zero_phase_weights` for zeros. The total-power timestamp anchors
-energy freshness; an aging allocation weight or voltage must not discard fresh
-aggregate consumption. Original phase timestamps remain unchanged, and
-asynchronous inputs stay labelled. Failed, invalid or future readings cannot
+and `last_reported_zero_phase_weights` for zeros. An aging allocation weight or
+voltage must not discard usable aggregate consumption. Original phase timestamps
+remain unchanged, and asynchronous inputs stay labelled. Failed, invalid or future readings cannot
 supply shares. Voltage × current fallback still requires fresh currents and
 verified voltages because those measurements establish consumption themselves.
 
@@ -99,15 +98,38 @@ specify three distinct IDs from `190–199`, in L1/L2/L3 order. An empty list us
 current shares with reported active power. Do not copy a terminal mapping from a
 different grid or installation without checking it.
 
+The same batched request also reads cloud connection observation `250` and, for
+the charger, telemetry IDs `130`, `132`, `136` and `150` (signal strength and maximum
+temperature). Only validated timestamps and connection state are retained as
+metadata; diagnostic values are discarded and no new series are recorded.
+Unchanged total power, including zero while idle, can remain usable when the
+connection is explicitly online and a valid electrical or charger diagnostic
+observation from the same device is still recent. A cloud reconnect does not
+reset the timestamps of unchanged electrical values. The newest observation
+supplies a separate `telemetryAt` clock, including across checkpoint restart.
+The original power and phase timestamps remain unchanged. Confirmed device
+telemetry is labelled `device_telemetry_confirmed`; holding older power adds
+`held_power_with_live_telemetry`.
+
+A cached online flag, HTTP receipt time, cumulative counter, or another device's
+readings cannot establish that freshness. Invalid or future observations cannot
+provide confirmation, and an explicit disconnection ends availability immediately.
+Charger terminal-pair voltages can confirm that the device is reporting even when
+their mapping is unsuitable for phase allocation or VI-only power estimation.
+
 Current, voltage and power snapshots remain acquisition-only. Current snapshots
 can appear in live status, but are not new historical or training signals.
 Restart state does not authorize integration over a long outage: the default
-maximum gap between usable polls is 60 seconds, and the measurements anchoring
-integration expire after five minutes: reported total power, or all currents and
-voltages on the VI fallback path. Repeated cached API values keep their original
-source age; successful HTTP polling alone cannot extend an old total-power
-reading, including zero while idle. Failures, expiry, backwards timestamps within
-the same measurement basis and recovery leave explicit gaps;
+maximum gap between usable polls is 60 seconds. Direct total-power measurements
+and all currents/voltages on the VI fallback path expire after five minutes.
+Independently confirmed device telemetry has a separate 17-minute default,
+following [Easee's documented online-detection window](https://developer.easee.com/changelog/ocpp-15).
+This is a bounded continuity estimate, not a promise that electrical fields are
+republished on every poll. Configure the window with
+`acquisition.electricity_telemetry_max_age_seconds` (default `1020`). Repeated
+cached API values keep their original source age; successful HTTP polling alone
+cannot extend an old total-power reading. Failures, expiry, backwards timestamps
+within the same measurement basis and recovery leave explicit gaps;
 there is no unbounded last-value hold. Pump/phase zero transitions bypass the
 numerical change threshold.
 
@@ -192,6 +214,7 @@ Permanent options:
     "market_poll_minutes": 60,
     "market_retry_minutes": 15,
     "electricity_source_max_age_seconds": 300,
+    "electricity_telemetry_max_age_seconds": 1020,
     "electricity_max_gap_seconds": 60
   }
 }

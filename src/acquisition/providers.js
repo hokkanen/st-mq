@@ -164,6 +164,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
   devices ??= createDeviceProviders({ connections, http, clock, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
   const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
   const integrationOptions = { maxAgeMs: cadence.electricityMaxAgeMs ?? 5 * MINUTE,
+    maxTelemetryAgeMs: cadence.electricityTelemetryMaxAgeMs ?? 17 * MINUTE,
     maxGapMs: cadence.electricityMaxGapMs ?? MINUTE };
   let electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: store.getState('electricity:acquisition') });
   const configuredCurrents = [['charger', 'charger_id'], ['property', 'equalizer_id']]

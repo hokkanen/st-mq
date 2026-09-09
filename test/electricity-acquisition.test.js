@@ -150,6 +150,68 @@ test('power and VI freshness clocks may differ across a basis change, while same
   assert.deepEqual(rollback.gaps[0].quality, ['source_time_rollback']);
 });
 
+const confirmedSample = (now, { telemetryAt = now, connection = { connected: true, observedAt: initial - 3_600_000 } } = {}) =>
+  sample(now, { timestamp: initial - 3_600_000 }).map(row => ({ ...row,
+    sourceTime: row.signal === 'property_voltage_l1' ? telemetryAt : row.sourceTime,
+    raw: { ...row.raw, deviceConnection: connection },
+  }));
+
+test('device telemetry confirms unchanged power across checkpoint restart without freshening its source clock', () => {
+  let accumulator = new ElectricityAccumulator();
+  const rows = confirmedSample(initial), original = structuredClone(rows);
+  assert.equal(accumulator.sample(rows, initial).gaps.length, 0);
+  const checkpoint = accumulator.checkpoint();
+  assert.equal(Object.values(checkpoint.devices)[0].sourceTime, initial - 3_600_000);
+  assert.equal(Object.values(checkpoint.devices)[0].telemetryAt, initial);
+  accumulator = new ElectricityAccumulator({ checkpoint });
+  const result = accumulator.sample(confirmedSample(initial + 15_000), initial + 15_000);
+  assert.equal(result.gaps.length, 0);
+  const [interval] = result.intervals;
+  assert.equal(interval.sourceTime, initial - 3_600_000);
+  assert.equal(interval.telemetryAt, initial + 15_000);
+  assert(interval.quality.includes('held_power_with_live_telemetry'));
+  near(interval.energies.reduce((sum, value) => sum + value, 0), 3.5 * 15 / 3600);
+  assert.deepEqual(rows, original);
+});
+
+test('cached online state, HTTP receipts, counters and other devices cannot confirm stale power', () => {
+  const cases = [
+    confirmedSample(initial, { telemetryAt: initial - 18 * 60_000 }),
+    confirmedSample(initial, { connection: null }),
+    confirmedSample(initial, { connection: { connected: null, observedAt: null } }),
+    confirmedSample(initial, { connection: { connected: true, observedAt: initial + 1 } }),
+    confirmedSample(initial, { telemetryAt: initial + 1 }),
+    ...['provider_error', 'invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'future_source_time'].map(flag =>
+      confirmedSample(initial).map(row => row.signal === 'property_voltage_l1' ? { ...row, quality: [flag] } : row)),
+    confirmedSample(initial).map(row => row.signal === 'property_voltage_l1' ? { ...row, unit: 'kWh' } : row),
+    [...confirmedSample(initial, { telemetryAt: initial - 18 * 60_000 }),
+      ...sample(initial, { counter: 123 }).filter(row => row.signal.endsWith('_counter'))],
+    [...confirmedSample(initial, { telemetryAt: initial - 18 * 60_000 }),
+      ...sample(initial).map(row => ({ ...row, device: 'another-invented-meter' }))],
+  ];
+  for (const rows of cases) {
+    const result = new ElectricityAccumulator().sample(rows, initial);
+    assert.equal(result.intervals.length, 0);
+    assert(result.gaps.some(gap => gap.device === 'invented-meter'));
+  }
+});
+
+test('explicit device disconnection vetoes even recently reported power until a new online observation', () => {
+  const accumulator = new ElectricityAccumulator();
+  accumulator.sample(sample(initial), initial);
+  const disconnected = now => sample(now).map(row => ({ ...row,
+    raw: { ...row.raw, deviceConnection: { connected: false, observedAt: initial + 1000 } },
+  }));
+  const lost = accumulator.sample(disconnected(initial + 15_000), initial + 15_000);
+  assert.equal(lost.intervals.length, 0);
+  assert.equal(lost.gaps.length, 1);
+  const recovered = now => sample(now).map(row => ({ ...row,
+    raw: { ...row.raw, deviceConnection: { connected: true, observedAt: initial + 20_000 } },
+  }));
+  assert.equal(accumulator.sample(recovered(initial + 30_000), initial + 30_000).intervals.length, 0);
+  assert.equal(accumulator.sample(recovered(initial + 45_000), initial + 45_000).intervals.length, 1);
+});
+
 test('counter audits are deduplicated and resets never change integrated phase energies', () => {
   const audited = new ElectricityAccumulator(), plain = new ElectricityAccumulator();
   for (let poll = 0; poll < 3; poll++) {
@@ -178,8 +240,8 @@ test('batched provider reads power, phases and audit counters once per device wi
     } } });
   const rows = await provider.electricity({ now: initial });
   assert.equal(calls.length, 2); assert.equal(rows.length, 16);
-  assert.deepEqual(new URL(calls[0]).searchParams.get('ids').split(',').map(Number), [183, 184, 185, 194, 195, 196, 120, 124]);
-  assert.deepEqual(new URL(calls[1]).searchParams.get('ids').split(',').map(Number), [31, 32, 33, 34, 35, 36, 40, 45]);
+  assert.deepEqual(new URL(calls[0]).searchParams.get('ids').split(',').map(Number), [183, 184, 185, 194, 195, 196, 120, 124, 250, 130, 132, 136, 150]);
+  assert.deepEqual(new URL(calls[1]).searchParams.get('ids').split(',').map(Number), [31, 32, 33, 34, 35, 36, 40, 45, 250]);
   assert(rows.every(row => row.raw.acquisitionOnly));
   assert.deepEqual(rows.filter(row => row.raw.auditOnly).map(row => row.signal), ['ev1_lifetime_energy_counter', 'property_import_energy_counter']);
   assert(!rows.some(row => row.signal === 'ev1_session_energy_counter'), 'Session energy is ignored even if the API returns it unsolicited');

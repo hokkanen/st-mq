@@ -109,6 +109,131 @@ test('failed Easee acquisition still breaks derived power and currents until fre
   } finally { store.close(); }
 });
 
+function unchangedElectricalReadings(store, start, chargerPower) {
+  const recorder = new Recorder(store), accumulator = new ElectricityAccumulator();
+  const devices = [
+    { prefix: 'property', power: 2.3, currents: [2, 3, 5] },
+    { prefix: 'ev1', power: chargerPower, currents: chargerPower === 0 ? [0, 0, 0] : [4, 4, 2] },
+  ];
+  const originalAt = start - 10 * MINUTE;
+  return { recorder, devices, originalAt, poll(at, { telemetryAt = at, deviceTelemetryAt, connected = true, connectionAt = start - HOUR } = {}) {
+    const rows = devices.flatMap(({ prefix, power, currents }) => [
+      { signal: `${prefix}_active_power`, value: power, unit: 'kW', sourceTime: originalAt },
+      ...currents.map((value, index) => ({ signal: `${prefix}_current_l${index + 1}`, value, unit: 'A', sourceTime: originalAt })),
+      // A single changing voltage confirms that this device is still reporting;
+      // its older connection event is not itself a measurement heartbeat.
+      { signal: `${prefix}_voltage_l1`, value: 230, unit: 'V', sourceTime: telemetryAt },
+    ].map(row => ({ ...row, source: 'easee', device: `invented-${prefix}`, receivedAt: at,
+      quality: at - row.sourceTime > 5 * MINUTE ? ['stale'] : [],
+      raw: { deviceConnection: { connected, observedAt: connected === null ? null : connectionAt },
+        ...(prefix === 'ev1' && deviceTelemetryAt !== undefined ? { deviceTelemetryAt } : {}) },
+    })));
+    const result = accumulator.sample(rows, at);
+    for (const row of rows) recorder.record(row);
+    for (const gap of result.gaps) recorder.energyGap(gap);
+    for (const interval of result.intervals) recorder.recordEnergy(interval);
+    return result;
+  } };
+}
+
+for (const chargerPower of [0, 4.6]) test(`connected Easee telemetry keeps unchanged power and currents continuous at ${chargerPower} kW charger power`, () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, end = start + 20 * MINUTE;
+    const { recorder, devices, originalAt, poll } = unchangedElectricalReadings(store, start, chargerPower);
+    for (let at = start; at <= end; at += 15_000) {
+      const result = poll(at);
+      assert.equal(result.gaps.length, 0, 'Fresh same-device voltage confirms unchanged power without renewing its original timestamp');
+      assert.equal(result.intervals.length, at === start ? 0 : devices.length);
+      assert(result.intervals.every(interval => interval.sourceTime === originalAt));
+    }
+    recorder.flush(end, { force: true });
+    const options = { store, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', now: end + MINUTE };
+    const power = getChartData({ ...options, left: 'power' }), phases = getChartData({ ...options, left: 'phases' });
+    for (const { prefix, power: kw, currents } of devices) {
+      const curves = [[power.series[prefix === 'property' ? 'property_power' : 'charger_power'], kw],
+        ...currents.map((weight, index) => [phases.series[`${prefix}_current_l${index + 1}`], kw * weight / 10 / 0.23])];
+      for (const [rows, expected] of curves) {
+        assert.equal(rows[0].x, start);
+        assert.equal(rows.at(-2).x, end - 1);
+        assert.deepEqual(rows.at(-1), { x: end, y: null });
+        assert(rows.filter(row => row.x < end).every(row => Number.isFinite(row.y)), 'Unchanged and idle readings draw continuous lines');
+        for (const row of rows.filter(row => row.y !== null)) near(row.y, expected);
+      }
+      const energy = store.observations().filter(row => row.signal.startsWith(`${prefix}_energy_l`) && Number.isFinite(row.value));
+      assert(energy.length < 80 * 3 / 2, 'Continuity does not require saving every acquisition');
+      near(energy.reduce((sum, row) => sum + row.value, 0), kw * (end - start) / HOUR);
+    }
+  } finally { store.close(); }
+});
+
+for (const failure of ['stalled telemetry', 'missing connection', 'disconnected']) test(`Easee ${failure} leaves a real chart gap before confirmed telemetry recovers`, () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, failedAt = start + 10 * MINUTE;
+    const recoveredAt = failedAt + (failure === 'stalled telemetry' ? 20 : 8) * MINUTE;
+    const end = recoveredAt + 5 * MINUTE;
+    const lastGoodAt = failedAt - 15_000 + (failure === 'stalled telemetry' ? 17 * MINUTE : 0);
+    const { recorder, devices, poll } = unchangedElectricalReadings(store, start, 0);
+    for (let at = start; at <= end; at += 15_000) {
+      const failed = at >= failedAt && at < recoveredAt;
+      poll(at, !failed ? {} : failure === 'stalled telemetry' ? { telemetryAt: failedAt - 15_000 }
+        : { connected: failure === 'disconnected' ? false : null });
+    }
+    recorder.flush(end, { force: true });
+    const options = { store, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', now: end + MINUTE };
+    const power = getChartData({ ...options, left: 'power' }), phases = getChartData({ ...options, left: 'phases' });
+    for (const { prefix, power: kw } of devices) {
+      const curves = [power.series[prefix === 'property' ? 'property_power' : 'charger_power'],
+        ...[1, 2, 3].map(phase => phases.series[`${prefix}_current_l${phase}`])];
+      for (const rows of curves) {
+        assert(rows.some(row => Number.isFinite(row.y) && row.x < lastGoodAt));
+        assert(rows.filter(row => row.x >= start && row.x < lastGoodAt).every(row => Number.isFinite(row.y)), 'Available telemetry must not expire before its permitted reporting interval');
+        assert(rows.some(row => row.y === null && row.x >= lastGoodAt && row.x < recoveredAt));
+        assert(!rows.some(row => Number.isFinite(row.y) && row.x >= lastGoodAt && row.x < recoveredAt), 'HTTP success cannot bridge absent device evidence');
+        assert(rows.some(row => Number.isFinite(row.y) && row.x === recoveredAt));
+        assert.equal(rows.at(-2).x, end - 1);
+      }
+      const energy = store.observations().filter(row => row.signal.startsWith(`${prefix}_energy_l`) && Number.isFinite(row.value));
+      assert(energy.every(row => row.raw.intervalEnd <= lastGoodAt || row.raw.intervalStart >= recoveredAt));
+      near(energy.reduce((sum, row) => sum + row.value, 0), kw * (lastGoodAt - start + end - recoveredAt) / HOUR);
+    }
+  } finally { store.close(); }
+});
+
+for (const failure of ['disconnection', 'stalled device telemetry']) test(`independent charger telemetry keeps cached idle readings through cloud reconnection but respects ${failure}`, () => {
+  const store = new Store(':memory:');
+  try {
+    const start = day.from + HOUR, stalled = failure === 'stalled device telemetry';
+    const failedAt = start + 20 * MINUTE, recoveredAt = stalled ? start + 10 * MINUTE : failedAt + 2 * MINUTE;
+    const end = recoveredAt + 3 * MINUTE, lastGoodAt = stalled ? start + 7 * MINUTE : failedAt - 15_000;
+    const { recorder, originalAt, poll } = unchangedElectricalReadings(store, start, 0);
+    for (let at = start; at <= end; at += 15_000) {
+      const connected = stalled || at < failedAt || at >= recoveredAt;
+      const available = at <= lastGoodAt || at >= recoveredAt;
+      const result = poll(at, { telemetryAt: originalAt,
+        deviceTelemetryAt: stalled && at < recoveredAt ? originalAt : at - 10 * MINUTE,
+        connected, connectionAt: start - 5 * MINUTE });
+      const charging = result.intervals.filter(interval => interval.prefix === 'ev1');
+      if (available && at !== start && at !== recoveredAt) assert.equal(charging.length, 1);
+      if (!available) assert.equal(charging.length, 0);
+      assert(charging.every(interval => interval.sourceTime === originalAt), 'A cloud reconnect does not reset the physical power reading');
+    }
+    recorder.flush(end, { force: true });
+    const options = { store, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', now: end + MINUTE };
+    const power = getChartData({ ...options, left: 'power' }), phases = getChartData({ ...options, left: 'phases' });
+    for (const rows of [power.series.charger_power, ...[1, 2, 3].map(phase => phases.series[`ev1_current_l${phase}`])]) {
+      assert.equal(rows[0].x, start);
+      assert(rows.filter(row => row.x < lastGoodAt).every(row => row.y === 0), 'Idle power remains a continuous zero line while device reports arrive');
+      assert(rows.some(row => row.y === null && row.x >= lastGoodAt && row.x < recoveredAt));
+      assert(!rows.some(row => Number.isFinite(row.y) && row.x >= lastGoodAt && row.x < recoveredAt));
+      assert(rows.some(row => row.y === 0 && row.x === recoveredAt));
+      assert(rows.filter(row => row.x >= recoveredAt && row.x < end).every(row => row.y === 0));
+      assert.equal(rows.at(-2).x, end - 1);
+    }
+  } finally { store.close(); }
+});
+
 test('phase kWh produces average real power without 230 V and explicitly equivalent chart currents', () => {
   const store = new Store(':memory:');
   try {

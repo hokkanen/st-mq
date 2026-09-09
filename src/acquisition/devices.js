@@ -13,6 +13,10 @@ const CURRENT_DEVICES = [
   ['charger_id', [183, 184, 185], 'ev1_current'],
   ['equalizer_id', [31, 32, 33], 'property_current'],
 ];
+const CHARGER_TELEMETRY = [
+  [130, -150, 0, ['dBm']], [132, -150, 0, ['dBm']], [136, -150, 0, ['dBm']],
+  [150, -60, 150, ['C', '°C', 'degC']],
+];
 // Charger voltage IDs describe terminal pairs, not a guaranteed neutral/phase
 // mapping. They are acquired for inspection but require a verified installation
 // mapping before they can be used for phase weights or apparent-power fallback.
@@ -110,9 +114,46 @@ function currentObservations(payload, device, ids, prefix, now) {
   });
 }
 
+function deviceConnection(list, now) {
+  const unknown = { connected: null, observedAt: null };
+  const matches = list.filter(row => number(row?.id) === 250).map(row => {
+    const value = typeof row.value === 'string' ? row.value.trim().toLowerCase() : row.value;
+    const connected = [true, 1, 'true', '1'].includes(value) ? true
+      : [false, 0, 'false', '0'].includes(value) ? false : null;
+    return { connected, observedAt: sourceTime(row.timestamp) };
+  });
+  if (!matches.length || matches.some(row => row.connected === null || row.observedAt === null
+    || row.observedAt < 0 || row.observedAt > now)) return unknown;
+  matches.sort((a, b) => b.observedAt - a.observedAt);
+  const latest = matches[0];
+  if (matches.some(row => row.observedAt === latest.observedAt && row.connected !== latest.connected)) return unknown;
+  // Cloud connection is change-reported state, not a heartbeat. Its original
+  // timestamp must never make unchanged electrical measurements appear newer.
+  return latest;
+}
+
+function chargerTelemetryAt(list, now) {
+  let latestAt = null;
+  for (const [id, minimum, maximum, units] of CHARGER_TELEMETRY) {
+    const matches = list.filter(row => number(row?.id) === id).map(row => ({
+      value: number(row.value), at: sourceTime(row.timestamp), unit: row.unit,
+    }));
+    if (!matches.length || matches.some(row => row.value === null || row.value < minimum || row.value > maximum
+      || row.at === null || row.at < 0 || row.at > now || row.unit != null && !units.includes(row.unit))) continue;
+    matches.sort((a, b) => b.at - a.at);
+    const latest = matches[0];
+    if (matches.some(row => row.at === latest.at && row.value !== latest.value)) continue;
+    latestAt = Math.max(latestAt ?? latest.at, latest.at);
+  }
+  // Keep evidence of device activity only, never diagnostic values or payloads.
+  return latestAt;
+}
+
 function electricalObservations(payload, device, prefix, fields, now, voltageVerified = false) {
   const list = Array.isArray(payload) ? payload : payload?.observations;
   if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee observations');
+  const connection = deviceConnection(list, now);
+  const telemetryAt = prefix === 'ev1' ? chargerTelemetryAt(list, now) : null;
   return fields.map(([id, name, unit]) => {
     const matches = list.filter(row => number(row?.id) === id)
       .map(row => ({ row, at: sourceTime(row.timestamp) })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
@@ -135,7 +176,7 @@ function electricalObservations(payload, device, prefix, fields, now, voltageVer
     if (value === null) quality.push('missing');
     if (name.startsWith('current_')) quality.push('current_snapshot_not_energy');
     return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at, receivedAt: now,
-      quality, raw: { observationId: id, acquisitionOnly: true, auditOnly: counter,
+      quality, raw: { observationId: id, acquisitionOnly: true, auditOnly: counter, deviceConnection: { ...connection }, deviceTelemetryAt: telemetryAt,
         ...(unit === 'V' ? { voltageMapping: prefix === 'property' || voltageVerified ? 'phase-neutral' : 'terminal-pair-unverified' } : {}) } };
   });
 }
@@ -273,7 +314,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           && new Set(voltageIds).size === 3 && voltageIds.every(id => Number.isInteger(id) && id >= 190 && id <= 199);
         const fields = ELECTRICITY_FIELDS[prefix].map(([id, name, unit]) =>
           [verified && unit === 'V' ? voltageIds[Number(name.at(-1)) - 1] : id, name, unit]);
-        return electricalObservations(await easeeRequest(easee[key], fields.map(row => row[0]), signal), easee[key], prefix, fields, now, verified);
+        const ids = [...fields.map(row => row[0]), 250, ...(prefix === 'ev1' ? CHARGER_TELEMETRY.map(row => row[0]) : [])];
+        return electricalObservations(await easeeRequest(easee[key], ids, signal), easee[key], prefix, fields, now, verified);
       }));
       return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : ELECTRICITY_FIELDS[jobs[index][1]].map(([id, name, unit]) => ({
         ...baseObservation({ source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][1]}_${name}`, unit, now,

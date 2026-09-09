@@ -7,9 +7,10 @@ const time = value => Number.isSafeInteger(value) && value >= 0;
 const positive = value => Number.isFinite(value) && value >= 0;
 
 export class ElectricityAccumulator {
-  constructor({ maxAgeMs = 300_000, maxGapMs = 60_000, checkpoint } = {}) {
-    if (![maxAgeMs, maxGapMs].every(value => Number.isFinite(value) && value > 0)) throw new RangeError('Electricity intervals must be positive');
+  constructor({ maxAgeMs = 300_000, maxTelemetryAgeMs = 17 * 60_000, maxGapMs = 60_000, checkpoint } = {}) {
+    if (![maxAgeMs, maxTelemetryAgeMs, maxGapMs].every(value => Number.isFinite(value) && value > 0)) throw new RangeError('Electricity intervals must be positive');
     this.maxAgeMs = maxAgeMs;
+    this.maxTelemetryAgeMs = maxTelemetryAgeMs;
     this.maxGapMs = maxGapMs;
     this.devices = {};
     this.auditHeads = {};
@@ -17,7 +18,8 @@ export class ElectricityAccumulator {
     if (checkpoint?.version === 1) {
       for (const [key, previous] of Object.entries(checkpoint.devices ?? {})) {
         if (time(previous?.at) && Array.isArray(previous.powers) && previous.powers.length === 3 && previous.powers.every(positive)
-          && time(previous.sourceTime) && ['ev1', 'property'].includes(previous.prefix)) this.devices[key] = structuredClone(previous);
+          && time(previous.sourceTime) && (previous.telemetryAt === undefined || time(previous.telemetryAt))
+          && ['ev1', 'property'].includes(previous.prefix)) this.devices[key] = structuredClone(previous);
       }
       for (const [key, head] of Object.entries(checkpoint.auditHeads ?? {})) {
         if (time(head?.sourceTime) && positive(head.value)) this.auditHeads[key] = { sourceTime: head.sourceTime, value: head.value };
@@ -66,14 +68,15 @@ export class ElectricityAccumulator {
       // estimation basis is not a reversal of the same source measurement.
       const sameBasis = previous?.quality.includes('reported_active_power') === snapshot.quality.includes('reported_active_power');
       const sourceRolledBack = previous && sameBasis && snapshot.sourceTime < previous.sourceTime;
+      const previousMaxAge = previous?.quality.includes('device_telemetry_confirmed') ? this.maxTelemetryAgeMs : this.maxAgeMs;
       if (previous && now > previous.at && now - previous.at <= this.maxGapMs && !sourceRolledBack
-        && now - previous.sourceTime <= this.maxAgeMs) {
+        && now - (previous.telemetryAt ?? previous.sourceTime) <= previousMaxAge) {
         const hours = (now - previous.at) / HOUR;
         const energies = snapshot.powers.map((power, index) => (previous.powers[index] + power) * 0.5 * hours);
         const quality = [...new Set([...previous.quality, ...snapshot.quality,
           ...(previous.sourceTime === snapshot.sourceTime ? ['held_source_values'] : [])])];
         intervals.push({ source: 'easee', device: group.device, prefix: group.prefix, start: previous.at, end: now,
-          energies, powers: snapshot.powers, receivedAt: now, sourceTime: snapshot.sourceTime, quality,
+          energies, powers: snapshot.powers, receivedAt: now, sourceTime: snapshot.sourceTime, telemetryAt: snapshot.telemetryAt, quality,
           force: snapshot.powers.some((power, index) => (power === 0) !== (previous.powers[index] === 0)) });
       } else if (previous && now !== previous.at) {
         gaps.push({ device: group.device, prefix: group.prefix, start: Math.min(previous.at, now), end: Math.max(previous.at, now),
@@ -93,15 +96,29 @@ export class ElectricityAccumulator {
     const currents = [1, 2, 3].map(phase => get(`current_l${phase}`));
     const voltages = [1, 2, 3].map(phase => get(`voltage_l${phase}`));
     const power = get('active_power');
-    const reportedPower = usable(power);
+    const connectionValid = value => typeof value?.connected === 'boolean' && time(value.observedAt) && value.observedAt <= now;
+    if (rows.some(row => connectionValid(row.raw?.deviceConnection) && row.raw.deviceConnection.connected === false)) return null;
+    const connection = power?.raw?.deviceConnection;
+    // These are device measurement timestamps, never HTTP receipt time or
+    // cumulative counter timestamps. A cached online flag alone proves nothing.
+    const telemetry = [[power, 'kW'], ...currents.map(row => [row, 'A']), ...voltages.map(row => [row, 'V'])]
+      .filter(([row, unit]) => row?.unit === unit && valid(row)).map(([row]) => row.sourceTime);
+    const diagnosticTime = power?.raw?.deviceTelemetryAt;
+    if (prefix === 'ev1' && time(diagnosticTime) && diagnosticTime <= now) telemetry.push(diagnosticTime);
+    const latestTelemetry = telemetry.length ? Math.max(...telemetry) : null;
+    const confirmed = connectionValid(connection) && connection.connected && valid(power)
+      && latestTelemetry !== null && now - latestTelemetry <= this.maxTelemetryAgeMs;
+    const reportedPower = usable(power) || confirmed;
     let used, powers;
     const quality = ['estimated', 'phase_allocation_estimated'];
+    if (confirmed) quality.push('device_telemetry_confirmed');
+    if (reportedPower && !usable(power)) quality.push('held_power_with_live_telemetry');
     if (reportedPower && power.value === 0) {
       used = [power]; powers = [0, 0, 0]; quality.push('reported_active_power');
     } else {
       // Last-reported phase values can remain unchanged while total power is
-      // updated. Older valid currents may estimate phase shares when fresh
-      // total power anchors consumption; they cannot supply VI-only energy.
+      // updated. Older valid currents may estimate phase shares when reported
+      // total power is usable; they cannot supply VI-only energy.
       const heldCurrents = currents.filter(row => !usable(row) && valid(row));
       if (!currents.every(row => usable(row) || reportedPower && heldCurrents.includes(row))) return null;
       const haveVoltage = voltages.every(row => usable(row) && row.raw?.voltageMapping !== 'terminal-pair-unverified');
@@ -125,8 +142,10 @@ export class ElectricityAccumulator {
     const times = used.map(row => row.sourceTime);
     if (Math.max(...times) - Math.min(...times) > 30_000) quality.push('asynchronous_snapshot');
     if (used.some(row => row.sourceTime < now)) quality.push('last_reported_observations');
-    // Only the total-power reading establishes freshness on this path. The
-    // original current timestamps remain intact as phase-allocation evidence.
-    return { device, prefix, at: now, sourceTime: reportedPower ? power.sourceTime : Math.min(...times), powers, quality };
+    // Keep the power's original clock for ordering; independent device evidence
+    // can confirm an unchanged value without rewriting any measurement time.
+    const sourceTime = reportedPower ? power.sourceTime : Math.min(...times);
+    const telemetryAt = reportedPower && confirmed ? latestTelemetry : sourceTime;
+    return { device, prefix, at: now, sourceTime, telemetryAt, powers, quality };
   }
 }

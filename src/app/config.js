@@ -54,6 +54,7 @@ export function acquisitionConfiguration(input = {}) {
     marketIntervalMs: Math.round(interval(input.market_poll_minutes, 60, 15, 1440, 'market_poll_minutes') * 60_000),
     marketRetryIntervalMs: Math.round(interval(input.market_retry_minutes, 15, 5, 60, 'market_retry_minutes') * 60_000),
     electricityMaxAgeMs: Math.round(interval(input.electricity_source_max_age_seconds, 300, 15, 3600, 'electricity_source_max_age_seconds') * 1000),
+    electricityTelemetryMaxAgeMs: Math.round(interval(input.electricity_telemetry_max_age_seconds, 1020, 15, 3600, 'electricity_telemetry_max_age_seconds') * 1000),
     electricityMaxGapMs: Math.round(interval(input.electricity_max_gap_seconds, 60, 15, 300, 'electricity_max_gap_seconds') * 1000),
   };
 }
