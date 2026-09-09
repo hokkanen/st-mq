@@ -149,7 +149,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .date-range button { margin: 0; white-space: nowrap; }
 .range-shortcuts { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto minmax(0, 1fr) 32px; align-items: center; gap: 6px; }
 .range-shortcuts button { margin: 0; background: transparent; color: var(--muted); border-color: var(--border); padding: 10px 12px; font-size: 12px; }
-.range-shortcuts .range-step { display: flex; align-items: center; justify-content: center; width: 32px; min-height: 34px; height: 34px; padding: 0; font-size: 22px; line-height: 1; }
+.range-shortcuts .range-step { display: flex; align-items: center; justify-content: center; width: 32px; min-height: 34px; height: 34px; padding: 0; }
+.range-step svg { display: block; width: 18px; height: 18px; flex: none; }
 .range-shortcuts button:hover, .range-shortcuts button[aria-pressed="true"] { color: var(--text); background: var(--surface-soft); border-color: var(--muted); }
 .chart-status { min-height: 20px; margin: 15px 0 7px; font-size: 11px; }
 .plot { position: relative; height: 480px; min-width: 0; }
