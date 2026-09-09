@@ -40,6 +40,7 @@
   --chart-compressor-dhw: #5a9ed9;
   --chart-learning: #c0a0df;
   --chart-solar: #dbbc53;
+  --chart-firewood: #d8aa75;
   color: var(--text);
   background: var(--bg);
 }
@@ -81,6 +82,7 @@
   --chart-compressor-dhw: #3583c8;
   --chart-learning: #8750ac;
   --chart-solar: #927619;
+  --chart-firewood: #916027;
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
@@ -155,6 +157,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-legend-button[aria-pressed="false"] .chart-legend-swatch { opacity: .35; }
 .chart-legend-swatch { width: 18px; height: 3px; display: inline-block; flex: 0 0 18px; border-radius: 1px; }
 .chart-legend-swatch[data-kind="fill"] { height: 10px; border: 1px solid; }
+.chart-legend-swatch[data-kind="event"] { width: 10px; height: 10px; flex-basis: 10px; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.chart-legend-swatch[data-kind="daily"] { width: 8px; height: 8px; flex-basis: 8px; transform: rotate(45deg); }
 .chart-legend-swatch[data-kind="forecast"] { background: transparent !important; height: 0; border-top: 2px dashed; }
 .chart-legend-swatch[data-kind="pattern"] { height: 10px; background: repeating-linear-gradient(45deg, transparent 0 3px, currentColor 3px 4px), repeating-linear-gradient(-45deg, transparent 0 3px, currentColor 3px 4px) !important; opacity: .65; }
 .mode-history { font-size: 10px; color: var(--muted); margin: 6px 0; }
@@ -166,7 +170,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-intro { margin: 0 auto 24px; text-align: center; }
 .timing-intro p { margin: 4px 0; }
 .timing-intro .timing-sign-guide { color: var(--muted); font-size: 13px; }
-.timing-devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; align-items: start; }
+.timing-devices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .timing-card { min-width: 0; padding: 24px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
 .timing-device-overview { min-width: 0; min-height: var(--timing-overview-height, 0px); }
 .timing-overview-content { display: flow-root; }
@@ -184,6 +188,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-basis { display: inline-flex; align-items: center; gap: 7px; }
 .timing-basis::before { content: ''; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--muted); }
 .timing-basis[data-basis="modelled"]::before, .timing-evidence-track [data-source="modelled"] { background: var(--chart-learning); }
+.timing-basis[data-basis="firewood"]::before { background: var(--chart-firewood); }
+.firewood-card .firewood-energy { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.firewood-card .firewood-range { font-size: 12px; }
+.firewood-card .firewood-status { color: var(--stale); }
+.firewood-card .firewood-status[data-status="validated"] { color: var(--muted); }
+.firewood-card .firewood-remaining { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.firewood-card .firewood-remaining h4 { font-size: 12px; }
+.firewood-card .firewood-remaining p { font-size: 12px; }
 .timing-basis[data-basis="observed"]::before, .timing-evidence-track [data-source="observed"] { background: var(--chart-solar); }
 .timing-basis[data-basis="measured"]::before, .timing-evidence-track [data-source="measured"] { background: var(--chart-property); }
 .timing-basis[data-basis="currents"]::before, .timing-evidence-track [data-source="currents"],
@@ -208,8 +220,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-explanation h3 { margin: 0 0 10px; font-size: 16px; font-weight: 550; }
 .timing-explanation p { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
 .timing-chart-rates { margin-top: 16px; border-left: 3px solid var(--stale); padding-left: 16px; }
+@media (min-width: 801px) and (max-width: 999px) {
+  .timing-devices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .timing-devices .firewood-card { grid-column: 1 / -1; }
+}
 @media (max-width: 800px) {
   .timing-devices { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .timing-device-overview { min-height: 0; }
   .timing-card { padding: 20px; }
 }
 @media (max-width: 480px) {

@@ -72,6 +72,7 @@ export const defaultPalette = Object.freeze({
   property: '#e98576', ev: '#64bbc0', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
   indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#99704e', learning: '#baa0de', solar: '#e4ca67',
+  firewood: '#d8aa75',
 });
 
 export function visible(key, preferences = {}) {
@@ -93,6 +94,8 @@ const seriesInfo = {
   learning_aux_profit: ['Space-heating benefit with auxiliary recovery', '€/cycle · observed space-heating auxiliary recovery cycles only', 'learning', 'learning'],
   learning_recovery_error: ['Space-heating recovery-cost prediction error', '€/cycle · mean absolute error; lower is better', 'learning', 'learning'],
   learning_indoor_temperature: ['Learned normal temperature', '°C · learned reference, not a thermostat command', 'learning', 'learning'],
+  firewood_savings: ['Firewood electricity cost avoided', '€/day · retrospective model estimate; wood cost €0', 'firewood', 'daily'],
+  firewood_electricity_avoided: ['Firewood electricity avoided', 'kWh/day · retrospective model estimate, not metered savings', 'firewood', 'daily'],
   solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
   indoor_temperature: ['Indoor', '°C', 'indoor'],
@@ -112,7 +115,16 @@ Object.assign(seriesInfo, {
   dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
 });
 for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO }))
-  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color];
+  seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : 'line'];
+
+export function firewoodPointDetail(key, point = {}) {
+  if (key === 'firewood_load') return `Recorded manual ${point.loadCount > 1 ? `total of ${point.loadCount} additions at this time` : 'addition'} · corrected history`;
+  if (key === 'model_fireplace_release') return 'Calculated delayed release · fuel equivalent, not measured heat';
+  if (!['firewood_savings', 'firewood_electricity_avoided'].includes(key)) return '';
+  const status = point.status === 'validated' ? 'Validated model estimate' : point.status === 'unavailable' ? 'Estimate unavailable' : 'Provisional model estimate';
+  const coverage = Number.isFinite(point.coverage) ? ` · ${Math.round(Math.max(0, Math.min(1, point.coverage)) * 100)}% of elapsed time included` : '';
+  return `${status} · retrospective daily total${coverage}${key === 'firewood_savings' ? ' · wood cost €0' : ''}`;
+}
 
 /** Shared right-axis readings must not conceal an empty selected left axis. */
 export function leftAxisAvailability(datasets) {
@@ -182,17 +194,19 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
     return {
       key, visibilityKey, unit, kind, label,
       data,
+      showLine: !['event', 'daily'].includes(kind),
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
       borderDash: kind === 'forecast' || PHASE_ENERGY_SIGNALS.includes(key) && key.startsWith('ev1') ? [5, 4] : isPrice ? [1, 3] : [],
       fill: kind === 'fill' ? 'origin' : false,
       order: key === 'auxiliary_power' ? 3 : kind === 'fill' ? 2 : 1,
-      pointBackgroundColor: palette[colorKey], pointBorderColor: palette[colorKey],
+      pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
+      pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : 'circle',
       // A finite reading surrounded by gaps has no line segment to draw.
-      pointRadius: isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
+      pointRadius: kind === 'event' ? 5 : kind === 'daily' ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
-      pointHoverRadius: 3, pointHitRadius: 8,
+      pointHoverRadius: kind === 'event' ? 7 : kind === 'daily' ? 6 : 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
       stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && key !== 'model_indoor_temperature' && !PHASE_ENERGY_SIGNALS.includes(key),
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),

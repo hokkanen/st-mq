@@ -1,7 +1,7 @@
-import { initialAdaptiveModel, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady } from './adaptive-learning.js';
+import { initialAdaptiveModel, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady, fireplaceGainUncertainty } from './adaptive-learning.js';
 import { comfortPenalty } from './index.js';
 import { CONTROL_DEFAULTS } from '../app/config.js';
-import { fireplaceActive, fireplaceIntegral, fireplaceRate } from '../domain/fireplace.js';
+import { fireplaceInfluence, fireplaceRate } from '../domain/fireplace.js';
 
 const HOUR = 3600000, STEP = 900000;
 const number = Number.isFinite;
@@ -18,7 +18,7 @@ export function learningReadiness(checkpoint, config = {}, equipment = {}) {
   const thermalValidated = thermalEvidenceReady(model), responseValidated = actionEvidenceReady(model, 'reduction');
   const advanceValidated = model?.forecastValidation?.accepted === true;
   const fireplaceValidated = fireplaceEvidenceReady(model);
-  const fireplacePending = equipment.fireplaceActive === true && !fireplaceValidated;
+  const fireplacePending = (equipment.fireplaceRelevant ?? equipment.fireplaceActive) === true && !fireplaceValidated;
   const actionValidated = responseValidated && advanceValidated && !fireplacePending;
   const trialReady = c.learningTrials && (checkpoint?.health?.usableSamples ?? 0) >= 4
     && number(equipment.compressorOn) && number(equipment.dhwRouting)
@@ -267,8 +267,10 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   const c = { ...CONTROL_DEFAULTS, ...config }, model = checkpoint?.model;
   const rejected = reason => ({ valid:false, reason });
   if (!plan?.schedule || plan.schedule.reductionEnd <= now) return rejected('scheduled-cycle-expired');
-  if (!fireplaceEvidenceReady(model) && (fireplaceActive(equipment.fireplaceEvents ?? [], now)
-    || fireplaceIntegral(equipment.fireplaceEvents ?? [], now, plan.schedule.reductionEnd + 2 * HOUR) > 0))
+  if (Array.isArray(equipment.fireplaceEvents)) equipment = { ...equipment,
+    fireplaceRelevant: fireplaceInfluence(equipment.fireplaceEvents, now, {
+      gainCPerKg: model?.parameters?.fireplaceCPerKg, gainUncertaintyCPerKg: fireplaceGainUncertainty(model) }).relevant };
+  if (!fireplaceEvidenceReady(model) && (equipment.fireplaceRelevant ?? equipment.fireplaceActive) === true)
     return rejected('awaiting-fireplace-response-evidence');
   if ((equipment.externalChangeRevision??0)!==(plan.equipment?.externalChangeRevision??0))
     return rejected('scheduled-cycle-native-settings-changed');
@@ -319,7 +321,10 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     || observations.indoor.observedAt > now) return normal('missing-or-stale-indoor');
   if (observations.indoor.stale === true) return normal('missing-or-stale-indoor');
   if (!number(targetC)) return normal('awaiting-normal-temperature-reference');
-  if (!fireplaceEvidenceReady(model) && fireplaceActive(equipment.fireplaceEvents ?? [], now))
+  if (Array.isArray(equipment.fireplaceEvents)) equipment = { ...equipment,
+    fireplaceRelevant: fireplaceInfluence(equipment.fireplaceEvents, now, {
+      gainCPerKg: model.parameters?.fireplaceCPerKg, gainUncertaintyCPerKg: fireplaceGainUncertainty(model) }).relevant };
+  if (!fireplaceEvidenceReady(model) && (equipment.fireplaceRelevant ?? equipment.fireplaceActive) === true)
     return normal('awaiting-fireplace-response-evidence');
   const intervals = forecastIntervals(prices, forecast, now);
   if (!intervals.length || intervals.at(-1).end - now < 4 * HOUR) return normal('missing-or-incomplete-price-weather-horizon');

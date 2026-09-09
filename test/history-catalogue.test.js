@@ -35,10 +35,13 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   for (const key of RIGHT_AXIS_SIGNALS) assert(!choices.has(key), `${key} already appears on the right axis`);
   const coefficients = select.children.find(group => group.label === 'Model coefficients · Calculated');
   assert.deepEqual(coefficients.children.map(option => option.value), Object.keys(MODEL_COEFFICIENT_INFO));
-  assert.equal(coefficients.children.length, 4);
+  assert.equal(coefficients.children.length, 5);
   assert.deepEqual(Object.values(MODEL_COEFFICIENT_INFO).map(info => info.parameter),
-    ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh']);
+    ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh', 'fireplaceCPerKg']);
   assert(choices.has('model_indoor_temperature') && choices.has('model_outdoor_temperature'), 'Saved learning inputs remain inspectable');
+  for (const key of ['firewood_load', 'model_fireplace_release', 'firewood_savings', 'firewood_electricity_avoided']) assert(choices.has(key));
+  const manual = select.children.flatMap(group => group.children).find(option => option.value === 'firewood_load');
+  assert.match(manual.textContent, /Recorded manual/);
   assert(!recordingRows().some(row => row.group === 'Model coefficients'), 'Replay does not add recorder channels');
   select.value = 'spot_price'; populateHistoryAxes(select);
   assert.equal(select.value, 'power', 'An unavailable old choice falls back to the default');

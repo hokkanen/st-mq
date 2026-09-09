@@ -4,7 +4,7 @@ import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { CONTROL_DEFAULTS } from './config.js';
 import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected } from './fireplace-inputs.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v4-fireplace';
+export const LEARNING_ALGORITHM = 'committed-house-v5-fireplace';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];

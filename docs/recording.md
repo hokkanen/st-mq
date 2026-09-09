@@ -333,7 +333,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v4-fireplace`. Configuration epochs retain power
+The current algorithm is `committed-house-v5-fireplace`. Configuration epochs retain power
 and control-policy interpretation; changed equipment assumptions invalidate old
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
 accidental corruption and trigger replay. They are integrity checks, not authentication.
@@ -432,10 +432,11 @@ Views longer than seven days refresh at five-minute intervals. Ordinary raw poll
 and recorder checkpoints do not force a history download. Short views react to
 new committed data. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
-The **Timing cost** fold starts closed beneath the chart, alongside **Recording
-details**. The **Heating** and **Charging** summary boxes align while closed.
+The **Energy cost comparisons** fold starts closed beneath the chart, alongside
+**Recording details**. **Heating**, **Charging** and **Firewood** summary boxes
+align in three columns when space allows and stack on narrow screens.
 Their details folds expand independently for energy sources, timestamps and coverage. Shared
-explanations come last in a centered column. All three folds support keyboard and
+explanations come last in a centered column. The folds support keyboard and
 touch and keep their state across chart refreshes and date changes.
 
 Both headline percentages mean included time divided by the selected elapsed time;
@@ -447,6 +448,13 @@ rate-assumption percentages describe shares of included time for either device.
 The daily average price still spans the full Finnish day. These rules affect the
 comparison only; original energy records, chart series and CSV import interpretation
 remain unchanged.
+
+Firewood is a separate estimated reduction in space-heating electricity under a
+paired normal-heating reference, with free wood, a scenario range and explicit
+coverage. It is not included in a combined total with the timing comparisons.
+Remaining forecast savings are separate from past estimates. All fireplace chart
+and savings data are derived on demand without new telemetry or daily savings rows;
+see [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
 Meter counters are also selectable under
 Meter checks, separately from estimated interval energy.

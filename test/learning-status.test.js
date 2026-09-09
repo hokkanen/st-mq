@@ -62,7 +62,7 @@ test('learning status separates conditional temperature skill from action eviden
   assert.match(text, /All attempted cycles: 5; completed 2, incomplete 2, in progress 1/);
   assert.match(text, /€3.45/);
   assert.match(text, /20.0 percentage points/);
-  assert.equal(display.inputs.length, 8);
+  assert.equal(display.inputs.length, 10);
   assert(display.inputs.every(row => row.sources && row.detail));
 });
 
@@ -86,11 +86,31 @@ test('current coefficient values retain units and separate fitted values from fi
   assert.equal(rows.reserveTimeHours.value, '12.0 h');
   const display = learningDisplay(learning);
   assert.equal(display.metrics.length, 4);
-  assert.equal(display.inputs.length, 8);
+  assert.equal(display.inputs.length, 10);
   assert.equal(display.coefficients.length, 6);
   assert.match(display.coefficientHistory, /today’s values are not applied to earlier intervals/);
-  assert.match(display.coefficientHistory, /four adjustable coefficients reconstructed from the learning journal/);
+  assert.match(display.coefficientHistory, /five adjustable coefficients reconstructed from the learning journal/);
   assert.match(display.coefficientHistory, /creates no additional stored history/);
+});
+
+test('a fireplace-only fit preserves the visible validation of unchanged identified house coefficients', () => {
+  const learning = { adaptive: { model: { parameters: { lossPerHour: 0.02, normalHeatCPerHour: 0.7,
+    fireplaceCPerKg: 0.12, reserveTimeHours: 12 }, validation: { accepted: true,
+    fittedParameters: ['fireplaceCPerKg'], parameterEvidence: {
+      lossPerHour: { status: 'identified', fitStatus: 'retained-unchanged',
+        currentWindowEvidence: { status: 'fixed', reason: 'insufficient-clean-intervals' } },
+      normalHeatCPerHour: { status: 'identified', fitStatus: 'retained-unchanged' },
+      fireplaceCPerKg: { status: 'identified' } } } } } };
+  const display = learningDisplay(learning);
+  const rows = Object.fromEntries(display.coefficients.map(row => [row.key, row]));
+  assert.equal(rows.lossPerHour.provenance, 'Retained unchanged / previously validated');
+  assert.equal(rows.normalHeatCPerHour.provenance, 'Retained unchanged / previously validated');
+  assert.match(rows.lossPerHour.evidence, /identified · retained unchanged/);
+  assert.equal(rows.fireplaceCPerKg.provenance, 'Fitted in the accepted model');
+  assert.equal(rows.reserveTimeHours.provenance, 'Fixed building assumption');
+  assert.match(display.coefficientEvidence.join(' '), /1 fitted in the accepted update; 2 retained unchanged with validated evidence; 1 fixed or awaiting evidence/);
+  learning.adaptive.model.validation.accepted = false;
+  assert.equal(modelCoefficientDescriptions(learning)[0].provenance, 'Initial estimate / awaiting evidence');
 });
 
 test('unavailable and rejected coefficients are never presented as learned values', () => {

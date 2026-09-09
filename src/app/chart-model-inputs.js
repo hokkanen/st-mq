@@ -1,4 +1,5 @@
 import { MODEL_INPUT_INFO } from '../domain/history-series.js';
+import { FIREPLACE_INPUT_NAMES } from './chart-fireplace.js';
 import { goodQuality } from '../control/learning.js';
 
 const WINDOW = 15 * 60_000;
@@ -14,7 +15,7 @@ const fields = {
 /** Project immutable learning inputs. Do not rerun today's learner, read mutable
  * configuration, or expose journal payloads / source identifiers to the browser. */
 export function addModelInputs({ store, range, now, input, envelopes }) {
-  const selected = Object.keys(MODEL_INPUT_INFO).filter(key => envelopes[key]);
+  const selected = Object.keys(MODEL_INPUT_INFO).filter(key => envelopes[key] && !FIREPLACE_INPUT_NAMES.includes(key));
   const stats = { records: 0, rejectedIntervals: 0, basis: 'immutable-learning-journal' };
   if (!selected.length) return stats;
   const inputs = input === 'simulated' ? ['simulated'] : ['history', 'providers', 'mqtt'];

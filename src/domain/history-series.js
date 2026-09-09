@@ -55,7 +55,9 @@ export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_controller_phase', 'Requested control phase input', 'state', 'learning', 'The controller phase saved with the interval: normal, preheat, tariff reduction or recovery. A reduction request does not prove that the compressor stopped.'],
   ['model_room_boost', 'ROOM boost input', '°C', 'integral', 'The temporary room-setting increase saved with the learning interval. It describes requested control, not measured indoor warming.'],
   ['model_target_temperature', 'Reference temperature input', '°C', 'indoor', 'The comfort reference saved when the interval was processed. Later changes do not rewrite the earlier reference.'],
-].map(([signal, label, unit, color, detail]) => [signal, { label, unit, color, detail, kind: 'Calculated', group: 'Model inputs' }])));
+  ['firewood_load', 'Recorded firewood additions', 'kg', 'firewood', 'Manually reported additions of dry firewood, shown as events; additions at exactly the same time are grouped. Mistaken entries are excluded after correction; each point is fuel added, not delivered heat.', 'Recorded manual'],
+  ['model_fireplace_release', 'Fireplace release input', 'kg/h', 'firewood', 'The delayed response to recorded firewood, expressed as fuel-equivalent kilograms per hour. This is a calculated input to the thermal model, not a measured burn rate or heat output.'],
+].map(([signal, label, unit, color, detail, kind = 'Calculated']) => [signal, { label, unit, color, detail, kind, group: 'Model inputs' }])));
 
 // Reconstructed from the learning journal in memory, never recorder channels.
 export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
@@ -63,6 +65,7 @@ export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   ['model_coefficient_compressor_response', 'Compressor heating response', '°C/h', 'compressorSpace', 'normalHeatCPerHour', 3, 'Effective heating contribution at full observed space-heating compressor duty. Building heat storage delays the room response; this is not measured compressor output or COP.'],
   ['model_coefficient_solar_response', 'Solar response', '°C/h per kW/m²', 'solar', 'solarCPerHourPerKwM2', 3, 'Temperature response to forecast solar radiation. Radiation forecasts enter in W/m² and are converted to kW/m²; no house radiation sensor is implied.'],
   ['model_coefficient_auxiliary_response', 'Auxiliary heating response', '°C/kWh', 'auxiliary', 'auxiliaryCPerKwh', 3, 'Effective heating contribution per estimated auxiliary electricity input during space heating. Stored heat affects when the indoor temperature responds.'],
+  ['model_coefficient_fireplace_response', 'Fireplace response', '°C/kg', 'firewood', 'fireplaceCPerKg', 3, 'Effective temperature contribution per logged kilogram after the delayed masonry release. This is a house-model coefficient, not measured fireplace efficiency or delivered kWh.'],
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
 
@@ -80,6 +83,8 @@ const basic = [
   ['learning_aux_profit', 'Space-heating benefit with auxiliary recovery', 'Learning', ['learning_aux_profit'], '€/cycle', 'Calculated'],
   ['learning_recovery_error', 'Space-heating recovery-cost prediction error', 'Learning', ['learning_recovery_error'], '€/cycle', 'Calculated'],
   ['learning_indoor_temperature', 'Learned normal temperature', 'Learning', ['learning_indoor_temperature'], '°C', 'Calculated'],
+  ['firewood_savings', 'Firewood electricity cost avoided', 'Learning', ['firewood_savings'], '€/day', 'Calculated'],
+  ['firewood_electricity_avoided', 'Firewood electricity avoided', 'Learning', ['firewood_electricity_avoided'], 'kWh/day', 'Calculated'],
   ['heat_pump_power', 'Heat-pump power estimate', 'Electricity', ['heat_pump_power'], 'kW', 'Calculated'],
   ['controller_phase', 'Requested controller phase', 'Control', ['controller_phase'], 'state', 'Recorded'],
   ['dhwr_request', 'Hot-water recirculation request', 'Control', ['dhwr_request'], 'state', 'Recorded'],

@@ -15,7 +15,7 @@ export function populateHistoryAxes(select) {
     const group = document.createElement('optgroup');
     group.label = `${name}${kinds.size === 1 ? ` · ${[...kinds][0]}` : ''}`;
     for (const axis of axes) {
-      const option = document.createElement('option'); option.value = axis.key; option.textContent = axis.label;
+      const option = document.createElement('option'); option.value = axis.key; option.textContent = `${axis.label}${axis.kind === 'Recorded manual' ? ' · Recorded manual' : ''}`;
       group.append(option);
     }
     select.append(group);

@@ -12,7 +12,7 @@ const metricDefinitions = [
 ];
 const coefficientLabels = {
   lossPerHour: 'Heat loss', normalHeatCPerHour: 'Compressor heating response', solarCPerHourPerKwM2: 'Solar response',
-  auxiliaryCPerKwh: 'Auxiliary heating response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
+  auxiliaryCPerKwh: 'Auxiliary heating response', fireplaceCPerKg: 'Fireplace response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
   reducedHeatCPerHour: 'Legacy reduced-mode allowance', preheatCPerHourPerDegree: 'Legacy preheat allowance',
 };
 const coefficientInfo = {
@@ -31,11 +31,18 @@ const inputSources = {
   model_controller_phase: 'The saved controller context supplies normal, preheat, tariff reduction or recovery. It is control context, separate from observed heat delivery.',
   model_room_boost: 'The temporary increase in the native ROOM setting saved in controller context. It describes an action; it is not a fitted direct heat source.',
   model_target_temperature: 'The learned or configured comfort reference saved in controller context. Missing historical context is left unknown.',
+  firewood_load: 'The Fireplace control records whole kilograms and the server time for either fireplace or a top-up. Corrections retain the original record internally; this chart shows the effective additions.',
+  model_fireplace_release: 'A shared delayed release curve represents both masonry fireplaces. Separate loads overlap and add together. The thermal model learns one effective response per kilogram; earlier periods without logging remain unknown.',
 };
 
 export function modelInputDescriptions() {
   return Object.entries(MODEL_INPUT_INFO).map(([key, info]) => ({ key, title: info.label, unit: info.unit,
     detail: info.detail, sources: inputSources[key] }));
+}
+
+function retainedValidatedCoefficient(validation, key) {
+  const evidence = validation?.parameterEvidence?.[key];
+  return validation?.accepted === true && evidence?.status === 'identified' && evidence.fitStatus === 'retained-unchanged';
 }
 
 /** Current model cards; chart history is reconstructed separately from the journal. */
@@ -46,12 +53,14 @@ export function modelCoefficientDescriptions(learning = {}) {
     const rawValue = model.parameters[key], available = finite(rawValue);
     const evidence = validation?.parameterEvidence?.[key];
     const learned = available && fitted.has(key) && !info.fixed && !info.legacy;
+    const retained = retainedValidatedCoefficient(validation, key);
     return { key, title: coefficientLabels[key], unit: info.unit, available,
       value: available ? `${number(rawValue, info.digits)} ${info.unit}` : 'Unavailable',
       provenance: !available ? 'Unavailable' : info.legacy ? 'Legacy model value' : info.fixed ? 'Fixed building assumption'
-        : learned ? 'Fitted in the accepted model' : validation?.accepted === true ? 'Retained value / awaiting evidence' : 'Initial estimate / awaiting evidence',
+        : learned ? 'Fitted in the accepted model' : retained ? 'Retained unchanged / previously validated'
+          : validation?.accepted === true ? 'Retained value / awaiting evidence' : 'Initial estimate / awaiting evidence',
       detail: info.detail,
-      evidence: evidence ? [words(evidence.status), words(evidence.reason)].filter(Boolean).join(' · ') : '' };
+      evidence: evidence ? [words(evidence.status), retained ? words(evidence.fitStatus) : '', words(evidence.reason)].filter(Boolean).join(' · ') : '' };
   });
 }
 
@@ -62,7 +71,7 @@ export function learningDisplay(learning = {}) {
   const title = status === 'prior-estimates' ? 'Learning from initial estimates'
     : status === 'retained-previous' ? 'Keeping the previous model'
       : status === 'learning' ? 'Learning from observed temperatures' : words(status || 'Collecting observations');
-  const process = 'The house model learns from completed 15-minute intervals of recorded temperatures, solar forecasts and observed space-heating input. Changes within an interval retain their own timing. Later temperature trajectories check proposed updates. A separate equipment-response check asks whether requested actions predict compressor use. Passing the temperature check alone does not validate a savings decision.';
+  const process = 'The house model learns from completed 15-minute intervals of recorded temperatures, solar forecasts, observed space-heating input and the delayed release of logged firewood. Changes within an interval retain their own timing. Later temperature trajectories check proposed updates. A separate equipment-response check asks whether requested actions predict compressor use. Passing the temperature check alone does not validate a savings decision.';
   const evidence = [], coefficientEvidence = [];
   if (finite(health.usableSamples)) evidence.push(`${health.usableSamples} usable temperature observations; ${health.acceptedFits ?? 0} accepted model updates and ${health.rejectedFits ?? 0} attempts without an accepted update.`);
   if (health.phaseSamples) evidence.push(`Observation coverage: ${Object.entries(health.phaseSamples).map(([phase, count]) => `${words(phase)} ${count}`).join(', ')}. Actions with little evidence still rely on initial estimates.`);
@@ -70,6 +79,11 @@ export function learningDisplay(learning = {}) {
   if (validation?.accepted && finite(validation.maeC)) evidence.push(`Conditional temperature validation: ${number(validation.maeC)} °C mean absolute trajectory error over ${validation.samples ?? 0} later blocks of ${horizon}${finite(validation.maxErrorC) ? `; maximum ${number(validation.maxErrorC)} °C` : ''}${finite(validation.persistenceMaeC) ? `. Holding the initial temperature gives ${number(validation.persistenceMaeC)} °C` : ''}. Observed heat input is supplied during this check; this does not validate full-cycle cost or future compressor duty.`);
   else if (validation?.accepted && finite(validation.maeCPerHour)) evidence.push(`Legacy temperature validation: ${number(validation.maeCPerHour)} °C/h over ${validation.samples ?? 0} saved checks of ${horizon}. This rate-normalized legacy score does not validate full-cycle cost or current action readiness.`);
   if (health.reason) evidence.push(`Latest update: ${words(health.reason)}.`);
+  if (finite(p.fireplaceCPerKg)) {
+    const fire = validation?.fireplace;
+    coefficientEvidence.push(`Fireplace response: ${number(p.fireplaceCPerKg, 3)} °C per logged kg, applied through the delayed masonry release curve. This represents an effective house-temperature contribution, not measured useful kWh or fireplace efficiency.`);
+    evidence.push(`Fireplace response: ${learning.readiness?.fireplaceValidated === true ? 'validated on later firing periods' : 'provisional; independent firing evidence is still required'}${fire ? `; ${fire.trainingBurns ?? 0} training firing groups and ${fire.validationBurns ?? 0} later validation groups` : ''}. Nearby additions belong to one overlapping heating episode. Firewood cost estimates remain model comparisons, not metered savings.`);
+  }
   if (health.evidence === 'includes-requested-modes') evidence.push('Some heating observations describe requested operation. Device readback is used where available.');
   if (finite(p.lossPerHour)) coefficientEvidence.push(`Current model: with the house 10 °C warmer than outdoors, heat loss contributes about ${number(p.lossPerHour * 10)} °C/h before heating, sunshine and stored heat. This is a model estimate, not a direct cooling measurement.`);
   if (finite(p.normalHeatCPerHour)) coefficientEvidence.push(`Compressor heating response: ${number(p.normalHeatCPerHour)} °C/h at full modeled space-heating duty. Actual compressor duty, heat loss and the building’s stored heat determine the temperature change. Replacing the heat pump requires equipment recalibration.`);
@@ -78,7 +92,8 @@ export function learningDisplay(learning = {}) {
   if (finite(energy.relativeUncertainty)) coefficientEvidence.push(`Electricity uncertainty allowance: ${number(energy.relativeUncertainty * 100, 0)}%. It describes the model's uncertainty budget, not a meter's accuracy or a statistical confidence interval.`);
   const coefficientNames = Object.keys(p).filter(key => coefficientLabels[key]);
   const fitted = new Set(validation?.accepted === true ? validation.fittedParameters ?? [] : []);
-  if (coefficientNames.length) coefficientEvidence.push(`Thermal coefficients: ${coefficientNames.filter(key => fitted.has(key)).length} fitted in the accepted update; ${coefficientNames.filter(key => !fitted.has(key)).length} fixed or awaiting evidence. ${coefficientNames.map(key => `${coefficientLabels[key]}: ${fitted.has(key) ? 'fitted' : 'fixed / awaiting evidence'}`).join('; ')}.`);
+  const retained = new Set(coefficientNames.filter(key => !fitted.has(key) && retainedValidatedCoefficient(validation, key)));
+  if (coefficientNames.length) coefficientEvidence.push(`Thermal coefficients: ${coefficientNames.filter(key => fitted.has(key)).length} fitted in the accepted update; ${retained.size ? `${retained.size} retained unchanged with validated evidence; ` : ''}${coefficientNames.filter(key => !fitted.has(key) && !retained.has(key)).length} fixed or awaiting evidence. ${coefficientNames.map(key => `${coefficientLabels[key]}: ${fitted.has(key) ? 'fitted' : retained.has(key) ? 'retained unchanged / previously validated' : 'fixed / awaiting evidence'}`).join('; ')}.`);
   for (const [key, info] of Object.entries(validation?.parameterEvidence ?? {})) {
     if (coefficientLabels[key] && info?.reason) coefficientEvidence.push(`${coefficientLabels[key]} evidence: ${words(info.status)} · ${words(info.reason)}.`);
   }
@@ -109,7 +124,7 @@ export function learningDisplay(learning = {}) {
   if (episode) evidence.push(`Current cycle: ${words(episode.phase ?? episode.status ?? 'in progress')}. Space-heating benefit is assessed only after recovery is complete; an unfinished cycle does not enter the averages.`);
   return { title, message: learning.message ?? learning.reason ?? (validation?.accepted ? 'The current model has passed later temperature checks. Action prediction and economic readiness are assessed separately.' : 'Initial estimates remain in use while independent evidence is collected.'),
     process, metrics, evidence, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
-    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the four adjustable coefficients reconstructed from the learning journal. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Fixed building assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
+    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the five adjustable coefficients reconstructed from the learning journal and applicable firewood history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. Fixed building assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
     history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
 }
 
@@ -118,7 +133,7 @@ export function learningDisplay(learning = {}) {
 export function renderModelInputs(root, rows = modelInputDescriptions()) {
   if (!root || root.childElementCount) return;
   const intro = document.createElement('p'); intro.className = 'muted';
-  intro.textContent = 'These are the saved inputs used to learn the house model, including recorded sensor readings, the temperature target and control context. Select Model inputs · Calculated on the chart to inspect them. Unknown and rejected intervals remain gaps.';
+  intro.textContent = 'These inputs describe how the house model learns: recorded sensor readings, the temperature target, control context and logged firewood. Select Model inputs on the chart to inspect manual additions or calculated interval inputs. Fireplace release is reconstructed from its corrected history; unknown and rejected intervals remain gaps.';
   root.append(intro);
   for (const row of rows) {
     const fold = document.createElement('details'); fold.dataset.modelInput = row.key;

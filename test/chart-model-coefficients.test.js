@@ -19,6 +19,7 @@ const coefficientFields = {
   model_coefficient_compressor_response: 'normalHeatCPerHour',
   model_coefficient_solar_response: 'solarCPerHourPerKwM2',
   model_coefficient_auxiliary_response: 'auxiliaryCPerKwh',
+  model_coefficient_fireplace_response: 'fireplaceCPerKg',
 };
 
 function context(store, at, { input = 'providers', config = {}, seed = null, model = null } = {}) {
@@ -94,7 +95,7 @@ test('independent input journals and imported fallback never share a replay chec
   assert(history.every(point => point.inputSource === 'Imported history'));
 });
 
-test('the four coefficient selections preserve zero and expose no fixed structural coefficients', t => {
+test('the five coefficient selections preserve zero and expose no fixed structural coefficients', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { model: model(0.025, { solarCPerHourPerKwM2: 0 }) });
   assert.deepEqual(Object.keys(MODEL_COEFFICIENT_INFO).sort(), Object.keys(coefficientFields).sort());

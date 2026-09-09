@@ -57,8 +57,14 @@ the service or recording another correction retries it.
 
 ## Version discipline
 
-`committed-house-v4-fireplace` adds the pooled fireplace response and its evidence
-rules. Its fixed response curve is version 1. Changes to numerical interpretation,
+`committed-house-v4-fireplace` introduced the pooled fireplace response and its
+original evidence rules (Git revision `a3390ad`). `committed-house-v5-fireplace`
+adds meaningful-tail learning gates and fitting against retained, validated house
+coefficients. The fixed response curve remains version 1. The v4 journal remains
+an archive requiring its matching code; the current runtime does not relabel it.
+The first v5 record establishes the new algorithm's explicit seed/learning epoch.
+Existing experimental SQLite contents do not require a compatibility migration.
+Changes to numerical interpretation,
 training selection, corrections, seeds or fitting rules require an explicit learning
 algorithm version change and appropriate replay tests. Configuration changes remain
 recorded with their configuration digest and snapshot. SQLite schema versioning is
@@ -75,3 +81,8 @@ The fireplace addition must remain compact: source events are stored once, input
 projections are derived, and rolling model state remains bounded. Do not add repeated
 full histories, per-minute model snapshots or comprehensive decision-input archives
 without a separately agreed change of scope and a measured storage budget.
+
+Retrospective firewood savings are a separate, read-only calculation under the
+current corrected model and normal heating policy. A model update can revise them.
+They do not claim to reconstruct a past controller's forecast or control choice,
+and must remain labelled as estimated rather than measured savings.

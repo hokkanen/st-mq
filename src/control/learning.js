@@ -1,4 +1,5 @@
 /** Bounded, chronological empirical learning. These estimates are not metered savings. */
+import { fireplaceAffectsLearning } from '../domain/fireplace.js';
 export const CHECKPOINT_VERSION = 2;
 export const MAX_SAMPLES = 768;
 const HOUR = 3_600_000;
@@ -80,8 +81,7 @@ export function inferComfortReference(previous, samples, { now = Date.now() } = 
   for (let i = sorted.length - 1; i >= 0; i--) {
     const sample = sorted[i], time = instant(sample.timestamp);
     if (!validSample(sample) || sample.action !== 'normal' || sample.regime !== 'occupied' || sample.preheat === true
-      || sample.recovering === true || sample.fireplaceActive === true || sample.fireplaceKgPerHour > 0
-      || sample.inputSegments?.some(segment => segment.fireplaceActive === true || segment.fireplaceKgPerHour > 0)
+      || sample.recovering === true || fireplaceAffectsLearning(sample)
       || nextTime - time > 2 * HOUR) break;
     uninterrupted.unshift(sample);
     nextTime = time;

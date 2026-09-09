@@ -35,6 +35,8 @@ parentPort.on('message', ({ id, args, operation }) => {
       (SELECT MAX(id) FROM recorder_coverage) coverage,
       (SELECT MAX(id) FROM learning_journal) learningJournal,
       (SELECT MAX(id) FROM fireplace_events) fireplaceRevision,
+      (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
+      (SELECT group_concat(value) FROM state WHERE key IN ('fireplace:rebuild:mqtt','fireplace:rebuild:providers','fireplace:rebuild:simulated')) fireplaceRebuilds,
       (SELECT MAX(id) FROM events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get());
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }

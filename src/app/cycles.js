@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCycle, phaseAt } from '../control/planner.js';
 import { predictThermalStep, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
-import { fireplaceRate, fireplaceIntegral } from '../domain/fireplace.js';
+import { fireplaceRate, fireplaceAffectsLearning } from '../domain/fireplace.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { CONTROL_DEFAULTS } from './config.js';
 
@@ -232,7 +232,9 @@ export class CycleTracker {
         fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? common.equipment.fireplaceEvents ?? [] }, schedule, intervals });
       const originalRecovery = predicted ? recoveryTotals(predicted.trajectory, cycle.observations) : null;
       const calibratedRecovery = recoveryTotals(calibration.trajectory, cycle.observations);
-      const firePresent = fireplaceIntegral(this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [], cycle.startedAt, now) > 0;
+      const fireplaceEvents = this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [];
+      const firePresent = cycle.observations.some(row => fireplaceAffectsLearning({
+        fireplaceKgPerHour: fireplaceRate(fireplaceEvents, row.start, row.end) }));
       const comparableSpace=a.routeMissingHours<=0.001 && a.routeCoveredHours>0
         && !cycle.fireplaceCorrectionRevision && (!firePresent || fireplaceEvidenceReady(cycle.plan.model));
       const trajectoryErrors = predicted ? cycle.observations.map(o => {

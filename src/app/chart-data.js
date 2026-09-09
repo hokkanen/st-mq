@@ -10,6 +10,9 @@ import { timingEvidenceSource, timingPowerEvidence } from './timing-evidence.js'
 import { HISTORY_AXIS_BY_KEY, PHASE_ENERGY_SIGNALS, AUDIT_SIGNALS, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
+import { addFireplaceInputs, addFirewoodOutcomes, FIREPLACE_INPUT_NAMES, FIREWOOD_OUTCOME_NAMES } from './chart-fireplace.js';
+import { getFirewoodBenefit } from './firewood-benefit.js';
+import { forecastIntervals } from '../control/planner.js';
 import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
 import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
@@ -526,7 +529,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
-    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !['property_power', 'heat_pump_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
+    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['property_power', 'heat_pump_power', 'solar_forecast',...PHASE_ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
@@ -780,7 +783,20 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const recordedEnergy = addRecordedEnergy({store,range,now,input,envelopes,timing});
   const modelInputs = addModelInputs({ store, range, now, input, envelopes });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
-  if (Object.hasOwn(MODEL_INPUT_INFO, left) && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
+  const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes });
+  const outlookForFirewood = input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);
+  const firewood = getFirewoodBenefit({ store, input, range, now,
+    priceIntervals: priced.map(row => ({ ...row, price: row.totalCtPerKwh })),
+    futureIntervals: range.from <= now && range.to > now
+      ? forecastIntervals(outlookForFirewood.prices, outlookForFirewood.forecast, Math.floor(now / 900_000) * 900_000) : [] });
+  const firewoodOutcomes = addFirewoodOutcomes({ result: firewood, range, now, envelopes });
+  if (FIREPLACE_INPUT_NAMES.includes(left) && fireplaceInputs.loggingStartedAt === null)
+    warnings.push('No fireplace logging exists for this input source. Earlier unlogged periods are unknown.');
+  if (FIREWOOD_OUTCOME_NAMES.includes(left)) {
+    warnings.push('Firewood savings are retrospective model estimates of avoided space-heating electricity, with free wood. They are separate from timing-cost comparisons.');
+    if (firewood.summary.status === 'unavailable') warnings.push(firewood.summary.reason ?? 'Firewood savings need usable heating observations and prices.');
+  }
+  if (Object.hasOwn(MODEL_INPUT_INFO, left) && !FIREPLACE_INPUT_NAMES.includes(left) && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
   if (Object.hasOwn(MODEL_COEFFICIENT_INFO, left)) {
     if (!envelopes[left].values().some(point => Number.isFinite(point.y))) warnings.push('No reconstructable model coefficients exist for these dates and input source.');
     if (modelCoefficients.unsupportedRecords || modelCoefficients.invalidRecords) warnings.push('Some coefficient history is unavailable because its learning records are unsupported or incomplete.');
@@ -854,7 +870,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), firewoodBenefit: firewood.summary, meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,

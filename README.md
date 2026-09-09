@@ -136,7 +136,7 @@ directly below the current readings.
   and starts hidden. A separate **Pump mode** strip shows categorical H66 readback.
   Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
   individual auxiliary episodes.
-- **Timing cost:** open this fold below the chart to compare each device's cost of
+- **Energy cost comparisons:** open this fold below the chart. Heating and Charging compare each device's cost of
   included energy at the recorded timestamps with the same daily energy at the
   whole Finnish day's average all-in price. Heat-pump electricity is reconstructed
   from recorded compressor activity and auxiliary output using the nominal powers
@@ -166,6 +166,12 @@ directly below the current readings.
   **Assumed rates** includes assumptions affecting the daily average even when
   the device ran during a period with known rates. This comparison does not
   establish savings caused by the controller.
+  A third **Firewood** box estimates space-heating electricity and cost avoided
+  with wood priced at zero. It shows a scenario range, evidence status and coverage
+  for the selected dates, with any remaining forecast estimate separately. It uses
+  a different reference from the timing comparisons, so the cards are not summed.
+  Manual wood loads, delayed release, the fitted response and daily savings are
+  also available in the left-axis drawer. See [fireplace details](docs/fireplace.md).
 
 Chart changes affect the display only. Viewing history neither polls providers
 nor sends equipment commands. Large ranges use bounded display resolution,

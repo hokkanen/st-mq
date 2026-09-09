@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
@@ -14,6 +14,7 @@ const paletteVariables = {
   property: '--chart-property', ev: '--chart-ev', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
   indoor: '--chart-indoor', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
+  firewood: '--chart-firewood',
 };
 const shades = [
   { key: 'heatOff', label: 'Tariff reduction requested', detail: 'Requested tariff reduction; compressor activity is shown separately' },
@@ -39,7 +40,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const preferences = loadPreferences();
   const listeners = [];
   let graph, payload, plottedSelection, fingerprint, status, initialized = false, closed = false;
-  let palette = { ...defaultPalette }, lastContract, lastLiveRevision, selectionGeneration = 0;
+  let palette = { ...defaultPalette }, lastContract, lastLiveRevision, lastFirewoodRevision, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
   let activePreset = 'today', previousToday, rangeEnabled = false;
 
@@ -186,11 +187,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                 title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
                 label: item => {
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
-                  const interval = item.raw?.fromEnergy || item.raw?.modelInput ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
+                  const interval = Number.isFinite(item.raw?.intervalStart) && Number.isFinite(item.raw?.intervalEnd) ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
                   const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
                   const value = historyValueLabel(item.dataset.key, item.parsed.y, item.dataset.unit);
                   const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
-                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${item.raw?.modelInput?` · ${item.raw.inputSource} · saved learning input`:''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  const firewood = firewoodPointDetail(item.dataset.key, item.raw);
+                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -210,11 +212,15 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
     if (plot.left === 'heat_pump_power') notes.push('Heat-pump electricity is reconstructed from saved equipment states and dated nominal power assumptions. It is an estimate; missing, stale or unverified source periods appear as gaps.');
     if (plot.left.startsWith('model_coefficient_')) {
-      notes.push('Coefficients show the model estimate known at each time, reconstructed from the saved learning journal without additional stored history. Stepped lines retain each value until the model changes. Tooltips distinguish initial estimates, fitted values and retained values awaiting evidence. Unavailable replay history remains blank.');
+      notes.push('Coefficients are reconstructed from the saved learning journal and applicable corrected firewood history without additional stored history. Stepped lines retain each value until the reconstructed model changes. Tooltips distinguish initial estimates, fitted values and retained values awaiting evidence. Unavailable replay history remains blank.');
+    } else if (plot.left === 'model_fireplace_release') {
+      notes.push('Fireplace release is calculated from corrected firewood additions using the delayed masonry response. Its kg/h unit is fuel equivalent, not a burn-rate measurement or delivered kW. Heat from additions before these dates can continue into the selection; periods before logging began remain unknown.');
     } else if (plot.left.startsWith('model_')) {
       notes.push('Model inputs are the values saved with completed learning intervals. They are not recalculated using today’s model or settings. Missing or rejected intervals appear as gaps; the indoor endpoint is the observed prediction target.');
       if (payload.meta?.modelInputs?.rejectedIntervals) notes.push(`${payload.meta.modelInputs.rejectedIntervals} input segments were excluded by recorded quality checks.`);
     }
+    if (plot.left === 'firewood_load') notes.push('Triangles show manually added kilograms. Additions with exactly the same timestamp are combined and counted in the tooltip. Corrections exclude mistaken additions. The empty space between points does not describe fireplace heat release.');
+    if (['firewood_savings', 'firewood_electricity_avoided'].includes(plot.left)) notes.push('Each diamond is a Finnish-day total over supported elapsed intervals. Hollow points are provisional model estimates; filled points use validated response evidence. These retrospective estimates compare heating electricity with and without logged firewood, with wood cost set to €0. They are separate from the Heating and Charging timing comparisons; missing evidence remains a gap.');
     if (plot.left === 'outdoor_forecast') notes.push('This view shows the forecast from now onward. It does not reconstruct past outdoor forecasts.');
     if (payload.meta?.historyBasis === 'original-recorded-history') notes.push('Charts read the original saved history. Point reduction for display and cached chart responses stay in memory; they create no additional database history. Energy and cost calculations use the original recorded intervals.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
@@ -238,6 +244,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
     previousToday = today;
     const contract = JSON.stringify(status.contract ?? null);
+    const firewoodRevision = JSON.stringify({ revision: status.fireplace?.revision, rebuilding: status.fireplace?.rebuild?.status,
+      model: status.learning?.adaptive?.model?.trainedAt });
+    if (lastFirewoodRevision !== undefined && firewoodRevision !== lastFirewoodRevision) { loader.invalidate(); force = true; }
+    lastFirewoodRevision = firewoodRevision;
     const liveRevision = status.recording?.historyRevision ?? JSON.stringify({ input: status.input, observations: status.observations,
       metrics: status.learning?.metrics, h66Readings: status.h66?.readings,
       providers: Object.fromEntries(Object.entries(status.providers ?? {}).map(([key, value]) => [key, value?.lastSuccessAt ?? value?.lastSuccess])) });
@@ -256,7 +266,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       // display tails and the now marker using each fresh server-status clock.
       const plotNow = Number.isFinite(status.now) ? status.now : result.now;
       payload = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
-      const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, left: selection.left,
+      const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, timingBenefit: payload.timingBenefit, firewoodBenefit: payload.firewoodBenefit, left: selection.left,
         now: plotNow >= payload.range.from && plotNow < payload.range.to ? plotNow : null });
       plottedSelection = { ...selection };
       if (nextFingerprint !== fingerprint) { fingerprint = nextFingerprint; renderChart(); }

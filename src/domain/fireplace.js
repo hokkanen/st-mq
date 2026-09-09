@@ -3,6 +3,9 @@
 const HOUR = 3_600_000;
 export const FIREPLACE_HORIZON_MS = 120 * HOUR;
 export const FIREPLACE_RESPONSE = Object.freeze({ version: 1, burnHours: 2, releaseHours: 18, horizonHours: 120 });
+/** Structural tolerances, not statistical confidence limits. A small residual
+ * still contributes heat; these only decide when it matters for evidence/control. */
+export const FIREPLACE_RELEVANCE = Object.freeze({ remainingC: 0.1, nextHourC: 0.02, cleanRateKgPerHour: 0.02 });
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
 const rawCumulative = hours => 1 - (18 * Math.exp(-hours / 18) - 2 * Math.exp(-hours / 2)) / 16;
 const normalization = rawCumulative(FIREPLACE_RESPONSE.horizonHours);
@@ -29,6 +32,31 @@ export function fireplaceActive(events = [], at) {
   const now = instant(at);
   return Number.isFinite(now) && events.some(event => valid(event)
     && instant(event.litAt ?? event.at) <= now && now < instant(event.litAt ?? event.at) + FIREPLACE_HORIZON_MS);
+}
+
+/** Aggregate before testing significance: several individually small tails may
+ * still matter together. Remaining degrees C are an integrated input allowance,
+ * not a forecast of the eventual room-temperature rise. */
+export function fireplaceInfluence(events = [], at, { gainCPerKg = 0.15, gainUncertaintyCPerKg = 0.15 } = {}) {
+  const now = instant(at);
+  const gain = Number.isFinite(gainCPerKg) ? Math.max(0, Math.min(1, gainCPerKg)) : 0.15;
+  const uncertainty = Number.isFinite(gainUncertaintyCPerKg) ? Math.max(0, Math.min(1, gainUncertaintyCPerKg)) : 0.15;
+  const remainingKgEquivalent = fireplaceIntegral(events, now, now + FIREPLACE_HORIZON_MS);
+  const rateKgPerHour = fireplaceRate(events, now, now + HOUR);
+  const expectedRemainingC = remainingKgEquivalent * gain;
+  const uncertaintyRemainingC = remainingKgEquivalent * uncertainty;
+  return { rateKgPerHour, remainingKgEquivalent, expectedRemainingC, uncertaintyRemainingC,
+    relevant: expectedRemainingC + uncertaintyRemainingC > FIREPLACE_RELEVANCE.remainingC
+      || rateKgPerHour * (gain + uncertainty) > FIREPLACE_RELEVANCE.nextHourC };
+}
+
+/** Completed-window rates already pool every logged load. Missing rates with an
+ * active-fire flag remain excluded; absent legacy logging does not assert no fire. */
+export function fireplaceAffectsLearning(sample) {
+  if (!sample) return false;
+  const rate = sample.fireplaceKgPerHour;
+  return (Number.isFinite(rate) ? rate > FIREPLACE_RELEVANCE.cleanRateKgPerHour : sample.fireplaceActive === true)
+    || sample.inputSegments?.some(fireplaceAffectsLearning) === true;
 }
 
 /** Simultaneous loads/reloads share one observation group. Separate groups have

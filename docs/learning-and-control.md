@@ -27,8 +27,8 @@ inputs** and **Model coefficients** into closed sections.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
 or fixed building assumption. The current-value display uses the existing learning
-state. Four **Model coefficients · Calculated** chart choices show historical heat
-loss, compressor response, solar response and auxiliary response. The two fixed
+state. Five **Model coefficients · Calculated** chart choices show historical heat
+loss, compressor response, solar response, auxiliary response and fireplace response. The two fixed
 building assumptions remain informational values only.
 
 Coefficient charts replay the immutable learning journal in memory with the matching
@@ -56,6 +56,12 @@ is the measured state and prediction target. Requested phase, ROOM boost and com
 target describe control context; they do not create a direct heat credit. The eight
 **Model inputs · Calculated** axes include the indoor endpoint and these seven
 input/context values exactly as saved in the learning journal.
+Manual **Recorded firewood additions** markers and calculated **Fireplace release input** provide
+two additional input views from the corrected source-event history. Fireplace
+response evidence appears alongside the coefficient. Daily estimated firewood cost
+and electricity savings are available under **Learning outcomes · Calculated**;
+their paired normal-heating reference and separate electrical validation are
+explained in [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
 Only outdoor temperature and solar radiation are weather inputs. Current outdoor
 source priority remains H66, FMI station, then Open-Meteo. Solar remains an archived

@@ -1,4 +1,5 @@
 import { timingDisplay, timingExplanations } from './timing-model.js';
+import { firewoodDisplay, firewoodExplanations } from './firewood-benefit.js';
 
 /** Keep native folds mounted while the chart refreshes their figures and notes. */
 export function createTimingBenefit(root) {
@@ -34,11 +35,12 @@ export function createTimingBenefit(root) {
   }
   function initialize(displays) {
     const intro = element('div', 'timing-intro');
-    paragraph(intro, 'The same energy, priced at the recorded times and at each full day’s average all-in price.');
-    paragraph(intro, 'Positive = cheaper timing · Negative = dearer timing', 'timing-sign-guide');
+    paragraph(intro, 'Heating and Charging compare the same electricity at recorded times and at each full day’s average all-in price.');
+    paragraph(intro, 'Firewood estimates heating electricity avoided. These comparisons have different baselines and are not added together.', 'timing-sign-guide');
+    paragraph(intro, 'Heating & Charging: positive = cheaper timing · negative = dearer timing', 'timing-sign-guide');
     devices = element('div', 'timing-devices');
     for (const display of displays) {
-      const card = element('article', 'timing-card timing-device'); card.dataset.device = display.key;
+      const card = element('article', `timing-card timing-device${display.key === 'firewood' ? ' firewood-card' : ''}`); card.dataset.device = display.key;
       const overviewBox = element('div', 'timing-device-overview');
       const overview = element('div', 'timing-overview-content'); overviewBox.append(overview);
       const details = element('details', 'timing-device-detail'); details.dataset.device = display.key;
@@ -119,11 +121,57 @@ export function createTimingBenefit(root) {
     }
     return content;
   }
+  function firewoodOverview(display) {
+    const overview = document.createDocumentFragment();
+    const heading = element('div', 'timing-device-heading');
+    heading.append(element('h3', 'timing-device-name', display.name)); overview.append(heading);
+    const result = element('p', 'timing-result');
+    result.append(element('strong', display.available ? 'timing-amount' : 'timing-unavailable', display.amount ?? 'Estimate unavailable'));
+    if (display.available) result.append(element('span', 'timing-outcome', display.outcome));
+    overview.append(result);
+    if (!display.available) paragraph(overview, display.unavailableReason, 'timing-unavailable-reason');
+    if (display.available) paragraph(overview, display.electricity, 'firewood-energy');
+    const meta = element('div', 'timing-meta');
+    const status = element('span', 'timing-basis firewood-status', display.statusLabel);
+    status.dataset.basis = 'firewood'; status.dataset.status = display.status;
+    meta.append(status, element('span', 'timing-coverage', display.coverageLabel)); overview.append(meta);
+    paragraph(overview, display.woodCost, 'timing-dates');
+    paragraph(overview, display.calculationPeriod, 'timing-dates');
+    return overview;
+  }
+  function firewoodDetail(display) {
+    const content = document.createDocumentFragment();
+    const evidence = element('section', 'timing-energy');
+    evidence.append(element('h4', '', 'How to read this estimate'));
+    paragraph(evidence, display.statusExplanation);
+    paragraph(evidence, display.uncertainty, 'firewood-range');
+    for (const text of display.evidence) paragraph(evidence, text);
+    content.append(evidence);
+    const fuel = element('section', 'timing-time');
+    fuel.append(element('h4', '', 'Recorded wood and assumptions'));
+    paragraph(fuel, display.loads); paragraph(fuel, display.loadExplanation); paragraph(fuel, display.woodCost);
+    for (const text of display.assumptions) paragraph(fuel, text);
+    content.append(fuel);
+    const coverage = element('section', 'timing-time');
+    coverage.append(element('h4', '', 'Time included'));
+    paragraph(coverage, display.coverageSummary, 'timing-coverage-summary');
+    paragraph(coverage, display.coverageExplanation);
+    paragraph(coverage, display.coveredPeriod, 'timing-dates'); content.append(coverage);
+    if (display.remaining) {
+      const remaining = element('section', 'firewood-remaining');
+      remaining.append(element('h4', '', display.remaining.label));
+      for (const text of [display.remaining.amount, display.remaining.energy, display.remaining.fuel,
+        display.remaining.unavailable, display.remaining.through, display.remaining.reason, display.remaining.explanation]) paragraph(remaining, text);
+      content.append(remaining);
+    }
+    return content;
+  }
 
   return {
     render(payload) {
       if (closed) return;
-      const displays = ['heatPump', 'charger'].map(key => timingDisplay(key, payload?.timingBenefit?.[key], payload));
+      const displays = [...['heatPump', 'charger'].map(key => timingDisplay(key, payload?.timingBenefit?.[key], payload)),
+        firewoodDisplay(payload?.firewoodBenefit, payload)];
       const chartAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used) && !displays.some(display => display.assumedRates);
       const fingerprint = JSON.stringify({ displays, chartAssumedRates });
       if (fingerprint === lastFingerprint) return;
@@ -131,13 +179,14 @@ export function createTimingBenefit(root) {
       if (!notes) initialize(displays);
       for (const display of displays) {
         const card = cards.get(display.key);
-        card.overview.replaceChildren(deviceOverview(display));
-        card.content.replaceChildren(deviceDetail(display));
+        card.overview.replaceChildren(display.key === 'firewood' ? firewoodOverview(display) : deviceOverview(display));
+        card.content.replaceChildren(display.key === 'firewood' ? firewoodDetail(display) : deviceDetail(display));
       }
       alignOverviews();
       notes.replaceChildren();
-      explanation(notes, 'How the comparison works', timingExplanations.comparison);
-      explanation(notes, 'What the percentages mean', [...timingExplanations.coverage, ...timingExplanations.evidence]);
+      explanation(notes, 'How Heating and Charging are compared', timingExplanations.comparison);
+      explanation(notes, 'Heating and Charging percentages', [...timingExplanations.coverage, ...timingExplanations.evidence]);
+      explanation(notes, 'How Firewood differs', firewoodExplanations);
       if (chartAssumedRates || displays.some(display => display.assumedRates)) {
         const rates = explanation(notes, 'When contract rates are assumed', timingExplanations.rates, 'timing-rate-explanation');
         if (chartAssumedRates) {

@@ -1,7 +1,7 @@
 /** Small empirical temperature model. Priors permit bounded operation before every
  * actuator is observed; validation never turns assumed electricity into a meter. */
 import { inferComfortReference, goodQuality } from './learning.js';
-import { fireplaceBurnGroups } from '../domain/fireplace.js';
+import { fireplaceBurnGroups, fireplaceAffectsLearning, FIREPLACE_RELEVANCE } from '../domain/fireplace.js';
 
 const HOUR = 3_600_000;
 const MAX_SAMPLES = 1536;
@@ -14,11 +14,12 @@ const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, v
 const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
 const SLOW_HEAT_FRACTION = 1;
-const BOUNDS = Object.freeze({
+export const THERMAL_PARAMETER_BOUNDS = Object.freeze({
   lossPerHour: [0.001, 0.12], normalHeatCPerHour: [0.05, 3], solarCPerHourPerKwM2: [0, 2.5],
   memoryExchangePerHour: [0.005, 0.4], reserveTimeHours: [2, 72], auxiliaryCPerKwh: [0.01, 0.6],
   fireplaceCPerKg: [0, 1],
 });
+const BOUNDS = THERMAL_PARAMETER_BOUNDS;
 const DEFAULTS = Object.freeze({ lossPerHour: 0.018, normalHeatCPerHour: 0.75,
   solarCPerHourPerKwM2: 0.45,
   memoryExchangePerHour: 0.08, reserveTimeHours: 12, auxiliaryCPerKwh: 0.15, fireplaceCPerKg: 0.15 });
@@ -75,6 +76,13 @@ export function fireplaceEvidenceReady(model) {
     && model.validation.parameterEvidence?.fireplaceCPerKg?.status === 'identified';
 }
 
+/** Structural gain-error allowance; thermal checks are not a probability bound
+ * and cannot establish observed electricity displacement. */
+export function fireplaceGainUncertainty(model) {
+  const gain = model?.parameters?.fireplaceCPerKg ?? DEFAULTS.fireplaceCPerKg;
+  return fireplaceEvidenceReady(model) ? Math.max(0.02, gain * 0.5) : Math.max(0.15, gain);
+}
+
 export function actionEvidenceReady(model, phase, durationHours = null) {
   if (!thermalEvidenceReady(model)) return false;
   if (phase === 'normal') return true;
@@ -124,8 +132,7 @@ export function thermalUncertaintyC(model, hours, inputs = {}) {
   const unknownAction = phase !== 'normal' && !actionEvidenceReady(model, phase) && !finite(inputs.compressorDuty);
   const missingSolar = !finite(inputs.solarRadiationWm2);
   const fireplace = finite(inputs.fireplaceKgPerHour) ? Math.max(0, inputs.fireplaceKgPerHour) : 0;
-  const fireAllowance = fireplace * duration * (model?.parameters?.fireplaceCPerKg ?? DEFAULTS.fireplaceCPerKg)
-    * (fireplaceEvidenceReady(model) ? 0.5 : 1);
+  const fireAllowance = fireplace * duration * fireplaceGainUncertainty(model);
   return base + (unknownAction ? 0.1 * Math.sqrt(duration) : 0) + (missingSolar ? 0.08 * Math.sqrt(duration) : 0) + fireAllowance;
 }
 
@@ -308,8 +315,7 @@ function thermalInterval(model, state, segments) {
 }
 
 function hasFireplace(sample) {
-  return sample?.fireplaceActive === true || sample?.fireplaceKgPerHour > 0
-    || sample?.inputSegments?.some(segment => segment.fireplaceActive === true || segment.fireplaceKgPerHour > 0);
+  return fireplaceAffectsLearning(sample);
 }
 
 function observedBurns(rows) {
@@ -430,14 +436,14 @@ function parameterEvidence(model, samples, targetC, episodes, excludeFireplace =
     const reason = rows.length < 96 || days.size < 3 ? 'fewer-than-three-days-of-observed-heat-input'
       : name === 'solarCPerHourPerKwM2' && sunlitDays.size < 3 ? 'fewer-than-three-sunlit-days'
         : name === 'auxiliaryCPerKwh' && auxiliaryEpisodes < MIN_PHASE_EPISODES ? 'fewer-than-three-observed-auxiliary-episodes'
-          : name === 'fireplaceCPerKg' && (burns < 3 || !thermalEvidenceReady(model)
-            || Math.max(fireFreeSamples, model.validation?.fireplaceFreeSamples ?? 0) < 96)
-            ? 'fireplace-requires-validated-house-response-free-intervals-and-three-separated-burns'
+          : name === 'fireplaceCPerKg' && (burns < 3 || !thermalEvidenceReady(model))
+            ? 'fireplace-requires-validated-house-response-and-three-separated-burns'
           : sensitivity < 0.002 ? 'insensitive-to-available-inputs' : null;
     evidence[name] = { status: reason ? 'fixed' : 'candidate', reason, sensitivityCPerHour: sensitivity,
       coefficientChange: perturbed.parameters[name] - value, perturbation: 'bounded coefficient perturbation',
       observedIntervals: rows.length, observedDays: days.size,
-      ...(name === 'fireplaceCPerKg' ? { burns, fireFreeSamples } : {}) };
+      ...(name === 'fireplaceCPerKg' ? { burns, fireFreeSamples,
+        coreAnchor: thermalEvidenceReady(model) ? 'previously-validated-house-response' : 'unavailable' } : {}) };
   }
   const eligible = names.filter(name => evidence[name].status === 'candidate');
   for (const name of eligible) {
@@ -564,7 +570,9 @@ export function fitAdaptiveModel(cp, config = {}) {
   const diagnostics = parameterEvidence(cp.model, training, targetC, trainingEpisodes);
   const firePresent = samples.some(hasFireplace);
   // Uncertain internal heat must not be absorbed into the house-loss or heat-pump
-  // response coefficients. Their objective and evidence use fire-free intervals.
+  // response coefficients. Their objective and evidence use fire-free/negligible
+  // intervals. An established anchor can identify wood from varying daily loads
+  // without manufacturing a new multi-day no-fire requirement.
   if (firePresent) {
     const clean = parameterEvidence(cp.model, training, targetC, trainingEpisodes, true);
     for (const name of Object.keys(diagnostics.evidence)) if (name !== 'fireplaceCPerKg')
@@ -614,11 +622,46 @@ export function fitAdaptiveModel(cp, config = {}) {
   const heldoutEpisodes = actionEpisodes.filter(episode => scoredIds.has(episode.id));
   const fireEpisodeIds = new Set([...diagnostics.rows, ...holdoutRows].filter(row => row.segments.some(hasFireplace))
     .flatMap(row => [row.episodeId, ...row.segments.map(segment => segment.episodeId)]).filter(Boolean));
+  const cleanTrainingEpisodes = trainingEpisodes.filter(episode => !fireEpisodeIds.has(episode.id));
+  const cleanHeldoutEpisodes = heldoutEpisodes.filter(episode => !fireEpisodeIds.has(episode.id));
   candidate.equipmentResponse = fitEquipmentResponse(candidate, diagnostics.rows, holdoutRows,
-    trainingEpisodes.filter(episode => !fireEpisodeIds.has(episode.id)),
-    heldoutEpisodes.filter(episode => !fireEpisodeIds.has(episode.id)));
+    cleanTrainingEpisodes, cleanHeldoutEpisodes);
+  candidate.equipmentResponse.validation.equipmentEpochAt = cp.equipmentEpochAt ?? null;
+  // A wood-only fit does not change the normal-duty formula. With no fresh clean
+  // action episodes, retain checked response from the same equipment epoch.
+  if (tunable.length === 1 && tunable[0] === 'fireplaceCPerKg'
+    && (cp.model.equipmentResponse?.validation?.equipmentEpochAt ?? null) === (cp.equipmentEpochAt ?? null)) {
+    for (const phase of PHASES.filter(phase => phase !== 'normal')) {
+      if (!actionEvidenceReady(cp.model, phase)
+        || [...cleanTrainingEpisodes, ...cleanHeldoutEpisodes].some(episode => episode.phases.includes(phase))) continue;
+      candidate.equipmentResponse.phases[phase] = structuredClone(cp.model.equipmentResponse.phases[phase]);
+      candidate.equipmentResponse.validation.phases[phase] = {
+        ...structuredClone(cp.model.equipmentResponse.validation.phases[phase]), fitStatus: 'retained-unchanged' };
+    }
+  }
   const phaseSamples = Object.fromEntries(PHASES.map(phase => [phase,
     diagnostics.rows.filter(row => row.segments.some(segment => segment.phase === phase)).length]));
+  // Current-window identification controls what may change. Prior identification
+  // of an unchanged coefficient remains valid even when daily fires leave no new
+  // clean intervals; retaining it must never make that coefficient tunable here.
+  const retainedEvidence = structuredClone(diagnostics.evidence), retainedCoreParameters = [];
+  if (thermalEvidenceReady(cp.model)) for (const [name, evidence] of Object.entries(retainedEvidence)) {
+    if (name === 'fireplaceCPerKg' || tunable.includes(name)
+      || candidate.parameters[name] !== cp.model.parameters[name]
+      || cp.model.validation.parameterEvidence?.[name]?.status !== 'identified') continue;
+    const previousEvidence = cp.model.validation.parameterEvidence[name];
+    retainedEvidence[name] = { ...previousEvidence, fitStatus: 'retained-unchanged',
+      retainedFrom: previousEvidence.retainedFrom ?? cp.model.trainedAt,
+      currentWindowEvidence: { status: evidence.status, reason: evidence.reason,
+        observedIntervals: evidence.observedIntervals, observedDays: evidence.observedDays } };
+    retainedCoreParameters.push(name);
+  }
+  const unchangedAnchor = Object.keys(BOUNDS).every(name => candidate.parameters[name] === cp.model.parameters[name]);
+  const retainedFireplace = !tunable.includes('fireplaceCPerKg') && unchangedAnchor && fireplaceEvidenceReady(cp.model);
+  if (retainedFireplace) retainedEvidence.fireplaceCPerKg = {
+    ...cp.model.validation.parameterEvidence.fireplaceCPerKg, fitStatus: 'retained-unchanged',
+    retainedFrom: cp.model.validation.parameterEvidence.fireplaceCPerKg.retainedFrom ?? cp.model.trainedAt,
+    currentWindowEvidence: diagnostics.evidence.fireplaceCPerKg };
   candidate.trainedAt = samples.at(-1).timestamp;
   candidate.uncertainty = errorEnvelope(validation);
   candidate.uncertaintyCPerHour = clamp(validation.maxErrorC / Math.max(1, Math.min(...validation.horizons)), 0.04, 0.6);
@@ -628,7 +671,7 @@ export function fitAdaptiveModel(cp, config = {}) {
     maximumHorizonHours: Math.max(...validation.horizons),
     metric: 'duration-weighted trajectory temperature error in degrees C', embargoHours: 12,
     trainThrough: samples[split - 1].timestamp, validateFrom: samples[scoreFrom].timestamp,
-    phaseSamples, phaseEpisodes, fittedParameters: tunable, parameterEvidence: diagnostics.evidence,
+    phaseSamples, phaseEpisodes, fittedParameters: tunable, parameterEvidence: retainedEvidence,
     phaseThermalEpisodes: Object.fromEntries(PHASES.map(phase => [phase,
       validation.blocks.filter(block => block.completeEpisode && block.phaseHours[phase] > 0).length])),
     phaseValidationSamples: Object.fromEntries(PHASES.map(phase => [phase,
@@ -637,8 +680,13 @@ export function fitAdaptiveModel(cp, config = {}) {
     sunlitSamples: diagnostics.rows.filter(row => row.segments.some(segment => segment.solarRadiationWm2 > 50)).length,
     sunlitValidationSamples: holdoutRows.filter(row => row.segments.some(segment => segment.solarRadiationWm2 > 50)).length,
     fireplaceFreeSamples: Math.max(diagnostics.fireFreeSamples, cp.model.validation?.fireplaceFreeSamples ?? 0),
-    fireplace: { accepted: tunable.includes('fireplaceCPerKg') && validationBurns.length >= 3,
+    fireplace: retainedFireplace ? { ...cp.model.validation.fireplace, fitStatus: 'retained-unchanged' }
+      : { accepted: tunable.includes('fireplaceCPerKg') && validationBurns.length >= 3,
       trainingBurns: trainingBurns.length, validationBurns: validationBurns.length,
+      coreAnchor: { kind: thermalEvidenceReady(cp.model) ? 'previously-validated-house-response' : 'unavailable',
+        trainedAt: cp.model.trainedAt, retainedParameters: retainedCoreParameters },
+      currentKnownCleanTrainingIntervals: diagnostics.fireFreeSamples,
+      cleanRateThresholdKgPerHour: FIREPLACE_RELEVANCE.cleanRateKgPerHour,
       excludedFromHouseFit: firePresent, responseShape: 'fixed-2h-rise-18h-release-120h-horizon',
       basis: 'effective temperature response per logged kg; no delivered-energy claim' },
     limitation: 'Thermal evidence is conditional on observed space-heating inputs; action response and full-cycle economics require separate validation' };

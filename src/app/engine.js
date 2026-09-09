@@ -8,8 +8,8 @@ import { Recorder } from '../storage/recorder.js';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
 import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
 import { fireplaceLearningContext, withFireplaceInputs } from './fireplace-inputs.js';
-import { evaluateThermalModel, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
-import { fireplaceActive, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
+import { evaluateThermalModel, fireplaceEvidenceReady, fireplaceGainUncertainty } from '../control/adaptive-learning.js';
+import { fireplaceActive, fireplaceInfluence, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 import { goodQuality } from '../control/learning.js';
 import { validateSettings, CONTROL_DEFAULTS } from './config.js';
 import { SimulatedPlant, simulatedOutlook } from './simulator.js';
@@ -547,6 +547,9 @@ export class Engine {
     const fireplaceContext = fireplaceLearningContext(this.store, input);
     equipment.fireplaceEvents = fireplaceContext.fireplaceEvents.filter(event => event.at <= now && event.at + FIREPLACE_HORIZON_MS > now);
     equipment.fireplaceActive = fireplaceActive(equipment.fireplaceEvents, now);
+    equipment.fireplaceRelevant = fireplaceInfluence(equipment.fireplaceEvents, now, {
+      gainCPerKg: checkpoint.model.parameters.fireplaceCPerKg,
+      gainUncertaintyCPerKg: fireplaceGainUncertainty(checkpoint.model) }).relevant;
     if (this.cycles.fireplaceContext?.fireplaceRevision !== fireplaceContext.fireplaceRevision)
       this.cycles.correctFireplace(fireplaceContext, now);
     this.cycles.fireplaceContext = fireplaceContext;
@@ -604,7 +607,7 @@ export class Engine {
     let cycle = this.cycles.active(), decision;
     const controlHold=!cycle?this.cycles.controlHold(now):null;
     const forceNormal = controlHold?'recent-cycle-incomplete'
-      : cycle && fireplaceActive(equipment.fireplaceEvents, now) && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
+      : cycle && equipment.fireplaceRelevant && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
       : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
       ? 'native-settings-changed' : override ? 'temporary-normal-override' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
