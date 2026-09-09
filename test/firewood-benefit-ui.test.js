@@ -97,19 +97,23 @@ test('House model explains manual fuel, delayed release, effective coefficient u
   assert.match(display.evidence.join(' '), /Fireplace response: provisional.*2 training firing groups and 1 later validation groups/);
 });
 
-function dom() {
+function dom(storage = new Map()) {
   let disconnected = false;
   const document = { activeElement: null,
     createElement: tag => new Element(tag), createDocumentFragment: () => new Element('fragment'),
-    defaultView: { ResizeObserver: class { observe() {} disconnect() { disconnected = true; } } } };
+    defaultView: { localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
+      ResizeObserver: class { observe() {} disconnect() { disconnected = true; } } } };
   class Element {
     constructor(tag) { this.tagName = tag; this.children = []; this.dataset = {}; this.ownerDocument = document;
-      this.style = { setProperty() {} }; this._text = ''; }
+      this.style = { setProperty() {} }; this._text = ''; this.attributes = {}; this.listeners = new Map(); }
     set textContent(value) { this._text = value; this.children = []; }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(' '); }
     append(...children) { for (const child of children) this.children.push(...(child.tagName === 'fragment' ? child.children : [child])); }
     replaceChildren(...children) { this.children = []; this.append(...children); }
-    setAttribute() {}
+    setAttribute(key, value) { this.attributes[key] = value; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    removeEventListener(type) { this.listeners.delete(type); }
+    click() { this.listeners.get('click')?.({ currentTarget: this }); }
     getBoundingClientRect() { return { height: 200 }; }
     focus() { document.activeElement = this; }
   }
@@ -125,7 +129,7 @@ test('three cost cards retain their folds and focus across updates and keep the 
   assert.deepEqual(devices.children.map(card => card.dataset.device), ['heatPump', 'charger', 'firewood']);
   const wood = devices.children[2], fold = wood.children[1], summary = fold.children[0];
   fold.open = true; summary.focus();
-  assert.match(root.children[0].textContent, /Heating and Charging compare the same electricity/);
+  assert.match(root.children[0].textContent, /Heating by model estimate or timing cost/);
   assert.match(root.children[0].textContent, /different baselines and are not added together/);
   assert.match(wood.textContent, /€1.25/); assert(!wood.textContent.includes('€4.25'), 'there is no sum of the three cards');
   panel.render({ ...data, firewoodBenefit: { ...estimate, valueEuro: 2.25,
@@ -136,4 +140,49 @@ test('three cost cards retain their folds and focus across updates and keep the 
   assert.match(wood.textContent, /Fresh forecast coverage is unavailable/);
   assert.match(devices.children[0].textContent, /€1.00/); assert.match(devices.children[1].textContent, /€2.00/);
   panel.close(); assert.equal(disconnected(), true);
+});
+
+test('heating choice changes its amount and details while preserving focus, folds and the other cards', () => {
+  const storage = new Map(), { root, document } = dom(storage);
+  const panel = createTimingBenefit(root);
+  const data = { ...payload, heatingBenefit: { status: 'estimated', valueEuro: 3.5, counts: { assessed: 2, completed: 2 } },
+    firewoodBenefit: estimate, timingBenefit: { heatPump: { value: 1 }, charger: { value: 2 } } };
+  panel.render(data);
+  const [heating, charger, fireplace] = root.children[1].children;
+  const overview = heating.children[0].children[0];
+  const [modelButton, timingButton] = overview.children[1].children;
+  const fold = heating.children[1]; fold.open = true;
+  modelButton.focus(); modelButton.click();
+  assert.equal(modelButton.attributes['aria-pressed'], 'true');
+  assert.equal(timingButton.attributes['aria-pressed'], 'false');
+  assert.equal(document.activeElement, modelButton); assert.equal(fold.open, true);
+  assert.match(heating.textContent, /Model-estimated saving.*€3.50/);
+  assert.doesNotMatch(heating.textContent, /€1.00|Energy used in the comparison/);
+  assert.match(heating.textContent, /2 assessed cycles.*Cycles included/);
+  assert.match(charger.textContent, /Timing cost saving.*€2.00/);
+  assert.match(fireplace.textContent, /Model-estimated saving.*€1.25/);
+  panel.render({ ...data, heatingBenefit: { status: 'unavailable', reason: 'no-completed-cycles' } });
+  assert.equal(overview.children[1].children[0], modelButton);
+  assert.equal(document.activeElement, modelButton); assert.equal(heating.children[1], fold);
+  assert.match(heating.textContent, /Estimate unavailable.*No completed heating cycles/);
+  assert.doesNotMatch(heating.textContent, /€3.50|€1.00/);
+  const reload = dom(storage), reloaded = createTimingBenefit(reload.root); reloaded.render(data);
+  assert.match(reload.root.children[1].children[0].textContent, /Model-estimated saving.*€3.50/);
+  timingButton.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  panel.close(); modelButton.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  reloaded.close();
+});
+
+test('heating selector works when browser preferences are blocked or invalid', () => {
+  for (const storage of [new Map([['stmq.heatingSavingMode', 'invalid']]), {
+    get() { throw new Error('Storage unavailable'); }, set() { throw new Error('Storage unavailable'); },
+  }]) {
+    const { root } = dom(storage), panel = createTimingBenefit(root);
+    panel.render(payload);
+    const heating = root.children[1].children[0];
+    assert.match(heating.textContent, /Timing cost saving/);
+    heating.children[0].children[0].children[1].children[0].click();
+    assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
+    panel.close();
+  }
 });

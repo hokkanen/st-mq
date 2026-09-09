@@ -22,7 +22,7 @@ const reasons = {
 
 export const firewoodExplanations = [
   'Firewood compares estimated heating electricity with and without the logged wood under the same house conditions. This is a retrospective model comparison, not a meter reading or a replay of historical controller choices.',
-  'Heating and Charging instead reprice the same electricity against each day’s average price. Their timing differences and the Firewood estimate have different baselines and are not added together.',
+  'Heating’s timing view and Charging reprice the same electricity against each day’s average price. Heating’s model view uses saved completed-cycle assessments. These comparisons and the Fireplace estimate have different baselines and are not added together.',
   'Wood cost is set to €0. The estimate excludes the cost of buying wood, labour and other fireplace costs. Negative electricity prices can make avoided electricity cost negative.',
 ];
 
@@ -53,7 +53,7 @@ export function firewoodDisplay(result, payload = {}) {
   if (finite(evidence.electricityRelativeError)) evidenceLines.push(`Later heating-electricity prediction error: ${number(evidence.electricityRelativeError * 100)}%.`);
   const through = Math.min(range.to, result.generatedAt ?? payload.now ?? range.to);
   return {
-    key: 'firewood', name: 'Firewood', available, status, statusLabel,
+    key: 'firewood', name: 'Fireplace', available, status, statusLabel,
     amount: available ? amount(result.valueEuro) : null,
     outcome: available ? result.valueEuro < 0 ? 'estimated electricity cost increase' : 'estimated electricity cost avoided' : null,
     electricity: finite(result.electricityAvoidedKwh) && status !== 'unavailable'

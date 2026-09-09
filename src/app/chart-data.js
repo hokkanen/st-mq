@@ -16,6 +16,7 @@ import { forecastIntervals } from '../control/planner.js';
 import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
 import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
+import { getHeatingBenefit } from './chart-heating-benefit.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -870,7 +871,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
-  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(), firewoodBenefit: firewood.summary, meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
+  return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(),
+    heatingBenefit: getHeatingBenefit({ store, input, range, now }), firewoodBenefit: firewood.summary, meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,

@@ -527,3 +527,24 @@ Both providers returned 48 hourly forecast intervals with solar radiation.
 Simulated MQTT tests cover H66 priority, staleness, errors, disconnect/reconnect,
 retained messages and recovery. Installed H66 hardware is not yet available for
 complete physical testing. No physical device commands were sent.
+
+## Heating savings comparison selector — 9 September 2026
+
+The Heating cost card now switches between timing cost saving and model-estimated
+saving, remembering the browser's choice. Charging remains a timing comparison;
+Fireplace remains a retrospective model estimate. The selector supports keyboard
+and touch, retains focus and open details during updates, and uses both themes.
+
+The new heating total reads saved, supported space-heating cycle assessments,
+including recovery, and assigns each full cycle to its Finnish completion date.
+A cycle can start before the selection. Unfinished, unsupported and corrected
+assessments do not contribute; no supported cycles means unavailable, not zero.
+This is separate from the rolling €/cycle learning metric, and is not an estimate
+for every selected hour. Details show cycle counts and saved uncertainty bounds.
+Cycle corrections invalidate the chart cache. Learning semantics, original
+observations, frozen forecasts and CSV imports remain unchanged.
+
+Validation: all 755 automated tests and the production build passed. The isolated
+Firefox smoke suite exercised both comparison modes, keyboard/touch selection,
+refresh/reload persistence, supported positive/zero/negative results, unavailable
+history, independent folds, and dark/light layouts from 320 to 1440 px.

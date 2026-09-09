@@ -181,6 +181,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-device-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .timing-device-name { margin: 0; font-size: 18px; font-weight: 550; }
 .timing-period { color: var(--muted); font-size: 12px; }
+.timing-period:empty { display: none; }
+.timing-comparison { display: flex; align-items: center; min-height: 46px; margin: 16px 0; }
+.timing-comparison-switch { gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); }
+.timing-comparison-option { flex: 1 1 0; min-width: 0; min-height: 36px; margin: 0; padding: 7px 4px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); font-size: 12px; line-height: 1.3; }
+.timing-comparison-option:hover { color: var(--text); background: var(--surface-soft); }
+.timing-comparison-option[aria-pressed="true"] { color: var(--accent-text); background: var(--accent); }
+.timing-comparison-option:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.timing-comparison-fixed { color: var(--muted); font-size: 12px; padding: 8px 12px; border-left: 2px solid var(--chart-ev); }
+.firewood-card .timing-comparison-fixed { border-left-color: var(--chart-firewood); }
+.timing-card .timing-comparison-label { color: var(--muted); font-size: 12px; margin: 0; }
+.timing-figures { display: flow-root; }
+.timing-card .heating-cycle-summary { color: var(--text); }
+.timing-selection-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .timing-card .timing-result { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin: 14px 0; color: var(--text); }
 .timing-amount { font-size: 32px; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.25; letter-spacing: -.6px; }
 .timing-outcome { color: var(--muted); font-size: 13px; }

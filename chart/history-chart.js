@@ -266,7 +266,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       // display tails and the now marker using each fresh server-status clock.
       const plotNow = Number.isFinite(status.now) ? status.now : result.now;
       payload = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
-      const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, timingBenefit: payload.timingBenefit, firewoodBenefit: payload.firewoodBenefit, left: selection.left,
+      const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, timingBenefit: payload.timingBenefit, heatingBenefit: payload.heatingBenefit, firewoodBenefit: payload.firewoodBenefit, left: selection.left,
         now: plotNow >= payload.range.from && plotNow < payload.range.to ? plotNow : null });
       plottedSelection = { ...selection };
       if (nextFingerprint !== fingerprint) { fingerprint = nextFingerprint; renderChart(); }

@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { getChartData, chartRange } from './chart-data.js';
 import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
+import { getHeatingBenefit } from './chart-heating-benefit.js';
 
 // The chart worker owns a separate read-only SQLite connection. A large history
 // view cannot block control decisions or the application's HTTP event loop.
@@ -9,6 +10,7 @@ const db = new DatabaseSync(workerData.dbPath, { readOnly: true });
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
 const cache = new Map(); let cacheBytes = 0, version = null;
+const heatingFingerprint = ({ generatedAt, ...summary }) => JSON.stringify(summary);
 let overview = null;
 parentPort.on('message', ({ id, args, operation }) => {
   try {
@@ -45,6 +47,13 @@ parentPort.on('message', ({ id, args, operation }) => {
     const bucket = chartRange(args).to <= args.now ? 0 : Math.floor(args.now / 15_000);
     const key = JSON.stringify({ ...args, now: bucket });
     let entry = cache.get(key), result;
+    // Cycle records can be corrected without a new telemetry or journal row.
+    // Recheck their compact selected-period aggregate, retaining history cache
+    // hits for unrelated recorder/checkpoint writes and active observation tapes.
+    if (entry && heatingFingerprint(entry.result.heatingBenefit) !== heatingFingerprint(
+      getHeatingBenefit({ ...args, store, range: entry.result.range }))) {
+      cache.delete(key); cacheBytes -= entry.bytes; entry = null;
+    }
     if (entry) {
       cache.delete(key); cache.set(key, entry);
       result = { ...entry.result, now: args.now, meta: { ...entry.result.meta, cacheHit: true } };

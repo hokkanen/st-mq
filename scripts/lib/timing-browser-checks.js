@@ -49,12 +49,30 @@ export function seedTimingBrowserFixture(store) {
         for (let phase = 1; phase <= 3; phase++) add(`ev1_current_l${phase}`, null, 'A', from + 96 * quarter);
       }
     }
+    // Invented saved assessments exercise the model comparison independently of
+    // timing telemetry, including a complete recovery across Finnish midnight.
+    const cycle = (id, startedAt, endedAt, assessment, status = 'completed') => store.cycle('providers', {
+      id: `synthetic-browser-${id}`, status, startedAt: Date.parse(`${startedAt}+03:00`),
+      endedAt: Date.parse(`${endedAt}+03:00`),
+      ...(assessment ? { assessment: { basis: 'estimated-space-heating-execution-and-reference', ...assessment } } : {}),
+    });
+    cycle('model-zero', '2026-09-01T01:00:00', '2026-09-01T03:00:00', { profitCents: 0, uncertaintyCents: 10 });
+    cycle('model-negative', '2026-09-02T01:00:00', '2026-09-02T03:00:00', { profitCents: -45, uncertaintyCents: 15 });
+    cycle('model-saving', '2026-09-04T23:00:00', '2026-09-05T02:00:00', {
+      profitCents: 210, uncertaintyCents: 25, referenceCostCents: 450, actualSpaceHeatingCostCents: 240,
+    });
+    cycle('model-extra-cost', '2026-09-05T06:00:00', '2026-09-05T08:00:00', {
+      profitCents: -35, uncertaintyCents: 10, referenceCostCents: 220, actualSpaceHeatingCostCents: 255,
+    });
+    cycle('model-unassessed', '2026-09-05T08:00:00', '2026-09-05T09:00:00');
+    cycle('model-incomplete', '2026-09-05T10:00:00', '2026-09-05T11:00:00', null, 'incomplete');
   });
 }
 
 export async function checkTimingBrowser({ command, evaluate, until, capture, context }) {
   const card = device => `.timing-device[data-device="${device}"]`;
   const detail = device => `.timing-device-detail[data-device="${device}"]`;
+  const comparison = mode => `${card('heatPump')} .timing-comparison-option[data-mode="${mode}"]`;
   const text = css => evaluate(`document.querySelector(${JSON.stringify(css)})?.textContent ?? ''`);
   const expanded = "document.getElementById('timing-details').open";
   const summary = '#timing-details > summary';
@@ -89,6 +107,31 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   const checkDetailOpen = async (device, expected) => {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).open`), expected,
       `${device} details follow the reader’s choice independently`);
+  };
+  const checkComparison = async mode => {
+    for (const option of ['model', 'timing']) {
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(comparison(option))}).getAttribute('aria-pressed')`),
+        String(option === mode), `The ${option} selector announces whether it is selected`);
+    }
+    for (const [device, label] of [['heatPump', mode === 'model' ? 'Model-estimated saving' : 'Timing cost saving'],
+      ['charger', 'Timing cost saving'], ['firewood', 'Model-estimated saving']]) {
+      assert.equal((await text(`${card(device)} .timing-comparison-label`)).trim(), label,
+        `${device} labels the displayed comparison without changing the other cards' baselines`);
+    }
+  };
+  const switchComparison = async (mode, activate = () => tap(comparison(mode))) => {
+    const before = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#timing-details details')].map(fold => fold.open))`));
+    const fixedResults = await evaluate(`JSON.stringify(['charger', 'firewood'].map(device =>
+      document.querySelector('.timing-device[data-device="' + device + '"] .timing-result').textContent))`);
+    await activate();
+    await until(`document.querySelector(${JSON.stringify(comparison(mode))}).getAttribute('aria-pressed') === 'true'`);
+    await checkComparison(mode);
+    assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#timing-details details')].map(fold => fold.open))`)), before,
+      'Changing the heating comparison preserves every device detail expansion');
+    assert.equal(await evaluate(`JSON.stringify(['charger', 'firewood'].map(device =>
+      document.querySelector('.timing-device[data-device="' + device + '"] .timing-result').textContent))`), fixedResults,
+    'Changing the heating comparison leaves charging and fireplace results unchanged');
+    await checkOpen(true);
   };
   const layout = async () => {
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
@@ -138,7 +181,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   };
 
   assert.equal(await evaluate("document.getElementById('timing-details').tagName"), 'DETAILS');
-  assert.match(await text(summary), /Timing cost/i);
+  assert.equal((await text(summary)).trim(), 'Energy cost comparisons');
   await checkOpen(false);
   await evaluate(`window.timingFoldFixture = {
     details: document.getElementById('timing-details'), summary: document.querySelector(${JSON.stringify(summary)})
@@ -156,18 +199,35 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await until(expanded);
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.summary'), true,
     'Native summary keeps keyboard focus while toggling');
-  assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button, #timing-benefit [role=dialog]').length"), 0,
-    'Timing results and explanations are ordinary text without popup controls');
-  for (const [device, name] of [['heatPump', 'Heating'], ['charger', 'Charging']]) {
+  assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button:not(.timing-comparison-option), #timing-benefit [role=dialog]').length"), 0,
+    'Results use only the inline comparison selector and native details controls');
+  assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-comparison-option').length"), 2,
+    'Only Heating has a two-option comparison selector');
+  for (const [device, name] of [['heatPump', 'Heating'], ['charger', 'Charging'], ['firewood', 'Fireplace']]) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).tagName`), 'DETAILS');
     assert.equal((await text(`${detail(device)} > summary`)).trim(), `${name} details`);
     assert.equal((await text(`${card(device)} .timing-device-name`)).trim(), name);
     await checkDetailOpen(device, false);
   }
-  await evaluate(`window.timingFoldFixture.devices = Object.fromEntries(['heatPump', 'charger'].map(device => {
+  await evaluate(`window.timingFoldFixture.devices = Object.fromEntries(['heatPump', 'charger', 'firewood'].map(device => {
     const details = document.querySelector('.timing-device-detail[data-device="' + device + '"]');
     return [device, { details, summary: details.querySelector(':scope > summary') }];
   })); true`);
+  await evaluate(`window.timingFoldFixture.comparisons = Object.fromEntries([...document.querySelectorAll('.timing-comparison-option')]
+    .map(button => [button.dataset.mode, button])); true`);
+  await checkComparison('timing');
+  await evaluate(`document.querySelector(${JSON.stringify(comparison('model'))}).focus(); true`);
+  await switchComparison('model', () => key('\uE007'));
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.comparisons.model'), true,
+    'Selecting the model estimate keeps keyboard focus on its persistent button');
+  assert.match(await text(`${card('heatPump')} .timing-unavailable`), /unavailable/i,
+    'Historical periods without model evidence show an unavailable estimate');
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(`${card('heatPump')} .timing-amount`)}) === null`), true,
+    'Missing model evidence never presents a zero saving or the timing amount');
+  await evaluate(`document.querySelector(${JSON.stringify(comparison('timing'))}).focus(); true`);
+  await switchComparison('timing', () => key(' '));
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.comparisons.timing'), true,
+    'The comparison selector also supports Space without losing keyboard focus');
 
   assert.match(await text(card('heatPump')), /unavailable/i);
   assert.match(await text(`${card('charger')} .timing-amount`), /€[\d.]+/);
@@ -217,13 +277,27 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await scrollTo(summary);
   await capture('home-energy-timing-unavailable-charging-open-844');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+  await switchComparison('model');
   await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
 
   await chooseDate('2026-09-05');
   await checkOpen(true);
+  await checkComparison('model');
+  assert.equal((await text(`${card('heatPump')} .timing-amount`)).trim(), '€1.75',
+    'Model saving totals supported completed cycles for the selected date');
+  assert.match(await text(`${card('heatPump')} .timing-outcome`), /estimated cost avoided/i);
+  assert.match(await text(detail('heatPump')), /2 assessed cycles/);
+  assert.match(await text(detail('heatPump')), /€1\.40.*€2\.10/);
+  assert.match(await text(detail('heatPump')), /began before the selected dates/);
+  assert.match(await text(detail('heatPump')), /completed cycle without a supported assessment/);
+  assert.match(await text(detail('heatPump')), /incomplete cycle/);
+  for (const mode of ['model', 'timing']) {
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(comparison(mode))}) === window.timingFoldFixture.comparisons.${mode}`), true,
+      'Changing dates preserves the comparison buttons and the selected mode');
+  }
   assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details && document.querySelector('#timing-details > summary') === window.timingFoldFixture.summary"), true,
     'Changing dates updates the contents without replacing the fold or its summary');
-  for (const device of ['heatPump', 'charger']) {
+  for (const device of ['heatPump', 'charger', 'firewood']) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}) === window.timingFoldFixture.devices.${device}.details
       && document.querySelector(${JSON.stringify(`${detail(device)} > summary`)}) === window.timingFoldFixture.devices.${device}.summary`), true,
     'Changing dates updates detail contents without replacing their folds or summaries');
@@ -232,6 +306,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await checkDetailOpen('charger', true);
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.devices.charger.summary'), true,
     'Changing data preserves focus on the nested native summary');
+  await switchComparison('timing');
   assert.match(await text(`${card('heatPump')} .timing-basis`), /operation estimate/i);
   assert.match(await text(`${detail('heatPump')} .timing-source[data-source="observed"]`), /100%/);
   assert.match(await text(detail('heatPump')), /reconstruct|recorded equipment/i);
@@ -274,6 +349,11 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       }
       await scrollTo(summary);
       await capture(`home-energy-timing-${theme}-${viewport.width}`);
+      await switchComparison('model');
+      await checkFits();
+      await scrollTo(summary);
+      await capture(`home-energy-model-${theme}-${viewport.width}`);
+      await switchComparison('timing');
       await scrollTo(`${detail('charger')} .timing-source`);
       await capture(`home-energy-timing-evidence-${theme}-${viewport.width}`);
       await scrollTo('.timing-explanations');
@@ -305,8 +385,25 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     }
   }
 
+  await switchComparison('model');
+  await chooseDate('2026-09-01');
+  await checkComparison('model');
+  assert.equal((await text(`${card('heatPump')} .timing-amount`)).trim(), '€0.00',
+    'A supported zero model difference remains distinguishable from missing evidence');
+  assert.match(await text(`${card('heatPump')} .timing-outcome`), /estimated cost difference/i);
+  await chooseDate('2026-09-02');
+  await checkComparison('model');
+  assert.match(await text(`${card('heatPump')} .timing-amount`), /[-−]€0\.45/);
+  assert.match(await text(`${card('heatPump')} .timing-outcome`), /estimated extra cost/i,
+    'Negative model savings clearly describe an estimated extra cost');
+  await checkFits();
+  await scrollTo(summary);
+  await capture('home-energy-model-negative-mobile');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await chooseDate('2026-09-04');
+  await checkComparison('model');
+  assert.match(await text(`${card('heatPump')} .timing-unavailable`), /unavailable/i);
+  await switchComparison('timing');
   await checkOpen(true);
   await checkDetailOpen('heatPump', false);
   await checkDetailOpen('charger', true);
@@ -341,6 +438,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     'Known-rate dates remove obsolete explanations about assumed contract rates');
   await tap(summary);
   await until(expanded);
+  await switchComparison('model');
   await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
   // Wait for a real background status poll while the reader leaves the fold open.
   await evaluate(`window.timingFoldFixture.fetch = window.fetch.bind(window);
@@ -355,6 +453,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await until("document.getElementById('history').dataset.ready === 'true'");
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
     await checkOpen(true);
+    await checkComparison('model');
     assert.equal(await evaluate("document.getElementById('timing-details') === window.timingFoldFixture.details"), true,
       'Background polling preserves the native fold');
     await checkDetailOpen('heatPump', false);
@@ -365,5 +464,14 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   } finally {
     await evaluate('window.fetch = window.timingFoldFixture.fetch; delete window.timingFoldFixture; true');
   }
+  await switchComparison('model');
+  await command('browsingContext.reload', { context, wait: 'complete' });
+  await until("document.getElementById('history')?.dataset.ready === 'true'");
+  await checkComparison('model');
+  await checkOpen(false);
+  await tap(summary);
+  await until(expanded);
+  await checkFits();
+  await switchComparison('timing');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
 }
