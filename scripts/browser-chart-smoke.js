@@ -116,6 +116,18 @@ try {
         && getComputedStyle(start).fontSize === getComputedStyle(end).fontSize;
     })()`), true, 'Date fields have matching widths, heights, alignment and text size');
   };
+  const checkRangeSteps = async () => {
+    assert.equal(await evaluate(`(() => {
+      const back = document.getElementById('range-back'), forward = document.getElementById('range-forward');
+      const yesterday = document.getElementById('range-yesterday'), tomorrow = document.getElementById('range-tomorrow');
+      const a = back.getBoundingClientRect(), b = yesterday.getBoundingClientRect();
+      const c = tomorrow.getBoundingClientRect(), d = forward.getBoundingClientRect();
+      return [back, forward].every(button => button.type === 'button' && button.getAttribute('aria-label'))
+        && a.width < b.width && d.width < c.width && a.right <= b.left && c.right <= d.left
+        && Math.abs((a.top + a.height / 2) - (b.top + b.height / 2)) < 1
+        && Math.abs((d.top + d.height / 2) - (c.top + c.height / 2)) < 1;
+    })()`), true, 'Accessible one-day arrows are compact and flank the shortcuts in one aligned row');
+  };
   const checkActivityTracks = async () => {
     assert.equal(await evaluate(`(() => {
       const canvas = document.getElementById('history').getBoundingClientRect();
@@ -150,7 +162,8 @@ try {
   await checkDateAlignment();
   assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
-  assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-yesterday,range-today,range-tomorrow');
+  assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-back,range-yesterday,range-today,range-tomorrow,range-forward');
+  await checkRangeSteps();
   assert.equal(await evaluate("document.getElementById('left-axis').value"), 'power');
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/original saved history.*stay in memory.*original recorded intervals/);
   assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"),/hourly temperature extrema|15-minute energy sums|15-minute aggregate/);
@@ -317,6 +330,7 @@ try {
     document.getElementById('date-range-enabled').click();
     document.getElementById('date-end').value='2026-09-08';
     document.getElementById('date-end').dispatchEvent(new Event('change'));
+    document.querySelector('#chart-range-form button[type=submit]').click();
     return true;
   })()`);
   await until("window.onlyCharger2Fixture.requests>0 && document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-08'");
@@ -344,31 +358,100 @@ try {
   await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
   await checkPowerDrawn();
-  await evaluate("localStorage.setItem('home-energy-theme', 'light'); true");
+  assert.equal(await evaluate("localStorage.getItem('home-energy-theme')"), 'light', 'The last selected theme is saved');
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
-  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark', 'Reload starts dark even with a legacy light preference');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light', 'Reload restores the last light theme');
+  assert.equal(await evaluate("document.getElementById('theme-toggle').getAttribute('aria-label')"), 'Switch to dark theme');
+  await checkPowerDrawn();
+  await evaluate("document.getElementById('theme-toggle').click(); true");
+  assert.equal(await evaluate("localStorage.getItem('home-energy-theme')"), 'dark');
+  await command('browsingContext.reload', { context, wait: 'complete' });
+  await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark', 'Reload restores the last dark theme');
+  assert.equal(await evaluate("document.getElementById('theme-toggle').getAttribute('aria-label')"), 'Switch to light theme');
+  const checkRange = async (start, end = start) => {
+    await until(`document.getElementById('history').dataset.ready === 'true'
+      && document.getElementById('history').dataset.rangeStart === ${JSON.stringify(start)}
+      && document.getElementById('history').dataset.rangeEnd === ${JSON.stringify(end)}`);
+  };
+  await checkRange('2026-09-07');
+  await evaluate(`(() => {
+    window.dateFixture = { fetch: window.fetch.bind(window), requests: 0 };
+    window.fetch = (...args) => {
+      if (String(args[0]).includes('/api/chart?')) window.dateFixture.requests++;
+      return window.dateFixture.fetch(...args);
+    };
+    return true;
+  })()`);
+  const checkDateDraft = async (edit, start, end = start) => {
+    const before = await evaluate('window.dateFixture.requests');
+    await evaluate(`${edit}; true`);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+    assert.equal(await evaluate('window.dateFixture.requests'), before, 'Editing an enabled range does not fetch a chart');
+    await checkRange(start, end);
+  };
   // A single start-date change opens one old day; the disabled end follows it.
   await evaluate("document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
-  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2024-09-07' && document.getElementById('history').dataset.rangeEnd === '2024-09-07'");
+  await checkRange('2024-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
   // Clicking the label enables a range and places the cursor in the end picker.
-  await evaluate("document.querySelector('.end-date-toggle').click(); true");
+  await checkDateDraft("document.querySelector('.end-date-toggle').click()", '2024-09-07');
   assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   assert.equal(await evaluate('document.activeElement.id'), 'date-end');
-  await evaluate("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
-  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeEnd === '2024-09-09'");
+  await checkDateDraft("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change'))", '2024-09-07');
+  await checkDateDraft("document.getElementById('date-start').value='2024-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change'))", '2024-09-07');
+  await evaluate("document.querySelector('#chart-range-form button[type=submit]').click(); true");
+  await checkRange('2024-09-06', '2024-09-09');
   // An end before the start is rejected without replacing the plotted range.
-  await evaluate("document.getElementById('date-end').value='2024-09-06'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
+  await checkDateDraft("document.getElementById('date-end').value='2024-09-05'; document.getElementById('date-end').dispatchEvent(new Event('change')); document.querySelector('#chart-range-form button[type=submit]').click()", '2024-09-06', '2024-09-09');
   assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), false);
-  assert.equal(await evaluate("document.getElementById('history').dataset.rangeEnd"), '2024-09-09');
   await evaluate("document.getElementById('date-range-enabled').click(); true");
-  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeEnd === '2024-09-07'");
-  // Moving the start beyond an enabled end keeps a valid one-day selection.
-  await evaluate("document.getElementById('date-range-enabled').click(); document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
-  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2024-09-12' && document.getElementById('history').dataset.rangeEnd === '2024-09-12'");
+  await checkRange('2024-09-06');
+  // Moving the start beyond an enabled end fixes the draft and still waits for Show dates.
+  await checkDateDraft("document.getElementById('date-range-enabled').click(); document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change'))", '2024-09-06');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-12');
+  assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), true);
+  await evaluate("document.querySelector('#chart-range-form button[type=submit]').click(); true");
+  await checkRange('2024-09-12');
+  await evaluate("document.getElementById('date-end').value='2024-09-21'; document.getElementById('date-end').dispatchEvent(new Event('change')); document.querySelector('#chart-range-form button[type=submit]').click(); true");
+  await checkRange('2024-09-12', '2024-09-21');
+  await evaluate("document.getElementById('range-back').click(); true");
+  await checkRange('2024-09-11', '2024-09-20');
+  await evaluate("document.getElementById('range-forward').click(); true");
+  await checkRange('2024-09-12', '2024-09-21');
+  // Navigation follows the applied ten-day window, replacing any unsent edits.
+  await checkDateDraft("document.getElementById('date-start').value='2024-08-01'; document.getElementById('date-start').dispatchEvent(new Event('change')); document.getElementById('date-end').value='2024-08-03'; document.getElementById('date-end').dispatchEvent(new Event('change'))", '2024-09-12', '2024-09-21');
+  await evaluate("document.getElementById('range-back').click(); true");
+  await checkRange('2024-09-11', '2024-09-20');
+  assert.equal(await evaluate("document.getElementById('date-start').value"), '2024-09-11');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-20');
+  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
+  await evaluate("document.getElementById('range-forward').click(); document.getElementById('range-forward').click(); document.getElementById('range-back').click(); true");
+  await checkRange('2024-09-12', '2024-09-21');
+  await evaluate("document.getElementById('date-range-enabled').click(); true");
+  await checkRange('2024-09-12');
+  await evaluate("document.getElementById('range-back').click(); true");
+  await checkRange('2024-09-11');
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
+  await evaluate("document.getElementById('range-forward').click(); true");
+  await checkRange('2024-09-12');
+  // Day stepping uses calendar dates through month/year, leap-day and DST boundaries,
+  // including when the browser's own zone differs from the household zone.
+  for (const [start, previous] of [
+    ['2025-01-01', '2024-12-31'], ['2024-03-01', '2024-02-29'],
+    ['2026-03-30', '2026-03-29'], ['2026-10-26', '2026-10-25'],
+  ]) {
+    await evaluate(`document.getElementById('date-start').value=${JSON.stringify(start)}; document.getElementById('date-start').dispatchEvent(new Event('change')); true`);
+    await checkRange(start);
+    await evaluate("document.getElementById('range-back').click(); true");
+    await checkRange(previous);
+    await evaluate("document.getElementById('range-forward').click(); true");
+    await checkRange(start);
+  }
+  await evaluate("window.fetch=window.dateFixture.fetch; true");
   await evaluate("document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
@@ -474,6 +557,7 @@ try {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Mobile layout fits screen');
     await checkActivityTracks();
     await checkDateAlignment();
+    await checkRangeSteps();
     await evaluate("document.getElementById('date-range-enabled').click(); true");
     await checkDateAlignment();
     await evaluate("document.getElementById('date-range-enabled').click(); true");
@@ -669,7 +753,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
-    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

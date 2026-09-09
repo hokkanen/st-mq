@@ -58,9 +58,11 @@
           <button type="submit">Show dates</button>
         </form>
         <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
+          <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><span aria-hidden="true">‹</span></button>
           <button id="range-yesterday" type="button" aria-pressed="false">Yesterday – today</button>
           <button id="range-today" type="button" aria-pressed="true">Today</button>
           <button id="range-tomorrow" type="button" aria-pressed="false">Today – tomorrow</button>
+          <button id="range-forward" class="range-step" type="button" aria-label="Move shown dates forward one day" title="Move shown dates forward one day"><span aria-hidden="true">›</span></button>
         </div>
       </div>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>

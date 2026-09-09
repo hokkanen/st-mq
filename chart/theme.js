@@ -1,10 +1,18 @@
 // This small classic script runs before CSS is loaded, avoiding a theme flash.
 // Keep it independent of the deferred dashboard bundle and API availability.
-// Every page starts dark; the toggle changes only the current page.
+// Restore the browser's last selected theme, defaulting to dark.
 (() => {
   const root = document.documentElement;
+  const preferenceKey = 'home-energy-theme';
   let current = 'dark';
   let button;
+
+  try {
+    const saved = localStorage.getItem(preferenceKey);
+    if (saved === 'dark' || saved === 'light') current = saved;
+  } catch {
+    // Storage can be unavailable; the theme still works for this page.
+  }
 
   function reflect() {
     root.dataset.theme = current;
@@ -21,6 +29,9 @@
   function setTheme(theme) {
     if (theme !== 'dark' && theme !== 'light') return current;
     current = theme;
+    try { localStorage.setItem(preferenceKey, current); } catch {
+      // Keep the chosen theme usable even if the browser cannot save it.
+    }
     reflect();
     document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: current } }));
     return current;

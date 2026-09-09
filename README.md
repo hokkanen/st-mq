@@ -97,17 +97,20 @@ proxies `/api` to the backend. `npm run preview` alone does not provide the API.
 
 ## Using the chart
 
-The interface opens in a green dark theme on every page load. The header's **Light
-theme / Dark theme** button changes it for the current page. The chart is
-directly below the current readings.
+The interface remembers the browser's last selected theme, with green dark as
+the initial default. The header's **Light theme / Dark theme** button changes
+and saves that choice. The chart is directly below the current readings.
 
 - **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
-  Choose **Start date** to view a single day; the greyed-out end date follows it.
+  Choose **Start date** to view a single day immediately; the greyed-out end date
+  follows it.
   Check **End date** to select a range of inclusive Finnish calendar days, including
-  daylight-saving changes. Date changes apply automatically; **Show dates** also
-  applies the selection. **Yesterday – today**, **Today** and **Today – tomorrow**
-  provide quick navigation and set the end-date checkbox accordingly. To see
-  tomorrow alone, leave End date unchecked and choose tomorrow as Start date.
+  daylight-saving changes, then click **Show dates** to apply the selection.
+  **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation
+  and set the end-date checkbox accordingly. The small arrows outside these
+  shortcuts shift the shown window one calendar day back or forward without
+  changing its length. To see tomorrow alone, leave End date unchecked and choose
+  tomorrow as Start date.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
 - **Left axis:** **Power** shows combined property power as a line, estimated

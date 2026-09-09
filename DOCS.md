@@ -12,8 +12,8 @@ for the algorithm, native-setting restoration and equipment testing limits.
    `controller.input: simulated` and `controller.mode: shadow` for initial review.
 3. Start the add-on and open the web UI on its mapped port (default 1234). Enter
    that token in the browser. The **Home Energy** UI clearly labels simulation.
-   Each page load starts in the green dark theme; the header button switches to
-   the light theme for the current page.
+   The header button switches between dark and light themes. The browser remembers
+   the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
    add-on folder. Terminal & SSH exposes it under
    `/addon_configs/<repository-id>_st-mq/st-mq/`. Private provider token caches stay
@@ -85,9 +85,12 @@ rate coverage. Day/night applies 07:00–22:00 versus other times; seasonal wint
 daytime applies November–March, Monday–Saturday 07:00–22:00.
 
 The main chart defaults to today's complete Finnish calendar day. Choose a start
-date to view one day; check **End date** to enable an inclusive date range. Date
-changes apply automatically. **Yesterday – today**, **Today**, **Today – tomorrow**
-shortcuts keep both observations and forecasts within the selected dates. The **Left axis** drawer offers Power, phase currents, live heating integral,
+date to view one day immediately; check **End date** to enable an inclusive date
+range and click **Show dates** to apply it. **Yesterday – today**, **Today**,
+**Today – tomorrow** shortcuts keep both observations and forecasts within the
+selected dates. The small outer arrows move the shown window one calendar day
+back or forward while preserving its length. The **Left axis** drawer offers
+Power, phase currents, live heating integral,
 solar radiation and all four historical learning metrics. Temperatures and prices
 remain available on the right. Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart

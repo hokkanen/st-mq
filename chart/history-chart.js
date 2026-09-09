@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
@@ -318,6 +318,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     rangeEnabled = preset !== 'today';
     activePreset = preset; selection = { ...selection, ...selectedRange(preset, status?.now ?? Date.now()) }; updateControls(); return refresh();
   }
+  function shiftRange(days) {
+    // Navigate the applied window, leaving unsubmitted date edits out of it.
+    selection = { ...selection, startDate: shiftDate(selection.startDate, days), endDate: shiftDate(selection.endDate, days) };
+    activePreset = null;
+    rangeEnabled = selection.startDate !== selection.endDate;
+    updateControls(); return refresh();
+  }
   function applyDates() {
     if (!$('chart-range-form').checkValidity()) return;
     activePreset = null;
@@ -330,9 +337,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const end = $('date-end');
     end.min = start.value;
     if (!rangeEnabled || !end.value || end.value < start.value) end.value = start.value;
-    applyDates();
+    if (!rangeEnabled) applyDates();
   });
-  listen($('date-end'), 'change', applyDates);
   listen($('date-range-enabled'), 'change', () => {
     rangeEnabled = $('date-range-enabled').checked;
     $('date-end').disabled = !rangeEnabled;
@@ -346,6 +352,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   });
   listen($('left-axis'), 'change', () => { selection = { ...selection, left: $('left-axis').value }; refresh(); });
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));
+  listen($('range-back'), 'click', () => shiftRange(-1));
+  listen($('range-forward'), 'click', () => shiftRange(1));
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
   return { refresh, updateTheme, close() { closed = true; loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
