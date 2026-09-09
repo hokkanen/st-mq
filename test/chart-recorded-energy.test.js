@@ -371,8 +371,8 @@ test('legacy power stops at recorded energy handover and audit counters cannot c
     assert.equal(before.timingBenefit.charger.evidence.timeBasis, 'mixed-recorded-time');
     assert.deepEqual(before.timingBenefit.charger.evidence.sources.map(source => [source.key, source.share]),
       [['unknown', 0.5], ['recorded', 0.5]]);
-    store.energyAudit({ source: 'easee', device: 'invented-ev1', signal: 'ev1_lifetime_energy_counter', sourceTime: start, receivedAt: start, value: 900 });
-    store.energyAudit({ source: 'easee', device: 'invented-ev1', signal: 'ev1_lifetime_energy_counter', sourceTime: start + 5 * MINUTE, receivedAt: start + 5 * MINUTE, value: 1900 });
+    store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter', sourceTime: start, receivedAt: start, value: 900 });
+    store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter', sourceTime: start + 5 * MINUTE, receivedAt: start + 5 * MINUTE, value: 1900 });
     const after = getChartData(options);
     assert.deepEqual(after.timingBenefit, before.timingBenefit);
     assert.deepEqual(after.series, before.series);

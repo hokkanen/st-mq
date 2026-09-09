@@ -10,7 +10,7 @@ const states = Object.freeze({ ok: 'Available', healthy: 'Available', available:
 
 const qualityLabels = Object.freeze({
   stale: 'Some readings have old source timestamps.',
-  charger_stale: 'Charger readings have old source timestamps.',
+  charger_stale: 'Charger 1 readings have old source timestamps.',
   property_stale: 'Property readings have old source timestamps.',
   source_time_unknown: 'Some readings have no source timestamp.',
   future_source_time: 'Some source timestamps are in the future.',
@@ -20,7 +20,7 @@ const qualityLabels = Object.freeze({
   implausible_current: 'Some current readings are implausible.',
   negative_current: 'Some current readings are negative.',
   all_zero_property_current: 'All property current readings are zero.',
-  ev_exceeds_property_current: 'Charger current exceeds the reported property current.',
+  ev_exceeds_property_current: 'Charger 1 current exceeds the reported property current.',
   conflicting_duplicate: 'Some readings disagree at the same source timestamp.',
   invalid_unit: 'Some readings have unsupported units.',
   invalid_numeric: 'Some readings have invalid values.',
@@ -54,16 +54,19 @@ export function providerSeries(job, health = {}) {
     });
   }
   if (job === 'easee') {
-    return [['property', 'Property', 'Equalizer'], ['ev1', 'Charger', 'charger']].flatMap(([prefix, label, device]) => [
+    return [['property', 'Property', 'Equalizer'], ['ev1', 'Charger 1', 'Charger 1']].flatMap(([prefix, label, device]) => [
       seriesRow(phaseSignals(`${prefix}_current`), `${label} phase currents L1–L3`, 'A',
         `Latest ${device} readings; historical chart currents are interval estimates reconstructed from saved energy.`, 'Easee'),
       seriesRow(phaseSignals(`${prefix}_voltage`), `${label} phase voltages L1–L3`, 'V',
-        prefix === 'ev1' ? 'Acquired for energy estimation; charger terminal voltages need a verified phase mapping before use.'
+        prefix === 'ev1' ? 'Acquired for energy estimation; Charger 1 terminal voltages need a verified phase mapping before use.'
           : 'Acquired for phase allocation and the voltage/current power fallback.', 'Easee'),
       seriesRow([`${prefix}_active_power`], `${label} active power`, 'kW',
         'Reported total power used to estimate phase energy over each recorded interval.', 'Easee'),
-      seriesRow([`${prefix}_${prefix === 'ev1' ? 'lifetime' : 'import'}_energy_counter`], `${label} meter counter`, 'kWh',
-        'Cumulative reading for meter checks; it does not correct recorded energy or train the model.', 'Easee'),
+      prefix === 'ev1'
+        ? seriesRow(['ev1_session_energy_check'], 'Charger 1 session check', 'kWh',
+          'One finalized session reading for comparison; it does not correct recorded energy or train the model.', 'Easee')
+        : seriesRow(['property_import_energy_counter'], 'Property meter counter', 'kWh',
+          'Cumulative reading for meter checks; it does not correct recorded energy or train the model.', 'Easee'),
       seriesRow(phaseSignals(`${prefix}_energy`), `${label} phase energy L1–L3`, 'kWh',
         'Estimated from acquired electrical readings and saved per interval. The chart derives power and interval current estimates from these records.', 'Calculated from Easee'),
     ]);
@@ -159,7 +162,7 @@ export function dashboardProviders(status, options) {
   const describe = ([key, health]) => {
     const display = describeProvider(key, health, options);
     return { key, display, series: providerSeries(key, health), backup: health.status === 'fallback',
-      overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast', easee: 'Meter & charger' })[key] ?? 'Data source',
+      overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast', easee: 'Property & Charger 1' })[key] ?? 'Data source',
       source: providerName(health.source ?? health.acquisition?.selected) ?? (key === 'easee' ? 'Easee' : display.title) };
   };
   return [
@@ -210,8 +213,8 @@ const scopedCurrentFlags = (flags, key) => currentFlags(flags).map(flag =>
 function describeEasee(health, { now, formatTime }) {
   const groups = ['charger', 'property'].filter(key => Object.hasOwn(health.currentReadings ?? {}, key)
     && health.currentReadings[key] && typeof health.currentReadings[key] === 'object');
-  const scope = key => key === 'charger' ? 'Charger readings' : 'Property readings';
-  const sharedScope = groups.length === 1 ? scope(groups[0]) : 'Charger and property readings';
+  const scope = key => key === 'charger' ? 'Charger 1 readings' : 'Property readings';
+  const sharedScope = groups.length === 1 ? scope(groups[0]) : 'Charger 1 and property readings';
   const success = health.lastSuccessAt ?? health.lastSuccess;
   const sentences = [Number.isFinite(success)
     ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.'];
@@ -236,9 +239,9 @@ function describeEasee(health, { now, formatTime }) {
   } else {
     // Older health snapshots did not retain the device behind a generic issue.
     // Name that ambiguity instead of attributing the issue to the wrong device.
-    addIssues(health.qualityIssues, 'Charger or property readings');
+    addIssues(health.qualityIssues, 'Charger 1 or property readings');
   }
-  if (health.error && !scopedError) sentence(groups.length ? sharedScope : 'Charger or property readings', `${failureLabel(health.error)}.`);
+  if (health.error && !scopedError) sentence(groups.length ? sharedScope : 'Charger 1 or property readings', `${failureLabel(health.error)}.`);
   if ((health.error || scopedError) && Number.isFinite(health.nextAttemptAt) && health.nextAttemptAt > now) {
     sentence(sharedScope, `Next try ${formatTime(health.nextAttemptAt)}.`);
   } else if (['waiting', 'pending'].includes(health.status) && Number.isFinite(health.nextAttemptAt)) {

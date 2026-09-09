@@ -50,15 +50,7 @@ test('meter diagnostics preserve latest property check and show real charger ses
   for(let phase=1;phase<=3;phase++)store.observation({source:'easee',device:'invented-property',
     signal:`property_energy_l${phase}`,sourceTime:now,receivedAt:now,value:0.01,unit:'kWh',quality:['estimated'],
     raw:{intervalStart:now-60000,intervalEnd:now}});
-  // Older property readings must survive more than a page of charger updates.
-  for(let i=1;i<=25;i++)store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_lifetime_energy_counter',
-    sourceTime:now+i*60000,receivedAt:now+i*60000,value:100+i});
-  // Raw counter history is retained, but cannot invent finalized sessions.
-  store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_session_energy_counter',
-    sourceTime:now+26*60000,receivedAt:now+26*60000,value:5});
-  // A delayed old observation must not replace the newest meter reading.
-  store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_lifetime_energy_counter',
-    sourceTime:now+30000,receivedAt:now+27*60000,value:100.5});
+  // Property cumulative readings cannot invent finalized charger sessions.
   const withoutSessions = await read();
   assert(withoutSessions.slice(1).every(row => row.summary.recordedSessions === 0));
   recordChargingSessionCheck(store, { source:'easee',sessionKey:'invented-session',start:now-60000,end:now,
@@ -85,14 +77,18 @@ test('meter diagnostics preserve latest property check and show real charger ses
 });
 test('every catalogue axis works, including historical meter references without learning use',async t=>{
   const {base,headers,store,now}=await fixture(t);
-  store.energyAudit({source:'easee',device:'invented-device',signal:'ev1_lifetime_energy_counter',sourceTime:now-60000,receivedAt:now,value:123,quality:[]});
+  store.energyAudit({source:'easee',device:'invented-property',signal:'property_import_energy_counter',sourceTime:now-60000,receivedAt:now,value:123,quality:[]});
+  for(const source of ['easee','teslamate'])recordChargingSessionCheck(store,{source,sessionKey:'invented-finalized-session',
+    start:now-3600000,end:now-60000,estimatedKwh:6,referenceKwh:5,complete:true,quality:[]});
   const {HISTORY_AXES}=await import('../src/domain/history-series.js');
   for(const axis of HISTORY_AXES) {
     const response=await fetch(`${base}/api/chart?left=${axis.key}`,{headers});
     assert.equal(response.status,200,axis.key);
     const chart=await response.json();
     for(const signal of axis.signals)assert(Array.isArray(chart.series[signal]),signal);
-    if(axis.key==='ev1_lifetime_energy_counter')assert(chart.series.ev1_lifetime_energy_counter.some(row=>row.y===123&&row.auditOnly));
+    if(axis.key==='property_import_energy_counter')assert(chart.series[axis.key].some(row=>row.y===123&&row.auditOnly));
+    if(['ev1_session_energy_check','tesla_session_energy_check'].includes(axis.key))
+      assert(chart.series[axis.key].some(row=>row.y===5&&row.auditOnly&&row.sessionCheck));
   }
 });
 

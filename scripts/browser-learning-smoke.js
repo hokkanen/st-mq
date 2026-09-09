@@ -11,6 +11,7 @@ import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
+import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-learning-ui-'));
 let now = Date.parse('2026-09-07T12:00:00Z');
@@ -87,7 +88,7 @@ try {
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
   assert.equal(await evaluate("document.querySelector('#h66-provider-details summary strong').textContent"), 'Husdata H66');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
-  assert.equal(await evaluate("document.querySelectorAll('#model-inputs-content details').length"), 8);
+  assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
   assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
   assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home & heating');
   assert.equal(await evaluate("document.getElementById('model-title').textContent"), 'House model');
@@ -173,11 +174,11 @@ try {
   }
   assert(await evaluate("document.querySelectorAll('.mode-segment').length > 0"));
   await evaluate("document.querySelector('[data-chart-key=spot_price]').click()");
-  for (const left of ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature', 'solar_radiation', 'model_compressor_duty', 'model_controller_phase', 'ev1_session_energy_counter', 'power']) {
+  for (const left of ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature', 'solar_radiation', 'model_compressor_duty', 'model_controller_phase', 'ev1_session_energy_check', 'power']) {
     await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === '${left}'`);
     assert.equal(await evaluate("document.querySelector('[data-chart-key=spot_price]').getAttribute('aria-pressed')"), 'false');
-    if (left === 'ev1_session_energy_counter') assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values for the selected left axis')"), true);
+    if (left === 'ev1_session_energy_check') assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values for the selected left axis')"), true);
     if (left.startsWith('model_')) {
       assert.equal(await evaluate("document.getElementById('chart-notes').textContent.includes('not recalculated using today')"), true);
       assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false);
@@ -270,7 +271,7 @@ try {
   assert.equal(publications.at(-1).value, '55');
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'eight input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'aligned closed dashboard columns', 'independent expanded dashboard cards', 'alignment with hidden nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'aligned closed dashboard columns', 'independent expanded dashboard cards', 'alignment with hidden nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

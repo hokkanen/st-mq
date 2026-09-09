@@ -86,7 +86,7 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
     store.snapshot({ kind: 'weather', source: privateMarker, fetchedAt: at, payload: { ...weather, fetchedAt: at } });
     store.snapshot({ kind: 'weather', source: privateMarker, fetchedAt: at + 1000, payload: { ...weather, fetchedAt: at + 1000 } });
     store.snapshot({ kind: 'market', source: privateMarker, fetchedAt: at, payload: { intervals: [], private: privateMarker } });
-    store.energyAudit({ source: 'easee', device: privateMarker, signal: 'ev1_lifetime_energy_counter',
+    store.energyAudit({ source: 'easee', device: privateMarker, signal: 'property_import_energy_counter',
       sourceTime: at, receivedAt: at, value: 100, quality: [] });
     store.annotation({ kind: 'fixture', startAt: at, note: privateMarker, boundaryConfidence: 'exact', excludeTraining: true, provenance: privateMarker });
     store.counter({ device: privateMarker, signal: 'compressor_runtime', value: 100, observedDate: '2026-01-10', note: privateMarker, provenance: privateMarker });

@@ -421,7 +421,7 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
           const description = describeProvider('easee', health, { now, formatTime: at => String(at) });
           assert.equal(description.attention, false);
           assert.equal(description.state, 'Available');
-          assert.match(description.detail, /Charger readings have source timestamps older than/);
+          assert.match(description.detail, /Charger 1 readings have source timestamps older than/);
           assert.ok(description.detail.startsWith(`Last successful download ${now}.`));
           assert.equal(description.detail.match(/successful download/g).length, 1);
           assert.doesNotMatch(description.detail, /different times/);
@@ -518,7 +518,7 @@ test('Easee scopes partial errors and quality notes to the affected current read
     const description = describeProvider('easee', health, { now: initial + 5 * MINUTE, formatTime: at => String(at) });
     assert.ok(description.detail.startsWith(`Last successful download ${initial}.`));
     assert.equal(description.detail.match(/successful download/g).length, 1);
-    assert.match(description.detail, /Charger readings: Download failed \(HTTP 503\)/);
+    assert.match(description.detail, /Charger 1 readings: Download failed \(HTTP 503\)/);
     assert.match(description.detail, /Property readings: Some current readings are negative/);
     await providers.close(); providers = startProviders(f.options);
     assert.deepEqual(f.engine.status().providers.easee.currentReadings, health.currentReadings);

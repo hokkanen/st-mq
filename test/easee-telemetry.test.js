@@ -29,9 +29,9 @@ test('electricity batches cloud connection with existing reads and keeps device 
   assert.equal(calls.length, 2);
   assert(calls.every(call => call.method === 'GET'));
   assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('ids')), [
-    '183,184,185,194,195,196,120,124,250,130,132,136,150,129,223', '31,32,33,34,35,36,40,45,250',
+    '183,184,185,194,195,196,120,250,130,132,136,150,129,223', '31,32,33,34,35,36,40,45,250',
   ]);
-  assert.equal(rows.length, 16, 'Connection is metadata, not another electrical series');
+  assert.equal(rows.length, 15, 'Connection is metadata, not another electrical series');
   for (const row of rows) assert.deepEqual(row.raw.deviceConnection, row.signal.startsWith('ev1_')
     ? { connected: true, observedAt: boot } : { connected: false, observedAt: now - 15_000 });
   for (const row of rows.filter(row => row.signal.endsWith('_active_power'))) {
@@ -95,7 +95,7 @@ test('charger diagnostics retain only their newest valid source time without alt
   const original = structuredClone(payload);
   const { rows, calls } = await read(payload);
   assert.equal(calls.length, 2);
-  assert.equal(rows.length, 16);
+  assert.equal(rows.length, 15);
   for (const row of rows.filter(row => row.signal.startsWith('ev1_'))) assert.equal(row.raw.deviceTelemetryAt, now - 420_000);
   for (const row of rows.filter(row => row.signal.startsWith('property_'))) assert.equal(row.raw.deviceTelemetryAt, null,
     'Charger diagnostic IDs must not be interpreted as Equalizer telemetry');

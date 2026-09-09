@@ -13,6 +13,13 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const instant = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
 const energy = value => value === null || Number.isFinite(value) && value >= 0;
 
+export function comparableChargingSession(check) {
+  return check?.version === VERSION && check.complete === true
+    && Number.isFinite(check.estimatedKwh) && check.estimatedKwh >= 0
+    && Number.isFinite(check.referenceKwh) && check.referenceKwh > 0
+    && Array.isArray(check.quality) && check.quality.every(flag => COMPARABLE_QUALITY.has(flag));
+}
+
 /** Finalized session checks only. The producer must establish actual session
  * boundaries and matching energy coverage; lifetime-counter periods are not
  * sessions. Complete describes coverage, not whether the session has ended.
@@ -63,9 +70,7 @@ export function chargingSessionCheckSummaries(store) {
     if (!summary || check.version !== VERSION) continue;
     summary.recordedSessions++;
     summary.lastSessionEnd = Math.max(summary.lastSessionEnd ?? check.end, check.end);
-    if (!check.complete || !Number.isFinite(check.estimatedKwh) || check.estimatedKwh < 0
-      || !Number.isFinite(check.referenceKwh) || check.referenceKwh <= 0
-      || !Array.isArray(check.quality) || check.quality.some(flag => !COMPARABLE_QUALITY.has(flag))) {
+    if (!comparableChargingSession(check)) {
       summary.excludedSessions++;
       continue;
     }

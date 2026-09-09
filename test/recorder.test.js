@@ -197,13 +197,14 @@ test('forecast content is shared across fetches without losing causal availabili
   assert.equal(store.snapshotById(fourth).payload.acquisition.attempts[0].latencyMs,50);
 });
 
-test('meter audit compares only complete matching intervals and never changes history or recorder thresholds',t=>{
+test('property meter audit compares only complete matching intervals and never changes history or recorder thresholds',t=>{
   const {store,recorder}=fixture(t);
-  const audit=(at,value)=>store.energyAudit({device:'fixture-charger',signal:'ev1_lifetime_energy_counter',
+  const propertyEnergy=(start,end)=>energy(start,end,3,{device:'fixture-property',prefix:'property'});
+  const audit=(at,value)=>store.energyAudit({device:'fixture-property',signal:'property_import_energy_counter',
     sourceTime:at,receivedAt:at+1000,value,quality:[]});
   audit(1000,10);
-  recorder.recordEnergy(energy(1000,16000));
-  recorder.recordEnergy(energy(16000,31000));
+  recorder.recordEnergy(propertyEnergy(1000,16000));
+  recorder.recordEnergy(propertyEnergy(16000,31000));
   audit(31000,10.03);
   assert.equal(store.energyAudits()[1].comparison,null,'pending estimates are not forced by audit');
   recorder.flush(31000,{force:true});
@@ -231,16 +232,26 @@ test('learning journal replays samples and episodes in commit order with immutab
 
 test('audit windows may cut through estimated intervals using labelled edge averages, but never bridge missing coverage',t=>{
   const {store,recorder}=fixture(t);
-  recorder.recordEnergy(energy(1000,16000));
-  recorder.recordEnergy(energy(16000,31000));
+  const propertyEnergy=(start,end)=>energy(start,end,3,{device:'fixture-property',prefix:'property'});
+  recorder.recordEnergy(propertyEnergy(1000,16000));
+  recorder.recordEnergy(propertyEnergy(16000,31000));
   recorder.flush(31000,{force:true});
-  const audit=(at,value)=>store.energyAudit({device:'fixture-charger',signal:'ev1_lifetime_energy_counter',
+  const audit=(at,value)=>store.energyAudit({device:'fixture-property',signal:'property_import_energy_counter',
     sourceTime:at,receivedAt:at+100000,value,quality:[]});
   audit(5000,10);audit(25000,10.02);
   const result=store.energyAudits()[1].comparison;
   assert.ok(Math.abs(result.estimatedKwh-3*20000/HOUR)<1e-12);
   assert.equal(result.edgeEstimated,true);assert.match(result.basis,/average-power-at-edges/);
-  recorder.recordEnergy(energy(46000,61000));recorder.flush(61000,{force:true});
+  recorder.recordEnergy(propertyEnergy(46000,61000));recorder.flush(61000,{force:true});
   audit(60000,10.04);
   assert.equal(store.energyAudits()[2].comparison,null);
+});
+
+test('charger counters cannot enter cumulative meter storage',t=>{
+  const {store}=fixture(t);
+  for(const signal of ['ev1_lifetime_energy_counter','ev1_session_energy_counter','ev2_lifetime_energy_counter']) {
+    assert.throws(()=>store.energyAudit({device:'fixture-charger',signal,sourceTime:1000,receivedAt:1000,value:10}),
+      /Only the property import counter/);
+  }
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM energy_audits').get().n,0);
 });

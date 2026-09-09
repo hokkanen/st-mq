@@ -184,6 +184,9 @@ export class Store {
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
+      // Experimental charger counter history is superseded by one finalized
+      // session reference. Keep property checks, source observations and imports.
+      this.db.exec("DELETE FROM energy_audits WHERE signal IN ('ev1_lifetime_energy_counter','ev1_session_energy_counter')");
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -267,6 +270,7 @@ export class Store {
 
   energyAudit({ source = 'easee', device, signal, sourceTime, receivedAt, value, quality = [], comparison = null }) {
     label(source,'source'); label(device,'device'); label(signal,'signal'); instant(sourceTime,'sourceTime'); instant(receivedAt,'receivedAt');
+    if (signal !== 'property_import_energy_counter') throw new TypeError('Only the property import counter is retained for cumulative meter checks');
     if (!Number.isFinite(value) || value < 0) throw new TypeError('Invalid audit energy counter');
     if (!Array.isArray(quality) || quality.some(q => typeof q !== 'string')) throw new TypeError('Invalid audit quality');
     return Number(this.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality,comparison)
@@ -275,7 +279,7 @@ export class Store {
   }
 
   energyAudits({ device, signal, from, to, after = 0, limit = 100, newestFirst = false } = {}) {
-    const clauses = ['id>?'], params = [integer(after,'after')];
+    const clauses = ['id>?', "signal='property_import_energy_counter'"], params = [integer(after,'after')];
     if (device !== undefined) { clauses.push('device=?'); params.push(label(device,'device')); }
     if (signal !== undefined) { clauses.push('signal=?'); params.push(label(signal,'signal')); }
     if (from !== undefined) { clauses.push('source_time>=?'); params.push(instant(from,'from')); }
@@ -305,13 +309,12 @@ export class Store {
   }
 
   compareEnergyAudit(row,previous) {
-    const prefix = row.signal.startsWith('property_') ? 'property' : row.signal.startsWith('ev1_') ? 'ev1' : null;
-    if (!prefix) return null;
+    if (row.signal !== 'property_import_energy_counter') return null;
     const start = previous.source_time, end = row.source_time;
     const totals = []; let edgeEstimated = false;
     for (let phase=1;phase<=3;phase++) {
       const values = this.db.prepare(`SELECT value,raw,quality FROM observations WHERE device=? AND signal=?
-        AND source_time>? ORDER BY source_time,id`).iterate(row.device,`${prefix}_energy_l${phase}`,start);
+        AND source_time>? ORDER BY source_time,id`).iterate(row.device,`property_energy_l${phase}`,start);
       let cursor = start, total = 0;
       for (const value of values) {
         const raw = value.raw ? JSON.parse(value.raw) : null, quality = JSON.parse(value.quality);

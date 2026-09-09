@@ -210,7 +210,7 @@ model and data cards, with both columns aligned when closed. The three cards sta
 on narrow screens; the event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,
 freshness and storage growth independently of model importance. **Meter accuracy
-checks** shows the latest property-meter comparison and Easee/Tesla session
+checks** shows the latest property-meter comparison and Charger 1 / Charger 2 session
 averages without correcting history or training/calibrating the house model.
 
 ## Persistence and historical data
@@ -375,8 +375,9 @@ Still-fresh near-term forecast blocks retain their original snapshot provenance.
 
 Easee readings retain original source ages. Reported active power is integrated
 between polls and allocated to three estimated phase energies; raw currents and
-voltages remain acquisition-only. Lifetime/session/import kWh counters are stored
-separately for accuracy diagnostics and never correct or calibrate those estimates.
+voltages remain acquisition-only. The property cumulative-import counter and the
+finalized Charger 1 / Charger 2 session references support diagnostics without
+correcting or calibrating those estimates. Charger lifetime counters are not retained.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee authentication can refresh tokens; it does not change
 charging settings. See [recording configuration and limitations](docs/recording.md).

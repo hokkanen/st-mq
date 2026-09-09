@@ -38,7 +38,7 @@ const checks = store => events(store, 'charging-session-check');
 
 test('Easee session metadata keeps actual timestamps/kWh and hashes identity, excluding full authorization payloads', async () => {
   const rows = await normalized(), power = rows.find(row => row.signal === 'ev1_active_power');
-  assert.equal(rows.length, 8);
+  assert.equal(rows.length, 7);
   assert.deepEqual(Object.keys(power.raw.chargingSession).sort(), ['end', 'quality', 'referenceKwh', 'reportedAt', 'sessionKey', 'start']);
   assert.equal(power.raw.chargingSession.start, start);
   assert.equal(power.raw.chargingSession.end, end);

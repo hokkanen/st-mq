@@ -21,8 +21,8 @@
   --stale: #e7b778;
   --chart-power: #81cbb2;
   --chart-property: var(--chart-power);
-  --chart-ev: #b493db;
-  --chart-ev2: #68c4b0;
+  --chart-ev: var(--chart-property);
+  --chart-ev2: #b493db;
   --chart-phase-1: #83c7ef;
   --chart-phase-2: #d4ba7f;
   --chart-phase-3: #c19fdb;
@@ -66,8 +66,8 @@
   --error-bg: #ffebe5;
   --stale: #94501f;
   --chart-power: #377b60;
-  --chart-ev: #8050a6;
-  --chart-ev2: #187d69;
+  --chart-ev: var(--chart-property);
+  --chart-ev2: #8050a6;
   --chart-phase-1: #2877a7;
   --chart-phase-2: #94701d;
   --chart-phase-3: #8e55a6;
@@ -163,6 +163,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-legend-swatch[data-kind="fill"], .chart-legend-swatch[data-kind="strip"] { height: 10px; border: 1px solid; }
 .chart-legend-swatch[data-kind="event"] { width: 10px; height: 10px; flex-basis: 10px; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .chart-legend-swatch[data-kind="daily"] { width: 8px; height: 8px; flex-basis: 8px; transform: rotate(45deg); }
+.chart-legend-swatch[data-kind="session"] { width: 8px; height: 8px; flex-basis: 8px; border-radius: 50%; }
 .chart-legend-swatch[data-kind="forecast"] { background: transparent !important; height: 0; border-top: 2px dashed; }
 .chart-legend-swatch[data-kind="pattern"] { height: 10px; background: repeating-linear-gradient(45deg, transparent 0 3px, currentColor 3px 4px), repeating-linear-gradient(-45deg, transparent 0 3px, currentColor 3px 4px) !important; opacity: .65; }
 .mode-history { font-size: 10px; color: var(--muted); margin: 6px 0; }

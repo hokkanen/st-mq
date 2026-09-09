@@ -25,7 +25,7 @@ const CHARGER_TELEMETRY = [
 export const ELECTRICITY_FIELDS = Object.freeze({
   ev1: [[183, 'current_l1', 'A'], [184, 'current_l2', 'A'], [185, 'current_l3', 'A'],
     [194, 'voltage_l1', 'V'], [195, 'voltage_l2', 'V'], [196, 'voltage_l3', 'V'],
-    [120, 'active_power', 'kW'], [124, 'lifetime_energy_counter', 'kWh']],
+    [120, 'active_power', 'kW']],
   property: [[31, 'current_l1', 'A'], [32, 'current_l2', 'A'], [33, 'current_l3', 'A'],
     [34, 'voltage_l1', 'V'], [35, 'voltage_l2', 'V'], [36, 'voltage_l3', 'V'],
     [40, 'active_power', 'kW'], [45, 'import_energy_counter', 'kWh']],

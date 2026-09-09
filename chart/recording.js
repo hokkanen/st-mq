@@ -228,14 +228,14 @@ export function energyAuditRow(item) {
     timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value) : '—';
   if (item.kind==='charging-session-summary') {
     const s=item.summary ?? {}, tesla=item.source==='teslamate', count=s.comparedSessions ?? 0;
-    return { title:tesla?'Tesla':'Charger', subtitle:'Completed-session averages',
+    return { title:tesla?'Charger 2':'Charger 1', subtitle:'Completed-session averages',
       when:Number.isFinite(s.lastSessionEnd)?`Last session: ${date(s.lastSessionEnd)}`:'No completed sessions recorded yet',
       value:count>0?`${number(s.differencePercent)}% energy-weighted difference · ${number(s.differenceKwh/count)} kWh average difference`
         :'Session comparison pending: complete recording and a session reference needed',
       details:[...(count>0?[`${number(s.estimatedKwh/count)} kWh recorded / ${number(s.referenceKwh/count)} kWh ${tesla?'added by car':'metered'} per session`]:[]),
         `${count} compared · ${s.excludedSessions ?? 0} excluded · ${s.recordedSessions ?? 0} recorded sessions`,
         ...(count>0?[`Compared sessions: ${date(s.start)} – ${date(s.end)}`]:[]),
-        tesla?'Recorded input minus energy added. Includes charging losses; not a meter-accuracy percentage.':'Recorded estimate minus Easee session meter.'] };
+        tesla?'Recorded input minus energy added. Includes charging losses; not a meter-accuracy percentage.':'Recorded estimate minus Charger 1 session meter.'] };
   }
   const c=item.comparison;
   return {title:'Property',subtitle:'Cumulative import meter',when:`Meter reading: ${date(item.sourceTime)}`,
@@ -249,7 +249,7 @@ export function renderEnergyAudits(rows, root) {
   if(!root)return;
   root.replaceChildren();
   const note=document.createElement('p');note.className='muted';
-  note.textContent='Property shows its latest cumulative-meter check. Charger and Tesla summarize completed sessions with matching recording coverage; percentages are weighted by reference energy. These checks never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
+  note.textContent='Property shows its latest cumulative-meter check. Charger 1 and Charger 2 summarize completed sessions with matching recording coverage; percentages are weighted by reference energy. These checks never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
   if(!rows?.length) {const p=document.createElement('p');p.textContent='Waiting for fresh accumulated-kWh updates.';root.append(p);return;}
   const table=document.createElement('table');table.className='recording-table';
   for(const item of rows) {

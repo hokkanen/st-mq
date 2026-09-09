@@ -1,5 +1,5 @@
-// Acquisition-only integration. Counter observations are audit data and never
-// participate in this calculation. All durable learning inputs are the three
+// Acquisition-only integration. The property import counter is audit data and never
+// participates in this calculation. All durable learning inputs are the three
 // interval energies emitted here and subsequently committed by the recorder.
 const HOUR = 3_600_000;
 const BAD = new Set(['provider_error', 'missing', 'invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'future_source_time']);
@@ -22,7 +22,8 @@ export class ElectricityAccumulator {
           && ['ev1', 'property'].includes(previous.prefix)) this.devices[key] = structuredClone(previous);
       }
       for (const [key, head] of Object.entries(checkpoint.auditHeads ?? {})) {
-        if (time(head?.sourceTime) && positive(head.value)) this.auditHeads[key] = { sourceTime: head.sourceTime, value: head.value };
+        if (key.startsWith('property:') && key.endsWith(':property_import_energy_counter')
+          && time(head?.sourceTime) && positive(head.value)) this.auditHeads[key] = { sourceTime: head.sourceTime, value: head.value };
       }
       for (const [key, available] of Object.entries(checkpoint.availability ?? {})) {
         if (typeof available === 'boolean') this.availability[key] = available;
@@ -38,11 +39,11 @@ export class ElectricityAccumulator {
     for (const row of rows) {
       if (row?.source !== 'easee' || typeof row.device !== 'string') continue;
       const prefix = /^ev1_/.test(row.signal) ? 'ev1' : /^property_/.test(row.signal) ? 'property' : null;
-      if (!prefix) continue;
+      if (!prefix || /_energy_counter$/.test(row.signal) && row.signal !== 'property_import_energy_counter') continue;
       const key = `${prefix}:${row.device}`;
       if (!groups.has(key)) groups.set(key, { device: row.device, prefix, rows: [] });
       groups.get(key).rows.push(row);
-      if (!/_energy_counter$/.test(row.signal) || !positive(row.value) || !time(row.sourceTime) || row.sourceTime > now
+      if (row.signal !== 'property_import_energy_counter' || !positive(row.value) || !time(row.sourceTime) || row.sourceTime > now
         || (row.quality ?? []).some(flag => BAD.has(flag))) continue;
       const auditKey = `${key}:${row.signal}`, previous = this.auditHeads[auditKey];
       if (previous?.sourceTime === row.sourceTime && previous.value === row.value) continue;

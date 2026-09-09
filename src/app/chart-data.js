@@ -7,7 +7,8 @@ import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { timingEvidenceSource, timingPowerEvidence } from './timing-evidence.js';
-import { HISTORY_AXIS_BY_KEY, ENERGY_SIGNALS, AUDIT_SIGNALS, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
+import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
 import { addFireplaceInputs, addFirewoodOutcomes, FIREPLACE_INPUT_NAMES, FIREWOOD_OUTCOME_NAMES } from './chart-fireplace.js';
@@ -530,7 +531,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
   const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
-    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
+    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
@@ -782,6 +783,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   flushPulse();
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger',energyStarts.ev1,null);
   const recordedEnergy = addRecordedEnergy({store,range,now,input,envelopes,timing});
+  const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
@@ -872,10 +874,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (LEARNING.includes(left)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
   return { range, now, input, left, series, shading, operatingModes, timingBenefit: timing.result(),
-    heatingBenefit: getHeatingBenefit({ store, input, range, now }), firewoodBenefit: firewood.summary, meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, heatPumpEnergy, historyBasis: 'original-recorded-history',
+    heatingBenefit: getHeatingBenefit({ store, input, range, now }), firewoodBenefit: firewood.summary, meta: { warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
-    powerEstimate: left === 'power' ? 'Recorded phase energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
+    powerEstimate: left === 'power' ? 'Recorded phase or total energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
     dhwrBasis: 'Historical ten-minute pulse requests, not verified pump feedback.',

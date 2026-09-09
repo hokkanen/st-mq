@@ -36,14 +36,20 @@ const h66 = [
 export const H66_HISTORY_SIGNALS = Object.freeze(h66.map(([signal]) => signal));
 export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
 export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy']);
-export const AUDIT_SIGNALS = Object.freeze(['ev1_lifetime_energy_counter','ev1_session_energy_counter','property_import_energy_counter']);
+export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
+export const SESSION_CHECK_INFO = Object.freeze({
+  ev1_session_energy_check: { label: 'Charger 1', source: 'easee', color: 'ev', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
+    detail: 'Final session electricity reading; each point represents one completed session' },
+  tesla_session_energy_check: { label: 'Charger 2', source: 'teslamate', color: 'ev2', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
+    detail: 'Final session energy added; differs from electrical input because of charging losses' },
+});
 export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...h66.map(([signal, label, unit, group, role]) => [signal, { label, unit, group, role, kind: 'Recorded' }]),
   ['garage_temperature', { label: 'Garage temperature', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
-  ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
+  ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
   ['ev2_energy', { label: 'Charger 2 total energy per interval', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'TeslaMate charging power integrated over the recorded interval; phase distribution unknown' }],
-  ...AUDIT_SIGNALS.map(signal=>[signal,{label:signal.startsWith('property')?'Property meter counter':signal.includes('session')?'Charger session counter':'Charger lifetime counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),
+  ...AUDIT_SIGNALS.map(signal=>[signal,{label:'Property meter counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),
 ]));
 
 // These describe values resolved for learning, not additional recorder channels.
@@ -94,9 +100,10 @@ const basic = [
 
 export const HISTORY_AXES = Object.freeze([
   ...basic.map(([key, label, group, signals, unit, kind]) => ({ key, label, group, signals, unit, kind })),
-  ...Object.entries(SIGNAL_INFO).filter(([signal]) => !PHASE_ENERGY_SIGNALS.includes(signal)).map(([signal, info]) => ({
+  ...Object.entries(SIGNAL_INFO).filter(([signal]) => !ENERGY_SIGNALS.includes(signal)).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
+  ...Object.entries(SESSION_CHECK_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
 ]);

@@ -156,6 +156,12 @@ try {
   assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"),/hourly temperature extrema|15-minute energy sums|15-minute aggregate/);
   assert(await evaluate("document.querySelectorAll('#left-axis optgroup').length")>=10);
   assert.equal(await evaluate("document.querySelector('#left-axis optgroup').label.split(' · ')[0]"), 'Electricity');
+  const meterChoices=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks'))?.children
+    ? [...[...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks')).children].map(option=>({key:option.value,label:option.textContent})) : [])`));
+  assert.deepEqual(meterChoices.filter(row=>row.key!=='property_import_energy_counter'),[
+    {key:'ev1_session_energy_check',label:'Charger 1'},{key:'tesla_session_energy_check',label:'Charger 2'}]);
+  for(const key of ['ev1_lifetime_energy_counter','ev1_session_energy_counter','ev2_energy'])
+    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} has no separate drawer entry`);
   for(const key of ['brine_pump_speed','phase_energy','alarm_code', ...coefficientKeys])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
   for(const key of ['indoor_temperature','garage_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is already shown on the right axis`);
@@ -231,7 +237,7 @@ try {
       await evaluate("document.getElementById('theme-toggle').click(); true");
     const checks=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#energy-audit-content tr')].map(row=>({
       title:row.querySelector('th').firstChild.textContent,subtitle:row.querySelector('th small').textContent,text:row.textContent})))`));
-    assert.deepEqual(checks.map(row=>row.title),['Property','Charger','Tesla'],`${theme}: one common meter-check table`);
+    assert.deepEqual(checks.map(row=>row.title),['Property','Charger 1','Charger 2'],`${theme}: one common meter-check table`);
     assert.equal(checks[0].subtitle,'Cumulative import meter');
     assert(checks.slice(1).every(row=>row.subtitle==='Completed-session averages'));
     assert.match(checks[1].text,/-7% energy-weighted difference/);
@@ -282,8 +288,41 @@ try {
       assert.ok(changedPixels > 0, `${key} draws visible chart pixels, not just a legend entry`);
     }
   };
-  const checkPowerDrawn = () => checkSeriesDrawn(['property_power', 'charger_power', 'charger2_power'], 'power');
+  const checkPowerDrawn = async () => {
+    await checkSeriesDrawn(['property_power', 'charger_power', 'charger2_power'], 'power');
+    const palette=JSON.parse(await evaluate(`JSON.stringify((()=>{const styles=getComputedStyle(document.documentElement);
+      return {property:styles.getPropertyValue('--chart-property').trim(),charger1:styles.getPropertyValue('--chart-ev').trim(),
+        charger2:styles.getPropertyValue('--chart-ev2').trim(),theme:document.documentElement.dataset.theme};})())`));
+    assert.equal(palette.charger1,palette.property,'Charger 1 uses the property power color');
+    assert.equal(palette.charger2,palette.theme==='light'?'#8050a6':'#b493db','Charger 2 retains the earlier violet color');
+  };
   await checkPowerDrawn();
+  assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/Auxiliary heat, Charger 1, Charger 2/);
+  await evaluate("document.querySelector('[data-chart-key=auxiliary_power]').click(); document.querySelector('[data-chart-key=charger_power]').click(); true");
+  await checkSeriesDrawn(['charger2_power'],'power');
+  await evaluate("document.querySelector('[data-chart-key=auxiliary_power]').click(); document.querySelector('[data-chart-key=charger_power]').click(); true");
+  // Exercise an actual response with both lower loads absent, independently of
+  // legend hiding. The fixture remains in browser memory and touches no history.
+  await evaluate(`(() => {
+    window.onlyCharger2Fixture={fetch:window.fetch.bind(window),requests:0};
+    window.fetch=async (...args)=>{
+      const response=await window.onlyCharger2Fixture.fetch(...args);
+      if(!String(args[0]).includes('/api/chart?'))return response;
+      const payload=await response.json();
+      payload.series.auxiliary_power=[];payload.series.charger_power=[];
+      delete payload.meta?.lastReadings?.auxiliary_power;delete payload.meta?.lastReadings?.charger_power;
+      window.onlyCharger2Fixture.requests++;
+      return new Response(JSON.stringify(payload),{status:200,headers:{'content-type':'application/json'}});
+    };
+    document.getElementById('date-range-enabled').click();
+    document.getElementById('date-end').value='2026-09-08';
+    document.getElementById('date-end').dispatchEvent(new Event('change'));
+    return true;
+  })()`);
+  await until("window.onlyCharger2Fixture.requests>0 && document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-08'");
+  await checkSeriesDrawn(['charger2_power'],'power');
+  await evaluate("window.fetch=window.onlyCharger2Fixture.fetch; document.getElementById('date-range-enabled').click(); document.getElementById('range-today').click(); true");
+  await until("document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-07'");
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
   assert.equal(await legendState('dhwr'), 'true');
@@ -340,6 +379,7 @@ try {
     ['heat_pump_power','heat_pump_power','property_power'],
     ...['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'].map(name => [name, name, 'property_power']),
     ...coefficientKeys.map(name => [name, name, 'property_power']),
+    ...['ev1_session_energy_check','tesla_session_energy_check'].map(name=>[name,name,'property_power']),
     ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
     await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
@@ -347,6 +387,13 @@ try {
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
     if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power], [data-chart-key^=ev2_]'))"),false,'Tesla total power never invents phase readings');
+    if(['ev1_session_energy_check','tesla_session_energy_check'].includes(left)) {
+      assert.equal(await evaluate(`document.querySelector('[data-chart-key="${left}"]').textContent.includes(${JSON.stringify(left==='ev1_session_energy_check'?'Charger 1':'Charger 2')})`),true);
+      assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/one finalized session reference.*Hollow points.*excluded/);
+      const sessionPlot=await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response=>response.json());
+      assert.equal(sessionPlot.series[left].length,2,'one chart point per finalized session');
+      await checkSeriesDrawn([left],left);
+    }
     if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/reconstructed from saved equipment states.*gaps/);
     if (coefficientKeys.includes(left)) {
       const tableCounts = () => app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
@@ -621,7 +668,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    chargingChecks:['charger2-visible-power-dark-and-light','charger2-no-invented-phases','property-latest-plus-charger-and-tesla-session-averages','session-counts-exclusions-and-energy-weighting'],
+    chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
     checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {

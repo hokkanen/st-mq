@@ -1,3 +1,4 @@
+import { stackPowerSeries } from './power-stack.js';
 import { HISTORY_AXES, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -69,7 +70,7 @@ export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current
 export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
-  property: '#e98576', ev: '#b493db', ev2: '#68c4b0', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
+  property: '#e98576', ev: '#e98576', ev2: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
   indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#e05555', learning: '#baa0de', solar: '#e4ca67',
   firewood: '#d8aa75', fireplace: '#b79b28',
@@ -81,16 +82,18 @@ export function visible(key, preferences = {}) {
 
 const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
-  charger_power: ['Charger', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
-  charger2_power: ['Charger 2 · Tesla', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
+  charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
+  charger2_power: ['Charger 2', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
   ev2_energy: ['Charger 2 total energy', 'kWh · estimated from TeslaMate charging power over the recorded interval', 'ev2'],
+  ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
+  tesla_session_energy_check: ['Charger 2', 'kWh · finalized session energy added to the battery', 'ev2', 'session'],
   auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary', 'fill'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
   property_current_l3: ['Property L3', 'A', 'phase3'],
-  ev1_current_l1: ['Charger L1', 'A', 'phase1', 'fill'],
-  ev1_current_l2: ['Charger L2', 'A', 'phase2', 'fill'],
-  ev1_current_l3: ['Charger L3', 'A', 'phase3', 'fill'],
+  ev1_current_l1: ['Charger 1 L1', 'A', 'phase1', 'fill'],
+  ev1_current_l2: ['Charger 1 L2', 'A', 'phase2', 'fill'],
+  ev1_current_l3: ['Charger 1 L3', 'A', 'phase3', 'fill'],
   heating_integral: ['Heating integral', '°min', 'integral'],
   learning_profit: ['Space-heating benefit after recovery', '€/cycle · estimated completed-cycle mean; hot-water service excluded', 'learning', 'learning'],
   learning_aux_profit: ['Space-heating benefit with auxiliary recovery', '€/cycle · observed space-heating auxiliary recovery cycles only', 'learning', 'learning'],
@@ -158,6 +161,13 @@ export function coefficientStatusLabel(status) {
     initial: 'Initial estimate / awaiting evidence' }[status] ?? 'Coefficient status unavailable';
 }
 
+export function sessionPointDetail(point = {}) {
+  if (!point.sessionCheck) return '';
+  const basis = point.referenceBasis === 'energy-added' ? 'energy added to battery; differs from electrical input'
+    : 'session electricity meter';
+  return `${basis} · ${point.comparisonEligible ? 'included in session averages' : 'excluded from session averages: incomplete comparison'}`;
+}
+
 // Learning and H66 output have their own bounded/recorded-state semantics.
 const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
 
@@ -189,77 +199,59 @@ export function historySeriesAt(payload, now = payload.now) {
  * explicit gaps. This changes presentation only; original readings and interval
  * provenance remain attached to every point used in the cumulative fill. */
 export function stackedPowerSeries(auxiliary = [], charger = []) {
-  const group = points => {
-    const groups = [];
-    for (const point of points.filter(point => Number.isFinite(point.x)).sort((a, b) => a.x - b.x)) {
-      if (groups.at(-1)?.x !== point.x) groups.push({ x: point.x, points: [] });
-      groups.at(-1).points.push(point);
-    }
-    return { groups, index: 0 };
-  };
-  const sources = [group(auxiliary), group(charger)];
-  const times = new Set(sources.flatMap(source => source.groups.map(group => group.x)));
-  const result = [[], []];
-  for (const x of [...times].sort((a, b) => a - b)) {
-    for (const source of sources) while (source.groups[source.index]?.x < x) source.index++;
-    const count = Math.max(1, ...sources.map(source => source.groups[source.index]?.x === x ? source.groups[source.index].points.length : 0));
-    for (let edge = 0; edge < count; edge++) {
-      const aligned = sources.map(source => {
-        const next = source.groups[source.index];
-        const exact = next?.x === x ? next.points : [];
-        const exactIndex = edge - (count - exact.length);
-        if (exactIndex >= 0) return { ...exact[exactIndex], x };
-        const previous = source.groups[source.index - 1]?.points.at(-1);
-        const following = next?.points[0];
-        // A line ending at a missing sample or its final timestamp has no
-        // supported segment to interpolate. Unknown auxiliary is never zero.
-        if (!Number.isFinite(previous?.y) || !Number.isFinite(following?.y)) return { x, y: null };
-        const held = following.carriedForward && previous.y === following.y ? following : previous;
-        // The API's envelope may omit intervening valid energy intervals.
-        // Their retained interval metadata is tooltip provenance, while null
-        // points and the displayed endpoints delimit actual gaps.
-        return { ...held, x, y: previous.y };
-      });
-      result[0].push(aligned[0]);
-      result[1].push({ ...aligned[1], componentValue: aligned[1].y,
-        y: Number.isFinite(aligned[0].y) && Number.isFinite(aligned[1].y) ? aligned[0].y + aligned[1].y : null });
-    }
-  }
-  return { auxiliary: result[0], charger: result[1] };
+  const [alignedAuxiliary, alignedCharger] = stackPowerSeries([auxiliary, charger]);
+  return { auxiliary: alignedAuxiliary, charger: alignedCharger };
 }
 
 export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
   if (!leftGroups[left]) throw new RangeError('Choose a valid left axis.');
   const keys = [...new Set([...leftGroups[left], ...RIGHT_AXIS_SIGNALS])];
-  const candidate = left === 'power' && visible('auxiliary_power', preferences) && visible('charger_power', preferences)
-    ? stackedPowerSeries(series.auxiliary_power, series.charger_power) : null;
-  // A range with no shared observations cannot show a combined fill. Keep its
-  // separate recorded components visible; the chart explains this fallback.
-  const stacked = candidate?.charger.some(point => Number.isFinite(point.y)) ? candidate : null;
+  const powerKeys = ['auxiliary_power', 'charger_power', 'charger2_power'];
+  const stackedData = new Map(), stackBases = new Map();
+  if (left === 'power') {
+    let group = [];
+    for (const key of powerKeys) {
+      if (!visible(key, preferences) || !(series[key] ?? []).some(point => Number.isFinite(point.y))) continue;
+      const next = [...group, key];
+      const aligned = stackPowerSeries(next.map(component => series[component]));
+      if (next.length > 1 && aligned.at(-1).some(point => Number.isFinite(point.y))) {
+        group = next;
+        group.forEach((component, index) => {
+          stackedData.set(component, aligned[index]);
+          if (index) stackBases.set(component, group[index - 1]);
+        });
+      } else {
+        // Without any shared observations, retain this load at its recorded
+        // power. A following load can still stack on that supported baseline.
+        group = [key];
+      }
+    }
+  }
   return keys.map(key => {
     const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
     const isLeft = leftGroups[left].includes(key);
     const isPrice = key.endsWith('_price');
-    const data = stacked && key === 'auxiliary_power' ? stacked.auxiliary
-      : stacked && key === 'charger_power' ? stacked.charger : series[key] ?? [];
+    const data = stackedData.get(key) ?? series[key] ?? [];
+    const stackBase = stackBases.get(key);
     return {
       key, visibilityKey, unit, kind, label,
       data,
-      ...(key === 'charger_power' ? { powerStacked: Boolean(stacked) } : {}),
-      showLine: !['event', 'daily'].includes(kind),
+      ...(powerKeys.includes(key) ? { powerStacked: Boolean(stackBase), powerStackBase: stackBase ?? null } : {}),
+      showLine: !['event', 'daily', 'session'].includes(kind),
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
       borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
       borderDash: kind === 'forecast' || PHASE_ENERGY_SIGNALS.includes(key) && key.startsWith('ev1') ? [5, 4] : isPrice ? [1, 3] : [],
-      fill: stacked && key === 'charger_power' ? keys.indexOf('auxiliary_power') : kind === 'fill' ? 'origin' : false,
-      order: key === 'auxiliary_power' ? 3 : kind === 'fill' ? 2 : 1,
-      pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
+      fill: stackBase ? keys.indexOf(stackBase) : kind === 'fill' ? 'origin' : false,
+      order: powerKeys.includes(key) ? 4 - powerKeys.indexOf(key) : kind === 'fill' ? 2 : 1,
+      pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? palette[colorKey] : 'transparent')
+        : kind === 'session' ? data.map(point => point.comparisonEligible ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
       pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : 'circle',
       // A finite reading surrounded by gaps has no line segment to draw.
-      pointRadius: kind === 'event' ? 5 : kind === 'daily' ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
+      pointRadius: kind === 'event' ? 5 : ['daily', 'session'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
-      pointHoverRadius: kind === 'event' ? 7 : kind === 'daily' ? 6 : 3, pointHitRadius: 8,
+      pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session'].includes(kind) ? 6 : 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
       stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && key !== 'model_indoor_temperature' && !PHASE_ENERGY_SIGNALS.includes(key),
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),

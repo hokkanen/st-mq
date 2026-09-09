@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
@@ -219,7 +219,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                   const value = historyValueLabel(item.dataset.key, item.raw?.componentValue ?? item.parsed.y, item.dataset.unit);
                   const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
                   const firewood = firewoodPointDetail(item.dataset.key, item.raw);
-                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  const session = sessionPointDetail(item.raw);
+                  const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
+                    ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
+                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -251,13 +254,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (plot.left === 'outdoor_forecast') notes.push('This view shows the forecast from now onward. It does not reconstruct past outdoor forecasts.');
     if (payload.meta?.historyBasis === 'original-recorded-history') notes.push('Charts read the original saved history. Point reduction for display and cached chart responses stay in memory; they create no additional database history. Energy and cost calculations use the original recorded intervals.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
+    if (['ev1_session_energy_check', 'tesla_session_energy_check'].includes(plot.left)) notes.push('Each point is one finalized session reference. Hollow points lack a complete comparison and are excluded from the session averages. These checks do not correct recorded energy or train the model.');
     if (plot.left === 'power') {
       notes.push('Auxiliary fill uses verified heater output and configured electrical capacity.');
-      const charger = datasets.find(dataset => dataset.key === 'charger_power');
-      if (charger.powerStacked) notes.push('Charger power is stacked above auxiliary power; tooltips show each load’s own kW. Missing auxiliary readings leave gaps in the combined fill; hiding auxiliary shows charger power from zero.');
-      else if (!charger.hidden) notes.push(visible('auxiliary_power', preferences)
-        ? 'No overlapping auxiliary and charger readings are available to stack. Charger power is shown from zero.'
-        : 'Charger power is shown from zero while auxiliary power is hidden.');
+      notes.push('Power fills stack in order: Auxiliary heat, Charger 1, Charger 2. Tooltips show each load’s own kW. Hidden loads are removed from the stack; missing lower readings leave gaps in upper fills.');
+      for (const charger of datasets.filter(dataset => ['charger_power', 'charger2_power'].includes(dataset.key))) {
+        if (!charger.hidden && !charger.powerStacked && charger.data.some(point => Number.isFinite(point.y)))
+          notes.push(`${charger.label} is shown from zero where no other visible load provides an overlapping baseline.`);
+      }
     }
     if (plot.left.startsWith('learning_')) {
       const metadata = payload.meta?.learning?.[plot.left];

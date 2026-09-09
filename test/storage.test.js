@@ -30,6 +30,26 @@ test('schema migrates once, checkpoints survive restart, future schema is reject
   assert.throws(() => new Store(path), /newer/);
 });
 
+test('opening development history removes obsolete charger counters while keeping property checks and session references', async t => {
+  const { store, path, dir } = fixture(t);
+  const insert = store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
+    VALUES('easee','invented-device',?,1000,1000,10,'[]')`);
+  for (const signal of ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter', 'property_import_energy_counter']) insert.run(signal);
+  store.event('charging-session-check', { source: 'easee', referenceKwh: 2, estimatedKwh: 2.1 }, 2000);
+  const csvPath = join(dir, 'invented-easee.csv');
+  writeFileSync(csvPath, evHeader + '1701842401,1,2,3,4,5,6\n');
+  const imported = await importCsv(store, csvPath, { kind: 'easee' });
+  const observations = store.observations(), importedRow = store.importRow(imported.importId, 1), sessions = store.events();
+  store.close();
+  const reopened = new Store(path);
+  try {
+    assert.deepEqual(reopened.db.prepare('SELECT signal FROM energy_audits').all().map(row => row.signal), ['property_import_energy_counter']);
+    assert.deepEqual(reopened.observations(), observations);
+    assert.deepEqual(reopened.importRow(imported.importId, 1), importedRow);
+    assert.deepEqual(reopened.events(), sessions);
+  } finally { reopened.close(); }
+});
+
 test('schema-v2 migration preserves observations and indexes complete Easee acquisitions', t => {
   const { store, path } = fixture(t);
   const receivedAt = 4_000_000;

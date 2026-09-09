@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries } from '../chart/history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries, sessionPointDetail } from '../chart/history-model.js';
 import { MODEL_COEFFICIENT_INFO, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 import { Envelope } from '../src/app/chart-data.js';
 
@@ -116,6 +116,53 @@ test('power histories without shared auxiliary observations keep both original c
     assert.equal(auxiliaryDataset.data, auxiliary);
     assert.equal(auxiliaryDataset.fill, 'origin');
     assert.equal(auxiliaryDataset.hidden, false);
+  }
+});
+
+test('three power fills stack auxiliary, Charger 1 and Charger 2 while visibility removes only the selected load', () => {
+  const series = Object.fromEntries([['auxiliary_power',2],['charger_power',4],['charger2_power',7],['property_power',15]]
+    .map(([key,y])=>[key,[{x:0,y},{x:10,y}]]));
+  const original = structuredClone(series);
+  for (const preferences of [{},{auxiliary_power:false},{charger_power:false},{charger2_power:false},
+    {auxiliary_power:false,charger_power:false}]) {
+    const datasets=historyDatasets(series,'power',preferences);
+    let total=0, previous;
+    for(const key of ['auxiliary_power','charger_power','charger2_power']) {
+      const dataset=datasets.find(row=>row.key===key);
+      if(preferences[key]===false) { assert.equal(dataset.hidden,true);continue; }
+      total+=series[key][0].y;
+      assert.equal(dataset.data[0].y,total,`${key} stacked value`);
+      assert.equal(dataset.fill,previous?datasets.indexOf(previous):'origin');
+      assert.equal(dataset.data[0].componentValue??dataset.data[0].y,series[key][0].y,'tooltip retains own power');
+      if(previous)assert(previous.order>dataset.order,'lower fill draws first');
+      previous=dataset;
+    }
+    assert.equal(datasets.find(row=>row.key==='property_power').data,series.property_power);
+    assert.equal(datasets.find(row=>row.key==='charger_power').label,'Charger 1');
+    assert.equal(datasets.find(row=>row.key==='charger2_power').label,'Charger 2');
+    assert.equal(datasets.find(row=>row.key==='charger_power').borderColor,datasets.find(row=>row.key==='property_power').borderColor);
+    assert.equal(datasets.find(row=>row.key==='charger2_power').borderColor,'#b493db');
+  }
+  assert.deepEqual(series,original,'display stack does not change recorded component histories');
+  assert.deepEqual(historyDatasets({},'phases').filter(row=>row.key.startsWith('ev1_')).map(row=>row.label),
+    ['Charger 1 L1','Charger 1 L2','Charger 1 L3']);
+});
+
+test('session check axes show single reference points, including hollow excluded comparisons, without extending readings', () => {
+  for(const [key,label,basis] of [['ev1_session_energy_check','Charger 1','electricity-meter'],
+    ['tesla_session_energy_check','Charger 2','energy-added']]) {
+    const points=[{x:2,y:10,sessionCheck:true,referenceBasis:basis,comparisonEligible:true},
+      {x:4,y:3,sessionCheck:true,referenceBasis:basis,comparisonEligible:false}];
+    const dataset=historyDatasets({[key]:points},key).find(row=>row.key===key);
+    assert.equal(dataset.label,label);
+    assert.equal(dataset.showLine,false);
+    assert.equal(dataset.pointRadius,4);
+    assert.equal(dataset.pointBackgroundColor[0],dataset.borderColor);
+    assert.equal(dataset.pointBackgroundColor[1],'transparent');
+    assert.equal(historySeriesAt({now:8,range:{from:0,to:10},series:{[key]:points}})[key],points);
+    assert.match(sessionPointDetail(points[0]),/included in session averages/);
+    assert.match(sessionPointDetail(points[1]),/excluded from session averages/);
+    if(basis==='energy-added')assert.match(sessionPointDetail(points[0]),/differs from electrical input/);
   }
 });
 

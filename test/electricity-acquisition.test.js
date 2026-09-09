@@ -227,7 +227,24 @@ test('counter audits are deduplicated and resets never change integrated phase e
   assert.equal(audited.sample(sample(now, { counter: 1 }), now).audits.length, 0);
 });
 
-test('batched provider reads power, phases and audit counters once per device with no raw payload persistence', async () => {
+test('charger counters never emit audits or survive accumulator checkpoints', () => {
+  const propertyKey = 'property:invented-meter:property_import_energy_counter';
+  const chargerKey = 'ev1:invented-charger:ev1_lifetime_energy_counter';
+  const head = { sourceTime: initial - 1000, value: 10 };
+  const accumulator = new ElectricityAccumulator({ checkpoint: { version: 1, auditHeads: {
+    [propertyKey]: head, [chargerKey]: head,
+  } } });
+  const chargerCounters = ['ev1_lifetime_energy_counter', 'ev1_session_energy_counter'].map(signal => ({
+    source: 'easee', device: 'invented-charger', signal, sourceTime: initial, receivedAt: initial,
+    value: 12, quality: [], unit: 'kWh',
+  }));
+  const observed = accumulator.sample([...sample(initial, { counter: 12 }), ...chargerCounters], initial);
+  assert.deepEqual(observed.audits.map(row => row.signal), ['property_import_energy_counter']);
+  assert.deepEqual(Object.keys(accumulator.checkpoint().auditHeads), [propertyKey]);
+  assert.deepEqual(observed.gaps, [], 'Ignored charger counters do not create measurement streams');
+});
+
+test('batched provider reads power, phases and only the property audit counter with no raw payload persistence', async () => {
   const calls = [];
   const provider = createDeviceProviders({ connections: { easee: { charger_id: 'invented-charger', equalizer_id: 'invented-equalizer', access_token: 'fixture-token' } },
     clock: () => initial, http: { async json(url) {
@@ -235,16 +252,16 @@ test('batched provider reads power, phases and audit counters once per device wi
       const prefix = url.includes('invented-charger') ? 'ev1' : 'property';
       return [
         ...ELECTRICITY_FIELDS[prefix].map(([id, , unit]) => ({ id, unit, value: 1, timestamp: new Date(initial).toISOString(), privateIgnoredField: 'discard-this' })),
-        ...(prefix === 'ev1' ? [{ id: 121, unit: 'kWh', value: 0.5, timestamp: new Date(initial).toISOString() }] : []),
+        ...(prefix === 'ev1' ? [121, 124].map(id => ({ id, unit: 'kWh', value: 0.5, timestamp: new Date(initial).toISOString() })) : []),
       ];
     } } });
   const rows = await provider.electricity({ now: initial });
-  assert.equal(calls.length, 2); assert.equal(rows.length, 16);
-  assert.deepEqual(new URL(calls[0]).searchParams.get('ids').split(',').map(Number), [183, 184, 185, 194, 195, 196, 120, 124, 250, 130, 132, 136, 150, 129, 223]);
+  assert.equal(calls.length, 2); assert.equal(rows.length, 15);
+  assert.deepEqual(new URL(calls[0]).searchParams.get('ids').split(',').map(Number), [183, 184, 185, 194, 195, 196, 120, 250, 130, 132, 136, 150, 129, 223]);
   assert.deepEqual(new URL(calls[1]).searchParams.get('ids').split(',').map(Number), [31, 32, 33, 34, 35, 36, 40, 45, 250]);
   assert(rows.every(row => row.raw.acquisitionOnly));
-  assert.deepEqual(rows.filter(row => row.raw.auditOnly).map(row => row.signal), ['ev1_lifetime_energy_counter', 'property_import_energy_counter']);
-  assert(!rows.some(row => row.signal === 'ev1_session_energy_counter'), 'Session energy is ignored even if the API returns it unsolicited');
+  assert.deepEqual(rows.filter(row => row.raw.auditOnly).map(row => row.signal), ['property_import_energy_counter']);
+  assert(!rows.some(row => /^ev1_.*_energy_counter$/.test(row.signal)), 'Charger counters are ignored even if the API returns them unsolicited');
   assert(rows.find(row => row.signal === 'property_active_power').unit === 'kW');
   assert(!JSON.stringify(rows).includes('discard-this'));
 });
@@ -264,7 +281,7 @@ test('missing Easee credentials never contact the API and failed devices remain 
   const absent = createDeviceProviders({ connections: { easee: { charger_id: 'invented-charger' } },
     http: { async json() { calls++; throw new Error('Unexpected request'); } } });
   const missing = await absent.electricity({ now: initial });
-  assert.equal(calls, 0); assert.equal(missing.length, 8);
+  assert.equal(calls, 0); assert.equal(missing.length, 7);
   assert(missing.every(row => row.value === null && row.quality.includes('provider_error') && row.quality.includes('missing_configuration') && row.raw.acquisitionOnly));
   const provider = createDeviceProviders({ connections: { easee: { charger_id: 'invented-charger', equalizer_id: 'invented-property', access_token: 'fixture-token' } },
     http: { async json(url) {

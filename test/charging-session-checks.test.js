@@ -18,9 +18,9 @@ const session = (changes = {}) => ({ source: 'easee', sessionKey: 'invented-sess
 
 test('empty summaries have no invented sessions or percentages and ignore cumulative audit periods', t => {
   const { store } = fixture(t);
-  store.energyAudit({ source: 'easee', device: 'invented-charger', signal: 'ev1_lifetime_energy_counter',
+  store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter',
     sourceTime: 1000, receivedAt: 1000, value: 10 });
-  store.energyAudit({ source: 'easee', device: 'invented-charger', signal: 'ev1_lifetime_energy_counter',
+  store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter',
     sourceTime: 2000, receivedAt: 2000, value: 11 });
   const rows = chargingSessionCheckSummaries(store);
   assert.deepEqual(rows.map(row => row.source), ['easee', 'teslamate']);

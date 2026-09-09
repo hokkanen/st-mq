@@ -41,13 +41,13 @@ test('charger 2 power is reconstructed only from its scalar energy, with gaps an
   recorder.energyGap({source:'teslamate',device:'invented-car',prefix:'ev2',start:start+10*MINUTE,end:start+12*MINUTE});
   interval(start+12*MINUTE,start+22*MINUTE,0.6);
   const options={store,input:'providers',startDate:'2026-08-19',endDate:'2026-08-19',now:start+HOUR};
-  const power=getChartData({...options,left:'power'}),phases=getChartData({...options,left:'phases'}),energy=getChartData({...options,left:'ev2_energy'});
+  const power=getChartData({...options,left:'power'}),phases=getChartData({...options,left:'phases'});
   assert(power.series.charger2_power.some(row=>row.x===start && Math.abs(row.y-7.2)<1e-9));
   assert(power.series.charger2_power.some(row=>row.x===start+12*MINUTE && Math.abs(row.y-3.6)<1e-9));
   assert(power.series.charger2_power.some(row=>row.y===null && row.x>=start+10*MINUTE && row.x<start+12*MINUTE));
   assert(!Object.keys(phases.series).some(key=>/ev2|charger2/.test(key)));
   assert(!HISTORY_AXIS_BY_KEY.phases.signals.some(key=>/ev2|charger2/.test(key)));
-  assert(energy.series.ev2_energy.some(row=>row.y===1.2));
+  assert.equal(HISTORY_AXIS_BY_KEY.ev2_energy,undefined,'stored total energy has no separate asymmetric left-axis entry');
   assert(!store.observations().some(row=>row.signal==='charger2_power'));
 });
 
@@ -56,7 +56,7 @@ test('same meter panel presents per-session means without turning Tesla added-en
     differenceKwh:2,differencePercent:10,start,end:start+HOUR,lastSessionEnd:start+2*HOUR};
   const charger=energyAuditRow({kind:'charging-session-summary',source:'easee',summary});
   const tesla=energyAuditRow({kind:'charging-session-summary',source:'teslamate',summary});
-  assert.equal(charger.title,'Charger');assert.equal(tesla.title,'Tesla');
+  assert.equal(charger.title,'Charger 1');assert.equal(tesla.title,'Charger 2');
   assert.equal(charger.subtitle,tesla.subtitle);
   assert.match(charger.value,/10% energy-weighted difference.*1 kWh average difference/);
   assert.match(charger.details.join(' '),/11 kWh recorded \/ 10 kWh metered per session/);

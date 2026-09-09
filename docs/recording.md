@@ -210,9 +210,13 @@ The previous accepted total power is integrated up to each message receipt and
 maintenance tick. New power is never applied backwards. Only compact scalar kWh
 intervals and bounded acquisition/session state are retained, with explicit
 estimate, receipt-time and held-value quality. No raw power/current MQTT archive
-is created. The power chart derives **Charger 2 · Tesla** kW from those intervals.
-Its total interval energy is selectable separately; it has no phase-current
-series. The existing Easee timing comparison retains its original scope.
+is created. The power chart derives **Charger 2** kW from those intervals.
+There is no separate total-interval-energy selector or phase-current series for
+Charger 2. The existing Charger 1 timing comparison retains its original scope.
+Power fills stack auxiliary heating, Charger 1 and Charger 2 in that order.
+Charger 1 uses the total-property-power color, and Charger 2 uses violet in both
+themes. Hiding a load removes it from the stack; unavailable lower readings leave
+gaps rather than invented zero power. Each tooltip shows the load's own kW.
 
 The installation currently has no solar or battery. Fresh, comparable property
 import bounds Tesla power and the combined separately counted chargers, allowing
@@ -234,28 +238,37 @@ installation requires revisiting the import-power bound before using it.
 
 ### Diagnostic meter and session checks
 
-Charger lifetime energy (`124`) and Equalizer accumulated import energy (`45`)
-are stored separately in `energy_audits` when a new counter observation arrives.
-Both measure cumulative energy. Charger session energy (`121`) is not requested or
-recorded; previously stored session readings remain in history. Duplicate
+Equalizer accumulated import energy (`45`) is the only cumulative counter stored
+in `energy_audits`. Charger lifetime energy (`124`) and running session counters
+(`121`) are neither requested nor recorded. Obsolete experimental charger counter
+rows are removed when the development database opens; completed-session records,
+property counters and original CSV imports remain separate. Duplicate property
 timestamp/value pairs are not copied. Source timestamps, resets, out-of-order
 counters and availability are retained.
 
 The existing **Meter accuracy checks** panel shows the latest property-meter
-comparison, an Easee **Charger** session summary, and a **Tesla** session summary.
+comparison, a **Charger 1** session summary, and a **Charger 2** session summary.
 There is no session list. Each charger row reports compared, excluded and recorded
 session counts; mean estimated/reference kWh per compared session; and the
 energy-weighted difference `100 × (sum estimate − sum reference) / sum reference`.
 Incomplete sessions and zero references are excluded, with no invented zero-percent
-accuracy. Older cumulative audit readings remain available in history.
+accuracy. Property cumulative readings remain available in history.
 
-Easee observation `129` supplies authoritative finalized session boundaries and
+The left-axis **Meter checks** group contains the property counter and exactly
+one **Charger 1** and one **Charger 2** entry. Each charger selection plots the
+final reference kWh of its recorded sessions as separate points at the session
+end, directly from the existing session records. No duplicate time-series rows
+are saved. Hollow points identify references excluded from comparison averages;
+tooltips distinguish metered electricity from energy added and show the session
+period. No continuous power or lifetime-counter meaning is implied between points.
+
+For Charger 1, Easee observation `129` supplies authoritative finalized session boundaries and
 energy; `223` supplies the current session start when available. A new finalized
 session flushes pending energy once and compares all three original Easee energy
 series over the same period. Duplicate polls cannot create duplicate sessions or
 force repeated flushes. Conflicting finalized readings do not rewrite a check.
 
-Tesla retains one final `charge_energy_added` reference per observed charging
+Charger 2 retains one final `charge_energy_added` reference per observed charging
 period, alongside integrated energy and coverage. Its charging-period boundaries
 can differ from an Easee session that includes pauses. Missed starts/stops, counter
 resets, location changes and ambiguous attribution exclude the comparison.
@@ -540,8 +553,8 @@ Remaining forecast savings are separate from past estimates. All fireplace chart
 and savings data are derived on demand without new telemetry or daily savings rows;
 see [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
-Meter counters are also selectable under
-Meter checks, separately from estimated interval energy.
+The property counter and finalized Charger 1 / Charger 2 session references are
+selectable under Meter checks, separately from estimated interval energy.
 
 ## Synthetic year benchmark
 
