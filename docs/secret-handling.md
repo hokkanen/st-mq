@@ -1,37 +1,28 @@
-# Secret handling and H66 audit
+# Private configuration and historical secret handling
 
-The mandatory policy is in [AGENTS.md](../AGENTS.md). Private configuration,
-credentials and personal data must never appear as plaintext in any Git commit.
-`options.json` is allowed in Git only as git-crypt ciphertext. Private local notes,
-exports and key backups should stay outside Git.
+Current private configuration stays outside Git in
+`~/.config/st-mq/secrets.json` (or `$XDG_CONFIG_HOME/st-mq/secrets.json` / the
+explicit `STMQ_CONFIG` path). HASSIO imports `/config/secrets.json` into Supervisor
+settings, then removes the uploaded file after successful application. Runtime
+Easee tokens remain in the private data directory; they are not configuration.
 
-The repository's pre-commit hook checks the complete staged index. Its pre-push
-hook checks every commit reachable from each ref being pushed. The CI `secrets`
-job repeats the history check with a full checkout. Install the hooks in each
-checkout with `git config --local core.hooksPath .githooks`; Git does not install
-repository hooks automatically on clone. These checks need Node.js but no npm
-dependencies or decryption key.
+Private configuration files and backups use mode `0600` in directories with
+mode `0700`. Ignore rules prevent accidental staging and Docker packaging; the
+pre-commit hook also rejects private filenames even when force-added. Source
+examples must contain invented, nonfunctional values only.
 
-Run the checks explicitly as well:
+The current checkout needs no git-crypt tooling or key. Historical ciphertext
+and its original committed attributes remain unchanged. Keep the recovery key
+outside Git in secure storage. This migration does not erase old ciphertext or
+rewrite any historical refs. Local git-crypt filter configuration can remain
+for reading historical revisions; it is unused by the current tree.
 
-```sh
-node scripts/check-secrets.js --staged
-node scripts/check-secrets.js --history H66
-```
-
-The checker inspects raw Git objects and the staged/historical attributes. It
-requires encryption for every `options.json`, its `options.json.*` backups,
-`workspace/consumption.csv`, and files assigned to git-crypt by those attributes.
-It also checks common credential signatures and literal assignments, including
-commit messages during history scans. It reports paths, hashes and categories,
-never matched values. This does not identify every possible secret or private
-datum. Review private-data handling even when the checker passes.
-
-A ciphertext header is an accidental-plaintext guard, not proof of authenticated
-encryption. When a key is available, authenticate/decrypt privately and do not
-print the result. Git-crypt requires attributes before staging sensitive files
-and leaves filenames and commit metadata unencrypted. See the
-[upstream git-crypt documentation](https://github.com/AGWA/git-crypt#using-git-crypt).
+The pre-commit hook scans the complete index once. Pre-push and CI scan reachable
+history, including archived encryption requirements and commit messages. These
+checks need Node.js, no npm dependencies or decryption key. Ordinary changes do
+not require manual attribute, git-crypt or repeated full-history checks. See
+[AGENTS.md](../AGENTS.md) for the working policy. Pattern checks are not exhaustive;
+results report paths, object IDs and categories without matched values.
 
 ## Audit and local history repair: 2026-09-07
 

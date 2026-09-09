@@ -7,8 +7,9 @@ The separate live section checks the configured providers with real requests:
 npm run test:live
 ```
 
-Run it from the repository. It reads `data/options.json`, or the file named by
-`STMQ_CONFIG`. With `STMQ_ADDON=1`, the default is `/data/options.json`, and
+Run it from the repository. It reads public `config.json` defaults and
+`~/.config/st-mq/secrets.json` (honoring `XDG_CONFIG_HOME`), or the private file
+named by `STMQ_CONFIG`. With `STMQ_ADDON=1`, the default is `/data/options.json`, and
 `STMQ_CONFIG` still takes precedence. Both a plain connection object and the add-on's `options` wrapper
 are accepted. It reports each provider separately, so a working backup cannot
 hide a broken primary. The live checks cover:

@@ -11,18 +11,28 @@
   "startup": "services",
   "boot": "auto",
   "init": false,
+  "ingress": true,
+  "ingress_port": 8099,
+  "panel_icon": "mdi:home-lightning-bolt",
+  "panel_title": "ST-MQ",
   "ports": {
     "1234/tcp": 1234
   },
+  "ports_description": {
+    "1234/tcp": "Direct web access; enabled only when a web token is configured"
+  },
+  "webui": "http://[HOST]:[PORT:1234]",
   "map": [
     "share:rw",
     "addon_config:rw"
   ],
+  "backup": "cold",
+  "timeout": 30,
   "options": {
     "geoloc": {
       "country_code": "fi",
-      "latitude": "60.3972",
-      "longitude": "25.6578"
+      "latitude": "",
+      "longitude": ""
     },
     "mqtt": {
       "address": "mqtt://core-mosquitto",
@@ -31,31 +41,40 @@
       "indoor_temperature_topic": "",
       "garage_temperature_topic": ""
     },
+    "entsoe": {
+      "token": ""
+    },
     "smartthings": {
       "token": "",
       "inside_temp_dev_id": "",
       "garage_temp_dev_id": ""
     },
+    "easee": {
+      "user": "",
+      "pw": "",
+      "charger_id": "",
+      "equalizer_id": "",
+      "charger_voltage_ids": []
+    },
     "teslamate": {
-      "enabled": false,
+      "enabled": true,
       "car_id": "1",
       "home_geofence": "Home",
       "namespace": "",
       "charger_assignment": "auto",
-      "charger_identification": false,
+      "charger_identification": true,
       "max_age_seconds": 180
     },
-    "entsoe": {
-      "token": ""
-    },
-    "easee": {
-      "user": "",
-      "pw": "",
-      "access_token": "",
-      "refresh_token": "",
-      "charger_id": "",
-      "equalizer_id": "",
-      "charger_voltage_ids": []
+    "electricity": {
+      "margin_ct_per_kwh_ex_vat": 0.33,
+      "tax_ct_per_kwh_ex_vat": 2.325,
+      "vat_percent": 25.5,
+      "transfer_tariff": "day-night",
+      "day_transfer_ct_per_kwh_ex_vat": 2.66,
+      "night_transfer_ct_per_kwh_ex_vat": 1.56,
+      "winter_day_transfer_ct_per_kwh_ex_vat": 3.32,
+      "other_transfer_ct_per_kwh_ex_vat": 1.65,
+      "effective_date": ""
     },
     "controller": {
       "input": "simulated",
@@ -86,21 +105,6 @@
       "recovery_compressor_only_hours": 4,
       "recovery_comfort_margin_c": 0.5
     },
-    "electricity": {
-      "margin_ct_per_kwh_ex_vat": 0.33,
-      "tax_ct_per_kwh_ex_vat": 2.325,
-      "vat_percent": 25.5,
-      "transfer_tariff": "day-night",
-      "day_transfer_ct_per_kwh_ex_vat": 2.66,
-      "night_transfer_ct_per_kwh_ex_vat": 1.56,
-      "winter_day_transfer_ct_per_kwh_ex_vat": 3.32,
-      "other_transfer_ct_per_kwh_ex_vat": 1.65,
-      "effective_date": ""
-    },
-    "recording": {
-      "max_interval_minutes": 5,
-      "annual_budget_gb": 10
-    },
     "acquisition": {
       "easee_poll_seconds": 15,
       "weather_poll_minutes": 30,
@@ -108,7 +112,12 @@
       "market_poll_minutes": 60,
       "market_retry_minutes": 15,
       "electricity_source_max_age_seconds": 300,
-      "electricity_max_gap_seconds": 60
+      "electricity_max_gap_seconds": 60,
+      "electricity_telemetry_max_age_seconds": 1020
+    },
+    "recording": {
+      "max_interval_minutes": 5,
+      "annual_budget_gb": 10
     }
   },
   "schema": {
@@ -124,10 +133,23 @@
       "indoor_temperature_topic": "str?",
       "garage_temperature_topic": "str?"
     },
+    "entsoe": {
+      "token": "password?",
+      "domain": "str?"
+    },
     "smartthings": {
       "token": "password?",
       "inside_temp_dev_id": "str?",
       "garage_temp_dev_id": "str?"
+    },
+    "easee": {
+      "user": "str?",
+      "pw": "password?",
+      "charger_id": "str?",
+      "equalizer_id": "str?",
+      "charger_voltage_ids": [
+        "int(190,199)"
+      ]
     },
     "teslamate": {
       "enabled": "bool",
@@ -138,20 +160,16 @@
       "charger_identification": "bool",
       "max_age_seconds": "int(30,600)"
     },
-    "entsoe": {
-      "token": "password?",
-      "domain": "str?"
-    },
-    "easee": {
-      "user": "str?",
-      "pw": "password?",
-      "access_token": "password?",
-      "refresh_token": "password?",
-      "charger_id": "str?",
-      "equalizer_id": "str?",
-      "charger_voltage_ids": [
-        "int(190,199)"
-      ]
+    "electricity": {
+      "margin_ct_per_kwh_ex_vat": "float(-20,100)",
+      "tax_ct_per_kwh_ex_vat": "float(0,100)",
+      "vat_percent": "float(0,100)",
+      "transfer_tariff": "list(day-night|seasonal)",
+      "day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "night_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "winter_day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "other_transfer_ct_per_kwh_ex_vat": "float(0,100)",
+      "effective_date": "str?"
     },
     "controller": {
       "input": "list(simulated|offline|mqtt|providers)",
@@ -182,21 +200,6 @@
       "recovery_compressor_only_hours": "float(0.25,12)",
       "recovery_comfort_margin_c": "float(0,1)"
     },
-    "electricity": {
-      "margin_ct_per_kwh_ex_vat": "float(-20,100)",
-      "tax_ct_per_kwh_ex_vat": "float(0,100)",
-      "vat_percent": "float(0,100)",
-      "transfer_tariff": "list(day-night|seasonal)",
-      "day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
-      "night_transfer_ct_per_kwh_ex_vat": "float(0,100)",
-      "winter_day_transfer_ct_per_kwh_ex_vat": "float(0,100)",
-      "other_transfer_ct_per_kwh_ex_vat": "float(0,100)",
-      "effective_date": "str?"
-    },
-    "recording": {
-      "max_interval_minutes": "float(0.25,60)",
-      "annual_budget_gb": "float(0.01,10000)"
-    },
     "acquisition": {
       "easee_poll_seconds": "float(10,3600)",
       "weather_poll_minutes": "float(5,360)",
@@ -204,10 +207,12 @@
       "market_poll_minutes": "float(15,1440)",
       "market_retry_minutes": "float(5,60)",
       "electricity_source_max_age_seconds": "float(15,3600)",
-      "electricity_max_gap_seconds": "float(15,300)"
+      "electricity_max_gap_seconds": "float(15,300)",
+      "electricity_telemetry_max_age_seconds": "float(15,3600)"
+    },
+    "recording": {
+      "max_interval_minutes": "float(0.25,60)",
+      "annual_budget_gb": "float(0.01,10000)"
     }
-  },
-  "webui": "http://[HOST]:[PORT:1234]",
-  "backup": "cold",
-  "timeout": 30
+  }
 }

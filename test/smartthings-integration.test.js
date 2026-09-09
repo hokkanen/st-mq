@@ -17,9 +17,10 @@ function fixture(t, input) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-smartthings-integration-'));
   const path = join(directory, 'options.json');
   writeFileSync(path, JSON.stringify({
+    geoloc: { country_code: '' }, teslamate: { enabled: false, charger_identification: false },
     controller: { input, h66_device: 'invented-h66' },
     smartthings: { token: 'synthetic-smartthings-token', inside_temp_dev_id: 'invented/indoor',
-      garage_temp_dev_id: 'invented/garage', outside_temp_dev_id: 'invented/unused-outdoor' },
+      garage_temp_dev_id: 'invented/garage' },
     mqtt: { address: 'mqtt://invented.invalid', indoor_temperature_topic: 'invented/indoor',
       garage_temperature_topic: 'invented/garage' },
   }));

@@ -73,3 +73,20 @@ test('rejected status and declared size cancel unread bodies', async () => {
     http.close();
   }
 });
+
+
+test('Easee cached tokens are bound to configured credentials and legacy caches require a new login', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-account-token-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'tokens.json');
+  const pair = { accessToken: 'synthetic-access-token', refreshToken: 'synthetic-refresh-token' };
+  fileTokenStore(path).save(pair);
+  const credentials = { user: 'synthetic-account', pw: 'synthetic-password' };
+  const bound = fileTokenStore(path, credentials);
+  assert.equal(bound.load(), null);
+  bound.save(pair);
+  assert.deepEqual(fileTokenStore(path, credentials).load(), pair);
+  assert.equal(fileTokenStore(path, { ...credentials, user: 'synthetic-other' }).load(), null);
+  assert.equal(fileTokenStore(path, { ...credentials, pw: 'synthetic-rotated-password' }).load(), null);
+  assert.equal(readFileSync(path, 'utf8').includes(credentials.pw), false);
+});

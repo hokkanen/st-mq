@@ -166,7 +166,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const location = configuredLocation(connections);
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // selects a usable H66 reading before either weather source.
-  devices ??= createDeviceProviders({ connections, http, clock, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json')) });
+  devices ??= createDeviceProviders({ connections, http, clock, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   const identification = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
     ? createChargerIdentification({ control: devices.chargerIdentificationControl(), clock }) : null;
   if (identification) engine.chargerIdentification = identification;

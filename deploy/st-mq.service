@@ -9,6 +9,8 @@ WorkingDirectory=/opt/st-mq
 Environment=STMQ_DATA_DIR=/var/lib/st-mq
 Environment=STMQ_INPUT=simulated
 Environment=STMQ_MODE=shadow
+# Create this private file outside the checkout, readable only by the stmq user.
+Environment=STMQ_CONFIG=/etc/st-mq/secrets.json
 EnvironmentFile=-/etc/st-mq.env
 ExecStart=/usr/bin/env node /opt/st-mq/src/main.js
 Restart=on-failure

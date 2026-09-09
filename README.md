@@ -50,8 +50,9 @@ npm start
 
 Open **http://127.0.0.1:1234**. The UI labels simulated readings and example prices.
 `node scheduler.js` also starts the safe application unless the separate legacy
-live gate is explicitly enabled. Existing `data/options.json` supplies permanent
-settings; without an explicit input selection the application uses simulation.
+live gate is explicitly enabled. The public `config.json.options` defaults are
+overridden by the permanent private `~/.config/st-mq/secrets.json` file (or
+`$XDG_CONFIG_HOME/st-mq/secrets.json`). Without an explicit input selection the application uses simulation.
 Simulation and offline modes do not connect to providers. The server serves the completed UI build; it does not
 rebuild historical CSVs or run a permanent Vite build watcher.
 
@@ -207,7 +208,7 @@ additional storage or reconstructed historical coefficient traces. See the detai
 [learning and control explanation](docs/learning-and-control.md).
 
 **Data & settings** shows a compact provider-health overview. **Connections &
-settings** opens each provider's data series and details, **Reload configuration**
+settings** opens each provider's data series and details, **Configuration**
 and **Electricity rates**. **Electricity consumption · Easee, Teslamate** groups
 property import, Charger 1 and Charger 2 in both the source overview and the
 connection details. Easee and TeslaMate keep separate acquisition diagnostics;
@@ -231,9 +232,11 @@ caches remain in `STMQ_DATA_DIR` (`/data/st-mq` in HA). Existing HA databases mi
 through SQLite's backup API to the public folder; the original is retained and an
 existing destination is never overwritten. `/share/st-mq` remains the exchange
 folder for historical CSVs and exported backups. See [SSH access and backups](DOCS.md#ssh-database-access-and-backups).
-These databases and supplied CSVs are
-excluded from Git and Docker contexts. The owner's existing `data/options.json`
-is preserved and remains governed by the repository's existing git-crypt setup.
+These databases and supplied CSVs are excluded from Git and Docker contexts.
+Keep private configuration outside the repository. Standalone uses the permanent
+`secrets.json` described below; Home Assistant owns its saved add-on options.
+Historical encrypted configuration is covered by the archival audit in
+[secret handling](docs/secret-handling.md); it is not the current configuration workflow.
 
 ```sh
 npm run history -- import
@@ -284,18 +287,22 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
-| `STMQ_HOST` | `127.0.0.1`; add-on listens on `0.0.0.0` |
-| `STMQ_API_TOKEN` | Required, at least 24 characters, when listening beyond loopback |
-| `STMQ_CONFIG` | Settings and connections JSON; defaults to `data/options.json`, or `/data/options.json` in add-on |
+| `STMQ_HOST` | `127.0.0.1` on standalone; optional add-on direct access listens on `0.0.0.0` |
+| `STMQ_API_TOKEN` | Overrides `controller.web_token`; at least 24 characters for direct network access |
+| `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the add-on, overrides only the initial/fallback Supervisor export path. |
 | `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1°C) |
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
-Use a trusted local network or an authenticated HTTPS reverse proxy for remote
-access. API authentication protects both household data and setting changes;
-credentials are never returned in API responses. The browser keeps an entered
-API token in session storage for its tab. There is no internet exposure configured
-by this project.
+Home Assistant ingress uses the existing Home Assistant login. Optional direct
+add-on access on port 1234 is enabled only with a valid `controller.web_token`;
+clearing that token and applying configuration disables direct access while
+ingress remains available. Standalone loopback access permits an empty token;
+listening beyond loopback requires a token of at least 24 characters. Use a
+trusted local network or an authenticated HTTPS reverse proxy for remote direct
+access. Credentials are never returned in API responses. A direct-access browser
+keeps its entered token in session storage for its tab. The **Configuration**
+section shows the current access state.
 
 MQTT reuses the existing broker address/user/password and subscribes to
 `<device>/HP/#` and configured indoor/garage temperature topics alongside online providers. Supported active control and
@@ -410,26 +417,67 @@ a rejected key. The suite uses no MQTT and sends no equipment commands.
 
 ## Permanent configuration and prices
 
-Edit add-on options in Home Assistant, or `data/options.json` on Linux, then choose
-**Data & settings → Connections & settings → Reload configuration → Reload
-supported settings**. The **Reloads without restart** list covers price-control
-mode, comfort limits, learning settings, electricity rates, recording interval
-and storage budget. With live input it also includes provider connections,
-location, sensor topics, polling intervals, H66 device selection and its
-verification file. The button re-reads the saved options file and reconnects
-providers. The separate **Requires restart** list covers input mode, web
-address/port/access token, data and database locations, and environment variables.
-Changed input, web-access or storage settings reject the reload without applying
-other settings. Finish ongoing equipment tests and setting changes first.
-The update restores owned equipment settings before reconnecting; if restoration
-is pending, retry after the equipment becomes available. An in-progress automatic
-heating cycle ends during the update; Away/Pause deadlines and learning history
-remain. Startup environment overrides still apply. Instances without a
-reloadable configuration source show the button as unavailable.
-`config.json` defines add-on metadata, defaults and schema; it is not the owner's
-credentials file. The dashboard reports the active values; Away/Pause and explicit
-timed tests are available there. Configuration takes precedence over old browser-saved mode/drop
-settings. `temp_to_hours` is obsolete and has been removed.
+`config.json` is public: its `options` object is the common application defaults,
+and its metadata and `schema` describe the Home Assistant add-on. Put permanent
+private overrides in a **plain JSON options object**, without the manifest's
+outer `options` wrapper. A small file is expected; it need not repeat defaults.
+
+On Ubuntu, edit `~/.config/st-mq/secrets.json` (or
+`$XDG_CONFIG_HOME/st-mq/secrets.json`). `STMQ_CONFIG` selects another private file,
+for example `/etc/st-mq/secrets.json` for a service account. Keep the directory
+owner-only (`chmod 700`) and the file owner-readable/writable (`chmod 600`), and
+ensure the account running ST-MQ can read it. This file is permanent: every start
+and **Apply configuration** merges it over `config.json.options`, and never
+deletes it. Environment overrides take precedence. The UI displays the actual
+paths used by the running instance.
+
+In Home Assistant, edit and **save** add-on options, then choose **Apply
+configuration** in ST-MQ. The button fetches the freshly saved Supervisor options;
+it does not depend on the startup export in `/data/options.json`. For an import,
+upload a sparse `secrets.json` using SSH to the exact add-on configuration path
+shown in ST-MQ, normally `/addon_configs/<actual-add-on-slug>/secrets.json`.
+ST-MQ sees this as `/config/secrets.json`. Apply reads the fresh saved options,
+merges the uploaded values, saves the result in Home Assistant, and applies the
+supported settings. The uploaded file is removed only after successful import
+and application. A failed import keeps it for correction; if cleanup alone fails,
+the UI reports that the applied file needs manual removal. Home Assistant keeps
+the imported values after the upload is removed. See [Home Assistant setup](DOCS.md).
+
+Supervisor remains authoritative in the add-on, including when `STMQ_CONFIG`
+selects an alternative startup export for tooling. Existing Home Assistant
+`!secret` references are resolved for runtime use; saving an import follows
+Supervisor's normal behavior of storing the resolved values. Uploaded JSON must
+contain actual values. Home Assistant rejects explicit `null`, including for
+optional fields; use an empty string for optional text, or remove the field in
+Home Assistant's settings. Ubuntu supports `null` for optional fields.
+
+Objects merge recursively. Missing keys retain the lower layer's value, arrays
+replace the lower layer's whole array, and explicit empty values clear fields
+where that field permits an empty value. For example, omitting a saved MQTT
+password preserves it during an HA import; providing `"pw": ""` clears it. To
+disable direct add-on access, set `"controller": { "web_token": "" }` and apply.
+On Ubuntu, removing a key from the permanent file restores the public default
+on the next application. Invalid values reject the change; no private values are
+included in validation errors or status responses.
+
+The button is at **Data & settings → Connections & settings → Configuration →
+Apply configuration**. **Applies without restart** covers price-control mode,
+comfort limits, learning settings, electricity rates, recording interval, storage
+budget, and the direct-access token. With live input it also covers provider
+connections, location, sensor topics, polling intervals, H66 device selection and
+its verification file. Token changes take effect immediately; direct-access tabs
+may need to enter the new token. Home Assistant ingress keeps using HA login.
+**Requires restart** covers input mode, web address/port, data and database
+locations, and environment variables. Changing one of these rejects the whole
+application of settings; restart to use such changes. Finish ongoing equipment
+tests and setting changes first. Owned equipment settings are restored before
+reconnecting; pending restoration blocks the update until equipment is available.
+An in-progress automatic heating cycle ends, while Away/Pause deadlines and
+learning history remain. Startup environment overrides still apply.
+
+The dashboard reports the active values; Away/Pause and explicit timed tests are
+temporary controls. Configuration takes precedence over old browser-saved
+mode/drop settings. `temp_to_hours` is obsolete and has been removed.
 
 `recording.max_interval_minutes` defaults to `5` and
 `recording.annual_budget_gb` to `10`. Acquisition intervals have separate options;
@@ -484,7 +532,8 @@ Live H66 control captures and restores existing ROOM/DHW/mode baselines, checks
 readback and retains restoration obligations through restarts. A1/A2 and native
 hysteresis are configured prediction inputs, not values read from integral
 register `8105`. The configured defaults are A2 −990 and auxiliary hysteresis
-30 °C; A1 and compressor hysteresis remain unknown until configured. The DHW stop
+30 °C. Public configuration also supplies A1 −100 and compressor hysteresis
+10 °C; these configured thresholds do not establish observed native readings. The DHW stop
 register `0208` is not a physical compressor temperature cap.
 
 DHWR retains ten-minute legacy pulses and its modeled coupling to house heat.

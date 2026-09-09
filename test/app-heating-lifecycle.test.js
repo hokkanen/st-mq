@@ -14,7 +14,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const now = Date.parse('2026-09-07T12:00Z');
   const fixture = providerFixture(now);
   const connection = { address: 'mqtt://fixture.invalid', user: 'synthetic-user', pw: 'synthetic-private-password' };
-  const config = { ...loadConfig({ STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory),
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory),
     input: 'providers', dbPath: join(directory, 'st-mq.sqlite'), legacyDbPath: join(directory, 'st-mq.sqlite'),
     connections: { ...fixture.connections, mqtt: connection } };
   const clients = [], packets = [], published = new EventEmitter();

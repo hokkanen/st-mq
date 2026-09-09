@@ -6,7 +6,7 @@ import { LIVE_SERVICES, selectedServices, readLiveState, writeLiveState, liveCoo
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
-const help = `Usage: npm run test:live -- [--services name,name]\n\nServices: ${LIVE_SERVICES.join(', ')}\n\nThis command makes bounded, read-only live provider requests using STMQ_CONFIG\n(or data/options.json; /data/options.json in addon mode). Easee authentication\nmay rotate cached tokens. No MQTT, device commands or history writes are\navailable. Local cooldowns prevent rapid repeats. Optional devices without IDs\nare reported as skipped.`;
+const help = `Usage: npm run test:live -- [--services name,name]\n\nServices: ${LIVE_SERVICES.join(', ')}\n\nThis command makes bounded, read-only live provider requests using STMQ_CONFIG\n(or ~/.config/st-mq/secrets.json; /data/options.json in addon mode). Easee authentication\nmay rotate cached tokens. No MQTT, device commands or history writes are\navailable. Local cooldowns prevent rapid repeats. Optional devices without IDs\nare reported as skipped.`;
 let lock;
 let child;
 let lockPath;

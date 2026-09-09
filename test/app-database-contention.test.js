@@ -18,7 +18,7 @@ const until = async predicate => {
 test('a scheduled controller survives SQLite contention and resumes after the writer releases its lock', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-lock-recovery-'));
   let now = Date.parse('2026-09-08T12:00:00Z');
-  const config = loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   const app = await start({ config, clock: () => now });
   const writer = new DatabaseSync(config.dbPath);
   let locked = false;
@@ -49,7 +49,7 @@ test('a scheduled controller survives SQLite contention and resumes after the wr
 test('failed error persistence cannot terminate the controller or expose the original error on stderr', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-error-reporting-'));
   let now = Date.parse('2026-09-08T12:00:00Z');
-  const config = loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   const app = await start({ config, clock: () => now });
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
   const reports = [];

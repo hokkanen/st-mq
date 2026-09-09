@@ -1,3 +1,4 @@
+import { loadConfig } from '../src/app/config.js';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { join } from 'path';
@@ -23,10 +24,6 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 
 // Configuration and CSV paths
-let CONFIG_PATH = join(__dirname, '..', 'config.json'); // default path
-if (fs.existsSync(join(__dirname, '..', 'data', 'options.json'))) {
-    CONFIG_PATH = join(__dirname, '..', 'data', 'options.json'); // HASS path
-}
 const CSV_FILE_PATH = join(__dirname, '..', 'share', 'st-mq', 'st-mq.csv');
 
 // ### Utility Functions ###
@@ -53,16 +50,8 @@ function config() {
         temp_to_hours: []
     };
 
-    if (!fs.existsSync(CONFIG_PATH)) {
-        console.log(`${BLUE}[ERROR ${date_string()}] Config file not found at ${CONFIG_PATH}${RESET}`);
-        return default_config;
-    }
-
     try {
-        const file_data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-        // When using options.json (HASS), file_data is the whole object
-        // When using config.json (standalone), options is a separate object
-        const options = file_data.options || file_data;
+        const options = loadConfig({ ...process.env, STMQ_INPUT: 'providers' }, join(__dirname, '..')).connections;
         return {
             ...default_config,
             country_code: options.geoloc?.country_code || '',
@@ -78,7 +67,7 @@ function config() {
             temp_to_hours: options.temp_to_hours || []
         };
     } catch (error) {
-        console.log(`${BLUE}[ERROR ${date_string()}] Failed to parse ${CONFIG_PATH}: ${error.toString()}${RESET}`);
+        console.log(`${BLUE}[ERROR ${date_string()}] Configuration could not be read or validated${RESET}`);
         return default_config;
     }
 }

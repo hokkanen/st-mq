@@ -5,9 +5,11 @@ import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Regist
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
+import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
 
 const $ = id => document.getElementById(id);
-let token = sessionStorage.getItem('stmq-token') ?? '';
+const ingress = usesHomeAssistantLogin();
+let token = ingress ? '' : sessionStorage.getItem('stmq-token') ?? '';
 let lastStatus;
 let lastEvent = 0;
 let historyChart;
@@ -48,8 +50,8 @@ const reasons = {
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 async function api(path, data, options = {}) {
-  const response = await fetch(path, { signal: options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
-  if (response.status === 401) { $('auth').hidden = false; const error = new Error('Enter your access token to view this installation.'); error.status = response.status; throw error; }
+  const response = await fetch(applicationUrl(path), { signal: options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+  if (response.status === 401) { $('auth').hidden = ingress; const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error; }
   const result = await response.json();
   if (!response.ok) { const error = new Error(result.error ?? 'Request failed'); error.status = response.status; throw error; }
   $('auth').hidden = true;
@@ -382,8 +384,17 @@ function render(s) {
   renderLearning(s);
   const scope = settingsReloadScope(s);
   $('settings-reload-help').textContent = scope.message;
+  $('settings-configuration-steps').replaceChildren();
+  for (const text of scope.instructions) {
+    const item = document.createElement('li'); item.textContent = text; $('settings-configuration-steps').append(item);
+  }
+  $('settings-access').textContent = scope.access.join(' ');
+  const cleanupPending = s.settingsReload?.result?.cleanupPending === true;
+  $('settings-import-warning').hidden = !cleanupPending;
+  $('settings-import-warning').textContent = cleanupPending
+    ? 'Configuration applied, but the uploaded secrets.json could not be removed. Delete it from the upload location shown above.' : '';
   $('settings-reload-scope').replaceChildren();
-  for (const [title, items] of [['Reloads without restart', scope.reloadable], ['Requires restart', scope.restartRequired]]) {
+  for (const [title, items] of [['Applies without restart', scope.reloadable], ['Requires restart', scope.restartRequired]]) {
     const group = document.createElement('div'), heading = document.createElement('h3'), list = document.createElement('ul');
     heading.textContent = title;
     for (const text of items) { const item = document.createElement('li'); item.textContent = text; list.append(item); }
@@ -421,10 +432,11 @@ $('settings-reload').addEventListener('click', async () => {
   updateTemporaryButtons();
   $('settings-reload').setAttribute('aria-busy', 'true');
   $('settings-reload-message').classList.remove('form-error');
-  $('settings-reload-message').textContent = 'Updating settings and reconnecting providers…';
+  $('settings-reload-message').textContent = 'Applying configuration and reconnecting providers…';
   try {
-    render(await api('/api/settings/reload', {}));
-    $('settings-reload-message').textContent = 'Settings updated.';
+    const result = await api('/api/settings/reload', {});
+    render(result);
+    $('settings-reload-message').textContent = 'Configuration applied.';
   } catch (error) {
     $('settings-reload-message').classList.add('form-error');
     $('settings-reload-message').textContent = error.message;

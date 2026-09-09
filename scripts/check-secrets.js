@@ -156,8 +156,8 @@ function run() {
         input: entries.map(({ mode, id, path }) => `${mode} ${id}\t${path}\0`).join('') });
     }
     const paths = entries.map(entry => entry.path);
-    const tracked = attributes(paths, isolated);
-    const effective = history ? tracked : attributes(paths, baseEnv);
+    const tracked = history ? attributes(paths, isolated) : new Map();
+    const effective = tracked;
     const missing = [...new Set(entries.map(entry => entry.id))].filter(id => !cache.has(id));
     const raw = objects(missing);
     for (let i = 0; i < missing.length; i++) cache.set(missing[i], {
@@ -168,11 +168,15 @@ function run() {
       snapshots++;
       const status = cache.get(id);
       if (status.encrypted) encryptedSnapshots++;
-      const attrs = tracked.get(path);
-      const actual = effective.get(path);
+      const attrs = tracked.get(path) ?? {};
+      const actual = effective.get(path) ?? {};
+      const privateName = /^(?:secrets|options)\.json(?:\..*)?$/.test(path.split('/').at(-1));
+      if (/^secrets\.json(?:\..*)?$/.test(path.split('/').at(-1))
+        || !history && (privateName || path === 'workspace/consumption.csv' || status.encrypted))
+        report(ref, path, 'private configuration/data must remain outside Git', id);
       const required = /^options\.json(?:\..*)?$/.test(path.split('/').at(-1)) || path === 'workspace/consumption.csv'
         || [attrs.filter, attrs.diff, actual.filter, actual.diff].includes('git-crypt');
-      if (required) {
+      if (history && required) {
         if (attrs.filter !== 'git-crypt' || attrs.diff !== 'git-crypt') report(ref, path, 'tracked attributes must set filter=git-crypt and diff=git-crypt', id);
         if (actual.filter !== 'git-crypt' || actual.diff !== 'git-crypt') report(ref, path, 'effective attributes must set filter=git-crypt and diff=git-crypt', id);
         if (!status.encrypted) report(ref, path, 'required git-crypt ciphertext signature missing', id);
@@ -185,7 +189,7 @@ function run() {
     throw new Error(`Secret check failed: ${findings.size} finding(s). No values were printed.`);
   }
   process.stdout.write(`Secret check passed: ${history ? `${commits.length} reachable commits` : 'complete staged index'}, ${snapshots} file snapshots, ${cache.size} unique blobs, ${encryptedSnapshots} encrypted snapshots.\n`);
-  process.stdout.write('Checks cover git-crypt signatures/attributes and credential patterns; signatures do not authenticate ciphertext and patterns are not exhaustive.\n');
+  process.stdout.write(history ? 'History includes archived ciphertext/attribute checks and credential patterns.\n' : 'Checks cover private filenames and credential patterns; private values are never printed.\n');
 }
 
 try {

@@ -26,7 +26,7 @@ function mqttClient() {
 
 async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-identification-runtime-'));
-  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
     acquisition: { easeeIntervalMs: 5000 },
     connections: { mqtt: { address: 'mqtt://invented.invalid' }, easee: { charger_id: 'invented-charger' },
       teslamate: teslamateConfiguration({ enabled: true, charger_identification: enabled, charger_assignment: assignment }) } };
@@ -181,7 +181,7 @@ test('provider shutdown aborts pending preflight and ignores its late completion
 test('application startup installs Tesla MQTT before the enabled identification provider', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-identification-main-'));
   const mock = mqttClient(); let factoryCalls = 0;
-  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt',
     connections: { mqtt: { address: 'mqtt://invented.invalid' },
       teslamate: teslamateConfiguration({ enabled: true, charger_identification: true }) } };
   const app = await start({ config, clock: () => INITIAL, mqttOptions: { connect: () => mock.client },

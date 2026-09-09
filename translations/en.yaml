@@ -2,14 +2,18 @@ configuration:
   controller:
     name: Home controller
     description: >-
-      Start with simulated input and shadow mode. Set a private web token of at
-      least 24 characters for network access. Providers input reads online
+      Start with simulated input and shadow mode. Home Assistant ingress uses
+      your HA login. Leave web_token empty to keep direct port 1234 disabled, or
+      set a private token of at least 24 characters to enable direct access.
+      Save options, then choose Apply configuration in ST-MQ. Token changes apply
+      immediately; clearing the token disables direct access while ingress stays
+      available. Input changes require restarting the add-on. Providers input reads online
       sensors, electricity prices and weather. MQTT input adds read-only H66
       readings and needs the exact installed H66 device prefix. An optional
       reviewed h66_verification_file confirms installed register meanings;
       relative paths are inside this add-on's SSH-accessible /config folder.
-      Active mode
-      operates only the simulator. max_drop_c is the preferred occupied
+      Active mode operates the selected supported control transport.
+      max_drop_c is the preferred occupied
       temperature drop in °C (default 1); away periods have no comfort-drop
       limit. The comfort reference is learned from continuous normal heating.
       Away until and Pause until are temporary dashboard controls.
@@ -24,7 +28,7 @@ configuration:
       4.17/2.07 including VAT. Daytime is 07:00–22:00 Finnish time; seasonal
       winter daytime is November–March, Monday–Saturday, with no holiday
       exceptions. transfer_tariff selects day-night or seasonal. Leave
-      effective_date empty to apply changed rates at restart; first setup
+      effective_date empty to apply changed rates with Apply configuration or at restart; first setup
       begins at today's Finnish midnight. An explicit YYYY-MM-DD date starts
       at Finnish midnight. Later rate changes apply now or in the future;
       elapsed history is preserved. A future configured change can be edited
@@ -42,8 +46,10 @@ configuration:
     name: MQTT broker and temperature sensors
     description: >-
       MQTT input subscribes to the installed H66 using this broker address,
-      username and password. It does not send commands to the heat pump or
-      domestic hot-water circulation. Set indoor_temperature_topic and garage_temperature_topic to exact MQTT topics for replacement temperature sensors. Providers input can use these topics without an H66 device.
+      username and password. Shadow and monitoring modes observe; active mode
+      can operate supported equipment. Set indoor_temperature_topic and
+      garage_temperature_topic to exact MQTT topics for replacement temperature
+      sensors. Providers input can use these topics without an H66 device.
   entsoe:
     name: ENTSO-E API token (recommended)
     description: >-

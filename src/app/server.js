@@ -13,6 +13,16 @@ function authorized(req, token) {
   const a = Buffer.from(supplied), b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
 }
+const ingressProxy = address => address === '172.30.32.2' || address === '::ffff:172.30.32.2';
+
+function requestHost(req, ingress) {
+  // Forwarded identity is meaningful only on the dedicated, peer-restricted
+  // ingress listener. Direct requests never gain trust from proxy headers.
+  const host = ingress ? req.headers['x-forwarded-host'] ?? req.headers.host : req.headers.host;
+  if (typeof host !== 'string' || !host || /[\s,/@\\]/.test(host)) return null;
+  try { return new URL(`http://${host}`).host === host.toLowerCase() ? host.toLowerCase() : null; }
+  catch { return null; }
+}
 async function body(req) {
   if (!req.headers['content-type']?.startsWith('application/json')) throw Object.assign(new Error('JSON content type required'), { statusCode: 400 });
   let data = '';
@@ -29,11 +39,22 @@ function numberParam(url, key, fallback, max) {
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
+  getAccess, ingress = false,
   reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
-    reason: 'This instance has no reloadable options/config source.' }), staticDir = resolve('dist') }) {
+    reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = chartService?.overview ? chartService : createChartService({ store });
+  const fixedAccess = { enabled: true, token, tokenRequired: false };
+  const access = getAccess ?? (() => fixedAccess);
   const server = createServer(async (req, res) => {
+    let acceptedAccess, completingReload = false;
     const json = (code, value) => {
+      // Revocation also covers reads that were awaiting chart/database work.
+      // An already authenticated reload may finish its own success response.
+      if (acceptedAccess && !ingress && !completingReload) {
+        const current = access();
+        if (!current.enabled) { code = 503; value = { error: 'Direct web access is disabled' }; }
+        else if (current !== acceptedAccess) { code = 401; value = { error: 'Authentication required' }; }
+      }
       res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(value));
     };
@@ -41,13 +62,25 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'");
     try {
+      if (ingress && !ingressProxy(req.socket.remoteAddress)) return json(403, { error: 'Ingress proxy required' });
+      acceptedAccess = access();
+      if (!acceptedAccess.enabled) return json(503, { error: 'Direct web access is disabled' });
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname.startsWith('/api/')) {
-        if (!token && !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.host ?? '')) return json(403, { error: 'Unrecognized local host' });
+        const host = requestHost(req, ingress);
+        if (!host) return json(403, { error: 'Unrecognized request host' });
+        if (!ingress && !acceptedAccess.token && !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host)) return json(403, { error: 'Unrecognized local host' });
         // Same-origin JSON writes prevent cross-site requests, including on a
         // loopback installation where no bearer token is configured.
-        if (req.headers.origin && new URL(req.headers.origin).host !== req.headers.host) return json(403, { error: 'Cross-origin request rejected' });
-        if (!authorized(req, token)) return json(401, { error: 'Authentication required' });
+        if (req.headers.origin && new URL(req.headers.origin).host !== host) return json(403, { error: 'Cross-origin request rejected' });
+        const stillAuthorized = () => {
+          const current = access();
+          if (!current.enabled) { json(503, { error: 'Direct web access is disabled' }); return false; }
+          if (!ingress && (current !== acceptedAccess || (current.tokenRequired && !current.token)
+            || !authorized(req, current.token))) { json(401, { error: 'Authentication required' }); return false; }
+          return true;
+        };
+        if (!stillAuthorized()) return;
         const unavailable = () => {
           const state = settingsReloadStatus();
           if (state.unavailable) return state.reason;
@@ -58,6 +91,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const status = () => ({ ...getEngine().status(), settingsReload: settingsReloadStatus() });
         const mutate = async action => {
           const input = await body(req);
+          // A credential can be rotated while a client slowly uploads a body.
+          // Recheck before any control or configuration mutation is dispatched.
+          if (!stillAuthorized()) return;
           // A slow JSON body can span a complete reload. Resolve the engine only
           // after parsing, and never dispatch while a replacement is in progress.
           if (unavailable()) return json(503, { error: unavailable() });
@@ -84,8 +120,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/settings/reload') {
           return await mutate(async (_engine, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
-              throw new Error('Update settings reads options/config; send an empty JSON object.');
+              throw new Error('Apply configuration reads saved settings; send an empty JSON object.');
             if (!reloadSettings) return json(409, { error: settingsReloadStatus().reason });
+            completingReload = true;
             await reloadSettings();
             return json(200, status());
           });
@@ -123,7 +160,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
-        if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates are configured in options/config. Use Update settings after editing them.' });
+        if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates come from configuration. Use Apply configuration after editing them.' });
         if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate((current, input) => json(200, current.setTemporary(input)));
         if (req.method === 'POST' && url.pathname === '/api/test/h66') return await mutate(async (current, input) => json(200, await current.testH66(input)));
         if (req.method === 'POST' && url.pathname === '/api/heating-test') return await mutate(async (current, input) => json(200, await current.testHeating(input)));

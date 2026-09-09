@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101e19">
   <title>Home Energy</title>
-  <script vite-ignore src="/theme.js"></script>
-  <link rel="stylesheet" href="/monitor.css">
+  <script vite-ignore src="./theme.js"></script>
+  <link rel="stylesheet" href="./monitor.css">
 </head>
 <body>
   <header>
@@ -266,12 +266,27 @@
             <p id="price-status" class="muted"></p><p id="weather-status" class="muted"></p>
             <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
             <details id="controls-details" class="controller-fold">
-              <summary>Reload configuration</summary>
-              <p class="muted">After editing the configuration file or add-on options, reload supported settings here.</p>
+              <summary>Configuration</summary>
+              <ol id="settings-configuration-steps" class="muted"></ol>
+              <details id="settings-format-example" class="configuration-example">
+                <summary>JSON file example</summary>
+                <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
+                <pre><code>{
+  "easee": {
+    "user": "your-easee-username",
+    "pw": "your-easee-password"
+  },
+  "controller": {
+    "web_token": "replace-with-your-private-token"
+  }
+}</code></pre>
+              </details>
+              <p id="settings-access" class="muted" role="status"></p>
+              <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
               <div id="settings-reload-scope" class="reload-scope"></div>
               <p id="settings-reload-help" class="muted"></p>
               <div class="settings-actions">
-                <button id="settings-reload" class="secondary-button" type="button" disabled>Reload supported settings</button>
+                <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
                 <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
               </div>
             </details>
@@ -291,6 +306,6 @@
     </section>
   </main>
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
-  <script type="module" src="/monitor.js"></script>
+  <script type="module" src="./monitor.js"></script>
 </body>
 </html>

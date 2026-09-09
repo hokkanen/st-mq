@@ -13,3 +13,10 @@ dist
 **/*.csv
 .env
 *.sqlite*
+
+**/secrets.json
+**/secrets.json.*
+**/options.json
+**/options.json.*
+*.key
+*.pem

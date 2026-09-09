@@ -9,6 +9,7 @@ const themeSource = fs.readFileSync(resolve(__dirname, 'chart/theme.js'), 'utf8'
 const themeFile = `theme-${createHash('sha256').update(themeSource).digest('hex').slice(0, 12)}.js`;
 
 export default defineConfig({
+  base: './',
   root: resolve(__dirname, 'chart'), // Absolute path to the root dir
   plugins: [{
     name: 'early-theme-bootstrap',
@@ -20,7 +21,7 @@ export default defineConfig({
     transformIndexHtml: {
       order: 'post',
       handler(html, context) {
-        return context.server ? html : html.replace('src="/theme.js"', `src="/${themeFile}"`);
+        return context.server ? html : html.replace('src="./theme.js"', `src="./${themeFile}"`);
       },
     },
   }],

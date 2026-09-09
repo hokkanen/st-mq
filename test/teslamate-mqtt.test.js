@@ -16,7 +16,7 @@ test('Tesla-only MQTT opt-in starts without H66 and stores total energy through 
   client.publish = (topic, payload, options, done) => { publications.push(topic); done?.(); };
   client.end = (force, options, done) => done();
   let now = Date.parse('2026-01-01T12:00:00Z');
-  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt', deviceId: null,
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt', deviceId: null,
     connections: { mqtt: { address: 'mqtt://invented.invalid' }, teslamate: { enabled: true, carId: '2', namespace: 'invented' } } };
   const app = await start({ config, clock: () => now, mqttOptions: { connect: () => client }, providerOptions: { automatic: false } });
   try {

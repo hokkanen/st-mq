@@ -30,7 +30,7 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const fixture = providerFixture(initial), client = broker();
   let now = initial;
-  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt', deviceId: null,
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt', deviceId: null,
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://example.invalid', temperatureTopics: {
       indoor_temperature: 'invented/indoor', garage_temperature: 'invented/garage',
     } } } };
@@ -67,7 +67,7 @@ test('H66 broker loss records all thirty included signals once and preserves can
   const directory = mkdtempSync(join(tmpdir(), 'stmq-mqtt-availability-'));
   const store = new Store(join(directory, 'test.sqlite'));
   let now = initial;
-  const config = { ...loadConfig({}, directory), input: 'mqtt', deviceId: 'invented-h66',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'mqtt', deviceId: 'invented-h66',
     connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { garage_temperature: 'invented/garage' } } } };
   const engine = new Engine({ store, config, clock: () => now }), client = broker();
   const reader = await startMqtt({ engine, store, config, connect: () => client });
@@ -100,7 +100,7 @@ test('H66 broker loss records all thirty included signals once and preserves can
 test('temperature subscription rejection records failure without exposing broker errors', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-mqtt-subscribe-'));
   const store = new Store(join(directory, 'test.sqlite'));
-  const config = { ...loadConfig({}, directory), input: 'mqtt', deviceId: null,
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'mqtt', deviceId: null,
     connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { garage_temperature: 'invented/garage' } } } };
   const engine = new Engine({ store, config, clock: () => initial }), client = broker({ rejectedTopic: 'invented/garage' });
   const reader = await startMqtt({ engine, store, config, connect: () => client });

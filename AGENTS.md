@@ -51,72 +51,48 @@
 - Report the resulting commit hash and validation outcome. Creating a commit
   does not authorize pushing it; push only when the user requests it.
 
-## Mandatory protection of secrets and personal data
+## Private configuration and personal data
 
-These rules apply to every agent and contributor, every branch, and every commit,
-including temporary commits, stashes, rebases, cherry-picks, and merges.
+- Keep credentials and private personal data out of Git and out of tool output,
+  logs, diffs, screenshots and commit messages. This includes precise household
+  coordinates, private device/account identifiers and household exports.
+- Private configuration lives outside the checkout in
+  `$XDG_CONFIG_HOME/st-mq/secrets.json` (default `~/.config/st-mq/secrets.json`),
+  or the explicit `STMQ_CONFIG` path. Never stage `secrets.json`, its copies or
+  the retired `options.json`. Use invented, nonfunctional examples in tests/docs.
+- Private directories use mode `0700`; private files use `0600`. Do not read
+  private values unless needed for the task. Inspect them in memory and report
+  only paths, field names and counts.
+- Current development no longer needs git-crypt. Historical encrypted blobs and
+  decryption keys must remain recoverable; do not rewrite history or remove keys
+  as part of ordinary work. Never commit a decryption key. Retained local
+  git-crypt filters are for old revisions only; do not disable their required flag.
 
-- **Never put plaintext secrets or private personal data in Git.** This includes
-  API keys, access/refresh tokens, passwords, private keys, connection credentials,
-  private device/account identifiers, and household observations or exports.
-- **Every `options.json` must be stored as git-crypt ciphertext in the index and
-  in every commit that contains it.** A decrypted local working copy is normal
-  in an unlocked checkout; it is not evidence that the Git blob is encrypted.
-  Renamed copies, backups, logs, fixtures, screenshots, and documentation must not
-  become plaintext escape routes. Use invented, nonfunctional example values.
-- Keep private files outside the repository or ignored whenever possible. If a
-  private file must be versioned, assign `filter=git-crypt diff=git-crypt -text`
-  in a committed `.gitattributes` rule **before staging the file**. Keep Git
-  control files such as `.gitattributes` readable. `.gitignore` does not protect
-  files already tracked, and attributes alone do not prove encryption occurred.
-- Never commit a raw git-crypt key or any private decryption key, even inside an
-  encrypted file. Keep key backups outside the repository with owner-only access
-  and secure storage. Unlock with the existing key; do not reinitialize git-crypt
-  or replace keys to bypass a missing-key error. Preserve `filter.git-crypt.required=true`.
-- Never print secrets or decrypted configuration in tool output, diffs, logs,
-  commit messages, issue/PR text, or audit reports. Inspect sensitive values only
-  in memory and report paths, object IDs, categories, and counts. Git-crypt does
-  not encrypt filenames or commit metadata. Ordinary author attribution may be
-  public; never add private personal information to it.
+## Routine commit validation
 
-## Required commit and push practice
+1. Use the repository hooks (`core.hooksPath=.githooks`). If another hooks path
+   is configured, integrate the checks instead of silently replacing it.
+2. Review intended changed paths, run appropriate tests/build checks, and stage
+   explicit paths. Never use an unchecked `git add .` or bypass hooks.
+3. The pre-commit hook runs `node scripts/check-secrets.js --staged`, checking the
+   index for private filenames and credential patterns. One successful check on
+   the final index is sufficient; routine tasks need no git-crypt status,
+   attribute, decryption or whole-history audit commands.
+4. Pre-push and CI audit reachable history automatically, including historical
+   ciphertext requirements. Run a history audit manually when changing the
+   checker, repairing history or investigating an exposure, not after every task.
 
-1. Install the repository hooks in each checkout:
-   `git config --local core.hooksPath .githooks`. If another hooks directory is
-   configured, integrate these checks into it instead of silently replacing it.
-   Node.js must be available. Do not bypass hooks with `--no-verify` or disable
-   the encryption filter/checker to make a commit succeed.
-2. Check encryption configuration before staging private changes:
-   `git check-attr filter diff -- data/options.json` and `git-crypt status -e`.
-   Both attributes must select `git-crypt`; the clean filter must be configured
-   and required. Stage only intentional paths, never an unchecked `git add .`.
-3. After staging, run `node scripts/check-secrets.js --staged`. This checks the
-   raw index, including unchanged tracked sensitive files, rather than trusting
-   a decrypted working copy or textconv output. Fix failures before committing.
-4. After committing and before pushing, run
-   `node scripts/check-secrets.js --history HEAD` (or `--history H66`). Every
-   reachable commit must pass, including intermediate commits and merge parents.
-   The pre-push hook and CI run this check too. CI must fetch complete history.
-5. Review changed paths and confidential-data handling as well as automated
-   results. Pattern checks cannot recognize every possible credential or piece
-   of personal data. A ciphertext signature check is a guard against accidental
-   plaintext, not cryptographic authentication; validate decryption privately
-   when the repository key is available.
+Pattern checks cannot recognize every private value. Review confidential-data
+handling when the task touches configuration, accounts or household observations.
+Do not broaden a routine code task into a repeated security audit without evidence.
 
 ## If plaintext ever enters history
 
-Stop committing/pushing the affected history. Encrypting only the newest version,
-adding `.gitignore`, deleting a file, or running `git-crypt status --fix` does not
-remove older plaintext commits. Repair every affected reachable commit using the
-existing encryption key, preserving the intended configuration, and rerun the
-complete history audit. Preserve unrelated working changes without creating a
-plaintext stash, patch, backup branch, or exported archive.
+Stop committing/pushing the affected history. Deleting a file from the newest
+revision does not remove earlier plaintext. Preserve unrelated work and recovery
+information, identify affected refs without printing values, and coordinate any
+shared-history repair with the owner. If credentials reached a remote or another
+person, revoke/rotate them with the provider. Do not rewrite unrelated refs or
+claim an exposure is removed from other clones/caches without evidence.
 
-If credentials reached a remote or another person, revoke/rotate them with the
-provider; history rewriting cannot make a disclosed credential secret again.
-Coordinate any rewrite of shared refs and replacement of remote history. Account
-for old branches/tags, reflogs, clones, caches, and backups before claiming that
-the exposure has been removed. Do not erase recovery data or rewrite unrelated
-refs without authorization. Never include exposed values in the incident note.
-
-See [docs/secret-handling.md](docs/secret-handling.md) for audit scope and results.
+See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scope.

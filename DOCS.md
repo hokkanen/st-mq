@@ -7,11 +7,13 @@ for the algorithm, native-setting restoration and equipment testing limits.
 
 1. Build/install ST-MQ through the repository's existing add-on mechanism on
    `aarch64` (Raspberry Pi 5) or `amd64`.
-2. In the add-on configuration, set `controller.web_token` to a private token of
-   at least 24 characters. It protects household data and settings. Leave
+2. Leave `controller.web_token` empty to use Home Assistant ingress with your
+   existing Home Assistant login. Set a private token of at least 24 characters
+   only if you also want direct access on the mapped port 1234. Leave
    `controller.input: simulated` and `controller.mode: shadow` for initial review.
-3. Start the add-on and open the web UI on its mapped port (default 1234). Enter
-   that token in the browser. The **Home Energy** UI clearly labels simulation.
+3. Start the add-on and choose **Open Web UI** in Home Assistant. Ingress needs no
+   separate ST-MQ token. Direct access, when enabled, asks for the configured
+   token. The **Home Energy** UI clearly labels simulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
@@ -57,25 +59,60 @@ for the algorithm, native-setting restoration and equipment testing limits.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
    change them in options, then use **Data & settings → Connections & settings →
-   Reload configuration → Reload supported settings**.
+   Configuration → Apply configuration**.
    Old browser-saved values cannot override
    these settings. `temp_to_hours` is no longer used; remove it from saved add-on
    options if an upgrade still displays the old key.
 
-**Reload supported settings** re-reads the saved options file and reconnects
-providers. **Reloads without restart** lists price-control mode, comfort limits,
-learning settings, electricity rates, recording interval and storage budget.
-With live input, provider connections, location, sensor topics, polling intervals,
-H66 device selection and its verification file are included. **Requires restart**
-lists input mode, web address/port/access token, data and database locations, and
-environment variables. Changed input, web-access or storage settings reject the
-entire reload. Wait for ongoing heating operations and native setting tests to
+**Apply configuration** reads freshly saved Home Assistant options from Supervisor
+and reconnects providers. Save options in Home Assistant before choosing the
+button in ST-MQ. It does not rely on `/data/options.json`, which Supervisor exports
+when starting the add-on. **Applies without restart** lists price-control mode,
+comfort limits, learning settings, electricity rates, recording interval, storage
+budget and the direct-access token. With live input, provider connections,
+location, sensor topics, polling intervals, H66 device selection and its
+verification file are included. **Requires restart** lists input mode, web
+address/port, data and database locations, and environment variables. Changed
+startup settings reject the entire application of settings; use a restart for
+those changes. Wait for ongoing heating operations and native setting tests to
 finish. Existing equipment overrides are restored before reconnecting; pending
 restoration blocks the update until equipment is available. An in-progress
-automatic heating cycle ends, while
-Away/Pause deadlines and learning history remain. Startup environment overrides
-still apply. Edit Supervisor-owned options through the add-on
-configuration, not inside the running container.
+automatic heating cycle ends, while Away/Pause deadlines and learning history
+remain. Startup environment overrides still apply.
+
+You can also import private settings through the same **Apply configuration**
+button. In Terminal & SSH, upload `secrets.json` to this add-on's configuration
+folder. The UI displays the exact path, such as
+`/addon_configs/<actual-add-on-slug>/secrets.json`; inside ST-MQ it is
+`/config/secrets.json`. This is next to the `st-mq/` database folder, not inside it.
+Use a **plain JSON options object without an outer `options` wrapper**. Keep the
+file private while transferring it. For example, a sparse settings import can be:
+
+```json
+{
+  "controller": { "max_drop_c": 0.8 },
+  "electricity": { "margin_ct_per_kwh_ex_vat": 0.4 }
+}
+```
+
+Only provided fields override saved options. Nested objects merge recursively;
+arrays replace saved arrays; explicit empty values clear fields where an empty
+value is valid. Omitted fields preserve saved values. Invalid JSON or settings
+reject the import. Apply merges the upload over freshly saved Supervisor options,
+saves the imported result in Home Assistant, then applies supported settings.
+The uploaded file is deleted only after successful import and application. If
+import or application fails, it stays for correction. If only file removal fails,
+the UI reports successful application and asks you to delete the upload. Imported
+values persist in Home Assistant after the file is removed.
+
+The **Configuration** section also reports live access status. Setting a valid
+`controller.web_token` and applying enables direct access on port 1234. Changing
+the token applies immediately; direct-access tabs must use the new token.
+Clearing it and applying disables direct access while Home Assistant ingress
+remains available. If `STMQ_API_TOKEN` overrides the option, change that environment
+override and restart to change access. Edit Supervisor-owned options through Home
+Assistant or the import above; do not edit its exported `/data/options.json`
+inside the running container.
 
 The optional `electricity.effective_date` schedules rates at Finnish midnight.
 Without a date, first-use rates start today; later rate changes start when loaded.
@@ -150,8 +187,9 @@ Missing AUX routing, solar forecasts or complete recovery evidence stays unknown
 Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.
 
-A blank network-access token prevents startup with a clear configuration error.
-Home Assistant options own permanent settings. Beneath the chart, **Home &
+An empty direct-access token keeps port 1234 disabled; Home Assistant ingress
+remains available through HA login. Home Assistant options own permanent settings.
+Beneath the chart, **Home &
 heating** summarizes the current decision and equipment settings, with **Away &
 pause** and **Equipment** for temporary controls, readbacks and manual
 tests. **House model** summarizes learning evidence; **Explore learning** separates
@@ -228,6 +266,7 @@ Unlike `/share` alone, this folder is included in an add-on backup.
 | Active household database | `/config/st-mq/st-mq.sqlite` | `/addon_configs/<repository-id>_st-mq/st-mq/st-mq.sqlite` |
 | Simulation database | `/config/st-mq/simulation.sqlite` | Same public folder, `simulation.sqlite` |
 | Options and provider tokens | `/data/options.json`, `/data/st-mq/` | Private to ST-MQ |
+| Temporary settings import | `/config/secrets.json` | `/addon_configs/<actual-add-on-slug>/secrets.json` |
 | CSV imports and exported backups | `/share/st-mq/` | `/share/st-mq/` |
 
 Find the installation folder with `ls -d /addon_configs/*_st-mq` in a current
@@ -265,8 +304,10 @@ For manual edits or raw file copies, stop ST-MQ through Home Assistant first and
 make a backup. Work on a copy, run `PRAGMA quick_check;`, and retain the original
 until the edited copy is verified. Restoring the complete HA add-on backup is the
 usual route; the history CLI can restore a snapshot to a new database path.
-Options are owned by Supervisor: edit them through add-on configuration, rather
-than changing `/data/options.json` inside a running container.
+Options are owned by Supervisor: edit and save them through add-on configuration,
+or upload the sparse import described above, then choose **Apply configuration**.
+The temporary upload is not a permanent settings file; Supervisor retains the
+successfully imported values.
 
 `config.json`, `translations/en.yaml`, `repository.yaml`, `Dockerfile` and this
 document are the maintained HA-specific files. `HASS_files/` is an old empty local

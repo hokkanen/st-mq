@@ -1,3 +1,4 @@
+import { configurationPaths } from '../../src/app/configuration-source.js';
 import { readFileSync, mkdirSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHttp, ProviderError } from '../../src/acquisition/http.js';
@@ -21,7 +22,7 @@ export function livePaths(env = process.env, cwd = process.cwd()) {
   const addon = env.STMQ_ADDON === '1';
   const dataDirectory = resolve(cwd, env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : 'var'));
   return {
-    configPath: resolve(cwd, env.STMQ_CONFIG ?? (addon ? '/data/options.json' : 'data/options.json')),
+    configPath: configurationPaths(env, cwd).privatePath,
     directory: resolve(cwd, env.STMQ_LIVE_DATA_DIR ?? join(dataDirectory, 'live-test')),
   };
 }

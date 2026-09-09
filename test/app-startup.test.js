@@ -19,7 +19,7 @@ test('legacy publisher exits at the live gate before loading credentials or conn
 test('standalone entry starts offline promptly, serves built UI, survives restart and closes workers', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-startup-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const config = loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
   const started = performance.now();
   const app = await start({ config });
   try {
@@ -65,7 +65,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
     assert.equal(options.retain, false); done();
   };
   fake.end = (force, options, done) => { closed++; done(); };
-  const config = { ...loadConfig({ STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } };
   const app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: () => fake } });
   try {
@@ -87,7 +87,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
 test('pause expires on its deadline between regular controller ticks', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-deadline-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const config = loadConfig({ STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory);
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory);
   const app = await start({ config });
   try {
     app.engine.setTemporary({ pauseUntil: new Date(Date.now() + 200).toISOString() });

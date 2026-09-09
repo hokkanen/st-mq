@@ -1,6 +1,6 @@
 // Synthetic local fixture only. Requires an isolated Chrome DevTools listener.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { start } from '../src/main.js';
@@ -149,15 +149,25 @@ try {
   await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
   writeFileSync('var/home-panels-closed-desktop.png', Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   await evaluate("document.getElementById('connections-details').open=true; document.getElementById('controls-details').open=true; document.getElementById('temporary-details').open=true; document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input'))");
-  assert.match(await evaluate("document.getElementById('settings-reload-scope').textContent"), /Reloads without restart.*Electricity rates.*Requires restart.*Input mode.*Environment variables/s);
+  assert.equal(actualStatus.settingsReload.configuration.environment, 'ubuntu');
+  assert.equal(actualStatus.settingsReload.configuration.privatePath, join(directory, 'options.json'));
+  const configurationInstructions = await evaluate("document.getElementById('settings-configuration-steps').textContent");
+  assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.privatePath), 'Configuration instructions show the actual isolated private file');
+  assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.defaultsPath), 'Configuration instructions show the actual defaults file');
+  assert.match(configurationInstructions, /stays in place/);
+  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Loopback access works without a token/);
+  assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), true);
+  assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Apply configuration');
+  assert.match(await evaluate("document.getElementById('settings-reload-scope').textContent"), /Applies without restart.*Electricity rates.*Requires restart.*Input mode.*Environment variables/s);
   assert.equal(await evaluate("document.getElementById('settings-reload-scope').getBoundingClientRect().height > 0"), true, 'Reload scope is visible beside the action');
   writeFileSync(join(directory, 'options.json'), JSON.stringify({ controller: { max_drop_c: 0.7 } }));
   await evaluate("document.getElementById('settings-reload').click()");
-  await until("document.getElementById('settings-reload-message').textContent === 'Settings updated.' && !document.getElementById('settings-reload').disabled");
+  await until("document.getElementById('settings-reload-message').textContent === 'Configuration applied.' && !document.getElementById('settings-reload').disabled");
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00', 'Settings refresh preserves unsaved temporary drafts');
   assert.equal(await evaluate("document.getElementById('controls-details').open"), true, 'Settings refresh preserves open controls');
   assert.equal(await evaluate("document.getElementById('connections-details').open"), true, 'Settings refresh preserves the parent disclosure');
   assert.equal(await evaluate("document.getElementById('drop').textContent"), '0.7 °C', 'Settings reload applies options from disk');
+  assert.equal(existsSync(join(directory, 'options.json')), true, 'Applying standalone configuration retains its permanent private file');
   await evaluate("document.getElementById('controls-details').open=false; document.getElementById('connections-details').open=false; document.getElementById('temporary-details').open=false");
   await evaluate("document.getElementById('learning-panel-details').open = true; document.getElementById('learning-details').open = true; document.getElementById('model-inputs-details').open = true; document.querySelector('#model-inputs-content details').open = true");
   assert.equal(await evaluate("document.getElementById('model-inputs-content').textContent.includes('recorded sensor')"), true);

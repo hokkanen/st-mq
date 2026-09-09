@@ -63,14 +63,46 @@ test('reload scope distinguishes live provider configuration from startup and en
   assert(live.reloadable.some(item => /Price-control mode/.test(item)));
   assert(live.reloadable.some(item => /Electricity rates/.test(item)));
   assert(live.restartRequired.some(item => /Input mode/.test(item)));
-  assert(live.restartRequired.some(item => /access token/.test(item)));
+  assert(live.reloadable.some(item => /Access token/.test(item)));
+  assert(!live.restartRequired.some(item => /access token/i.test(item)));
+  assert(live.restartRequired.some(item => /Web address and port/.test(item)));
   assert(live.restartRequired.some(item => /database/.test(item)));
   assert(live.restartRequired.some(item => /Environment variables/.test(item)));
   assert.match(live.message, /Startup environment overrides still apply/);
   assert.match(live.message, /pending heating restoration must complete/);
-  assert.match(live.message, /block the whole reload/);
+  assert.match(live.message, /require restart and block the whole application/);
   for (const input of ['simulated', 'offline']) {
     const local = settingsReloadScope({ input, settingsReload: { available: true } });
     assert(!local.reloadable.some(item => /Provider|H66/.test(item)));
   }
+});
+
+test('configuration instructions use the actual standalone private path and preserve its permanent role', () => {
+  const scope = settingsReloadScope({ settingsReload: { available: true,
+    configuration: { environment: 'ubuntu', defaultsPath: '/opt/example/config.json', privatePath: '/etc/example/secrets.json' },
+    access: { ingress: { enabled: false }, direct: { enabled: true, tokenRequired: false } } } });
+  assert.match(scope.instructions.join(' '), /\/etc\/example\/secrets.json/);
+  assert.match(scope.instructions.join(' '), /\/opt\/example\/config.json/);
+  assert.match(scope.instructions.join(' '), /stays in place/);
+  assert.match(scope.instructions.join(' '), /omitted settings use the defaults/);
+  assert.match(scope.access.join(' '), /Loopback access works without a token/);
+  assert.doesNotMatch(scope.instructions.join(' '), /upload|removes|Home Assistant/i);
+});
+
+test('Home Assistant configuration instructions distinguish sparse import, saved options and live access', () => {
+  const reload = { available: true,
+    configuration: { environment: 'home-assistant', defaultsPath: '/st-mq/config.json', privatePath: '/data/options.json',
+      importPath: '/config/secrets.json', externalImportPath: '/addon_configs/example_st-mq/secrets.json' },
+    access: { ingress: { enabled: true }, direct: { enabled: false, tokenRequired: true } } };
+  const scope = settingsReloadScope({ settingsReload: reload });
+  assert.match(scope.instructions.join(' '), /\/addon_configs\/example_st-mq\/secrets.json/);
+  assert.match(scope.instructions.join(' '), /freshly saved options/);
+  assert.match(scope.instructions.join(' '), /Omitted fields keep saved values, arrays replace saved arrays/);
+  assert.match(scope.instructions.join(' '), /failed import keeps the file/);
+  assert.match(scope.access.join(' '), /Home Assistant login/);
+  assert.match(scope.access.join(' '), /Direct access is disabled/);
+  reload.access.direct.enabled = true;
+  assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /Clear controller.web_token and apply to disable/);
+  reload.configuration.externalImportPath = null;
+  assert.doesNotMatch(settingsReloadScope({ settingsReload: reload }).instructions.join(' '), /<.*slug|undefined|null/);
 });

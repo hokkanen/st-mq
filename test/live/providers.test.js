@@ -1,5 +1,5 @@
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readConfigurationOptions } from '../../src/app/configuration-source.js';
 import { join } from 'node:path';
 import * as market from '../../src/acquisition/market.js';
 import * as weather from '../../src/acquisition/weather.js';
@@ -14,12 +14,9 @@ function requireResult(condition, message) { if (!condition) throw new LiveValid
 
 function readConnections() {
   try {
-    const content = readFileSync(livePaths().configPath, 'utf8');
-    if (content.length > 256 * 1024) throw new Error();
-    const raw = JSON.parse(content), connections = raw.options ?? raw;
-    if (!connections || typeof connections !== 'object' || Array.isArray(connections)) throw new Error();
+    const { options: connections } = readConfigurationOptions(process.env, process.cwd());
     return connections;
-  } catch { throw new Error('Cannot load live connection settings; check STMQ_CONFIG or the documented options.json location'); }
+  } catch { throw new Error('Cannot load live connection settings; check STMQ_CONFIG or the documented secrets.json location'); }
 }
 
 function checkPrices(result, source, now, t) {
@@ -77,7 +74,7 @@ test('live configured providers (explicit opt-in)', { skip: !enabled, timeout: 2
   const { directory } = livePaths();
   const state = readLiveState(directory);
   const http = createLiveHttp({ state, saveState: next => writeLiveState(directory, next) });
-  const devices = createDeviceProviders({ connections, http, tokenStore: fileTokenStore(join(directory, 'easee-tokens.json')) });
+  const devices = createDeviceProviders({ connections, http, tokenStore: fileTokenStore(join(directory, 'easee-tokens.json'), connections.easee ?? {}) });
   const temperatures = ['inside_temp_dev_id', 'garage_temp_dev_id', 'outside_temp_dev_id'];
   const currents = ['charger_id', 'equalizer_id'];
   const prices = new Map();

@@ -4,6 +4,7 @@ WORKDIR /st-mq
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY chart/ ./chart/
+COPY src/ ./src/
 COPY vite.config.js ./
 RUN npm run build
 
@@ -20,5 +21,5 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY test/live/ ./test/live/
 COPY scheduler.js config.json ./
-EXPOSE 1234
+EXPOSE 1234 8099
 CMD ["node", "src/main.js"]

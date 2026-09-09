@@ -1,11 +1,13 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
+import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
 const configurationReaders = new WeakMap();
+const configurationSources = new WeakMap();
 export function configurationReader(config) { return configurationReaders.get(config) ?? null; }
+export function configurationSource(config) { return configurationSources.get(config) ?? null; }
 
 export function validateSettings(input = {}) {
   const settings = {
@@ -113,24 +115,16 @@ export function controlConfiguration(input = {}) {
   return result;
 }
 
-// Permanent settings come from options/environment, temporary occupancy from the
-// database. Only live acquisition and the command transport receive credentials.
-export function loadConfig(env = process.env, cwd = process.cwd()) {
+// Public manifest defaults are overlaid by one private source. Environment
+// overrides remain authoritative; temporary occupancy stays in the database.
+function buildConfiguration(options, env, cwd, configuration, source, { bootstrap = false } = {}) {
   const addon = env.STMQ_ADDON === '1';
-  const configPath = env.STMQ_CONFIG ?? (addon ? '/data/options.json' : `${cwd}/data/options.json`);
-  let options = {};
-  if (env.STMQ_CONFIG && !existsSync(configPath)) throw new Error('STMQ_CONFIG must name an existing options.json file');
-  if (existsSync(configPath)) {
-    const raw = JSON.parse(readFileSync(configPath, 'utf8'));
-    options = raw.options ?? raw;
-  }
   const input = env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
   if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
   const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
-    if (!existsSync(configPath)) throw new Error('Live input requires an existing STMQ_CONFIG/options.json file');
     const mqtt = { ...(options.mqtt ?? {}) };
     mqtt.temperatureTopics = {
       ...(mqtt.temperature_topics ?? {}),
@@ -150,15 +144,21 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   }
   const port = Number(env.STMQ_PORT ?? 1234);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');
-  const host = env.STMQ_HOST ?? '127.0.0.1';
+  const host = env.STMQ_HOST ?? (addon ? '0.0.0.0' : '127.0.0.1');
   const token = env.STMQ_API_TOKEN ?? options.controller?.web_token ?? '';
-  if (!['127.0.0.1', '::1', 'localhost'].includes(host) && token.length < 24) throw new Error('Network listening requires STMQ_API_TOKEN with at least 24 characters');
+  if (typeof token !== 'string') throw new Error('The web token must be a string.');
+  if (!bootstrap && (addon ? token !== '' && token.length < 24 : !['127.0.0.1', '::1', 'localhost'].includes(host) && token.length < 24))
+    throw new Error('Network access requires a web token with at least 24 characters.');
+  const ingressPort = Number(env.STMQ_INGRESS_PORT ?? 8099);
+  if (!Number.isInteger(ingressPort) || ingressPort < 0 || ingressPort > 65535 || addon && ingressPort !== 0 && ingressPort === port)
+    throw new Error('The ingress port must be valid and different from the direct port.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
   const config = { addon, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
     legacyDbPath: resolve(dataDir, databaseName),
-    host, port, token, connections, priceSettings: configuredPriceSettings(options.electricity),
-    deviceId: env.STMQ_H66_DEVICE ?? options.controller?.h66_device,
+    host, port, token, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
+    connections, priceSettings: configuredPriceSettings(options.electricity),
+    deviceId: (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
     control: controlConfiguration(options.controller),
     recording: recordingConfiguration(options.recording),
     acquisition: acquisitionConfiguration(options.acquisition),
@@ -168,7 +168,16 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
     h66Verification: verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ mode: env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
-  const sourceEnvironment = { ...env };
-  configurationReaders.set(config, () => loadConfig(sourceEnvironment, cwd));
+  configurationSources.set(config, source);
+  configurationReaders.set(config, () => loadConfig(env, cwd));
   return config;
+}
+
+export function loadConfig(env = process.env, cwd = process.cwd()) {
+  const sourceEnvironment = { ...env };
+  const paths = configurationPaths(sourceEnvironment, cwd);
+  const source = createConfigurationSource({ env: sourceEnvironment, cwd, paths,
+    buildConfig: (options, information, owner) => buildConfiguration(options, sourceEnvironment, cwd, information, owner) });
+  const { options } = readConfigurationOptions(sourceEnvironment, cwd, paths);
+  return buildConfiguration(options, sourceEnvironment, cwd, source.publicInfo(), source, { bootstrap: sourceEnvironment.STMQ_ADDON === '1' });
 }

@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration } from '../src/app/config.js';
+import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration } from '../src/app/config.js';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+const loadConfig = (env = {}, cwd) => readConfig({ HOME: '/missing-stmq-test-home', ...env }, cwd);
 
 test('default startup is shadow with simulated devices, no provider connections and no real comfort target', () => {
   const cfg = loadConfig({}, '/missing-repository');
@@ -39,7 +41,7 @@ test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/names
   const directory = mkdtempSync(join(tmpdir(), 'stmq-teslamate-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
-  writeFileSync(path, JSON.stringify({ teslamate: { enabled: true } }));
+  writeFileSync(path, JSON.stringify({ mqtt: { address: '' }, teslamate: { enabled: true } }));
   assert.throws(() => loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory), /existing MQTT/);
   writeFileSync(path, JSON.stringify({ mqtt: { address: 'mqtt://invented.invalid' }, teslamate: { enabled: true } }));
   const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory);
@@ -82,7 +84,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const path = join(directory, 'options.json');
   const options = { smartthings: { token: 'synthetic', inside_temp_dev_id: 'fixture-room', garage_temp_dev_id: 'fixture-garage' },
     mqtt: { address: 'mqtt://invented.invalid', garage_temperature_topic: 'invented/garage' },
-    geoloc: { latitude: 60, longitude: 25, country_code: 'fi' } };
+    geoloc: { latitude: '60', longitude: '25', country_code: 'fi' } };
   for (const contents of [options, { options }]) for (const input of ['providers', 'mqtt']) {
     const original = JSON.stringify(contents);
     writeFileSync(path, original);
@@ -124,20 +126,79 @@ test('explicit standalone options configure permanent settings without enabling 
   assert.equal(overridden.settings.comfort.maxDropC, 1.2);
 });
 
-test('implicit standalone options supply permanent settings while legacy credentials alone keep simulated input', t => {
+test('standalone secrets use XDG config and repository options are no longer read', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-safe-default-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, 'st-mq'));
   mkdirSync(join(directory, 'data'));
-  const path = join(directory, 'data/options.json');
+  writeFileSync(join(directory, 'data/options.json'), JSON.stringify({ controller: { mode: 'active' } }));
+  const path = join(directory, 'st-mq/secrets.json');
   writeFileSync(path, JSON.stringify({ controller: { mode: 'monitoring', max_drop_c: 0.6 },
     electricity: { tax_ct_per_kwh_ex_vat: 2.3 }, smartthings: { token: 'synthetic' } }));
-  const config = loadConfig({}, directory);
+  const config = loadConfig({ XDG_CONFIG_HOME: directory }, directory);
   assert.equal(config.input, 'simulated');
   assert.equal(config.settings.mode, 'monitoring');
   assert.equal(config.settings.comfort.maxDropC, 0.6);
   assert.equal(config.priceSettings.taxCtPerKwh, 2.3);
   assert.deepEqual(config.connections, {});
-  assert.throws(() => loadConfig({ STMQ_INPUT: 'providers' }, '/missing-repository'), /requires an existing/);
+  assert.equal(config.configuration.privatePath, path);
+  assert.equal(loadConfig({ STMQ_INPUT: 'providers', HOME: directory }, '/missing-repository').input, 'providers');
+});
+
+test('public defaults are reread before private overrides and explicit values survive merging', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-defaults-overlay-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, '.config/st-mq'), { recursive: true });
+  const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  manifest.options.controller.mode = 'monitoring';
+  manifest.options.controller.learning_trials = true;
+  manifest.options.electricity.tax_ct_per_kwh_ex_vat = 4;
+  writeFileSync(join(directory, 'config.json'), JSON.stringify(manifest));
+  const privatePath = join(directory, '.config/st-mq/secrets.json');
+  writeFileSync(privatePath, JSON.stringify({ controller: { learning_trials: false, compressor_integral_a1: null },
+    electricity: { tax_ct_per_kwh_ex_vat: 0 } }));
+  const config = loadConfig({ HOME: directory }, directory);
+  assert.equal(config.settings.mode, 'monitoring');
+  assert.equal(config.control.learningTrials, false);
+  assert.equal(config.control.compressorIntegralA1, null);
+  assert.equal(config.priceSettings.taxCtPerKwh, 0);
+  manifest.options.controller.mode = 'shadow';
+  writeFileSync(join(directory, 'config.json'), JSON.stringify(manifest));
+  const transaction = await configurationSource(config).prepare();
+  assert.equal(transaction.config.settings.mode, 'shadow');
+  assert.equal(transaction.config.control.learningTrials, false);
+  await transaction.persist();
+  await transaction.complete();
+  assert.equal(readFileSync(privatePath, 'utf8').includes('learning_trials'), true);
+  assert.equal(configurationSource(transaction.config), configurationSource(config));
+});
+
+test('add-on allows ingress bootstrap with no direct token and validates the candidate before application', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-ingress-bootstrap-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'secrets.json');
+  writeFileSync(path, JSON.stringify({ controller: { web_token: '' } }));
+  const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path }, directory);
+  assert.equal(config.host, '0.0.0.0');
+  assert.equal(config.token, '');
+  assert.equal(config.ingressPort, 8099);
+  const initial = await configurationSource(config).prepare({ startup: true });
+  assert.equal(initial.config.token, '');
+  writeFileSync(path, JSON.stringify({ controller: { web_token: 'synthetic-short' } }));
+  const invalid = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path }, directory);
+  await assert.rejects(configurationSource(invalid).prepare({ startup: true }), /at least 24/);
+});
+
+test('standalone startup rejects unknown settings and malformed JSON without exposing their values', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-startup-validation-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'secrets.json');
+  writeFileSync(path, JSON.stringify({ mqtt: { password_typo: 'synthetic-sensitive-value' } }));
+  assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), error =>
+    /Unknown configuration field: mqtt.password_typo/.test(error.message) && !error.message.includes('synthetic-sensitive-value'));
+  writeFileSync(path, '{"mqtt":{"pw":"synthetic-sensitive-value');
+  assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), error =>
+    /valid JSON/.test(error.message) && !error.message.includes('synthetic-sensitive-value'));
 });
 
 test('H66 verification paths resolve relative to the public add-on config folder or standalone workspace', t => {
@@ -176,5 +237,5 @@ test('live MQTT can run without H66 and threshold configuration keeps native def
   assert.equal(cfg.control.auxIntegralA2,-990);assert.equal(cfg.control.auxHysteresisC,30);
   assert.equal(cfg.control.compressorIntegralA1,-60);assert.equal(cfg.control.compressorHysteresisC,10);
   const defaults=loadConfig({},'/missing-repository');
-  assert.equal(defaults.control.compressorIntegralA1,null);assert.equal(defaults.control.compressorHysteresisC,null);
+  assert.equal(defaults.control.compressorIntegralA1,-100);assert.equal(defaults.control.compressorHysteresisC,10);
 });

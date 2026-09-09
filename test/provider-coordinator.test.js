@@ -16,7 +16,7 @@ const initial = Date.parse('2026-09-06T09:00:00Z'), MINUTE = 60_000;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-providers-'));
-  const config = { ...loadConfig({ STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: dir, STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
     acquisition: { easeeIntervalMs: 5 * MINUTE, weatherIntervalMs: 60 * MINUTE, outdoorIntervalMs: 10 * MINUTE },
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' }, easee: { charger_id: 'fixture-ev' },
       entsoe: { token: 'fixture-not-a-real-token' }, geoloc: { latitude: 60, longitude: 25 } } };
@@ -249,7 +249,7 @@ test('unconfigured providers make no requests', async t => {
 test('provider startup serves UI while a device request is pending and closes cleanly', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-start-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const config = { ...loadConfig({ STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
     connections: { smartthings: { inside_temp_dev_id: 'fixture-room' } } };
   let pending = false, cancelled = false;
   const app = await start({ config, clock: () => initial, providerOptions: {

@@ -14,7 +14,7 @@ async function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-api-'));
   const store = new Store(join(directory, 'test.sqlite'));
   const now = Date.parse('2026-09-07T09:00:00Z');
-  const config = { ...loadConfig({}, directory), input: 'providers', connections: {}, ...overrides };
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'providers', connections: {}, ...overrides };
   const engine = new Engine({ store, config, clock: () => now });
   const service = createChartService({ store });
   const token = 'synthetic-chart-api-access-token';

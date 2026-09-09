@@ -36,58 +36,43 @@ function repository(t) {
   return { path, env, git, write, stage, check, commit };
 }
 
-test('plaintext options fail despite attributes; staged ciphertext passes without a key or clean filter', t => {
-  const repo = repository(t);
-  repo.stage('.gitattributes', policy);
-  repo.stage('data/options.json', '{}');
-  let result = repo.check('--staged');
-  assert.equal(result.code, 1);
-  assert.match(result.output, /ciphertext signature missing/);
-  repo.stage('data/options.json', ciphertext);
-  repo.write('data/options.json', '{"token":"synthetic-decrypted-worktree"}');
-  result = repo.check('--staged');
-  assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /1 encrypted snapshots/);
-  repo.stage('data/options.json', '{}');
-  repo.write('data/options.json', ciphertext);
-  assert.equal(repo.check('--staged').code, 1, 'a safe worktree cannot mask plaintext in the index');
+test('private configuration names and ciphertext cannot be staged, even with encryption attributes', t => {
+  for (const name of ['data/options.json', 'secrets.json', 'backup/secrets.json.bak', 'options.json.copy']) {
+    const repo = repository(t);
+    repo.stage('.gitattributes', policy);
+    repo.stage(name, '{}');
+    assert.match(repo.check('--staged').output, /private configuration\/data must remain outside Git/);
+    repo.stage(name, ciphertext);
+    assert.equal(repo.check('--staged').code, 1);
+  }
 });
 
-test('committed policy, nested overrides, backups and effective local attributes are enforced', t => {
+test('renamed ciphertext and known household telemetry are rejected in the current index', t => {
   const repo = repository(t);
-  repo.stage('data/options.json', ciphertext);
-  assert.match(repo.check('--staged').output, /tracked attributes must set/);
-  repo.stage('.gitattributes', policy);
-  repo.stage('data/.gitattributes', 'options.json -filter -diff\n');
-  assert.match(repo.check('--staged').output, /tracked attributes must set/);
-  repo.git('rm', '-f', 'data/.gitattributes');
-  repo.write('.git/info/attributes', 'data/options.json -filter -diff\n');
-  assert.match(repo.check('--staged').output, /effective attributes must set/);
-  repo.write('.git/info/attributes', '');
-  repo.stage('data/options.json.bak', '{}');
-  assert.match(repo.check('--staged').output, /options.json.bak.*ciphertext signature missing/);
-});
-
-test('any file selected by git-crypt must contain ciphertext, including when the clean filter is absent', t => {
-  const repo = repository(t);
-  repo.stage('.gitattributes', 'private/*.csv filter=git-crypt diff=git-crypt\n');
-  repo.stage('private/readings.csv', 'time,value\n');
-  assert.match(repo.check('--staged').output, /readings.csv.*ciphertext signature missing/);
-  repo.stage('private/readings.csv', ciphertext);
-  assert.equal(repo.check('--staged').code, 0);
-  repo.stage('private/readings.csv', ciphertext.subarray(0, 15));
-  assert.match(repo.check('--staged').output, /truncated git-crypt data/);
-});
-
-test('known household telemetry cannot become plaintext by removing its attribute rule', t => {
-  const repo = repository(t);
+  repo.stage('renamed.bin', ciphertext);
   repo.stage('workspace/consumption.csv', 'time,value\n');
   const result = repo.check('--staged');
   assert.equal(result.code, 1);
-  assert.match(result.output, /consumption.csv.*ciphertext signature missing/);
-  assert.match(result.output, /consumption.csv.*tracked attributes must set/);
-  repo.stage('.gitattributes', '/workspace/consumption.csv filter=git-crypt diff=git-crypt\n');
-  repo.stage('workspace/consumption.csv', ciphertext);
+  assert.match(result.output, /renamed.bin.*private configuration/);
+  assert.match(result.output, /consumption.csv.*private configuration/);
+});
+
+test('safe current checkout needs no encryption attributes or filter and reads index only', t => {
+  const repo = repository(t);
+  repo.stage('public.json', '{}');
+  repo.write('public.json', '{"password":"synthetic-worktree-value"}');
+  assert.equal(repo.check('--staged').code, 0);
+});
+
+test('historical ciphertext remains valid with its historical attributes after migration', t => {
+  const repo = repository(t);
+  repo.stage('.gitattributes', policy);
+  repo.stage('data/options.json', ciphertext);
+  repo.commit();
+  repo.git('rm', '-f', 'data/options.json', '.gitattributes');
+  repo.stage('.gitignore', 'options.json\nsecrets.json\n');
+  repo.commit();
+  assert.equal(repo.check('--history', 'HEAD').code, 0);
   assert.equal(repo.check('--staged').code, 0);
 });
 

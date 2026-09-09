@@ -162,13 +162,28 @@ if (operation !== 'fixture') {
 } else {
 assert.equal(existsSync('/st-mq/scripts/share'), false, 'Historical CSVs must be excluded from the image');
 assert.equal(existsSync('/st-mq/data/options.json'), false, 'Owner credentials must not be built into the image');
+assert.equal(existsSync('/st-mq/secrets.json'), false, 'Private imports must not be built into the image');
 assert.equal(existsSync('/st-mq/test/live/providers.test.js'), true, 'Opt-in live checks are packaged for add-on use');
 const addonManifest = JSON.parse(readFileSync('/st-mq/config.json', 'utf8'));
 assert.equal(addonManifest.init, false);
+assert.equal(addonManifest.ingress, true);
+assert.equal(addonManifest.ingress_port, 8099);
 assert.equal(addonManifest.backup, 'cold');
 assert.ok(addonManifest.map.includes('addon_config:rw'));
 assert.ok(addonManifest.map.includes('share:rw'));
 assert.ok(addonManifest.arch.includes(process.arch === 'arm64' ? 'aarch64' : 'amd64'));
+
+// A fresh add-on can start with only ingress; direct access never opens empty.
+const ingressOnly = await start({ config: loadConfig({ ...process.env, STMQ_INPUT: 'simulated',
+  STMQ_PORT: '0', STMQ_INGRESS_PORT: '0', STMQ_API_TOKEN: '', STMQ_HOST: '0.0.0.0' }) });
+try {
+  assert.equal(ingressOnly.webAccess.status().direct.enabled, false);
+  assert.equal(ingressOnly.webAccess.status().ingress.enabled, true);
+  const base = `http://127.0.0.1:${ingressOnly.webAccess.ingressServer.address().port}`;
+  assert.equal((await fetch(`${base}/api/status`, {
+    headers: { 'X-Forwarded-For': '172.30.32.2' },
+  })).status, 403, 'A direct container client cannot impersonate HA ingress');
+} finally { await ingressOnly.close(); }
 
 const config = loadConfig({ ...process.env, STMQ_INPUT: 'simulated', STMQ_PORT: '0', STMQ_HOST: '127.0.0.1' });
 let app = await start({ config });

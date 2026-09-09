@@ -23,7 +23,8 @@ with persistent obligations. A missing gateway retains conservative relay contro
 
 Authoritative brief: `CODEX/ST-MQ-Codex-handoff.md` (6 September 2026).
 Baseline: `8c701d6`, v0.7.5, branch `H66`. The pre-existing change to
-`data/options.json` and supplied CSVs are owner data and must be preserved.
+Private configuration lives outside Git in `~/.config/st-mq/secrets.json`.
+Supplied CSVs are owner data and must be preserved.
 
 ## Reviewable stages
 

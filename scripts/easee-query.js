@@ -1,3 +1,5 @@
+import { loadConfig } from '../src/app/config.js';
+import { fileTokenStore } from '../src/acquisition/token-store.js';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { join } from 'path';
@@ -14,10 +16,8 @@ const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 // Configuration and CSV paths
-let CONFIG_PATH = join(__dirname, '..', 'config.json'); // default path
-if (fs.existsSync(join(__dirname, '..', 'data', 'options.json'))) {
-  CONFIG_PATH = join(__dirname, '..', 'data', 'options.json'); // HASS path
-}
+const runtimeConfiguration = () => loadConfig({ ...process.env, STMQ_INPUT: 'providers' }, join(__dirname, '..'));
+const tokenStore = () => fileTokenStore(join(runtimeConfiguration().dataDir, 'easee-tokens.json'), runtimeConfiguration().connections.easee ?? {});
 const CSV_FILE_PATH = join(__dirname, '..', 'share', 'st-mq', 'easee.csv');
 // ### Utility Functions ###
 // Formats the current or given time into a UTC time string for logging
@@ -36,66 +36,26 @@ function config() {
         charger_id: '',
         equalizer_id: ''
     };
-    // Check if a config file is found
-    if (!fs.existsSync(CONFIG_PATH)) {
-        console.log(`${GREEN}[ERROR ${date_string()}] Config file not found at ${CONFIG_PATH}${RESET}`);
-        return default_config;
-    }
     try {
-        const file_data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-        // When using options.json (HASS), file_data is the whole object
-        // When using config.json (standalone), options is a separate object
-        const options = file_data.options || file_data;
+        const options = runtimeConfiguration().connections;
+        const tokens = tokenStore().load();
         return {
             ...default_config,
             user: options.easee?.user || '',
             pw: options.easee?.pw || '',
-            access_token: options.easee?.access_token || '',
-            refresh_token: options.easee?.refresh_token || '',
+            access_token: tokens?.accessToken || '',
+            refresh_token: tokens?.refreshToken || '',
             charger_id: options.easee?.charger_id || '',
             equalizer_id: options.easee?.equalizer_id || ''
         };
     } catch (error) {
-        console.log(`${GREEN}[ERROR ${date_string()}] Failed to parse ${CONFIG_PATH}: ${error.toString()}${RESET}`);
+        console.log(`${GREEN}[ERROR ${date_string()}] Configuration could not be read or validated${RESET}`);
         return default_config;
     }
 }
-// Updates the configuration file with new access and refresh tokens
+// Runtime authentication state is separate from public/private configuration.
 function update_config(access_token, refresh_token) {
-    // Create new apikey file structure
-    let config_data = {
-        easee: {
-            user: '',
-            pw: '',
-            access_token: '',
-            refresh_token: '',
-            charger_id: '',
-            equalizer_id: ''
-        }
-    };
-    // Use existing apikey file structure if the file exists
-    if (fs.existsSync(CONFIG_PATH)) {
-        try {
-            config_data = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-        } catch (error) {
-            console.log(`${GREEN}[ERROR ${date_string()}] Cannot parse config data from ${CONFIG_PATH}: ${error.toString()}${RESET}`);
-            console.log(`${GREEN}[${date_string()}] Creating new config file${RESET}`);
-        }
-    }
-    // Add tokens depending on the config file type
-    if (config_data.hasOwnProperty('options')) {
-        config_data.options.easee.access_token = access_token;
-        config_data.options.easee.refresh_token = refresh_token;
-    } else {
-        config_data.easee.access_token = access_token;
-        config_data.easee.refresh_token = refresh_token;
-    }
-    // Write to file with error handling
-    try {
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(config_data, null, 4), { encoding: 'utf8', flag: 'w' });
-    } catch (error) {
-        console.log(`${GREEN}[ERROR ${date_string()}] Failed to write to config file: ${error.toString()}${RESET}`);
-    }
+    tokenStore().save({ accessToken: access_token, refreshToken: refresh_token });
 }
 // Checks the status of an API response and logs the result
 async function check_response(response, type, log_success = false) {

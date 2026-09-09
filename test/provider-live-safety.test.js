@@ -120,8 +120,8 @@ test('live service selection and private cooldown state retain only known safe f
 });
 
 test('live runner uses addon paths and honors explicit connection and cache overrides', () => {
-  assert.deepEqual(livePaths({}, '/project'), {
-    configPath: '/project/data/options.json', directory: '/project/var/live-test',
+  assert.deepEqual(livePaths({ XDG_CONFIG_HOME: '/private/config' }, '/project'), {
+    configPath: '/private/config/st-mq/secrets.json', directory: '/project/var/live-test',
   });
   assert.deepEqual(livePaths({ STMQ_ADDON: '1' }, '/app'), {
     configPath: '/data/options.json', directory: '/data/st-mq/live-test',

@@ -2,9 +2,9 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
-import { loadConfig, configurationReader } from './app/config.js';
+import { loadConfig, configurationReader, configurationSource } from './app/config.js';
 import { Engine } from './app/engine.js';
-import { createAppServer } from './app/server.js';
+import { createWebAccess } from './app/web-access.js';
 import { startHistoryLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
 import { prepareStorage } from './app/storage-paths.js';
@@ -13,11 +13,18 @@ import { createHeatingTransport } from './control/mqtt.js';
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
   clock = Date.now, providerOptions = {}, mqttOptions = {} } = {}) {
   const started = performance.now();
+  const source = readConfig === configurationReader(config) ? configurationSource(config) : null;
+  let startupImport = null;
+  if (config.addon && source) {
+    startupImport = await source.prepare({ startup: true });
+    config = startupImport.config;
+    await startupImport.persist();
+  }
   const migrated = await prepareStorage(config);
   const store = new Store(config.dbPath);
   if (migrated) store.event('database-migrated', migrated, clock());
-  let engine, server, learning, chartService, commandTransport, timer, closed = false, reloadPending = null;
-  let runtimeUsable = true, starting = true;
+  let engine, webAccess, learning, chartService, commandTransport, timer, closed = false, reloadPending = null;
+  let runtimeUsable = true, starting = true, configurationResult = null;
   const acquisitions = [];
   const signalHandlers = new Map();
   function reportControllerError(error) {
@@ -39,7 +46,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     await reloadPending?.catch(() => {});
     await stopRuntime();
     await chartService?.close();
-    if (server?.listening) await new Promise(resolve => server.close(resolve));
+    await webAccess?.close();
     store.close();
   }
   async function stopRuntime() {
@@ -102,11 +109,19 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       acquisitions.push(startProviders({ ...providerOptions, engine, store, config, clock }));
     }
   }
-  const settingsReloadStatus = () => ({ available: typeof readConfig === 'function' && runtimeUsable, busy: Boolean(reloadPending) || starting,
+  const settingsReloadStatus = () => ({
+    available: typeof readConfig === 'function' && runtimeUsable,
+    busy: Boolean(reloadPending) || starting,
     unavailable: !runtimeUsable && !reloadPending,
-    reason: !runtimeUsable && !reloadPending ? 'Settings recovery failed. Restart the application after checking options/config.' : typeof readConfig === 'function'
-      ? 'Reads options/config and reconnects providers. Input, network access and storage changes require restart.'
-      : 'This instance has no reloadable options/config source.' });
+    configuration: config.configuration ?? { environment: config.addon ? 'home-assistant' : 'ubuntu' },
+    access: webAccess?.status(),
+    result: configurationResult,
+    reason: !runtimeUsable && !reloadPending
+      ? 'Settings recovery failed. Restart the application after checking configuration.'
+      : typeof readConfig === 'function'
+        ? 'Applies configuration and reconnects providers. Input, listening addresses, ports and storage changes require restart.'
+        : 'This instance has no reloadable configuration source.',
+  });
   async function reloadSettings() {
     if (closed) throw new Error('The application is shutting down.');
     if (starting) throw new Error('The application is still starting. Retry shortly.');
@@ -116,11 +131,18 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     clearTimeout(timer);
     const requireRunning = () => { if (closed) throw new Error('The application is shutting down.'); };
     const operation = async () => {
-      let next;
-      try { next = await readConfig(); }
-      catch { throw new Error('Options/config could not be read or validated. Check the configuration file.'); }
+      let next, transaction;
+      try {
+        transaction = source ? await source.prepare() : null;
+        next = transaction ? transaction.config : await readConfig();
+      }
+      catch (error) {
+        // Source errors are authored without JSON snippets or provider responses.
+        // Injected readers have no such contract, so keep their errors private.
+        throw new Error(`Configuration could not be read or validated. ${source ? error.message : 'Check the configuration file.'}`);
+      }
       requireRunning();
-      const startupKeys = ['input', 'host', 'port', 'token', 'dataDir', 'databaseDir', 'dbPath', 'legacyDbPath', 'addon'];
+      const startupKeys = ['input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'legacyDbPath', 'addon'];
       if (startupKeys.some(key => next[key] !== config[key]))
         throw new Error('Input, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
@@ -143,7 +165,16 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       const savedKeys = [`contract:${config.input}`, 'providers:health', 'provider:market',
         'provider:weather', 'provider:observations', 'electricity:acquisition'];
       const previousState = savedKeys.map(key => [key, store.getState(key)]);
-      let stopped = false;
+      let stopped = false, accessTransaction;
+      // Reserve a newly needed listener before saving anything to Supervisor.
+      try {
+        accessTransaction = await webAccess.prepare(next);
+        await transaction?.persist();
+      } catch {
+        await accessTransaction?.rollback();
+        engine.onTemporaryChange = schedule;
+        throw new Error('Configuration could not be saved or web access prepared. The import file was retained; no runtime settings were updated.');
+      }
       runtimeUsable = false;
       try {
         await stopRuntime(); stopped = true;
@@ -182,8 +213,13 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         requireRunning();
         runtimeUsable = true;
         startBackground();
+        await accessTransaction.commit();
+        configurationResult = null;
+        try { configurationResult = await transaction?.complete() ?? null; }
+        catch { configurationResult = { cleanupPending: true }; }
         store.event('settings-reloaded', { input: config.input }, clock());
       } catch {
+        await accessTransaction?.rollback();
         runtimeUsable = false;
         requireRunning();
         try { await stopRuntime(); }
@@ -194,6 +230,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         }
         store.transaction(() => { for (const [key, value] of previousState) store.setState(key, value); });
         config = previous;
+        await webAccess.apply(previous);
         try {
           requireRunning();
           await createRuntime();
@@ -209,7 +246,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           throw new Error('Settings update and runtime recovery failed. Restart the application after checking options/config.');
         }
         store.event('settings-reload-failed', { restored: true }, clock());
-        throw new Error('Settings could not be applied. The previous configuration was restored.');
+        throw new Error('Settings could not be applied. The previous configuration was restored. Any saved Supervisor settings remain saved; retry Apply configuration.');
       }
     };
     reloadPending = operation();
@@ -220,26 +257,27 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     await createRuntime();
     engine.tick();
     chartService = createChartService({ store });
-    server = createAppServer({ getEngine: () => engine, store, chartService, token: config.token,
+    webAccess = createWebAccess({ config, getEngine: () => engine, store, chartService,
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(config.port, config.host, resolve);
-    });
+    await webAccess.start();
     await startProviderRuntime();
     // The first tick runs before the listener, as before; background work follows it.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
+    if (startupImport) {
+      try { configurationResult = await startupImport.complete(); }
+      catch { configurationResult = { cleanupPending: true }; }
+    }
     starting = false;
     engine.onTemporaryChange = schedule;
     schedule();
     console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: engine.status().liveWrites, manualHeatingTests: engine.heatingTests().available,
-      address: server.address(), startupMs: Math.round(performance.now() - started) }));
+      address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
     for (const signal of ['SIGTERM', 'SIGINT']) {
       const handler = () => close().catch(error => { console.error(error.message); process.exitCode = 1; });
       signalHandlers.set(signal, handler); process.once(signal, handler);
     }
-    return { store, get engine() { return engine; }, server, close, reloadSettings };
+    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, close, reloadSettings };
   } catch (error) { await close(); throw error; }
 }
 

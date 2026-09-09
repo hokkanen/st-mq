@@ -13,7 +13,7 @@ import { startMqtt } from '../src/acquisition/mqtt.js';
 function setup(t, input = 'simulated') {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-app-test-'));
   const store = new Store(join(directory, 'test.sqlite'));
-  const config = { ...loadConfig({}, directory), input };
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input };
   let at = Date.parse('2026-09-06T03:45:00Z'); // 06:45 Finnish time
   const engine = new Engine({ store, config, clock: () => at });
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });

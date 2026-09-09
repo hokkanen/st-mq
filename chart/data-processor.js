@@ -1,10 +1,11 @@
 import Papa from 'papaparse';
+import { applicationUrl } from './network.js';
 
 // The local electric grid voltage for all phases
 const VOLTAGE = 230;
-// Parcel-resolved URLs for CSV assets (use fetch to load at runtime)
-const EASEE_CSV_URL = new URL('../share/st-mq/easee.csv', import.meta.url).toString();
-const ST_CSV_URL = new URL('../share/st-mq/st-mq.csv', import.meta.url).toString();
+// Runtime CSV paths stay within the same deployment prefix as the dashboard.
+const EASEE_CSV_URL = applicationUrl('share/st-mq/easee.csv');
+const ST_CSV_URL = applicationUrl('share/st-mq/st-mq.csv');
 const EASEE_PATH = './share/st-mq/easee.csv';
 const ST_PATH = './share/st-mq/st-mq.csv';
 const EASEE_CACHE_KEY = 'easee';

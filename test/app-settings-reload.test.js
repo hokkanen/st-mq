@@ -10,7 +10,7 @@ import { loadConfig } from '../src/app/config.js';
 async function setup(t, options = {}, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-settings-reload-'));
   const path = join(directory, 'options.json');
-  const write = value => writeFileSync(path, JSON.stringify(value));
+  const write = value => writeFileSync(path, JSON.stringify({ teslamate: { enabled: false, charger_identification: false }, ...value }));
   write(options);
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
   const app = await start({ config, ...overrides });
@@ -178,7 +178,7 @@ test('changing the H66 device starts with empty live readings and uses only the 
 
 test('controller-only reload retains provider snapshots and rate-limit backoff', async t => {
   const now = Date.parse('2026-09-08T12:00Z');
-  const options = { controller: { input: 'providers' }, geoloc: { country_code: 'fi', latitude: 60, longitude: 25 } };
+  const options = { controller: { input: 'providers' }, geoloc: { country_code: 'fi', latitude: '60', longitude: '25' } };
   const { app, write, post } = await setup(t, options, { clock: () => now, providerOptions: { automatic: false } });
   const market = { source: 'elering', fetchedAt: now, intervals: [] };
   const weather = { source: 'openmeteo', fetchedAt: now, forecast: [] };
