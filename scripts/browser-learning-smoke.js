@@ -56,7 +56,7 @@ try {
     for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
-  await send('Runtime.enable'); await send('Page.enable');
+  await send('Runtime.enable'); await send('Page.enable'); await send('Page.bringToFront');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
@@ -73,24 +73,60 @@ try {
   assert.equal(await evaluate("document.getElementById('h66-test-temperature-field').hidden"), false);
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
   assert.equal(await evaluate("document.querySelector('#h66-provider-details summary strong').textContent"), 'Husdata H66');
-  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Calculated learning outcomes · 4');
+  assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
   assert.equal(await evaluate("document.querySelectorAll('#model-inputs-content details').length"), 8);
   assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
   assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home & heating');
   assert.equal(await evaluate("document.getElementById('model-title').textContent"), 'House model');
   assert.equal(await evaluate("document.getElementById('providers-title').textContent"), 'Data & settings');
   assert.equal(await evaluate("[...document.querySelectorAll('.controller-panels details')].every(fold => !fold.open)"), true);
+  const checkClosedColumns = async () => {
+    assert.equal(await evaluate(`(() => {
+      const columns = [...document.querySelectorAll('.controller-column')];
+      const [left, right] = columns.map(column => column.getBoundingClientRect());
+      const [leftCard, rightCard] = columns.map(column => column.lastElementChild.getBoundingClientRect());
+      return Math.abs(left.top - right.top) < 1 && Math.abs(left.bottom - right.bottom) < 1
+        && Math.abs(leftCard.bottom - rightCard.bottom) < 1
+        && Math.abs(leftCard.bottom - left.bottom) < 1 && Math.abs(rightCard.bottom - right.bottom) < 1;
+    })()`), true, 'Closed desktop columns and their last cards align within one pixel');
+  };
   const checkIndependentCards = async () => {
-    assert.equal(await evaluate("[...document.querySelectorAll('.controller-column > article')].every(card => getComputedStyle(card).flexGrow === '0')"), true, 'Cards keep their natural content height');
+    await checkClosedColumns();
     const rightHeights = await evaluate("['house-model', 'providers-controls'].map(id => document.getElementById(id).getBoundingClientRect().height)");
     const homeHeight = await evaluate("document.getElementById('home-control').getBoundingClientRect().height");
     await evaluate("document.querySelector('#temporary-details > summary').click()");
     assert.equal(await evaluate("document.getElementById('temporary-details').open"), true);
+    assert.equal(await evaluate("[...document.querySelectorAll('.controller-column > article')].every(card => getComputedStyle(card).flexGrow === '0')"), true, 'Expanded cards keep their natural content height');
     assert.ok(await evaluate("document.getElementById('home-control').getBoundingClientRect().height") > homeHeight, 'Opening temporary controls expands the home card');
-    assert.deepEqual(await evaluate("['house-model', 'providers-controls'].map(id => document.getElementById(id).getBoundingClientRect().height)"), rightHeights, 'Opening the home card does not stretch either right card');
+    const expandedRightHeights = await evaluate("['house-model', 'providers-controls'].map(id => document.getElementById(id).getBoundingClientRect().height)");
+    assert.ok(expandedRightHeights.every((height, index) => height <= rightHeights[index] + 0.5), 'Opening the home card does not stretch either right card');
     await evaluate("document.querySelector('#temporary-details > summary').click()");
+    await checkClosedColumns();
+    await evaluate("document.querySelector('#learning-panel-details > summary').click(); document.querySelector('#learning-details > summary').click(); document.querySelector('#learning-panel-details > summary').click()");
+    assert.equal(await evaluate("document.getElementById('learning-details').open"), true, 'Closing a parent preserves its nested disclosure state');
+    await checkClosedColumns();
+    await evaluate("document.getElementById('learning-details').open = false");
   };
   await checkIndependentCards();
+  for (const [section, content] of [['timing-details', 'timing-benefit'], ['recording-details', 'recording-adaptive-details']]) {
+    const marker = `getComputedStyle(document.querySelector('#${section} > summary'), '::after').content`;
+    assert.equal(await evaluate(`document.getElementById('${section}').open`), false);
+    assert.equal(await evaluate(marker), '"+"', `${section} shows a plus when closed`);
+    assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false, `${section} hides its content when closed`);
+    await evaluate(`document.querySelector('#${section} > summary').focus()`);
+    assert.equal(await evaluate(`document.activeElement === document.querySelector('#${section} > summary')`), true, `${section} accepts keyboard focus`);
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+    assert.equal(await evaluate(`document.getElementById('${section}').open`), true, `${section} opens with Enter`);
+    assert.equal(await evaluate(marker), '"−"', `${section} shows a minus when open`);
+    assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), true, `${section} reveals its content when open`);
+    await checkClosedColumns();
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+    assert.equal(await evaluate(`document.getElementById('${section}').open`), false, `${section} closes with Space`);
+    assert.equal(await evaluate(marker), '"+"');
+    assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false);
+  }
   assert.equal(await evaluate("document.querySelectorAll('.model-coefficient').length >= 6"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Thermal coefficients:')"), false);
   assert.equal(await evaluate("document.getElementById('home-h66-summary').textContent.includes('Unavailable')"), true);
@@ -182,10 +218,6 @@ try {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider summary fits ${width}px`);
     if (width === 1440) {
       await checkIndependentCards();
-      assert.equal(await evaluate(`(() => {
-        const [left, right] = [...document.querySelectorAll('.controller-column')].map(column => column.getBoundingClientRect());
-        return Math.abs(left.top - right.top) < 1 && Math.abs(left.bottom - right.bottom) <= 64;
-      })()`), true, 'Closed provider columns are visually balanced without stretching cards');
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
@@ -211,7 +243,7 @@ try {
   assert.equal(publications.at(-1).value, '55');
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'eight input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'three independent dashboard cards', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'eight input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'aligned closed dashboard columns', 'independent expanded dashboard cards', 'alignment with hidden nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

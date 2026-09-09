@@ -19,7 +19,7 @@ stored kWh. Effective heating response is not measured capacity or COP.
 The dashboard's **House model** card summarizes the learning state and reported
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
-inferred. **Explore learning** separates **Calculated learning outcomes**, **Model
+inferred. **Explore learning** separates **Learning outcomes · Calculated**, **Model
 inputs** and **Model coefficients** into closed sections.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
@@ -113,7 +113,7 @@ covered costs and missing-data counts.
 
 ## Historical learning values
 
-The chart and **Calculated learning outcomes** use the same assessments. Means cover the latest
+The chart and **Learning outcomes · Calculated** use the same assessments. Means cover the latest
 30 completed cycles with attributable space-heating evidence. A separate overview
 includes all of the latest 100 attempts, including incomplete and active cycles.
 A missing result is unavailable, not zero.
