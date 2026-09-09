@@ -8,6 +8,7 @@ import { Engine } from '../src/app/engine.js';
 import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { createChartService } from '../src/app/chart-service.js';
+import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
 
 async function fixture(t, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-api-'));
@@ -37,11 +38,13 @@ test('chart API requires authentication and rejects malformed date/axis/point se
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
 });
-test('meter diagnostics show one latest cumulative check per meter, preserving comparisons and privacy',async t=>{
+test('meter diagnostics preserve latest property check and show real charger session summaries without private identifiers',async t=>{
   const {base,headers,store,now}=await fixture(t);
   assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);
   const read=()=>fetch(`${base}/api/energy-audits`,{headers}).then(response=>response.json());
-  assert.deepEqual(await read(),[]);
+  const empty = await read();
+  assert.deepEqual(empty.map(row => row.source), ['easee', 'teslamate']);
+  assert(empty.every(row => row.summary.recordedSessions === 0 && row.summary.differencePercent === null));
   for(const [at,value] of [[now-60000,10],[now,10.03]])store.energyAudit({source:'easee',device:'invented-property',
     signal:'property_import_energy_counter',sourceTime:at,receivedAt:at,value});
   for(let phase=1;phase<=3;phase++)store.observation({source:'easee',device:'invented-property',
@@ -50,21 +53,32 @@ test('meter diagnostics show one latest cumulative check per meter, preserving c
   // Older property readings must survive more than a page of charger updates.
   for(let i=1;i<=25;i++)store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_lifetime_energy_counter',
     sourceTime:now+i*60000,receivedAt:now+i*60000,value:100+i});
-  // Session history is retained, but never appears as another charger check.
+  // Raw counter history is retained, but cannot invent finalized sessions.
   store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_session_energy_counter',
     sourceTime:now+26*60000,receivedAt:now+26*60000,value:5});
   // A delayed old observation must not replace the newest meter reading.
   store.energyAudit({source:'easee',device:'invented-charger',signal:'ev1_lifetime_energy_counter',
     sourceTime:now+30000,receivedAt:now+27*60000,value:100.5});
+  const withoutSessions = await read();
+  assert(withoutSessions.slice(1).every(row => row.summary.recordedSessions === 0));
+  recordChargingSessionCheck(store, { source:'easee',sessionKey:'invented-session',start:now-60000,end:now,
+    estimatedKwh:1.1,referenceKwh:1,complete:true,quality:[] });
+  recordChargingSessionCheck(store, { source:'teslamate',sessionKey:'invented-tesla-session',start:now-60000,end:now,
+    estimatedKwh:1.2,referenceKwh:1,complete:false,quality:['incomplete-coverage'] });
   const auditCount=store.energyAudits().length;
   const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
   const rows=await response.json();
-  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_lifetime_energy_counter']);
-  assert.deepEqual(rows.map(row=>row.sourceTime),[now,now+25*60000]);
+  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check','tesla_session_energy_check']);
+  assert.equal(rows[0].sourceTime,now);
   assert.equal(rows[0].comparison.start,now-60000);
   assert.equal(rows[0].comparison.end,now);
   assert.ok(Math.abs(rows[0].comparison.differenceKwh)<1e-12);
-  assert.equal(rows[1].comparison,null);
+  assert.equal(rows[1].summary.comparedSessions,1);
+  assert.equal(rows[1].summary.referenceKwh,1);
+  assert(Math.abs(rows[1].summary.differencePercent-10)<1e-10);
+  assert.equal(rows[2].summary.recordedSessions,1);
+  assert.equal(rows[2].summary.excludedSessions,1);
+  assert.equal(rows[2].summary.differencePercent,null);
   assert(rows.every(row=>!Object.hasOwn(row,'device')&&!Object.hasOwn(row,'value')));
   assert(!JSON.stringify(rows).includes('invented-'));
   assert.equal(store.energyAudits().length,auditCount,'summary never deletes audit history');

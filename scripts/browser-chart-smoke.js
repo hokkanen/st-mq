@@ -12,6 +12,7 @@ import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { addFireplace } from '../src/app/fireplace.js';
+import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -24,6 +25,24 @@ const coefficientValues = {
   model_coefficient_auxiliary_response: { parameter: 'auxiliaryCPerKwh', value: 0.16 },
 };
 const coefficientKeys = Object.keys(coefficientValues);
+function seedChargingFixture(store, energySource='simulation') {
+  store.transaction(() => {
+    for (let slot=0;slot<12;slot++) {
+      const start=now-(120-slot*5)*60_000,end=start+5*60_000,power=slot<6?6:4;
+      store.observation({source:energySource,device:'synthetic-browser-tesla',signal:'ev2_energy',
+        sourceTime:end,receivedAt:end,value:power/12,unit:'kWh',quality:['estimated',...(energySource==='simulation'?['simulated']:[])],
+        raw:{intervalStart:start,intervalEnd:end,durationMs:end-start,basis:'synthetic-browser-fixture'}});
+    }
+    store.energyAudit({source:'easee',device:'synthetic-browser-property',signal:'property_import_energy_counter',
+      sourceTime:now,receivedAt:now,value:100});
+    for (const [source,key,estimatedKwh,referenceKwh,complete,offset] of [
+      ['easee','synthetic-first',12,10,true,4],['easee','synthetic-second',81,90,true,2],
+      ['teslamate','synthetic-first',12,10,true,4],['teslamate','synthetic-partial',2,1,false,2],
+    ]) recordChargingSessionCheck(store,{source,sessionKey:key,start:now-offset*3600_000,
+      end:now-(offset-1)*3600_000,estimatedKwh,referenceKwh,complete,
+      quality:complete?[]:['incomplete-coverage']});
+  });
+}
 let app, ws, command, ownsBrowser=false;
 const pending = new Map(), errors = [], timings = [];
 let id = 0;
@@ -46,6 +65,7 @@ try {
   } finally { fixtureStore.close(); }
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
+  seedChargingFixture(app.store);
   addFireplace(app.store, 'simulated', { kg: 8, requestId: 'synthetic-browser-fire' }, now - 3 * 3600000);
   addFireplace(app.store, 'simulated', { kg: 4, requestId: 'synthetic-browser-topup' }, now - 2 * 3600000);
   app.store.snapshot({kind:'weather',source:'browser-fixture',fetchedAt:now-4*86400000,
@@ -205,6 +225,26 @@ try {
   await evaluate("window.fetch=window.recordingFixture.fetch; document.getElementById('recording-overview-details').open=false; true");
   await evaluate("document.getElementById('energy-audit-details').open=true; true");
   await until("document.getElementById('energy-audit-content').textContent.includes('never change history')");
+  mkdirSync('var',{recursive:true});
+  for(const theme of ['dark','light']) {
+    if(await evaluate('document.documentElement.dataset.theme')!==theme)
+      await evaluate("document.getElementById('theme-toggle').click(); true");
+    const checks=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#energy-audit-content tr')].map(row=>({
+      title:row.querySelector('th').firstChild.textContent,subtitle:row.querySelector('th small').textContent,text:row.textContent})))`));
+    assert.deepEqual(checks.map(row=>row.title),['Property','Charger','Tesla'],`${theme}: one common meter-check table`);
+    assert.equal(checks[0].subtitle,'Cumulative import meter');
+    assert(checks.slice(1).every(row=>row.subtitle==='Completed-session averages'));
+    assert.match(checks[1].text,/-7% energy-weighted difference/);
+    assert.match(checks[1].text,/2 compared · 0 excluded · 2 recorded sessions/);
+    assert.match(checks[2].text,/20% energy-weighted difference/);
+    assert.match(checks[2].text,/1 compared · 1 excluded · 2 recorded sessions/);
+    assert.match(checks[2].text,/Includes charging losses; not a meter-accuracy percentage/);
+    assert(!checks.slice(1).some(row=>row.text.includes('Lifetime energy meter')));
+    await evaluate("document.getElementById('energy-audit-details').scrollIntoView({block:'start'}); true");
+    const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+    writeFileSync(`var/home-energy-session-checks-${theme}.png`,Buffer.from(shot.data,'base64'));
+  }
+  await evaluate("document.getElementById('theme-toggle').click(); true");
   await evaluate("document.getElementById('recording-details').scrollIntoView(); true");
   mkdirSync('var',{recursive:true});
   const recordingShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
@@ -242,7 +282,7 @@ try {
       assert.ok(changedPixels > 0, `${key} draws visible chart pixels, not just a legend entry`);
     }
   };
-  const checkPowerDrawn = () => checkSeriesDrawn(['property_power', 'charger_power'], 'power');
+  const checkPowerDrawn = () => checkSeriesDrawn(['property_power', 'charger_power', 'charger2_power'], 'power');
   await checkPowerDrawn();
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
@@ -264,6 +304,7 @@ try {
   }
   await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
+  await checkPowerDrawn();
   await evaluate("localStorage.setItem('home-energy-theme', 'light'); true");
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
@@ -305,6 +346,7 @@ try {
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
+    if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power], [data-chart-key^=ev2_]'))"),false,'Tesla total power never invents phase readings');
     if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/reconstructed from saved equipment states.*gaps/);
     if (coefficientKeys.includes(left)) {
       const tableCounts = () => app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
@@ -491,6 +533,7 @@ try {
     priceSettings: { ...config.priceSettings, effectiveDate: '2026-09-07' },
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } },
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
+  seedChargingFixture(app.store,'teslamate');
   for(const [prefix,power] of [['property',6.9],['ev1',2.07]]) {
     app.engine.ingestEnergy({source:'easee',device:`synthetic-${prefix}`,prefix,start:now-5*60_000,end:now,
       energies:[power/36,power/36,power/36],powers:[power/3,power/3,power/3],quality:['estimated'],receivedAt:now});
@@ -518,6 +561,7 @@ try {
     assert.ok(providerChart.series[key].some(point => Number.isFinite(point.y) && Math.abs(point.y - expected) < 1e-9),
       `${key} contains the expected total from all three provider phase currents`);
   }
+  assert(providerChart.series.charger2_power.some(point=>point.y===6),'Tesla scalar intervals project to total charger power');
   await checkPowerDrawn();
   await checkTimingBrowser({ command, evaluate, until, capture, context });
   for (const left of ['phases', 'integral', 'power']) {
@@ -577,6 +621,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+    chargingChecks:['charger2-visible-power-dark-and-light','charger2-no-invented-phases','property-latest-plus-charger-and-tesla-session-averages','session-counts-exclusions-and-energy-weighting'],
     checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {

@@ -17,6 +17,7 @@ units, quality flags and import provenance remain supported.
 | --- | --- | --- |
 | H66 | Continuous MQTT publications, plus GETALL every 60 seconds | GETALL republishes the gateway's known values; receipt time is not proof of a new sensor measurement. |
 | Easee charger and Equalizer | REST every 15 seconds; one batched observations request per configured device | The endpoint returns last-reported observations. Polling faster does not force new measurements. |
+| TeslaMate | MQTT on the existing broker; integration checked every five seconds | Changed fields arrive separately. Live health and increasing session energy can confirm unchanged retained charging power. |
 | Indoor/garage replacement sensors | Configured MQTT topics | The publisher determines its measurement frequency; retained messages are marked explicitly. |
 | FMI outdoor observations, Open-Meteo backup | Every five minutes | A successful fetch can contain the same older station or model timestamp. |
 | FMI/Open-Meteo forecast | Every 30 minutes | Actual forecasts update on provider/model schedules; unchanged content is referenced rather than copied. |
@@ -37,6 +38,7 @@ Provider references:
 - [Easee charger observation IDs](https://developer.easee.com/docs/charger-observation-ids)
 - [Easee Equalizer observation IDs](https://developer.easee.com/docs/equalizer-observations)
 - [Easee AMQP requirements](https://developer.easee.com/docs/amqp-connect)
+- [TeslaMate MQTT fields and geofence topic](https://docs.teslamate.org/docs/integrations/mqtt/)
 - [FMI time-series access](https://en.ilmatieteenlaitos.fi/open-data-manual-time-series-data)
 - [FMI model updates](https://en.ilmatieteenlaitos.fi/numerical-weather-prediction)
 - [Open-Meteo model updates](https://open-meteo.com/en/docs/model-updates)
@@ -46,10 +48,12 @@ These references describe interfaces, not a verified update cadence for a
 particular installation. The offline tests use invented observations and never
 contact providers or use private credentials.
 
-## Electricity: three recorded values per device
+## Electricity: recorded interval energy
 
 The electrical dataset contains `ev1_energy_l1` through `ev1_energy_l3` for the
-charger, and `property_energy_l1` through `property_energy_l3` for property import.
+Easee charger, and `property_energy_l1` through `property_energy_l3` for property import.
+TeslaMate adds one scalar `ev2_energy` for the portable charger; its phase
+distribution is unknown and is never inferred from a phase-count field.
 Each value is an **estimated kWh increment over an explicit interval**, not an
 instantaneous power reading or a cumulative phase meter.
 
@@ -59,7 +63,7 @@ snapshot, source freshness, availability and audit-counter heads. The recorder
 retains the three pending energy sums. Both checkpoints have bounded size;
 there is no growing log of raw current/voltage/power polls.
 
-The calculation is:
+The Easee and Equalizer calculation is:
 
 1. Prefer reported active total power: charger observation `120` or Equalizer
    observation `40`, both in kW.
@@ -171,19 +175,97 @@ and provenance for replay. They are documented as learning records in the
 database overview; they are not a second adaptive power series. Removing the
 standalone chart series does not change the house learner's input selection.
 
-### Audit-only cumulative meters
+### TeslaMate portable-charger capture
+
+Enable the connection in the add-on options (or standalone options), using the
+same broker credentials already configured under `mqtt`:
+
+```json
+{
+  "teslamate": {
+    "enabled": true,
+    "car_id": "1",
+    "home_geofence": "Home",
+    "namespace": "",
+    "charger_assignment": "auto",
+    "max_age_seconds": 180
+  }
+}
+```
+
+Restart st-mq after changing permanent options. TeslaMate's own database remains
+its responsibility: st-mq subscribes to MQTT only and never queries PostgreSQL.
+The topic prefix is `teslamate/cars/<car_id>/`, or
+`teslamate/<namespace>/cars/<car_id>/` when a namespace is configured.
+
+Capture requires an exact `Home` geofence match, healthy live charging evidence
+and usable total `charger_power` in kW. Missing or different geofences prevent
+portable-charger recording. Coordinates are not copied or archived. TeslaMate
+publishes separate fields when they change; MQTT receipt time is not an atomic
+vehicle snapshot or a source measurement timestamp. Retained power alone cannot
+start recording. Live health plus increasing `charge_energy_added` can confirm
+steady power after startup; that first partial session is excluded from averages.
+
+The previous accepted total power is integrated up to each message receipt and
+maintenance tick. New power is never applied backwards. Only compact scalar kWh
+intervals and bounded acquisition/session state are retained, with explicit
+estimate, receipt-time and held-value quality. No raw power/current MQTT archive
+is created. The power chart derives **Charger 2 · Tesla** kW from those intervals.
+Its total interval energy is selectable separately; it has no phase-current
+series. The existing Easee timing comparison retains its original scope.
+
+The installation currently has no solar or battery. Fresh, comparable property
+import bounds Tesla power and the combined separately counted chargers, allowing
+1 kW for rounded Tesla power and five seconds after a power change for source
+settling. An impossible overlap immediately suppresses new Tesla energy and
+records an uncertain gap. A later increase in household power cannot on its own
+revive the suppressed Tesla reading. Stale, disconnected and missing-stop periods
+remain incomplete; restart does not integrate across downtime.
+
+`auto` suppresses a matching Easee/Tesla overlap when their sum cannot fit the
+fresh property reading, while allowing two cars when their sum does fit. Power
+and location cannot identify the physical connector in every case: high household
+load or missing comparable property/Easee measurements can leave attribution
+ambiguous. Set `charger_assignment` to `easee` for a Tesla session known to use
+Easee; it then creates no charger-2 consumption, and its diagnostic uses matching
+recorded Easee energy when full coverage exists. `bmw` identifies intended portable
+charging but retains the physical-overlap safeguards. A future solar/battery
+installation requires revisiting the import-power bound before using it.
+
+### Diagnostic meter and session checks
 
 Charger lifetime energy (`124`) and Equalizer accumulated import energy (`45`)
 are stored separately in `energy_audits` when a new counter observation arrives.
-Both measure cumulative energy, so the charger and property checks use the same
-comparison basis. Charger session energy (`121`) is no longer requested or
+Both measure cumulative energy. Charger session energy (`121`) is not requested or
 recorded; previously stored session readings remain in history. Duplicate
 timestamp/value pairs are not copied. Source timestamps, resets, out-of-order
 counters and availability are retained.
 
-The meter-check panel shows only the latest reading for each cumulative meter,
-with its comparison interval when available. It is not a list of readings or an
-average across charging sessions. Older audit readings remain available in history.
+The existing **Meter accuracy checks** panel shows the latest property-meter
+comparison, an Easee **Charger** session summary, and a **Tesla** session summary.
+There is no session list. Each charger row reports compared, excluded and recorded
+session counts; mean estimated/reference kWh per compared session; and the
+energy-weighted difference `100 × (sum estimate − sum reference) / sum reference`.
+Incomplete sessions and zero references are excluded, with no invented zero-percent
+accuracy. Older cumulative audit readings remain available in history.
+
+Easee observation `129` supplies authoritative finalized session boundaries and
+energy; `223` supplies the current session start when available. A new finalized
+session flushes pending energy once and compares all three original Easee energy
+series over the same period. Duplicate polls cannot create duplicate sessions or
+force repeated flushes. Conflicting finalized readings do not rewrite a check.
+
+Tesla retains one final `charge_energy_added` reference per observed charging
+period, alongside integrated energy and coverage. Its charging-period boundaries
+can differ from an Easee session that includes pauses. Missed starts/stops, counter
+resets, location changes and ambiguous attribution exclude the comparison.
+Terminal messages have a 45-second settling window. A comparable final reference
+must arrive near the end or afterward; an older last-known counter is not treated
+as a confirmed final reading.
+Tesla's reference describes energy added to the battery, not a lifetime electricity
+meter. Its difference includes charging losses and is labelled an **energy
+difference**, not meter accuracy. Neither source's summary implies a measured
+accuracy percentage for incomplete coverage.
 
 Recording diagnostics compare a valid counter increment with the sum of committed
 phase-energy estimates over the same source-time period. Missing coverage prevents
@@ -193,9 +275,10 @@ estimated boundary. Differences appear in kWh and percentage; zero metered energ
 does not produce a division-by-zero percentage.
 
 **Audit values never correct history, calibrate integration, tune the house model
-or determine per-signal recording thresholds.** A comparison is computed when
-diagnostics are read, after available energy intervals have been committed. A
-counter update does not force an extra energy record.
+or determine per-signal recording thresholds.** Cumulative comparisons are computed
+when diagnostics are read; finalized session comparisons are frozen after matching
+energy intervals have been committed. A cumulative counter update does not force
+an extra energy record.
 
 ## Recording optimizer and storage
 
@@ -421,7 +504,8 @@ or chart-summary bookkeeping entries.
 Database inventory queries are read-only and requested when the other-data fold
 is open. A bounded worker query and cache keep large inventories out of the live
 control loop. Expand/collapse state survives updates. Meter-accuracy details
-continue to show the two cumulative-meter checks without changing the learner.
+show the property cumulative-meter check and the two charger session summaries
+without changing the learner.
 
 Selecting the house model's inputs and explaining their source dependencies,
 transformations and averaging windows is a separate interface concern. The

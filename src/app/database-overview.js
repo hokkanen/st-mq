@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import { H66_HISTORY_SIGNALS, PHASE_ENERGY_SIGNALS, SIGNAL_INFO } from '../domain/history-series.js';
+import { H66_HISTORY_SIGNALS, ENERGY_SIGNALS, SIGNAL_INFO } from '../domain/history-series.js';
 
 export const OVERVIEW_REFRESH_MS = 5 * 60_000;
 const fields = (...pairs) => pairs.map(([name, description]) => ({ name, description }));
@@ -76,7 +76,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   // The CASE expression has a bounded number of groups even when an imported
   // database contains arbitrary source or signal names. Imported rows always
   // belong to the import inventory, including incomplete/failed imports.
-  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...PHASE_ENERGY_SIGNALS, 'garage_temperature', 'auxiliary_power'];
+  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...ENERGY_SIGNALS, 'garage_temperature', 'auxiliary_power'];
   const observationCategory = `CASE
     WHEN source='csv:stmq' THEN CASE ${importedSignals.stmq.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`stmq:${signal}`)}`).join(' ')} ELSE 'import-other' END
     WHEN source='csv:easee' THEN CASE ${importedSignals.easee.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`easee:${signal}`)}`).join(' ')} ELSE 'import-other' END
@@ -207,8 +207,9 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const stateCategories = [
     ['contract', "key LIKE 'contract:%'", 'Contract documents', 'Dated electricity rates; their periods are described above.'],
     ['heat-power', "key LIKE 'heat-pump-power-config:%'", 'Heat-pump power assumptions', 'Current nominal compressor, circulation and auxiliary power assumptions; historical changes are retained in configuration events.'],
-    ['recorder', "key LIKE 'recorder:%'", 'Adaptive recorder checkpoints', 'Shared storage feedback, learned per-signal scales, last saved values, coverage cursors and pending phase-energy intervals.'],
-    ['acquisition', "key LIKE 'provider:%' OR key='providers:health' OR key='electricity:acquisition'", 'Provider and electricity acquisition state', 'Latest provider responses, source health/backoff and unfinished electrical integration needed to resume acquisition.'],
+    ['recorder', "key LIKE 'recorder:%'", 'Adaptive recorder checkpoints', 'Shared storage feedback, learned per-signal scales, last saved values, coverage cursors and pending phase or total energy intervals.'],
+    ['acquisition', "key LIKE 'provider:%' OR key='providers:health' OR key='electricity:acquisition' OR key LIKE 'teslamate:acquisition:%'", 'Provider and electricity acquisition state', 'Latest provider responses, source health/backoff and unfinished electrical integration and charging sessions needed to resume acquisition.'],
+    ['session-checks', "key LIKE 'charging-session-check:%' OR key LIKE 'easee:session-check:%' OR key LIKE 'easee:session-check-head:%'", 'Charging comparison identities', 'Hashed session identities prevent duplicate finalized comparisons; raw provider identifiers are not copied into checks.'],
     ['learning', "key LIKE 'learning:%' OR key LIKE 'adaptive:%' OR key LIKE 'learned:%'", 'Learning checkpoints and progress', 'Current fitted model, replay cursor, baseline, metrics and history rebuild progress.'],
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%' OR key LIKE 'override:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and expiring manual overrides; credentials remain in external configuration.'],
@@ -229,6 +230,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       ...(state.get('other')?.count ? [item('state-other', 'Other application state', 'Additional stored current state; private keys and payloads are not listed.', state.get('other'), currentOptions)] : [])]);
 
   const eventCategories = [
+    ['charging-checks', "type='charging-session-check'", 'Finalized charging comparisons', 'One immutable reference and estimated energy comparison per observed Easee session or Tesla charging period; incomplete coverage is excluded from averages.'],
     ['heat-power-config', "type='heat-pump-power-config'", 'Historical heat-pump power assumptions', 'Versioned nominal power assumptions used to reconstruct heat-pump power and timing comparisons from recorded equipment states.'],
     ['decisions', "type='decision'", 'Controller decisions', 'Action, phase, reasons, commands and execution outcomes recorded for each decision.'],
     ['settings', "type IN ('settings-changed','configured-rates-applied','contract-period-added','occupancy-changed','occupancy-expired','override-changed','override-expired')", 'Settings and override changes', 'Changes to settings, contract rates and temporary operating instructions.'],
@@ -238,7 +240,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const events = grouped('events', `CASE ${eventCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END`, 'at');
   const eventItems = eventCategories.map(([id, , label, description]) => item(`events-${id}`, label, description, events.get(id), {
     writeBehavior: id === 'decisions' ? 'On every recorded controller decision.' : 'When the event occurs.',
-    fields: id === 'heat-power-config' ? fields(['Nominal powers', 'Compressor, circulation and rated auxiliary power in kW.'], ['Version and effective time', 'Algorithm/configuration version, input mode and effective timestamp.'])
+    fields: id === 'charging-checks' ? fields(['Period and energy', 'Start/end, source, integrated kWh and final reference kWh.'], ['Coverage', 'Completeness and quality; Tesla energy added differs from electrical input.'])
+      : id === 'heat-power-config' ? fields(['Nominal powers', 'Compressor, circulation and rated auxiliary power in kW.'], ['Version and effective time', 'Algorithm/configuration version, input mode and effective timestamp.'])
       : fields(['Event type and time', 'What happened and when.'], ['Event context', 'Associated decision, configuration, command, assessment or failure details.']) }));
   eventItems.push(item('events-other', 'Acquisition, import and application events', 'Provider/MQTT health, imports, learning resets, rebuilds and other application events.', events.get('other'), {
     writeBehavior: 'When the event occurs.', fields: fields(['Event type and time', 'What happened and when.'], ['Event context', 'Relevant details; payloads are not exposed here.']) }));
@@ -256,7 +259,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const metrics = aggregate('recorder_metrics', 'bucket');
   const audits = aggregate('energy_audits', 'source_time');
   add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read original committed records using SQLite indexes. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
-    item('adaptive-observations', 'Adaptive observations', 'The recorded temperature, equipment and three-phase energy series listed in the main adaptive table above.', observations.get('adaptive'), {
+    item('adaptive-observations', 'Adaptive observations', 'The recorded temperature, equipment, phase energy and charger-2 total energy series listed in the main adaptive table above.', observations.get('adaptive'), {
       dateBasis: 'observation time', writeBehavior: 'When adaptive thresholds, maximum fresh-data spacing, state or quality changes require a record.', fields: observationFields }),
     item('coverage', 'Availability and verification coverage', 'Compact spans distinguish fresh unchanged readings from stale, failed or unavailable acquisition.', coverage, {
       countLabel: 'spans', dateBasis: 'span start / end', retention: 'mixed', retentionDescription: 'New spans are retained; the current unchanged span is extended in place.',
@@ -268,7 +271,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       fields: fields(['Counts', 'Polls, saved records and stale/failed/unavailable acquisitions.'], ['Compression statistics', 'Approximate serialized observation bytes and accumulated normalized error/time; not per-table disk usage.']) }),
     item('snapshot-content', 'Shared provider snapshot content', 'Immutable deduplicated content shared by timestamped weather and market fetch references listed above.', contentCount ? { count: contentCount } : empty(), {
       countLabel: 'versions', writeBehavior: 'Once per new content digest.', fields: fields(['Content', 'Provider forecast/price intervals.'], ['Digest', 'Content identity used to reuse unchanged data.']) }),
-    item('meter-audits', 'Cumulative meter reference readings', 'Property import and charger lifetime counters plus their stored diagnostic metadata. The Meter accuracy checks panel above shows the latest comparison for each meter.', audits, {
+    item('meter-audits', 'Cumulative meter reference readings', 'Property import and charger lifetime counters plus their stored diagnostic metadata. The Meter accuracy checks panel shows the latest property comparison and separate charger session averages.', audits, {
       dateBasis: 'meter observation time', writeBehavior: 'When a changed cumulative counter is received; never used to correct estimates or train.',
       fields: fields(['Meter reading', 'Cumulative kWh, source and receipt timestamps, quality.'], ['Diagnostic context', 'Optional stored comparison metadata; current checks can also be calculated read-only from matching energy coverage.']) }),
   ]);

@@ -4,6 +4,8 @@
 // https://developer.easee.com/reference/getobservations
 // https://developer.easee.com/reference/account_refreshtoken
 // https://developer.easee.com/docs/charger-observation-ids
+import { createHash } from 'node:crypto';
+
 const TEMPERATURES = [
   ['inside_temp_dev_id', 'indoor_temperature'],
   ['garage_temp_dev_id', 'garage_temperature'],
@@ -149,11 +151,46 @@ function chargerTelemetryAt(list, now) {
   return latestAt;
 }
 
+// 129 is the finalized session; 223 announces its start. 121 is telemetry and
+// has no reliable reset/end boundary, so it must not manufacture session checks.
+// The payload schema is also implemented by the EVCC Easee adapter:
+// https://github.com/evcc-io/evcc/blob/master/charger/easee/signalr.go
+function chargerSession(list, id, device, now) {
+  const candidates = list.filter(row => number(row?.id) === id)
+    .map(row => ({ row, at: sourceTime(row.timestamp) }))
+    .sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
+  const picked = candidates[0];
+  if (!picked || picked.at === null || picked.at < 0 || picked.at > now) return null;
+  const parse = ({ row, at }) => {
+    let payload = row.value;
+    if (typeof payload === 'string') {
+      if (payload.length > 16_384) return null;
+      try { payload = JSON.parse(payload); } catch { return null; }
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const sessionId = number(payload.Id), start = sourceTime(payload.Start);
+    if (!Number.isSafeInteger(sessionId) || sessionId < 0 || start === null || start < 0 || start > at) return null;
+    // Never retain the authorization token or the original JSON/device/session ID.
+    const sessionKey = createHash('sha256').update(JSON.stringify([device, sessionId, start])).digest('hex');
+    const result = { sessionKey, start, reportedAt: at };
+    if (id === 223) return result;
+    const end = sourceTime(payload.Stop), referenceKwh = number(payload.EnergyKwh);
+    if (end === null || end <= start || end > at || referenceKwh === null || referenceKwh < 0) return null;
+    const meterStart = number(payload.MeterValueStart), meterEnd = number(payload.MeterValueStop);
+    return { ...result, end, referenceKwh, quality: meterStart !== null && meterEnd !== null && meterEnd < meterStart ? ['counter-reset'] : [] };
+  };
+  const result = parse(picked);
+  if (!result || candidates.some(candidate => candidate.at === picked.at && JSON.stringify(parse(candidate)) !== JSON.stringify(result))) return null;
+  return result;
+}
+
 function electricalObservations(payload, device, prefix, fields, now, voltageVerified = false) {
   const list = Array.isArray(payload) ? payload : payload?.observations;
   if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee observations');
   const connection = deviceConnection(list, now);
   const telemetryAt = prefix === 'ev1' ? chargerTelemetryAt(list, now) : null;
+  const sessions = prefix === 'ev1' ? { chargingSession: chargerSession(list, 129, device, now),
+    chargingSessionStart: chargerSession(list, 223, device, now) } : null;
   return fields.map(([id, name, unit]) => {
     const matches = list.filter(row => number(row?.id) === id)
       .map(row => ({ row, at: sourceTime(row.timestamp) })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
@@ -177,6 +214,7 @@ function electricalObservations(payload, device, prefix, fields, now, voltageVer
     if (name.startsWith('current_')) quality.push('current_snapshot_not_energy');
     return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at, receivedAt: now,
       quality, raw: { observationId: id, acquisitionOnly: true, auditOnly: counter, deviceConnection: { ...connection }, deviceTelemetryAt: telemetryAt,
+        ...(prefix === 'ev1' && name === 'active_power' ? sessions : {}),
         ...(unit === 'V' ? { voltageMapping: prefix === 'property' || voltageVerified ? 'phase-neutral' : 'terminal-pair-unverified' } : {}) } };
   });
 }
@@ -314,7 +352,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           && new Set(voltageIds).size === 3 && voltageIds.every(id => Number.isInteger(id) && id >= 190 && id <= 199);
         const fields = ELECTRICITY_FIELDS[prefix].map(([id, name, unit]) =>
           [verified && unit === 'V' ? voltageIds[Number(name.at(-1)) - 1] : id, name, unit]);
-        const ids = [...fields.map(row => row[0]), 250, ...(prefix === 'ev1' ? CHARGER_TELEMETRY.map(row => row[0]) : [])];
+        const ids = [...fields.map(row => row[0]), 250, ...(prefix === 'ev1' ? [...CHARGER_TELEMETRY.map(row => row[0]), 129, 223] : [])];
         return electricalObservations(await easeeRequest(easee[key], ids, signal), easee[key], prefix, fields, now, verified);
       }));
       return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : ELECTRICITY_FIELDS[jobs[index][1]].map(([id, name, unit]) => ({

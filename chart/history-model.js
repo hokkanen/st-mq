@@ -52,7 +52,7 @@ export function calendarTicks(range, maxTicks = 9) {
 export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
 export const leftGroups = Object.freeze({
   ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis.signals])),
-  power: ['property_power', 'auxiliary_power', 'charger_power'],
+  power: ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'],
   phases: ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'],
   integral: ['heating_integral'],
   learning_profit: ['learning_profit'],
@@ -69,7 +69,7 @@ export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current
 export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compressor only', 3: 'Auxiliary only', 4: 'Hot water only' });
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
-  property: '#e98576', ev: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
+  property: '#e98576', ev: '#b493db', ev2: '#68c4b0', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
   indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#e05555', learning: '#baa0de', solar: '#e4ca67',
   firewood: '#d8aa75', fireplace: '#b79b28',
@@ -82,6 +82,8 @@ export function visible(key, preferences = {}) {
 const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
+  charger2_power: ['Charger 2 · Tesla', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
+  ev2_energy: ['Charger 2 total energy', 'kWh · estimated from TeslaMate charging power over the recorded interval', 'ev2'],
   auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary', 'fill'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
@@ -157,7 +159,7 @@ export function coefficientStatusLabel(status) {
 }
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
-const heldReadingKeys = ['property_power', 'charger_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
+const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
 
 /** Advance display tails without changing source timestamps or cached history. */
 export function historySeriesAt(payload, now = payload.now) {

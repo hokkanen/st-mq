@@ -1,13 +1,13 @@
-import { PHASE_ENERGY_SIGNALS } from '../domain/history-series.js';
+import { ENERGY_SIGNALS } from '../domain/history-series.js';
 
 const HOUR = 3_600_000;
 const invalid = new Set(['missing','invalid_numeric','invalid_unit','provider_error','integration_gap','unknown_phase_share']);
 const scope = input => input === 'simulated' ? "source='simulation'" : "source<>'simulation'";
-const prefixOf = signal => signal.startsWith('ev1_') ? 'ev1' : 'property';
+const prefixOf = signal => signal.startsWith('ev1_') ? 'ev1' : signal==='ev2_energy' ? 'ev2' : 'property';
 
 export function recordedEnergyStart(store, prefix, input) {
   const row = store.db.prepare(`SELECT raw,source_time FROM observations WHERE signal=? AND ${scope(input)}
-    ORDER BY source_time,id LIMIT 1`).get(`${prefix}_energy_l1`);
+    ORDER BY source_time,id LIMIT 1`).get(prefix==='ev2'?'ev2_energy':`${prefix}_energy_l1`);
   if (!row) return Infinity;
   try { return JSON.parse(row.raw)?.intervalStart ?? row.source_time; } catch { return row.source_time; }
 }
@@ -15,10 +15,10 @@ export function recordedEnergyStart(store, prefix, input) {
 /** Each phase query includes the first following interval. Reading just this
  * boundary instead of an entire extra day keeps sparse/fallback windows bounded. */
 function* rawRows(store, { from, to, now, input }) {
-  const signals = PHASE_ENERGY_SIGNALS;
+  const signals = ENERGY_SIGNALS;
   const columns = 'id,source,device,signal,value,unit,source_time,received_at,quality,raw';
   const condition = `${scope(input)} AND received_at<=?`, until = Math.min(to, now);
-  // Six individually ordered index scans avoid sorting the whole selected energy
+  // Individually ordered index scans avoid sorting the whole selected energy
   // history in SQLite. Merge only their current heads; source time and insertion
   // ID preserve the original three-phase acquisition cohort order.
   const heads = [], pending = new Set();
@@ -62,15 +62,15 @@ function* rawGroups(rows, stats) {
     if (nextKey !== key) {
       if (group) yield group;
       key = nextKey;
-      group = { source: row.source, device: row.device, prefix, start: raw?.intervalStart, end: raw?.intervalEnd, values: [null, null, null] };
+      group = { source: row.source, device: row.device, prefix, start: raw?.intervalStart, end: raw?.intervalEnd, values: prefix==='ev2'?[null]:[null, null, null] };
     }
-    group.values[Number(row.signal.at(-1)) - 1] = row.unit === 'kWh' && Number.isFinite(row.value) && row.value >= 0
+    group.values[prefix==='ev2'?0:Number(row.signal.at(-1)) - 1] = row.unit === 'kWh' && Number.isFinite(row.value) && row.value >= 0
       && Array.isArray(flags) && !flags.some(flag => invalid.has(flag)) ? row.value : null;
   }
   if (group) yield group;
 }
 
-/** Original three-phase intervals supply every history range. Drawing points
+/** Original phase or total-energy intervals supply every history range. Drawing points
  * may be reduced in memory, but never determine energy or tariff comparisons. */
 export function addRecordedEnergy({store,range,now,input,envelopes,timing}) {
   const stats = {rows:0,intervals:0};
@@ -89,10 +89,14 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing}) {
     if (!Number.isFinite(start) || !Number.isFinite(end) || duration <= 0 || duration > 24*HOUR
       || start >= range.to || end <= range.from) return;
     stats.intervals++;
-    const complete = values.length === 3 && values.every(Number.isFinite);
+    const complete = values.length === (prefix==='ev2'?1:3) && values.every(Number.isFinite);
     const total = complete ? values.reduce((sum,value)=>sum+value,0) : null;
     const metadata = {basis:'estimated',intervalStart:start,intervalEnd:end,source:group.source,fromEnergy:true};
-    project(prefix === 'ev1' ? 'charger_power' : 'property_power',start,end,total === null ? null : total*HOUR/duration,metadata);
+    project(prefix === 'ev1' ? 'charger_power' : prefix==='ev2'?'charger2_power':'property_power',start,end,total === null ? null : total*HOUR/duration,metadata);
+    if (prefix==='ev2') {
+      if (end>=range.from && end<=Math.min(range.to,now)) envelopes.ev2_energy?.add(end,total,metadata);
+      return;
+    }
     for (let phase=0;phase<3;phase++) {
       const value = values[phase] ?? null, power = value === null ? null : value*HOUR/duration;
       project(`${prefix}_current_l${phase+1}`,start,end,power === null ? null : power/0.23,{...metadata,equivalentCurrent:true});

@@ -5,6 +5,7 @@ import { createDeviceProviders } from './devices.js';
 import { fetchMarket } from './market.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
 import { ElectricityAccumulator } from '../domain/electricity.js';
+import { recordEaseeSessionChecks } from './easee-session-checks.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -233,7 +234,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     const job = definitions[name], state = health[name], at = clock();
     Object.assign(state, { status: 'running', lastAttemptAt: at });
     store.setState('providers:health', health);
-    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false;
+    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false, electricityCommitted = false;
     try {
       // Forecast and current weather share provider hosts. A server's rate
       // limit or access denial applies to both routes, while a missing station
@@ -277,6 +278,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
             for (const interval of sampled.intervals) engine.ingestEnergy?.(interval);
             for (const audit of sampled.audits) store.energyAudit?.(audit);
             for (const gap of sampled.gaps) engine.recorder?.energyGap?.(gap);
+            recordEaseeSessionChecks({ store, rows: result, now: clock(),
+              flush: () => engine.recorder?.flush?.(clock(), { force: true }) });
             store.setState('electricity:acquisition', electricity.checkpoint());
           }
           for (const observation of result) {
@@ -302,6 +305,23 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
         electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: electricityBefore });
         engine.recorder?.reload?.();
         throw error;
+      }
+      if (name === 'easee') {
+        const snapshot = { property: null, charger: null };
+        for (const row of Object.values(electricity.checkpoint().devices)) {
+          if (!result.some(observation => observation.source === 'easee' && observation.device === row.device
+            && observation.signal.startsWith(`${row.prefix}_`))) continue;
+          const group = row.prefix === 'ev1' ? 'charger' : 'property';
+          const sessionStart = result.find(observation => observation.device === row.device
+            && observation.signal === 'ev1_active_power')?.raw?.chargingSessionStart?.start;
+          snapshot[group] = { device: row.device, powerKw: row.powers.reduce((sum, value) => sum + value, 0),
+            sourceTime: row.sourceTime, receivedAt: row.at, telemetryAt: row.telemetryAt,
+            ...(Number.isSafeInteger(sessionStart) ? { sessionStart } : {}) };
+        }
+        // Publish availability only after the complete acquisition transaction.
+        // Missing device samples clear prior snapshots instead of renewing them.
+        engine.electricitySnapshot = snapshot;
+        electricityCommitted = true;
       }
       state.qualityIssues = issues;
       state.staleSourceTimes = staleSourceTimes;
@@ -333,6 +353,10 @@ export function startProviders({ engine, store, config, clock = Date.now, http =
     if (failure && sourceDelays.length && sourceDelays.every(value => value > 0)) delay = Math.max(delay, Math.min(...sourceDelays));
     state.nextAttemptAt = clock() + delay;
     store.setState('providers:health', health);
+    if (electricityCommitted) {
+      try { engine.teslamate?.tick(clock()); }
+      catch { store.event('teslamate-acquisition-error', { reason: 'property-check-failed' }, clock()); }
+    }
   }
 
   function runDue() {

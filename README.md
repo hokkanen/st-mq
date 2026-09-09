@@ -10,7 +10,7 @@ preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/con
 **Default startup uses simulated devices in shadow mode.** With live input,
 configured transport and active mode, the controller can operate heating and
 supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
-Read-only market, weather, MQTT temperature and Easee providers plus dated contract
+Read-only market, weather, MQTT temperature, TeslaMate and Easee providers plus dated contract
 setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
 the H66 sensor first, then FMI station observations, then Open-Meteo estimates. Offline
@@ -20,8 +20,9 @@ Physical equipment control has not been commissioned.
 
 An independent recording optimizer targets a configurable **10 GB/year** rolling
 growth rate with a **five-minute maximum interval when fresh measurements exist**.
-Electricity history stores three estimated phase-energy increments per device;
-occasional accumulated meter readings are audit-only. The house learner uses
+Electricity history stores three estimated phase-energy increments for Easee and
+property import, plus one total-energy increment for TeslaMate portable charging.
+Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
 [adaptive recording and migration](docs/recording.md), including SmartThings removal.
 
@@ -208,9 +209,9 @@ and **Electricity rates**. On wide screens, the home card sits beside the stacke
 model and data cards, with both columns aligned when closed. The three cards stack
 on narrow screens; the event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,
-freshness and storage growth independently of model importance. Its **Energy audit**
-compares occasional meter counters with integrated estimates without correcting
-history or training/calibrating the house model.
+freshness and storage growth independently of model importance. **Meter accuracy
+checks** shows the latest property-meter comparison and Easee/Tesla session
+averages without correcting history or training/calibrating the house model.
 
 ## Persistence and historical data
 
@@ -320,6 +321,7 @@ and plans; active mode can use a configured command transport.
 | Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
 | Indoor/garage temperatures | H66 indoor; configured MQTT sensors | MQTT publications; H66 GETALL every 60 seconds |
 | Property/charger electrical observations | Easee REST | 15 seconds, one batched request per device |
+| Portable-charger total energy | TeslaMate MQTT | Changed fields and live health; integration checked every 5 seconds |
 
 These are collection schedules, not guarantees that each provider publishes a new
 measurement that often. FMI and Open-Meteo forecasts use hourly valid times.
@@ -378,6 +380,13 @@ separately for accuracy diagnostics and never correct or calibrate those estimat
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee authentication can refresh tokens; it does not change
 charging settings. See [recording configuration and limitations](docs/recording.md).
+
+Optional [TeslaMate capture](docs/recording.md#teslamate-portable-charger-capture)
+uses the existing MQTT broker and the exact `Home` geofence. It records total kWh
+from charging power, with no phase-current series or PostgreSQL connection.
+Fresh property-power checks suppress impossible overlaps; physical connector
+identity remains ambiguous in some cases, with an explicit Easee assignment
+available to guarantee that charger 2 is not counted for a known Easee session.
 
 Normal `npm test` and `npm run check` stay offline. To verify current service access
 and the configured keys explicitly, use the [bounded live test suite](docs/live-testing.md):

@@ -59,6 +59,23 @@ export function acquisitionConfiguration(input = {}) {
   };
 }
 
+export function teslamateConfiguration(input = {}) {
+  if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new Error('TeslaMate enabled must be a boolean');
+  const enabled = input.enabled === true;
+  const carId = String(input.carId ?? input.car_id ?? '1');
+  const homeGeofence = input.homeGeofence ?? input.home_geofence ?? 'Home';
+  const namespace = input.namespace ?? '';
+  const chargerAssignment = input.chargerAssignment ?? input.charger_assignment ?? 'auto';
+  if (!/^[1-9]\d{0,8}$/.test(carId) || typeof homeGeofence !== 'string' || !homeGeofence.trim()
+    || homeGeofence.length > 100 || typeof namespace !== 'string' || namespace.length > 100
+    || /[\/+#\u0000]/.test(namespace) || !['auto', 'bmw', 'easee'].includes(chargerAssignment)) throw new Error('Invalid TeslaMate car, geofence, assignment or MQTT namespace');
+  if (input.max_age_seconds !== undefined && !Number.isFinite(input.max_age_seconds)) throw new Error('Invalid TeslaMate maximum age');
+  return { enabled, carId, homeGeofence, namespace, chargerAssignment,
+    maxAgeMs: Math.round(interval(input.maxAgeMs ?? (input.max_age_seconds == null ? undefined : input.max_age_seconds * 1000),
+      180_000, 30_000, 600_000, 'teslamate.max_age_seconds')),
+    propertyMaxAgeMs: 60_000, settleMs: 5000, powerToleranceKw: 1 };
+}
+
 export function controlConfiguration(input = {}) {
   const map = { aux_integral_a2: 'auxIntegralA2', aux_hysteresis_c: 'auxHysteresisC',
     compressor_integral_a1: 'compressorIntegralA1', compressor_hysteresis_c: 'compressorHysteresisC',
@@ -126,7 +143,8 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
       if (!['indoor_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
-    connections = { ...providers, mqtt };
+    connections = { ...providers, mqtt, teslamate: teslamateConfiguration(providers.teslamate) };
+    if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
     }

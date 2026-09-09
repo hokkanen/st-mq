@@ -65,7 +65,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // Load durable native-setting obligations before the first active dispatch.
     // MQTT connection and device publications remain asynchronous.
     const hasMqttObservations = config.h66?.deviceId || config.deviceId
-      || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0;
+      || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0
+      || config.connections.teslamate?.enabled === true;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
       if (closed) throw new Error('The application is shutting down.');

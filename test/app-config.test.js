@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig, validateSettings, recordingConfiguration, acquisitionConfiguration } from '../src/app/config.js';
+import { loadConfig, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration } from '../src/app/config.js';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,23 @@ test('recording and acquisition options are independent, configurable and valida
   assert.equal(acquisitionConfiguration({weather_poll_minutes:60}).weatherIntervalMs,3600000);
   for(const options of [{max_interval_minutes:0},{annual_budget_gb:-1},{annual_budget_gb:'10'}])assert.throws(()=>recordingConfiguration(options));
   assert.throws(()=>acquisitionConfiguration({easee_poll_seconds:1}));
+});
+test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/namespace settings', t => {
+  assert.equal(teslamateConfiguration().enabled, false);
+  assert.equal(teslamateConfiguration().homeGeofence, 'Home');
+  assert.equal(teslamateConfiguration({ car_id: 2, charger_assignment: 'easee', max_age_seconds: 120 }).carId, '2');
+  assert.equal(teslamateConfiguration({ charger_assignment: 'easee' }).chargerAssignment, 'easee');
+  for (const input of [{ car_id: '1/#' }, { home_geofence: '' }, { namespace: '#' }, { enabled: 'true' },
+    { charger_assignment: 'guess' }, { max_age_seconds: 0 }, { max_age_seconds: '120' }]) assert.throws(() => teslamateConfiguration(input));
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-teslamate-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'options.json');
+  writeFileSync(path, JSON.stringify({ teslamate: { enabled: true } }));
+  assert.throws(() => loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory), /existing MQTT/);
+  writeFileSync(path, JSON.stringify({ mqtt: { address: 'mqtt://invented.invalid' }, teslamate: { enabled: true } }));
+  const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory);
+  assert.equal(config.connections.teslamate.enabled, true);
+  assert.equal(config.connections.teslamate.homeGeofence, 'Home');
 });
 test('replacement indoor and garage MQTT topics are exact and keep private configuration unchanged',t=>{
   const directory=mkdtempSync(join(tmpdir(),'stmq-temperature-config-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));

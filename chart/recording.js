@@ -223,26 +223,43 @@ export function recordingOverviewRefresh({request,root,details,parent,message,bu
   return refresh;
 }
 
+export function energyAuditRow(item) {
+  const date = value => Number.isFinite(value) ? new Intl.DateTimeFormat('en-GB',{
+    timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value) : '—';
+  if (item.kind==='charging-session-summary') {
+    const s=item.summary ?? {}, tesla=item.source==='teslamate', count=s.comparedSessions ?? 0;
+    return { title:tesla?'Tesla':'Charger', subtitle:'Completed-session averages',
+      when:Number.isFinite(s.lastSessionEnd)?`Last session: ${date(s.lastSessionEnd)}`:'No completed sessions recorded yet',
+      value:count>0?`${number(s.differencePercent)}% energy-weighted difference · ${number(s.differenceKwh/count)} kWh average difference`
+        :'Session comparison pending: complete recording and a session reference needed',
+      details:[...(count>0?[`${number(s.estimatedKwh/count)} kWh recorded / ${number(s.referenceKwh/count)} kWh ${tesla?'added by car':'metered'} per session`]:[]),
+        `${count} compared · ${s.excludedSessions ?? 0} excluded · ${s.recordedSessions ?? 0} recorded sessions`,
+        ...(count>0?[`Compared sessions: ${date(s.start)} – ${date(s.end)}`]:[]),
+        tesla?'Recorded input minus energy added. Includes charging losses; not a meter-accuracy percentage.':'Recorded estimate minus Easee session meter.'] };
+  }
+  const c=item.comparison;
+  return {title:'Property',subtitle:'Cumulative import meter',when:`Meter reading: ${date(item.sourceTime)}`,
+    value:c?`${number(c.differenceKwh)} kWh difference · ${number(c.differencePercent)}% · estimated minus meter`
+      :'Comparison pending: two valid counters and matching energy coverage needed',
+    details:c?[`${number(c.estimatedKwh)} kWh estimated / ${number(c.meteredKwh)} kWh meter${c.edgeEstimated?' · interval edges prorated':''}`,
+      `Compared: ${date(c.start)} – ${date(c.end)}`]:[]};
+}
+
 export function renderEnergyAudits(rows, root) {
   if(!root)return;
   root.replaceChildren();
   const note=document.createElement('p');note.className='muted';
-  note.textContent='The latest check for each cumulative meter compares estimated energy with the meter increase between two readings. These checks never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
+  note.textContent='Property shows its latest cumulative-meter check. Charger and Tesla summarize completed sessions with matching recording coverage; percentages are weighted by reference energy. These checks never change history, calibrate estimates, train the house model or affect recording thresholds.';root.append(note);
   if(!rows?.length) {const p=document.createElement('p');p.textContent='Waiting for fresh accumulated-kWh updates.';root.append(p);return;}
   const table=document.createElement('table');table.className='recording-table';
-  const date = value => new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'short',timeStyle:'short'}).format(value);
   for(const item of rows) {
+    const display=energyAuditRow(item);
     const row=document.createElement('tr'),title=document.createElement('th');title.scope='row';
-    title.textContent=item.signal?.startsWith('property')?'Property':'Charger';
-    const meter=document.createElement('small');meter.textContent=item.signal?.startsWith('property')?'Cumulative import meter':'Lifetime energy meter';title.append(meter);
-    const when=document.createElement('small');when.textContent=`Meter reading: ${date(item.sourceTime)}`;title.append(when);row.append(title);
-    const comparison=item.comparison,cell=document.createElement('td');
-    cell.textContent=comparison ? `${number(comparison.differenceKwh)} kWh difference · ${number(comparison.differencePercent)}% · estimated minus meter`
-      : 'Comparison pending: two valid counters and matching energy coverage needed';
-    if (comparison) {
-      const detail=document.createElement('small');detail.textContent=`${number(comparison.estimatedKwh)} kWh estimated / ${number(comparison.meteredKwh)} kWh meter${comparison.edgeEstimated?' · interval edges prorated':''}`;cell.append(detail);
-      const period=document.createElement('small');period.textContent=`Compared: ${date(comparison.start)} – ${date(comparison.end)}`;cell.append(period);
-    }
+    title.textContent=display.title;
+    const meter=document.createElement('small');meter.textContent=display.subtitle;title.append(meter);
+    const when=document.createElement('small');when.textContent=display.when;title.append(when);row.append(title);
+    const cell=document.createElement('td');cell.textContent=display.value;
+    for (const text of display.details) {const detail=document.createElement('small');detail.textContent=text;cell.append(detail);}
     row.append(cell);table.append(row);
   }
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);root.append(wrap);

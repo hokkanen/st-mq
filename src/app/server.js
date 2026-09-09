@@ -5,6 +5,7 @@ import { resolve, extname } from 'node:path';
 import { getChartData } from './chart-data.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
+import { chargingSessionCheckSummaries } from './charging-session-checks.js';
 
 function authorized(req, token) {
   if (!token) return true;
@@ -88,11 +89,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          // One current check per cumulative meter. Select independently so a
-          // frequently updated charger cannot hide the property's older reading.
-          const rows = ['property_import_energy_counter','ev1_lifetime_energy_counter']
-            .flatMap(signal => store.energyAudits({ signal, newestFirst:true, limit:1 }));
-          return json(200, rows.map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison})));
+          const property = store.energyAudits({ signal:'property_import_energy_counter', newestFirst:true, limit:1 })
+            .map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison}));
+          return json(200, [...property, ...chargingSessionCheckSummaries(store)]);
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();

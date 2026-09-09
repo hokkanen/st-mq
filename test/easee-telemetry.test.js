@@ -29,7 +29,7 @@ test('electricity batches cloud connection with existing reads and keeps device 
   assert.equal(calls.length, 2);
   assert(calls.every(call => call.method === 'GET'));
   assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('ids')), [
-    '183,184,185,194,195,196,120,124,250,130,132,136,150', '31,32,33,34,35,36,40,45,250',
+    '183,184,185,194,195,196,120,124,250,130,132,136,150,129,223', '31,32,33,34,35,36,40,45,250',
   ]);
   assert.equal(rows.length, 16, 'Connection is metadata, not another electrical series');
   for (const row of rows) assert.deepEqual(row.raw.deviceConnection, row.signal.startsWith('ev1_')

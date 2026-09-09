@@ -503,7 +503,7 @@ test('energy index scans merge chronologically without a full-range SQL sort or 
     assert.equal(result.meta.rows, 21, 'Simulation and future receipt rows stay outside the physical query');
     assert(result.series.charger_power.some(row => row.x === start + 3 * MINUTE && row.y === null));
     assert(result.series.property_power.some(row => Math.abs(row.y - 36) < 1e-10));
-    assert.equal(plans.length, 6);
+    assert.equal(plans.length, 7, 'Six phase-energy series and one total-only Tesla series each use an index scan');
     assert(plans.every(plan => plan.some(row => /SEARCH observations USING INDEX observations_signal_time/.test(row.detail))));
     assert(plans.every(plan => plan.every(row => !/TEMP B-TREE/.test(row.detail))), 'The default original-energy path must not sort all selected rows');
   } finally { store.close(); }

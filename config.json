@@ -31,6 +31,14 @@
       "indoor_temperature_topic": "",
       "garage_temperature_topic": ""
     },
+    "teslamate": {
+      "enabled": false,
+      "car_id": "1",
+      "home_geofence": "Home",
+      "namespace": "",
+      "charger_assignment": "auto",
+      "max_age_seconds": 180
+    },
     "entsoe": {
       "token": ""
     },
@@ -109,6 +117,14 @@
       "pw": "password",
       "indoor_temperature_topic": "str?",
       "garage_temperature_topic": "str?"
+    },
+    "teslamate": {
+      "enabled": "bool",
+      "car_id": "str",
+      "home_geofence": "str",
+      "namespace": "str?",
+      "charger_assignment": "list(auto|bmw|easee)",
+      "max_age_seconds": "int(30,600)"
     },
     "entsoe": {
       "token": "password?",

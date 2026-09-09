@@ -186,13 +186,14 @@ export class Recorder {
    */
   recordEnergy(interval) {
     const { source = 'easee', device, prefix, start, end, energies, powers, quality = [], receivedAt = end } = interval;
-    if (!['ev1','property'].includes(prefix) || !finiteTime(start) || !finiteTime(end) || end <= start
-      || !finiteTime(receivedAt) || !Array.isArray(energies) || energies.length !== 3
-      || energies.some(n => !Number.isFinite(n) || n < 0) || !Array.isArray(powers) || powers.length !== 3
+    const signals = energySignals(prefix);
+    if (!signals || !finiteTime(start) || !finiteTime(end) || end <= start
+      || !finiteTime(receivedAt) || !Array.isArray(energies) || energies.length !== signals.length
+      || energies.some(n => !Number.isFinite(n) || n < 0) || !Array.isArray(powers) || powers.length !== signals.length
       || powers.some(n => !Number.isFinite(n) || n < 0)) throw new TypeError('Invalid phase energy interval');
     return this.store.transaction(() => {
       const checkpointKey = `recorder:energy:${JSON.stringify([source,device,prefix])}`;
-      const state = this.store.getState(checkpointKey) ?? { lastEnd:null,pending:null,lastPowers:null,scales:[null,null,null],lastQuality:null };
+      const state = this.store.getState(checkpointKey) ?? { lastEnd:null,pending:null,lastPowers:null,scales:signals.map(()=>null),lastQuality:null };
       if (state.lastEnd !== null && end <= state.lastEnd) return { saved:false,reason:'duplicate-interval',observations:[] };
       if (state.lastEnd !== null && start < state.lastEnd) throw new Error('Overlapping energy integration intervals');
       const q = flags(quality), g = this.global(receivedAt), observations = [], previousPowers = state.lastPowers;
@@ -200,11 +201,11 @@ export class Recorder {
       // do not spread its energy over missing time or blend measurement bases.
       if (state.pending && (state.pending.end !== start || !same(state.pending.quality,q)))
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'boundary'));
-      if (!state.pending) state.pending = {start,end,energies:[0,0,0],quality:q};
-      for (let i=0;i<3;i++) state.pending.energies[i] += energies[i];
+      if (!state.pending) state.pending = {start,end,energies:signals.map(()=>0),quality:q};
+      for (let i=0;i<signals.length;i++) state.pending.energies[i] += energies[i];
       state.pending.end = end; state.lastEnd = end;
       let changed = false;
-      for (let i=0;i<3;i++) {
+      for (let i=0;i<signals.length;i++) {
         const s = state.scales[i] ?? {mean:null,variance:0,step:0,previousValue:null,lastFreshAt:null,scale:0};
         this.scale(s,powers[i],end); state.scales[i] = s;
         if (state.lastPowers && ((powers[i] === 0) !== (state.lastPowers[i] === 0)
@@ -213,8 +214,8 @@ export class Recorder {
       const reason = state.lastPowers === null ? 'initial' : !same(state.lastQuality,q) ? 'quality-or-availability'
         : changed ? 'learned-change' : end-state.pending.start >= this.config.maxIntervalMs ? 'maximum-interval' : null;
       if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason));
-      for (let i=0;i<3;i++) {
-        const s = this.signalState({source,device,signal:`${prefix}_energy_l${i+1}`,unit:'kWh'},receivedAt);
+      for (let i=0;i<signals.length;i++) {
+        const s = this.signalState({source,device,signal:signals[i],unit:'kWh'},receivedAt);
         s.scale = state.scales[i].scale; s.lastPollAt = receivedAt;
         this.count(s,receivedAt,{elapsed:end-start,error:previousPowers && s.scale>0 ? Math.abs(powers[i]-previousPowers[i])/s.scale : null});
         this.store.setState(stateKey(s.key),s);
@@ -227,10 +228,11 @@ export class Recorder {
   commitEnergy(state,source,device,prefix,receivedAt,reason) {
     const p = state.pending;
     if (!p) return [];
+    const signals = energySignals(prefix);
     const observations = p.energies.map((value,i) => {
-      const o = {source,device,signal:`${prefix}_energy_l${i+1}`,value,unit:'kWh',sourceTime:p.end,receivedAt,
+      const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
-          basis:'integrated-power-phase-allocation',recorder:{version:VERSION,reason,group:prefix}}};
+          basis:prefix==='ev2'?'integrated-total-power':'integrated-power-phase-allocation',recorder:{version:VERSION,reason,group:prefix}}};
       o.id = this.store.observation(o);
       const s = this.signalState(o,receivedAt);
       const previous = s.last;
@@ -251,14 +253,15 @@ export class Recorder {
   }
 
   energyGap({ source = 'easee', device, prefix, start, end, quality = ['acquisition-failed'] }) {
-    if (!['ev1','property'].includes(prefix) || !finiteTime(start) || !finiteTime(end) || end < start)
+    const signals = energySignals(prefix);
+    if (!signals || !finiteTime(start) || !finiteTime(end) || end < start)
       throw new TypeError('Invalid phase energy gap');
     return this.store.transaction(() => {
       const key = `recorder:energy:${JSON.stringify([source,device,prefix])}`, state = this.store.getState(key);
       const observations = state ? this.commitEnergy(state,source,device,prefix,end,'availability-boundary') : [];
       if (state) { state.lastPowers = null; state.lastQuality = null; this.store.setState(key,state); }
-      for (let phase=1;phase<=3;phase++) {
-        const result = this.record({source,device,signal:`${prefix}_energy_l${phase}`,value:null,unit:'kWh',
+      for (const signal of signals) {
+        const result = this.record({source,device,signal,value:null,unit:'kWh',
           sourceTime:end,receivedAt:end,quality:flags([...quality,'missing']),
           raw:{basis:'availability-gap',intervalStart:start,intervalEnd:end,durationMs:end-start}});
         if (result.saved) observations.push(result.observation);
@@ -323,16 +326,21 @@ export class Recorder {
           normalizedRmsError:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
           estimatedBytes:buckets.reduce((n,b)=>n+b.bytes,0)};
       }
-      const grouped = /_energy_l[123]$/.test(s.signal), exact = ['state','code'].includes(s.unit) || EXACT.test(s.signal);
+      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = s.signal==='ev2_energy', exact = ['state','code'].includes(s.unit) || EXACT.test(s.signal);
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
-        threshold:exact ? null : s.scale*g.tolerance,thresholdUnit:grouped ? 'kW' : s.unit,
-        optimizedQuantity:grouped ? 'phase-power' : 'value',grouped,...stats};
+        threshold:exact ? null : s.scale*g.tolerance,thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
+        optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
     return {version:VERSION,...this.config,historyRevision:JSON.stringify(revision),normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
       bytesPerDay:g.bytesPerDay,bytesPerDay7d:g.bytesPerDay7d,projectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,
       measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',parameters};
   }
+}
+
+function energySignals(prefix) {
+  return prefix === 'ev2' ? ['ev2_energy'] : ['ev1','property'].includes(prefix)
+    ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : null;
 }
 
 function compactRaw(raw) {

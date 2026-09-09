@@ -11,7 +11,7 @@ const shortDate = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki'
 const visibilityStorage = 'home-energy-chart-visibility';
 const paletteVariables = {
   text: '--text', muted: '--muted', border: '--border', grid: '--grid',
-  property: '--chart-property', ev: '--chart-ev', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
+  property: '--chart-property', ev: '--chart-ev', ev2: '--chart-ev2', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
   indoor: '--chart-indoor', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
   firewood: '--chart-firewood', fireplace: '--chart-fireplace',

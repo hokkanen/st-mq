@@ -22,6 +22,7 @@
   --chart-power: #81cbb2;
   --chart-property: var(--chart-power);
   --chart-ev: #b493db;
+  --chart-ev2: #68c4b0;
   --chart-phase-1: #83c7ef;
   --chart-phase-2: #d4ba7f;
   --chart-phase-3: #c19fdb;
@@ -66,6 +67,7 @@
   --stale: #94501f;
   --chart-power: #377b60;
   --chart-ev: #8050a6;
+  --chart-ev2: #187d69;
   --chart-phase-1: #2877a7;
   --chart-phase-2: #94701d;
   --chart-phase-3: #8e55a6;

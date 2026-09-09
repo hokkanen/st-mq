@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
 import { createH66Controller } from '../control/h66.js';
+import { createTeslaMateCapture } from './teslamate.js';
 
 // Alternative indoor/garage sensors publish a number in Celsius, or
 // {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.
@@ -49,9 +50,12 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
     .filter(([signal, topic]) => ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic));
+  const teslamate = config.connections.teslamate?.enabled === true
+    ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
+  if (teslamate) engine.teslamate = teslamate;
   const client = connect(address, { username, password, reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false });
   let connected = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
-  const source = decoder ? 'husdata-h66' : 'mqtt-temperature';
+  const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
   })) : [];
@@ -109,12 +113,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
         report('mqtt-temperature-subscribe-error');
       }
     });
+    if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, error => {
+      if (error) { teslamate.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
+      else teslamate.setConnected(true);
+    });
   };
   client.on('connect', connectedHandler);
   client.on('error', () => report('mqtt-error'));
   const disconnected = () => {
     if (stopped) return;
     connected = false; h66?.setConnected(false);
+    teslamate?.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
     if (!disconnectedRecorded) {
       markUnavailable([...h66Signals, ...temperatureSignals], ['mqtt-disconnected']);
@@ -127,6 +136,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
   client.on('message', (topic, payload, packet = {}) => {
     if (!connected || stopped) return;
     try {
+      if (teslamate?.receive(topic, payload, packet, engine.clock())) return;
       const temperature = temperatureTopics.find(([, configured]) => configured === topic);
       if (temperature) {
         const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain });
@@ -157,6 +167,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
     h66.reconcile({ now: engine.clock() }).catch(() => {});
   }, intervalMs) : null;
   maintenance?.unref?.();
+  const teslaMaintenance = teslamate ? setInterval(() => {
+    if (stopped) return;
+    try { teslamate.tick(engine.clock()); } catch { report('mqtt-teslamate-capture-failed'); }
+  }, 5000) : null;
+  teslaMaintenance?.unref?.();
   if (client.connected) connectedHandler();
   return { h66, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
@@ -164,6 +179,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
     close: async () => {
       if (stopped) return;
       clearInterval(maintenance);
+      clearInterval(teslaMaintenance);
+      teslamate?.close();
+      if (engine.teslamate === teslamate) engine.teslamate = null;
       if (h66 && connected && settings.writeEnabled === true) {
         try { await h66.restore({ now: engine.clock(), reason: 'application-shutdown' }); }
         catch { report('h66-shutdown-restoration-pending'); }
