@@ -1,5 +1,5 @@
 import { operationModes } from './history-model.js';
-import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
+import { MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 
 const finite = Number.isFinite;
 const number = (value, digits = 2) => finite(value) ? value.toFixed(digits) : '—';
@@ -16,10 +16,7 @@ const coefficientLabels = {
   reducedHeatCPerHour: 'Legacy reduced-mode allowance', preheatCPerHourPerDegree: 'Legacy preheat allowance',
 };
 const coefficientInfo = {
-  lossPerHour: { unit: '1/h', digits: 4, detail: 'Heat loss per degree of indoor–outdoor temperature difference. Multiply by that difference to get the modeled cooling contribution in °C/h.' },
-  normalHeatCPerHour: { unit: '°C/h', digits: 3, detail: 'Effective heating contribution at full observed space-heating compressor duty. Building heat storage delays the room response; this is not measured compressor output or COP.' },
-  solarCPerHourPerKwM2: { unit: '°C/h per kW/m²', digits: 3, detail: 'Temperature response to forecast solar radiation. Radiation forecasts enter in W/m² and are converted to kW/m²; no house radiation sensor is implied.' },
-  auxiliaryCPerKwh: { unit: '°C/kWh', digits: 3, detail: 'Effective heating contribution per estimated auxiliary electricity input during space heating. Stored heat affects when the indoor temperature responds.' },
+  ...Object.fromEntries(Object.values(MODEL_COEFFICIENT_INFO).map(info => [info.parameter, info])),
   memoryExchangePerHour: { unit: '1/h', digits: 4, fixed: true, detail: 'Exchange rate between the modeled building heat reserve and indoor air. The slow reserve is unmeasured, so this remains a fixed structural assumption.' },
   reserveTimeHours: { unit: 'h', digits: 1, fixed: true, detail: 'Time scale of the modeled building heat reserve. This is temperature memory, not a measured floor temperature or storage capacity.' },
   reducedHeatCPerHour: { unit: '°C/h', digits: 3, legacy: true, detail: 'Reduced-mode heating allowance carried by a legacy model. The current observed-input model does not fit this coefficient.' },
@@ -41,7 +38,7 @@ export function modelInputDescriptions() {
     detail: info.detail, sources: inputSources[key] }));
 }
 
-/** Current model state only: no new historical series or coefficient storage. */
+/** Current model cards; chart history is reconstructed separately from the journal. */
 export function modelCoefficientDescriptions(learning = {}) {
   const adaptive = learning.adaptive ?? {}, model = adaptive.model ?? {}, validation = model.validation;
   const fitted = new Set(validation?.accepted === true ? validation.fittedParameters ?? [] : []);
@@ -112,7 +109,7 @@ export function learningDisplay(learning = {}) {
   if (episode) evidence.push(`Current cycle: ${words(episode.phase ?? episode.status ?? 'in progress')}. Space-heating benefit is assessed only after recovery is complete; an unfinished cycle does not enter the averages.`);
   return { title, message: learning.message ?? learning.reason ?? (validation?.accepted ? 'The current model has passed later temperature checks. Action prediction and economic readiness are assessed separately.' : 'Initial estimates remain in use while independent evidence is collected.'),
     process, metrics, evidence, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
-    coefficientHistory: 'These are current values from the latest retained model. The chart shows assessed learning outcomes and resolved model inputs. Coefficient history is not plotted; today’s values are not applied to earlier intervals.',
+    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the four adjustable coefficients reconstructed from the learning journal. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Fixed building assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
     history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
 }
 

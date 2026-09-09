@@ -8,11 +8,21 @@ import { seedChartFixture } from './lib/chart-fixture.js';
 import { providerFixture } from './lib/provider-fixture.js';
 import { seedTimingBrowserFixture, checkTimingBrowser } from './lib/timing-browser-checks.js';
 import { EventEmitter } from 'node:events';
+import { Store } from '../src/storage/store.js';
+import { appendLearningRecord } from '../src/app/committed-learning.js';
+import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
 const directory = mkdtempSync(join(tmpdir(), 'stmq-browser-chart-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
+const coefficientValues = {
+  model_coefficient_heat_loss: { parameter: 'lossPerHour', value: 0.0273 },
+  model_coefficient_compressor_response: { parameter: 'normalHeatCPerHour', value: 0.85 },
+  model_coefficient_solar_response: { parameter: 'solarCPerHourPerKwM2', value: 0.32 },
+  model_coefficient_auxiliary_response: { parameter: 'auxiliaryCPerKwh', value: 0.16 },
+};
+const coefficientKeys = Object.keys(coefficientValues);
 let app, ws, command, ownsBrowser=false;
 const pending = new Map(), errors = [], timings = [];
 let id = 0;
@@ -20,6 +30,19 @@ try {
   writeFileSync(join(directory, 'options.json'), '{}');
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   config.priceSettings = { ...config.priceSettings, effectiveDate: '2020-01-01' };
+  // Seed this temporary simulation before startup writes its current context,
+  // keeping journal order chronological and exercising actual API replay.
+  const fixtureStore = new Store(config.dbPath);
+  try {
+    appendLearningRecord(fixtureStore, 'simulated', 'context', { timestamp: now - 8 * 3600000 },
+      { config: { ...config.control, thermalPriors: { lossPerHour: 0.0187 } } });
+    const model = initialAdaptiveModel({ ...config.control,
+      thermalPriors: Object.fromEntries(Object.values(coefficientValues).map(row => [row.parameter, row.value])) });
+    model.validation = { accepted: true, fittedParameters: Object.values(coefficientValues).map(row => row.parameter) };
+    model.trainedAt = new Date(now - 4 * 3600000).toISOString();
+    appendLearningRecord(fixtureStore, 'simulated', 'context', { timestamp: now - 4 * 3600000,
+      historySeed: { model, source: { basis: 'synthetic-browser-model' } } }, { config: config.control });
+  } finally { fixtureStore.close(); }
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
   app.store.snapshot({kind:'weather',source:'browser-fixture',fetchedAt:now-4*86400000,
@@ -100,7 +123,11 @@ try {
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/original saved history.*stay in memory.*original recorded intervals/);
   assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"),/hourly temperature extrema|15-minute energy sums|15-minute aggregate/);
   assert(await evaluate("document.querySelectorAll('#left-axis optgroup').length")>=10);
-  for(const key of ['garage_temperature','brine_pump_speed','phase_energy','alarm_code'])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
+  assert.equal(await evaluate("document.querySelector('#left-axis optgroup').label.split(' · ')[0]"), 'Electricity');
+  for(const key of ['brine_pump_speed','phase_energy','alarm_code', ...coefficientKeys])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
+  for(const key of ['indoor_temperature','garage_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
+    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is already shown on the right axis`);
+  assert.equal(await evaluate("document.querySelector('#left-axis optgroup[label=\"Model coefficients · Calculated\"]').children.length"), 4);
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
     window.recordingFixture={fetch:window.fetch.bind(window),requests:0,fail:false,hold:false};
@@ -175,12 +202,12 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('A comfortable home')"), false);
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   const legendState = text => evaluate(`Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes(${JSON.stringify(text.toLowerCase())}))?.getAttribute('aria-pressed')`);
-  const checkPowerDrawn = async () => {
+  const checkSeriesDrawn = async (keys, left) => {
     await until(`document.getElementById('history').dataset.ready === 'true'
-      && document.getElementById('history').dataset.left === 'power'
-      && ['property_power', 'charger_power'].every(key =>
+      && document.getElementById('history').dataset.left === ${JSON.stringify(left)}
+      && ${JSON.stringify(keys)}.every(key =>
         document.querySelector('[data-chart-key="' + key + '"]')?.getAttribute('aria-pressed') === 'true')`);
-    for (const key of ['property_power', 'charger_power']) {
+    for (const key of keys) {
       const changedPixels = await evaluate(`(async () => {
         const canvas = document.getElementById('history');
         const context = canvas.getContext('2d');
@@ -203,6 +230,7 @@ try {
       assert.ok(changedPixels > 0, `${key} draws visible chart pixels, not just a legend entry`);
     }
   };
+  const checkPowerDrawn = () => checkSeriesDrawn(['property_power', 'charger_power'], 'power');
   await checkPowerDrawn();
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
@@ -243,6 +271,7 @@ try {
   for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'],
     ['heat_pump_power','heat_pump_power','property_power'],
     ...['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'].map(name => [name, name, 'property_power']),
+    ...coefficientKeys.map(name => [name, name, 'property_power']),
     ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
     await evaluate(`document.getElementById('left-axis').value=${JSON.stringify(left)}; document.getElementById('left-axis').dispatchEvent(new Event('change')); true`);
@@ -250,6 +279,22 @@ try {
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     assert.equal(await legendState('indoor'), 'true');
     if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/reconstructed from saved equipment states.*gaps/);
+    if (coefficientKeys.includes(left)) {
+      const tableCounts = () => app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
+        .map(({ name }) => [name, app.store.db.prepare(`SELECT COUNT(*) AS count FROM "${name.replaceAll('"', '""')}"`).get().count]);
+      const before = tableCounts();
+      const replayed = await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response => response.json());
+      assert.deepEqual(tableCounts(), before, 'Coefficient API reads do not add stored entries');
+      assert.equal(replayed.meta.modelCoefficients.basis, 'read-only-learning-replay');
+      const values = replayed.series[left].filter(point => Number.isFinite(point.y));
+      assert(values.some(point => point.coefficientStatus === 'initial'));
+      assert(values.some(point => point.coefficientStatus === 'fitted' && point.y === coefficientValues[left].value));
+      assert(values.every(point => point.modelCoefficient && point.inputSource === 'Simulation'));
+      assert(values.every(point => point.x <= now), 'Current coefficients are never extended into the future');
+      assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /without additional stored history.*initial estimates, fitted values and retained values/);
+      assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"), /Model inputs are the values saved/);
+      await checkSeriesDrawn([left], left);
+    }
     if (left === 'power') await checkPowerDrawn();
     timings.push({ action: left, elapsedMs: Math.round(performance.now() - began) });
   }
@@ -427,7 +472,7 @@ try {
   seedTimingBrowserFixture(app.store);
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
-  await until("document.getElementById('outdoor-age').textContent.includes('FMI nearby station')");
+  await until("document.getElementById('outdoor-age')?.textContent.includes('FMI nearby station')");
   await until("document.getElementById('history').dataset.ready === 'true'");
   const providerChart = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?start=2026-09-07&end=2026-09-07&left=power`).then(response => response.json());
   for (const [key, expected] of [['property_power', 6.9], ['charger_power', 2.07]]) {
@@ -493,7 +538,7 @@ try {
   await capture('home-energy-provider-fixture-mobile');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
-    checked: ['default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'default-dark-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'three-dashboard-cards', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

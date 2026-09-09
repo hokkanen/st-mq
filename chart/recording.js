@@ -1,10 +1,15 @@
-import { HISTORY_AXES, HISTORY_GROUPS, SIGNAL_INFO } from '../src/domain/history-series.js';
+import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
+
+// Frequent chart choices first; equipment diagnostics remain together at the end.
+const leftAxisGroups = ['Electricity', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
+  'Learning', 'Model coefficients', 'Model inputs', 'Equipment states', 'Settings', 'Runtime counters', 'Meter checks'];
+const leftAxes = HISTORY_AXES.filter(axis => !RIGHT_AXIS_SIGNALS.includes(axis.key));
 
 export function populateHistoryAxes(select) {
-  const chosen = select.value || 'power';
+  const chosen = leftAxes.some(axis => axis.key === select.value) ? select.value : 'power';
   select.replaceChildren();
-  for (const name of HISTORY_GROUPS) {
-    const axes = HISTORY_AXES.filter(axis => axis.group === name);
+  for (const name of leftAxisGroups) {
+    const axes = leftAxes.filter(axis => axis.group === name);
     if (!axes.length) continue;
     const kinds = new Set(axes.map(axis => axis.kind));
     const group = document.createElement('optgroup');

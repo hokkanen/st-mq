@@ -89,6 +89,8 @@ test('current coefficient values retain units and separate fitted values from fi
   assert.equal(display.inputs.length, 8);
   assert.equal(display.coefficients.length, 6);
   assert.match(display.coefficientHistory, /today’s values are not applied to earlier intervals/);
+  assert.match(display.coefficientHistory, /four adjustable coefficients reconstructed from the learning journal/);
+  assert.match(display.coefficientHistory, /creates no additional stored history/);
 });
 
 test('unavailable and rejected coefficients are never presented as learned values', () => {

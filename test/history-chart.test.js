@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible } from '../chart/history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel } from '../chart/history-model.js';
+import { MODEL_COEFFICIENT_INFO, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 
 test('calendar controls use Finnish dates across UTC midnight, leap days and both clock changes', () => {
   assert.equal(finnishDate(Date.parse('2026-09-07T21:30:00Z')), '2026-09-08');
@@ -75,6 +76,34 @@ test('chart queries preserve selected dates without expanding to forecast horizo
   assert.equal(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'power' }), '/api/chart?start=2026-09-08&end=2026-09-08&left=power&points=800');
   assert.throws(() => chartQuery({ startDate: '2026-09-08', endDate: '2026-09-07', left: 'power' }), /end date/);
   assert.throws(() => chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'injected' }), /left axis/);
+});
+
+test('coefficient history keeps exact replay metadata and visible steps alongside shared right-axis readings', () => {
+  for (const [key, info] of Object.entries(MODEL_COEFFICIENT_INFO)) {
+    const points = [{ x: 1000, y: 0.018, modelCoefficient: true, coefficientStatus: 'initial' },
+      { x: 2000, y: 0.0187, modelCoefficient: true, coefficientStatus: 'fitted', modelUpdatedAt: 2000 },
+      { x: 3000, y: null }];
+    const datasets = historyDatasets({ [key]: points }, key);
+    const coefficient = datasets.find(dataset => dataset.yAxisID === 'left');
+    assert.equal(coefficient.key, key);
+    assert.equal(coefficient.label, info.label);
+    assert.equal(coefficient.data, points);
+    assert.equal(coefficient.stepped, true);
+    assert.equal(coefficient.spanGaps, false);
+    assert.equal(coefficient.tension, 0);
+    assert.deepEqual(datasets.filter(dataset => dataset.yAxisID === 'right').map(dataset => dataset.key), RIGHT_AXIS_SIGNALS);
+    assert(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: key }).includes(`left=${key}`));
+  }
+  assert.equal(historyValueLabel('model_coefficient_heat_loss', 0.0187, '1/h · heat loss'), '0.0187 1/h');
+  assert.equal(historyValueLabel('model_coefficient_compressor_response', 0.7503, '°C/h'), '0.750 °C/h');
+  assert.equal(historyValueLabel('model_coefficient_solar_response', 0, '°C/h per kW/m²'), '0.000 °C/h per kW/m²');
+  assert.equal(historyValueLabel('model_coefficient_auxiliary_response', 0.135, '°C/kWh'), '0.135 °C/kWh');
+  assert.equal(historyValueLabel('model_controller_phase', 2, 'state'), 'Tariff reduction');
+  assert.equal(historyValueLabel('indoor_temperature', 21.256, '°C'), '21.26 °C');
+  assert.match(coefficientStatusLabel('initial'), /Initial estimate/);
+  assert.match(coefficientStatusLabel('fitted'), /Fitted in the accepted model/);
+  assert.match(coefficientStatusLabel('retained'), /Retained value \/ awaiting evidence/);
+  assert.match(coefficientStatusLabel(), /unavailable/);
 });
 
 test('quick navigation cancels obsolete downloads even if their transport ignores cancellation', async () => {

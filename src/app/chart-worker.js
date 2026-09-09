@@ -33,6 +33,7 @@ parentPort.on('message', ({ id, args, operation }) => {
       (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
       (SELECT MAX(id) FROM recorder_coverage) coverage,
+      (SELECT MAX(id) FROM learning_journal) learningJournal,
       (SELECT MAX(id) FROM events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get());
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }
@@ -45,7 +46,10 @@ parentPort.on('message', ({ id, args, operation }) => {
       cache.delete(key); cache.set(key, entry);
       result = { ...entry.result, now: args.now, meta: { ...entry.result.meta, cacheHit: true } };
     } else {
-      result = getChartData({ ...args, store });
+      // Replay and source handovers must see one committed journal prefix.
+      db.exec('BEGIN');
+      try { result = getChartData({ ...args, store }); db.exec('COMMIT'); }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
       const bytes = Buffer.byteLength(JSON.stringify(result));
       while (cache.size && (cache.size >= 16 || cacheBytes + bytes > 32 * 1024 * 1024)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);

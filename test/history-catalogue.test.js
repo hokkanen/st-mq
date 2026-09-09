@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { H66_HISTORY_SIGNALS,HISTORY_AXES,PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
+import { H66_HISTORY_SIGNALS,HISTORY_AXES,PHASE_ENERGY_SIGNALS,MODEL_COEFFICIENT_INFO,RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 import { H66_REGISTERS } from '../src/domain/telemetry.js';
-import { recordingRows } from '../chart/recording.js';
+import { recordingRows, populateHistoryAxes } from '../chart/recording.js';
 
 test('every retained H66 parameter and garage temperature is selectable independently of model use',()=>{
   assert.equal(H66_HISTORY_SIGNALS.length,30);
@@ -17,4 +17,29 @@ test('every retained H66 parameter and garage temperature is selectable independ
   assert(rows.find(r=>r.signal==='brine_pump_speed'));
   assert.equal(rows.find(r=>r.signal==='auxiliary_power').group,'Electricity');
   assert(!rows.some(r=>r.signal.startsWith('model_')),'Calculated learning views do not create recorder channels');
+});
+
+test('left-axis menu puts electricity first and groups replay coefficients without duplicating the right axis', t => {
+  const node = () => ({ children: [], value: '', append(child) { this.children.push(child); },
+    replaceChildren() { this.children = []; } });
+  const previousDocument = globalThis.document;
+  globalThis.document = { createElement: node };
+  t.after(() => { if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument; });
+  const select = node(); select.value = 'model_coefficient_heat_loss';
+  populateHistoryAxes(select);
+  assert.equal(select.value, 'model_coefficient_heat_loss');
+  assert.deepEqual(select.children.map(group => group.label.split(' · ')[0]), ['Electricity', 'Heating', 'Hot water',
+    'Ground loop', 'Control', 'Weather', 'Learning', 'Model coefficients', 'Model inputs', 'Equipment states',
+    'Settings', 'Runtime counters', 'Meter checks']);
+  const choices = new Set(select.children.flatMap(group => group.children.map(option => option.value)));
+  for (const key of RIGHT_AXIS_SIGNALS) assert(!choices.has(key), `${key} already appears on the right axis`);
+  const coefficients = select.children.find(group => group.label === 'Model coefficients · Calculated');
+  assert.deepEqual(coefficients.children.map(option => option.value), Object.keys(MODEL_COEFFICIENT_INFO));
+  assert.equal(coefficients.children.length, 4);
+  assert.deepEqual(Object.values(MODEL_COEFFICIENT_INFO).map(info => info.parameter),
+    ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh']);
+  assert(choices.has('model_indoor_temperature') && choices.has('model_outdoor_temperature'), 'Saved learning inputs remain inspectable');
+  assert(!recordingRows().some(row => row.group === 'Model coefficients'), 'Replay does not add recorder channels');
+  select.value = 'spot_price'; populateHistoryAxes(select);
+  assert.equal(select.value, 'power', 'An unavailable old choice falls back to the default');
 });

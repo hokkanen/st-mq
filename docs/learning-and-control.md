@@ -23,9 +23,29 @@ inferred. **Explore learning** separates **Learning outcomes · Calculated**, **
 inputs** and **Model coefficients** into closed sections.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
-or fixed building assumption. They use the existing learning state; this display
-adds no database records or historical coefficient reconstruction. Earlier chart
-intervals never receive today's coefficient values.
+or fixed building assumption. The current-value display uses the existing learning
+state. Four **Model coefficients · Calculated** chart choices show historical heat
+loss, compressor response, solar response and auxiliary response. The two fixed
+building assumptions remain informational values only.
+
+Coefficient charts replay the immutable learning journal in memory with the matching
+algorithm, saved configuration and initial seed. Replay preserves journal order,
+including late episodes, and uses earlier entries to establish the model at the
+selected range's start. Each coefficient is a stepped line with initial, fitted or
+retained status in its tooltip. Unsupported or incomplete replay prefixes leave
+gaps; an explicit saved seed can establish a new supported start. The selected live
+learner and imported history are replayed separately, and simulation stays separate.
+Earlier chart intervals never receive today's coefficient values.
+
+Chart requests use a read-only database connection and never save replay checkpoints,
+coefficient rows or new snapshots. A bounded memory cache reuses derived timelines
+and resumes replay as new entries arrive; advancing the clock alone does not repeat
+learning. The first request can take longer because it replays earlier learning. The left-axis
+menu starts with **Electricity**, followed by heating and control, weather, learning
+and model views, then equipment diagnostics. Main temperature and electricity-price
+choices are omitted from that menu because they already appear on the right axis.
+Saved model-input temperatures remain selectable because they describe the inputs
+used for learning.
 
 Observed thermal drivers are outdoor temperature, archived solar radiation,
 space-heating compressor duty and space-heating auxiliary power. Indoor temperature

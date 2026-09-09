@@ -57,6 +57,17 @@ export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_target_temperature', 'Reference temperature input', '°C', 'indoor', 'The comfort reference saved when the interval was processed. Later changes do not rewrite the earlier reference.'],
 ].map(([signal, label, unit, color, detail]) => [signal, { label, unit, color, detail, kind: 'Calculated', group: 'Model inputs' }])));
 
+// Reconstructed from the learning journal in memory, never recorder channels.
+export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
+  ['model_coefficient_heat_loss', 'Heat loss', '1/h', 'outdoor', 'lossPerHour', 4, 'Heat loss per degree of indoor–outdoor temperature difference. Multiply by that difference to get the modeled cooling contribution in °C/h.'],
+  ['model_coefficient_compressor_response', 'Compressor heating response', '°C/h', 'compressorSpace', 'normalHeatCPerHour', 3, 'Effective heating contribution at full observed space-heating compressor duty. Building heat storage delays the room response; this is not measured compressor output or COP.'],
+  ['model_coefficient_solar_response', 'Solar response', '°C/h per kW/m²', 'solar', 'solarCPerHourPerKwM2', 3, 'Temperature response to forecast solar radiation. Radiation forecasts enter in W/m² and are converted to kW/m²; no house radiation sensor is implied.'],
+  ['model_coefficient_auxiliary_response', 'Auxiliary heating response', '°C/kWh', 'auxiliary', 'auxiliaryCPerKwh', 3, 'Effective heating contribution per estimated auxiliary electricity input during space heating. Stored heat affects when the indoor temperature responds.'],
+].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
+  { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
+
+export const RIGHT_AXIS_SIGNALS = Object.freeze(['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
+
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power'], 'kW', 'Calculated'],
   ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
@@ -80,6 +91,7 @@ export const HISTORY_AXES = Object.freeze([
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
   ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
+  ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Learning', 'Meter checks']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks']);

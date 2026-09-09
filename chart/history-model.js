@@ -1,4 +1,4 @@
-import { HISTORY_AXES, SIGNAL_INFO, MODEL_INPUT_INFO, PHASE_ENERGY_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXES, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -111,9 +111,8 @@ Object.assign(seriesInfo, {
   controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
   dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
 });
-for (const [signal, info] of Object.entries(MODEL_INPUT_INFO))
+for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO }))
   seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color];
-const rightKeys = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
 
 /** Shared right-axis readings must not conceal an empty selected left axis. */
 export function leftAxisAvailability(datasets) {
@@ -131,6 +130,18 @@ export function historyStateLabel(key, value) {
   if (['compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'dhwr_request') return value === 1 ? 'Pulse requested' : value === 0 ? 'Request expired' : `Unknown (${value})`;
   return null;
+}
+
+export function historyValueLabel(key, value, unit) {
+  const state = historyStateLabel(key, value);
+  if (state) return state;
+  const digits = MODEL_COEFFICIENT_INFO[key]?.digits;
+  return `${new Intl.NumberFormat('en-GB', { minimumFractionDigits: digits ?? 0, maximumFractionDigits: digits ?? 2 }).format(value)} ${unit.split(' · ')[0]}`;
+}
+
+export function coefficientStatusLabel(status) {
+  return { fitted: 'Fitted in the accepted model', retained: 'Retained value / awaiting evidence',
+    initial: 'Initial estimate / awaiting evidence' }[status] ?? 'Coefficient status unavailable';
 }
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
@@ -162,7 +173,7 @@ export function historySeriesAt(payload, now = payload.now) {
 
 export function historyDatasets(series = {}, left = 'power', preferences = {}, palette = defaultPalette) {
   if (!leftGroups[left]) throw new RangeError('Choose a valid left axis.');
-  return [...new Set([...leftGroups[left], ...rightKeys])].map(key => {
+  return [...new Set([...leftGroups[left], ...RIGHT_AXIS_SIGNALS])].map(key => {
     const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
     const isLeft = leftGroups[left].includes(key);

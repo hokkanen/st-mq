@@ -87,6 +87,12 @@ versions remain archival and are not silently interpreted as identical new-model
 history. Imported CSV formats, timestamps, units, duplicate handling and provenance
 remain unchanged.
 
+The four fitted-coefficient chart choices use the same per-entry learning operation
+in a read-only replay. They derive steps and provenance in memory without recording
+coefficient history or updating the controller checkpoint. Unsupported journal
+segments are shown as gaps, and newer model states are never backfilled into older
+dates. Initial estimates remain visibly distinct from fitted and retained values.
+
 Reconstruction itself does not reduce the best achievable model quality. Lossy
 recording can: discarded excursions, source timing and unobserved equipment states
 cannot be recovered by replay. The interval/joint-attribution fixes preserve useful

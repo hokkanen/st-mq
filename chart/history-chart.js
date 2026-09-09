@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyStateLabel } from './history-model.js';
+import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
@@ -188,9 +188,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
                   const interval = item.raw?.fromEnergy || item.raw?.modelInput ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
                   const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
-                  const stateLabel = historyStateLabel(item.dataset.key, item.parsed.y);
-                  const value = stateLabel ?? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(item.parsed.y)} ${item.dataset.unit.split(' · ')[0]}`;
-                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${item.raw?.modelInput?` · ${item.raw.inputSource} · saved learning input`:''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  const value = historyValueLabel(item.dataset.key, item.parsed.y, item.dataset.unit);
+                  const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
+                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${item.raw?.modelInput?` · ${item.raw.inputSource} · saved learning input`:''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -209,7 +209,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
     if (plot.left === 'heat_pump_power') notes.push('Heat-pump electricity is reconstructed from saved equipment states and dated nominal power assumptions. It is an estimate; missing, stale or unverified source periods appear as gaps.');
-    if (plot.left.startsWith('model_')) {
+    if (plot.left.startsWith('model_coefficient_')) {
+      notes.push('Coefficients show the model estimate known at each time, reconstructed from the saved learning journal without additional stored history. Stepped lines retain each value until the model changes. Tooltips distinguish initial estimates, fitted values and retained values awaiting evidence. Unavailable replay history remains blank.');
+    } else if (plot.left.startsWith('model_')) {
       notes.push('Model inputs are the values saved with completed learning intervals. They are not recalculated using today’s model or settings. Missing or rejected intervals appear as gaps; the indoor endpoint is the observed prediction target.');
       if (payload.meta?.modelInputs?.rejectedIntervals) notes.push(`${payload.meta.modelInputs.rejectedIntervals} input segments were excluded by recorded quality checks.`);
     }
