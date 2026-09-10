@@ -17,7 +17,7 @@ const prefix = '/api/hassio_ingress/synthetic-browser-session/';
 const uploadPath = '/addon_configs/synthetic_repository_st-mq/secrets.json';
 const now = Date.parse('2026-09-07T12:00:00Z');
 const requests = [], pending = new Map(), errors = [];
-let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false;
+let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false, metadataAvailable = true;
 
 try {
   writeFileSync(privatePath, '{}', { mode: 0o600 });
@@ -51,6 +51,7 @@ try {
         if (result.ok) {
           status.settingsReload.configuration = { environment: 'home-assistant', defaultsPath: '/st-mq/config.json',
             privatePath: '/data/options.json', importPath: '/config/secrets.json', externalImportPath: uploadPath };
+          if (!metadataAvailable) delete status.settingsReload.configuration;
           status.settingsReload.access = { ingress: { enabled: true }, direct: { enabled: false, tokenRequired: true } };
           status.settingsReload.result = { cleanupPending };
         }
@@ -103,7 +104,10 @@ try {
   await evaluate("document.getElementById('connections-details').open = true; document.getElementById('controls-details').open = true;");
   const instructions = await evaluate("document.getElementById('settings-configuration-steps').textContent");
   assert.ok(instructions.includes(uploadPath), 'UI renders the actual Supervisor slug supplied by status');
-  assert.match(instructions, /\/config\/secrets.json/);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#settings-location dt, #settings-location dd')].map(node => node.textContent)"),
+    ['Folder', '/addon_configs/synthetic_repository_st-mq', 'File name', 'secrets.json', 'Full path', uploadPath,
+      'Inside add-on', '/config/secrets.json']);
+  assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), true);
   assert.match(instructions, /freshly saved options/);
   assert.match(instructions, /Omitted fields keep saved values/);
   assert.match(instructions, /failed import keeps the file/);
@@ -137,6 +141,13 @@ try {
   await send('Page.reload');
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), false, 'Cleanup warning survives a page reload');
+  metadataAvailable = false;
+  await send('Page.reload');
+  await until("document.getElementById('history')?.dataset.ready === 'true'");
+  assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), false);
+  assert.equal(await evaluate("document.getElementById('settings-location-message').textContent"),
+    'Restart ST-MQ to load configuration paths, then refresh this page');
+  assert.equal(await evaluate("document.getElementById('settings-location').children.length"), 0, 'Missing backend metadata never invents a folder');
   rejectStatus = true;
   await send('Page.reload');
   await until("document.getElementById('error')?.textContent.includes('Reopen ST-MQ from Home Assistant')");
@@ -144,7 +155,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'ingress-browser-smoke-passed', checks: ['built theme, CSS and module assets under ingress prefix',
     'chart, events, recording, audits and configuration API requests under ingress prefix', 'actual upload path in instructions',
-    'Home Assistant login without token prompt', 'Apply configuration updates visible state', 'persistent import cleanup warning',
+    'Home Assistant login without token prompt', 'Apply configuration updates visible state', 'persistent import cleanup warning', 'explicit restart guidance when backend path metadata is missing',
     'configuration paths fit mobile width', 'expired HA session directs user back to Home Assistant'] }));
   await send('Page.close');
 } finally {

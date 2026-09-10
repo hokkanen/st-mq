@@ -151,6 +151,9 @@ try {
   await evaluate("document.getElementById('connections-details').open=true; document.getElementById('controls-details').open=true; document.getElementById('temporary-details').open=true; document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input'))");
   assert.equal(actualStatus.settingsReload.configuration.environment, 'ubuntu');
   assert.equal(actualStatus.settingsReload.configuration.privatePath, join(directory, 'options.json'));
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#settings-location dt, #settings-location dd')].map(node => node.textContent)"),
+    ['Folder', directory, 'File name', 'options.json', 'Full path', join(directory, 'options.json')]);
+  assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), true);
   const configurationInstructions = await evaluate("document.getElementById('settings-configuration-steps').textContent");
   assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.privatePath), 'Configuration instructions show the actual isolated private file');
   assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.defaultsPath), 'Configuration instructions show the actual defaults file');

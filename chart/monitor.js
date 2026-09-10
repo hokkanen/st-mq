@@ -384,6 +384,14 @@ function render(s) {
   renderLearning(s);
   const scope = settingsReloadScope(s);
   $('settings-reload-help').textContent = scope.message;
+  $('settings-location-title').textContent = scope.location.title;
+  $('settings-location').replaceChildren();
+  for (const { label, value } of scope.location.rows) {
+    const term = document.createElement('dt'), description = document.createElement('dd'), path = document.createElement('code');
+    term.textContent = label; path.textContent = value; description.append(path); $('settings-location').append(term, description);
+  }
+  $('settings-location-message').textContent = scope.location.message;
+  $('settings-location-message').hidden = !scope.location.message;
   $('settings-configuration-steps').replaceChildren();
   for (const text of scope.instructions) {
     const item = document.createElement('li'); item.textContent = text; $('settings-configuration-steps').append(item);

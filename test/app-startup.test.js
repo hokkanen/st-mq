@@ -28,6 +28,9 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
     const status = await response.json();
     assert.equal(status.input, 'simulated');
     assert.equal(status.liveWrites, false);
+    assert.equal(status.settingsReload.configuration.environment, 'ubuntu');
+    assert.equal(status.settingsReload.configuration.privatePath, join(directory, 'st-mq/secrets.json'));
+    assert.equal(status.settingsReload.configuration.defaultsPath, config.configuration.defaultsPath);
     app.engine.setOverride(60);
     // A conflicting listener must close its worker instead of hanging startup.
     await assert.rejects(start({ config: { ...config, dataDir: join(directory, 'conflict'), dbPath: join(directory, 'conflict/test.sqlite'), port: app.server.address().port } }), /EADDRINUSE/);

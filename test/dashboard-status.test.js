@@ -87,6 +87,11 @@ test('configuration instructions use the actual standalone private path and pres
   assert.match(scope.instructions.join(' '), /omitted settings use the defaults/);
   assert.match(scope.access.join(' '), /Loopback access works without a token/);
   assert.doesNotMatch(scope.instructions.join(' '), /upload|removes|Home Assistant/i);
+  assert.deepEqual(scope.location.rows, [
+    { label: 'Folder', value: '/etc/example' }, { label: 'File name', value: 'secrets.json' },
+    { label: 'Full path', value: '/etc/example/secrets.json' },
+  ]);
+  assert.equal(scope.location.message, '');
 });
 
 test('Home Assistant configuration instructions distinguish sparse import, saved options and live access', () => {
@@ -101,8 +106,40 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
   assert.match(scope.instructions.join(' '), /failed import keeps the file/);
   assert.match(scope.access.join(' '), /Home Assistant login/);
   assert.match(scope.access.join(' '), /Direct access is disabled/);
+  assert.deepEqual(scope.location.rows, [
+    { label: 'Folder', value: '/addon_configs/example_st-mq' }, { label: 'File name', value: 'secrets.json' },
+    { label: 'Full path', value: '/addon_configs/example_st-mq/secrets.json' },
+    { label: 'Inside add-on', value: '/config/secrets.json' },
+  ]);
+  assert.equal(scope.location.message, '');
   reload.access.direct.enabled = true;
   assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /Clear controller.web_token and apply to disable/);
   reload.configuration.externalImportPath = null;
-  assert.doesNotMatch(settingsReloadScope({ settingsReload: reload }).instructions.join(' '), /<.*slug|undefined|null/);
+  const missingSlug = settingsReloadScope({ settingsReload: reload });
+  assert.doesNotMatch(missingSlug.instructions.join(' '), /<.*slug|undefined|null/);
+  assert.deepEqual(missingSlug.location.rows, [{ label: 'Inside add-on', value: '/config/secrets.json' }]);
+  assert.equal(missingSlug.location.message, 'Restart ST-MQ to load configuration paths, then refresh this page');
+});
+
+test('configuration location reports missing metadata explicitly without guessing private paths', () => {
+  for (const configuration of [undefined, null, {}, { environment: 'ubuntu' }, { environment: 'home-assistant' },
+    { environment: 'ubuntu', privatePath: '' }, { environment: 'ubuntu', privatePath: '/folder/' }]) {
+    const scope = settingsReloadScope({ settingsReload: { available: true, configuration } });
+    assert.equal(scope.location.message, 'Restart ST-MQ to load configuration paths, then refresh this page');
+    assert.deepEqual(scope.location.rows, []);
+    assert.doesNotMatch(scope.instructions.join(' '), /undefined|null|\/home\/|\/addon_configs\/|\/config\/secrets/);
+  }
+});
+
+test('configuration location preserves custom filenames, service paths and XDG paths with spaces', () => {
+  for (const [privatePath, folder, filename] of [
+    ['/srv/example/private/custom.json', '/srv/example/private', 'custom.json'],
+    ['/home/example user/Settings/st-mq/secrets.json', '/home/example user/Settings/st-mq', 'secrets.json'],
+    ['/settings.json', '/', 'settings.json'],
+  ]) {
+    const { location } = settingsReloadScope({ settingsReload: { configuration: { environment: 'ubuntu', privatePath } } });
+    assert.deepEqual(location.rows, [{ label: 'Folder', value: folder }, { label: 'File name', value: filename },
+      { label: 'Full path', value: privatePath }]);
+    assert.equal(location.message, '');
+  }
 });
