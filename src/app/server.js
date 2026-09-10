@@ -40,6 +40,7 @@ function numberParam(url, key, fallback, max) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
   getAccess, ingress = false, role = 'primary', getReadContext, replicationStatus,
+  pairContext, controlAuthority,
   reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
@@ -81,6 +82,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return true;
         };
         if (!stillAuthorized()) return;
+        if (url.pathname === '/api/pairing' && req.method === 'GET')
+          return json(200, pairContext?.status() ?? { enabled: false });
+        if (url.pathname === '/api/pairing/action' && req.method === 'POST') {
+          if (!pairContext) return json(409, { error: 'Paired operation is not configured.' });
+          const input = await body(req);
+          if (!stillAuthorized()) return;
+          return json(202, pairContext.requestAction(input));
+        }
         if (role === 'replica' && !['GET', 'HEAD'].includes(req.method))
           return json(405, { error: 'This replica is read-only. Make changes on the primary instance.' });
         const unavailable = () => {
@@ -96,7 +105,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const status = () => {
           const replication = replicationStatus?.();
           return { ...(readContext ? engine : getEngine()).status(), settingsReload: settingsReloadStatus(),
-            ...(replication ? { replication } : {}) };
+            ...(replication ? { replication } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
+              ...(!controlAuthority.canControl() ? { readOnly: true, liveWrites: false } : {}) } : {}),
+            ...(pairContext ? { pairing: pairContext.status(),
+              liveWrites: pairContext.canControl() && Boolean((readContext ? engine : getEngine()).status().liveWrites),
+              readOnly: !pairContext.canControl() } : {}) };
         };
         const mutate = async action => {
           const input = await body(req);
@@ -106,6 +119,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           // A slow JSON body can span a complete reload. Resolve the engine only
           // after parsing, and never dispatch while a replacement is in progress.
           if (unavailable()) return json(503, { error: unavailable() });
+          if (pairContext && !pairContext.canControl())
+            return json(409, { error: 'This instance does not own device control.' });
+          if (controlAuthority && !controlAuthority.canControl())
+            return json(409, { error: 'Another ST-MQ controller owns device control. This instance is protected.' });
+          if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/settings/reload'].includes(url.pathname))
+            return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
           return action(getEngine(), input);
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());

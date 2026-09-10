@@ -31,7 +31,7 @@ function observed(store, signal, now) {
  * verified generation, including its chart worker, until the response ends. */
 export async function startReplica({ config, clock = Date.now,
   readPublication = readReplicaPublication, makeChartService = createChartService,
-  installSignalHandlers = true } = {}) {
+  installSignalHandlers = true, pairContext = null, controlAuthority = null } = {}) {
   if (config?.role !== 'replica') throw new TypeError('Replica startup requires the local replica role');
   if (!config.replication?.directory) throw new TypeError('A local replica directory is required');
   let current = null, refreshing = null, closed = false, lastError = null;
@@ -120,7 +120,7 @@ export async function startReplica({ config, clock = Date.now,
       } };
   }
 
-  const webAccess = createWebAccess({ config, role: 'replica', getReadContext,
+  const webAccess = createWebAccess({ config, role: 'replica', getReadContext, pairContext, controlAuthority,
     settingsReloadStatus: () => ({ available: false, busy: false, reason: unavailable }),
     staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') });
   async function close() {

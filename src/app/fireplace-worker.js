@@ -8,6 +8,8 @@ import { fireplaceLearningContext } from './fireplace-inputs.js';
 const db = workerData.dbPath === ':memory:' ? null : new DatabaseSync(workerData.dbPath, { readOnly: true });
 if (db) db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=5000;');
 let checkpoint = null, source = null, processed = 0;
+let epoch = null;
+const currentEpoch = () => db?.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(workerData.input)?.epoch ?? 'original';
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
   algorithmVersion: row.algorithm_version, configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
   forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) });
@@ -16,9 +18,10 @@ parentPort.on('message', message => {
   try {
     if (message.type === 'rebuild') {
       checkpoint = null; processed = 0;
+      epoch = currentEpoch();
       source = db ? fireplaceLearningContext({ db }, workerData.input, message.revision) : message.source;
     }
-    if (!source || source.fireplaceRevision !== message.revision
+    if (!source || epoch !== currentEpoch() || source.fireplaceRevision !== message.revision
       || db && fireplaceRevision({ db }, workerData.input) !== message.revision) {
       parentPort.postMessage({ type: 'stale', revision: message.revision }); return;
     }
@@ -33,7 +36,7 @@ parentPort.on('message', message => {
       after = entries.at(-1).id; processed += entries.length;
       parentPort.postMessage({ type: 'progress', revision: source.fireplaceRevision, processed, journalCursor: after });
     }
-    if (db && fireplaceRevision({ db }, workerData.input) !== message.revision) {
+    if (db && (epoch !== currentEpoch() || fireplaceRevision({ db }, workerData.input) !== message.revision)) {
       parentPort.postMessage({ type: 'stale', revision: message.revision }); return;
     }
     parentPort.postMessage({ type: 'ready', revision: source.fireplaceRevision, checkpoint, processed, head: after });

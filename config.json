@@ -133,6 +133,22 @@
       "timeout_seconds": 3600,
       "stale_seconds": 180,
       "ssh_config": ""
+    },
+    "pairing": {
+      "enabled": false,
+      "pair_id": "",
+      "token": "",
+      "peer_url": "",
+      "listen_host": "0.0.0.0",
+      "port": 1244,
+      "directory": "",
+      "interval_seconds": 60,
+      "timeout_seconds": 3600,
+      "vip_interface": "",
+      "vip_address": "",
+      "vip_prefix": 24,
+      "vip_helper": "/usr/local/bin/st-mq-vip",
+      "vip_socket": ""
     }
   },
   "schema": {
@@ -243,6 +259,27 @@
       "timeout_seconds": "int(30,86400)",
       "stale_seconds": "int(30,604800)",
       "ssh_config": "str?"
+    },
+    "pairing": {
+      "enabled": "bool",
+      "pair_id": "str?",
+      "token": "password?",
+      "peer_url": "str?",
+      "listen_host": "str",
+      "port": "int(1,65535)",
+      "directory": "str?",
+      "interval_seconds": "int(10,86400)",
+      "timeout_seconds": "int(30,86400)",
+      "vip_interface": "str?",
+      "vip_address": "str?",
+      "vip_prefix": "int(1,30)",
+      "vip_helper": "str",
+      "vip_socket": "str?"
     }
-  }
+  },
+  "host_network": true,
+  "privileged": [
+    "NET_ADMIN",
+    "NET_RAW"
+  ]
 }

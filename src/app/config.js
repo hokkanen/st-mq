@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
 import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
+import { pairingEnabled, pairingConfiguration } from '../pairing/config.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
@@ -170,7 +171,9 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   const addon = env.STMQ_ADDON === '1';
   const role = env.STMQ_ROLE ?? options.controller?.role ?? 'primary';
   if (!['primary', 'replica'].includes(role)) throw new Error('STMQ_ROLE must be primary or replica');
-  const replica = role === 'replica';
+  // Paired standbys retain their own future controller configuration privately.
+  // The durable pair role decides whether a runtime may actually use it.
+  const replica = role === 'replica' && !pairingEnabled(options.pairing, env);
   const input = replica ? 'offline' : env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
   if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
@@ -188,7 +191,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       if (!['indoor_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
-    const { replication: _replication, ...providerOptions } = options;
+    const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
@@ -222,6 +225,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
+  config.pairing = pairingConfiguration(options.pairing, env, config);
   configurationSources.set(config, source);
   configurationReaders.set(config, () => loadConfig(env, cwd));
   return config;

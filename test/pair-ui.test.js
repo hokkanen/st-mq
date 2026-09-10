@@ -1,0 +1,246 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createPairActions, createPairPanel, isPairManagementRequest, pairActionAllowed, pairAllowsControl,
+  pairConfirmation, pairDisplay, renderRecoveryReport } from '../chart/pair-status.js';
+import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../chart/replica-status.js';
+
+const now = Date.parse('2026-09-12T12:00:00Z');
+const id = '11111111-1111-4111-8111-111111111111';
+const previewId = 'a'.repeat(64);
+const primary = (overrides = {}) => ({ enabled: true, role: 'primary', canControl: true, busy: false,
+  peer: { reachable: true, role: 'replica' }, vip: { owned: true, ready: true },
+  recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, handover: true, promote: false, rejoin: false }, ...overrides });
+const standby = (overrides = {}) => primary({ role: 'replica', canControl: false, vip: { owned: false },
+  actions: { promote: true }, ...overrides });
+const preview = () => ({ previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 5 },
+  period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } });
+const checked = () => primary({ recovery: { state: 'ready', preview: preview() },
+  actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: false } });
+const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
+function memoryStorage() {
+  const values = new Map();
+  return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+}
+
+test('paired controls require confirmed primary authority while recovery keeps normal control available', () => {
+  assert.equal(pairAllowsControl({ role: 'primary' }), true);
+  for (const pairing of [{ enabled: true }, standby(), standby({ role: 'protected' }), primary({ canControl: false }), primary({ transition: { kind: 'handover' } })]) {
+    const status = { role: 'primary', pairing };
+    assert.equal(pairAllowsControl(status), false);
+    assert.equal(isReadOnlyReplica(status), true, 'a stale primary dashboard cannot enable controls after authority loss');
+  }
+  assert.equal(pairAllowsControl({ pairing: primary({ busy: true, recovery: { state: 'recovering' } }) }), true);
+  assert.equal(isReadOnlyReplica({ role: 'replica', pairing: primary() }), true, 'a promoted viewer waits for fresh primary runtime status');
+});
+
+test('a standalone authority loser remains readable and its chart stops at authority loss rather than an older outgoing backup', () => {
+  const stoppedAt = now - 60000;
+  const status = { role: 'primary', now, controlAuthority: { state: 'protected', stoppedAt },
+    replication: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 }, observations: {} };
+  assert.equal(isReadOnlyReplica(status), true);
+  assert.equal(chartObservationTime(status, now), stoppedAt);
+  const display = replicaDisplay(status);
+  assert.equal(display.available, true);
+  assert.equal(display.snapshotAt, stoppedAt);
+  assert.match(display.summary, /controller is stopped/);
+  assert.doesNotMatch(display.summary, /first verified|automatically/);
+  assert.equal(display.verifiedAt, null, 'an earlier outgoing backup cannot verify the local stopped controller database');
+});
+
+test('the read-only POST exception is limited to known pairing operations on an enabled pair', () => {
+  const status = { role: 'replica', pairing: standby() }, body = { action: 'promote', requestId: id };
+  assert.equal(isPairManagementRequest('/api/pairing/action', body, status), true);
+  for (const path of ['/api/temporary', '/api/settings/reload', '/api/pairing/action/other', '/api/pairing'])
+    assert.equal(isPairManagementRequest(path, body, status), false);
+  assert.equal(isPairManagementRequest('/api/pairing/action', { ...body, action: 'control' }, status), false);
+  assert.equal(isPairManagementRequest('/api/pairing/action', { ...body, requestId: 'invalid' }, status), false);
+  assert.equal(isPairManagementRequest('/api/pairing/action', body, { pairing: { enabled: false } }), false);
+  assert.equal(isPairManagementRequest('/api/pairing/action', body, undefined), false);
+});
+
+test('pair display distinguishes protected history, peer outages, broker readiness and sync progress without exposing errors', () => {
+  assert.equal(pairDisplay({ enabled: false }), null);
+  const protectedView = standby({ role: 'protected', reason: 'private diagnostic', error: 'private error',
+    peer: { reachable: false, lastSeenAt: now - 120000, url: 'private peer URL' }, vip: { error: 'private broker diagnostic' } });
+  const display = pairDisplay(protectedView, { now });
+  assert.equal(display.state, 'protected');
+  assert.match(display.summary, /history is protected/);
+  assert.match(display.sync, /blocked/);
+  assert.match(display.peer, /Last seen/);
+  assert.match(display.broker, /needs attention/);
+  assert.doesNotMatch(JSON.stringify(display), /private/);
+  const copied = replicaDisplay({ role: 'replica', now, pairing: protectedView,
+    replication: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 } });
+  assert.match(copied.summary, /explicitly resolves recovery/);
+  assert.doesNotMatch(copied.summary, /automatically/);
+  assert.match(pairDisplay(primary({ peer: { reachable: false } })).summary, /does not stop home control/);
+  assert.match(pairDisplay(primary({ sync: { state: 'syncing', phase: 'verifying' } })).sync, /Verifying/);
+  assert.match(pairDisplay(primary({ sync: { sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 } }), { now }).sync, /3 minutes old/);
+  assert.match(pairDisplay(primary({ transition: { kind: 'handover', phase: 'quiescing' } })).phase, /Finishing control/);
+});
+
+test('management capability flags are restricted by role, transition, operation and checked donor identity', () => {
+  assert.equal(pairActionAllowed(primary(), 'handover'), true);
+  assert.equal(pairActionAllowed(standby(), 'promote'), true);
+  assert.equal(pairActionAllowed(standby({ role: 'protected' }), 'promote'), true);
+  assert.equal(pairActionAllowed(primary({ actions: { promote: true } }), 'promote'), false);
+  assert.equal(pairActionAllowed(standby({ actions: { recover: true } }), 'recover'), false);
+  assert.equal(pairActionAllowed(primary({ actions: { recover: true } }), 'recover'), false);
+  assert.equal(pairActionAllowed(checked(), 'recover'), true);
+  assert.equal(pairActionAllowed({ ...checked(), recovery: { state: 'ready', preview: { previewId: 'invalid' } } }, 'recover'), false);
+  assert.equal(pairActionAllowed(primary({ recovery: { state: 'complete' }, actions: { rejoin: true } }), 'rejoin'), true);
+  for (const change of [{ busy: true }, { transition: { kind: 'handover' } }, { uiOperation: { state: 'running' } }, { enabled: false }])
+    assert.equal(pairActionAllowed(primary(change), 'handover'), false);
+});
+
+test('force promotion requires explicit confirmation and never becomes an automatic retry', async () => {
+  const requests = [], confirmations = [];
+  const actions = createPairActions({ requestId: () => id, request: async (...args) => { requests.push(args); return operation(primary()); },
+    confirm: text => { confirmations.push(text); return false; } });
+  actions.update(standby({ role: 'protected' }));
+  assert.equal(await actions.run('promote'), false);
+  assert.equal(requests.length, 0);
+  assert.match(confirmations[0], /unreachable computer may still be controlling/i);
+  assert.equal(actions.snapshot().pending, null);
+  assert.match(pairConfirmation('rejoin'), /divergent data will be replaced/);
+});
+
+test('an asynchronous accepted operation stays pending until its matching completion and blocks duplicate clicks', async () => {
+  let resolve;
+  const bodies = [];
+  const actions = createPairActions({ requestId: () => id, request: (path, body) => { bodies.push(body); return new Promise(done => { resolve = done; }); } });
+  actions.update(primary());
+  const first = actions.run('check-recovery');
+  assert.equal(await actions.run('check-recovery'), false);
+  assert.equal(bodies.length, 1);
+  resolve(operation(primary(), 'running'));
+  assert.equal(await first, true);
+  assert.equal(actions.snapshot().pending.requestId, id, 'HTTP 202 is not a completion');
+  assert.match(actions.snapshot().message, /Waiting for its completion/);
+  actions.update({ ...checked(), uiOperation: { id: previewId, state: 'complete' } });
+  assert.notEqual(actions.snapshot().pending, null, 'a different operation cannot acknowledge this request');
+  actions.update(operation(checked()));
+  assert.equal(actions.snapshot().pending, null);
+  assert.match(actions.snapshot().message, /Check complete/);
+});
+
+test('confirmed recovery sends the exact checked preview identity and server confirmation field', async () => {
+  let body, confirmation;
+  const actions = createPairActions({ requestId: () => id, confirm: text => { confirmation = text; return true; },
+    request: async (path, payload) => { assert.equal(path, '/api/pairing/action'); body = payload; return operation(primary(), 'running', 'recover'); } });
+  actions.update(checked());
+  assert.equal(await actions.run('recover'), true);
+  assert.deepEqual(body, { action: 'recover', requestId: id, confirmed: true, previewId });
+  assert.match(confirmation, /Existing master data wins/);
+});
+
+test('an uncertain promotion survives a reload and rechecks the original request after the machine became primary', async () => {
+  const storage = memoryStorage(), requests = [];
+  const first = createPairActions({ storage, requestId: () => id, confirm: () => true, request: async (path, body) => {
+    requests.push(body); throw new TypeError('synthetic private transport details');
+  } });
+  first.update(standby());
+  assert.equal(await first.run('promote'), false);
+  assert.doesNotMatch(first.snapshot().message, /private/);
+  const restored = createPairActions({ storage, requestId: () => { throw new Error('must reuse the original ID'); },
+    confirm: () => { throw new Error('already confirmed'); }, request: async (path, body) => {
+      requests.push(body); return operation(primary(), 'complete', 'promote');
+    } });
+  assert.equal(requests.length, 1, 'restoring a browser tab never automatically promotes');
+  restored.update(primary());
+  assert.equal(await restored.run('handover'), false, 'an unconfirmed action must be resolved first');
+  assert.equal(await restored.retry(), true);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(restored.snapshot().pending, null);
+});
+
+test('a durable completion resolves an uncertain operation after the server has restarted', async () => {
+  const storage = memoryStorage();
+  const first = createPairActions({ storage, requestId: () => id, request: async () => { throw new TypeError('response lost'); } });
+  first.update(primary()); await first.run('check-recovery');
+  const restored = createPairActions({ storage, request: async () => { throw new Error('should not send another request'); } });
+  restored.update({ ...checked(), recentActions: [{ requestId: id, name: 'check-recovery', state: 'complete' }] });
+  assert.equal(restored.snapshot().pending, null);
+  assert.match(restored.snapshot().message, /Check complete/);
+});
+
+test('a disconnected panel and a role change during confirmation both prevent new actions', async () => {
+  let resolveConfirmation;
+  let requests = 0;
+  const actions = createPairActions({ requestId: () => id, confirm: () => new Promise(resolve => { resolveConfirmation = resolve; }),
+    request: async () => { requests++; } });
+  actions.update(standby()); actions.unavailable();
+  assert.equal(await actions.run('promote'), false);
+  actions.update(standby());
+  const promotion = actions.run('promote');
+  actions.update(primary()); resolveConfirmation(true);
+  assert.equal(await promotion, false);
+  assert.equal(requests, 0);
+});
+
+test('rejected actions clear pending IDs, and asynchronous failures expose only fixed messages', async () => {
+  const actions = createPairActions({ requestId: () => id, request: async () => {
+    throw Object.assign(new Error('synthetic private server details'), { status: 409 });
+  } });
+  actions.update(primary());
+  await actions.run('check-recovery');
+  assert.equal(actions.snapshot().pending, null);
+  assert.match(actions.snapshot().message, /readiness changed/);
+  assert.doesNotMatch(actions.snapshot().message, /private/);
+  const accepted = createPairActions({ requestId: () => id, request: async () => operation(primary(), 'running') });
+  accepted.update(primary()); await accepted.run('check-recovery');
+  accepted.update({ ...operation(primary(), 'error'), error: 'private error' });
+  assert.equal(accepted.snapshot().pending, null);
+  assert.equal(accepted.snapshot().error, true);
+  assert.doesNotMatch(accepted.snapshot().message, /private/);
+});
+
+function fixture() {
+  class Element {
+    constructor(tag = 'div') { this.tagName = tag; this.dataset = {}; this.hidden = false; this.disabled = false; this.children = []; this.attributes = {}; this.textContent = ''; this.listeners = new Map();
+      this.classes = new Set(); this.classList = { toggle: (name, on) => on ? this.classes.add(name) : this.classes.delete(name) }; }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    addEventListener(name, callback) { this.listeners.set(name, callback); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+  }
+  const nodes = new Map();
+  const document = { createElement: tag => new Element(tag), getElementById: id => {
+    if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id);
+  } };
+  return { document, $: document.getElementById };
+}
+const allText = root => [root.textContent, ...root.children.map(allText)].join(' ');
+
+test('the paired panel hides when disabled, shows promotion only on a slave, and locks actions during reconnect', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  assert.equal($('pairing-panel').hidden, true);
+  panel.update(standby({ role: 'protected' }));
+  assert.equal($('pairing-panel').hidden, false);
+  assert.equal($('pairing-panel').dataset.state, 'protected');
+  assert.equal($('pairing-promote').hidden, false);
+  assert.equal($('pairing-promote').disabled, false);
+  assert.equal($('pairing-handover').hidden, true);
+  panel.unavailable();
+  assert.equal($('pairing-promote').disabled, true);
+  assert.match($('pairing-message').textContent, /reconnecting/);
+  panel.update(checked());
+  assert.equal($('pairing-promote').hidden, true);
+  assert.equal($('pairing-recover').disabled, false);
+  assert.match(allText($('pairing-preview')), /Missing entries: 12/);
+});
+
+test('recovery reports render aggregate counts and periods while omitting donor rows and unknown fields', () => {
+  const { document, $ } = fixture();
+  const root = $('report');
+  renderRecoveryReport(document, root, { ...preview(), imported: 12, raw: 'private household row',
+    tables: [{ name: 'private field', missing: 1 }], error: 'private error' }, { report: true });
+  const text = allText(root);
+  for (const phrase of ['Recovery result', 'Recovered entries: 12', 'Conflicting entries: 3', 'Already present: 4', 'Skipped entries: 5', 'Missing history period:', 'Unsupported learning entries skipped: 2']) assert(text.includes(phrase));
+  assert.doesNotMatch(text, /private/);
+  assert.match(text, /not kept as a separate archive/);
+  renderRecoveryReport(document, root, null);
+  assert.equal(root.hidden, true);
+  assert.equal(root.children.length, 0);
+});

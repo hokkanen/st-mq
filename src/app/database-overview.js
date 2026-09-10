@@ -212,6 +212,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['session-checks', "key LIKE 'charging-session-check:%' OR key LIKE 'easee:session-check:%' OR key LIKE 'easee:session-check-head:%'", 'Charging comparison identities', 'Hashed session identities prevent duplicate finalized comparisons; raw provider identifiers are not copied into checks.'],
     ['learning', "key LIKE 'learning:%' OR key LIKE 'adaptive:%' OR key LIKE 'learned:%'", 'Learning checkpoints and progress', 'Current fitted model, replay cursor, baseline, metrics and history rebuild progress.'],
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
+    ['recovery', "key LIKE 'recovery:%'", 'History recovery progress', 'Current manual recovery progress and its accepted, conflicting and skipped record counts. The complete reconstructed model is published after catching up live learning.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%' OR key LIKE 'override:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and expiring manual overrides; credentials remain in external configuration.'],
     ['control', "key LIKE 'executor:%' OR key LIKE 'h66:%' OR key LIKE 'applied:%' OR key LIKE 'pending-plan:%' OR key LIKE 'phase-snapshot:%' OR key LIKE 'dhwr:%' OR key LIKE 'heating-test:%' OR key LIKE 'cycle:%' OR key LIKE 'trials:%' OR key LIKE 'native-room-reference:%'", 'Control execution and active plans', 'Execution/readback/restoration state, native room reference, active cycle, pending plan, phase coverage and bounded trial allowance.'],
     ['simulation', "key LIKE 'simulation:%'", 'Simulation state', 'Current simulated plant state for resuming a simulation.'],
@@ -258,6 +259,12 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const coverage = aggregate('recorder_coverage', 'start_at', 'end_at');
   const metrics = aggregate('recorder_metrics', 'bucket');
   const audits = aggregate('energy_audits', 'source_time');
+  const journalEntries = aggregate('learning_journal_entries', 'at');
+  const epochs = aggregate('learning_epochs', 'NULL');
+  const recoveryRuns = aggregate('recovery_runs', 'started_at', 'COALESCE(completed_at,started_at)');
+  const recoverySources = aggregate('recovery_provenance', 'NULL');
+  const otherEpochs = aggregate('learning_journal_entries', 'at', 'at',
+    "epoch<>COALESCE((SELECT epoch FROM learning_epochs WHERE input=learning_journal_entries.input),'original')");
   add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read original committed records using SQLite indexes. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
     item('adaptive-observations', 'Adaptive observations', 'The recorded temperature, equipment, phase energy and charger-2 total energy series listed in the main adaptive table above.', observations.get('adaptive'), {
       dateBasis: 'observation time', writeBehavior: 'When adaptive thresholds, maximum fresh-data spacing, state or quality changes require a record.', fields: observationFields }),
@@ -274,6 +281,15 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     item('meter-audits', 'Property cumulative meter readings', 'Property import counters and diagnostic metadata. Charger 1 and Charger 2 use finalized session references instead of cumulative charger counters.', audits, {
       dateBasis: 'meter observation time', writeBehavior: 'When a changed cumulative counter is received; never used to correct estimates or train.',
       fields: fields(['Meter reading', 'Cumulative kWh, source and receipt timestamps, quality.'], ['Diagnostic context', 'Optional stored comparison metadata; current checks can also be calculated read-only from matching energy coverage.']) }),
+    item('learning-archive', 'Other model history epochs', 'Original committed learning remains available after a successful recovery. A recovery in progress also stages its candidate history here until verification and publication.', otherEpochs, {
+      retention: 'mixed', retentionDescription: 'Successful original epochs remain reconstructible. Compact ordering references reuse original inputs; abandoned unpublished candidates are removed on retry.',
+      dateBasis: 'learning record time', fields: learningFields }),
+    item('learning-epochs', 'Selected model histories', 'One selection per recovered input identifies the complete learning history currently used by the model.', epochs, {
+      retention: 'current', retentionDescription: 'Updated atomically with the completed model checkpoint.', countLabel: 'selections' }),
+    item('recovery-runs', 'Manual recovery records', 'Recovery boundaries and outcomes identify how combined model history was reconstructed. Counts and dates are shown without source identities or payloads.', recoveryRuns, {
+      countLabel: 'recoveries', retention: 'mixed', retentionDescription: 'Completed recoveries retain their reconstruction boundary; abandoned incomplete jobs are removed on retry.' }),
+    item('recovery-provenance', 'Recovered source references', 'Source-to-master reference mappings prevent duplicate imports and keep accepted record references consistent across interrupted recovery attempts.', recoverySources, {
+      countLabel: 'references', fields: fields(['Origin and disposition', 'Opaque source identity, mapped local record reference and whether it was accepted or rejected; values are not displayed.']) }),
   ]);
   if (snapshots.get('other')?.count) groups.at(-1).items.push(item('snapshot-other', 'Other provider fetch references',
     'Additional provider snapshot kinds present in the database.', snapshots.get('other'), { dateBasis: 'fetch time' }));
@@ -285,7 +301,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     imports: sum([...imports.values()]).count, import_rows: importRows.count, annotations: annotations.count, counters: counters.count,
     provider_snapshot_fetches: sum([...snapshots.values()]).count, provider_snapshot_contents: contentCount,
     recorder_coverage: coverage.count, recorder_metrics: metrics.count, energy_audits: audits.count,
-    learning_journal: sum([...journal.values()]).count, learning_samples: samples.count, learning_cycles: cycles.count,
+    learning_journal_entries: journalEntries.count, learning_epochs: epochs.count, recovery_runs: recoveryRuns.count,
+    recovery_provenance: recoverySources.count, learning_samples: samples.count, learning_cycles: cycles.count,
     fireplace_events: sum([...fireplace.values()]).count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
@@ -300,6 +317,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
       description: 'SQLite allocated pages include recorded data, indexes that speed lookups and reusable pages. Chart responses and display-point reduction use memory, not additional database tables. Main-file plus WAL bytes are physical files and include temporary journal overhead; dataset sizes are not estimated.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),
-      views: [{ name: 'provider_snapshots', description: 'Compatibility view joining fetch references with shared content; it stores no additional rows.' }],
+      views: [{ name: 'provider_snapshots', description: 'Compatibility view joining fetch references with shared content; it stores no additional rows.' },
+        { name: 'learning_journal', description: 'Selected complete learning epoch for each input; source entries and archived epochs are counted in learning_journal_entries.' },
+        { name: 'learning_journal_all', description: 'Resolves compact epoch references to their original saved input; it stores no duplicated payload rows.' }],
       description: 'Each physical table is counted once here. Dataset counts above overlap where documents contain periods or fetches reference shared content; do not add those dataset counts together.' } };
 }

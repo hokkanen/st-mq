@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -187,6 +187,39 @@ export class Store {
           CHECK((kind='load' AND kg BETWEEN 2 AND 10 AND target_id IS NULL)
             OR (kind='remove' AND kg IS NULL AND target_id IS NOT NULL)));
           CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);`);
+        if (version < 11) this.db.exec(`
+          CREATE TABLE learning_epochs (input TEXT PRIMARY KEY, epoch TEXT NOT NULL);
+          CREATE TABLE learning_journal_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, epoch TEXT NOT NULL,
+            input TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL,
+            algorithm_version TEXT NOT NULL, config_version TEXT, forecast_version TEXT,
+            payload TEXT, source_entry_id INTEGER REFERENCES learning_journal_entries(id),
+            CHECK(payload IS NOT NULL OR source_entry_id IS NOT NULL), UNIQUE(epoch,input,key));
+          INSERT INTO learning_journal_entries(id,epoch,input,key,kind,at,algorithm_version,config_version,forecast_version,payload)
+            SELECT id,'original',input,key,kind,at,
+            algorithm_version,config_version,forecast_version,payload FROM learning_journal;
+          DROP TABLE learning_journal;
+          CREATE INDEX learning_entries_epoch_input ON learning_journal_entries(epoch,input,id);
+          CREATE INDEX learning_entries_time ON learning_journal_entries(epoch,input,kind,at,id);
+          CREATE VIEW learning_journal_all AS SELECT e.id,e.epoch,e.input,e.key,e.kind,e.at,e.algorithm_version,
+            COALESCE(e.config_version,s.config_version) AS config_version,
+            COALESCE(e.forecast_version,s.forecast_version) AS forecast_version,
+            COALESCE(e.payload,s.payload) AS payload,e.source_entry_id
+            FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id;
+          CREATE VIEW learning_journal AS SELECT id,input,key,kind,at,algorithm_version,
+            config_version,forecast_version,payload FROM learning_journal_all e
+            WHERE epoch=COALESCE((SELECT epoch FROM learning_epochs WHERE input=e.input),'original');
+          CREATE TABLE recovery_runs (id TEXT PRIMARY KEY, input TEXT NOT NULL, donor_digest TEXT NOT NULL,
+            previous_epoch TEXT NOT NULL, epoch TEXT NOT NULL, status TEXT NOT NULL,
+            started_at INTEGER NOT NULL, completed_at INTEGER, report TEXT,
+            previous_fireplace_revision INTEGER, source_head INTEGER, fireplace_revision INTEGER);
+          CREATE TABLE recovery_provenance (donor_digest TEXT NOT NULL, table_name TEXT NOT NULL,
+            donor_id TEXT NOT NULL, target_id TEXT, disposition TEXT NOT NULL,
+            PRIMARY KEY(donor_digest,table_name,donor_id)) WITHOUT ROWID;
+          CREATE INDEX recovery_provenance_target ON recovery_provenance(table_name,target_id);
+          CREATE INDEX observations_recovery_energy ON observations(device,signal,
+            CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END);
+        `);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
@@ -255,12 +288,17 @@ export class Store {
     label(key, 'journal key');
     const encoded = json(payload), config = configVersion === null ? null : json(configVersion);
     const forecast = forecastVersion === null ? null : json(forecastVersion);
-    this.db.prepare(`INSERT INTO learning_journal(input,key,kind,at,algorithm_version,config_version,forecast_version,payload)
-      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(input,key) DO NOTHING`).run(input,key,kind,at,algorithmVersion,config,forecast,encoded);
+    this.db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,config_version,forecast_version,payload)
+      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(epoch,input,key) DO NOTHING`)
+      .run(this.learningEpoch(input),input,key,kind,at,algorithmVersion,config,forecast,encoded);
     const row = this.db.prepare('SELECT * FROM learning_journal WHERE input=? AND key=?').get(input,key);
     if (row.kind !== kind || row.at !== at || row.algorithm_version !== algorithmVersion || row.payload !== encoded
       || row.config_version !== config || row.forecast_version !== forecast) throw new Error('Conflicting immutable learning journal entry');
     return row.id;
+  }
+
+  learningEpoch(input) {
+    return this.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(label(input, 'input'))?.epoch ?? 'original';
   }
 
   learningJournal({ input, after = 0, limit = 256, algorithmVersion } = {}) {

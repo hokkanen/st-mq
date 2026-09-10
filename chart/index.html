@@ -17,6 +17,28 @@
     </div>
   </header>
   <main>
+    <section id="pairing-panel" class="notice pairing-panel" aria-labelledby="pairing-title" hidden>
+      <h2 id="pairing-title">Paired computers</h2>
+      <p id="pairing-summary"></p>
+      <div class="pairing-facts">
+        <p id="pairing-peer"></p>
+        <p id="pairing-broker"></p>
+        <p id="pairing-sync"></p>
+        <p id="pairing-syncDetail" class="muted"></p>
+      </div>
+      <p id="pairing-phase" role="status" aria-live="polite"></p>
+      <p id="pairing-recovery" role="status" aria-live="polite"></p>
+      <div id="pairing-preview" class="pairing-preview" hidden></div>
+      <div class="pairing-actions" role="group" aria-label="Manage paired computers">
+        <button id="pairing-check-recovery" type="button" disabled>Check other computer for missing data</button>
+        <button id="pairing-recover" type="button" disabled>Recover gaps and rebuild model</button>
+        <button id="pairing-handover" class="secondary-button" type="button" disabled>Hand over to the other computer</button>
+        <button id="pairing-promote" class="secondary-button" type="button" disabled hidden>Force promote this computer</button>
+        <button id="pairing-rejoin" class="secondary-button" type="button" disabled>Resume mirroring</button>
+      </div>
+      <p id="pairing-message" role="status" aria-live="polite"></p>
+      <button id="pairing-retry" class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
+    </section>
     <section id="primary-replication-notice" class="notice replica-notice" aria-labelledby="primary-replication-title" role="status" hidden>
       <h2 id="primary-replication-title">Database replica</h2>
       <p id="primary-replication-summary"></p>

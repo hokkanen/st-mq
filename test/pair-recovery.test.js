@@ -1,0 +1,362 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/storage/store.js';
+import { recoveryPreview, recoverHistory } from '../src/recovery/service.js';
+import { appendLearningRecord, replayLearningJournal, recordLearningContext, LEARNING_WINDOW_MS,
+  LEARNING_ALGORITHM, learningVersion } from '../src/app/committed-learning.js';
+import { recordChargingSessionCheck, chargingSessionCheckSummaries } from '../src/app/charging-session-checks.js';
+import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
+import { importCsv } from '../src/storage/history.js';
+import { Engine } from '../src/app/engine.js';
+
+const start = Date.parse('2026-01-01T00:00:00Z'), HOUR = 3_600_000, W = LEARNING_WINDOW_MS;
+function fixture(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-recovery-'));
+  const master = new Store(join(directory, 'master.sqlite'));
+  const stores = [master];
+  t.after(() => { for (const store of stores) try { store.close(); } catch {} rmSync(directory, { recursive: true, force: true }); });
+  return { directory, master, async donor() {
+    const path = join(directory, 'donor.sqlite'); await master.backup(path);
+    const store = new Store(path); stores.push(store); return store;
+  }, async snapshot(store) {
+    const path = join(directory, `snapshot-${stores.length}-${readdirSync(directory).length}.sqlite`); await store.backup(path); return path;
+  } };
+}
+function observation(store, at, value = 21, extra = {}) {
+  return store.observation({ source: 'synthetic', device: 'invented-house', signal: 'indoor_temperature',
+    unit: 'degC', value, sourceTime: at, receivedAt: at, ...extra });
+}
+function sample(store, at, extra = {}) {
+  const value = { timestamp: at, windowStart: at - W, windowEnd: at,
+    indoorC: 21, outdoorC: 0, solarRadiationWm2: 0, phase: 'normal', roomBoostC: 0,
+    targetC: 21, regime: 'occupied', quality: [], energyBasis: 'estimated', actualModeKnown: false, ...extra };
+  return appendLearningRecord(store, 'mqtt', 'sample', value, { config: {} });
+}
+async function recover(f, donorPath, options = {}) {
+  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
+  return { preview, ...(await recoverHistory({ store: f.master, donorPath, input: 'mqtt', preview, ...options })) };
+}
+
+test('recovery preview is read only and master wins point and partial energy conflicts', async t => {
+  const f = fixture(t);
+  observation(f.master, start);
+  const donor = await f.donor();
+  observation(f.master, start + HOUR, 22);
+  observation(donor, start + HOUR, 35);
+  observation(donor, start + 2 * HOUR, 20);
+  observation(f.master, start + 3 * HOUR, 1, { signal: 'property_energy_l1', unit: 'kWh',
+    raw: { intervalStart: start + 2 * HOUR, intervalEnd: start + 3 * HOUR } });
+  observation(donor, start + 4 * HOUR, 9, { signal: 'property_energy_l1', unit: 'kWh',
+    raw: { intervalStart: start + 2 * HOUR, intervalEnd: start + 4 * HOUR } });
+  const donorPath = await f.snapshot(donor), before = f.master.observations();
+  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
+  assert.deepEqual(f.master.observations(), before);
+  assert.equal(preview.counts.missing, 1); assert.equal(preview.counts.conflicts, 2);
+  assert.deepEqual(readdirSync(join(f.directory, 'work')), [], 'private comparison snapshots are cleaned');
+  const result = await recoverHistory({ store: f.master, donorPath, preview });
+  assert.equal(result.report.status, 'complete'); assert.equal(result.report.imported, 1);
+  assert.equal(f.master.observations().find(row => row.sourceTime === start + HOUR).value, 22);
+  assert.equal(f.master.observations().filter(row => row.signal === 'property_energy_l1').reduce((sum, row) => sum + row.value, 0), 1);
+  const again = await recover(f, donorPath);
+  assert.equal(again.report.imported, 0);
+  assert.equal(f.master.observations().filter(row => row.sourceTime === start + 2 * HOUR).length, 1);
+});
+
+test('a missing week feeds chronological learning, catches up live records, and retains the original journal', async t => {
+  const f = fixture(t);
+  recordLearningContext(f.master, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21, roomBoostC: 0 }, start);
+  for (let i = 1; i <= 8; i++) sample(f.master, start + i * W);
+  const beforeModel = replayLearningJournal(f.master, 'mqtt');
+  const donor = await f.donor();
+  for (let i = 9; i <= 8 + 7 * 96; i++) sample(donor, start + i * W, { indoorC: 21 + Math.sin(i / 30) * 0.1 });
+  for (let i = 8 + 7 * 96 + 1; i <= 8 + 7 * 96 + 8; i++) sample(f.master, start + i * W);
+  const old = replayLearningJournal(f.master, 'mqtt', beforeModel);
+  const original = f.master.db.prepare('SELECT * FROM learning_journal ORDER BY id').all();
+  const donorPath = await f.snapshot(donor);
+  let beats = 0, liveWritten = false, published = null;
+  const timer = setInterval(() => { beats++; }, 5); t.after(() => clearInterval(timer));
+  const result = await recover(f, donorPath, { onProgress(progress) {
+    if (progress.phase === 'rebuilding' && !liveWritten) {
+      liveWritten = true; sample(f.master, start + (8 + 7 * 96 + 9) * W);
+      assert.equal(f.master.learningEpoch('mqtt'), 'original', 'old selected history remains active during rebuild');
+      const continuing = replayLearningJournal(f.master, 'mqtt', old);
+      assert.equal(continuing.windowCursor, start + (8 + 7 * 96 + 9) * W);
+    }
+  }, onPublish(value) { published = value; } });
+  assert.ok(beats >= 3, 'background replay leaves the main event loop responsive');
+  assert.equal(liveWritten, true); assert.equal(published.epoch, result.epoch);
+  assert.equal(result.report.model.acceptedSamples, 7 * 96);
+  assert.equal(f.master.learningEpoch('mqtt'), result.epoch);
+  assert.equal(result.checkpoint.windowCursor, start + (8 + 7 * 96 + 9) * W);
+  const archived = f.master.db.prepare(`SELECT id,input,key,kind,at,algorithm_version,config_version,forecast_version,payload
+    FROM learning_journal_entries WHERE epoch='original' AND id<=? ORDER BY id`).all(original.at(-1).id);
+  assert.deepEqual(archived, original, 'master source bytes and IDs remain an honest archival boundary');
+  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), result.checkpoint,
+    'the selected combined journal reconstructs the published model exactly');
+  assert.notDeepEqual(result.checkpoint.samples, old.samples, 'the model has consumed recovered windows');
+  assert.equal(f.master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+  assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(), undefined);
+  const storage = f.master.db.prepare(`SELECT COUNT(*) entries,SUM(payload IS NOT NULL) payloads,
+    SUM(source_entry_id IS NOT NULL) references_count,
+    SUM(COALESCE(length(payload),0)+COALESCE(length(config_version),0)+COALESCE(length(forecast_version),0)) payload_bytes
+    FROM learning_journal_entries`).get();
+  assert.equal(storage.references_count, original.length + 1, 'master prefix and live tail use compact source references');
+  assert.equal(storage.payloads, original.length + 1 + 7 * 96, 'each accepted source payload is saved once');
+  assert.equal(f.master.db.prepare(`SELECT COUNT(*) n FROM learning_journal_entries a
+    JOIN learning_journal_entries b ON a.source_entry_id=b.id WHERE b.source_entry_id IS NOT NULL`).get().n, 0,
+  'references point directly to original input, never chains across recoveries');
+  t.diagnostic(JSON.stringify({ syntheticWeek: true, entries: storage.entries, uniquePayloads: storage.payloads,
+    orderedReferences: storage.references_count, payloadBytes: storage.payload_bytes, databaseBytes: f.master.databaseBytes() }));
+});
+
+test('recovery remaps observations, coverage, forecast and context provenance instead of mixing local IDs', async t => {
+  const f = fixture(t);
+  const context = recordLearningContext(f.master, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21, roomBoostC: 0 }, start);
+  const donor = await f.donor();
+  observation(f.master, start + 4 * HOUR, 22);
+  const changedContext = recordLearningContext(donor, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 20, roomBoostC: 0 }, start + W / 2);
+  const id = observation(donor, start + W, 20);
+  const coverage = Number(donor.db.prepare(`INSERT INTO recorder_coverage(source,device,signal,status,start_at,end_at,source_time,observation_id,samples)
+    VALUES('synthetic','invented-house','indoor_temperature','fresh',?,?,?,?,2)`).run(start, start + W, start + W, id).lastInsertRowid);
+  const forecast = donor.snapshot({ kind: 'weather', source: 'fmi', fetchedAt: start, payload: { forecast: [] } });
+  sample(donor, start + W, { indoorC: 20, provenance: { basis: 'committed-history', lineage: {
+    indoor_temperature: { observations: [id], coverage: [coverage] }, control_context: { journal: [context, changedContext] } },
+  forecastVersion: { id: forecast, contentId: donor.snapshotById(forecast).contentId } } });
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.model.acceptedSamples, 1);
+  const row = f.master.learningJournal({ input: 'mqtt' }).find(value => value.kind === 'sample');
+  const mapped = row.payload.value.provenance;
+  assert.notEqual(mapped.lineage.indoor_temperature.observations[0], id);
+  assert.equal(f.master.db.prepare('SELECT source_time FROM observations WHERE id=?').get(mapped.lineage.indoor_temperature.observations[0]).source_time, start + W);
+  assert.equal(mapped.lineage.control_context.journal[0], f.master.learningJournal({ input: 'mqtt' })[0].id);
+  assert.equal(mapped.lineage.control_context.journal[1], f.master.learningJournal({ input: 'mqtt' }).find(row => row.at === start + W / 2).id);
+  assert.equal(f.master.snapshotById(mapped.forecastVersion.id).source, 'fmi');
+});
+
+test('donor learning cannot bypass conflicting master source measurements', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W);
+  const donor = await f.donor();
+  observation(f.master, start + 2 * W, 22);
+  const rejected = observation(donor, start + 2 * W, 35);
+  sample(donor, start + 2 * W, { indoorC: 35, provenance: { lineage: { indoor_temperature: { observations: [rejected] } } } });
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.model.acceptedSamples, 0);
+  assert.ok(result.report.counts.skipped > 0);
+  assert.equal(f.master.learningJournal({ input: 'mqtt' }).length, 1);
+});
+
+test('malformed donor records are skipped and unsupported learning leaves an explicit gap', async t => {
+  const f = fixture(t), donor = await f.donor();
+  observation(donor, start);
+  donor.db.prepare("UPDATE observations SET quality='broken-json' WHERE id=1").run();
+  donor.appendLearningJournal('mqtt', { key: 'unsupported', kind: 'sample', at: start + W,
+    algorithmVersion: 'invented-old-algorithm', configVersion: learningVersion({}), payload: { value: { indoorC: 20 }, configuration: {}, seed: null } });
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.counts.skipped, 2); assert.equal(result.report.model.unsupported, 1);
+  assert.equal(f.master.observations().length, 0);
+  assert.equal(f.master.learningJournal({ input: 'mqtt' }).length, 0);
+});
+
+test('master removal wins and donor loads/removals keep valid references', async t => {
+  const f = fixture(t);
+  const shared = Number(f.master.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','shared-load',?,'load',3)").run(start).lastInsertRowid);
+  const donor = await f.donor();
+  f.master.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,target_id) VALUES('mqtt','master-remove',?,'remove',?)").run(start + HOUR, shared);
+  const load = Number(donor.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','donor-load',?,'load',4)").run(start + 2 * HOUR).lastInsertRowid);
+  donor.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,target_id) VALUES('mqtt','donor-remove',?,'remove',?)").run(start + 3 * HOUR, load);
+  const result = await recover(f, await f.snapshot(donor));
+  const rows = f.master.db.prepare('SELECT * FROM fireplace_events ORDER BY id').all();
+  assert.equal(rows.length, 4);
+  assert.equal(rows.find(row => row.request_id === 'master-remove').target_id, shared);
+  assert.equal(rows.find(row => row.request_id === 'donor-remove').target_id, rows.find(row => row.request_id === 'donor-load').id);
+  assert.equal(result.report.status, 'complete');
+});
+
+test('authority loss rejects publication and resumed recovery is idempotent', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W);
+  const donor = await f.donor();
+  for (let i = 2; i < 100; i++) { observation(donor, start + i * W); sample(donor, start + i * W); }
+  const donorPath = await f.snapshot(donor);
+  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  let current = true;
+  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview, isCurrent: () => current,
+    onProgress(value) { if (value.phase === 'rebuilding') current = false; } }), /authority changed/);
+  assert.equal(f.master.learningEpoch('mqtt'), 'original');
+  assert.equal(f.master.getState('recovery:active:mqtt').status, 'failed');
+  const count = f.master.observations().length;
+  const resumed = await recover(f, donorPath);
+  assert.equal(f.master.observations().length, count);
+  assert.equal(resumed.report.status, 'complete');
+  assert.equal(f.master.learningJournal({ input: 'mqtt', limit: 1000 }).length, 99);
+});
+
+test('a modified donor invalidates its preview before source import', async t => {
+  const f = fixture(t), donor = await f.donor();
+  observation(donor, start);
+  const donorPath = await f.snapshot(donor);
+  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  const changed = new Store(donorPath); observation(changed, start + HOUR); changed.close();
+  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview }), /preview is stale/);
+  assert.equal(f.master.observations().length, 0);
+});
+
+test('missing placeholders are filled without changing original master source records', async t => {
+  const f = fixture(t), donor = await f.donor();
+  const id = observation(f.master, start + W, null);
+  sample(f.master, start + W, { indoorC: null, outdoorC: null, quality: ['missing'] });
+  const original = f.master.db.prepare('SELECT * FROM observations WHERE id=?').get(id);
+  observation(donor, start + W, 20);
+  sample(donor, start + W, { indoorC: 20 });
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.model.acceptedSamples, 1);
+  assert.equal(f.master.latestObservation('indoor_temperature').value, 20);
+  assert.deepEqual(f.master.db.prepare('SELECT * FROM observations WHERE id=?').get(id), original);
+  assert.equal(f.master.learningJournal({ input: 'mqtt' }).length, 1);
+  assert.equal(f.master.learningJournal({ input: 'mqtt' })[0].payload.value.indoorC, 20);
+});
+
+test('a missing donor removal of a shared load is recovered and logging starts at the earliest source date', async t => {
+  const f = fixture(t);
+  const later = Number(f.master.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','later',?,'load',3)").run(start + 2 * HOUR).lastInsertRowid);
+  const donor = await f.donor();
+  donor.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,target_id) VALUES('mqtt','removed-on-backup',?,'remove',?)")
+    .run(start + 3 * HOUR, later);
+  donor.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','earlier',?,'load',2)").run(start);
+  const result = await recover(f, await f.snapshot(donor));
+  const source = fireplaceLearningContext(f.master, 'mqtt');
+  assert.equal(result.report.status, 'complete');
+  assert.equal(source.fireplaceStartedAt, start);
+  assert.equal(source.fireplaceEvents.length, 1);
+  assert.equal(source.fireplaceEvents[0].at, start);
+});
+
+test('a recovered charging session retains retry identity and cannot be counted twice by acquisition', async t => {
+  const f = fixture(t), donor = await f.donor();
+  const input = { source: 'easee', sessionKey: 'invented-session', start, end: start + HOUR,
+    estimatedKwh: 2, referenceKwh: 2.1, complete: true, quality: ['estimated'] };
+  recordChargingSessionCheck(donor, input);
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.status, 'complete');
+  const id = f.master.events().find(row => row.type === 'charging-session-check').id;
+  assert.equal(recordChargingSessionCheck(f.master, input), id);
+  assert.equal(chargingSessionCheckSummaries(f.master).find(row => row.source === 'easee').summary.recordedSessions, 1);
+});
+
+test('a week of phase energy is imported in bounded batches while the master continues recording', async t => {
+  const f = fixture(t), donor = await f.donor();
+  f.master.setState('controller:sentinel', { mode: 'active', currentAction: 'normal' });
+  donor.transaction(() => {
+    for (let i = 1; i <= 7 * 24 * 12; i++) for (let phase = 1; phase <= 3; phase++) {
+      const at = start + i * 5 * 60_000;
+      observation(donor, at, 0.1, { signal: `property_energy_l${phase}`, unit: 'kWh',
+        raw: { intervalStart: at - 5 * 60_000, intervalEnd: at } });
+    }
+  });
+  let beats = 0, writes = 0;
+  const timer = setInterval(() => { beats++; }, 5); t.after(() => clearInterval(timer));
+  const result = await recover(f, await f.snapshot(donor), { onProgress(value) {
+    if (value.phase === 'importing') { f.master.event('synthetic-live-control-tick', { sequence: ++writes }, start + 8 * 24 * HOUR + writes); }
+  } });
+  assert.equal(result.report.imported, 6048);
+  assert.ok(beats > 5); assert.ok(writes > 0);
+  assert.deepEqual(f.master.getState('controller:sentinel'), { mode: 'active', currentAction: 'normal' });
+  const energy = f.master.db.prepare("SELECT COUNT(*) n,SUM(value) kwh FROM observations WHERE unit='kWh'").get();
+  assert.equal(energy.n, 6048); assert.ok(Math.abs(energy.kwh - 604.8) < 1e-8);
+});
+
+test('recovered CSV history preserves raw source rows, time, units and remapped import provenance', async t => {
+  const f = fixture(t), donor = await f.donor();
+  const primaryCsv = join(f.directory, 'invented-primary.csv'), donorCsv = join(f.directory, 'invented-donor.csv');
+  writeFileSync(primaryCsv, `unix_time,price,heat_on,temp_in,temp_ga,temp_out\n${start / 1000},3,15,20,10,-1\n`);
+  writeFileSync(donorCsv, `unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n${(start + HOUR) / 1000},1,2,3,4,5,6\n`);
+  await importCsv(f.master, primaryCsv, { kind: 'stmq' });
+  const imported = await importCsv(donor, donorCsv, { kind: 'easee' });
+  const source = donor.importRow(imported.importId, 1);
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.status, 'complete');
+  const saved = f.master.observations().find(row => row.source === 'csv:easee');
+  assert.notEqual(saved.provenance.importId, imported.importId);
+  assert.equal(saved.sourceTime, start + HOUR); assert.equal(saved.unit, 'A'); assert.equal(saved.value, 1);
+  assert.deepEqual(f.master.importRow(saved.provenance.importId, 1), { ...source, importId: saved.provenance.importId });
+  assert.equal(f.master.db.prepare('SELECT status FROM imports WHERE id=?').get(saved.provenance.importId).status, 'complete');
+  const original = f.master.events({ limit: 100 }).find(row => row.type === 'history.imported' && row.payload.kind === 'easee');
+  assert.equal(original.payload.importId, saved.provenance.importId);
+});
+
+test('an accepted source deletion on the master is not resurrected by retrying the same donor snapshot', async t => {
+  const f = fixture(t), donor = await f.donor();
+  observation(donor, start);
+  const donorPath = await f.snapshot(donor);
+  await recover(f, donorPath);
+  f.master.db.prepare('DELETE FROM observations WHERE source_time=?').run(start);
+  const result = await recover(f, donorPath);
+  assert.equal(result.report.imported, 0);
+  assert.equal(f.master.observations().length, 0);
+  assert.equal(result.report.counts.conflicts, 1);
+});
+
+test('a fresh engine resumes the verified recovery epoch and appends later learning without rewriting history', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W); replayLearningJournal(f.master, 'mqtt');
+  const donor = await f.donor();
+  sample(donor, start + 2 * W, { indoorC: 20.8 });
+  sample(f.master, start + 3 * W); replayLearningJournal(f.master, 'mqtt');
+  const result = await recover(f, await f.snapshot(donor));
+  const before = f.master.db.prepare('SELECT * FROM learning_journal ORDER BY id').all();
+  const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: { mode: 'shadow' } }, clock: () => start + 4 * W });
+  t.after(() => engine.closeFireplace());
+  assert.deepEqual(engine.readAdaptive(start + 4 * W), result.checkpoint);
+  engine.tick();
+  assert.equal(engine.checkpoint.windowCursor, start + 4 * W);
+  assert.deepEqual(f.master.db.prepare('SELECT * FROM learning_journal WHERE id<=? ORDER BY id').all(before.at(-1).id), before);
+  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), engine.checkpoint);
+});
+
+test('failed recovery keeps control learning available and resumes ordinary background manual corrections', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W); replayLearningJournal(f.master, 'mqtt');
+  const donor = await f.donor();
+  donor.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','accepted-before-failure',?,'load',3)").run(start);
+  sample(donor, start + 2 * W);
+  const donorPath = await f.snapshot(donor);
+  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  let current = true;
+  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview, isCurrent: () => current,
+    onProgress(value) { if (value.phase === 'rebuilding') current = false; } }), /authority changed/);
+  assert.equal(f.master.learningEpoch('mqtt'), 'original');
+  assert.equal(f.master.getState('fireplace:rebuild:mqtt').status, 'pending');
+  const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: { mode: 'shadow' } }, clock: () => start + 3 * W });
+  t.after(() => engine.closeFireplace());
+  engine.readAdaptive(start + 3 * W);
+  for (let attempt = 0; attempt < 200 && f.master.getState('fireplace:rebuild:mqtt').status !== 'current'; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10)); engine.reconcileFireplace();
+  }
+  assert.equal(f.master.getState('fireplace:rebuild:mqtt').status, 'current');
+  assert.equal(f.master.getState('recovery:active:mqtt').status, 'failed', 'peer remains protected until manual recovery succeeds');
+  assert.equal(engine.checkpoint.fireplaceRevision, 1);
+});
+
+test('successive recoveries reuse source payloads directly and a no-op creates no further model epoch', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W); const donor = await f.donor();
+  sample(donor, start + 2 * W); sample(f.master, start + 3 * W);
+  await recover(f, await f.snapshot(donor));
+  sample(donor, start + 4 * W); sample(f.master, start + 5 * W);
+  const secondPath = await f.snapshot(donor);
+  const second = await recover(f, secondPath);
+  assert.equal(second.report.model.acceptedSamples, 1);
+  assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries WHERE payload IS NOT NULL').get().n, 5);
+  assert.equal(f.master.db.prepare(`SELECT COUNT(*) n FROM learning_journal_entries a JOIN learning_journal_entries b
+    ON a.source_entry_id=b.id WHERE b.source_entry_id IS NOT NULL`).get().n, 0);
+  const before = f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries').get().n;
+  const again = await recover(f, secondPath);
+  assert.equal(again.report.model.status, 'unchanged'); assert.equal(again.epoch, second.epoch);
+  assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries').get().n, before);
+  assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM recovery_runs WHERE status='complete'").get().n, 2);
+  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), second.checkpoint);
+});

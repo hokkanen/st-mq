@@ -409,6 +409,13 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
  * A crash before that update replays the same entries from the saved cursor.
  * Rebuild uses precisely this same ordered entry function. */
 export function replayLearningJournal(store, input, checkpoint = null, { rebuild = false, fireplaceRevision } = {}) {
+  // Source recovery may commit old manual events in bounded batches while the
+  // selected journal/model still serves live control. Its completed projection
+  // is published atomically; do not accidentally trigger a synchronous rebuild
+  // from those partially recovered source revisions on an ordinary control tick.
+  const recovery = store.getState?.(`recovery:active:${input}`);
+  if (!rebuild && checkpoint && ['importing', 'rebuilding', 'catching-up'].includes(recovery?.status))
+    fireplaceRevision = checkpoint.fireplaceRevision ?? 0;
   const fireplaceContext = fireplaceLearningContext(store, input, fireplaceRevision);
   let next = rebuild || checkpoint?.algorithmVersion && checkpoint.algorithmVersion !== LEARNING_ALGORITHM ? null : checkpoint;
   if (next && (next.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision) next = null;

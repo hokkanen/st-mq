@@ -33,7 +33,7 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
 
 // Observations and the four permitted native-setting writes share this connection.
 // Credentials and raw broker errors never enter event logs.
-export async function startMqtt({ engine, store, config, connect = mqtt.connect }) {
+export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true }) {
   const settings = { ...(config.h66 ?? {}) };
   const intervalMs = settings.snapshotIntervalMs ?? 60_000;
   const deviceId = settings.deviceId ?? config.deviceId;
@@ -82,6 +82,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
   };
   const publish = (topic, payload, options) => new Promise((resolve, reject) => {
     if (!connected || stopped) { reject(new Error('MQTT unavailable')); return; }
+    if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
     let finished = false;
     const finish = error => {
       if (finished) return;
@@ -176,13 +177,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect 
   return { h66, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
-    close: async () => {
+    close: async ({ restore = true } = {}) => {
       if (stopped) return;
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
       teslamate?.close();
       if (engine.teslamate === teslamate) engine.teslamate = null;
-      if (h66 && connected && settings.writeEnabled === true) {
+      if (restore && canControl() && h66 && connected && settings.writeEnabled === true) {
         try { await h66.restore({ now: engine.clock(), reason: 'application-shutdown' }); }
         catch { report('h66-shutdown-restoration-pending'); }
       }

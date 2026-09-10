@@ -302,7 +302,7 @@ function identificationSnapshot(payload, now) {
  * Each call returns normalized observation arrays, including null error records for
  * configured devices. No provider is contacted until a returned method is invoked.
  */
-export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now } = {}) {
+export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const smartthings = { ...connections.smartthings }; const easee = { ...connections.easee };
   let tokens = { accessToken: easee.access_token ?? '', refreshToken: easee.refresh_token ?? '' };
@@ -323,6 +323,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     catch (error) { throw sanitized(error, provider); }
   }
   async function easeeTransport(url, options, responseText = false) {
+    // The only text response is the opted-in physical command. Check every
+    // dispatch, including a retry after asynchronous authentication or storage.
+    if (responseText && !canControl()) throw new Error('Controller authority was revoked');
+    if (options.signal?.aborted) throw new Error('Provider request was aborted');
     admitRequest();
     try { return await request(url, options, 'Easee', responseText); }
     catch (error) {
@@ -418,6 +422,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       return identificationSnapshot(payload, clock());
     },
     async limit({ amps, minutes, signal } = {}) {
+      if (!canControl()) throw new Error('Controller authority was revoked');
       if (!Number.isInteger(amps) || !(amps === 0 || amps >= 6 && amps <= 32) || minutes !== 1)
         throw new TypeError('Charger identification requires 0 or 6..32 amps and a one-minute expiry');
       if (typeof http.text !== 'function') throw new Error('Easee charger identification transport is unavailable');

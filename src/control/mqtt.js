@@ -15,6 +15,7 @@ const MESSAGES = {
   MQTT_TIMEOUT: 'MQTT acknowledgement timed out. The command may have reached the device; check its state before retrying.',
   MQTT_CLOSED: 'MQTT command transport is closed. Check device state if a test was in progress.',
   MQTT_BUSY: 'An MQTT test is already in progress. Wait for its result before trying again.',
+  MQTT_AUTHORITY_LOST: 'This instance no longer owns device control.',
 };
 function failure(code) {
   return Object.assign(new Error(MESSAGES[code]), { code });
@@ -42,7 +43,7 @@ export function heatingErrorMessage(code) {
 
 // A new, short-lived connection owns each explicit batch. Nothing is retained,
 // reconnected, or saved for a later retry when the broker is unavailable.
-export function createHeatingTransport({ connection, connect = mqtt.connect, timeoutMs = 10_000 }) {
+export function createHeatingTransport({ connection, connect = mqtt.connect, timeoutMs = 10_000, canControl = () => true }) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('MQTT timeout must be positive');
   let active = null;
   let closed = false;
@@ -54,6 +55,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
         throw failure('MQTT_COMMAND_INVALID');
       }
       if (closed) throw failure('MQTT_CLOSED');
+      if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
       if (active) throw failure('MQTT_BUSY');
       if (!connection || typeof connection.address !== 'string' || !connection.address.trim()) throw failure('MQTT_CONNECTION_FAILED');
 
@@ -100,6 +102,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
       const disconnected = error => finish(publishAttempted ? failure('MQTT_UNAVAILABLE') : connectionFailure(error));
       const publishNext = () => {
         if (finished) return;
+        if (!canControl()) { finish(failure('MQTT_AUTHORITY_LOST')); return; }
         if (index === batch.length) { finish(); return; }
         const command = batch[index++];
         try {

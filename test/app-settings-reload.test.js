@@ -90,7 +90,7 @@ function fakeMqtt() {
     client.subscribe = (topic, options, done) => { client.subscriptions.push(topic); done(); };
     client.publish = (topic, payload, options, done) => { packets.push({ address, topic, payload }); done(); };
     client.end = (force, options, done) => { client.endCalls++; done(); };
-    clients.push(client);
+    if (!options?.clientId?.startsWith('stmq-identity-')) clients.push(client);
     return client;
   };
   return { clients, packets, connect };
@@ -135,6 +135,7 @@ test('a failed reconnect restores the previous configuration and rate history wi
   const mqtt = fakeMqtt();
   let attempts = 0;
   const connect = (...args) => {
+    if (args[1]?.clientId?.startsWith('stmq-identity-')) return mqtt.connect(...args);
     if (++attempts === 2) throw new Error('synthetic-private-transport-failure');
     return mqtt.connect(...args);
   };

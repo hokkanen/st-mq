@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { Engine } from '../src/app/engine.js';
+import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
 test('Tesla-only MQTT opt-in starts without H66 and stores total energy through the existing subscriber', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-teslamate-mqtt-'));
@@ -18,7 +19,7 @@ test('Tesla-only MQTT opt-in starts without H66 and stores total energy through 
   let now = Date.parse('2026-01-01T12:00:00Z');
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt', deviceId: null,
     connections: { mqtt: { address: 'mqtt://invented.invalid' }, teslamate: { enabled: true, carId: '2', namespace: 'invented' } } };
-  const app = await start({ config, clock: () => now, mqttOptions: { connect: () => client }, providerOptions: { automatic: false } });
+  const app = await start({ config, clock: () => now, mqttOptions: { connect: (_url, options) => identityConnection(options) ? idleIdentityClient() : client }, providerOptions: { automatic: false } });
   try {
     assert.equal(app.engine.status().providers.teslamate.reason, 'mqtt-disconnected');
     client.emit('connect');

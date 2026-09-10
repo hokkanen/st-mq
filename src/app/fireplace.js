@@ -96,7 +96,7 @@ export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}
   const affected = store.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
     AND algorithm_version=? AND at>? LIMIT 1`);
   const events = store.db.prepare(`SELECT * FROM fireplace_events WHERE input=? AND kind='load'
-    AND id<=? AND at<=? AND at>=? ORDER BY id DESC`).all(input, source.revision, asOf, Math.max(0, asOf - 48 * 3_600_000))
+    AND id<=? AND at<=? AND at>=? ORDER BY at DESC,id DESC`).all(input, source.revision, asOf, Math.max(0, asOf - 48 * 3_600_000))
     .map(row => ({ ...loadEvent(row), removedAt: removed.get(row.id) ?? null,
       requiresRebuild: Boolean(affected.get(input, LEARNING_ALGORITHM, row.at)) }));
   const rebuild = store.getState(jobKey(input)) ?? { status: 'idle', revision: source.revision };

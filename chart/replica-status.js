@@ -1,18 +1,22 @@
 import { outdoorSourceLabel, providerName } from './provider-status.js';
+import { pairAllowsControl } from './pair-status.js';
 
-export const isReadOnlyReplica = status => status?.role === 'replica' || status?.instance?.role === 'replica';
+export const isReadOnlyReplica = status => ['replica', 'protected', 'transition'].includes(status?.role)
+  || status?.instance?.role === 'replica' || status?.controlAuthority?.state === 'protected' || !pairAllowsControl(status);
 const timestamp = value => Number.isFinite(value) && value > 0 ? value : null;
 
 export function replicaSnapshotKey(status) {
   if (!isReadOnlyReplica(status)) return null;
   const sync = status.replication ?? {};
-  return sync.generation ?? sync.digest ?? timestamp(sync.snapshotAt ?? sync.sourceAt);
+  return sync.generation ?? sync.digest ?? timestamp(sync.snapshotAt ?? sync.sourceAt)
+    ?? (status.controlAuthority?.state === 'protected' ? timestamp(status.controlAuthority.stoppedAt) ?? 'controller-stopped' : null);
 }
 
 /** A copied observation must never grow a live chart tail beyond its snapshot. */
 export function chartObservationTime(status, fallback) {
   const now = timestamp(status?.now) ?? fallback;
-  const snapshot = timestamp(status?.replication?.snapshotAt ?? status?.replication?.sourceAt);
+  const snapshot = (status?.controlAuthority?.state === 'protected' ? timestamp(status.controlAuthority.stoppedAt) : null)
+    ?? timestamp(status?.replication?.snapshotAt ?? status?.replication?.sourceAt);
   return isReadOnlyReplica(status) && snapshot !== null ? Math.min(now, snapshot) : now;
 }
 
@@ -26,10 +30,12 @@ function ageLabel(ms) {
 /** Only report verified facts from the local receiver, never primary online flags. */
 export function replicaDisplay(status, { now = status?.now ?? Date.now(), formatTime = at => new Date(at).toISOString() } = {}) {
   const sync = status?.replication ?? {};
-  const snapshotAt = timestamp(sync.snapshotAt ?? sync.sourceAt);
+  const stoppedController = status?.controlAuthority?.state === 'protected';
+  const snapshotAt = (stoppedController ? timestamp(status.controlAuthority.stoppedAt) : null)
+    ?? timestamp(sync.snapshotAt ?? sync.sourceAt);
   const lastSuccessAt = timestamp(sync.lastSuccessAt ?? sync.verifiedAt);
-  const verifiedAt = timestamp(sync.verifiedAt);
-  const available = snapshotAt !== null && sync.available !== false;
+  const verifiedAt = stoppedController && status.role !== 'replica' ? null : timestamp(sync.verifiedAt);
+  const available = (snapshotAt !== null || stoppedController && status?.role !== 'replica') && sync.available !== false;
   const future = snapshotAt !== null && snapshotAt > now + 60_000;
   const staleAfterMs = Number.isFinite(sync.staleAfterMs) && sync.staleAfterMs > 0 ? sync.staleAfterMs : 5 * 60_000;
   const stale = available && (sync.state === 'stale' || sync.stale === true || now - snapshotAt > staleAfterMs);
@@ -45,7 +51,13 @@ export function replicaDisplay(status, { now = status?.now ?? Date.now(), format
   const success = lastSuccessAt === null ? 'No successful synchronization recorded.' : `Last successful sync: ${formatTime(lastSuccessAt)}.`;
   const verification = verifiedAt === null ? 'Snapshot verification is not reported.'
     : `Database identity verified ${formatTime(verifiedAt)}. Later primary changes are copied on the next synchronization.`;
-  return { state, available, snapshotAt, lastSuccessAt, verifiedAt, summary, snapshot, success, verification };
+  const protectedHistory = status?.pairing?.enabled === true && status.pairing.role === 'protected';
+  return { state, available, snapshotAt, lastSuccessAt, verifiedAt,
+    summary: stoppedController ? 'Another ST-MQ controller won authority. This controller is stopped and its local history is protected for manual recovery.'
+      : protectedHistory ? 'Local history is protected. Mirroring will resume only after the master explicitly resolves recovery.' : summary,
+    snapshot: stoppedController ? snapshotAt ? `Local history snapshot: ${formatTime(snapshotAt)}.` : 'Showing the preserved local history.' : snapshot,
+    success: stoppedController ? '' : success,
+    verification: stoppedController ? verifiedAt ? `Local snapshot identity verified ${formatTime(verifiedAt)}.` : 'This computer no longer records measurements or sends device commands.' : verification };
 }
 
 export function primaryReplicationDisplay(status, { formatTime = at => new Date(at).toISOString() } = {}) {
@@ -82,17 +94,34 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
   $('replica-notice').hidden = !replica;
   for (const node of document.querySelectorAll('[data-controller-only]')) {
     node.hidden = replica;
-    if (replica) for (const control of node.querySelectorAll('button, input, select, textarea')) control.disabled = true;
+    for (const control of node.querySelectorAll('button, input, select, textarea')) {
+      if (replica && !control.dataset.replicaDisabled) {
+        control.dataset.replicaDisabled = control.disabled ? 'already' : 'viewer'; control.disabled = true;
+      } else if (!replica && control.dataset.replicaDisabled) {
+        control.disabled = control.dataset.replicaDisabled === 'already'; delete control.dataset.replicaDisabled;
+      }
+    }
   }
-  if (!replica) return null;
+  if (!replica) {
+    for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = false;
+    $('requested-label').textContent = 'HEATING REQUEST';
+    $('recording-adaptive-details').hidden = false;
+    return null;
+  }
   const display = replicaDisplay(status, { formatTime });
+  const stoppedController = status.controlAuthority?.state === 'protected';
+  if ($('replica-title')) $('replica-title').textContent = stoppedController ? 'Controller stopped' : 'Read-only replica';
   $('replica-notice').dataset.state = display.state;
   $('replica-summary').textContent = display.summary;
   $('replica-snapshot').textContent = display.snapshot;
   $('replica-success').textContent = display.success;
   $('replica-verification').textContent = display.verification;
-  $('connection').textContent = `READ-ONLY REPLICA · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
-  $('context').textContent = 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
+  $('connection').textContent = stoppedController ? 'CONTROLLER STOPPED · READ-ONLY HISTORY'
+    : status.pairing?.role === 'protected' ? 'PROTECTED RECOVERY · HOME CONTROL DISABLED'
+    : status.pairing?.transition ? 'ROLE CHANGE · WAITING FOR CONFIRMATION'
+      : `READ-ONLY REPLICA · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
+  $('context').textContent = stoppedController ? 'Another ST-MQ controller owns control. This computer preserves its local history and remains read-only until its history is explicitly recovered.'
+    : 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
   for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = !display.available;
   $('recording-adaptive-details').hidden = true;
   for (const key of ['indoor', 'outdoor']) {
@@ -103,15 +132,16 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     const source = key === 'outdoor' ? outdoorSourceLabel(observation.source) : providerName(observation.source);
     $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time'].filter(Boolean).join(' · ');
   }
-  const decision = status.lastDecision?.payload ?? status.lastDecision ?? {};
+  const decision = status.lastDecision?.payload ?? status.lastDecision ?? (stoppedController ? status.decision : null) ?? {};
   $('requested').textContent = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');
   $('requested-label').textContent = 'RECORDED HEATING REQUEST';
   const decisionAt = timestamp(status.lastDecision?.at ?? decision.at);
   $('actual').textContent = `${decisionAt ? `Recorded ${formatTime(decisionAt)} · ` : ''}Current home state unknown`;
   const bytes = status.replication?.bytes;
   $('price').textContent = Number.isFinite(bytes) && bytes >= 0 ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(bytes / 1e6) : '—';
-  $('price-label').textContent = 'COPIED DATABASE';
+  $('price-label').textContent = stoppedController ? 'LOCAL HISTORY DATABASE' : 'COPIED DATABASE';
   $('price-unit').textContent = 'MB · recorded history and saved models';
-  $('updated').textContent = display.snapshotAt === null ? 'Waiting for a snapshot' : `Primary snapshot ${formatTime(display.snapshotAt)}`;
+  $('updated').textContent = display.snapshotAt === null ? stoppedController ? 'Local history preserved' : 'Waiting for a snapshot'
+    : `${stoppedController ? 'Local history' : 'Primary snapshot'} ${formatTime(display.snapshotAt)}`;
   return display;
 }

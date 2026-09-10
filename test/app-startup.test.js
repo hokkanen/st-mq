@@ -8,6 +8,7 @@ import { loadConfig } from '../src/app/config.js';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
+import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
 test('legacy publisher exits at the live gate before loading credentials or connecting', () => {
   const result = spawnSync(process.execPath, ['scripts/mqtt-control.js'], { encoding: 'utf8', env: { ...process.env, STMQ_LEGACY_LIVE: '' }, timeout: 3000 });
@@ -70,7 +71,8 @@ test('H66 observations coexist with weather and prices and acquisition only requ
   fake.end = (force, options, done) => { closed++; done(); };
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } };
-  const app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: () => fake } });
+  const app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions,
+    mqttOptions: { connect: (_address, options) => identityConnection(options) ? idleIdentityClient() : fake } });
   try {
     fake.emit('connect');
     for (let i = 0; i < 100 && !app.engine.status().providers.outdoor?.lastSuccessAt; i++) await new Promise(resolve => setTimeout(resolve, 10));

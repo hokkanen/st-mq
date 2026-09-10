@@ -210,3 +210,41 @@ test('HTTP identification is explicitly opted in, bounded and accepts empty succ
   assert.equal(calls.length, 2);
   assert(calls.every(call => call.options.redirect === 'error'));
 });
+
+test('authority loss during a fresh control read prevents the charger command', async () => {
+  let allowed = true, writes = 0;
+  const devices = createDeviceProviders({ connections, clock: () => NOW, canControl: () => allowed,
+    http: { async json() { allowed = false; return snapshot(); }, async text() { writes++; return ''; } } });
+  await assert.rejects(devices.chargerIdentificationControl().limit({ amps: 10, minutes: 1 }), /authority was revoked/);
+  assert.equal(writes, 0);
+});
+
+test('authority loss during token rotation prevents a second physical command', async () => {
+  let allowed = true, writes = 0, refreshes = 0;
+  const devices = createDeviceProviders({ connections, clock: () => NOW, canControl: () => allowed,
+    tokenStore: { async save() { allowed = false; } }, http: {
+      async json(url) {
+        if (url.endsWith('/refresh_token')) {
+          refreshes++;
+          return { accessToken: 'synthetic-rotated-access', refreshToken: 'synthetic-rotated-refresh' };
+        }
+        return snapshot();
+      },
+      async text() { writes++; throw Object.assign(new Error('Authentication rejected'), { status: 401 }); },
+    } });
+  await assert.rejects(devices.chargerIdentificationControl().limit({ amps: 10, minutes: 1 }), /authority was revoked/);
+  assert.equal(writes, 1); assert.equal(refreshes, 1);
+});
+
+test('HTTP dispatch refuses identification after authority revocation or cancellation', async () => {
+  let allowed = true, writes = 0;
+  const http = createHttp({ allowChargerIdentification: true, canControl: () => allowed,
+    fetchImpl: async () => { writes++; return new Response(null, { status: 200 }); } });
+  const options = { method: 'POST', body: '{"amps":10,"minutes":1}' };
+  await http.text(commandUrl, options);
+  allowed = false;
+  await assert.rejects(http.text(commandUrl, options), /authority-revoked/);
+  allowed = true;
+  await assert.rejects(http.text(commandUrl, { ...options, signal: AbortSignal.abort() }), /request-aborted/);
+  assert.equal(writes, 1); http.close();
+});

@@ -24,6 +24,11 @@ catches up after replica outages, and verifies each snapshot before publication.
 The replica never acquires data or controls equipment. Replication is disabled by
 default and requires configuring the two computers.
 
+Optional [paired operation](docs/pairing.md) adds manual handover and force
+promotion, a managed MQTT virtual IP, and protected recovery of missing history.
+The dashboard shows each computer's role, synchronization and verification
+status, and the explicit recovery controls. There is no automatic failover.
+
 An independent recording optimizer targets a configurable **10 GB/year** rolling
 growth rate with a **five-minute maximum interval when fresh measurements exist**.
 Electricity history stores three estimated phase-energy increments for Easee and

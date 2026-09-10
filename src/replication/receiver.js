@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { open, readdir, rm } from 'node:fs/promises';
+import { lstat, open, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { copySnapshot, GENERATION_PATTERN, normalizeSnapshot, ownedDirectory, privateFile,
@@ -8,11 +8,21 @@ import { copySnapshot, GENERATION_PATTERN, normalizeSnapshot, ownedDirectory, pr
 const MARKER = '.st-mq-replica';
 const LOCK = '.receiver-lock.sqlite';
 
+async function assertUnpairedDirectory(directory) {
+  // Paired lifecycle owns its recovery gate. A legacy SSH sender must never
+  // bypass protection by replacing or pruning its publications independently.
+  try {
+    await lstat(join(directory, '.st-mq-paired-receiver'));
+    throw replicationError('protected_history');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
+
 async function initializeDirectory(directory) {
+  await assertUnpairedDirectory(directory);
   await ownedDirectory(directory, MARKER);
 }
 
-async function acquireLock(directory) {
+export async function acquireReceiverLock(directory) {
   const path = join(directory, LOCK);
   try { const file = await open(path, 'wx', 0o600); await file.close(); }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
@@ -52,7 +62,8 @@ export async function runReceiver({ directory, input = process.stdin, output = p
         if (message.type !== 'prepare' || message.version !== 1 || !GENERATION_PATTERN.test(message.generation)) {
           throw replicationError('invalid_protocol');
         }
-        unlock = await acquireLock(directory);
+        unlock = await acquireReceiverLock(directory);
+        await assertUnpairedDirectory(directory);
         generation = message.generation;
         // Remove leftovers only after ownership is established. Active orphan
         // writers may retain an unlinked inode but cannot publish it.
@@ -100,6 +111,7 @@ export async function runReceiver({ directory, input = process.stdin, output = p
       normalizeSnapshot(incoming);
       const actual = await snapshotDigest(incoming);
       if (actual.digest !== message.digest || actual.bytes !== message.bytes) throw replicationError('verification_failed');
+      await assertUnpairedDirectory(directory);
       const publication = await publishSnapshot(directory, incoming, { generation, ...actual,
         sourceStartedAt: message.sourceStartedAt, sourceAt: message.sourceAt, verifiedAt: Date.now() });
       incoming = null;

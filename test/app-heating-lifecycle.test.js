@@ -8,6 +8,7 @@ import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { Store } from '../src/storage/store.js';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
+import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
 test('live test transport stays idle until a POST and shutdown records an unconfirmed pending command before closing storage', { timeout: 15_000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-lifecycle-'));
@@ -19,6 +20,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
     connections: { ...fixture.connections, mqtt: connection } };
   const clients = [], packets = [], published = new EventEmitter();
   const connect = (address, options) => {
+    if (identityConnection(options)) return idleIdentityClient();
     assert.equal(address, connection.address);
     assert.equal(options.username, connection.user);
     assert.equal(options.password, connection.pw);

@@ -16,6 +16,16 @@ function fixture(t) {
 }
 const stHeader = 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n';
 const evHeader = 'unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n';
+function legacyJournal(db) {
+  db.exec(`CREATE TABLE journal_v10 (id INTEGER PRIMARY KEY,input TEXT NOT NULL,key TEXT NOT NULL,
+    kind TEXT NOT NULL,at INTEGER NOT NULL,algorithm_version TEXT NOT NULL,config_version TEXT,
+    forecast_version TEXT,payload TEXT NOT NULL,UNIQUE(input,key));
+    INSERT INTO journal_v10 SELECT * FROM learning_journal;
+    DROP VIEW learning_journal; DROP VIEW learning_journal_all; DROP TABLE learning_journal_entries; DROP TABLE learning_epochs;
+    DROP TABLE recovery_runs; DROP TABLE recovery_provenance;
+    DROP INDEX observations_recovery_energy;
+    ALTER TABLE journal_v10 RENAME TO learning_journal;`);
+}
 
 test('schema migrates once, checkpoints survive restart, future schema is rejected', t => {
   const { store, path } = fixture(t);
@@ -64,6 +74,7 @@ test('schema-v2 migration preserves observations and indexes complete Easee acqu
   store.close();
 
   const prior = new DatabaseSync(path);
+  legacyJournal(prior);
   prior.exec(`DROP INDEX observations_easee_acquisition; DROP TABLE learning_samples; DROP TABLE learning_cycles;
     DROP VIEW provider_snapshots;
     DROP INDEX snapshots_content_fetch;
@@ -104,6 +115,7 @@ test('chart cache removal retains original history, checkpoints and lookup index
   assert.deepEqual(store.observations(), before);
   store.close();
   const previous = new DatabaseSync(path);
+  legacyJournal(previous);
   previous.exec(`CREATE TABLE chart_rollups (bucket INTEGER, payload TEXT);
     CREATE INDEX chart_rollups_time ON chart_rollups(bucket);
     INSERT INTO chart_rollups VALUES(0,'{"synthetic":true}');

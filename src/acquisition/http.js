@@ -19,7 +19,7 @@ function retryDelay(value) {
 /** Finite requests with sanitized errors: URLs, authorization and response bodies
  * are deliberately excluded because providers sometimes echo credentials. */
 export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, maxBytes = 2 * 1024 * 1024,
-  allowChargerIdentification = false } = {}) {
+  allowChargerIdentification = false, canControl = () => true } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error('Invalid provider timeout');
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) throw new Error('Invalid provider response limit');
   const pending = new Set();
@@ -50,6 +50,8 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
     let reader, response;
     try {
+      if (identification && !canControl()) throw new ProviderError('controller-authority-revoked');
+      if (signal.aborted) throw new ProviderError('provider-request-aborted');
       response = await fetchImpl(url.href, { ...options, method, redirect: 'error', signal });
       if (!response.ok) throw new ProviderError('provider-http-error', response.status,
         retryDelay(response.headers.get('retry-after')));

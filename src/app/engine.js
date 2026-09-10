@@ -97,6 +97,8 @@ export class Engine {
   }
   reconcileFireplace() {
     if (!['mqtt', 'providers', 'simulated'].includes(this.config.input)) return;
+    const recovery = this.store.getState(`recovery:active:${this.config.input}`);
+    if (['importing', 'rebuilding', 'catching-up'].includes(recovery?.status)) return;
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     if (['pending', 'running', 'ready'].includes(job?.status) || job?.status === 'failed' && !this.fireplaceRebuild) {
       const manager = this.fireplaceManager();
@@ -467,6 +469,7 @@ export class Engine {
       raw:{expiresAt,verified:Boolean(this.plant),basis:'Requested ten-minute circulation; physical DHWR state is not observed'} });
   }
   tick() {
+    if (this.suspended) return structuredClone(this.latestStatus);
     const now = this.clock(), input = this.config.input;
     recordHeatPumpConfiguration(this.store, input, this.control, now);
     this.recorder.flush(now);

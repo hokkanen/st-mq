@@ -34,7 +34,9 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://example.invalid', temperatureTopics: {
       indoor_temperature: 'invented/indoor', garage_temperature: 'invented/garage',
     } } } };
-  const app = await start({ config, clock: () => now, mqttOptions: { connect: () => client }, providerOptions: fixture.providerOptions });
+  const app = await start({ config, clock: () => now, mqttOptions: {
+    connect: (_address, options) => options?.clientId?.startsWith('stmq-identity-') ? broker() : client,
+  }, providerOptions: fixture.providerOptions });
   try {
     client.emit('connect');
     assert.deepEqual(client.subscriptions, ['invented/indoor', 'invented/garage']);

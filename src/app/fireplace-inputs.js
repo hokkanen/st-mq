@@ -12,7 +12,7 @@ export function fireplaceLearningContext(store, input, revision, asOf = Infinity
   for (const row of rows) if (row.kind === 'remove' && !removed.has(row.target_id)) removed.set(row.target_id, row.at);
   const loads = rows.filter(row => row.kind === 'load');
   return { fireplaceRevision: rows.at(-1)?.id ?? 0,
-    fireplaceStartedAt: loads[0]?.at ?? null,
+    fireplaceStartedAt: loads.length ? loads.reduce((earliest, row) => Math.min(earliest, row.at), Infinity) : null,
     fireplaceEvents: loads.filter(row => !removed.has(row.id)).map(row => ({ id: row.id, at: row.at, litAt: row.at, kg: row.kg })),
     fireplaceExcludedRanges: loads.filter(row => removed.has(row.id)).map(row => ({ start: row.at,
       end: Math.min(row.at + FIREPLACE_HORIZON_MS, removed.get(row.id)) })).filter(range => range.end > range.start) };

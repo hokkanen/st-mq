@@ -158,21 +158,30 @@ function cacheWeather(previous, result, snapshotId, now) {
  * of its last good data; it cannot postpone control or another provider's poll. */
 export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
-  temperatureProvider, automatic = true } = {}) {
+  temperatureProvider, automatic = true, canControl = () => true } = {}) {
   const connections = config.connections ?? {};
   const identifyCharger = connections.teslamate?.enabled === true
     && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
-  http ??= createHttp({ allowChargerIdentification: identifyCharger });
+  http ??= createHttp({ allowChargerIdentification: identifyCharger, canControl });
   const location = configuredLocation(connections);
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // selects a usable H66 reading before either weather source.
-  devices ??= createDeviceProviders({ connections, http, clock, tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
-  const identification = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
-    ? createChargerIdentification({ control: devices.chargerIdentificationControl(), clock }) : null;
+  devices ??= createDeviceProviders({ connections, http, clock, canControl,
+    tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
+  const identificationControl = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
+    ? devices.chargerIdentificationControl() : null;
+  const identification = identificationControl ? createChargerIdentification({ clock, control: {
+    read: args => identificationControl.read(args),
+    limit: args => {
+      if (!canControl() || args.signal?.aborted) throw new Error('Controller authority was revoked');
+      return identificationControl.limit(args);
+    },
+  } }) : null;
   if (identification) engine.chargerIdentification = identification;
   let identificationTimer;
   const runIdentification = async () => {
     if (!identification) return;
+    if (!canControl()) { identification.stop(); return; }
     try {
       await identification.tick({ tesla: engine.teslamate?.identificationSnapshot(),
         charger: engine.electricitySnapshot?.charger }, clock());
@@ -264,7 +273,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       }
       const skipSources = Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
       const result = await job.run({ now: at, signal: cancellation.signal, skipSources });
-      if (closed) return;
+      if (closed || !canControl()) return;
       noteAcquisition(state, result?.acquisition, clock());
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
       // SQLite rollback must also restore the in-memory view used by decisions.
@@ -355,7 +364,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       if (readings) state.currentReadings = readings;
       state.status = failure || issues.some(flag => flag !== 'charger_stale') ? 'degraded' : state.acquisition?.fallbackUsed ? 'fallback' : 'ok';
     } catch (error) {
-      if (closed) return;
+      if (closed || !canControl()) return;
       noteAcquisition(state, error?.acquisition, clock());
       retryAfterMs = boundedDelay(error?.retryAfterMs);
       state.status = 'error'; failure = errorCode(error);
@@ -367,7 +376,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         }]));
       }
     }
-    if (closed) return;
+    if (closed || !canControl()) return;
     state.error = failure;
     state.failures = failure ? Math.min(10, state.failures + 1) : 0;
     if (!failure) state.lastSuccessAt = clock();
@@ -388,7 +397,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   }
 
   function runDue() {
-    if (closed) return Promise.resolve([]);
+    if (closed || !canControl()) return Promise.resolve([]);
     for (const [name, job] of Object.entries(definitions)) {
       if (!job.enabled || pending.has(name) || health[name].nextAttemptAt > clock()) continue;
       const flight = poll(name).finally(() => pending.delete(name));

@@ -7,6 +7,7 @@ import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey } from './replica-status.js';
+import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 
 const $ = id => document.getElementById(id);
 const ingress = usesHomeAssistantLogin();
@@ -52,7 +53,7 @@ const reasons = {
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 async function api(path, data, options = {}) {
-  if (data !== undefined && (!lastStatus || isReadOnlyReplica(lastStatus))) {
+  if (data !== undefined && (!lastStatus || isReadOnlyReplica(lastStatus)) && !isPairManagementRequest(path, data, lastStatus)) {
     const error = new Error(lastStatus ? 'This replica is read-only. Make changes on the primary computer.' : 'Wait for the installation status before making changes.');
     error.status = 403; throw error;
   }
@@ -66,6 +67,8 @@ async function api(path, data, options = {}) {
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
+const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
+  afterMutation: () => refresh({ forceChart: true }) });
 function renderContract(s) {
   const current = activeRates(s);
   const period = current ?? s.configuredPrices;
@@ -348,6 +351,7 @@ function renderH66(s) {
 function render(s) {
   lastStatus = s;
   $('error').hidden = true;
+  pairPanel.update(s.pairing ?? { enabled: false });
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) {
     if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
@@ -451,7 +455,22 @@ async function refresh({ forceChart = false } = {}) {
     }
     lastReplicaSnapshot = snapshot;
     await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);
-  } catch (error) { if (sequence === refreshSequence) showError(error); }
+  } catch (error) { if (sequence === refreshSequence) { pairPanel.unavailable(); showError(error); } }
+}
+let pairPollBusy = false;
+async function refreshPairing() {
+  if (lastStatus?.pairing?.enabled !== true || pairPollBusy) return;
+  pairPollBusy = true;
+  try {
+    const pairing = await api('/api/pairing');
+    const previous = lastStatus.pairing;
+    const changed = pairing.role !== previous.role || pairing.canControl !== previous.canControl || Boolean(pairing.transition) !== Boolean(previous.transition);
+    lastStatus = { ...lastStatus, pairing };
+    pairPanel.update(pairing);
+    if (isReadOnlyReplica(lastStatus)) renderReplicaStatus(document, lastStatus, { formatTime: time });
+    if (changed) await refresh({ forceChart: true });
+  } catch { pairPanel.unavailable(); }
+  finally { pairPollBusy = false; }
 }
 $('settings-reload').addEventListener('click', async () => {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !settingsReloadScope(lastStatus).available) return;
@@ -586,3 +605,4 @@ historyChart = createHistoryChart({ api: (path, options) => api(path, undefined,
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 await refresh();
 setInterval(refresh, 15_000);
+setInterval(refreshPairing, 3_000);

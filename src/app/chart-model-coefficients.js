@@ -9,19 +9,20 @@ const caches = new WeakMap();
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 
 function replay(store, input, through) {
+  const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
   const fireplaceContext = fireplaceLearningContext(store, input);
   const bounds = store.db.prepare(`SELECT MAX(id) lastId,
     MIN(CASE WHEN at>? THEN id END) futureId FROM learning_journal WHERE input=?`).get(through, input);
   const lastId = bounds.futureId === null ? bounds.lastId ?? 0 : bounds.futureId - 1;
   let cache = caches.get(store.db);
   if (!cache) { cache = new Map(); caches.set(store.db, cache); }
-  const key = JSON.stringify([input, lastId, LEARNING_ALGORITHM, fireplaceContext.fireplaceRevision]);
+  const key = JSON.stringify([input, epoch, lastId, LEARNING_ALGORITHM, fireplaceContext.fireplaceRevision]);
   if (cache.has(key)) {
     const hit = cache.get(key); cache.delete(key); cache.set(key, hit); return hit.result;
   }
   // Advancing the clock does not change an immutable journal prefix. New
   // entries resume its cached state instead of refitting all earlier samples.
-  const base = [...cache.values()].filter(entry => entry.input === input && entry.lastId < lastId
+  const base = [...cache.values()].filter(entry => entry.input === input && entry.epoch === epoch && entry.lastId < lastId
     && entry.fireplaceRevision === fireplaceContext.fireplaceRevision)
     .sort((a, b) => b.lastId - a.lastId)[0];
   const result = base ? { ...base.result, events: [...base.result.events] }
@@ -97,7 +98,7 @@ function replay(store, input, through) {
       result.invalidRecords++; blocked = true; checkpoint = null; learned.clear(); fitted.clear(); emit(null);
     }
   }
-  const cached = { input, lastId, result, checkpoint, at, blocked, learned: [...learned], fitted: [...fitted],
+  const cached = { input, epoch, lastId, result, checkpoint, at, blocked, learned: [...learned], fitted: [...fitted],
     fireplaceRevision: fireplaceContext.fireplaceRevision };
   const bytes = Buffer.byteLength(JSON.stringify(cached));
   if (bytes <= MAX_CACHE_BYTES) {

@@ -26,7 +26,7 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    assert.equal(actual.length, 16);
+    assert.equal(actual.length, 19);
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);

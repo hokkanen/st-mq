@@ -130,6 +130,15 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .replica-notice p { margin: 4px 0; }
 .replica-notice[data-state="stale"], .replica-notice[data-state="clock-warning"] { border-color: var(--stale); }
 .replica-notice[data-state="error"] { border-color: var(--error-text); }
+.pairing-panel h2 { font-size: 17px; margin: 0 0 8px; }
+.pairing-panel p { margin: 4px 0; }
+.pairing-panel[data-state="protected"], .pairing-panel[data-state="transition"] { border-color: var(--stale); }
+.pairing-facts { margin-top: 10px; }
+.pairing-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pairing-actions button { margin-top: 8px; max-width: 100%; text-align: left; }
+.pairing-preview { margin-top: 12px; padding: 12px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.pairing-preview h3 { font-size: 14px; margin: 0 0 6px; }
+.pairing-panel [hidden] { display: none; }
 .section-top { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; margin: 14px 0; min-width: 0; }
 input, select { font: inherit; padding: 11px 12px; border: 1px solid var(--border); background: var(--input); border-radius: 6px; color: var(--text); min-width: 0; max-width: 100%; min-height: 42px; }

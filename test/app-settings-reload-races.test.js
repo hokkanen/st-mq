@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 import { request } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -105,7 +106,8 @@ test('a slow POST already reading JSON is rejected if its body completes during 
 
 function fakeMqtt() {
   const clients = [], packets = [];
-  const connect = () => {
+  const connect = (_address, options) => {
+    if (identityConnection(options)) return idleIdentityClient();
     const client = new EventEmitter();
     Object.assign(client, { connected: true, endCalls: 0 });
     client.subscribe = (_topic, _options, done) => done();
@@ -151,7 +153,8 @@ test('failed replacement and recovery disable API mutations and scheduled contro
   const mqtt = fakeMqtt();
   let attempts = 0;
   let now = Date.parse('2026-09-08T12:00:00Z');
-  const connect = () => {
+  const connect = (_address, options) => {
+    if (identityConnection(options)) return idleIdentityClient();
     if (++attempts > 1) throw new Error('synthetic-private-reconnect-failure');
     return mqtt.connect();
   };

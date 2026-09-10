@@ -212,8 +212,14 @@ export class Executor {
       status: restorationPending ? 'pending' : 'mqtt', restorationPending, native, nativeError, ...detail });
   }
   restore(options = {}) { return this.exclusive(() => this.restoreInternal(options)); }
-  async close() {
+  async close({ restore = true } = {}) {
     if (this.closed) return;
+    if (!restore) {
+      this.closed = true; clearTimeout(this.timer);
+      await this.commandTransport?.close();
+      await this.pending?.catch(() => {});
+      return;
+    }
     await this.pending?.catch(() => {});
     try { await this.restore({ reason: 'application-shutdown' }); }
     finally { this.closed = true; clearTimeout(this.timer); }

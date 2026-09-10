@@ -9,24 +9,33 @@ import { startHistoryLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
 import { prepareStorage } from './app/storage-paths.js';
 import { createHeatingTransport } from './control/mqtt.js';
+import { standaloneAuthority, stoppedControllerViewer } from './control/authority.js';
 
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
-  clock = Date.now, providerOptions = {}, mqttOptions = {} } = {}) {
+  clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairingOptions = {},
+  installSignalHandlers = true } = {}) {
   const started = performance.now();
-  const source = readConfig === configurationReader(config) ? configurationSource(config) : null;
+  const source = pairContext?.configurationSource ?? (readConfig === configurationReader(config) ? configurationSource(config) : null);
   let startupImport = null;
-  if (config.addon && source) {
+  if (config.addon && source && !pairContext) {
     startupImport = await source.prepare({ startup: true });
     config = startupImport.config;
     await startupImport.persist();
   }
   if (config.role !== undefined && !['primary', 'replica'].includes(config.role))
     throw new Error('Invalid local instance role');
+  if (config.pairing?.enabled && !pairContext) {
+    const { startPaired } = await import('./pairing/runtime.js');
+    const app = await startPaired({ config, readConfig, clock, providerOptions, mqttOptions,
+      startRuntime: start, installSignalHandlers, ...pairingOptions });
+    if (startupImport) await startupImport.complete().catch(() => {});
+    return app;
+  }
   // A replica never opens the live Store or constructs a controller. Its role
   // comes from this machine's configuration, never from replicated state.
   if (config.role === 'replica') {
     const { startReplica } = await import('./app/replica.js');
-    const app = await startReplica({ config, clock });
+    const app = await startReplica({ config, clock, pairContext, installSignalHandlers });
     if (startupImport) {
       try { await startupImport.complete(); }
       catch { /* The retained import can be retried on restart. */ }
@@ -36,9 +45,15 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   const migrated = await prepareStorage(config);
   const store = new Store(config.dbPath);
   if (migrated) store.event('database-migrated', migrated, clock());
-  let engine, webAccess, learning, chartService, commandTransport, replication, timer, closed = false, reloadPending = null;
+  let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
+  let authorityStopping = null, controlRevoked = false;
   const acquisitions = [];
+  const canControl = () => !controlRevoked && (pairContext?.canControl?.() ?? true) && (authority?.canControl() ?? true);
+  const requireRunning = () => {
+    if (closed) throw new Error('The application is shutting down.');
+    if (!canControl()) throw new Error('Controller authority was revoked. This instance is read-only.');
+  };
   const signalHandlers = new Map();
   function reportControllerError(error) {
     const databaseBusy = error?.code === 'ERR_SQLITE_ERROR' && [5, 6].includes(error.errcode & 0xff);
@@ -51,39 +66,53 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.error(JSON.stringify({ event: 'controller-error',
       reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
   }
-  async function close() {
+  async function close({ restore = true } = {}) {
     if (closed) return;
     closed = true;
     clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     const replicationStopped = replication?.stop();
     await reloadPending?.catch(() => {});
+    await authorityStopping?.catch(() => {});
     // Cancel a large copy immediately, but restore equipment before waiting for
     // its worker/process cleanup. Replication must not delay control shutdown.
-    await stopRuntime();
+    await stopRuntime({ restore });
+    await authority?.close();
     await replicationStopped;
     await chartService?.close();
     await webAccess?.close();
     store.close();
   }
-  async function stopRuntime() {
+  async function stopRuntime({ restore = true } = {}) {
+    restore = restore && canControl();
     clearTimeout(timer);
     if (engine) engine.onTemporaryChange = null;
+    // Revoke transports before awaiting any pending device readback on demotion.
+    // Ordinary shutdown still performs the existing restoration protocol.
+    let revokedAcquisitions;
+    if (!restore) {
+      const transportStopped = commandTransport?.close();
+      revokedAcquisitions = Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close({ restore: false })));
+      await transportStopped;
+    }
     if (engine?.heatingTestBusy) await commandTransport?.close();
     await engine?.dispatchPending?.catch(() => {});
     await engine?.closeFireplace();
-    try { await engine?.executor?.close?.(); }
+    try { await engine?.executor?.close?.({ restore }); }
     catch { store.event('restoration-pending', { reason: 'application-shutdown' }, clock()); }
     await commandTransport?.close();
-    await Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close()));
+    await (revokedAcquisitions ?? Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close({ restore }))));
     await learning?.close(); learning = null;
     engine?.recorder.flush(clock());
     commandTransport = null;
   }
   async function createRuntime() {
-    if (closed) throw new Error('The application is shutting down.');
+    requireRunning();
+    await authority?.reconfigure(config.connections.mqtt);
+    requireRunning();
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
-      commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect });
+      commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect,
+        canControl });
     }
     engine = new Engine({ store, config, clock, commandTransport });
     // Load durable native-setting obligations before the first active dispatch.
@@ -93,14 +122,19 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       || config.connections.teslamate?.enabled === true;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
-      if (closed) throw new Error('The application is shutting down.');
-      const acquisition = await startMqtt({ ...mqttOptions, engine, store, config });
+      requireRunning();
+      const acquisition = await startMqtt({ ...mqttOptions, engine, store, config,
+        canControl });
+      if (closed || !canControl()) {
+        await acquisition.close({ restore: false });
+        requireRunning();
+      }
       acquisitions.push(acquisition);
       if (acquisition.h66) engine.setH66(acquisition);
     }
   }
   function startBackground() {
-    if (closed) throw new Error('The application is shutting down.');
+    requireRunning();
     engine.tick();
     // Start UI and conservative control before bounded historical reconstruction.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
@@ -109,11 +143,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   }
   function schedule() {
     clearTimeout(timer);
-    if (closed || reloadPending || !runtimeUsable) return;
+    if (closed || reloadPending || !runtimeUsable || !canControl()) return;
     const now = clock();
     const next = Math.min(now + 60_000 - (now % 60_000), engine.nextTemporaryDeadline());
     timer = setTimeout(() => {
-      if (closed || reloadPending || !runtimeUsable) return;
+      if (closed || reloadPending || !runtimeUsable || !canControl()) return;
       try { engine.tick(); }
       catch (error) { reportControllerError(error); }
       schedule();
@@ -122,14 +156,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   async function startProviderRuntime() {
     if (['providers', 'mqtt'].includes(config.input)) {
       const { startProviders } = await import('./acquisition/providers.js');
-      if (closed) throw new Error('The application is shutting down.');
-      acquisitions.push(startProviders({ ...providerOptions, engine, store, config, clock }));
+      requireRunning();
+      acquisitions.push(startProviders({ ...providerOptions, engine, store, config, clock, canControl }));
     }
   }
   const settingsReloadStatus = () => ({
-    available: typeof readConfig === 'function' && runtimeUsable,
+    available: typeof readConfig === 'function' && runtimeUsable && canControl(),
     busy: Boolean(reloadPending) || starting,
-    unavailable: !runtimeUsable && !reloadPending,
+    unavailable: !runtimeUsable && !reloadPending && canControl(),
     configuration: config.configuration ?? { environment: config.addon ? 'home-assistant' : 'ubuntu' },
     access: webAccess?.status(),
     result: configurationResult,
@@ -140,18 +174,18 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         : 'This instance has no reloadable configuration source.',
   });
   async function reloadSettings() {
-    if (closed) throw new Error('The application is shutting down.');
+    requireRunning();
     if (starting) throw new Error('The application is still starting. Retry shortly.');
     if (!runtimeUsable) throw new Error(settingsReloadStatus().reason);
     if (reloadPending) throw new Error('Settings are already being updated.');
     if (typeof readConfig !== 'function') throw new Error(settingsReloadStatus().reason);
     clearTimeout(timer);
-    const requireRunning = () => { if (closed) throw new Error('The application is shutting down.'); };
     const operation = async () => {
       let next, transaction;
       try {
         transaction = source ? await source.prepare() : null;
         next = transaction ? transaction.config : await readConfig();
+        if (pairContext?.runtimeConfiguration) next = pairContext.runtimeConfiguration(next);
       }
       catch (error) {
         // Source errors are authored without JSON snippets or provider responses.
@@ -160,7 +194,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       }
       requireRunning();
       const startupKeys = ['role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'legacyDbPath', 'addon'];
-      if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.replication, config.replication))
+      if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.replication, config.replication)
+        || !isDeepStrictEqual(next.pairing, config.pairing))
         throw new Error('Input, role, replication, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
       if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending
@@ -186,9 +221,12 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       // Reserve a newly needed listener before saving anything to Supervisor.
       try {
         accessTransaction = await webAccess.prepare(next);
+        requireRunning();
         await transaction?.persist();
+        requireRunning();
       } catch {
         await accessTransaction?.rollback();
+        requireRunning();
         engine.onTemporaryChange = schedule;
         throw new Error('Configuration could not be saved or web access prepared. The import file was retained; no runtime settings were updated.');
       }
@@ -231,9 +269,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         runtimeUsable = true;
         startBackground();
         await accessTransaction.commit();
+        requireRunning();
         configurationResult = null;
         try { configurationResult = await transaction?.complete() ?? null; }
         catch { configurationResult = { cleanupPending: true }; }
+        requireRunning();
         store.event('settings-reloaded', { input: config.input }, clock());
       } catch {
         await accessTransaction?.rollback();
@@ -241,6 +281,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         requireRunning();
         try { await stopRuntime(); }
         catch { stopped = false; }
+        requireRunning();
         if (!stopped) {
           store.event('settings-reload-failed', { restored: false }, clock());
           throw new Error('Settings teardown failed. Restart the application after checking options/config.');
@@ -258,7 +299,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           startBackground();
         } catch {
           runtimeUsable = false;
-          if (!closed) await stopRuntime().catch(() => {});
+          requireRunning();
+          await stopRuntime().catch(() => {});
+          requireRunning();
           store.event('settings-reload-failed', { restored: false }, clock());
           throw new Error('Settings update and runtime recovery failed. Restart the application after checking options/config.');
         }
@@ -271,17 +314,34 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     finally { reloadPending = null; schedule(); }
   }
   try {
+    if (!pairContext && ['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
+      authority = await standaloneAuthority({ config, clock, connect: mqttOptions.connect,
+        onLoss: async () => {
+          controlRevoked = true;
+          if (engine) engine.suspended = true;
+          // Invalidate pending reload continuations before cancelling providers.
+          // The losing dashboard remains readable; it cannot reopen a runtime.
+          authorityStopping = Promise.all([stopRuntime({ restore: false }), reloadPending?.catch(() => {})]);
+          await authorityStopping;
+        } });
+      if (!authority.canControl()) {
+        store.close();
+        return await stoppedControllerViewer({ config, authority, clock, installSignalHandlers });
+      }
+    }
     await createRuntime();
-    engine.tick();
+    if (canControl()) engine.tick();
     chartService = createChartService({ store });
     webAccess = createWebAccess({ config, getEngine: () => engine, store, chartService,
       replicationStatus: () => replication?.status() ?? null,
+      pairContext,
+      controlAuthority: authority,
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
-    await startProviderRuntime();
+    if (canControl()) await startProviderRuntime();
     // The first tick runs before the listener, as before; background work follows it.
-    learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
+    learning = canControl() && config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     if (config.replication?.enabled) {
       const { ReplicationService } = await import('./replication/service.js');
       replication = new ReplicationService({ dbPath: store.path, config: config.replication });
@@ -292,11 +352,12 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       catch { configurationResult = { cleanupPending: true }; }
     }
     starting = false;
+    authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();
     console.log(JSON.stringify({ event: 'ready', input: config.input, mode: engine.settings.mode, liveWrites: engine.status().liveWrites, manualHeatingTests: engine.heatingTests().available,
       address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
-    for (const signal of ['SIGTERM', 'SIGINT']) {
+    if (installSignalHandlers) for (const signal of ['SIGTERM', 'SIGINT']) {
       const handler = () => close().catch(error => { console.error(error.message); process.exitCode = 1; });
       signalHandlers.set(signal, handler); process.once(signal, handler);
     }
