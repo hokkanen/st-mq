@@ -1,9 +1,14 @@
 # ST-MQ
 
+![ST-MQ icon](icon.png)
+
 ST-MQ is a local home-energy controller under development for a Raspberry Pi 5
 Home Assistant add-on and standalone Linux. The authoritative project brief is
 `CODEX/ST-MQ-Codex-handoff.md`; implementation status and remaining work are in
 [docs/PROGRESS.md](docs/PROGRESS.md).
+
+The default icon and all three reusable SVG/PNG designs are in
+[branding assets](assets/branding/README.md).
 
 The controller provides SQLite history, adaptive thermal learning, complete
 preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/control.
