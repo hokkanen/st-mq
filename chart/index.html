@@ -296,6 +296,12 @@
             <p id="provider-context" class="muted"></p>
             <p id="price-status" class="muted"></p><p id="weather-status" class="muted"></p>
             <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
+            <details id="electricity-details" class="controller-fold electricity-panel">
+              <summary>Electricity rates</summary>
+              <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+              <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+              <p class="muted">Rates are set in the configuration.</p>
+            </details>
             <details id="controls-details" class="controller-fold">
               <summary>Configuration</summary>
               <section class="configuration-location" aria-labelledby="settings-location-title">
@@ -325,12 +331,6 @@
                 <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
                 <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
               </div>
-            </details>
-            <details id="electricity-details" class="controller-fold electricity-panel">
-              <summary>Electricity rates</summary>
-              <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
-              <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
-              <p class="muted">Rates and the temperature-drop limit are set in the configuration.</p>
             </details>
           </details>
         </article>

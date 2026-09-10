@@ -224,8 +224,8 @@ additional storage or reconstructed historical coefficient traces. See the detai
 [learning and control explanation](docs/learning-and-control.md).
 
 **Data & settings** shows a compact provider-health overview. **Connections &
-settings** opens each provider's data series and details, **Configuration**
-and **Electricity rates**. **Electricity consumption · Easee, Teslamate** groups
+settings** opens each provider's data series and details, **Electricity rates**
+and **Configuration**. **Electricity consumption · Easee, Teslamate** groups
 property import, Charger 1 and Charger 2 in both the source overview and the
 connection details. Easee and TeslaMate keep separate acquisition diagnostics;
 Charger 2 lists total power, estimated interval energy and its session check.
