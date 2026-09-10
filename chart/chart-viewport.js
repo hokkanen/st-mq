@@ -1,3 +1,5 @@
+import { alignStepSeries } from './power-stack.js';
+
 const minute = 60_000;
 const hour = 60 * minute;
 const day = 24 * hour;
@@ -171,6 +173,105 @@ export function reduceSeries(series = [], view, budget = 500) {
   for (let bucket = 0; bucket < buckets; bucket++) {
     result.push(...envelope(points, Math.floor(bucket * points.length / buckets), Math.floor((bucket + 1) * points.length / buckets)));
   }
+  return result;
+}
+
+const relatedSeries = [
+  ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'],
+  ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)),
+  ['all_in_price', 'spot_price'],
+];
+
+/** Related curves share every retained sample, including total-power readings
+ * beside charging extrema. Independently choosing extrema can invert their
+ * relationship even when every original measurement was consistent. */
+export function reduceChartSeries(series = {}, view, budget = 500) {
+  const result = {}, grouped = new Set();
+  for (const group of relatedSeries) {
+    const keys = group.filter(key => series[key]?.length);
+    if (keys.length < 2) continue;
+    const aligned = alignStepSeries(keys.map(key => sliceSeries(series[key], view)));
+    const count = aligned[0].length;
+    const limit = finite(budget) ? Math.max(1, Math.floor(budget)) : 500;
+    let indices;
+    if (count <= limit) indices = Array.from({ length: count }, (_, index) => index);
+    else {
+      const extremaSeries = [...aligned];
+      if (group === relatedSeries[0]) {
+        const loads = keys.map((key, index) => key === 'property_power' ? -1 : index).filter(index => index >= 0);
+        // A stack can peak where none of its individual loads reaches a maximum.
+        // Include every multi-load combination so legend visibility cannot hide
+        // the peak of the remaining visible stack through point reduction.
+        for (let mask = 1; mask < 2 ** loads.length; mask++) {
+          const members = loads.filter((_, bit) => mask & (1 << bit));
+          if (members.length < 2) continue;
+          extremaSeries.push(aligned[0].map((_, index) => {
+            let total = 0;
+            for (const member of members) {
+              if (!finite(aligned[member][index].y)) return { y: null };
+              total += aligned[member][index].y;
+            }
+            return { y: total };
+          }));
+        }
+      }
+      // The budget remains a per-curve detail target. Related curves may need
+      // additional matching samples; dividing the budget among them would
+      // erase patterns merely because another load is visible. The union is
+      // bounded by the small fixed group size, with extra edges for real gaps.
+      const buckets = Math.max(1, Math.floor(limit / 7));
+      const selected = new Set();
+      for (let bucket = 0; bucket < buckets; bucket++) {
+        const start = Math.floor(bucket * count / buckets), end = Math.floor((bucket + 1) * count / buckets);
+        selected.add(start); selected.add(end - 1);
+        for (const points of extremaSeries) {
+          let minimum, maximum;
+          for (let index = start; index < end; index++) {
+            if (!finite(points[index].y)) continue;
+            if (minimum === undefined || points[index].y < points[minimum].y) minimum = index;
+            if (maximum === undefined || points[index].y > points[maximum].y) maximum = index;
+          }
+          if (minimum !== undefined) { selected.add(minimum); selected.add(maximum); }
+        }
+      }
+      // Keep all sides of duplicate edges in their original order. Missing
+      // markers at the same timestamp are distinct from an adjacent reading.
+      function retainEdges(index) {
+        const x = aligned[0][index].x;
+        let first = index, last = index;
+        while (first > 0 && aligned[0][first - 1].x === x) first--;
+        while (last + 1 < count && aligned[0][last + 1].x === x) last++;
+        for (let edge = first; edge <= last; edge++) selected.add(edge);
+        return [first, last];
+      }
+      for (const index of [...selected]) retainEdges(index);
+      const nextMissing = aligned.map(points => {
+        const next = new Uint32Array(count + 1); next[count] = count;
+        for (let index = count - 1; index >= 0; index--) next[index] = finite(points[index].y) ? next[index + 1] : index;
+        return next;
+      });
+      const ordered = [...selected].sort((a, b) => a - b);
+      const pending = ordered.slice(1).map((index, before) => [ordered[before], index]);
+      while (pending.length) {
+        const [from, to] = pending.pop();
+        let gap = to;
+        aligned.forEach((points, component) => {
+          if (finite(points[from].y) && finite(points[to].y)) gap = Math.min(gap, nextMissing[component][from + 1]);
+        });
+        if (gap >= to) continue;
+        const [first, last] = retainEdges(gap);
+        // A gap selected for one curve may expose another curve's later gap.
+        // Check both resulting segments until none bridge omitted outages.
+        if (first > from) pending.push([from, first]);
+        if (last < to) pending.push([last, to]);
+      }
+      indices = [...selected].sort((a, b) => a - b);
+    }
+    keys.forEach((key, component) => {
+      result[key] = indices.map(index => aligned[component][index]); grouped.add(key);
+    });
+  }
+  for (const [key, points] of Object.entries(series)) if (!grouped.has(key)) result[key] = reduceSeries(points, view, budget);
   return result;
 }
 

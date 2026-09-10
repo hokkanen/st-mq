@@ -18,6 +18,7 @@ import { addRecordedEnergy, recordedEnergyStart } from './chart-energy.js';
 import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
+import { RelatedStepSampler, alignRelatedSamples } from './chart-related-series.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -538,17 +539,22 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
 /** Combined chart query. This deliberately never calls providers, reads options,
  * writes history, or turns phase-current estimates into electricity metering. */
 export function getChartData({ store, input = 'offline', contract = null, market = null, weather = null,
-  simulated = null, now = Date.now(), startDate, endDate, left = 'power', points = 800, viewFrom, viewTo }) {
+  simulated = null, now = Date.now(), startDate, endDate, left = 'power', points = 800, viewFrom, viewTo,
+  _relatedTimes, _priceProjection }) {
   const started = performance.now();
   const { range, selection, detail } = chartRequestRange({ startDate, endDate, now, viewFrom, viewTo });
+  const projecting = Array.isArray(_relatedTimes), drawingOnly = detail || projecting;
   if (!HISTORY_AXIS_BY_KEY[left]) throw new TypeError('Unknown left axis');
   if (!Number.isInteger(points) || points < 100 || points > 2000) throw new RangeError('Chart points must be 100–2000');
   if (!['simulated', 'providers', 'mqtt', 'offline'].includes(input)) throw new TypeError('Unknown chart input');
   let rates = null;
-  if (contract) { rates = validateContract(contract); if (rates.mode !== 'billing') throw new TypeError('Historical charts require dated billing rates'); }
+  if (contract && (!projecting || _priceProjection)) { rates = validateContract(contract); if (rates.mode !== 'billing') throw new TypeError('Historical charts require dated billing rates'); }
   const leftNames = HISTORY_AXIS_BY_KEY[left].signals;
-  const names = [...TEMPERATURES, 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames];
-  const envelopes = Object.fromEntries(names.map(name => [name, new Envelope(range.from, range.to, points)]));
+  const names = projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : leftNames
+    : [...TEMPERATURES, 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames];
+  const envelopes = Object.fromEntries(names.map(name => [name, projecting
+    ? new RelatedStepSampler(range.from, range.to, _relatedTimes) : new Envelope(range.from, range.to, points)]));
+  if (_priceProjection) for (const envelope of Object.values(envelopes)) envelope.mask = _priceProjection.marketIntervals;
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) ? Infinity : name === 'auxiliary_power' ? 5 * 60_000 : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation'].includes(name), detail,
     name.endsWith('_price') || leftNames.includes(name) && left !== 'integral' && name !== 'model_indoor_temperature' && !ENERGY_SIGNALS.includes(name))]));
   // Following samples close clipped scalar segments, including a viewport
@@ -561,22 +567,24 @@ export function getChartData({ store, input = 'offline', contract = null, market
     from: Math.max(selection.from, moment.tz(range.from, CHART_TIME_ZONE).startOf('day').valueOf()),
     to: Math.min(selection.to, moment.tz(range.to - 1, CHART_TIME_ZONE).startOf('day').add(1, 'day').valueOf()),
   } : range;
-  const marketIntervals = input === 'simulated' ? [] : knownIntervals(market, store, firewoodRange, now);
+  const marketIntervals = projecting || input === 'simulated' ? [] : knownIntervals(market, store, firewoodRange, now);
   const historicalPricing = rates ? createHistoricalPricing(rates) : null;
   const priced = input === 'simulated' ? (simulated?.prices ?? []).map(row => ({ ...row, totalCtPerKwh: row.allInCentsPerKWh }))
     : historicalPricing?.intervals(marketIntervals) ?? [];
   const priceAssumptions = { used: priced.some(price => price.assumedPrice) };
-  const timing = detail ? { add() {}, addEnergy() {} }
+  const timing = drawingOnly ? { add() {}, addEnergy() {} }
     : new DailyTimingBenchmark(range, now, priced, { heatPump: 'reconstructed-equipment' });
-  const heatPumpEnergy = !detail || envelopes.heat_pump_power
+  const heatPumpEnergy = !drawingOnly || envelopes.heat_pump_power
     ? addHistoricalHeatPump({ store, range, now, input, envelope: envelopes.heat_pump_power, timing }) : null;
   const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,recordedEnergyStart(store,prefix,input)]));
-  if (!detail) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
+  if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1);
   const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
   let telemetry = new Map(), previousTelemetryAt = null;
   const learningMetadata = {};
-  const requested = new Set([...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output',
-    ...(left === 'integral' ? [] : PHASES), ...H66_SIGNALS, ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
+  const requested = new Set(projecting ? _priceProjection ? ['spot_price']
+    : left === 'power' ? [...PHASES, 'auxiliary_output', 'auxiliary_power', 'charger_power'] : PHASES
+    : [...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS,
+    ...(left === 'integral' ? [] : PHASES), ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
@@ -711,7 +719,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
-        if (signal === 'charger_power') timing.add('charger', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
+        if (signal === 'charger_power' && !drawingOnly) timing.add('charger', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
         if (LEARNING.includes(signal)) {
           try { const raw = JSON.parse(row.raw); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
         }
@@ -827,9 +835,30 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (time !== null) flushTime();
   flushPulse();
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger',energyStarts.ev1,null);
-  const recordedEnergy = !detail || leftNames.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
+  const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
     || ['property_power', 'charger_power', 'charger2_power'].includes(name))
     ? addRecordedEnergy({store,range,now,input,envelopes,timing}) : { rows: 0, intervals: 0 };
+  const finishHeldLines = () => {
+    for (const name of ['auxiliary_power', 'solar_radiation']) if (lines[name]?.previous) {
+      const line = lines[name], previous = line.previous, nowEnd = Math.min(now, range.to), end = Math.min(nowEnd, previous.x + line.gap);
+      if (previous.x < range.from && end >= range.from) envelopes[name].add(range.from, previous.y, previous);
+      if (previous.x < end) envelopes[name].add(end, previous.y, previous);
+      if (end < nowEnd) envelopes[name].add(end + 1, null);
+    }
+  };
+  // The optional second pass shares the exact telemetry/energy projection but
+  // skips summaries, weather lookup, model replay and source writes. Price
+  // projection reuses the already selected authoritative intervals.
+  if (projecting) {
+    finishHeldLines();
+    if (_priceProjection) {
+      for (const envelope of Object.values(envelopes)) envelope.mask = null;
+      intervalPoints(_priceProjection.marketIntervals, 'spotCtPerKwh', envelopes.spot_price);
+      intervalPoints(_priceProjection.priced, 'totalCtPerKwh', envelopes.all_in_price);
+    }
+    return { series: Object.fromEntries(names.map(name => [name, envelopes[name].values()])),
+      rawRows, energyRows: recordedEnergy.rows };
+  }
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
@@ -868,12 +897,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (previous.x < range.from) envelopes[name].add(range.from, previous.y);
     if (previous.x < end) envelopes[name].add(end, previous.y);
   }
-  for (const name of ['auxiliary_power', 'solar_radiation']) if (lines[name]?.previous) {
-    const line = lines[name], previous = line.previous, nowEnd = Math.min(now, range.to), end = Math.min(nowEnd, previous.x + line.gap);
-    if (previous.x < range.from && end >= range.from) envelopes[name].add(range.from, previous.y, previous);
-    if (previous.x < end) envelopes[name].add(end, previous.y, previous);
-    if (end < nowEnd) envelopes[name].add(end + 1, null);
-  }
+  finishHeldLines();
   if (input !== 'simulated' && envelopes.solar_radiation)
     intervalPoints(historicalSolar(store,range,now),'solarRadiationWm2',envelopes.solar_radiation);
 
@@ -911,6 +935,19 @@ export function getChartData({ store, input = 'offline', contract = null, market
       warnings.push('No all-in price is available for these dates: spot prices and known contract rates are required.');
   }
   const series = Object.fromEntries(Object.entries(envelopes).map(([name, envelope]) => [name, envelope.values()]));
+  let relatedSampling;
+  const relatedGroups = [...(['power', 'phases'].includes(left) ? [leftNames] : []), ['all_in_price', 'spot_price']];
+  for (const group of relatedGroups) if (group.some(name => envelopes[name].count > series[name].length)) {
+    const times = [...new Set(group.flatMap(name => series[name].map(point => point.x)))].sort((a, b) => a - b);
+    const priceGroup = group[0] === 'all_in_price';
+    const projected = getChartData({ store, input, contract, now, startDate, endDate, left, points, viewFrom, viewTo,
+      _relatedTimes: times, ...(priceGroup ? { _priceProjection: { marketIntervals, priced } } : {}) });
+    Object.assign(series, alignRelatedSamples(projected.series));
+    relatedSampling ??= { basis: 'shared-original-step-times', groups: [], times: 0, sourceRows: 0,
+      description: 'Related channels share selected original step times; held display points retain their original source timestamp and interval. Omitted missing runs remain disconnected.' };
+    relatedSampling.groups.push(group); relatedSampling.times += times.length;
+    relatedSampling.sourceRows += projected.rawRows + projected.energyRows;
+  }
   priceAssumptions.used ||= series.all_in_price.some(point => Number.isFinite(point.y) && point.assumedPrice);
   for (const key of Object.keys(shading)) shading[key] = shading[key].values();
   if (Object.values(shading).some(rows => rows.some(row => row.aggregated))) warnings.push('Dense shading shows the occupied fraction of each display interval.');
@@ -924,7 +961,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   return { range, now, input, left, series, shading, operatingModes,
     ...(detail ? { selection } : { timingBenefit: timing.result(),
       heatingBenefit: getHeatingBenefit({ store, input, range, now }), firewoodBenefit: firewood.summary }),
-    meta: { ...(detail ? { detail: true } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
+    meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: left === 'power' ? 'Recorded phase or total energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,

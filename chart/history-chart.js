@@ -6,7 +6,7 @@ import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
 import { createChartNavigation } from './chart-navigation.js';
-import { createDetailLoader, reduceSeries, viewportTicks } from './chart-viewport.js';
+import { createDetailLoader, reduceChartSeries, viewportTicks } from './chart-viewport.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -235,9 +235,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const plot = plottedSelection;
     // Fitting the complete selection keeps the same overview as the normal
     // chart. A reduced budget from earlier zooms must not erase its patterns.
-    // Reduce original components before stacking, so cumulative fills continue
-    // to share aligned edges and their tooltips retain each load's own value.
-    const series = exploring ? Object.fromEntries(Object.entries(payload.series).map(([key, points]) => [key, reduceSeries(points, view, pointBudget)])) : payload.series;
+    // Keep related totals and components on a shared timeline before stacking;
+    // every displayed load keeps the contemporaneous total and its provenance.
+    const series = exploring ? reduceChartSeries(payload.series, view, pointBudget) : payload.series;
     const datasets = historyDatasets(series, plot.left, preferences, palette);
     if (exploring) for (const dataset of datasets) if (dataset.showLine && dataset.data.length < 80) {
       dataset.pointRadius = dataset.data.map(point => Number.isFinite(point.y) ? 2 : 0);
