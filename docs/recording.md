@@ -471,9 +471,15 @@ retains eight responses in memory for 30 seconds. Routine observation updates do
 not repeatedly abort slow historical detail queries. Selection/source changes and
 model corrections invalidate detail; closing the chart cleans up pending work.
 
-Drawing starts with a conservative point budget and adjusts it using measured
-redraw time. Display reduction retains original extrema, missing-data breaks and
-tooltip provenance; power components are reduced before their fills are aligned.
+Zooming retains every already loaded point in the visible interval, including
+neighboring step edges, missing-data breaks and tooltip provenance. It does not
+apply another drawing reduction or lower precision when a redraw is slow.
+Refinement keeps the initial 800-bucket target and requests an overlapping window
+when its buckets improve on the finest cached covering response by about 20%.
+All series and activity tracks use one complete response at that resolution;
+late coarser responses cannot replace finer covering data. Expired detail stays
+visible while it refreshes. Aligned stepped load and phase fills are drawn in one
+pass through their supported segments, avoiding repeated searches across gaps.
 Zoom currently stops at a one-minute visible interval, independently of network
 latency. This does not imply one-minute observations: source cadence, daily totals,
 committed learning intervals and missing history retain their existing meaning.

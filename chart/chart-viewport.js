@@ -288,7 +288,7 @@ function stableKey(value) {
  * Cache keys include the entire selection and path, including dates and points. */
 export function createDetailLoader({ api, query, onData = () => {}, onStatus = () => {}, delay = 180, maxEntries = 8, ttl = 30_000, now = Date.now }) {
   const cache = new Map();
-  let active, pending, wanted, timer, generation = 0, closed = false, state = 'idle';
+  let active, pending, wanted, timer, generation = 0, cacheOrder = 0, closed = false, state = 'idle';
   function status(next, error) {
     if (closed || state === next && !error) return;
     state = next; onStatus(next, error);
@@ -304,7 +304,7 @@ export function createDetailLoader({ api, query, onData = () => {}, onStatus = (
   }
   function remember(entry, data) {
     if (maxEntries <= 0) return;
-    cache.delete(entry.key); cache.set(entry.key, { data, at: now() });
+    cache.delete(entry.key); cache.set(entry.key, { data, selection: entry.selection, at: now(), order: ++cacheOrder });
     while (cache.size > maxEntries) cache.delete(cache.keys().next().value);
   }
   async function pump() {
@@ -354,5 +354,16 @@ export function createDetailLoader({ api, query, onData = () => {}, onStatus = (
     if (closed) return;
     invalidate(); closed = true;
   }
-  return { request, invalidate, close };
+  // Coverage lookup uses the same bounded cache and freshness rules as exact
+  // requests. An abandoned response can still be useful at a later viewport.
+  function entries() {
+    const result = [];
+    for (const [key, item] of cache) {
+      if (now() - item.at >= ttl) cache.delete(key);
+      else result.push(item);
+    }
+    return result.sort((a, b) => a.order - b.order)
+      .map(item => ({ data: item.data, selection: structuredClone(item.selection) }));
+  }
+  return { request, invalidate, close, entries };
 }

@@ -47,7 +47,11 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     if (snapshot || !getChart()?.chartArea) return;
     const graph = getChart();
     originalView = { from: graph.scales.x.min, to: graph.scales.x.max };
-    graph.setActiveElements([]); graph.tooltip?.setActiveElements([], { x: 0, y: 0 }); graph.draw();
+    const active = graph.getActiveElements().length || graph.tooltip?.getActiveElements().length;
+    graph.setActiveElements([]); graph.tooltip?.setActiveElements([], { x: 0, y: 0 });
+    // Most gestures can copy the already painted chart immediately. A redraw
+    // is only needed to remove a visible hover highlight or tooltip.
+    if (active) graph.draw();
     snapshot = document.createElement('canvas'); snapshot.width = canvas.width; snapshot.height = canvas.height;
     snapshot.getContext('2d').drawImage(canvas, 0, 0);
     preview = document.createElement('canvas'); preview.className = 'chart-gesture-preview';

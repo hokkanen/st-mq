@@ -6,7 +6,9 @@ import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
 import { createChartNavigation } from './chart-navigation.js';
-import { createDetailLoader, reduceChartSeries, viewportTicks } from './chart-viewport.js';
+import { createDetailLoader, viewportTicks } from './chart-viewport.js';
+import { chartBucketWidth, chartDetailRequest, clipChartSeries, selectChartResolution } from './chart-resolution.js';
+import { preparePowerFills, powerFillPlugin } from './power-fill.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -51,7 +53,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   let palette = { ...defaultPalette }, lastContract, lastLiveRevision, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
   let activePreset = 'today', rangeEnabled = false;
-  let pointBudget = 600, fastDraws = 0, detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
+  let detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
   const navigation = createChartNavigation({ canvas, getChart: () => graph, onSettle: () => {
     if (!overview || closed) return;
     renderChart({ viewOnly: navigation.fullscreen && !pendingFullRender }); requestDetail();
@@ -60,8 +62,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const detailLoader = createDetailLoader({ api, query: chartQuery,
     onData(result, request) {
       if (closed || !navigation.fullscreen || !sameSelection(request, selection) || !sameSelection(request, plottedSelection)) return;
-      const plotNow = chartObservationTime(status, result.now);
-      detail = { ...result, now: plotNow, series: historySeriesAt(result, plotNow), points: request.points };
+      // Keep a finer covering view even if a coarser request finishes later.
+      const selected = selectChartResolution(overview, [detail, { ...result, points: request.points }], navigation.view);
+      if (selected !== overview) detail = selected;
       if (!navigation.moving) renderChart({ viewOnly: true });
     },
     onStatus(state) { detailState = state; renderDetailStatus(); },
@@ -69,6 +72,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   function sameSelection(a, b) { return a && b && a.startDate === b.startDate && a.endDate === b.endDate && a.left === b.left; }
   function invalidateDetail() { detail = undefined; detailLoader.invalidate(); }
   function invalidate() { loader.invalidate(); invalidateDetail(); }
+  function cachedDetails() {
+    return detailLoader.entries().filter(entry => sameSelection(entry.selection, plottedSelection))
+      .map(entry => ({ ...entry.data, points: entry.selection.points }));
+  }
   function renderDetailStatus() {
     const node = $('chart-detail-status');
     node.dataset.state = detailState;
@@ -79,18 +86,17 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (!navigation.fullscreen) { detailLoader.request(null); return; }
     const view = navigation.view;
     if (!view || !overview || !sameSelection(selection, plottedSelection)) return;
-    const span = view.to - view.from, fullSpan = overview.range.to - overview.range.from;
-    // Refinement is independent of gesture frames and full-selection totals.
-    // Quantized, overlapping windows make nearby movements reuse detail.
-    if (fullSpan / span < 2) { detailLoader.request(null); return; }
-    const step = Math.max(60_000, 2 ** Math.floor(Math.log2(span / 4)));
-    const viewFrom = Math.max(overview.range.from, Math.floor(view.from / step) * step - step);
-    const viewTo = Math.min(overview.range.to, Math.ceil(view.to / step) * step + step);
-    const points = Math.max(100, Math.min(800, Math.round(pointBudget)));
-    // A buffered request that cannot improve on the overview's bucket width
-    // would repeat a large scan without revealing additional information.
-    if ((viewTo - viewFrom) / points >= fullSpan / plottedSelection.points * 0.8) { detailLoader.request(null); return; }
-    const request = { ...plottedSelection, points, viewFrom, viewTo };
+    // Expired detail remains a display fallback, but cannot suppress a fresh
+    // request indefinitely. The loader owns TTL, invalidation and cache bounds.
+    const available = selectChartResolution(overview, cachedDetails(), view);
+    let request = chartDetailRequest(plottedSelection, overview.range, view, available);
+    const displayed = selectChartResolution(overview, [detail], view);
+    if (displayed !== overview && chartBucketWidth(displayed) < chartBucketWidth(available)
+      && (!request || (request.viewTo - request.viewFrom) / request.points > chartBucketWidth(displayed))) {
+      // Refresh an expired finer level at its existing coverage if the newly
+      // quantized window would otherwise replace it with coarser buckets.
+      request = { ...plottedSelection, points: displayed.points, viewFrom: displayed.range.from, viewTo: displayed.range.to };
+    }
     detailLoader.request(request);
   }
 
@@ -228,17 +234,18 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     viewOnly = viewOnly && !pendingFullRender; pendingFullRender = false;
     const view = navigation.view ?? overview.range;
     const exploring = navigation.fullscreen && (view.from > overview.range.from || view.to < overview.range.to);
-    payload = exploring && detail && detail.range.from <= view.from && detail.range.to >= view.to ? detail : overview;
+    const source = exploring ? selectChartResolution(overview, [detail, ...cachedDetails()], view) : overview;
+    if (source !== overview) detail = source;
+    const plotNow = chartObservationTime(status, source.now);
+    payload = source === overview ? overview : { ...source, now: plotNow, series: historySeriesAt(source, plotNow) };
     const started = performance.now();
     // A theme or legend change can occur during a request. Keep the previous
     // graph's labels and axes attached to its own data until the new data arrives.
     const plot = plottedSelection;
-    // Fitting the complete selection keeps the same overview as the normal
-    // chart. A reduced budget from earlier zooms must not erase its patterns.
-    // Keep related totals and components on a shared timeline before stacking;
-    // every displayed load keeps the contemporaneous total and its provenance.
-    const series = exploring ? reduceChartSeries(payload.series, view, pointBudget) : payload.series;
-    const datasets = historyDatasets(series, plot.left, preferences, palette);
+    // The server has already bounded the envelope. Zoom must retain all loaded
+    // detail until finer buckets arrive, including the first small wheel step.
+    const series = exploring ? clipChartSeries(payload.series, view) : payload.series;
+    const datasets = preparePowerFills(historyDatasets(series, plot.left, preferences, palette));
     if (exploring) for (const dataset of datasets) if (dataset.showLine && dataset.data.length < 80) {
       dataset.pointRadius = dataset.data.map(point => Number.isFinite(point.y) ? 2 : 0);
     }
@@ -270,7 +277,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       graph.update('none');
     } else {
       graph = new Chart(canvas, {
-        type: 'line', data: { datasets }, plugins: [{ id: 'activityShading', beforeDatasetsDraw: paintShading, afterLayout: alignActivityTracks,
+        type: 'line', data: { datasets }, plugins: [powerFillPlugin, { id: 'activityShading', beforeDatasetsDraw: paintShading, afterLayout: alignActivityTracks,
           beforeEvent: () => navigation.moving ? false : undefined }],
         options: {
           animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: false,
@@ -302,12 +309,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       });
     }
     const drawMs = performance.now() - started;
-    if (exploring) {
-      if (drawMs > 35) { pointBudget = Math.max(140, Math.round(pointBudget * 0.75)); fastDraws = 0; }
-      else if (drawMs < 12 && ++fastDraws >= 5) { pointBudget = Math.min(1000, Math.max(200, canvas.clientWidth), pointBudget + 100); fastDraws = 0; }
-      else if (drawMs >= 12) fastDraws = 0;
-    }
-    canvas.dataset.drawMs = String(Math.round(drawMs)); canvas.dataset.pointBudget = String(pointBudget);
+    canvas.dataset.drawMs = String(Math.round(drawMs)); canvas.dataset.resolutionMs = String(chartBucketWidth(source));
     canvas.dataset.dataFrom = String(payload.range.from); canvas.dataset.dataTo = String(payload.range.to);
     renderModes(); renderDetailStatus();
     if (viewOnly) return;
@@ -399,7 +401,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       // The response cache may contain unchanged measurements. Advance their
       // display tails and the now marker using each fresh server-status clock.
       const plotNow = chartObservationTime(status, result.now);
-      overview = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
+      overview = { ...result, points: requestedSelection.points, now: plotNow, series: historySeriesAt(result, plotNow) };
       const nextFingerprint = JSON.stringify({ range: overview.range, input: overview.input, series: overview.series, shading: overview.shading, meta: overview.meta, timingBenefit: overview.timingBenefit, heatingBenefit: overview.heatingBenefit, firewoodBenefit: overview.firewoodBenefit, left: selection.left,
         now: plotNow >= overview.range.from && plotNow < overview.range.to ? plotNow : null });
       plottedSelection = requestedSelection;

@@ -269,3 +269,48 @@ test('detail cache has bounded entries and snapshots mutable selections before r
   }
   loader.request(selection); t.mock.timers.tick(180); assert.equal(calls.length, 4);
 });
+
+test('detail entries expose fresh responses in fetch order, independently of cache access order', async t => {
+  let now = 1000;
+  const { loader, calls } = detailFixture(t, { now: () => now, ttl: 1000 });
+  assert.deepEqual(loader.entries(), []);
+  loader.request(selection); t.mock.timers.tick(180);
+  calls[0].resolve('older response'); await flush();
+  now += 10;
+  const next = { ...selection, from: 110 };
+  loader.request(next); t.mock.timers.tick(180);
+  calls[1].resolve('newer response'); await flush();
+  loader.request(selection);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(loader.entries(), [
+    { data: 'older response', selection }, { data: 'newer response', selection: next },
+  ], 'Reading an older cached view cannot make it newer than a later fetched response');
+  now = 2000;
+  assert.deepEqual(loader.entries(), [{ data: 'newer response', selection: next }]);
+  now = 2010;
+  assert.deepEqual(loader.entries(), [], 'Expired responses cannot compete in resolution selection');
+});
+
+test('unwanted successful detail warms entries but errors and invalidated completions cannot restore old data', async t => {
+  const { loader, calls, displayed } = detailFixture(t);
+  loader.request(selection); t.mock.timers.tick(180);
+  loader.request(null);
+  calls[0].resolve('cached while zoomed out'); await flush();
+  assert.equal(displayed.length, 0);
+  assert.deepEqual(loader.entries(), [{ data: 'cached while zoomed out', selection }]);
+  const finer = { ...selection, points: 800 };
+  loader.request(finer); t.mock.timers.tick(180);
+  calls[1].reject(new Error('Refinement unavailable')); await flush();
+  assert.deepEqual(loader.entries(), [{ data: 'cached while zoomed out', selection }],
+    'A failed refinement leaves the existing loaded resolution available');
+  loader.request(finer); t.mock.timers.tick(180);
+  loader.invalidate();
+  assert.deepEqual(loader.entries(), []);
+  loader.request(selection); t.mock.timers.tick(180);
+  calls[2].resolve('old source generation'); await flush();
+  assert.deepEqual(loader.entries(), []);
+  calls[3].resolve('fresh same-window readings'); await flush();
+  assert.deepEqual(loader.entries(), [{ data: 'fresh same-window readings', selection }]);
+  assert.deepEqual(displayed.map(entry => entry.data), ['fresh same-window readings']);
+  loader.close(); assert.deepEqual(loader.entries(), []);
+});
