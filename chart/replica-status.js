@@ -184,11 +184,11 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     : 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
   for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = !display.available;
   $('recording-adaptive-details').hidden = true;
-  for (const key of ['indoor', 'outdoor']) {
+  for (const key of ['indoor', 'upstairs', 'downstairs', 'bedroom', 'outdoor']) {
     const observation = status.observations?.[key] ?? {};
     const at = timestamp(observation.observedAt ?? observation.sourceTime ?? observation.receivedAt);
     $(key).textContent = Number.isFinite(observation.value) ? `${observation.value.toFixed(1)} °C` : '—';
-    $(key).classList.toggle('stale', observation.stale === true || display.state !== 'ready');
+    $(key).classList.toggle('stale', observation.stale === true || !Number.isFinite(observation.value) || display.state !== 'ready');
     const source = key === 'outdoor' ? outdoorSourceLabel(observation.source) : providerName(observation.source);
     $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time'].filter(Boolean).join(' · ');
   }

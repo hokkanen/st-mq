@@ -165,6 +165,31 @@ export function controlConfiguration(input = {}) {
   return result;
 }
 
+/** Stable membership comes from configuration, never from whichever readings
+ * happen to be available on a particular tick. Only logical signal names enter
+ * learning configuration; private connection identifiers remain outside it. */
+export function indoorSensorWeightsConfiguration(input, connections = {}) {
+  const signals = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'];
+  const configured = new Set(['indoor_temperature']);
+  for (const [signal, key] of [['downstairs_temperature', 'downstairs_temp_dev_id'], ['bedroom_temperature', 'bedroom_temp_dev_id']]) {
+    if ([connections.smartthings?.[key], connections.mqtt?.temperatureTopics?.[signal],
+      connections.mqtt?.temperature_topics?.[signal], connections.mqtt?.[`${signal}_topic`]]
+      .some(value => typeof value === 'string' && value.trim())) configured.add(signal);
+  }
+  // Supervisor requires a nested schema object to exist in default options.
+  // An empty object therefore selects automatic membership, like an absent map.
+  const automatic = input === undefined || input !== null && typeof input === 'object'
+    && !Array.isArray(input) && Object.keys(input).length === 0;
+  const weights = automatic ? Object.fromEntries([...configured].map(signal => [signal, 1])) : input;
+  if (!weights || typeof weights !== 'object' || Array.isArray(weights)
+    || Object.entries(weights).some(([signal, weight]) => !signals.includes(signal)
+      || !Number.isFinite(weight) || weight < 0 || weight > 0 && !configured.has(signal)))
+    throw new Error('Indoor sensor weights must use configured indoor sensors and nonnegative numbers');
+  const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0);
+  if (!Number.isFinite(total) || total <= 0) throw new Error('Indoor sensor weights must have a positive total');
+  return Object.fromEntries(signals.filter(signal => weights[signal] > 0).map(signal => [signal, weights[signal] / total]));
+}
+
 // Public manifest defaults are overlaid by one private source. Environment
 // overrides remain authoritative; temporary occupancy stays in the database.
 function buildConfiguration(options, env, cwd, configuration, source, { bootstrap = false } = {}) {
@@ -185,10 +210,12 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       ...(mqtt.temperature_topics ?? {}),
       ...(mqtt.temperatureTopics ?? {}),
       ...(mqtt.indoor_temperature_topic ? { indoor_temperature: mqtt.indoor_temperature_topic } : {}),
+      ...(mqtt.downstairs_temperature_topic ? { downstairs_temperature: mqtt.downstairs_temperature_topic } : {}),
+      ...(mqtt.bedroom_temperature_topic ? { bedroom_temperature: mqtt.bedroom_temperature_topic } : {}),
       ...(mqtt.garage_temperature_topic ? { garage_temperature: mqtt.garage_temperature_topic } : {}),
     };
     for (const [signal, topic] of Object.entries(mqtt.temperatureTopics)) {
-      if (!['indoor_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
+      if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
     const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
@@ -216,7 +243,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     connections, priceSettings: configuredPriceSettings(options.electricity),
     replication: replicationConfiguration(options.replication, env, { role, dataDir, databaseDir }),
     deviceId: replica ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
-    control: controlConfiguration(options.controller),
+    control: { ...controlConfiguration(options.controller),
+      indoorSensorWeights: indoorSensorWeightsConfiguration(options.controller?.indoor_sensor_weights, options) },
     recording: recordingConfiguration(options.recording),
     acquisition: acquisitionConfiguration(options.acquisition),
     h66: { enabled: !replica && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !replica,

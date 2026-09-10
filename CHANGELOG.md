@@ -1,5 +1,11 @@
 # 0.9.0
 
+- Add separate Upstairs Hallway, Downstairs and Bedroom temperatures, a stable
+  configured indoor average and individual room comfort checks. Record sensor
+  replacements, moves and calibration changes as replayable measurement boundaries.
+- Allow the learned normal temperature to adapt gradually in either direction
+  from repeated normal heating, including changes to floor circulation thermostats.
+  Version these learning semantics as `committed-house-v6-sensors`.
 - Use FMI temperature and solar forecasts with keyless Open-Meteo ICON Seamless
   fallback, including missing solar intervals. Prefer H66 outdoor temperature,
   then FMI nearby stations, then Open-Meteo model estimates. Remove the obsolete

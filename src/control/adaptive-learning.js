@@ -744,6 +744,8 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
     ...(sample.intervalInputs ? { intervalInputs: structuredClone(sample.intervalInputs), windowStart: sample.windowStart } : {}),
     ...(sample.inputSegments ? { inputSegments: structuredClone(sample.inputSegments), windowStart: sample.windowStart } : {}),
   } : { timestamp: new Date(at).toISOString(), valid: false, quality: ['invalid-observation'] };
+  if (sample.indoorSensors) normalized.indoorSensors = structuredClone(sample.indoorSensors);
+  if (sample.measurementEpochAt !== undefined) normalized.measurementEpochAt = sample.measurementEpochAt;
   const previous = cp.samples.at(-1);
   cp.samples.push(normalized);
   cp.samples = cp.samples.slice(-MAX_SAMPLES);
@@ -766,15 +768,26 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
       : { reserveC: sample.indoorC };
     cp.state = { indoorC: sample.indoorC, reserveC: predicted.reserveC, observedAt: normalized.timestamp };
   } else cp.state = null;
+  // Reference adaptation consumes each committed sample in the same order in
+  // live operation, replay and batched historical processing. A page boundary
+  // cannot skip exclusions or earn a larger temperature adjustment.
+  const comfortSamples = cp.samples.map(row => ({ ...row,
+    action: row.phase === 'normal' ? 'normal' : 'reduction', regime: row.regime === 'occupied' ? 'occupied' : 'absence',
+  }));
+  cp.comfortReference = inferComfortReference(cp.comfortReference, comfortSamples, { now: at });
+  cp.baselineC = cp.comfortReference?.targetC ?? cp.baselineC;
+  const participating = Object.entries(normalized.indoorSensors ?? {}).filter(([, sensor]) => sensor.weight > 0).map(([signal]) => signal);
+  const sensorSignals = new Set([...Object.keys(cp.sensorComfortReferences ?? {}), ...participating]);
+  if (sensorSignals.size) {
+    cp.sensorComfortReferences ??= {};
+    for (const signal of sensorSignals) cp.sensorComfortReferences[signal] = inferComfortReference(cp.sensorComfortReferences[signal],
+      comfortSamples.map(row => ({ ...row, indoorC: row.indoorSensors?.[signal]?.weight > 0 ? row.indoorSensors[signal].value : null })), { now: at });
+  }
   cp.sinceFit++;
   return finish ? finishAdaptiveUpdate(cp, { nowAt, config }) : cp;
 }
 
 function finishAdaptiveUpdate(cp, { nowAt, config }) {
-  cp.comfortReference = inferComfortReference(cp.comfortReference, cp.samples.map(row => ({ ...row,
-    action: row.phase === 'normal' ? 'normal' : 'reduction', regime: row.regime === 'occupied' ? 'occupied' : 'absence',
-  })), { now: nowAt });
-  cp.baselineC = cp.comfortReference?.targetC ?? cp.baselineC;
   const valid = cp.samples.filter(validSample);
   cp.health = { ...cp.health, processedThrough: cp.cursor, usableSamples: valid.length,
     retainedRecords: cp.samples.length, solarSamples: valid.filter(row => finite(row.solarRadiationWm2)).length,

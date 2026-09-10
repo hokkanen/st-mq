@@ -214,9 +214,25 @@ test('temperature catalogue distinguishes the optional adapter and MQTT sensor h
   assert.equal(providerSeries('smartthings')[0].source, 'SmartThings');
   const mqtt = providerSeries('mqtt-temperature');
   assert.equal(mqtt[0].source, 'MQTT temperature sensor');
-  assert.deepEqual(mqtt.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
+  assert.deepEqual(mqtt.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
   assert.match(mqtt.find(row => row.signals.includes('outdoor_temperature')).detail,
     /recorded for history.*Live outdoor control selects H66, FMI or Open-Meteo/);
+});
+
+test('indoor provider rows show the three physical sensors separately from their model average', () => {
+  const status = { input: 'providers', observations: {
+    indoor: temperature('indoor-average', 21), upstairs: temperature('smartthings', 22),
+    downstairs: temperature('smartthings', 20), bedroom: temperature('mqtt-temperature', 21),
+    outdoor: temperature('fmi', 4),
+  }, providers: { temperatures: { source: 'smartthings', status: 'ok', lastSuccessAt: now } } };
+  const [grouped] = dashboardProviders(status, options);
+  assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs Hallway', 'Downstairs', 'Bedroom', 'Garage temperature', 'Outdoor temperature']);
+  assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
+  assert.match(grouped.display.title, /SmartThings, MQTT temperature sensor, FMI/);
+  assert.equal(grouped.display.state, 'Available');
+  assert.match(grouped.series[0].detail, /recorded separately/);
+  status.providers.temperatures.error = 'HTTP-401';
+  assert.equal(dashboardProviders(status, options)[0].display.state, 'Needs attention', 'composite source must not hide failures affecting its sensors');
 });
 
 test('catalogue rejects unknown names and never includes provider bodies or identifiers', () => {

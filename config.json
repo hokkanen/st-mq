@@ -39,6 +39,8 @@
       "user": "",
       "pw": "",
       "indoor_temperature_topic": "",
+      "downstairs_temperature_topic": "",
+      "bedroom_temperature_topic": "",
       "garage_temperature_topic": ""
     },
     "entsoe": {
@@ -47,6 +49,8 @@
     "smartthings": {
       "token": "",
       "inside_temp_dev_id": "",
+      "downstairs_temp_dev_id": "",
+      "bedroom_temp_dev_id": "",
       "garage_temp_dev_id": ""
     },
     "easee": {
@@ -82,6 +86,7 @@
       "web_token": "",
       "h66_device": "",
       "max_drop_c": 1,
+      "indoor_sensor_weights": {},
       "h66_verification_file": "",
       "aux_integral_a2": -990,
       "aux_hysteresis_c": 30,
@@ -162,6 +167,8 @@
       "user": "str",
       "pw": "password",
       "indoor_temperature_topic": "str?",
+      "downstairs_temperature_topic": "str?",
+      "bedroom_temperature_topic": "str?",
       "garage_temperature_topic": "str?"
     },
     "entsoe": {
@@ -171,6 +178,8 @@
     "smartthings": {
       "token": "password?",
       "inside_temp_dev_id": "str?",
+      "downstairs_temp_dev_id": "str?",
+      "bedroom_temp_dev_id": "str?",
       "garage_temp_dev_id": "str?"
     },
     "easee": {
@@ -208,6 +217,11 @@
       "web_token": "password",
       "h66_device": "str?",
       "max_drop_c": "float(0,2)",
+      "indoor_sensor_weights": {
+        "indoor_temperature": "float(0,)?",
+        "downstairs_temperature": "float(0,)?",
+        "bedroom_temperature": "float(0,)?"
+      },
       "h66_verification_file": "str?",
       "aux_integral_a2": "int(-5000,-1)",
       "aux_hysteresis_c": "float(1,50)",

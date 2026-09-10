@@ -111,11 +111,11 @@ export function providerSeries(job, health = {}) {
   if (['temperatures', 'smartthings', 'mqtt-temperature'].includes(job)) {
     const source = job === 'mqtt-temperature' ? 'MQTT temperature sensor'
       : job === 'smartthings' || health?.source === 'smartthings' ? 'SmartThings' : 'Configured temperature adapter';
-    return ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
+    return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
         ? 'Optional configured sensor, recorded for history.' : signal === 'outdoor_temperature'
           ? 'Optional configured sensor, recorded for history. Live outdoor control selects H66, FMI or Open-Meteo.'
-          : 'Configured indoor sensor, used by the home model when selected and usable.', source));
+          : 'Individual indoor sensor, recorded separately and included in the home model average when configured and usable.', source));
   }
   return [];
 }
@@ -128,7 +128,9 @@ const temperatureAvailable = (reading, now) => Number.isFinite(reading?.value) &
 
 function temperatureDisplay(status, entries, options) {
   const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];
-  const rows = ['indoor', 'garage', 'outdoor'].map(key => {
+  const indoorKeys = [Object.hasOwn(observations, 'upstairs') ? 'upstairs' : 'indoor',
+    ...['downstairs', 'bedroom'].filter(key => Object.hasOwn(observations, key))];
+  const rows = [...indoorKeys, 'garage', 'outdoor'].map(key => {
     const reading = observations[key], allowed = key === 'outdoor' ? outdoorSources : indoorSources;
     // The selected observation is authoritative: H66 can take over while the
     // weather provider's most recent successful download still names FMI.
@@ -138,22 +140,23 @@ function temperatureDisplay(status, entries, options) {
     const age = Number.isFinite(reading?.observedAt) && reading.observedAt > 0 && reading.observedAt <= options.now
       ? `Latest reading ${options.formatTime(reading.observedAt)}${available ? '.' : ' is out of date or unusable.'}`
       : 'No current reading received.';
-    const detail = key === 'indoor' ? 'Measured indoor temperature, used by the home model when usable.'
+    const detail = indoorKeys.includes(key) ? 'Individual indoor temperature, recorded separately and included in the home model average when configured and usable.'
       : key === 'garage' ? 'Optional garage sensor, recorded for history.'
         : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
-    return seriesRow([`${key}_temperature`], SIGNAL_INFO[`${key}_temperature`].label, '°C', `${detail} ${age}`, label);
+    const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
+    return seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${age}`, label);
   });
   const sources = [...new Set(rows.map(row => row.source).filter(Boolean))].join(', ');
   const required = [observations.indoor, observations.outdoor];
   const available = required.every(reading => temperatureAvailable(reading, options.now));
   const downloadFailure = entries.some(([key, health]) => (health.error || health.status === 'error')
     && (key === 'outdoor' ? observations.outdoor?.source !== 'husdata-h66'
-      : !health.source || required.some(reading => reading?.source === health.source)));
+      : !health.source || [...required, ...indoorKeys.map(key => observations[key])].some(reading => reading?.source === health.source)));
   const attention = Boolean(downloadFailure || !available && (required.some(reading => Number.isFinite(reading?.value))
     || entries.some(([key, health]) => describeProvider(key, health, options).attention)));
   const backup = outdoorHealth?.status === 'fallback' && observations.outdoor?.source !== 'husdata-h66';
   const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
-  const details = ['Indoor and outdoor readings support home control. Garage readings are optional history.'];
+  const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage readings are optional history.'];
   for (const [key, health] of entries) {
     const scope = key === 'outdoor' ? 'Outdoor downloads' : 'Temperature downloads';
     const source = providerName(health.source ?? health.acquisition?.selected);

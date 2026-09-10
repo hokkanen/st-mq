@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
 import { chartRange, getChartData } from '../src/app/chart-data.js';
+import { RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 
 const MINUTE = 60_000;
 const day = chartRange({ startDate: '2026-01-15', now: Date.parse('2026-01-16T00:00:00Z') });
@@ -68,14 +69,33 @@ for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors c
 
 for (const failure of ['prepare', 'prime', 'processing']) test(`scalar cursors close through CSV and coverage merges after ${failure} failure`, t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  for (const signal of ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'])
+  for (const signal of RIGHT_AXIS_SIGNALS.filter(signal => signal.endsWith('_temperature')))
     store.observation({ source: 'fixture-temperature', device: 'invented-house', signal,
       value: 20, unit: 'degC', sourceTime: day.from, receivedAt: day.from, quality: [] });
+  // Keep the surrounding merge cursors active while a native scalar fails.
+  // The imported row and coverage transition follow the first native reading.
+  const importId = Number(store.db.prepare(`INSERT INTO imports(kind,sha256,path,status,started_at)
+    VALUES('stmq','cursor-cleanup-fixture','/invented/chart.csv','complete',?)`).run(day.from).lastInsertRowid);
+  const importedAt = day.from + MINUTE;
+  store.db.prepare('INSERT INTO import_rows(import_id,row_number,source_time,raw,quality) VALUES(?,1,?,?,?)')
+    .run(importId, importedAt, `${importedAt / 1000},8,60,21,12,0`, '[]');
+  store.db.prepare(`INSERT INTO recorder_coverage(source,device,signal,status,start_at,end_at,samples)
+    VALUES('fixture-temperature','invented-house','indoor_temperature','failed',?,?,1)`)
+    .run(day.from + 2 * MINUTE, day.from + 3 * MINUTE);
   const originalError = new Error(`Synthetic scalar ${failure} failure`);
   const tracker = trackedDatabase(store.db, sql => sql.includes('FROM observations o INDEXED BY observations_signal_time')
     && sql.includes('WHERE o.signal=? AND o.source_time>=?'), failure, originalError);
-  assert.throws(() => getChartData({ store: { db: tracker.facade }, input: 'offline',
+  const imports = trackedDatabase(tracker.facade, sql => sql.includes('SELECT r.raw,r.source_time,r.row_number,i.id,i.kind,i.started_at')
+    && sql.includes('FROM import_rows r JOIN imports'), 'observe', originalError, false);
+  const coverage = trackedDatabase(imports.facade, sql => sql.includes('FROM transitions t LEFT JOIN observations'), 'observe', originalError, false);
+  assert.throws(() => getChartData({ store: { db: coverage.facade }, input: 'offline',
     now: day.to, startDate: '2026-01-01', endDate: '2026-01-15', left: 'indoor_temperature' }), error => error === originalError);
-  assert.equal(tracker.pending.size, 0);
+  for (const stream of [tracker, imports, coverage]) assert.equal(stream.pending.size, 0);
   assert(tracker.counts().closed >= (failure === 'prepare' ? 2 : 3));
+  assert.ok(imports.counts().opened >= 1, 'The CSV merge is exercised alongside native scalar acquisition');
+  assert.equal(imports.counts().closed, 1, 'Error unwinding closes the active CSV cursor');
+  // Preparation/priming fail before the outer merge can prime coverage.
+  const coverageOpened = failure === 'processing' ? 1 : 0;
+  assert.equal(coverage.counts().opened, coverageOpened);
+  assert.equal(coverage.counts().closed, coverageOpened, 'Processing failure closes the active coverage cursor');
 });

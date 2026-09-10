@@ -63,6 +63,23 @@ adds meaningful-tail learning gates and fitting against retained, validated hous
 coefficients. The fixed response curve remains version 1. The v4 journal remains
 an archive requiring its matching code; the current runtime does not relabel it.
 The first v5 record establishes the new algorithm's explicit seed/learning epoch.
+`committed-house-v6-sensors` introduces a configured indoor average, individual
+room comfort references, bounded bidirectional comfort adaptation, and recorded
+sensor-change boundaries. The v5 archive requires its matching code (for example
+Git revision `dd7d378`); it is never replayed as v6. The first v6 entry saves the
+explicit initial seed. Legacy CSV `temp_in` still means the original upstairs
+sensor; imported learning remains separate from a live multi-sensor average.
+
+Sensor changes are compact immutable journal context events, with a server
+timestamp, logical signal, reason, settling deadline and retry identity. They
+start a new measurement period under the same v6 algorithm; an ordinary sensor
+replacement does not create a new software algorithm version. Affected thermal
+and comfort evidence is cleared, with house coefficients retained only as starting
+estimates. Live updates and replay apply this same reset. Old observations and
+frozen cycle forecasts remain unchanged, and no calibration offset is invented.
+Configured average-membership or weight changes also establish a measurement
+boundary. See [temperature sensors](temperature-sensors.md) for operational rules.
+
 Existing experimental SQLite contents do not require a compatibility migration.
 Changes to numerical interpretation,
 training selection, corrections, seeds or fitting rules require an explicit learning

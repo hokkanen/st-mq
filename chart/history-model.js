@@ -71,7 +71,7 @@ export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compresso
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
   property: '#e98576', ev: '#e98576', ev2: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
-  indoor: '#81ca99', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
+  indoor: '#81ca99', downstairs: '#64c9c1', bedroom: '#c0a2e8', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#e05555', learning: '#baa0de', solar: '#e4ca67',
   firewood: '#d8aa75', fireplace: '#b79b28',
 });
@@ -103,7 +103,9 @@ const seriesInfo = {
   firewood_electricity_avoided: ['Firewood electricity avoided', 'kWh/day · retrospective model estimate, not metered savings', 'firewood', 'daily'],
   solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
-  indoor_temperature: ['Indoor', '°C', 'indoor'],
+  indoor_temperature: ['Upstairs Hallway', '°C', 'indoor'],
+  downstairs_temperature: ['Downstairs', '°C', 'downstairs'],
+  bedroom_temperature: ['Bedroom', '°C', 'bedroom'],
   garage_temperature: ['Garage', '°C', 'garage'],
   outdoor_temperature: ['Outdoor', '°C · H66 sensor, FMI station or Open-Meteo model estimate; dashed line is forecast', 'outdoor'],
   outdoor_forecast: ['Outdoor forecast', '°C · forecast', 'outdoor', 'forecast'],
@@ -169,7 +171,7 @@ export function sessionPointDetail(point = {}) {
 }
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
-const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
+const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'];
 
 /** Advance display tails without changing source timestamps or cached history. */
 export function historySeriesAt(payload, now = payload.now) {

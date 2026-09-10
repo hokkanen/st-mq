@@ -1,6 +1,6 @@
 /** Bounded, chronological empirical learning. These estimates are not metered savings. */
 import { fireplaceAffectsLearning } from '../domain/fireplace.js';
-export const CHECKPOINT_VERSION = 2;
+export const CHECKPOINT_VERSION = 3;
 export const MAX_SAMPLES = 768;
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
@@ -19,7 +19,7 @@ export function emptyCheckpoint() {
 }
 
 function validReference(reference) {
-  return reference?.version === 2 && finite(reference.targetC) && reference.targetC >= 12 && reference.targetC <= 28
+  return reference?.version === 3 && finite(reference.targetC) && reference.targetC >= 12 && reference.targetC <= 28
     && ['sustained-cool-weather-proxy', 'verified-space-heating-activity'].includes(reference.heatingEvidence?.kind)
     && finite(instant(reference.establishedAt)) && finite(instant(reference.updatedAt));
 }
@@ -67,42 +67,87 @@ function heatingEvidence(samples) {
   return null;
 }
 
-/** Infer the room temperature produced by household knobs under sustained normal mode.
- * A stored reference never follows a falling temperature. Deliberate knob changes can reset it explicitly.
+const normalReferenceSample = sample => validSample(sample) && sample.action === 'normal'
+  && sample.regime === 'occupied' && sample.preheat !== true && sample.recovering !== true
+  && !(sample.roomBoostC > 0) && !fireplaceAffectsLearning(sample)
+  && (!sample.inputSegments || sample.inputSegments.every(segment => segment.phase === 'normal'
+    && segment.regime === 'occupied' && !(segment.roomBoostC > 0)));
+
+function validAdaptation(value) {
+  return value && ['candidateC', 'minimumC', 'maximumC', 'evidenceHours', 'appliedHours'].every(key => finite(value[key]))
+    && value.minimumC >= 12 && value.maximumC <= 28 && value.maximumC - value.minimumC <= 0.300000001
+    && value.candidateC >= value.minimumC && value.candidateC <= value.maximumC
+    && value.evidenceHours >= 0 && value.appliedHours >= 0 && value.appliedHours <= value.evidenceHours
+    && finite(instant(value.firstWindowStart)) && finite(instant(value.lastWindowEnd))
+    && instant(value.lastWindowEnd) >= instant(value.firstWindowStart);
+}
+
+/** Learn achieved household temperature; normal controller cycles never redefine it.
+ * Later knob changes require repeated clean plateaus across days in either direction.
+ * Only newly covered plateau time earns adjustment, independently of polling frequency.
  */
 export function inferComfortReference(previous, samples, { now = Date.now() } = {}) {
   const retained = validReference(previous) ? structuredClone(previous) : null;
-  const sorted = samples.filter(sample => sample && finite(instant(sample.timestamp)) && instant(sample.timestamp) <= instant(now))
-    .sort((a, b) => instant(a.timestamp) - instant(b.timestamp)).slice(-MAX_SAMPLES);
+  const sorted = normalizedRecords(samples).filter(sample => instant(sample.timestamp) <= instant(now)).slice(-MAX_SAMPLES);
   const last = sorted.at(-1);
   if (!last || instant(now) - instant(last.timestamp) > 2 * HOUR) return retained;
+  if (retained?.adaptation && (!validAdaptation(retained.adaptation)
+    || sorted.some(sample => instant(sample.timestamp) > instant(retained.adaptation.lastWindowEnd)
+      && (!validSample(sample) || sample.regime !== 'occupied' || fireplaceAffectsLearning(sample)))))
+    retained.adaptation = null;
+  const normalHours = retained ? 8 : 24, plateauHours = retained ? 6 : 12;
   const uninterrupted = [];
   let nextTime = instant(last.timestamp);
   for (let i = sorted.length - 1; i >= 0; i--) {
     const sample = sorted[i], time = instant(sample.timestamp);
-    if (!validSample(sample) || sample.action !== 'normal' || sample.regime !== 'occupied' || sample.preheat === true
-      || sample.recovering === true || fireplaceAffectsLearning(sample)
-      || nextTime - time > 2 * HOUR) break;
+    if (!normalReferenceSample(sample) || nextTime - time > 2 * HOUR) break;
     uninterrupted.unshift(sample);
     nextTime = time;
-    if (instant(last.timestamp) - time >= 24 * HOUR) break;
+    if (instant(last.timestamp) - time >= normalHours * HOUR) break;
   }
-  if (uninterrupted.length < 13 || instant(last.timestamp) - instant(uninterrupted[0].timestamp) < 24 * HOUR) return retained;
-  const plateau = uninterrupted.filter(sample => instant(last.timestamp) - instant(sample.timestamp) <= 12 * HOUR);
+  if (uninterrupted.length < normalHours / 2 + 1
+    || instant(last.timestamp) - instant(uninterrupted[0].timestamp) < normalHours * HOUR) return retained;
+  const plateau = uninterrupted.filter(sample => instant(last.timestamp) - instant(sample.timestamp) <= plateauHours * HOUR);
   const values = plateau.map(sample => sample.indoorC).sort((a, b) => a - b);
-  if (plateau.length < 7 || values.at(-1) - values[0] > 0.4) return retained;
+  if (plateau.length < plateauHours / 2 + 1 || values.at(-1) - values[0] > 0.4) return retained;
   const midpoint = Math.floor(plateau.length / 2);
   if (Math.abs(mean(plateau.slice(0, midpoint).map(sample => sample.indoorC))
     - mean(plateau.slice(midpoint).map(sample => sample.indoorC))) > 0.15) return retained;
   const evidence = heatingEvidence(uninterrupted);
   if (!evidence) return retained;
-  const targetC = Math.round(values[Math.floor((values.length - 1) * 0.75)] * 10) / 10;
-  if (targetC < 12 || targetC > 28 || (retained && targetC <= retained.targetC + 0.1)) return retained;
-  return { version: 2, targetC, establishedAt: retained?.establishedAt ?? last.timestamp,
+  const candidateC = Math.round(values[Math.floor((values.length - 1) * 0.75)] * 10) / 10;
+  if (candidateC < 12 || candidateC > 28) return retained;
+  let targetC = candidateC, adaptation = null;
+  if (retained) {
+    // Do not reuse evidence from initial establishment, duplicate windows, a
+    // long acquisition interruption, or a materially different new plateau.
+    const end = instant(last.timestamp), start = Math.max(instant(plateau[0].timestamp), instant(retained.establishedAt));
+    if (end <= start) return retained;
+    const old = validAdaptation(retained.adaptation) ? retained.adaptation : null;
+    if (old && end <= instant(old.lastWindowEnd)) return retained;
+    const minimumC = Math.min(old?.minimumC ?? candidateC, candidateC), maximumC = Math.max(old?.maximumC ?? candidateC, candidateC);
+    const continuing = old && end - instant(old.lastWindowEnd) <= 48 * HOUR && maximumC - minimumC <= 0.300000001;
+    const from = continuing ? Math.max(start, instant(old.lastWindowEnd)) : start;
+    adaptation = { candidateC, minimumC: continuing ? minimumC : candidateC, maximumC: continuing ? maximumC : candidateC,
+      firstWindowStart: continuing ? old.firstWindowStart : new Date(start).toISOString(), lastWindowEnd: last.timestamp,
+      evidenceHours: (continuing ? old.evidenceHours : 0) + Math.max(0, end - from) / HOUR,
+      appliedHours: continuing ? old.appliedHours : 0 };
+    targetC = retained.targetC;
+    if (adaptation.evidenceHours >= 24 && end - instant(adaptation.firstWindowStart) >= 48 * HOUR) {
+      const earnedHours = Math.min(24, adaptation.evidenceHours - adaptation.appliedHours);
+      const difference = candidateC - targetC;
+      targetC = Math.round((targetC + Math.sign(difference) * Math.min(Math.abs(difference), earnedHours * 0.2 / 24)) * 1e10) / 1e10;
+      // Consume all prior credit, including any first-qualification excess.
+      // Reprocessing these rows cannot turn a capped step into a sudden jump.
+      adaptation.appliedHours = adaptation.evidenceHours;
+    }
+    if (targetC === retained.targetC) return { ...retained, adaptation };
+  }
+  return { version: 3, targetC, establishedAt: retained?.establishedAt ?? last.timestamp,
     updatedAt: last.timestamp, source: 'sustained-occupied-normal-temperature-plateau',
     confidence: evidence.kind === 'verified-space-heating-activity' ? 'observed-heating-baseline' : 'provisional-heating-demand-baseline',
     heatingEvidence: evidence, windowStart: uninterrupted[0].timestamp,
-    windowEnd: last.timestamp, samples: uninterrupted.length,
+    windowEnd: last.timestamp, samples: uninterrupted.length, adaptation,
     semantics: 'temperature achieved by native household settings; normal request does not prove continuous compressor runtime' };
 }
 
@@ -283,10 +328,11 @@ export function updateLearning(input, incoming, { now = Date.now(), maxBatch = 5
   const seen = new Set(checkpoint.samples.map(sample => instant(sample.timestamp)));
   for (const sample of samples) if (!seen.has(instant(sample.timestamp))) {
     checkpoint.samples.push({ ...sample, timestamp: new Date(instant(sample.timestamp)).toISOString() });
+    checkpoint.samples = checkpoint.samples.slice(-MAX_SAMPLES);
+    checkpoint.comfortReference = inferComfortReference(checkpoint.comfortReference, checkpoint.samples, { now: sample.timestamp });
     seen.add(instant(sample.timestamp));
   }
   checkpoint.samples = checkpoint.samples.slice(-MAX_SAMPLES);
-  checkpoint.comfortReference = inferComfortReference(checkpoint.comfortReference, checkpoint.samples, { now });
   if (samples.length) {
     const lastSample = checkpoint.samples.at(-1);
     checkpoint.processedThrough = lastSample.timestamp;

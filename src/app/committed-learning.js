@@ -3,8 +3,10 @@ import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { CONTROL_DEFAULTS } from './config.js';
 import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected } from './fireplace-inputs.js';
+import { indoorWeights, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v5-fireplace';
+export const LEARNING_ALGORITHM = 'committed-house-v6-sensors';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -13,7 +15,7 @@ const EQUIPMENT_KEYS = ['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', '
   'recoveryCompressorOnly', 'recoveryCompressorOnlyHours', 'recoveryComfortMarginC',
   'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours', 'maxPreheatHours', 'maxRoomBoostC',
   'recoveryTimeoutHours', 'dhwrPulseMinutes'];
-const MODEL_KEYS = [...EQUIPMENT_KEYS, 'targetC', 'thermalPriors'];
+const MODEL_KEYS = [...EQUIPMENT_KEYS, 'targetC', 'thermalPriors', 'indoorSensorWeights'];
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
 const readingAge = (row, fallback) => row.source === 'husdata-h66' ? 5 * 60_000 : fallback;
 
@@ -55,7 +57,7 @@ function usable(row) {
 /** Only committed observations and committed coverage are read. A coverage span
  * confirms a held recorded value; it never supplies the discarded poll value.
  * Future publications and coverage ends cannot change a causal window. */
-function trajectory(store, signal, from, to, input, maxAge) {
+function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infinity) {
   const outdoor = signal === 'outdoor_temperature' && ['mqtt', 'providers'].includes(input);
   const scope = input === 'simulated' ? "source='simulation'" : outdoor
     ? "source IN ('husdata-h66','fmi','openmeteo')" : "source<>'simulation'";
@@ -63,7 +65,7 @@ function trajectory(store, signal, from, to, input, maxAge) {
     value: row.value, unit: row.unit, sourceTime: row.source_time, receivedAt: row.received_at,
     quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null });
   const rows = store.db.prepare(`SELECT * FROM observations WHERE signal=? AND source_time>=? AND source_time<=?
-    AND received_at<=? AND ${scope} ORDER BY source_time,id`).all(signal, from - maxAge, to, to).map(decode);
+    AND received_at<=? AND ${scope} ORDER BY source_time,id`).all(signal, Math.max(from - maxAge, minimumTime), to, to).map(decode);
   const coverage = store.db.prepare(`SELECT c.*,c.source_time AS coverage_source_time,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,o.quality,o.raw
     FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
     WHERE c.signal=? AND c.start_at<=? AND c.end_at>=? AND o.received_at<=?
@@ -71,6 +73,7 @@ function trajectory(store, signal, from, to, input, maxAge) {
       ? "o.source IN ('husdata-h66','fmi','openmeteo')" : "o.source<>'simulation'"}
     ORDER BY c.start_at,c.id`).all(signal, to, from - maxAge, to);
   for (const span of coverage) {
+    if (span.coverage_source_time < minimumTime) continue;
     const observation = decode({ ...span, id: span.observation_id });
     rows.push({ ...observation, sourceTime: Math.max(from, span.start_at), coverageId: span.id,
       coverageEnd: Math.min(span.end_at, span.coverage_source_time) + readingAge(observation, maxAge), value: span.status === 'fresh' ? observation.value : null });
@@ -198,19 +201,35 @@ const oneValue = (segments, field, fallback = null) => {
  * refers to its own interval, and energyKwh integrates that same interval. The
  * indoor value is the observation at windowEnd. No current mutable context is
  * allowed to label an earlier interval, including after a restart. */
-export function committedLearningSample({ store, input, at, config = {}, windowMs = LEARNING_WINDOW_MS }) {
+export function committedLearningSample({ store, input, at, config = {}, windowMs = LEARNING_WINDOW_MS, measurementEpochAt = null }) {
   if (!Number.isSafeInteger(at) || !Number.isSafeInteger(windowMs) || windowMs <= 0 || windowMs > LEARNING_WINDOW_MS)
     throw new TypeError('A bounded completed learning window is required');
   const from = at - windowMs, lineage = {}, streams = {};
+  const boundariesBySensor = sensorBoundaries(store, input, at);
   const get = (signal, age = 30 * 60_000) => {
     const priority = signal === 'outdoor_temperature' && ['mqtt', 'providers'].includes(input)
       ? ['husdata-h66', 'fmi', 'openmeteo'] : null;
-    const value = windowValues(trajectory(store, signal, from, at, input, age), from, at, age, priority);
+    const changedAt = boundariesBySensor[signal];
+    const value = windowValues(trajectory(store, signal, from, at, input, age, changedAt ?? -Infinity), from, at, age, priority);
+    if (Number.isFinite(changedAt) && from < changedAt + SENSOR_SETTLING_MS) {
+      value.value = null; value.mean = null;
+      value.segments = value.segments.map(segment => ({ ...segment, value: null }));
+    }
     lineage[signal] = { observations: value.ids, coverage: value.coverageIds };
     streams[signal] = value;
     return value;
   };
-  const indoor = get('indoor_temperature'), outdoor = get('outdoor_temperature');
+  const weights = indoorWeights(config);
+  const indoorSensors = Object.fromEntries(Object.entries(weights).map(([signal, weight]) => {
+    const value = get(signal).value;
+    return [signal, { value: Number.isFinite(value) && value > 2 && value < 40 ? value : null, weight }];
+  }));
+  const indoor = { value: Object.values(indoorSensors).every(row => Number.isFinite(row.value))
+    ? Object.values(indoorSensors).reduce((sum, row) => sum + row.value * row.weight, 0) : null };
+  const outdoor = get('outdoor_temperature');
+  const sensorEpochAt = Math.max(measurementEpochAt ?? 0, ...Object.entries(boundariesBySensor)
+    .filter(([signal]) => affectsThermalLearning(signal, config)).map(([, changedAt]) => changedAt));
+  if (sensorEpochAt && from < sensorEpochAt + SENSOR_SETTLING_MS) indoor.value = null;
   const compressor = get('compressor_active', 5 * 60_000), route = get('dhw_routing', 5 * 60_000);
   const auxiliary = get('auxiliary_output', 5 * 60_000), integral = get('heating_integral', 5 * 60_000);
   const supply = get('supply_temperature', 5 * 60_000), setpoint = get('heating_setpoint', 5 * 60_000);
@@ -279,7 +298,8 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const routed = inputSegments.every(row => Number.isFinite(row.thermalCompressorDuty) && Number.isFinite(row.thermalAuxKw));
   lineage.control_context = { journal: contexts.filter(row => row.at < at).map(row => row.id) };
   const sample = { timestamp: at, windowStart: from, windowEnd: at, durationHours, inputSegments,
-    indoorC: indoor.value, outdoorC: outdoor.mean, solarRadiationWm2: radiation.value,
+    indoorC: indoor.value, indoorSensors, measurementEpochAt: sensorEpochAt || null,
+    outdoorC: outdoor.mean, solarRadiationWm2: radiation.value,
     phase, roomBoostC: oneValue(inputSegments, 'roomBoostC'), targetC: oneValue(inputSegments, 'targetC'),
     regime: oneValue(inputSegments, 'regime', 'mixed'), quality,
     powerKw, energyKwh: powerKw === null ? null : powerKw * durationHours,
@@ -335,6 +355,8 @@ export function historicalLearningWindows(rows, inputState = null) {
 }
 
 export function appendLearningRecord(store, input, kind, value, { config = {}, seed = null } = {}) {
+  // Old CSV temp_in is the historical upstairs sensor, never a fabricated average.
+  if (input === 'history') config = { ...config, indoorSensorWeights: { indoor_temperature: 1 } };
   const configuration = learningConfiguration(config);
   const key = `${LEARNING_ALGORITHM}:${kind}:${kind === 'sample' ? value.timestamp : kind === 'context' ? `${value.timestamp}:${learningVersion(value)}` : value.id}`;
   const existing = store.db.prepare('SELECT payload FROM learning_journal WHERE input=? AND key=?').get(input, key);
@@ -348,6 +370,17 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
       : first ? { seed: seed ? structuredClone(seed) : null } : {}) } });
 }
 
+function resetMeasurement(checkpoint, configuration, at) {
+  const initial = restoreAdaptiveCheckpoint(checkpoint, configuration), fresh = initialAdaptiveModel(configuration);
+  return { ...initial, model: { ...fresh, parameters: { ...initial.model.parameters },
+      provenance: { ...fresh.provenance, measurementChangedAt: at, retainedParameters: true } },
+    samples: [], episodeArchive: [], sensorComfortReferences: {}, state: null,
+    baselineC: null, comfortReference: null, sinceFit: 0,
+    cursor: new Date(at).toISOString(), windowCursor: Math.floor(at / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS,
+    baselineResetAt: at, measurementEpochAt: at, equipmentEpochAt: at,
+    health: { status: 'prior-estimates', reason: 'sensor-measurement-changed', acceptedFits: 0, rejectedFits: 0 } };
+}
+
 export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
   if (entry.algorithmVersion !== LEARNING_ALGORITHM) throw new Error('Unsupported learning journal algorithm');
   if (entry.configVersion !== learningVersion(entry.payload.configuration)) throw new Error('Learning journal configuration version mismatch');
@@ -358,6 +391,8 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
     initial = restoreAdaptiveCheckpoint(initial, configuration);
     const defaults = initialAdaptiveModel(configuration).energy;
     const previous = initial.learningConfiguration;
+    if (learningVersion(indoorWeights(previous)) !== learningVersion(indoorWeights(configuration)))
+      initial = resetMeasurement(initial, configuration, entry.at);
     const changed = EQUIPMENT_KEYS.some(key => previous[key] !== configuration[key]);
     if (changed) {
       initial.equipmentEpochAt = entry.at;
@@ -374,6 +409,12 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
         configurationChangedAt: entry.at };
     }
   }
+  const sensorChange = entry.payload.value.sensorChange;
+  if (sensorChange) {
+    initial = restoreAdaptiveCheckpoint(initial, configuration);
+    if (affectsThermalLearning(sensorChange.signal, configuration)) initial = resetMeasurement(initial, configuration, entry.at);
+    initial.sensorEpochs = { ...initial.sensorEpochs, [sensorChange.signal]: entry.at };
+  }
   const historySeed = entry.payload.value.historySeed;
   if (historySeed) {
     initial = { ...restoreAdaptiveCheckpoint(initial, configuration),
@@ -385,14 +426,21 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
   if (Number.isFinite(entry.payload.value.resetBaselineAt)
     && entry.payload.value.resetBaselineAt > (initial?.baselineResetAt ?? -Infinity)) {
     initial = { ...restoreAdaptiveCheckpoint(initial, configuration), baselineC: null, comfortReference: null,
-      baselineResetAt: entry.payload.value.resetBaselineAt, equipmentEpochAt: entry.payload.value.resetBaselineAt, samples: [], sinceFit: 0 };
+      baselineResetAt: entry.payload.value.resetBaselineAt, equipmentEpochAt: entry.payload.value.resetBaselineAt,
+      sensorComfortReferences: {}, samples: [], sinceFit: 0 };
     initial.model.equipmentResponse = { phases: {}, validation: null };
     initial.model.forecastValidation = null;
   }
-  const value = entry.kind === 'sample' ? withFireplaceInputs(entry.payload.value, fireplaceContext) : entry.payload.value;
+  let value = entry.kind === 'sample' ? withFireplaceInputs(entry.payload.value, fireplaceContext) : entry.payload.value;
+  const sampleStart = value.windowStart ?? value.timestamp;
+  if (entry.kind === 'sample' && Number.isFinite(initial?.measurementEpochAt)
+    && (typeof sampleStart === 'number' ? sampleStart : Date.parse(sampleStart)) < initial.measurementEpochAt + SENSOR_SETTLING_MS)
+    value = { ...value, indoorC: null, valid: false, quality: ['sensor-change-settling'] };
+  const oldMeasurementEpisode = entry.kind === 'episode' && Number.isFinite(initial?.measurementEpochAt)
+    && (typeof value.startedAt === 'number' ? value.startedAt : Date.parse(value.startedAt)) < initial.measurementEpochAt;
   const next = entry.kind === 'sample'
     ? updateAdaptiveLearning(initial, value, { now: entry.at, config: configuration })
-    : entry.kind === 'episode' && !fireplaceEpisodeAffected(value, fireplaceContext) ? updateAdaptiveEpisode(initial, value, { config: configuration })
+    : entry.kind === 'episode' && !oldMeasurementEpisode && !fireplaceEpisodeAffected(value, fireplaceContext) ? updateAdaptiveEpisode(initial, value, { config: configuration })
       : restoreAdaptiveCheckpoint(initial, configuration);
   const journalEntryHash = learningVersion(entry);
   const result = { ...next, ...(entry.kind === 'sample' ? { windowCursor: entry.payload.value.windowEnd ?? entry.at } : {}),

@@ -113,3 +113,24 @@ test('temperature subscription rejection records failure without exposing broker
   assert.equal(JSON.stringify(store.events()).includes('Private broker'), false);
   assert.equal(reader.h66, null); assert.equal(reader.status().connected, true);
 });
+
+test('Downstairs and Bedroom MQTT temperatures are recorded independently across one sensor outage', async t => {
+  const store = new Store(':memory:');
+  const config = { ...loadConfig({ HOME: '/missing-stmq-test-home' }, '/missing-repository'), input: 'mqtt', deviceId: null,
+    connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: {
+      downstairs_temperature: 'invented/downstairs', bedroom_temperature: 'invented/bedroom',
+    } } } };
+  const engine = new Engine({ store, config, clock: () => initial }), client = broker();
+  const reader = await startMqtt({ engine, store, config, connect: () => client });
+  t.after(async () => { await reader.close(); store.close(); });
+  client.emit('connect');
+  assert.deepEqual(client.subscriptions, ['invented/downstairs', 'invented/bedroom']);
+  client.emit('message', 'invented/downstairs', Buffer.from('20.5'));
+  client.emit('message', 'invented/bedroom', Buffer.from('{"value":66.2,"unit":"F"}'));
+  assert.equal(engine.recorder.latestCommitted('downstairs_temperature').value, 20.5);
+  assert(Math.abs(engine.recorder.latestCommitted('bedroom_temperature').value - 19) < 1e-10);
+  client.emit('message', 'invented/downstairs', Buffer.from('{"value":null}'));
+  assert.equal(engine.recorder.latestCommitted('downstairs_temperature').value, null);
+  assert(Math.abs(engine.latest.bedroom_temperature.value - 19) < 1e-10);
+  assert.equal(engine.latest.indoor_temperature, undefined);
+});

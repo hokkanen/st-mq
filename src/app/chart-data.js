@@ -23,7 +23,7 @@ import { RelatedStepSampler, alignRelatedSamples } from './chart-related-series.
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
 const CHARGING_MIN_POWER_KW = 0.1;
-const TEMPERATURES = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'];
+const TEMPERATURES = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'];
 const PHASES = ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`));
 const LEARNING = ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'];
 const H66_SIGNALS = ['auxiliary_power', 'charger_power', 'compressor_active', 'dhw_routing', 'operating_mode', 'controller_phase', 'dhwr_request'];

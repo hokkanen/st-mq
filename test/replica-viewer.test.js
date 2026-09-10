@@ -10,6 +10,7 @@ import { startReplica } from '../src/app/replica.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
+import { addSensorChange } from '../src/app/sensor-changes.js';
 
 const at = Date.parse('2026-01-15T12:00:00+02:00');
 const chartPath = '/api/chart?start=2026-01-15&end=2026-01-15&left=power';
@@ -127,7 +128,7 @@ test('viewer starts before first snapshot and denies every mutation without open
   assert.equal(result.body.liveWrites, false);
   assert.equal(app.store, null);
   assert.equal((await request(chartPath)).status, 503);
-  for (const path of ['/api/temporary', '/api/override', '/api/fireplace', '/api/fireplace/remove',
+  for (const path of ['/api/temporary', '/api/override', '/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
     '/api/settings/reload', '/api/heating-test', '/api/test/h66', '/api/charger-identification', '/api/unrecognized']) {
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
       const response = await request(path, { method });
@@ -135,6 +136,34 @@ test('viewer starts before first snapshot and denies every mutation without open
       assert.match(response.body.error, /read-only/);
     }
   }
+});
+
+test('replica averages retain source freshness and the primary sensor settling boundary', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'sensor-change');
+  const store = new Store(publication.dbPath);
+  const control = { indoorSensorWeights: { indoor_temperature: 0.5, bedroom_temperature: 0.5 } };
+  store.observation({ source: 'smartthings', device: 'synthetic-bedroom', signal: 'bedroom_temperature',
+    value: 19, unit: 'degC', sourceTime: at - 60_000, receivedAt: at - 60_000, quality: [] });
+  addSensorChange(store, 'mqtt', { requestId: 'synthetic-move', signal: 'bedroom_temperature', reason: 'moved' }, at,
+    { config: control });
+  store.setState('adaptive:mqtt', { learningConfiguration: control, measurementEpochAt: at });
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  let now = at;
+  const { request } = await viewer(t, directory, async () => publication, { clock: () => now });
+  const current = (await request('/api/status')).body;
+  assert.equal(current.observations.bedroom.value, 19);
+  assert.equal(current.observations.bedroom.settling, true);
+  assert.equal(current.observations.indoor.value, null);
+  assert.equal(current.observations.indoor.stale, true);
+  assert.equal((await request('/api/sensor-changes')).body.available, false);
+  now += 60 * 60_000;
+  const stale = (await request('/api/status')).body;
+  assert.equal(stale.observations.upstairs.stale, true);
+  assert.equal(stale.observations.bedroom.stale, true);
+  assert.equal(stale.observations.indoor.stale, true);
+  assert.equal(stale.observations.bedroom.observedAt, at - 60_000);
 });
 
 test('verified snapshots remain unchanged and viewer replaces charts and history after outage catch-up', async t => {

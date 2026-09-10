@@ -6,7 +6,7 @@ const h66 = [
   ['brine_in_temperature', 'Brine in', '°C', 'Ground loop', 'History only'],
   ['brine_out_temperature', 'Brine out', '°C', 'Ground loop', 'History only'],
   ['outdoor_temperature', 'Outdoor temperature', '°C', 'Home temperatures', 'House input'],
-  ['indoor_temperature', 'Indoor temperature', '°C', 'Home temperatures', 'House input'],
+  ['indoor_temperature', 'Upstairs Hallway', '°C', 'Home temperatures', 'House input'],
   ['dhw_temperature', 'Hot-water temperature', '°C', 'Hot water', 'Equipment context'],
   ['heating_setpoint', 'Supply target', '°C', 'Heating', 'Equipment context'],
   ['heating_integral', 'Heating integral', '°min', 'Heating', 'Equipment context'],
@@ -45,6 +45,8 @@ export const SESSION_CHECK_INFO = Object.freeze({
 });
 export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...h66.map(([signal, label, unit, group, role]) => [signal, { label, unit, group, role, kind: 'Recorded' }]),
+  ['downstairs_temperature', { label: 'Downstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
+  ['bedroom_temperature', { label: 'Bedroom', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['garage_temperature', { label: 'Garage temperature', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
@@ -77,7 +79,7 @@ export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
 
-export const RIGHT_AXIS_SIGNALS = Object.freeze(['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
+export const RIGHT_AXIS_SIGNALS = Object.freeze(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
 
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],

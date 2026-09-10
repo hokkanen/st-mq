@@ -97,6 +97,20 @@ an entire quarter-hour of heating. The reference is held through preheat, reduct
 and recovery. Away removes the usual occupied drop constraint but retains a return
 requirement inside the known forecast horizon.
 
+After initial establishment from 24 hours of normal heating, the reference can
+follow sustained household thermostat changes both down and up, including floor
+circulation settings that the heat pump cannot report. Each later qualifying
+normal period lasts at least eight hours with a stable final six-hour plateau.
+Only nonoverlapping plateau time counts: at least 24 hours of evidence spanning
+48 hours must support a consistent candidate temperature before adaptation starts.
+Normal periods may be separated by controller preheat, reduction or recovery;
+those phases hold the reference fixed and add no evidence. The reference moves
+at most 0.2°C per newly evidenced 24 hours, with the first catch-up adjustment
+capped at 0.2°C. Polling the same data again cannot move it. Missing or invalid
+observations, away periods and meaningful fireplace influence clear pending
+adaptation evidence; a 48-hour gap between qualifying periods also expires it.
+Passive summer warmth and ongoing cooling cannot establish a new reference.
+
 ## Planning and recovery
 
 Each candidate prices preheat, reduction, recovery and remaining heat debt under

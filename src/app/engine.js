@@ -17,6 +17,9 @@ import { Executor } from './executor.js';
 import { assembleOutlook, contractWithPeriod, reconcileConfiguredContract } from './contract.js';
 import { temporaryUpdate } from './temporary.js';
 import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
+import { addSensorChange, sensorChangesView } from './sensor-changes.js';
+import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
+import { indoorAverage, indoorWeights, INDOOR_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 
 const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
@@ -31,7 +34,7 @@ function trustworthy(observation, now) {
       && !(modelOutdoor && flag === 'estimated')) : observation?.quality;
   if (!observation || !Number.isFinite(observation.value) || !Number.isFinite(observation.sourceTime)
     || observation.sourceTime > now || !goodQuality(quality)) return false;
-  if (observation.signal === 'indoor_temperature') return observation.value > 2 && observation.value < 40;
+  if (INDOOR_SIGNALS.includes(observation.signal)) return observation.value > 2 && observation.value < 40;
   if (observation.signal === 'outdoor_temperature') return observation.value >= -60 && observation.value <= 50;
   if (phaseCurrent) return observation.value >= 0 && observation.value <= 1000;
   return true;
@@ -86,6 +89,63 @@ export class Engine {
     return providers;
   }
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
+  sensorChangesStatus() {
+    const connections = this.config.connections ?? {};
+    const configured = [['indoor_temperature', 'inside_temp_dev_id'], ['downstairs_temperature', 'downstairs_temp_dev_id'],
+      ['bedroom_temperature', 'bedroom_temp_dev_id'], ['garage_temperature', 'garage_temp_dev_id']]
+      .filter(([signal, key]) => connections.smartthings?.[key] || connections.mqtt?.temperatureTopics?.[signal])
+      .map(([signal]) => signal);
+    return sensorChangesView(this.store, this.config.input, { now: this.clock(), config: this.control,
+      observedSignals: [...Object.keys(this.latest), ...configured] });
+  }
+  changeSensor(payload) {
+    const now = this.clock(), input = this.config.input;
+    const checkpoint = this.readAdaptive(now);
+    let result, next;
+    this.store.transaction(() => {
+      result = addSensorChange(this.store, input, payload, now, { config: this.control, seed: checkpoint });
+      next = this.replayLearning(checkpoint);
+      if (!result.repeated && affectsThermalLearning(result.signal, this.control)) {
+        this.store.setState(`pending-plan:${input}`, null);
+        if (this.cycles.active() && this.cycles.active().startedAt <= result.at)
+          this.cycles.cancel(now, 'sensor-measurement-changed');
+      }
+    });
+    this.checkpoint = next;
+    if (!result.repeated && affectsThermalLearning(result.signal, this.control)) {
+      this.pendingPlan = null; this.lastSample = null; this.fireplaceReserveOverride = null;
+    }
+    // The source and complete checkpoint are durable before follow-up control.
+    this.latestStatus = null;
+    try { this.tick(); this.onTemporaryChange?.(); }
+    catch { throw Object.assign(new Error('Sensor change save could not be confirmed. Retry the same request.'), { statusCode: 503 }); }
+    return this.sensorChangesStatus();
+  }
+  temperatureObservations(observations, now, checkpoint = this.checkpoint) {
+    const boundaries = sensorBoundaries(this.store, this.config.input, now);
+    const names = { upstairs: 'indoor_temperature', downstairs: 'downstairs_temperature', bedroom: 'bedroom_temperature',
+      garage: 'garage_temperature', outdoor: 'outdoor_temperature' };
+    for (const [key, signal] of Object.entries(names)) {
+      const latest = this.latest[signal];
+      const reading = latest ? { value: latest.value, observedAt: latest.sourceTime, quality: latest.quality, source: latest.source }
+        : key === 'upstairs' ? observations.upstairs ?? observations.indoor : observations[key];
+      observations[key] = decorate(reading, signal, now);
+      const changedAt = boundaries[signal];
+      if (Number.isFinite(changedAt) && (now < changedAt + SENSOR_SETTLING_MS || observations[key].observedAt < changedAt))
+        observations[key] = { ...observations[key], stale: true, settling: now < changedAt + SENSOR_SETTLING_MS };
+    }
+    if (['mqtt', 'providers'].includes(this.config.input)) {
+      observations.outdoor = this.outdoorObservation(now);
+      const changedAt = boundaries.outdoor_temperature;
+      if (Number.isFinite(changedAt) && (now < changedAt + SENSOR_SETTLING_MS || observations.outdoor.observedAt < changedAt))
+        observations.outdoor.stale = true;
+    }
+    observations.indoor = indoorAverage(Object.fromEntries(Object.entries(names)
+      .map(([key, signal]) => [signal, observations[key]])), this.control);
+    if (Number.isFinite(checkpoint?.measurementEpochAt) && now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS)
+      observations.indoor = { ...observations.indoor, value: null, stale: true, settling: true };
+    return observations;
+  }
   replayLearning(checkpoint) {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
@@ -439,7 +499,8 @@ export class Engine {
     if (this.config.input !== 'simulated' && !this.cycles.active()) {
       let saved;
       try { saved = this.store.getState('adaptive:history'); } catch { /* Background reconstruction may replace a corrupt checkpoint. */ }
-      if (saved?.version === 1 && saved.algorithmVersion === LEARNING_ALGORITHM) {
+      if (saved?.version === 1 && saved.algorithmVersion === LEARNING_ALGORITHM
+        && !this.checkpoint.measurementEpochAt && indoorWeights(this.control).indoor_temperature === 1) {
         const history = restoreAdaptiveCheckpoint(saved, this.control);
         const modelReady = history.model.validation && !this.checkpoint.model.validation;
         const baselineReady = Number.isFinite(history.baselineC) && !Number.isFinite(this.checkpoint.baselineC)
@@ -493,6 +554,9 @@ export class Engine {
       for (const [key, signal] of [['indoor','indoor_temperature'],['outdoor','outdoor_temperature']])
         this.ingest({ source: 'simulation', device: 'test-house', signal, value: observations[key].value,
           unit: 'degC', sourceTime: now, receivedAt: now, quality: ['simulated'], raw: null });
+      for (const signal of Object.keys(indoorWeights(this.control)).filter(signal => signal !== 'indoor_temperature'))
+        this.ingest({ source: 'simulation', device: 'test-house', signal, value: observations.indoor.value,
+          unit: 'degC', sourceTime: now, receivedAt: now, quality: ['simulated'], raw: null });
       // Synthetic operation is recorded through the same boundary as physical
       // readbacks; the learner never consumes the plant object's hidden state.
       for (const [signal, value, unit] of [
@@ -509,10 +573,7 @@ export class Engine {
           phase: this.applied.phase, verified: false, source: 'mqtt-request', observedAt: this.applied.at } };
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
-    observations.indoor = decorate(observations.indoor, 'indoor_temperature', now);
-    observations.garage = decorate(observations.garage, 'garage_temperature', now);
-    observations.outdoor = decorate(observations.outdoor, 'outdoor_temperature', now);
-    if (['mqtt', 'providers'].includes(input)) observations.outdoor = this.outdoorObservation(now);
+    this.temperatureObservations(observations, now);
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
     let checkpoint = this.readAdaptive(now);
@@ -537,7 +598,8 @@ export class Engine {
     if (input !== 'simulated' && !this.cycles.active() && !reference.resetBaselineAt) {
       let history;
       try { history = this.store.getState('adaptive:history'); } catch { /* Background reconstruction can retry. */ }
-      const compatibleHistory=history?.algorithmVersion===LEARNING_ALGORITHM;
+      const compatibleHistory=history?.algorithmVersion===LEARNING_ALGORITHM
+        && !checkpoint.measurementEpochAt && indoorWeights(this.control).indoor_temperature === 1;
       const modelReady = compatibleHistory && history?.model?.validation && !checkpoint.model.validation;
       const baselineReady = compatibleHistory && Number.isFinite(history?.baselineC) && !Number.isFinite(checkpoint.baselineC)
         && (!checkpoint.baselineResetAt || Date.parse(history.comfortReference?.windowStart) >= checkpoint.baselineResetAt);
@@ -581,11 +643,17 @@ export class Engine {
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
     recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
     checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
+    this.temperatureObservations(observations, now, checkpoint);
+    if (this.cycles.active() && Number.isFinite(checkpoint.measurementEpochAt)
+      && this.cycles.active().startedAt <= checkpoint.measurementEpochAt) {
+      this.cycles.cancel(now, 'sensor-measurement-changed'); this.pendingPlan = null; this.lastSample = null;
+    }
     const completedWindow = Math.floor(now / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS;
     const lastWindow = checkpoint.windowCursor;
     let windowAt = Number.isSafeInteger(lastWindow) ? lastWindow + LEARNING_WINDOW_MS : completedWindow;
     for (let count = 0; windowAt <= completedWindow && count < 256; count++, windowAt += LEARNING_WINDOW_MS) {
-      const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context });
+      const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context,
+        measurementEpochAt: checkpoint.measurementEpochAt });
       committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
       appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
       checkpoint = this.replayLearning(checkpoint);
@@ -597,6 +665,7 @@ export class Engine {
         { rollout: false, observedOnly: false }).state?.reserveC ?? null;
     }
     const cycleSample = withFireplaceInputs(committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
+      measurementEpochAt: checkpoint.measurementEpochAt,
       windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000, now - (this.cycles.active()?.lastSample?.timestamp ?? now - 60_000))) }), fireplaceContext);
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
     Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
@@ -619,11 +688,17 @@ export class Engine {
     const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
       comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
     let cycle = this.cycles.active(), decision;
+    const roomComfortLimited = this.settings.occupancy.mode === 'occupied' && Object.keys(indoorWeights(this.control)).some(signal => {
+      const reference = checkpoint.sensorComfortReferences?.[signal]?.targetC;
+      const reading = observations[{ indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom' }[signal]];
+      return Number.isFinite(reference) && !reading?.stale && reading.value <= reference - this.settings.comfort.maxDropC;
+    });
     const controlHold=!cycle?this.cycles.controlHold(now):null;
     const forceNormal = controlHold?'recent-cycle-incomplete'
       : cycle && equipment.fireplaceRelevant && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
       : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
       ? 'native-settings-changed' : override ? 'temporary-normal-override' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
+      : roomComfortLimited ? 'room-comfort-limit'
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
         : this.settings.occupancy.mode === 'occupied' && targetC !== null && sample.indoorC <= targetC-2 ? 'hard-comfort-limit' : null;
     if (forceNormal) {
@@ -721,7 +796,8 @@ export class Engine {
             this.store.setState(`dhwr:${input}`, { lastPulseAt: executorStatus.requested.at, pulseUntil: execution.pulseUntil });
             this.recordDhwr(execution.pulseUntil,executorStatus.requested.at);
           }
-        if (decision.plan && ['preheat','reduction'].includes(phase) && !this.cycles.active()) {
+        if (decision.plan && ['preheat','reduction'].includes(phase) && !this.cycles.active()
+          && (this.checkpoint?.measurementEpochAt ?? null) === (checkpoint.measurementEpochAt ?? null)) {
           const effectiveAt=this.clock();
           const plan = structuredClone(decision.plan);
           plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral };
@@ -778,7 +854,7 @@ export class Engine {
       heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.providerStatus(),contract:this.contract(),configuredPrices:this.config.priceSettings??null,
-      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),
+      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
         controlHold,outcomes:this.cycles.outcomes(),
@@ -797,19 +873,13 @@ export class Engine {
     result.heatingTests = this.heatingTests();
     result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();
+    result.sensorChanges = this.sensorChangesStatus();
     if (this.h66Status) result.h66 = this.h66Status();
     result.providers = this.providerStatus();
-    for (const [key, signal] of [['indoor', 'indoor_temperature'], ['garage', 'garage_temperature'], ['outdoor', 'outdoor_temperature']]) {
-      result.observations[key] = decorate(result.observations[key], signal, now);
-    }
+    this.temperatureObservations(result.observations, now);
     if (!this.plant) {
       const outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
       Object.assign(result, outlook);
-      for (const [key, signal] of [['indoor', 'indoor_temperature'], ['garage', 'garage_temperature'], ['outdoor', 'outdoor_temperature']]) {
-        const obs = this.latest[signal];
-        if (obs) result.observations[key] = decorate({ value: obs.value, observedAt: obs.sourceTime, quality: obs.quality, source: obs.source }, signal, now);
-      }
-      if (['mqtt', 'providers'].includes(this.config.input)) result.observations.outdoor = this.outdoorObservation(now);
     }
     return result;
   }

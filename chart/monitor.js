@@ -5,6 +5,7 @@ import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Regist
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
+import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
@@ -50,6 +51,8 @@ const reasons = {
   'awaiting-tariff-response-evidence': 'Learning how the heat pump responds to tariff control',
   'timed-normal-override': 'A timed normal-heating override is in effect',
   'missing-or-stale-observations': 'Waiting for fresh temperature observations',
+  'room-comfort-limit': 'A room has reached its permitted temperature drop',
+  'sensor-measurement-changed': 'Re-establishing temperature learning after a sensor change',
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 async function api(path, data, options = {}) {
@@ -67,6 +70,8 @@ async function api(path, data, options = {}) {
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
+const sensorChangePanel = createSensorChangePanel({ document, request: api, storage: sessionStorage,
+  beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
   afterMutation: () => refresh({ forceChart: true }) });
 function renderContract(s) {
@@ -353,6 +358,7 @@ function render(s) {
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
   const replica = renderReplicaStatus(document, s, { formatTime: time });
+  sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
   if (replica) {
     if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
     return replica;
@@ -362,12 +368,13 @@ function render(s) {
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
       : s.liveWrites ? 'Learning from the house and controlling heating through preheating, reduction and recovery.'
         : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
-  for (const key of ['indoor', 'outdoor']) {
-    const obs = s.observations[key];
+  for (const key of ['indoor', 'upstairs', 'downstairs', 'bedroom', 'outdoor']) {
+    const obs = s.observations[key] ?? {};
     $(key).textContent = Number.isFinite(obs.value) ? `${obs.value.toFixed(1)} °C` : '—';
-    $(key).classList.toggle('stale', obs.stale);
+    $(key).classList.toggle('stale', obs.stale || !Number.isFinite(obs.value));
     const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
-    const age = obs.stale ? 'Missing or stale reading' : `${obs.source === 'openmeteo' ? 'Valid at' : 'Observed'} ${time(obs.observedAt)}`;
+    const age = obs.settling ? 'Settling after sensor change' : obs.configured === false ? 'Not configured' : obs.stale || !Number.isFinite(obs.value) || !Number.isFinite(obs.observedAt)
+      ? 'Missing or stale reading' : `${obs.source === 'openmeteo' ? 'Valid at' : 'Observed'} ${time(obs.observedAt)}`;
     $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${age}`;
   }
   $('requested').textContent = label(s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'));

@@ -5,6 +5,9 @@ import { readReplicaPublication } from '../replication/publication.js';
 import { createChartService } from './chart-service.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
+import { sensorChangesView } from './sensor-changes.js';
+import { indoorAverage, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { sensorBoundaries } from './sensor-inputs.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -22,9 +25,13 @@ function recordedInput(store) {
 function observed(store, signal, now) {
   const row = store?.latestObservation(signal);
   if (!row) return null;
-  const observedAt = row.sourceTime ?? row.receivedAt;
+  const observedAt = row.sourceTime ?? null;
+  const quality = row.quality ?? [];
+  const acceptable = quality.every(flag => ['good', 'simulated', 'historical', 'converted_fahrenheit'].includes(flag)
+    || flag === 'estimated' && row.source === 'openmeteo' && signal === 'outdoor_temperature');
   return { value: row.value, observedAt, receivedAt: row.receivedAt, source: row.source,
-    quality: row.quality, ageMs: Math.max(0, now - observedAt), recorded: true };
+    quality, ageMs: Number.isFinite(observedAt) ? Math.max(0, now - observedAt) : null, recorded: true,
+    stale: !Number.isFinite(observedAt) || observedAt > now || now - observedAt > 30 * 60_000 || !acceptable };
 }
 
 /** A viewer never constructs an Engine. Each request leases one immutable,
@@ -88,14 +95,33 @@ export async function startReplica({ config, clock = Date.now,
     const now = clock(), publication = snapshot?.publication;
     const state = lastError ? 'error' : !publication ? 'waiting'
       : Math.max(now - publication.verifiedAt, now - publication.sourceAt) > staleAfterMs ? 'stale' : 'ready';
+    const checkpoint = snapshot?.store.getState(`adaptive:${snapshot.input}`);
+    const learningConfig = checkpoint?.learningConfiguration ?? {};
+    const boundaries = snapshot ? sensorBoundaries(snapshot.store, snapshot.input, snapshot.publication.sourceAt) : {};
+    const observations = Object.fromEntries([['upstairs', 'indoor_temperature'], ['downstairs', 'downstairs_temperature'],
+      ['bedroom', 'bedroom_temperature'], ['outdoor', 'outdoor_temperature'], ['garage', 'garage_temperature']]
+      .map(([name, signal]) => {
+        const reading = observed(snapshot?.store, signal, now), changedAt = boundaries[signal];
+        if (reading && Number.isFinite(changedAt)
+          && (now < changedAt + SENSOR_SETTLING_MS || reading.observedAt === null || reading.observedAt < changedAt))
+          Object.assign(reading, { stale: true, settling: now < changedAt + SENSOR_SETTLING_MS });
+        return [name, reading];
+      }));
+    observations.indoor = indoorAverage({ indoor_temperature: observations.upstairs,
+      downstairs_temperature: observations.downstairs, bedroom_temperature: observations.bedroom }, learningConfig);
+    if (Number.isFinite(checkpoint?.measurementEpochAt) && now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS)
+      Object.assign(observations.indoor, { value: null, stale: true, settling: true });
     return { role: 'replica', instance: { role: 'replica', readOnly: true }, readOnly: true,
       mode: 'monitoring', liveWrites: false, now, input: snapshot?.input ?? 'offline',
       replication: { state, generation: publication?.generation ?? null,
         snapshotAt: publication?.sourceAt ?? null, lastSuccessAt: publication?.verifiedAt ?? null,
         verifiedAt: publication?.verifiedAt ?? null, digest: publication?.digest ?? null,
         bytes: publication?.bytes ?? null, staleAfterMs, ...(lastError ? { error: lastError } : {}) },
-      observations: Object.fromEntries([['indoor', 'indoor_temperature'], ['outdoor', 'outdoor_temperature'],
-        ['garage', 'garage_temperature']].map(([name, signal]) => [name, observed(snapshot?.store, signal, now)])),
+      observations,
+      sensorChanges: snapshot ? sensorChangesView(snapshot.store, snapshot.input,
+        { now: snapshot.publication.sourceAt, config: learningConfig, readOnly: true,
+          observedSignals: ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].filter((signal, i) => observations[['upstairs', 'downstairs', 'bedroom'][i]]) })
+        : { available: false, readOnly: true, events: [], sensors: [] },
       contract: snapshot?.store.getState(`contract:${snapshot.input}`) ?? null,
       lastDecision: snapshot?.decision ?? null,
       recording: { historyRevision: publication?.generation ?? null,
@@ -113,7 +139,8 @@ export async function startReplica({ config, clock = Date.now,
     return { store: snapshot?.store, chartService: snapshot?.chartService,
       engine: { clock: () => snapshot?.publication.sourceAt ?? clock(), config: { input: snapshot?.input ?? 'offline' }, plant: null,
         status: () => status(snapshot), contract: () => snapshot?.store.getState(`contract:${snapshot.input}`) ?? null,
-        fireplaceStatus: () => snapshot ? fireplaceView(snapshot.store, snapshot.input, { asOf: snapshot.publication.sourceAt }) : null },
+        fireplaceStatus: () => snapshot ? fireplaceView(snapshot.store, snapshot.input, { asOf: snapshot.publication.sourceAt }) : null,
+        sensorChangesStatus: () => status(snapshot).sensorChanges },
       release() {
         if (released || !snapshot) return;
         released = true; snapshot.references--; retire(snapshot);

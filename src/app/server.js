@@ -108,6 +108,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const engine = readContext?.engine ?? getEngine();
         const readerStore = readContext?.store ?? store;
         const readerCharts = readContext?.chartService ?? chartService;
+        const sensorChangesStatus = () => {
+          const view = (readContext ? engine : getEngine()).sensorChangesStatus();
+          const readOnly = role === 'replica' || controlAuthority && !controlAuthority.canControl()
+            || pairContext && (!pairContext.canControl() || pairContext.recovering());
+          return readOnly ? { ...view, available: false, readOnly: true } : view;
+        };
         const status = () => {
           const replication = replicationStatus?.();
           return { ...(readContext ? engine : getEngine()).status(), settingsReload: settingsReloadStatus(),
@@ -129,7 +135,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(409, { error: 'This instance does not own device control.' });
           if (controlAuthority && !controlAuthority.canControl())
             return json(409, { error: 'Another ST-MQ controller owns device control. This instance is protected.' });
-          if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/settings/reload'].includes(url.pathname))
+          if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes', '/api/settings/reload'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
           return action(getEngine(), input);
         };
@@ -148,6 +154,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(202, current.chargerIdentification.status());
           });
         if (req.method === 'GET' && url.pathname === '/api/fireplace') return json(200, engine.fireplaceStatus());
+        if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
+        if (req.method === 'POST' && url.pathname === '/api/sensor-changes')
+          return await mutate((current, input) => json(200, current.changeSensor(input)));
         if (req.method === 'POST' && url.pathname === '/api/fireplace')
           return await mutate((current, input) => json(200, current.changeFireplace(input)));
         if (req.method === 'POST' && url.pathname === '/api/fireplace/remove')
@@ -228,7 +237,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
-        const fireplaceWrite = req.method === 'POST' && /^\/api\/fireplace(?:\/remove)?(?:\?|$)/.test(req.url);
+        const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.' : error.message });
       }

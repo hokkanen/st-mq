@@ -125,6 +125,8 @@ test('reference cannot be learned from absence, setback, preheat, recovery, gaps
     samples => { samples[20].action = 'reduction'; },
     samples => { samples[20].preheat = true; },
     samples => { samples[20].recovering = true; },
+    samples => { samples[20].roomBoostC = 1; },
+    samples => { samples[20].inputSegments = [{ phase: 'reduction', regime: 'occupied', roomBoostC: 0 }]; },
     samples => { samples.splice(18, 4); },
     samples => { for (let i = 0; i < samples.length; i++) samples[i].indoorC -= i * 0.08; }]) {
     const samples = plateau(); mutate(samples);
@@ -132,14 +134,91 @@ test('reference cannot be learned from absence, setback, preheat, recovery, gaps
   }
 });
 
-test('learned comfort reference freezes across lower plateaus and is not inflated by preheat', () => {
+test('one later plateau cannot reset the reference in either direction and preheat remains excluded', () => {
   const reference = inferComfortReference(null, plateau(), { now: start + 29 * HOUR });
   const lower = plateau(30, 19, start + 30 * HOUR);
-  assert.deepEqual(inferComfortReference(reference, lower, { now: start + 59 * HOUR }), reference);
+  assert.equal(inferComfortReference(reference, lower, { now: start + 59 * HOUR }).targetC, reference.targetC);
   const preheat = plateau(30, 23, start + 30 * HOUR).map(sample => ({ ...sample, preheat: true }));
   assert.deepEqual(inferComfortReference(reference, preheat, { now: start + 59 * HOUR }), reference);
   const higher = plateau(30, 21.6, start + 30 * HOUR);
-  assert.equal(inferComfortReference(reference, higher, { now: start + 59 * HOUR }).targetC, 21.6);
+  assert.equal(inferComfortReference(reference, higher, { now: start + 59 * HOUR }).targetC, reference.targetC);
+});
+
+function dailyNormalHistory(temperature, days = 6) {
+  return [...plateau(), ...Array.from({ length: days * 24 }, (_, i) => {
+    const phase = i % 24 < 2 ? 'preheat' : i % 24 < 4 ? 'reduction' : i % 24 < 6 ? 'recovery' : 'normal';
+    return { timestamp: iso(start + (30 + i) * HOUR), indoorC: temperature, outdoorC: 5,
+      regime: 'occupied', action: phase === 'normal' ? 'normal' : 'reduction',
+      preheat: phase === 'preheat', recovering: phase === 'recovery' };
+  })];
+}
+
+test('repeated normal plateaus across daily cycles gradually learn both lower and higher household settings', () => {
+  for (const temperature of [19, 23]) {
+    const samples = dailyNormalHistory(temperature);
+    let reference = null, firstChange = null;
+    for (let i = 0; i < samples.length; i++) {
+      const previous = reference;
+      reference = inferComfortReference(reference, samples.slice(0, i + 1), { now: samples[i].timestamp });
+      if (!previous) continue;
+      if (samples[i].action !== 'normal') assert.equal(reference.targetC, previous.targetC);
+      if (reference.targetC !== previous.targetC) {
+        firstChange ??= i;
+        assert.ok(Math.abs(reference.targetC - previous.targetC) <= 0.200000001);
+        assert.ok(Math.abs(reference.targetC - temperature) < Math.abs(previous.targetC - temperature));
+      }
+      assert.deepEqual(inferComfortReference(reference, samples.slice(0, i + 1), { now: samples[i].timestamp }), reference,
+        'A repeated window earns no temperature adjustment');
+    }
+    assert.ok(firstChange >= 30 + 48, 'The new setting requires evidence across multiple days');
+    assert.ok(Math.abs(reference.targetC - 21) > 0.4 && Math.abs(reference.targetC - 21) < 1);
+  }
+});
+
+test('cooler controller phases never lower a normal-temperature reference', () => {
+  const samples = dailyNormalHistory(21).map(sample => sample.action === 'normal' ? sample : { ...sample, indoorC: 18 });
+  let reference = null;
+  for (let i = 0; i < samples.length; i++) reference = inferComfortReference(reference, samples.slice(0, i + 1), { now: samples[i].timestamp });
+  assert.equal(reference.targetC, 21);
+});
+
+test('away, missing and fireplace observations clear pending plateau evidence before it can adjust the reference', () => {
+  for (const barrier of [{ regime: 'absence' }, { quality: ['missing'] }, { fireplaceActive: true }]) {
+    const samples = dailyNormalHistory(19, 2);
+    let reference = null;
+    for (let i = 0; i < samples.length; i++) reference = inferComfortReference(reference, samples.slice(0, i + 1), { now: samples[i].timestamp });
+    assert.ok(reference.adaptation.evidenceHours >= 24);
+    assert.equal(reference.targetC, 21);
+    samples.push({ ...samples.at(-1), timestamp: iso(start + samples.length * HOUR), ...barrier });
+    reference = inferComfortReference(reference, samples, { now: samples.at(-1).timestamp });
+    assert.equal(reference.targetC, 21);
+    assert.equal(reference.adaptation, null);
+  }
+});
+
+test('comfort adaptation is independent of historical page boundaries and survives restart', () => {
+  const samples = dailyNormalHistory(19, 5), now = samples.at(-1).timestamp;
+  const batch = updateLearning(null, samples, { now });
+  let single = null;
+  for (const sample of samples) single = updateLearning(single, [sample], { now: sample.timestamp });
+  assert.deepEqual(batch.comfortReference, single.comfortReference);
+  let paged = updateLearning(null, samples.slice(0, 78), { now });
+  paged = restoreCheckpoint(JSON.stringify(paged), { now });
+  paged = updateLearning(paged, samples.slice(78), { now });
+  assert.deepEqual(paged.comfortReference, single.comfortReference);
+});
+
+test('old plateau evidence expires after a long gap and held old rows cannot earn fresh credit', () => {
+  const samples = dailyNormalHistory(19, 2);
+  let reference = null;
+  for (let i = 0; i < samples.length; i++) reference = inferComfortReference(reference, samples.slice(0, i + 1), { now: samples[i].timestamp });
+  const oldEnd = Date.parse(samples.at(-1).timestamp);
+  assert.deepEqual(inferComfortReference(reference, samples, { now: oldEnd + 24 * HOUR }), reference);
+  const resumed = plateau(9, 19, oldEnd + 72 * HOUR);
+  reference = inferComfortReference(reference, [...samples, ...resumed], { now: resumed.at(-1).timestamp });
+  assert.equal(reference.targetC, 21);
+  assert.equal(reference.adaptation.evidenceHours, 6);
+  assert.ok(Date.parse(reference.adaptation.firstWindowStart) > oldEnd);
 });
 
 test('a passive summer plateau cannot establish or inflate the household heating reference', () => {
@@ -152,7 +231,7 @@ test('a passive summer plateau cannot establish or inflate the household heating
 
 test('cool-weather inference records its provisional heat-demand evidence without requiring an energy meter', () => {
   const reference = inferComfortReference(null, plateau(), { now: start + 29 * HOUR });
-  assert.equal(reference.version, 2);
+  assert.equal(reference.version, 3);
   assert.equal(reference.heatingEvidence.kind, 'sustained-cool-weather-proxy');
   assert.equal(reference.confidence, 'provisional-heating-demand-baseline');
   assert.ok(reference.heatingEvidence.meanOutdoorC <= 10);

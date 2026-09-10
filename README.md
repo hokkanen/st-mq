@@ -41,6 +41,9 @@ property import, plus one total-energy increment for TeslaMate portable charging
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
 [adaptive recording and migration](docs/recording.md), including SmartThings and MQTT temperature sensors.
+See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
+Upstairs Hallway, Downstairs and Bedroom average, replacements and moves, and
+comfort learning after adjustments to floor circulation thermostats.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults

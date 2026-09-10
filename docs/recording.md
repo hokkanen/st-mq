@@ -584,9 +584,21 @@ This does not expand the storage contract to full control-choice replay.
 ## SmartThings, MQTT temperature sensors and interface
 
 SmartThings indoor and garage acquisition is available in both `providers` and
-`mqtt` input modes. Set `smartthings.token`, `smartthings.inside_temp_dev_id` and/or
-`smartthings.garage_temp_dev_id` in the private options file or add-on configuration.
-Existing configured credentials and device IDs are reused. Each configured sensor
+`mqtt` input modes. Set `smartthings.token` and the relevant device fields in the
+private options file or add-on configuration:
+
+| SmartThings field | Recorded signal | Display name |
+| --- | --- | --- |
+| `inside_temp_dev_id` | `indoor_temperature` | Upstairs Hallway |
+| `downstairs_temp_dev_id` | `downstairs_temperature` | Downstairs |
+| `bedroom_temp_dev_id` | `bedroom_temperature` | Bedroom |
+| `garage_temp_dev_id` | `garage_temperature` | Garage |
+
+The two additional indoor sensors are optional. Empty device fields generate no
+requests or artificial missing observations. All indoor locations are recorded
+separately, and an individual sensor failure does not replace the other readings.
+The existing indoor signal and imported CSV meaning remain unchanged; only its
+display name becomes Upstairs Hallway. Each configured sensor
 is queried every five minutes through the read-only
 [device status API](https://developer.smartthings.com/docs/service-integrations/query-and-list-devices).
 Source timestamps, units and quality flags are preserved; polling unchanged device
@@ -603,13 +615,16 @@ For example, these invented topic names illustrate the configuration shape:
 {
   "mqtt": {
     "indoor_temperature_topic": "example/sensors/indoor",
+    "downstairs_temperature_topic": "example/sensors/downstairs",
+    "bedroom_temperature_topic": "example/sensors/bedroom",
     "garage_temperature_topic": "example/sensors/garage"
   }
 }
 ```
 
 Standalone options also accept `mqtt.temperature_topics` mapping the signal names
-`indoor_temperature` and `garage_temperature` to topics. The payload can be a JSON
+`indoor_temperature`, `downstairs_temperature`, `bedroom_temperature` and
+`garage_temperature` to topics. The payload can be a JSON
 number in Celsius, or an object such as
 `{"value":12.5,"unit":"C","timestamp":"2026-01-01T12:00:00Z"}`. Units `C`, `degC`,
 `°C` and `F` are accepted; a supplied timestamp must include its time zone or be
@@ -620,6 +635,22 @@ Broker disconnection records explicit unavailable transitions for configured
 temperature sensors and included H66 signals. Reconnection alone does not recover
 their availability; each signal requires a usable new publication. Subscription
 failures are recorded separately from unchanged sensor values.
+
+The model's indoor temperature defaults to an equal average of Upstairs Hallway
+and each configured extra indoor sensor. Membership is fixed by configuration,
+including sensors temporarily missing or stale. It does not change when one
+sensor stops reporting. The garage is excluded. Optional
+`controller.indoor_sensor_weights` assigns nonnegative weights by indoor signal
+name. Its default empty object `{}` selects the automatic equal average;
+omitting the whole setting has the same meaning. Within a nonempty map, omitted
+or zero-weight sensors do not contribute. At least one weight in that map must
+be positive, and positive weights require the relevant extra sensor to be
+configured. For example, with both extra sensors configured,
+`{"indoor_temperature":1,"downstairs_temperature":2,"bedroom_temperature":2}`
+gives Upstairs Hallway one fifth of the contribution. Weights are normalized and
+saved with learning configuration using logical signal names, without private
+device IDs or MQTT topics. Adding or changing contributing sensors changes the
+measurement setup; it must establish the corresponding learning boundary.
 
 The left drawer lists historical axes in temperature, heating, hot-water,
 ground-loop, settings, equipment, runtime, electricity, weather and learning groups.

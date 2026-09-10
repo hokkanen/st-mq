@@ -39,10 +39,16 @@
     </form>
     <p id="error" role="alert" hidden></p>
     <section class="metrics" aria-label="Latest recorded home conditions" data-snapshot-content>
-      <article><p>INDOOR</p><strong id="indoor">—</strong><small id="indoor-age">Waiting for readings</small></article>
+      <article><p>INDOOR AVERAGE</p><strong id="indoor">—</strong><small id="indoor-age">Waiting for readings</small></article>
       <article><p>OUTDOOR</p><strong id="outdoor">—</strong><small id="outdoor-age">Waiting for readings</small></article>
       <article><p id="requested-label">HEATING REQUEST</p><strong id="requested">—</strong><small id="actual">Actual state unknown</small></article>
       <article><p id="price-label">ALL-IN PRICE</p><strong id="price">—</strong><small id="price-unit">Waiting for prices and contract rates</small></article>
+    </section>
+
+    <section class="indoor-readings" aria-label="Indoor temperature sensors" data-snapshot-content>
+      <article><p>Upstairs Hallway</p><strong id="upstairs">—</strong><small id="upstairs-age">Waiting for readings</small></article>
+      <article><p>Downstairs</p><strong id="downstairs">—</strong><small id="downstairs-age">Waiting for readings</small></article>
+      <article><p>Bedroom</p><strong id="bedroom">—</strong><small id="bedroom-age">Waiting for readings</small></article>
     </section>
 
     <section class="panel history-panel" aria-labelledby="history-title" data-snapshot-content>
@@ -174,6 +180,24 @@
               <small id="drop-note">When you are home</small>
             </div>
           </div>
+          <details id="sensor-change-details" class="dashboard-disclosure sensor-change-details">
+            <summary><span>Sensor changed</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
+            <div id="sensor-change-content">
+              <p id="sensor-change-help" class="muted">Record a replacement, move or calibration so learning can account for the new measurement. This records the change now.</p>
+              <form id="sensor-change-form" class="sensor-change-form" aria-describedby="sensor-change-help">
+                <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
+                <label for="sensor-change-reason">What changed?<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">Moved</option><option value="calibration">Calibration changed</option><option value="other">Other change</option></select></label>
+                <button id="sensor-change-submit" type="submit" disabled>Sensor changed</button>
+              </form>
+              <p id="sensor-change-message" class="temporary-status" role="status" aria-live="polite"></p>
+              <button id="sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+              <p id="sensor-change-availability" class="muted" role="status"></p>
+              <div class="sensor-change-history-heading"><h3>Recent changes</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
+              <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
+              <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Recent sensor changes"></ul>
+              <p id="sensor-change-empty" class="muted">No sensor changes recorded.</p>
+            </div>
+          </details>
           <div class="equipment-overview">
             <div class="equipment-heading"><h3>Heat pump</h3><span id="h66-status" class="muted">Not connected</span></div>
             <div id="home-h66-summary" class="home-h66-summary"></div>

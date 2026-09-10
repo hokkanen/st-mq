@@ -811,7 +811,7 @@ test('live charts recover old unchanged readings and expose original timestamps 
   const store = new Store(':memory:');
   try {
     const recordedAt = from - 2 * 24 * HOUR;
-    for (const [signal, value] of [['indoor_temperature', 21], ['garage_temperature', 12], ['outdoor_temperature', -4]])
+    for (const [signal, value] of [['indoor_temperature', 21], ['downstairs_temperature', 20], ['bedroom_temperature', 19], ['garage_temperature', 12], ['outdoor_temperature', -4]])
       put(store, signal, value, recordedAt);
     for (const phase of [1, 2, 3]) {
       put(store, `property_current_l${phase}`, phase, recordedAt);
@@ -825,7 +825,7 @@ test('live charts recover old unchanged readings and expose original timestamps 
     for (const left of ['power', 'phases', 'integral']) {
       const result = get(store, { left });
       const projected = historySeriesAt(result, now);
-      for (const key of ['indoor_temperature', 'garage_temperature', 'outdoor_temperature',
+      for (const key of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature',
         ...(left === 'power' ? ['property_power', 'charger_power'] : left === 'phases'
           ? ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)) : ['heating_integral'])]) {
         assert.equal(projected[key][0].x, from, `${key} starts at the chosen day`);
@@ -838,6 +838,26 @@ test('live charts recover old unchanged readings and expose original timestamps 
     }
     assert.equal(store.db.prepare('SELECT count(*) AS total FROM observations').get().total, count, 'Projection never appends observations');
     assert.deepEqual(get(store, { now: now + 3 * 24 * HOUR }).series.indoor_temperature, [], 'Historical selections stay unchanged');
+  } finally { store.close(); }
+});
+
+test('raw indoor location history preserves independent values and missing optional sensors', () => {
+  const store = new Store(':memory:');
+  try {
+    put(store, 'indoor_temperature', 23, from);
+    let result = get(store);
+    assert.deepEqual(result.series.downstairs_temperature, []);
+    assert.deepEqual(result.series.bedroom_temperature, []);
+    put(store, 'downstairs_temperature', 20, from);
+    put(store, 'bedroom_temperature', 19, from);
+    put(store, 'downstairs_temperature', null, from + HOUR, { quality: ['missing'] });
+    result = get(store);
+    assert.equal(result.series.indoor_temperature[0].y, 23);
+    assert.equal(result.series.downstairs_temperature[0].y, 20);
+    assert.equal(result.series.bedroom_temperature[0].y, 19);
+    assert(result.series.downstairs_temperature.some(point => point.y === null));
+    assert.equal(result.meta.lastReadings.downstairs_temperature.y, null);
+    assert.equal(result.meta.lastReadings.bedroom_temperature.y, 19);
   } finally { store.close(); }
 });
 

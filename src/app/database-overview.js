@@ -76,7 +76,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   // The CASE expression has a bounded number of groups even when an imported
   // database contains arbitrary source or signal names. Imported rows always
   // belong to the import inventory, including incomplete/failed imports.
-  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...ENERGY_SIGNALS, 'garage_temperature', 'auxiliary_power'];
+  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...ENERGY_SIGNALS, 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'auxiliary_power'];
   const observationCategory = `CASE
     WHEN source='csv:stmq' THEN CASE ${importedSignals.stmq.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`stmq:${signal}`)}`).join(' ')} ELSE 'import-other' END
     WHEN source='csv:easee' THEN CASE ${importedSignals.easee.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`easee:${signal}`)}`).join(' ')} ELSE 'import-other' END

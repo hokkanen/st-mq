@@ -86,6 +86,40 @@ test('coupled preheat and recovery do not redefine the achieved normal-temperatu
   assert.equal(cp.baselineC, 21);
 });
 
+test('ordered adaptive batches preserve gradual comfort adaptation and individual room references', () => {
+  const samples = Array.from({ length: 174 }, (_, i) => {
+    const dayHour = (i - 30) % 24;
+    const phase = i < 30 || dayHour >= 6 ? 'normal' : dayHour < 2 ? 'preheat' : dayHour < 4 ? 'reduction' : 'recovery';
+    const downstairs = i < 30 ? 22 : 20, bedroom = i < 30 ? 20 : 18;
+    return sample(i, { phase, indoorC: (downstairs + bedroom) / 2, measurementEpochAt: start,
+      indoorSensors: { downstairs_temperature: { value: downstairs, weight: 0.5 },
+        bedroom_temperature: { value: bedroom, weight: 0.5 }, indoor_temperature: { value: 25, weight: 0 } } });
+  });
+  let single = null;
+  for (const current of samples) single = updateAdaptiveLearning(single, current, { now: current.timestamp });
+  let batched = updateAdaptiveLearningBatch(null, samples.slice(0, 78), { now: samples.at(-1).timestamp });
+  batched = updateAdaptiveLearningBatch(JSON.stringify(batched), samples.slice(78), { now: samples.at(-1).timestamp });
+  assert.deepEqual(batched.comfortReference, single.comfortReference);
+  assert.deepEqual(batched.sensorComfortReferences, single.sensorComfortReferences);
+  assert.ok(single.baselineC < 20.6 && single.baselineC > 20);
+  assert.equal(single.sensorComfortReferences.downstairs_temperature.targetC - single.sensorComfortReferences.bedroom_temperature.targetC, 2);
+  assert.equal(single.sensorComfortReferences.indoor_temperature, undefined, 'Zero-weight sensors do not define occupied room limits');
+  assert.deepEqual(single.samples.at(-1).indoorSensors, samples.at(-1).indoorSensors);
+  assert.equal(single.samples.at(-1).measurementEpochAt, start);
+  const invalid = updateAdaptiveLearning(single, sample(174, { ...samples.at(-1), timestamp: start + 174 * HOUR, quality: ['missing'] }),
+    { now: start + 174 * HOUR });
+  assert.equal(invalid.samples.at(-1).valid, false);
+  assert.equal(invalid.samples.at(-1).measurementEpochAt, start);
+  assert.deepEqual(invalid.samples.at(-1).indoorSensors, samples.at(-1).indoorSensors);
+  assert.equal(invalid.sensorComfortReferences.bedroom_temperature.adaptation, null);
+  const missingBedroom = updateAdaptiveLearning(single, { ...samples.at(-1), timestamp: start + 174 * HOUR,
+    indoorSensors: { ...samples.at(-1).indoorSensors, bedroom_temperature: { value: null, weight: 0.5 } } },
+  { now: start + 174 * HOUR });
+  assert.equal(missingBedroom.sensorComfortReferences.bedroom_temperature.targetC, single.sensorComfortReferences.bedroom_temperature.targetC);
+  assert.equal(missingBedroom.sensorComfortReferences.bedroom_temperature.adaptation, null);
+  assert.ok(missingBedroom.sensorComfortReferences.downstairs_temperature.adaptation);
+});
+
 test('episode calibration retains attribution and does not turn estimated or incomplete cycles into measured evidence', () => {
   const cp = updateAdaptiveLearning(null, sample(0), { now: start });
   const episode = { id: 'synthetic-cycle', endedAt: start + 10 * HOUR, complete: true, recoveryComplete: true,

@@ -57,6 +57,36 @@ test('SmartThings indoor and garage selection excludes the configured outdoor de
   assert.equal(calls.length, 2);
 });
 
+test('three configured indoor SmartThings sensors retain independent readings and failure quality', async () => {
+  const calls = [];
+  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, outside_temp_dev_id: '',
+    downstairs_temp_dev_id: 'invented/downstairs', bedroom_temp_dev_id: 'invented-bedroom' } }, http: { async json(url) {
+    calls.push(url);
+    if (url.includes('invented-bedroom')) throw httpError(503);
+    const payload = structuredClone(fixtures.smartthingsC);
+    payload.components.main.temperatureMeasurement.temperature.value = url.includes('downstairs') ? 19.25 : 22.5;
+    return payload;
+  } } });
+  const rows = await providers.temperatures({ now });
+  assert.deepEqual(rows.map(row => [row.signal, row.value]), [
+    ['indoor_temperature', 22.5], ['downstairs_temperature', 19.25], ['bedroom_temperature', null],
+  ]);
+  assert.equal(calls.length, 3);
+  assert(calls.some(url => url.includes('invented%2Fdownstairs')));
+  assert(rows[2].quality.includes('http_status_503'));
+  assert.equal(rows[0].quality.includes('provider_error'), false);
+  assert.equal(rows[1].quality.includes('provider_error'), false);
+});
+
+test('absent optional SmartThings indoor sensors produce no requests or placeholder observations', async () => {
+  let calls = 0;
+  const providers = createDeviceProviders({ connections: { smartthings: { token: 'synthetic', inside_temp_dev_id: 'invented-room',
+    downstairs_temp_dev_id: '', bedroom_temp_dev_id: ' ' } }, http: { async json() { calls++; return fixtures.smartthingsC; } } });
+  const rows = await providers.temperatures({ now });
+  assert.equal(calls, 1);
+  assert.deepEqual(rows.map(row => row.signal), ['indoor_temperature']);
+});
+
 test('SmartThings garage outage preserves indoor observations and sanitized failure quality', async () => {
   const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, garage_temp_dev_id: 'garage-device' } }, http: { async json(url) {
     if (url.includes('garage')) throw httpError(503);

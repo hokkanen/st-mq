@@ -354,16 +354,16 @@ test('new algorithm starts its own journal while older entries remain explicitly
   assert.equal(replayLearningJournal(store, 'mqtt').algorithmVersion, LEARNING_ALGORITHM);
 });
 
-test('fireplace learning semantics establish a v5 seed and replay without reinterpreting the v4 archive', t => {
+test('sensor learning semantics establish a v6 seed and replay without reinterpreting the v5 archive', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   store.appendLearningJournal('mqtt', { kind: 'context', at: start - HOUR,
-    algorithmVersion: 'committed-house-v4-fireplace', key: 'invented-v4-archive',
+    algorithmVersion: 'committed-house-v5-fireplace', key: 'invented-v5-archive',
     payload: { value: { timestamp: start - HOUR }, configuration: {}, seed: null } });
-  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v4-fireplace'").get();
+  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v5-fireplace'").get();
   const model = initialAdaptiveModel(); model.parameters.fireplaceCPerKg = 0.23;
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start }, { config, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v5-fireplace');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v6-sensors');
   assert.equal(entry.payload.seed.model.parameters.fireplaceCPerKg, 0.23);
   const checkpoint = replayLearningJournal(store, 'mqtt');
   assert.equal(checkpoint.model.parameters.fireplaceCPerKg, 0.23);

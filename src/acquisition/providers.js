@@ -190,7 +190,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   };
   const smartthings = connections.smartthings ?? {}, easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
   const readTemperatures = typeof temperatureProvider === 'function' ? temperatureProvider
-    : args => devices.temperatures({ ...args, signals: ['indoor_temperature', 'garage_temperature'] });
+    : args => devices.temperatures({ ...args, signals: ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature'] });
   const integrationOptions = { maxAgeMs: cadence.electricityMaxAgeMs ?? 5 * MINUTE,
     maxTelemetryAgeMs: cadence.electricityTelemetryMaxAgeMs ?? 17 * MINUTE,
     maxGapMs: cadence.electricityMaxGapMs ?? MINUTE };
@@ -201,7 +201,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     // SmartThings supplies indoor/garage readings alongside MQTT. Outdoor
     // acquisition keeps the H66 → FMI → Open-Meteo selection.
     temperatures: { enabled: typeof temperatureProvider === 'function'
-        || ['inside_temp_dev_id', 'garage_temp_dev_id'].some(key => present(smartthings[key])),
+        || ['inside_temp_dev_id', 'downstairs_temp_dev_id', 'bedroom_temp_dev_id', 'garage_temp_dev_id'].some(key => present(smartthings[key])),
       period: 5 * MINUTE, run: readTemperatures },
     easee: { enabled: ['charger_id', 'equalizer_id'].some(key => present(easee[key])),
       period: cadence.easeeIntervalMs ?? 15_000, run: args => (devices.electricity ?? devices.easee).call(devices, args) },

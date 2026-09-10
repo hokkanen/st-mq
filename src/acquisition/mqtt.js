@@ -7,7 +7,7 @@ import { createTeslaMateCapture } from './teslamate.js';
 // Alternative indoor/garage sensors publish a number in Celsius, or
 // {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.
 export function decodeMqttTemperature({ signal, payload, receivedAt, retained = false }) {
-  if (!['indoor_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)) return null;
+  if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)) return null;
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
   if (text.length > 512) return null;
   let input;
@@ -48,7 +48,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   }
   const { address, user: username, pw: password } = config.connections.mqtt;
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
-    .filter(([signal, topic]) => ['indoor_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
+    .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic));
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;

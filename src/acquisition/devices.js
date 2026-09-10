@@ -15,6 +15,8 @@ import { createHash } from 'node:crypto';
 
 const TEMPERATURES = [
   ['inside_temp_dev_id', 'indoor_temperature'],
+  ['downstairs_temp_dev_id', 'downstairs_temperature'],
+  ['bedroom_temp_dev_id', 'bedroom_temperature'],
   ['garage_temp_dev_id', 'garage_temperature'],
   ['outside_temp_dev_id', 'outdoor_temperature'],
 ];
@@ -90,7 +92,7 @@ function temperatureObservation(payload, device, signal, now) {
   if (input === null) quality.push(attribute?.value === null || attribute?.value === undefined ? 'missing' : 'invalid_numeric');
   if (value === null) quality.push('missing');
   if (value !== null && (value < -60 || value > 70)) quality.push('implausible_temperature');
-  if (value === 0 && signal === 'indoor_temperature') quality.push('suspect_zero_indoor');
+  if (value === 0 && ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].includes(signal)) quality.push('suspect_zero_indoor');
   return { source: 'smartthings', device, signal, value, unit: 'degC', sourceTime: at, receivedAt: now,
     quality: [...new Set(quality)], raw: { attribute: 'temperature', reportedValue: input,
       reportedUnit: ['C', 'F'].includes(unit) ? unit : null, timestamp: at } };

@@ -17,7 +17,7 @@ test('calendar controls use Finnish dates across UTC midnight, leap days and bot
 });
 
 test('left axis groups remain exclusive while all shared temperatures and prices survive every choice', () => {
-  const shared = ['indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
+  const shared = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
   for (const [left, expected] of [['power', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']],
     ...['learning_profit','learning_aux_profit','learning_recovery_error','learning_indoor_temperature'].map(name => [name, [name]]), ['solar_radiation', ['solar_radiation', 'solar_forecast']]]) {
     const datasets = historyDatasets({}, left);
@@ -52,6 +52,16 @@ test('axis ticks stay on whole Finnish hours and calendar days across DST with e
   assert.ok(ticks.length <= 5);
   assert.ok(ticks.every(tick => hours.format(tick.value) === '00:00'));
   assert.deepEqual(ticks.map(tick => finnishDate(tick.value)), ['2026-03-25', '2026-03-28', '2026-03-31', '2026-04-03', '2026-04-06']);
+});
+
+test('indoor locations retain separate chart identities, labels, colours and visibility', () => {
+  const series = { indoor_temperature: [{ x: 1, y: 23 }], downstairs_temperature: [{ x: 1, y: 20 }], bedroom_temperature: [{ x: 1, y: 19 }] };
+  const datasets = historyDatasets(series, 'power', { downstairs_temperature: false });
+  const indoors = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].map(key => datasets.find(row => row.key === key));
+  assert.deepEqual(indoors.map(row => row.label), ['Upstairs Hallway', 'Downstairs', 'Bedroom']);
+  assert.deepEqual(indoors.map(row => row.data[0].y), [23, 20, 19]);
+  assert.deepEqual(indoors.map(row => row.hidden), [false, true, false]);
+  assert.equal(new Set(indoors.map(row => row.borderColor)).size, 3);
 });
 
 test('charger fills and shared outdoor visibility retain exact missing and negative values', () => {

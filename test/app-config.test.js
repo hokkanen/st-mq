@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration } from '../src/app/config.js';
+import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration } from '../src/app/config.js';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,16 +48,59 @@ test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/names
   assert.equal(config.connections.teslamate.enabled, true);
   assert.equal(config.connections.teslamate.homeGeofence, 'Home');
 });
-test('replacement indoor and garage MQTT topics are exact and keep private configuration unchanged',t=>{
+test('all indoor and garage MQTT topics are exact and keep private configuration unchanged',t=>{
   const directory=mkdtempSync(join(tmpdir(),'stmq-temperature-config-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));
   const path=join(directory,'options.json');
-  const original=JSON.stringify({mqtt:{address:'mqtt://invented.invalid',indoor_temperature_topic:'invented/indoor',garage_temperature_topic:'invented/garage'}});
+  const original=JSON.stringify({mqtt:{address:'mqtt://invented.invalid',indoor_temperature_topic:'invented/indoor',
+    downstairs_temperature_topic:'invented/downstairs',bedroom_temperature_topic:'invented/bedroom',garage_temperature_topic:'invented/garage'}});
   writeFileSync(path,original);
   const config=loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory);
-  assert.deepEqual(config.connections.mqtt.temperatureTopics,{indoor_temperature:'invented/indoor',garage_temperature:'invented/garage'});
+  assert.deepEqual(config.connections.mqtt.temperatureTopics,{indoor_temperature:'invented/indoor',
+    downstairs_temperature:'invented/downstairs',bedroom_temperature:'invented/bedroom',garage_temperature:'invented/garage'});
+  assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
   assert.equal(readFileSync(path,'utf8'),original);
   writeFileSync(path,JSON.stringify({mqtt:{indoor_temperature_topic:'invented/#'}}));
   assert.throws(()=>loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic/);
+});
+test('indoor learning weights have stable configured membership, optional explicit preferences and no private identifiers', () => {
+  assert.deepEqual(indoorSensorWeightsConfiguration(), { indoor_temperature: 1 });
+  const connections = { smartthings: { downstairs_temp_dev_id: 'invented-downstairs' },
+    mqtt: { temperatureTopics: { bedroom_temperature: 'invented/bedroom' } } };
+  const automatic = indoorSensorWeightsConfiguration(undefined, connections);
+  assert.deepEqual(automatic, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
+  assert.deepEqual(indoorSensorWeightsConfiguration({}, connections), automatic);
+  assert.equal(JSON.stringify(automatic).includes('invented'), false);
+  assert.deepEqual(indoorSensorWeightsConfiguration({ bedroom_temperature: 3, indoor_temperature: 0, downstairs_temperature: 1 }, connections),
+    { downstairs_temperature: 0.25, bedroom_temperature: 0.75 });
+  for (const invalid of [{ outdoor_temperature: 1 }, { indoor_temperature: -1 }, { indoor_temperature: '1' },
+    { indoor_temperature: Infinity }, { indoor_temperature: 0 },
+    { indoor_temperature: 0, downstairs_temperature: 0, bedroom_temperature: 0 }, [], null])
+    assert.throws(() => indoorSensorWeightsConfiguration(invalid, connections), /Indoor sensor weights/);
+  assert.throws(() => indoorSensorWeightsConfiguration({ downstairs_temperature: 1 }), /configured/);
+});
+test('add-on default indoor weights include the required nested object and retain automatic sensor membership', () => {
+  const addon = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  // Supervisor AppOptions._check_missing_options requires dictionary fields
+  // even when all their children are optional; the public default must exist.
+  assert.deepEqual(addon.options.controller.indoor_sensor_weights, {});
+  assert(Object.values(addon.schema.controller.indoor_sensor_weights).every(type => type.endsWith('?')));
+  assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights), { indoor_temperature: 1 });
+  assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights,
+    { smartthings: { downstairs_temp_dev_id: 'invented-downstairs', bedroom_temp_dev_id: 'invented-bedroom' } }),
+  { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
+});
+test('explicit indoor weights load through the public schema and survive disabled replica acquisition', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-indoor-weight-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  writeFileSync(path, JSON.stringify({ controller: { input: 'providers', indoor_sensor_weights: {
+    indoor_temperature: 1, downstairs_temperature: 2, bedroom_temperature: 2,
+  } }, smartthings: { downstairs_temp_dev_id: 'invented-downstairs', bedroom_temp_dev_id: 'invented-bedroom' } }));
+  for (const role of ['primary', 'replica']) {
+    const config = loadConfig({ STMQ_CONFIG: path, STMQ_ROLE: role }, directory);
+    assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 0.2, downstairs_temperature: 0.4, bedroom_temperature: 0.4 });
+    if (role === 'replica') assert.deepEqual(config.connections, {});
+  }
 });
 test('legacy write gate requires the exact separate acknowledgement', () => {
   for (const value of [undefined, '', 'true', '1']) assert.throws(() => requireLegacyLive({ STMQ_LEGACY_LIVE: value }));
@@ -82,7 +125,8 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
-  const options = { smartthings: { token: 'synthetic', inside_temp_dev_id: 'fixture-room', garage_temp_dev_id: 'fixture-garage' },
+  const options = { smartthings: { token: 'synthetic', inside_temp_dev_id: 'fixture-room', downstairs_temp_dev_id: 'fixture-downstairs',
+    bedroom_temp_dev_id: 'fixture-bedroom', garage_temp_dev_id: 'fixture-garage' },
     mqtt: { address: 'mqtt://invented.invalid', garage_temperature_topic: 'invented/garage' },
     geoloc: { latitude: '60', longitude: '25', country_code: 'fi' } };
   for (const contents of [options, { options }]) for (const input of ['providers', 'mqtt']) {
@@ -92,6 +136,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
     assert.equal(config.input, input);
     assert.equal(config.deviceId, undefined);
     assert.deepEqual(config.connections.smartthings, options.smartthings);
+    assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
     assert.deepEqual(config.connections.mqtt.temperatureTopics, { garage_temperature: 'invented/garage' });
     assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
     assert.equal(config.settings.comfort.targetC, null);
@@ -223,8 +268,8 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.options.controller.max_drop_c, 1);
   assert.equal(addon.options.easee.charger_id, '');
   assert.equal(addon.schema.easee.charger_id, 'str?');
-  assert.deepEqual(addon.options.smartthings, { token: '', inside_temp_dev_id: '', garage_temp_dev_id: '' });
-  assert.deepEqual(addon.schema.smartthings, { token: 'password?', inside_temp_dev_id: 'str?', garage_temp_dev_id: 'str?' });
+  assert.deepEqual(addon.options.smartthings, { token: '', inside_temp_dev_id: '', downstairs_temp_dev_id: '', bedroom_temp_dev_id: '', garage_temp_dev_id: '' });
+  assert.deepEqual(addon.schema.smartthings, { token: 'password?', inside_temp_dev_id: 'str?', downstairs_temp_dev_id: 'str?', bedroom_temp_dev_id: 'str?', garage_temp_dev_id: 'str?' });
 });
 
 test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {

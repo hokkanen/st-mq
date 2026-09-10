@@ -118,21 +118,24 @@ test('normal configuration polls SmartThings indoor and garage every five minute
   } finally { await providers.close(); }
 });
 
-test('a garage sensor alone enables SmartThings while an outdoor-only configuration stays disabled', async t => {
-  for (const [key, enabled] of [['garage_temp_dev_id', true], ['outside_temp_dev_id', false]]) {
+test('any indoor or garage sensor alone enables SmartThings while an outdoor-only configuration stays disabled', async t => {
+  for (const [key, signal, enabled] of [['downstairs_temp_dev_id', 'downstairs_temperature', true],
+    ['bedroom_temp_dev_id', 'bedroom_temperature', true], ['garage_temp_dev_id', 'garage_temperature', true],
+    ['outside_temp_dev_id', 'outdoor_temperature', false]]) {
     await t.test(key, async t => {
       const f = fixture(t);
       f.config.connections = { smartthings: { token: 'synthetic-smartthings-token', [key]: 'invented-sensor' } };
       let calls = 0;
       f.options.devices.temperatures = async ({ signals }) => {
         calls++;
-        assert.deepEqual(signals, ['indoor_temperature', 'garage_temperature']);
-        return f.temperature().map(row => ({ ...row, signal: 'garage_temperature' }));
+        assert.deepEqual(signals, ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature']);
+        return f.temperature().map(row => ({ ...row, signal }));
       };
       const providers = startProviders(f.options);
       try {
         await providers.runDue();
         assert.equal(calls, enabled ? 1 : 0);
+        assert.equal(f.engine.latest[signal]?.value, enabled ? 21.1 : undefined);
         assert.equal(f.store.getState('providers:health').temperatures.status, enabled ? 'ok' : 'not-configured');
       } finally { await providers.close(); }
     });
