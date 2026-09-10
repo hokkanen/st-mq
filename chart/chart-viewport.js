@@ -44,9 +44,14 @@ function midnight(date) {
   return at - Number(localHour.format(at)) * hour;
 }
 
-function alignedTicks(view, unit, step, limit) {
+function alignedTicks(view, unit, step, limit, minimumEdgeGap) {
   const result = [];
-  function append(at) { if (at > view.from && at < view.to) result.push(at); }
+  function append(at) {
+    // Exact visible endpoints are added separately. Calendar alignment can put
+    // another tick almost on top of one (for example July 1 beside July 2).
+    // Keep a full target interval clear at each edge, including narrow views.
+    if (at > view.from && at < view.to && at - view.from >= minimumEdgeGap && view.to - at >= minimumEdgeGap) result.push(at);
+  }
   if (unit === 'minute') {
     for (let at = Math.floor(view.from / (step * minute)) * step * minute; at < view.to; at += step * minute) {
       append(at); if (result.length > limit) break;
@@ -96,7 +101,7 @@ export function viewportTicks(view, maxTicks = 9) {
   ];
   for (const [unit, step, duration] of steps) {
     if (duration < wanted) continue;
-    const interior = alignedTicks(view, unit, step, count - 2);
+    const interior = alignedTicks(view, unit, step, count - 2, wanted);
     if (interior.length <= count - 2) return [view.from, ...interior, view.to].map(value => ({ value }));
   }
   return [{ value: view.from }, { value: view.to }];

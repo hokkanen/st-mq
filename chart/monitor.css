@@ -261,7 +261,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .history-panel[data-fullscreen="true"] .mode-history { flex: none; margin: 2px 0; }
 .history-panel[data-fullscreen="true"] .mode-history p { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .history-panel[data-fullscreen="true"] .mode-track { height: 12px; }
-.history-panel[data-fullscreen="true"] .chart-overview { display: block; flex: none; margin-top: 4px; }
+.history-panel[data-fullscreen="true"] .chart-overview { display: block; flex: none; margin: 0 0 6px; }
 .history-panel[data-fullscreen="true"] .chart-legend { flex: none; max-height: 74px; overflow: auto; padding: 3px 0 0; scrollbar-color: var(--muted) var(--surface); scrollbar-width: thin; }
 .history-panel[data-fullscreen="true"]:has(#history[data-ready="false"]) #chart-status { display: block; flex: none; margin: 3px 0; }
 @media (max-width: 1000px) and (orientation: landscape) {

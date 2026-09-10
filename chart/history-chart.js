@@ -227,12 +227,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (navigation.moving) { if (!viewOnly) pendingFullRender = true; return; }
     viewOnly = viewOnly && !pendingFullRender; pendingFullRender = false;
     const view = navigation.view ?? overview.range;
-    payload = navigation.fullscreen && detail && detail.range.from <= view.from && detail.range.to >= view.to ? detail : overview;
+    const exploring = navigation.fullscreen && (view.from > overview.range.from || view.to < overview.range.to);
+    payload = exploring && detail && detail.range.from <= view.from && detail.range.to >= view.to ? detail : overview;
     const started = performance.now();
     // A theme or legend change can occur during a request. Keep the previous
     // graph's labels and axes attached to its own data until the new data arrives.
     const plot = plottedSelection;
-    const exploring = navigation.fullscreen || view.from !== overview.range.from || view.to !== overview.range.to;
+    // Fitting the complete selection keeps the same overview as the normal
+    // chart. A reduced budget from earlier zooms must not erase its patterns.
     // Reduce original components before stacking, so cumulative fills continue
     // to share aligned edges and their tooltips retain each load's own value.
     const series = exploring ? Object.fromEntries(Object.entries(payload.series).map(([key, points]) => [key, reduceSeries(points, view, pointBudget)])) : payload.series;
@@ -242,16 +244,20 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
     for (const dataset of datasets) if (dataset.kind === 'fill') dataset.backgroundColor = color(dataset.backgroundColor).alpha(0.25).rgbString();
     const leftTitle = leftTitles[plot.left];
+    const span = view.to - view.from;
+    // Reserve space for both value axes and for the widest date format. A
+    // phone cannot fit the same number of year-bearing labels as short dates.
+    const tickWidth = span > 180 * 86_400_000 ? 110 : span > 3 * 86_400_000 ? 75 : 65;
+    const tickLimit = Math.max(2, Math.min(9, Math.floor((canvas.clientWidth - 120) / tickWidth) + 1));
     const scales = {
       x: {
         type: 'linear', min: view.from, max: view.to,
-        afterBuildTicks: scale => { scale.ticks = exploring ? viewportTicks(navigation.view, canvas.clientWidth < 600 ? 5 : 9) : calendarTicks(overview.range, canvas.clientWidth < 600 ? 5 : 9); },
+        afterBuildTicks: scale => { scale.ticks = navigation.fullscreen ? viewportTicks(view, tickLimit) : calendarTicks(overview.range, tickLimit); },
         grid: { color: palette.grid }, border: { color: palette.border },
-        ticks: { color: palette.muted, autoSkip: false, maxTicksLimit: canvas.clientWidth < 600 ? 5 : 9, maxRotation: 0, callback: value => {
+        ticks: { color: palette.muted, autoSkip: false, maxTicksLimit: tickLimit, maxRotation: 0, callback: value => {
           if (value === overview.range.to && plot.startDate === plot.endDate) return '24:00';
-          const span = navigation.view.to - navigation.view.from;
           return span > 180 * 86_400_000 ? datedYear.format(value) : span > 3 * 86_400_000 ? shortDate.format(value)
-            : finnishDate(navigation.view.from) === finnishDate(navigation.view.to - 1) ? clock.format(value) : [shortDate.format(value), clock.format(value)];
+            : finnishDate(view.from) === finnishDate(view.to - 1) ? clock.format(value) : [shortDate.format(value), clock.format(value)];
         } },
       },
       left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(plot.left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitle, color: palette.muted } },

@@ -70,6 +70,26 @@ test('long-view ticks advance by local days, months and years without fixed-dura
   assert.deepEqual(viewportTicks({ from: 0, to: minute }, 2), [{ value: 0 }, { value: minute }]);
 });
 
+test('calendar ticks leave room beside exact endpoints in preview and settled chart widths', () => {
+  const view = { from: Date.parse('2026-06-30T21:00Z'), to: Date.parse('2026-09-10T21:00Z') };
+  assert.deepEqual(viewportTicks(view, 9).map(tick => finnishDay.format(tick.value)), [
+    '2026-07-01', '2026-07-16', '2026-07-30', '2026-08-13', '2026-08-27', '2026-09-11',
+  ]);
+  // Preview uses 4/8 ticks, settled charts 5/9. Long calendar labels must
+  // not acquire an extra nearly coincident label next to either endpoint.
+  for (const maxTicks of [4, 5, 8, 9]) {
+    for (const range of [view, { from: Date.parse('2023-12-30T22:00Z'), to: Date.parse('2027-01-02T22:00Z') }]) {
+      const ticks = viewportTicks(range, maxTicks);
+      const wanted = (range.to - range.from) / (maxTicks - 1);
+      assert.equal(ticks[0].value, range.from); assert.equal(ticks.at(-1).value, range.to);
+      assert(ticks.length <= maxTicks);
+      assert(ticks[1].value - range.from >= wanted);
+      assert(range.to - ticks.at(-2).value >= wanted);
+      assert(ticks.slice(1, -1).every(tick => finnishTime.format(tick.value) === '00:00'));
+    }
+  }
+});
+
 test('series clipping preserves all duplicate boundary edges, neighbors and metadata', () => {
   const points = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5].map((x, index) => ({ x, y: index, source: 'fixture', intervalStart: x }));
   const clipped = sliceSeries(points, { from: 2, to: 3 });

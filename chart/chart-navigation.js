@@ -79,7 +79,8 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     }
     ctx.restore();
     ctx.fillStyle = styles.getPropertyValue('--muted').trim(); ctx.font = '11px sans-serif'; ctx.textBaseline = 'top';
-    const ticks = viewportTicks(view, canvas.clientWidth < 600 ? 4 : 8);
+    const tickLimit = Math.max(2, Math.min(8, Math.floor(area.width / (span > 86400000 ? 110 : 65)) + 1));
+    const ticks = viewportTicks(view, tickLimit);
     ticks.forEach(({ value }, index) => {
       const x = area.left + (value - view.from) / span * area.width;
       ctx.textAlign = index === 0 ? 'left' : index === ticks.length - 1 ? 'right' : 'center';
