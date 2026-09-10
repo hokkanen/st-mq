@@ -647,14 +647,21 @@ device identifiers or MQTT topics. Adding or changing contributing sensors chang
 measurement setup; it must establish the corresponding learning boundary.
 
 The right axis has one **Average indoor** series: the same configured average
-used by the model, with the existing indoor colour. Individual Upstairs, Bedroom,
-Downstairs and Garage temperatures are selectable under **Home temperatures** in
-the left drawer. **All air temperatures** shows individual room, garage and
-outdoor readings together. Average indoor uses the saved model input at each completed
-15-minute learning window's endpoint. Missing or invalid windows remain gaps;
-changing configured weights does not recalculate historical inputs. Historical
-CSV `temp_in` remains an Upstairs reading and is never presented as a three-room
-average. The left drawer lists historical axes in temperature, heating, hot-water,
+used by the model, retaining its green colour alongside blue Outdoor readings.
+The **Home temperatures** drawer section contains only **All home temperatures**,
+which adds Upstairs, Bedroom and Downstairs to the left axis. Both axes use the
+same numeric range in that view, including visible prices, so equal temperatures
+align. Room colours are distinct: terracotta Upstairs, amber Downstairs and violet
+Bedroom. Garage remains a separate left-axis choice under **Other air temperatures**.
+Average indoor reads the resolved value already included in each existing
+15-minute learning journal record; it creates no additional temperature recorder
+channel or chart-history table. Missing or invalid windows remain gaps, and
+changing configured weights does not recalculate historical inputs. The journal
+retains the original endpoints, weights and configuration needed for model replay.
+Historical CSV `temp_in` remains an Upstairs reading and is never presented as a
+three-room average. Saved learning-input tooltip rows use the same short marker
+without repeating their journal source and interval beside each value.
+The left drawer lists historical axes in temperature, heating, hot-water,
 ground-loop, settings, equipment, runtime, electricity, weather and learning groups.
 Recorded and calculated roles are separate from model roles.
 

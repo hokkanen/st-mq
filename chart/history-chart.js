@@ -18,7 +18,7 @@ const visibilityStorage = 'home-energy-chart-visibility';
 const paletteVariables = {
   text: '--text', muted: '--muted', border: '--border', grid: '--grid',
   property: '--chart-property', ev: '--chart-ev', ev2: '--chart-ev2', phase1: '--chart-phase-1', phase2: '--chart-phase-2', phase3: '--chart-phase-3',
-  indoor: '--chart-indoor', downstairs: '--chart-downstairs', bedroom: '--chart-bedroom', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
+  indoor: '--chart-indoor', upstairs: '--chart-upstairs', downstairs: '--chart-downstairs', bedroom: '--chart-bedroom', garage: '--chart-garage', outdoor: '--chart-outdoor', integral: '--chart-integral', price: '--chart-price', spot: '--chart-spot',
   heatOff: '--chart-heat-off', auxiliary: '--chart-auxiliary', compressorSpace: '--chart-compressor-space', compressorDhw: '--chart-compressor-dhw', dhwr: '--chart-dhwr', learning: '--chart-learning', solar: '--chart-solar',
   firewood: '--chart-firewood', fireplace: '--chart-fireplace',
 };
@@ -38,6 +38,42 @@ function loadPreferences() {
     const saved = JSON.parse(localStorage.getItem(visibilityStorage) ?? '{}');
     return Object.fromEntries(Object.entries(saved ?? {}).filter(([key, value]) => /^[a-zA-Z0-9_]{1,40}$/.test(key) && typeof value === 'boolean'));
   } catch { return {}; }
+}
+
+export function historyValueScales(left, datasets, palette = defaultPalette) {
+  const scales = {
+    left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitles[left], color: palette.muted } },
+    right: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: 'Air temperature · °C / Price · c/kWh', color: palette.muted } },
+  };
+  if (left === 'temperatures') {
+    // Both sides describe air temperatures in this view. Include every visible
+    // curve (also prices) so neither axis clips values or gives equal °C values
+    // different heights. Fresh options recalculate the range on zoom and toggles.
+    let min = Infinity, max = -Infinity;
+    for (const dataset of datasets) if (!dataset.hidden) {
+      for (const point of dataset.data) if (Number.isFinite(point.y)) {
+        min = Math.min(min, point.y); max = Math.max(max, point.y);
+      }
+    }
+    if (Number.isFinite(min)) for (const scale of Object.values(scales)) {
+      scale.suggestedMin = min; scale.suggestedMax = max;
+    }
+  }
+  return scales;
+}
+
+export function historyTooltipLabel(item) {
+  const source = item.raw?.modelInput ? null : item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
+  const interval = !item.raw?.modelInput && Number.isFinite(item.raw?.intervalStart) && Number.isFinite(item.raw?.intervalEnd) ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
+  const reconstructed = item.dataset.key === 'heat_pump_power' ? ' · reconstructed estimate' : '';
+  const boundary = item.raw?.displayBoundary ? ` · ${item.raw.interpolated ? 'interpolated line boundary' : 'held line boundary'} between recorded samples` : '';
+  const value = historyValueLabel(item.dataset.key, item.raw?.componentValue ?? item.parsed.y, item.dataset.unit);
+  const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
+  const firewood = firewoodPointDetail(item.dataset.key, item.raw);
+  const session = sessionPointDetail(item.raw);
+  const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
+    ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
+  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ' · saved learning input' : ''}${item.raw?.equivalentCurrent ? ' · equivalent at 230 V' : ''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly ? ' · meter check only' : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
 }
 
 /** The chart owns only its controls and fetches; the monitor owns authentication. */
@@ -251,7 +287,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       dataset.pointRadius = dataset.data.map(point => Number.isFinite(point.y) ? 2 : 0);
     }
     for (const dataset of datasets) if (dataset.kind === 'fill') dataset.backgroundColor = color(dataset.backgroundColor).alpha(0.25).rgbString();
-    const leftTitle = leftTitles[plot.left];
     const span = view.to - view.from;
     // Reserve space for both value axes and for the widest date format. A
     // phone cannot fit the same number of year-bearing labels as short dates.
@@ -268,8 +303,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
             : finnishDate(view.from) === finnishDate(view.to - 1) ? clock.format(value) : [shortDate.format(value), clock.format(value)];
         } },
       },
-      left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(plot.left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitle, color: palette.muted } },
-      right: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: 'Temperature · °C / Price · c/kWh', color: palette.muted } },
+      ...historyValueScales(plot.left, datasets, palette),
     };
     // Touch devices keep datapoint popups in fullscreen in either orientation.
     const tooltipsEnabled = navigation.fullscreen || !mobilePointer.matches;
@@ -295,19 +329,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
               borderColor: palette.border, borderWidth: 1,
               callbacks: {
                 title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
-                label: item => {
-                  const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
-                  const interval = Number.isFinite(item.raw?.intervalStart) && Number.isFinite(item.raw?.intervalEnd) ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
-                  const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
-                  const boundary = item.raw?.displayBoundary ? ` · ${item.raw.interpolated ? 'interpolated line boundary' : 'held line boundary'} between recorded samples` : '';
-                  const value = historyValueLabel(item.dataset.key, item.raw?.componentValue ?? item.parsed.y, item.dataset.unit);
-                  const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
-                  const firewood = firewoodPointDetail(item.dataset.key, item.raw);
-                  const session = sessionPointDetail(item.raw);
-                  const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
-                    ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
-                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
-                },
+                label: historyTooltipLabel,
               },
             },
           },

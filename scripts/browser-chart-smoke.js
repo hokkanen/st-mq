@@ -750,7 +750,7 @@ try {
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT temperature sensor, FMI');
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · Smartthings, FMI');
   assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
     'Upstairs · °C,Downstairs · °C,Bedroom · °C,Garage temperature · °C,Outdoor temperature · °C');
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-heading > strong').textContent"),

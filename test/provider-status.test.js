@@ -16,9 +16,10 @@ test('dashboard groups measured temperature channels under their actual sources 
     weather: { status: 'ok', source: 'fmi' }, outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
   assert.deepEqual(entries.map(row => row.key), ['electricity', 'market', 'main-temperatures', 'weather']);
   const grouped = entries[2];
-  assert.equal(grouped.display.title, 'Main temperatures · MQTT temperature sensor, FMI');
+  assert.equal(grouped.display.title, 'Main temperatures · Smartthings, FMI');
   assert.equal(grouped.display.state, 'Available');
-  assert.equal(grouped.source, 'MQTT temperature sensor, FMI');
+  assert.equal(grouped.source, 'Smartthings, FMI');
+  assert.deepEqual(grouped.series.map(row => row.source), ['Smartthings', 'Smartthings', 'FMI']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
   assert.match(grouped.series[1].detail, /Optional garage sensor, recorded for history/);
   assert.match(grouped.display.detail, /Temperature downloads · MQTT temperature sensor: Last successful download 10:00/);
@@ -30,7 +31,7 @@ test('selected live temperatures take precedence over downloaded provider source
     indoor: temperature('mqtt-temperature'), outdoor: temperature('husdata-h66', 4), garage: { value: null, stale: true },
   }, providers: { temperatures: { status: 'disabled' }, outdoor: { source: 'openmeteo', status: 'fallback' } } };
   const [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.title, 'Main temperatures · MQTT temperature sensor, H66');
+  assert.equal(grouped.display.title, 'Main temperatures · Smartthings, H66');
   assert.equal(grouped.display.state, 'Available');
   assert.equal(grouped.display.attention, false);
   assert.equal(grouped.backup, false);
@@ -227,7 +228,8 @@ test('indoor provider rows show the three physical sensors separately from their
   const [grouped] = dashboardProviders(status, options);
   assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom', 'Garage temperature', 'Outdoor temperature']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
-  assert.match(grouped.display.title, /MQTT temperature sensor, FMI/);
+  assert.equal(grouped.display.title, 'Main temperatures · Smartthings, FMI');
+  assert.ok(grouped.series.slice(0, 3).every(row => row.source === 'Smartthings'));
   assert.equal(grouped.display.state, 'Available');
   assert.match(grouped.series[0].detail, /recorded separately/);
   status.providers.temperatures.error = 'HTTP-401';

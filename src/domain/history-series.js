@@ -83,7 +83,7 @@ export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'ou
 
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],
-  ['temperatures', 'All air temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'outdoor_temperature'], '°C', 'Recorded'],
+  ['temperatures', 'All home temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'], '°C', 'Recorded'],
   ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
   ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],

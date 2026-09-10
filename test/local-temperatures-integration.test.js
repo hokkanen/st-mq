@@ -77,7 +77,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
     assert.equal(status.providers.temperatures.status, 'not-configured');
     const grouped = dashboardProviders(status, { now: f.clock(), formatTime: at => new Date(at).toISOString() })
       .find(row => row.key === 'main-temperatures');
-    assert.equal(grouped.display.title, 'Main temperatures · MQTT temperature sensor, H66');
+    assert.equal(grouped.display.title, 'Main temperatures · Smartthings, H66');
     assert.equal(grouped.display.state, 'Available');
     const chart = getChartData({ store: f.store, now: f.clock(), startDate: '2026-09-09', endDate: '2026-09-09', input });
     for (const [signal, value] of [['indoor_temperature', 22], ['bedroom_temperature', 21],

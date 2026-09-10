@@ -27,8 +27,9 @@
   --chart-phase-2: #d4ba7f;
   --chart-phase-3: #c19fdb;
   --chart-indoor: #81ca99;
-  --chart-downstairs: #d3b7ed;
-  --chart-bedroom: #e5cb75;
+  --chart-upstairs: #e99583;
+  --chart-downstairs: #e5cb75;
+  --chart-bedroom: #d3b7ed;
   --chart-garage: #eda65e;
   --chart-outdoor: #83b8da;
   --chart-price: #ffffff;
@@ -74,8 +75,9 @@
   --chart-phase-2: #94701d;
   --chart-phase-3: #8e55a6;
   --chart-indoor: #397844;
-  --chart-downstairs: #8150a0;
-  --chart-bedroom: #927218;
+  --chart-upstairs: #a44c38;
+  --chart-downstairs: #927218;
+  --chart-bedroom: #8150a0;
   --chart-garage: #b66a20;
   --chart-outdoor: #3278b3;
   --chart-price: #000000;

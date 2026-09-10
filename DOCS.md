@@ -132,13 +132,13 @@ range and click **Show dates** to apply it. **Yesterday – today**, **Today**,
 **Today – tomorrow** shortcuts keep both observations and forecasts within the
 selected dates. The small outer arrows move the shown window one calendar day
 back or forward while preserving its length. The **Left axis** drawer offers
-Power, phase currents, individual Upstairs, Bedroom, Downstairs and Garage
-temperatures, live heating integral, solar radiation and all four historical
-learning metrics. **Average indoor**, outdoor temperature and prices remain
+Power, phase currents, home and Garage temperatures, live heating integral,
+solar radiation and all four historical learning metrics. **Average indoor**, outdoor temperature and prices remain
 available on the right with their existing colours. Average indoor is the configured
-sensor average used by the house model. **All air temperatures** in the left
-drawer shows individual rooms, garage and outdoor readings together. Whole-house
-and EV power estimates use recorded
+sensor average used by the house model. **All home temperatures** in the left
+drawer adds the three individual room readings with synchronized air-temperature
+scales. Garage remains a separate left-axis choice under **Other air temperatures**.
+Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
 currents assume 230 V and unity power factor; older current-only history uses
 the nominal 230 V power estimate. H66 AUX power is a red fill derived from the

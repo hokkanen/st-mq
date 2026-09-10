@@ -64,6 +64,7 @@ export const leftGroups = Object.freeze({
 });
 export const leftTitles = Object.freeze({ power: 'Power · kW', phases: 'Current · A', integral: 'Heating integral · °min',
   ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, `${axis.label} · ${axis.unit}`])),
+  temperatures: 'Air temperature · °C',
   learning_profit: 'Estimated space-heating benefit · €/cycle', learning_aux_profit: 'Space-heating benefit with auxiliary recovery · €/cycle',
   learning_recovery_error: 'Space-heating recovery-cost prediction error · €/cycle', learning_indoor_temperature: 'Learned normal temperature · °C',
   solar_radiation: 'Solar radiation forecast · W/m²' });
@@ -71,7 +72,7 @@ export const operationModes = Object.freeze({ 0: 'Off', 1: 'Auto', 2: 'Compresso
 export const defaultPalette = Object.freeze({
   text: '#e0ede6', muted: '#9bb4a5', border: '#334d3e', grid: '#243c30',
   property: '#e98576', ev: '#e98576', ev2: '#b493db', auxiliary: '#e86868', phase1: '#66cbd0', phase2: '#cf94d3', phase3: '#dfc16c',
-  indoor: '#81ca99', downstairs: '#64c9c1', bedroom: '#c0a2e8', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
+  indoor: '#81ca99', upstairs: '#e99583', downstairs: '#e5cb75', bedroom: '#d3b7ed', garage: '#eda65e', outdoor: '#83b8da', integral: '#cea0dc', price: '#ffffff', spot: '#c5c5c5',
   heatOff: '#9ba89e', compressorSpace: '#dbc754', compressorDhw: '#549edd', dhwr: '#e05555', learning: '#baa0de', solar: '#e4ca67',
   firewood: '#d8aa75', fireplace: '#b79b28',
 });
@@ -103,7 +104,7 @@ const seriesInfo = {
   firewood_electricity_avoided: ['Firewood electricity avoided', 'kWh/day · retrospective model estimate, not metered savings', 'firewood', 'daily'],
   solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
-  indoor_temperature: ['Upstairs', '°C', 'indoor'],
+  indoor_temperature: ['Upstairs', '°C', 'upstairs'],
   downstairs_temperature: ['Downstairs', '°C', 'downstairs'],
   bedroom_temperature: ['Bedroom', '°C', 'bedroom'],
   garage_temperature: ['Garage', '°C', 'garage'],

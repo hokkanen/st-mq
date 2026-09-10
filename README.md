@@ -138,10 +138,11 @@ and saves that choice. The chart is directly below the current readings.
   from zero; they are not stacked. **Phase currents** shows the three property phase lines
   in amperes with corresponding charger fills. **Phase energy per interval** shows
   the three saved kWh increments per device. The drawer groups all retained H66
-  parameters, individual Upstairs, Bedroom, Downstairs and Garage temperatures,
-  control, weather and learning series. **All air temperatures** shows the
-  room, garage and outdoor readings together. **Heating
-  integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
+  parameters, Garage temperature, control, weather and learning series.
+  **All home temperatures** is the sole **Home temperatures** drawer option;
+  it shows Upstairs, Bedroom and Downstairs on the left with the two air-temperature
+  scales synchronized. Garage remains a separate left-axis choice under
+  **Other air temperatures**. **Heating integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
   with observed auxiliary recovery, recovery cost prediction error and learned
   normal indoor temperature. **Solar radiation** shows archived and future FMI
   forecasts in W/m², not a solar sensor. Only that group's legend items appear.
@@ -152,8 +153,9 @@ and saves that choice. The chart is directly below the current readings.
 - **Right axis:** **Average indoor**, outdoor temperature and electricity prices
   stay available with every left-axis selection, retaining their existing colours.
   Average indoor is the same configured sensor average used by the house model;
-  select individual room temperatures in the left-axis drawer. The dashed outdoor continuation
-  is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
+  select **All home temperatures** to compare the rooms. Outdoor stays blue,
+  Average indoor green, Upstairs terracotta, Downstairs amber and Bedroom violet.
+  The dashed outdoor continuation is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
   charges. Explicit saved legend choices are preserved. All-in prices combine
   historical spot prices with the contract rates for that date, or the nearest
   known rates when the date is uncovered. An **Assumed rates** explanation identifies these assumptions;

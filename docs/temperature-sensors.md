@@ -8,16 +8,23 @@ using `mqtt.indoor_temperature_topic`, `mqtt.bedroom_temperature_topic` and
 topics in private configuration. [Recording configuration](recording.md)
 describes the supported payloads and optional averaging weights.
 
+The dashboard labels these sensors **Smartthings** in **Main temperatures** and
+lists the selected outdoor source beside them. Readings arrive through local
+MQTT; st-mq does not connect to the SmartThings cloud API.
+
 The smoke publisher uses `stmq/smoke/1/temperature`, `stmq/smoke/2/temperature`
 and `stmq/smoke/3/temperature`. Assign each exact topic to its corresponding room;
 the subscription fields do not use the wildcard `stmq/smoke/+/temperature`.
 
 The chart shows one **Average indoor** series on the right axis, using the existing
 indoor temperature colour. This is the same fixed average of configured indoor
-sensors used by the thermal model, with equal weights by default. Upstairs,
-Bedroom, Downstairs and Garage can be selected individually in the **Left axis**
-drawer. **All air temperatures** shows rooms, garage and outdoor readings
-together. The dashboard's current readings also identify individual rooms.
+sensors used by the thermal model, with equal weights by default. The **Home
+temperatures · Recorded** section of the **Left axis** drawer contains one option,
+**All home temperatures**, which adds Upstairs, Bedroom and Downstairs on the left
+axis. Both air temperature axes then use the same scale. Garage remains a separate
+left-axis choice under **Other air temperatures**. Average indoor keeps its green
+colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
+blue for Outdoor. The dashboard's current readings also identify individual rooms.
 The Average indoor chart follows saved model inputs at the endpoints of completed
 15-minute learning windows. Invalid or missing windows remain gaps. It does not
 recalculate old averages from today's sensor membership or weights. Imported

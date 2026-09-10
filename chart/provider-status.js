@@ -123,6 +123,9 @@ export function providerSeries(job, health = {}) {
 const temperatureJobs = ['temperatures', 'mqtt-temperature', 'outdoor'];
 const indoorSources = ['husdata-h66', 'mqtt-temperature'];
 const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
+// Main temperatures names the sensor platform; acquisition diagnostics retain
+// the local MQTT transport name. No SmartThings cloud connection is involved.
+const temperatureSourceLabel = source => source === 'mqtt-temperature' ? 'Smartthings' : providerName(source);
 const temperatureAvailable = (reading, now) => Number.isFinite(reading?.value) && reading.stale !== true
   && Number.isFinite(reading.observedAt) && reading.observedAt <= now && now - reading.observedAt <= 30 * 60_000;
 
@@ -135,7 +138,7 @@ function temperatureDisplay(status, entries, options) {
     // The selected observation is authoritative: H66 can take over while the
     // weather provider's most recent successful download still names FMI.
     const source = reading?.source ?? (key === 'outdoor' ? outdoorHealth?.source ?? outdoorHealth?.acquisition?.selected : null);
-    const label = allowed.includes(source) ? providerName(source) : null;
+    const label = allowed.includes(source) ? temperatureSourceLabel(source) : null;
     const available = temperatureAvailable(reading, options.now);
     const age = Number.isFinite(reading?.observedAt) && reading.observedAt > 0 && reading.observedAt <= options.now
       ? `Latest reading ${options.formatTime(reading.observedAt)}${available ? '.' : ' is out of date or unusable.'}`

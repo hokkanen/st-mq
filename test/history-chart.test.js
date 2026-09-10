@@ -64,7 +64,7 @@ test('one Average indoor uses the earlier indoor colour while individual rooms a
   assert.equal(average.yAxisID, 'right');
   assert.equal(average.borderColor, '#81ca99');
   assert.equal(average.stepped, false);
-  for (const [key, label, color] of [['indoor_temperature', 'Upstairs', 'indoor'],
+  for (const [key, label, color] of [['indoor_temperature', 'Upstairs', 'upstairs'],
     ['downstairs_temperature', 'Downstairs', 'downstairs'], ['bedroom_temperature', 'Bedroom', 'bedroom'],
     ['garage_temperature', 'Garage', 'garage']]) {
     assert(!datasets.some(row => row.key === key), `${label} is not another default indoor line`);
@@ -83,19 +83,24 @@ test('one Average indoor uses the earlier indoor colour while individual rooms a
   assert.equal(themed.find(row => row.key === 'outdoor_temperature').borderColor, palette.outdoor);
 });
 
-test('All air temperatures compares five sensor locations on the left while keeping Average indoor on the right', () => {
-  const signals = ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'outdoor_temperature'];
+test('All home temperatures compares three rooms with distinct colours while retaining shared right-axis readings', () => {
+  const signals = ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'];
   const series = Object.fromEntries(signals.map((key, index) => [key, [{ x: 1, y: 23 - index * 2 }]]));
   series.model_indoor_temperature = [{ x: 1, y: 21 }];
   const datasets = historyDatasets(series, 'temperatures');
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.key), signals);
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.label),
-    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Outdoor']);
+    ['Upstairs', 'Bedroom', 'Downstairs']);
   for (const key of signals) {
     assert.equal(datasets.filter(row => row.key === key).length, 1);
     assert.equal(datasets.find(row => row.key === key).data, series[key]);
   }
   assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
+  assert.equal(datasets.find(row => row.key === 'outdoor_temperature').yAxisID, 'right');
+  assert.equal(datasets.some(row => row.key === 'garage_temperature'), false);
+  const roomAndAverage = datasets.filter(row => [...signals, 'model_indoor_temperature'].includes(row.key));
+  assert.equal(new Set(roomAndAverage.map(row => row.borderColor)).size, 4);
+  assert.equal(historyDatasets(series, 'garage_temperature')[0].yAxisID, 'left');
   assert(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'temperatures' }).includes('left=temperatures'));
 });
 

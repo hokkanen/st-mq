@@ -245,7 +245,7 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=dhw]').textContent.includes('40–55 °C')"), true);
   assert.equal(await evaluate("document.getElementById('home-tariff-status').textContent.includes('Unknown · no device readback')"), true);
   assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT temperature sensor, FMI');
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · Smartthings, FMI');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
     ['Upstairs · °C', 'Downstairs · °C', 'Bedroom · °C', 'Garage temperature · °C', 'Outdoor temperature · °C']);
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
