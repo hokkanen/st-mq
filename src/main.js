@@ -20,10 +20,23 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     config = startupImport.config;
     await startupImport.persist();
   }
+  if (config.role !== undefined && !['primary', 'replica'].includes(config.role))
+    throw new Error('Invalid local instance role');
+  // A replica never opens the live Store or constructs a controller. Its role
+  // comes from this machine's configuration, never from replicated state.
+  if (config.role === 'replica') {
+    const { startReplica } = await import('./app/replica.js');
+    const app = await startReplica({ config, clock });
+    if (startupImport) {
+      try { await startupImport.complete(); }
+      catch { /* The retained import can be retried on restart. */ }
+    }
+    return app;
+  }
   const migrated = await prepareStorage(config);
   const store = new Store(config.dbPath);
   if (migrated) store.event('database-migrated', migrated, clock());
-  let engine, webAccess, learning, chartService, commandTransport, timer, closed = false, reloadPending = null;
+  let engine, webAccess, learning, chartService, commandTransport, replication, timer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
   const acquisitions = [];
   const signalHandlers = new Map();
@@ -43,8 +56,12 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     closed = true;
     clearTimeout(timer);
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+    const replicationStopped = replication?.stop();
     await reloadPending?.catch(() => {});
+    // Cancel a large copy immediately, but restore equipment before waiting for
+    // its worker/process cleanup. Replication must not delay control shutdown.
     await stopRuntime();
+    await replicationStopped;
     await chartService?.close();
     await webAccess?.close();
     store.close();
@@ -142,9 +159,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         throw new Error(`Configuration could not be read or validated. ${source ? error.message : 'Check the configuration file.'}`);
       }
       requireRunning();
-      const startupKeys = ['input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'legacyDbPath', 'addon'];
-      if (startupKeys.some(key => next[key] !== config[key]))
-        throw new Error('Input, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
+      const startupKeys = ['role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'legacyDbPath', 'addon'];
+      if (startupKeys.some(key => next[key] !== config[key]) || !isDeepStrictEqual(next.replication, config.replication))
+        throw new Error('Input, role, replication, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
       if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending
         || native?.phase === 'test' || Object.values(native?.controls ?? {}).some(control => control.reason === 'A setting transition is in progress.'))
@@ -258,12 +275,18 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     engine.tick();
     chartService = createChartService({ store });
     webAccess = createWebAccess({ config, getEngine: () => engine, store, chartService,
+      replicationStatus: () => replication?.status() ?? null,
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
     await startProviderRuntime();
     // The first tick runs before the listener, as before; background work follows it.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
+    if (config.replication?.enabled) {
+      const { ReplicationService } = await import('./replication/service.js');
+      replication = new ReplicationService({ dbPath: store.path, config: config.replication });
+      replication.start();
+    }
     if (startupImport) {
       try { configurationResult = await startupImport.complete(); }
       catch { configurationResult = { cleanupPending: true }; }
@@ -277,7 +300,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       const handler = () => close().catch(error => { console.error(error.message); process.exitCode = 1; });
       signalHandlers.set(signal, handler); process.once(signal, handler);
     }
-    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, close, reloadSettings };
+    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, replication, close, reloadSettings };
   } catch (error) { await close(); throw error; }
 }
 

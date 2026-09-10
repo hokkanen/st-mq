@@ -13,7 +13,8 @@ async function setup(t, options = {}, overrides = {}) {
   const write = value => writeFileSync(path, JSON.stringify({ teslamate: { enabled: false, charger_identification: false }, ...value }));
   write(options);
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
-  const app = await start({ config, ...overrides });
+  // MQTT fixtures exercise reload and subscriptions without polling public providers.
+  const app = await start({ config, providerOptions: { automatic: false }, ...overrides });
   t.after(async () => { try { await app.close(); } finally { rmSync(directory, { recursive: true, force: true }); } });
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const headers = { 'Content-Type': 'application/json', ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}) };

@@ -152,14 +152,20 @@ function observationResult(row) {
 
 /** Local authoritative history. All timestamps are UTC milliseconds; queries are bounded. */
 export class Store {
-  constructor(path) {
+  constructor(path, { readOnly = false } = {}) {
     label(path, 'database path');
     this.path = path === ':memory:' ? path : resolve(path);
-    if (path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
-    this.db = new DatabaseSync(this.path);
+    this.readOnly = readOnly;
+    if (!readOnly && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
+    this.db = new DatabaseSync(this.path, { readOnly });
     try {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
+      if (readOnly) {
+        if (version !== SCHEMA_VERSION) throw new Error('Replica database schema does not match this application version');
+        this.db.exec('PRAGMA query_only = ON;');
+        return;
+      }
       if (version > SCHEMA_VERSION) throw new Error(`Database schema ${version} is newer than supported version ${SCHEMA_VERSION}`);
       if (version < SCHEMA_VERSION) this.transaction(() => {
         if (version === 0) this.db.exec(schema);

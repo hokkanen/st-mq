@@ -1,0 +1,216 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, readFileSync, existsSync, chmodSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
+import { startReplica } from '../src/app/replica.js';
+import { createChartService } from '../src/app/chart-service.js';
+import { loadConfig } from '../src/app/config.js';
+import { start } from '../src/main.js';
+
+const at = Date.parse('2026-01-15T12:00:00+02:00');
+const chartPath = '/api/chart?start=2026-01-15&end=2026-01-15&left=power';
+const digest = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+};
+
+function fixture(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-replica-viewer-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+}
+
+function snapshot(directory, generation, value = 21, sourceAt = at) {
+  const dbPath = join(directory, `${generation}.sqlite`), store = new Store(dbPath);
+  store.observation({ source: 'test-fixture', device: 'synthetic-sensor', signal: 'indoor_temperature',
+    value, unit: 'degC', sourceTime: sourceAt - 60_000, receivedAt: sourceAt - 60_000 });
+  store.event('decision', { input: 'mqtt', mode: 'active', phase: 'reduction', commands: ['heatoff'] }, sourceAt);
+  // Copied settings and outstanding obligations must never activate on a viewer.
+  store.setState('settings:mqtt', { mode: 'active' });
+  store.setState('executor:mqtt', { version: 1, legacyOutstanding: true, phase: 'reduction' });
+  store.setState('h66:control:synthetic-device', { version: 1, baseline: { '0203': 20 }, obligations: { '0203': { value: 20 } } });
+  store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
+    VALUES('easee','synthetic-device','ev1_lifetime_energy_counter',?,?,10,'[]')`).run(sourceAt, sourceAt);
+  store.close();
+  const raw = new DatabaseSync(dbPath);
+  raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  chmodSync(dbPath, 0o600);
+  return { dbPath, generation, sourceAt, verifiedAt: sourceAt, sourceStartedAt: sourceAt - 1000,
+    digest: digest(dbPath), bytes: readFileSync(dbPath).length };
+}
+
+const configuration = directory => ({ role: 'replica', input: 'mqtt', addon: false,
+  host: '127.0.0.1', port: 0, token: '', replication: { directory, intervalMs: 60_000 },
+  settings: { mode: 'active' }, connections: { mqtt: { address: 'mqtt://127.0.0.1:1' } },
+  h66: { enabled: true, writeEnabled: true } });
+
+async function viewer(t, directory, readPublication, extra = {}) {
+  const app = await startReplica({ config: configuration(directory), readPublication,
+    clock: () => at, installSignalHandlers: false, ...extra });
+  t.after(() => app.close());
+  const request = async (path, options) => {
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, options);
+    return { status: response.status, body: await response.json() };
+  };
+  return { app, request };
+}
+
+test('read-only Store never migrates, deletes, creates a missing database or permits writes', t => {
+  const directory = fixture(t), publication = snapshot(directory, 'readonly');
+  const store = new Store(publication.dbPath, { readOnly: true });
+  assert.equal(store.readOnly, true);
+  assert.equal(store.getState('settings:mqtt').mode, 'active');
+  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM energy_audits').get().count, 1);
+  assert.throws(() => store.setState('settings:mqtt', { mode: 'monitoring' }), /readonly/i);
+  assert.throws(() => store.db.exec('DELETE FROM events'), /readonly/i);
+  store.close();
+  assert.equal(digest(publication.dbPath), publication.digest);
+  assert.equal(existsSync(`${publication.dbPath}-wal`), false);
+  assert.equal(existsSync(`${publication.dbPath}-shm`), false);
+
+  const raw = new DatabaseSync(publication.dbPath);
+  raw.exec(`PRAGMA user_version=${SCHEMA_VERSION - 1}`); raw.close();
+  const oldDigest = digest(publication.dbPath);
+  assert.throws(() => new Store(publication.dbPath, { readOnly: true }), /schema does not match/);
+  assert.equal(digest(publication.dbPath), oldDigest);
+  const missing = join(directory, 'missing', 'database.sqlite');
+  assert.throws(() => new Store(missing, { readOnly: true }));
+  assert.equal(existsSync(join(directory, 'missing')), false);
+});
+
+test('main replica startup bypasses legacy migration and providers and removes its signal handlers', async t => {
+  const directory = fixture(t), legacy = snapshot(directory, 'st-mq');
+  const databaseDir = join(directory, 'database');
+  const config = loadConfig({ HOME: directory, XDG_CONFIG_HOME: join(directory, 'configuration'),
+    STMQ_ROLE: 'replica', STMQ_INPUT: 'mqtt', STMQ_MODE: 'active', STMQ_DATA_DIR: directory,
+    STMQ_DATABASE_DIR: databaseDir, STMQ_PORT: '0' }, directory);
+  const signalCounts = Object.fromEntries(['SIGINT', 'SIGTERM'].map(signal => [signal, process.listenerCount(signal)]));
+  const app = await start({ config, clock: () => at,
+    mqttOptions: { connect() { assert.fail('A replica must not connect to MQTT'); } },
+    providerOptions: { temperatureProvider() { assert.fail('A replica must not query providers'); } } });
+  t.after(() => app.close());
+  assert.equal(app.store, null);
+  assert.equal(app.engine, undefined);
+  assert.equal(existsSync(databaseDir), false, 'No primary database or migration directory is created');
+  assert.equal(digest(legacy.dbPath), legacy.digest);
+  const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`);
+  assert.equal((await response.json()).replication.state, 'waiting');
+  await app.close();
+  for (const signal of ['SIGINT', 'SIGTERM']) assert.equal(process.listenerCount(signal), signalCounts[signal]);
+});
+
+test('configured freshness checks source snapshot age even immediately after verification', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'delayed', 21, at - 40_000);
+  publication.verifiedAt = at;
+  const config = configuration(directory);
+  config.replication.staleAfterMs = 30_000;
+  const { request } = await viewer(t, directory, async () => publication, { config });
+  const result = await request('/api/status');
+  assert.equal(result.body.replication.state, 'stale');
+  assert.equal(result.body.replication.staleAfterMs, 30_000);
+  assert.equal(result.body.replication.lastSuccessAt, at);
+});
+
+test('viewer starts before first snapshot and denies every mutation without opening control runtime', async t => {
+  const directory = fixture(t);
+  const { app, request } = await viewer(t, directory, async () => null);
+  const result = await request('/api/status');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.instance.role, 'replica');
+  assert.equal(result.body.replication.state, 'waiting');
+  assert.equal(result.body.liveWrites, false);
+  assert.equal(app.store, null);
+  assert.equal((await request(chartPath)).status, 503);
+  for (const path of ['/api/temporary', '/api/override', '/api/fireplace', '/api/fireplace/remove',
+    '/api/settings/reload', '/api/heating-test', '/api/test/h66', '/api/charger-identification', '/api/unrecognized']) {
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+      const response = await request(path, { method });
+      assert.equal(response.status, 405, `${method} ${path}`);
+      assert.match(response.body.error, /read-only/);
+    }
+  }
+});
+
+test('verified snapshots remain unchanged and viewer replaces charts and history after outage catch-up', async t => {
+  const directory = fixture(t), first = snapshot(directory, 'first', 21);
+  let publication = first, now = at;
+  const { app, request } = await viewer(t, directory, async () => publication, { clock: () => now });
+  const initial = await request('/api/status');
+  assert.equal(initial.body.input, 'mqtt');
+  assert.equal(initial.body.observations.indoor.value, 21);
+  assert.equal(initial.body.lastDecision.phase, 'reduction');
+  assert.equal(initial.body.liveWrites, false);
+  assert.equal(initial.body.replication.digest, first.digest);
+  assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 21);
+  assert.equal((await request('/api/recording-overview')).status, 200);
+  assert.equal((await request('/api/energy-audits')).status, 200);
+  assert.equal((await request('/api/events')).body.length, 1);
+  assert.equal((await request('/api/fireplace')).status, 200);
+  assert.equal((await request('/api/heating-test', { method: 'POST' })).status, 405);
+
+  now += 7 * 86_400_000;
+  const stale = await request('/api/status');
+  assert.equal(stale.body.replication.state, 'stale');
+  assert.equal(stale.body.now, now);
+  const oldChart = await request(chartPath);
+  assert.equal(oldChart.body.now, first.sourceAt, 'snapshot calculations never advance into an unobserved outage');
+  assert.equal(oldChart.body.series.indoor_temperature[0].y, 21);
+  assert.equal(digest(first.dbPath), first.digest);
+
+  const second = snapshot(directory, 'second', 24, at + 120_000);
+  publication = second;
+  now = second.verifiedAt;
+  assert.equal((await request('/api/status')).body.replication.generation, 'second');
+  assert.equal(app.store.path, second.dbPath);
+  assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 24);
+  assert.equal((await request('/api/history?signal=indoor_temperature')).body[0].value, 24);
+  assert.equal(digest(first.dbPath), first.digest);
+  assert.equal(digest(second.dbPath), second.digest);
+});
+
+test('bad replacement keeps serving the last verified snapshot and recovers on next publication', async t => {
+  const directory = fixture(t), first = snapshot(directory, 'first');
+  let publication = first;
+  const { request } = await viewer(t, directory, async () => publication);
+  publication = { ...first, generation: 'missing', dbPath: join(directory, 'absent.sqlite') };
+  const error = await request('/api/status');
+  assert.equal(error.body.replication.state, 'error');
+  assert.equal(error.body.replication.generation, 'first');
+  assert.equal(error.body.observations.indoor.value, 21);
+  assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 21);
+  assert(!error.body.replication.error.includes(directory));
+  publication = snapshot(directory, 'recovered', 23);
+  assert.equal((await request('/api/status')).body.replication.state, 'ready');
+  assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 23);
+});
+
+test('in-flight chart requests lease their generation across publication and old-file removal', async t => {
+  const directory = fixture(t), first = snapshot(directory, 'first', 21);
+  let publication = first;
+  const entered = deferred(), proceed = deferred();
+  const makeChartService = ({ store }) => {
+    const service = createChartService({ store });
+    return { overview: options => service.overview(options), close: () => service.close(),
+      async query(args, options) {
+        if (store.path === first.dbPath) { entered.resolve(); await proceed.promise; }
+        return service.query(args, options);
+      } };
+  };
+  const { request } = await viewer(t, directory, async () => publication, { makeChartService });
+  const oldRequest = request(chartPath);
+  await entered.promise;
+  publication = snapshot(directory, 'second', 25);
+  assert.equal((await request('/api/status')).body.replication.generation, 'second');
+  unlinkSync(first.dbPath);
+  proceed.resolve();
+  const old = await oldRequest;
+  assert.equal(old.status, 200);
+  assert.equal(old.body.series.indoor_temperature[0].y, 21);
+  assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 25);
+});

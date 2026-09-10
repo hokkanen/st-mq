@@ -103,7 +103,8 @@
       "recovery_timeout_hours": 48,
       "recovery_compressor_only": true,
       "recovery_compressor_only_hours": 4,
-      "recovery_comfort_margin_c": 0.5
+      "recovery_comfort_margin_c": 0.5,
+      "role": "primary"
     },
     "acquisition": {
       "easee_poll_seconds": 15,
@@ -118,6 +119,20 @@
     "recording": {
       "max_interval_minutes": 5,
       "annual_budget_gb": 10
+    },
+    "replication": {
+      "enabled": false,
+      "directory": "",
+      "ssh_host": "",
+      "remote_directory": "",
+      "receiver_path": "",
+      "node_path": "node",
+      "rsync_path": "sqlite3_rsync",
+      "remote_rsync_path": "sqlite3_rsync",
+      "interval_seconds": 60,
+      "timeout_seconds": 3600,
+      "stale_seconds": 180,
+      "ssh_config": ""
     }
   },
   "schema": {
@@ -198,7 +213,8 @@
       "recovery_timeout_hours": "int(4,168)",
       "recovery_compressor_only": "bool",
       "recovery_compressor_only_hours": "float(0.25,12)",
-      "recovery_comfort_margin_c": "float(0,1)"
+      "recovery_comfort_margin_c": "float(0,1)",
+      "role": "list(primary|replica)"
     },
     "acquisition": {
       "easee_poll_seconds": "float(10,3600)",
@@ -213,6 +229,20 @@
     "recording": {
       "max_interval_minutes": "float(0.25,60)",
       "annual_budget_gb": "float(0.01,10000)"
+    },
+    "replication": {
+      "enabled": "bool",
+      "directory": "str?",
+      "ssh_host": "str?",
+      "remote_directory": "str?",
+      "receiver_path": "str?",
+      "node_path": "str",
+      "rsync_path": "str",
+      "remote_rsync_path": "str",
+      "interval_seconds": "int(10,86400)",
+      "timeout_seconds": "int(30,86400)",
+      "stale_seconds": "int(30,604800)",
+      "ssh_config": "str?"
     }
   }
 }

@@ -1,0 +1,117 @@
+import { outdoorSourceLabel, providerName } from './provider-status.js';
+
+export const isReadOnlyReplica = status => status?.role === 'replica' || status?.instance?.role === 'replica';
+const timestamp = value => Number.isFinite(value) && value > 0 ? value : null;
+
+export function replicaSnapshotKey(status) {
+  if (!isReadOnlyReplica(status)) return null;
+  const sync = status.replication ?? {};
+  return sync.generation ?? sync.digest ?? timestamp(sync.snapshotAt ?? sync.sourceAt);
+}
+
+/** A copied observation must never grow a live chart tail beyond its snapshot. */
+export function chartObservationTime(status, fallback) {
+  const now = timestamp(status?.now) ?? fallback;
+  const snapshot = timestamp(status?.replication?.snapshotAt ?? status?.replication?.sourceAt);
+  return isReadOnlyReplica(status) && snapshot !== null ? Math.min(now, snapshot) : now;
+}
+
+function ageLabel(ms) {
+  if (ms < 60_000) return 'less than a minute ago';
+  if (ms < 3600_000) { const count = Math.floor(ms / 60_000); return `${count} ${count === 1 ? 'minute' : 'minutes'} ago`; }
+  if (ms < 86400_000) { const count = Math.floor(ms / 3600_000); return `${count} ${count === 1 ? 'hour' : 'hours'} ago`; }
+  const count = Math.floor(ms / 86400_000); return `${count} ${count === 1 ? 'day' : 'days'} ago`;
+}
+
+/** Only report verified facts from the local receiver, never primary online flags. */
+export function replicaDisplay(status, { now = status?.now ?? Date.now(), formatTime = at => new Date(at).toISOString() } = {}) {
+  const sync = status?.replication ?? {};
+  const snapshotAt = timestamp(sync.snapshotAt ?? sync.sourceAt);
+  const lastSuccessAt = timestamp(sync.lastSuccessAt ?? sync.verifiedAt);
+  const verifiedAt = timestamp(sync.verifiedAt);
+  const available = snapshotAt !== null && sync.available !== false;
+  const future = snapshotAt !== null && snapshotAt > now + 60_000;
+  const staleAfterMs = Number.isFinite(sync.staleAfterMs) && sync.staleAfterMs > 0 ? sync.staleAfterMs : 5 * 60_000;
+  const stale = available && (sync.state === 'stale' || sync.stale === true || now - snapshotAt > staleAfterMs);
+  const state = sync.state === 'error' ? 'error' : !available ? 'waiting' : future ? 'clock-warning' : stale ? 'stale' : 'ready';
+  const summary = state === 'waiting' ? 'Waiting for the first verified database snapshot.'
+    : state === 'error' ? available ? 'Synchronization needs attention. The last verified history remains available.'
+      : 'No verified snapshot is available. Synchronization needs attention.'
+      : state === 'clock-warning' ? 'The snapshot time is ahead of this computer. Check the clocks on both computers.'
+        : state === 'stale' ? 'History is out of date. It will catch up automatically when synchronization resumes.'
+          : 'Showing the most recently synchronized history.';
+  const snapshot = snapshotAt === null ? 'Snapshot time unavailable.'
+    : `Primary snapshot: ${formatTime(snapshotAt)}${future ? '' : ` · ${ageLabel(Math.max(0, now - snapshotAt))}`}.`;
+  const success = lastSuccessAt === null ? 'No successful synchronization recorded.' : `Last successful sync: ${formatTime(lastSuccessAt)}.`;
+  const verification = verifiedAt === null ? 'Snapshot verification is not reported.'
+    : `Database identity verified ${formatTime(verifiedAt)}. Later primary changes are copied on the next synchronization.`;
+  return { state, available, snapshotAt, lastSuccessAt, verifiedAt, summary, snapshot, success, verification };
+}
+
+export function primaryReplicationDisplay(status, { formatTime = at => new Date(at).toISOString() } = {}) {
+  const sync = status?.replication;
+  if (isReadOnlyReplica(status) || sync?.enabled !== true) return null;
+  const state = ['waiting', 'syncing', 'ready', 'error', 'stopped'].includes(sync.state) ? sync.state : 'waiting';
+  const phase = { connecting: 'Connecting to the replica.', snapshotting: 'Preparing a consistent database snapshot.',
+    transferring: 'Sending database changes to the replica.', verifying: 'Verifying the replica’s database identity.' }[sync.phase];
+  const summary = state === 'syncing' ? phase ?? 'Synchronizing the database replica.'
+    : state === 'error' ? 'Replica synchronization failed. Home control continues; synchronization will retry automatically.'
+      : state === 'stopped' ? 'Database synchronization is stopped.'
+        : state === 'ready' ? 'The last database synchronization was verified.' : 'Waiting to synchronize the database replica.';
+  const sourceAt = timestamp(sync.snapshotAt ?? sync.sourceAt), verifiedAt = timestamp(sync.verifiedAt);
+  const lastSuccessAt = timestamp(sync.lastSuccessAt), nextAttemptAt = timestamp(sync.nextAttemptAt);
+  const detail = [lastSuccessAt ? `Last successful sync: ${formatTime(lastSuccessAt)}.` : 'No successful synchronization yet.',
+    sourceAt ? `Primary snapshot: ${formatTime(sourceAt)}.` : '',
+    verifiedAt ? `Identity verified: ${formatTime(verifiedAt)}.` : '',
+    nextAttemptAt && state !== 'syncing' && state !== 'stopped' ? `Next attempt: ${formatTime(nextAttemptAt)}.` : ''].filter(Boolean).join(' ');
+  return { state, summary, detail };
+}
+
+/** Keep the viewer useful before its first database exists and after long outages. */
+export function renderReplicaStatus(document, status, { formatTime = at => new Date(at).toISOString() } = {}) {
+  const $ = id => document.getElementById(id);
+  const replica = isReadOnlyReplica(status);
+  document.documentElement.dataset.instanceRole = replica ? 'replica' : 'primary';
+  const outgoing = primaryReplicationDisplay(status, { formatTime });
+  $('primary-replication-notice').hidden = !outgoing;
+  if (outgoing) {
+    $('primary-replication-notice').dataset.state = outgoing.state;
+    $('primary-replication-summary').textContent = outgoing.summary;
+    $('primary-replication-detail').textContent = outgoing.detail;
+  }
+  $('replica-notice').hidden = !replica;
+  for (const node of document.querySelectorAll('[data-controller-only]')) {
+    node.hidden = replica;
+    if (replica) for (const control of node.querySelectorAll('button, input, select, textarea')) control.disabled = true;
+  }
+  if (!replica) return null;
+  const display = replicaDisplay(status, { formatTime });
+  $('replica-notice').dataset.state = display.state;
+  $('replica-summary').textContent = display.summary;
+  $('replica-snapshot').textContent = display.snapshot;
+  $('replica-success').textContent = display.success;
+  $('replica-verification').textContent = display.verification;
+  $('connection').textContent = `READ-ONLY REPLICA · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
+  $('context').textContent = 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
+  for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = !display.available;
+  $('recording-adaptive-details').hidden = true;
+  for (const key of ['indoor', 'outdoor']) {
+    const observation = status.observations?.[key] ?? {};
+    const at = timestamp(observation.observedAt ?? observation.sourceTime ?? observation.receivedAt);
+    $(key).textContent = Number.isFinite(observation.value) ? `${observation.value.toFixed(1)} °C` : '—';
+    $(key).classList.toggle('stale', observation.stale === true || display.state !== 'ready');
+    const source = key === 'outdoor' ? outdoorSourceLabel(observation.source) : providerName(observation.source);
+    $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time'].filter(Boolean).join(' · ');
+  }
+  const decision = status.lastDecision?.payload ?? status.lastDecision ?? {};
+  $('requested').textContent = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');
+  $('requested-label').textContent = 'RECORDED HEATING REQUEST';
+  const decisionAt = timestamp(status.lastDecision?.at ?? decision.at);
+  $('actual').textContent = `${decisionAt ? `Recorded ${formatTime(decisionAt)} · ` : ''}Current home state unknown`;
+  const bytes = status.replication?.bytes;
+  $('price').textContent = Number.isFinite(bytes) && bytes >= 0 ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(bytes / 1e6) : '—';
+  $('price-label').textContent = 'COPIED DATABASE';
+  $('price-unit').textContent = 'MB · recorded history and saved models';
+  $('updated').textContent = display.snapshotAt === null ? 'Waiting for a snapshot' : `Primary snapshot ${formatTime(display.snapshotAt)}`;
+  return display;
+}

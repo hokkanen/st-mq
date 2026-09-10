@@ -4,6 +4,7 @@ import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyD
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
+import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -44,7 +45,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const preferences = loadPreferences();
   const listeners = [];
   let graph, payload, plottedSelection, fingerprint, status, initialized = false, closed = false;
-  let palette = { ...defaultPalette }, lastContract, lastLiveRevision, lastFirewoodRevision, selectionGeneration = 0;
+  let palette = { ...defaultPalette }, lastContract, lastLiveRevision, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
   let activePreset = 'today', previousToday, rangeEnabled = false;
 
@@ -236,7 +237,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.left = plot.left; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
     const notes = ['Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
-    if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push('Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
+    if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
+      ? 'Lines carry the last recorded readings forward to the snapshot time; these extensions are not new measurements.'
+      : 'Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
     if (plot.left === 'power') notes.push(payload.meta?.powerEstimate ?? 'Power is an interval average derived from estimated energy.');
     if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
@@ -251,9 +254,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
     if (plot.left === 'firewood_load') notes.push('Triangles show manually added kilograms. Additions with exactly the same timestamp are combined and counted in the tooltip. Corrections exclude mistaken additions. The empty space between points does not describe fireplace heat release.');
     if (['firewood_savings', 'firewood_electricity_avoided'].includes(plot.left)) notes.push('Each diamond is a Finnish-day total over supported elapsed intervals. Hollow points are provisional model estimates; filled points use validated response evidence. These retrospective estimates compare heating electricity with and without logged firewood, with wood cost set to €0. They are separate from the Heating and Charging timing comparisons; missing evidence remains a gap.');
-    if (plot.left === 'outdoor_forecast') notes.push('This view shows the forecast from now onward. It does not reconstruct past outdoor forecasts.');
+    if (plot.left === 'outdoor_forecast') notes.push(replicaSnapshotKey(status) !== null
+      ? 'This view shows the saved forecast from the primary snapshot time onward. It does not reconstruct past outdoor forecasts.'
+      : 'This view shows the forecast from now onward. It does not reconstruct past outdoor forecasts.');
     if (payload.meta?.historyBasis === 'original-recorded-history') notes.push('Charts read the original saved history. Point reduction for display and cached chart responses stay in memory; they create no additional database history. Energy and cost calculations use the original recorded intervals.');
     if (plot.left.endsWith('_energy_counter')) notes.push('Meter counters are diagnostic references only. They do not correct recorded energy or train the model.');
+    if (replicaSnapshotKey(status) !== null) notes.push('Read-only replica: the vertical time marker is the primary snapshot time. Measurements are not extended beyond that snapshot; forecasts are those saved by the primary.');
     if (['ev1_session_energy_check', 'tesla_session_energy_check'].includes(plot.left)) notes.push('Each point is one finalized session reference. Hollow points lack a complete comparison and are excluded from the session averages. These checks do not correct recorded energy or train the model.');
     if (plot.left === 'power') {
       notes.push('Auxiliary fill uses verified heater output and configured electrical capacity.');
@@ -281,6 +287,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       updateControls(); initialized = true;
     }
     previousToday = today;
+    const snapshot = replicaSnapshotKey(status);
+    if (lastReplicaSnapshot !== undefined && snapshot !== lastReplicaSnapshot) { loader.invalidate(); force = true; }
+    lastReplicaSnapshot = snapshot;
     const contract = JSON.stringify(status.contract ?? null);
     const firewoodRevision = JSON.stringify({ revision: status.fireplace?.revision, rebuilding: status.fireplace?.rebuild?.status,
       model: status.learning?.adaptive?.model?.trainedAt });
@@ -302,7 +311,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       if (generation !== selectionGeneration || closed) return;
       // The response cache may contain unchanged measurements. Advance their
       // display tails and the now marker using each fresh server-status clock.
-      const plotNow = Number.isFinite(status.now) ? status.now : result.now;
+      const plotNow = chartObservationTime(status, result.now);
       payload = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
       const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, timingBenefit: payload.timingBenefit, heatingBenefit: payload.heatingBenefit, firewoodBenefit: payload.firewoodBenefit, left: selection.left,
         now: plotNow >= payload.range.from && plotNow < payload.range.to ? plotNow : null });

@@ -39,14 +39,14 @@ function numberParam(url, key, fallback, max) {
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
-  getAccess, ingress = false,
+  getAccess, ingress = false, role = 'primary', getReadContext, replicationStatus,
   reloadSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
-  const overviewService = chartService?.overview ? chartService : createChartService({ store });
+  const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
   const fixedAccess = { enabled: true, token, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
   const server = createServer(async (req, res) => {
-    let acceptedAccess, completingReload = false;
+    let acceptedAccess, completingReload = false, readContext;
     const json = (code, value) => {
       // Revocation also covers reads that were awaiting chart/database work.
       // An already authenticated reload may finish its own success response.
@@ -81,14 +81,23 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return true;
         };
         if (!stillAuthorized()) return;
+        if (role === 'replica' && !['GET', 'HEAD'].includes(req.method))
+          return json(405, { error: 'This replica is read-only. Make changes on the primary instance.' });
         const unavailable = () => {
           const state = settingsReloadStatus();
           if (state.unavailable) return state.reason;
           return state.busy ? 'Settings are being updated. Retry shortly.' : null;
         };
         if (unavailable()) return json(503, { error: unavailable() });
-        const engine = getEngine();
-        const status = () => ({ ...getEngine().status(), settingsReload: settingsReloadStatus() });
+        readContext = await getReadContext?.();
+        const engine = readContext?.engine ?? getEngine();
+        const readerStore = readContext?.store ?? store;
+        const readerCharts = readContext?.chartService ?? chartService;
+        const status = () => {
+          const replication = replicationStatus?.();
+          return { ...(readContext ? engine : getEngine()).status(), settingsReload: settingsReloadStatus(),
+            ...(replication ? { replication } : {}) };
+        };
         const mutate = async action => {
           const input = await body(req);
           // A credential can be rotated while a client slowly uploads a body.
@@ -100,6 +109,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return action(getEngine(), input);
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
+        if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
         if (req.method === 'GET' && url.pathname === '/api/charger-identification')
           return json(200, engine.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null });
         if (req.method === 'POST' && url.pathname === '/api/charger-identification')
@@ -132,20 +142,20 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const cancel = () => cancellation.abort();
           res.once('close', cancel);
           try {
-            const result = await overviewService.overview({ signal: cancellation.signal });
+            const result = await (readerCharts?.overview ? readerCharts : overviewService).overview({ signal: cancellation.signal });
             if (!res.destroyed) return json(200, result);
           } finally { res.removeListener('close', cancel); }
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          const property = store.energyAudits({ signal:'property_import_energy_counter', newestFirst:true, limit:1 })
+          const property = readerStore.energyAudits({ signal:'property_import_energy_counter', newestFirst:true, limit:1 })
             .map(({signal,sourceTime,quality,comparison}) => ({signal,sourceTime,quality,comparison}));
-          return json(200, [...property, ...chargingSessionCheckSummaries(store)]);
+          return json(200, [...property, ...chargingSessionCheckSummaries(readerStore)]);
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();
           const args = { input: engine.config.input, contract: engine.contract(),
-            market: store.getState('provider:market'), weather: store.getState('provider:weather'),
+            market: readerStore.getState('provider:market'), weather: readerStore.getState('provider:weather'),
             simulated: engine.plant ? simulatedOutlook(now) : null, now,
             startDate: url.searchParams.get('start') ?? undefined,
             endDate: url.searchParams.get('end') ?? undefined,
@@ -154,7 +164,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const cancel = () => cancellation.abort();
           res.once('close', cancel);
           try {
-            const result = chartService ? await chartService.query(args, { signal: cancellation.signal }) : getChartData({ store, ...args });
+            const result = readerCharts ? await readerCharts.query(args, { signal: cancellation.signal }) : getChartData({ store: readerStore, ...args });
             if (!res.destroyed) return json(200, result);
           } finally { res.removeListener('close', cancel); }
           return;
@@ -164,7 +174,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate((current, input) => json(200, current.setTemporary(input)));
         if (req.method === 'POST' && url.pathname === '/api/test/h66') return await mutate(async (current, input) => json(200, await current.testH66(input)));
         if (req.method === 'POST' && url.pathname === '/api/heating-test') return await mutate(async (current, input) => json(200, await current.testHeating(input)));
-        if (req.method === 'GET' && url.pathname === '/api/events') return json(200, store.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
+        if (req.method === 'GET' && url.pathname === '/api/events') return json(200, readerStore.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();
           const from = numberParam(url, 'from', now - 86_400_000, Number.MAX_SAFE_INTEGER);
@@ -172,7 +182,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (to < from || to - from > 31 * 86_400_000) throw new Error('History range must be at most 31 days');
           const signal = url.searchParams.get('signal') ?? 'indoor_temperature';
           if (!/^[a-z0-9_]{1,64}$/.test(signal)) throw new Error('Invalid signal');
-          return json(200, store.observations({ signal, from, to, limit: numberParam(url, 'limit', 1000, 5000) }));
+          return json(200, readerStore.observations({ signal, from, to, limit: numberParam(url, 'limit', 1000, 5000) }));
         }
         if (req.method === 'POST' && url.pathname === '/api/override') return await mutate((current, input) => json(200, current.setOverride(input.minutes)));
         return json(404, { error: 'Unknown endpoint' });
@@ -196,8 +206,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.' : error.message });
       }
-    }
+    } finally { readContext?.release?.(); }
   });
-  if (overviewService !== chartService) server.once('close', () => { void overviewService.close(); });
+  if (overviewService && overviewService !== chartService) server.once('close', () => { void overviewService.close(); });
   return server;
 }

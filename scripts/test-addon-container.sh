@@ -62,4 +62,6 @@ docker run --rm --platform "$stmq_platform" --network none --env STMQ_CONTAINER_
 # In-process fixture separately checks the actual provider acquisition plumbing,
 # including FMI, Elering fallback and simulated restart. It has no HTTP transport.
 docker run --rm "${stmq_mounts[@]}" "${stmq_options_mount[@]}" "$stmq_image" node scripts/smoke-container.js
+docker run --rm --platform "$stmq_platform" --network none --env STMQ_CONTAINER_FIXTURE=1 \
+  "$stmq_image" node scripts/smoke-replica-container.js
 echo "Add-on container checks passed: $stmq_platform"

@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
 import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
 
@@ -61,6 +61,55 @@ export function acquisitionConfiguration(input = {}) {
   };
 }
 
+/** Machine-local replication settings never enter the mirrored database. */
+export function replicationConfiguration(input = {}, env = {}, { role = 'primary', dataDir, databaseDir } = {}) {
+  const enabled = env.STMQ_REPLICATION_ENABLED === undefined ? input.enabled ?? false
+    : env.STMQ_REPLICATION_ENABLED === '1' ? true : env.STMQ_REPLICATION_ENABLED === '0' ? false : null;
+  if (typeof enabled !== 'boolean') throw new Error('STMQ_REPLICATION_ENABLED must be 0 or 1');
+  if (role === 'replica' && enabled) throw new Error('A replica cannot enable outgoing replication');
+  const text = (value, name) => {
+    if (typeof value !== 'string' || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value))
+      throw new Error(`Invalid replication setting: ${name}`);
+    return value;
+  };
+  const number = (value, fallback, min, max, name) => {
+    const result = value === undefined ? fallback : Number(value);
+    if (!Number.isFinite(result) || result < min || result > max)
+      throw new Error(`Invalid replication setting: ${name}`);
+    return result;
+  };
+  const settings = {
+    enabled,
+    directory: resolve(text(env.STMQ_REPLICA_DIR ?? (input.directory || resolve(databaseDir ?? '.', 'replica')), 'directory')),
+    sourceDirectory: resolve(text(env.STMQ_REPLICATION_WORK_DIR ?? resolve(dataDir ?? '.', 'replication'), 'work_directory')),
+    sshHost: text(env.STMQ_REPLICATION_SSH_HOST ?? input.ssh_host ?? '', 'ssh_host'),
+    sshConfigPath: text(env.STMQ_REPLICATION_SSH_CONFIG ?? input.ssh_config ?? '', 'ssh_config'),
+    remoteDirectory: text(env.STMQ_REPLICATION_REMOTE_DIR ?? input.remote_directory ?? '', 'remote_directory'),
+    receiverPath: text(env.STMQ_REPLICATION_RECEIVER ?? input.receiver_path ?? '', 'receiver_path'),
+    nodePath: text(env.STMQ_REPLICATION_NODE ?? input.node_path ?? 'node', 'node_path'),
+    rsyncPath: text(env.STMQ_REPLICATION_RSYNC ?? input.rsync_path ?? 'sqlite3_rsync', 'rsync_path'),
+    remoteRsyncPath: text(env.STMQ_REPLICATION_REMOTE_RSYNC ?? input.remote_rsync_path ?? 'sqlite3_rsync', 'remote_rsync_path'),
+    intervalMs: Math.round(number(env.STMQ_REPLICATION_INTERVAL_SECONDS ?? input.interval_seconds, 60, 10, 86400, 'interval_seconds') * 1000),
+    timeoutMs: Math.round(number(env.STMQ_REPLICATION_TIMEOUT_SECONDS ?? input.timeout_seconds, 3600, 30, 86400, 'timeout_seconds') * 1000),
+    staleAfterMs: Math.round(number(env.STMQ_REPLICA_STALE_SECONDS ?? input.stale_seconds, 180, 30, 604800, 'stale_seconds') * 1000),
+  };
+  if (settings.sshConfigPath && !isAbsolute(settings.sshConfigPath))
+    throw new Error('Replication ssh_config must be an absolute path');
+  if (enabled) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(settings.sshHost))
+      throw new Error('Replication ssh_host must be an SSH host alias');
+    if (!isAbsolute(settings.remoteDirectory) || settings.remoteDirectory === '/' || !isAbsolute(settings.receiverPath))
+      throw new Error('Replication remote_directory and receiver_path must be absolute paths');
+    if (![settings.nodePath, settings.rsyncPath, settings.remoteRsyncPath].every(value => value && !value.startsWith('-')))
+      throw new Error('Replication executables must be configured');
+    if (![settings.remoteDirectory, settings.receiverPath, settings.nodePath, settings.remoteRsyncPath]
+      .every(value => /^[A-Za-z0-9_./-]+$/.test(value) && !value.split('/').includes('..')))
+      throw new Error('Replication remote paths must contain only letters, numbers, dots, underscores, slashes and hyphens, without parent traversal');
+    if (settings.sourceDirectory.includes(':')) throw new Error('Replication work directory cannot contain a colon');
+  }
+  return settings;
+}
+
 export function teslamateConfiguration(input = {}) {
   if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new Error('TeslaMate enabled must be a boolean');
   const enabled = input.enabled === true;
@@ -119,7 +168,10 @@ export function controlConfiguration(input = {}) {
 // overrides remain authoritative; temporary occupancy stays in the database.
 function buildConfiguration(options, env, cwd, configuration, source, { bootstrap = false } = {}) {
   const addon = env.STMQ_ADDON === '1';
-  const input = env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
+  const role = env.STMQ_ROLE ?? options.controller?.role ?? 'primary';
+  if (!['primary', 'replica'].includes(role)) throw new Error('STMQ_ROLE must be primary or replica');
+  const replica = role === 'replica';
+  const input = replica ? 'offline' : env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
   if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
   const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
@@ -136,7 +188,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       if (!['indoor_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
-    connections = { ...options, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
+    const { replication: _replication, ...providerOptions } = options;
+    connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
@@ -154,19 +207,20 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     throw new Error('The ingress port must be valid and different from the direct port.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
-  const config = { addon, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
+  const config = { addon, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
     legacyDbPath: resolve(dataDir, databaseName),
     host, port, token, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
-    deviceId: (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
+    replication: replicationConfiguration(options.replication, env, { role, dataDir, databaseDir }),
+    deviceId: replica ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
     control: controlConfiguration(options.controller),
     recording: recordingConfiguration(options.recording),
     acquisition: acquisitionConfiguration(options.acquisition),
-    h66: { enabled: Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: true,
+    h66: { enabled: !replica && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !replica,
       maxAgeMs: 300000, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
-    h66Verification: verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
-    settings: validateSettings({ mode: env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
+    h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
+    settings: validateSettings({ mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
       comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
   configurationSources.set(config, source);
   configurationReaders.set(config, () => loadConfig(env, cwd));

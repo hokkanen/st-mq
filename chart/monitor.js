@@ -6,6 +6,7 @@ import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from '.
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
+import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey } from './replica-status.js';
 
 const $ = id => document.getElementById(id);
 const ingress = usesHomeAssistantLogin();
@@ -19,6 +20,7 @@ let h66TestBusy = false;
 let settingsReloadBusy = false;
 let lastHeatingTestResult;
 let refreshSequence = 0;
+let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
@@ -50,6 +52,10 @@ const reasons = {
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 async function api(path, data, options = {}) {
+  if (data !== undefined && (!lastStatus || isReadOnlyReplica(lastStatus))) {
+    const error = new Error(lastStatus ? 'This replica is read-only. Make changes on the primary computer.' : 'Wait for the installation status before making changes.');
+    error.status = 403; throw error;
+  }
   const response = await fetch(applicationUrl(path), { signal: options.signal, method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   if (response.status === 401) { $('auth').hidden = ingress; const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error; }
   const result = await response.json();
@@ -97,7 +103,7 @@ function renderContract(s) {
   list.append(heading, table, tariff);
 }
 function updateTemporaryButtons() {
-  const busy = temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy;
+  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy;
   $('temporary-submit').disabled = busy || dirtyTemporary.size === 0;
   const saved = lastStatus ? temporaryValues(lastStatus) : {};
   $('home-now').disabled = busy || !($('away-until').value || saved.awayUntilLocal);
@@ -342,6 +348,11 @@ function renderH66(s) {
 function render(s) {
   lastStatus = s;
   $('error').hidden = true;
+  const replica = renderReplicaStatus(document, s, { formatTime: time });
+  if (replica) {
+    if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
+    return replica;
+  }
   $('connection').textContent = `${s.input === 'simulated' ? 'SIMULATION' : s.liveWrites ? 'LIVE CONTROL' : s.input !== 'offline' ? 'LIVE OBSERVATION' : 'READ-ONLY'} · ${s.mode.toUpperCase()}`;
   $('context').textContent = s.input === 'simulated' ? 'Simulated devices and example prices. This workspace sends no commands to your home.'
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
@@ -430,8 +441,16 @@ async function refresh({ forceChart = false } = {}) {
   try {
     const s = await api('/api/status');
     if (sequence !== refreshSequence) return;
-    render(s);
-    await Promise.all([historyChart.refresh(s, { force: forceChart }), events()]);
+    const replica = render(s);
+    if (replica && !replica.available) return;
+    const snapshot = replicaSnapshotKey(s);
+    const replaced = replica && snapshot !== lastReplicaSnapshot;
+    if (replaced) {
+      lastEvent = 0; $('events').replaceChildren(); auditFetchedAt = 0;
+      void refreshRecordingOverview({ force: true });
+    }
+    lastReplicaSnapshot = snapshot;
+    await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);
   } catch (error) { if (sequence === refreshSequence) showError(error); }
 }
 $('settings-reload').addEventListener('click', async () => {
@@ -468,7 +487,7 @@ for (const [field, id] of Object.entries(temporaryFields)) {
   $(id).addEventListener('change', changed);
 }
 async function applyTemporary(values) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy) return;
+  if (!lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy) return;
   temporaryBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();

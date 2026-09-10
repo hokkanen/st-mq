@@ -18,6 +18,12 @@ regressions and a separate opt-in live suite verify the provider paths. See the
 [progress log](docs/PROGRESS.md) for actual live-check results and remaining limits.
 Physical equipment control has not been commissioned.
 
+An optional [read-only LAN replica](docs/replication.md) keeps a second computer's
+SQLite history synchronized over SSH. It serves charts through primary outages,
+catches up after replica outages, and verifies each snapshot before publication.
+The replica never acquires data or controls equipment. Replication is disabled by
+default and requires configuring the two computers.
+
 An independent recording optimizer targets a configurable **10 GB/year** rolling
 growth rate with a **five-minute maximum interval when fresh measurements exist**.
 Electricity history stores three estimated phase-energy increments for Easee and
