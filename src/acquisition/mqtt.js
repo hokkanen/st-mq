@@ -33,7 +33,8 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
 
 // Observations and the four permitted native-setting writes share this connection.
 // Credentials and raw broker errors never enter event logs.
-export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true }) {
+export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true,
+  reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`) }) {
   const settings = { ...(config.h66 ?? {}) };
   const intervalMs = settings.snapshotIntervalMs ?? 60_000;
   const deviceId = settings.deviceId ?? config.deviceId;
@@ -74,10 +75,21 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   };
   const pendingPublications = new Set();
   const lastErrorAt = new Map();
-  const report = type => {
+  const report = (type, cause) => {
     const now = engine.clock();
     if (now - (lastErrorAt.get(type) ?? -Infinity) >= 60_000) {
-      store.event(type, { source }, now); lastErrorAt.set(type, now);
+      // Diagnostic failures must not escape a timer or reject its catch handler.
+      // Rate-limit failed attempts too; never recursively log into a busy DB.
+      lastErrorAt.set(type, now);
+      const errorCode = Number.isSafeInteger(cause?.errcode) ? cause.errcode : undefined;
+      try { store.event(type, { source, ...(errorCode === undefined ? {} : { errorCode }) }, now); }
+      catch (error) {
+        const busy = Number.isSafeInteger(error?.errcode) && [5, 6].includes(error.errcode & 255);
+        try { reportStorageFailure({ event: 'mqtt-event-write-failed', source, attemptedEvent: type,
+          reason: busy ? 'database-busy' : 'storage-write-failed',
+          ...(errorCode === undefined ? {} : { captureErrorCode: errorCode }) }); }
+        catch { /* A failed diagnostic sink cannot terminate acquisition either. */ }
+      }
     }
   };
   const publish = (topic, payload, options) => new Promise((resolve, reject) => {
@@ -170,7 +182,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   maintenance?.unref?.();
   const teslaMaintenance = teslamate ? setInterval(() => {
     if (stopped) return;
-    try { teslamate.tick(engine.clock()); } catch { report('mqtt-teslamate-capture-failed'); }
+    try { teslamate.tick(engine.clock()); } catch (error) { report('mqtt-teslamate-capture-failed', error); }
   }, 5000) : null;
   teslaMaintenance?.unref?.();
   if (client.connected) connectedHandler();

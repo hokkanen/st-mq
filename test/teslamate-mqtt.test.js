@@ -4,9 +4,13 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { start } from '../src/main.js';
+import { startMqtt } from '../src/acquisition/mqtt.js';
 import { loadConfig } from '../src/app/config.js';
 import { Engine } from '../src/app/engine.js';
+import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
 test('Tesla-only MQTT opt-in starts without H66 and stores total energy through the existing subscriber', async t => {
@@ -62,4 +66,45 @@ test('provider status includes disabled live acquisition and omits absent acquis
   assert.equal(status().teslamate.enabled, true);
   assert.equal(status().teslamate.connected, true);
   assert.deepEqual(saved, { market: { status: 'ok' } });
+});
+
+for (const sinkFails of [false, true]) test(`TeslaMate timer survives a SQLite writer lock and resumes capture (diagnostic sink fails: ${sinkFails})`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-mqtt-lock-'));
+  const path = join(directory, 'test.sqlite'), store = new Store(path), writer = new DatabaseSync(path);
+  // Exercise the actual SQLITE_BUSY path without waiting five seconds per write.
+  store.db.exec('PRAGMA busy_timeout = 0');
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let now = Date.parse('2026-01-01T12:00:00Z'), locked = false, reader;
+  t.after(async () => {
+    if (locked) writer.exec('ROLLBACK');
+    await reader?.close();
+    writer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  const client = new EventEmitter(), diagnostics = [];
+  client.end = (force, options, done) => done();
+  const engine = { clock: () => now, recorder: new Recorder(store, { clock: () => now }) };
+  reader = await startMqtt({ engine, store, config: {
+    connections: { mqtt: { address: 'mqtt://invented.invalid' }, teslamate: { enabled: true, carId: '2' } },
+  }, connect: () => client, reportStorageFailure: diagnostic => {
+    diagnostics.push(diagnostic);
+    if (sinkFails) throw new Error('Invented diagnostic sink failure');
+  } });
+  const tick = () => { now += 5000; t.mock.timers.tick(5000); };
+  const checkpointKey = 'teslamate:acquisition:2';
+  writer.exec('BEGIN IMMEDIATE'); locked = true;
+  assert.doesNotThrow(tick, 'A failed diagnostic write must not escape the maintenance timer');
+  assert.deepEqual(diagnostics, [{ event: 'mqtt-event-write-failed', source: 'teslamate',
+    attemptedEvent: 'mqtt-teslamate-capture-failed', reason: 'database-busy', captureErrorCode: 5 }]);
+  assert.equal(store.getState(checkpointKey), null, 'The failed capture does not publish a checkpoint');
+  for (let i = 0; i < 11; i++) assert.doesNotThrow(tick);
+  assert.equal(diagnostics.length, 1, 'Failed diagnostic attempts are limited to once a minute');
+  assert.doesNotThrow(tick);
+  assert.equal(diagnostics.length, 2, 'A continuing failure remains visible after the rate limit');
+  writer.exec('ROLLBACK'); locked = false;
+  assert.doesNotThrow(tick);
+  assert.equal(store.getState(checkpointKey).cursor, now, 'The next scheduled capture commits after the lock is released');
+  assert.equal(diagnostics.length, 2);
+  client.emit('error', new Error('Invented private broker error'));
+  const event = store.db.prepare("SELECT payload FROM events WHERE type='mqtt-error'").get();
+  assert.deepEqual(JSON.parse(event.payload), { source: 'teslamate' }, 'Normal logging recovers without recording raw broker errors');
 });
