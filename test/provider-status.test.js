@@ -367,7 +367,7 @@ test('scoped charger age stays informational and scopes all other current notes'
   const display = describeProvider('easee', informational, options);
   assert.equal(display.state, 'Available');
   assert.equal(display.attention, false);
-  assert.match(display.detail, /Charger 1 readings have source timestamps older than 1.5 hours\./);
+  assert.match(display.detail, /Charger 1 current readings have source timestamps older than 1.5 hours\./);
   assert.doesNotMatch(display.detail, /[Pp]roperty|different times|asynchronous/);
   informational.currentReadings.charger.qualityIssues = ['stale', 'asynchronous_snapshot'];
   assert.equal(describeProvider('easee', informational, options).attention, false,
@@ -438,8 +438,8 @@ test('Easee identifies old charger and property timestamps and only property sta
     const result = describeProvider('easee', { status, lastSuccessAt: now, qualityIssues }, options);
     assert.equal(result.state, property ? 'Needs attention' : 'Available');
     assert.equal(result.attention, property);
-    assert.equal(result.detail.includes('Charger 1 readings have old source timestamps.'), charger);
-    assert.equal(result.detail.includes('Property readings have old source timestamps.'), property);
+    assert.equal(result.detail.includes('Charger 1 current readings have old source timestamps.'), charger);
+    assert.equal(result.detail.includes('Property current readings have old source timestamps.'), property);
     assert.doesNotMatch(result.detail, /Some readings have old source timestamps/);
   }
 });
@@ -452,7 +452,7 @@ test('informational charger timestamps do not hide other Easee problems', () => 
     const result = describeProvider('easee', { lastSuccessAt: now, ...health }, options);
     assert.equal(result.state, 'Needs attention');
     assert.equal(result.attention, true);
-    assert.match(result.detail, /Charger 1 readings have old source timestamps/);
+    assert.match(result.detail, /Charger 1 current readings have old source timestamps/);
     assert.match(result.detail, /implausible|Download failed/);
   }
 });
@@ -463,8 +463,8 @@ test('source ages use completed half-hour buckets and keep charger and property 
     const result = describeProvider('easee', { status: 'degraded', lastSuccessAt: now,
       qualityIssues: ['charger_stale', 'property_stale'],
       staleSourceTimes: { charger_stale: now - 48 * 3_600_000, property_stale: now - minutes * 60_000 } }, options);
-    assert.ok(result.detail.includes(`Property readings have source timestamps older than ${age}.`), result.detail);
-    assert.match(result.detail, /Charger 1 readings have source timestamps older than 48 hours\./);
+    assert.ok(result.detail.includes(`Property current readings have source timestamps older than ${age}.`), result.detail);
+    assert.match(result.detail, /Charger 1 current readings have source timestamps older than 48 hours\./);
     assert.equal(result.attention, true);
   }
   const health = { status: 'degraded', qualityIssues: ['stale'], staleSourceTimes: { stale: now - 135 * 60_000 } };
@@ -477,7 +477,7 @@ test('missing or invalid age metadata keeps legacy warnings without displaying p
     'https://provider.example/?token=private-secret', { value: now - 3_600_000 }]) {
     const result = describeProvider('easee', { status: 'ok', qualityIssues: ['charger_stale'],
       staleSourceTimes: { charger_stale: at } }, options);
-    assert.match(result.detail, /Charger 1 readings have old source timestamps\./);
+    assert.match(result.detail, /Charger 1 current readings have old source timestamps\./);
     assert.equal(result.attention, false);
     assert.doesNotMatch(JSON.stringify(result), /private-secret|provider\.example|https:|NaN|Infinity/);
   }

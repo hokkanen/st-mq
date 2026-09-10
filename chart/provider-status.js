@@ -11,8 +11,8 @@ const states = Object.freeze({ ok: 'Available', healthy: 'Available', available:
 
 const qualityLabels = Object.freeze({
   stale: 'Some readings have old source timestamps.',
-  charger_stale: 'Charger 1 readings have old source timestamps.',
-  property_stale: 'Property readings have old source timestamps.',
+  charger_stale: 'Charger 1 current readings have old source timestamps.',
+  property_stale: 'Property current readings have old source timestamps.',
   source_time_unknown: 'Some readings have no source timestamp.',
   future_source_time: 'Some source timestamps are in the future.',
   asynchronous_snapshot: 'Current readings were measured at different times.',
