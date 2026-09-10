@@ -33,7 +33,10 @@ export function* historicalSolar(store,range,now) {
       const value={...item,source:item.source??row.source,fetchedAt:item.fetchedAt??row.fetched_at,issuedAt:item.issuedAt??row.issued_at};
       if(value.issuedAt==null&&Number.isFinite(row.first_fetched_at))value.fetchedAt=Math.min(value.fetchedAt,row.first_fetched_at);
       if(value.solar) {
-        value.solar={...value.solar};
+        // Native provider rows share the forecast's timestamps. A solar backup
+        // can override them, including an explicitly unknown publication time.
+        value.solar={source:value.source,fetchedAt:value.fetchedAt,issuedAt:value.issuedAt,
+          issuedAtBasis:value.issuedAtBasis,...value.solar};
         if(value.solar.issuedAt==null&&Number.isFinite(row.first_fetched_at))value.solar.fetchedAt=Math.min(value.solar.fetchedAt??row.fetched_at,row.first_fetched_at);
       }
       return value;
