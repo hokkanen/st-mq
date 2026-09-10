@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, openSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 const MAX_LIMIT = 5000;
 const schema = `
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -220,6 +220,11 @@ export class Store {
           CREATE INDEX observations_recovery_energy ON observations(device,signal,
             CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END);
         `);
+        // A new learning algorithm starts after archived journal entries. Its
+        // first/current-page lookups must not rescan that archive while a
+        // history batch holds SQLite's single writer lock.
+        if (version < 12) this.db.exec(`CREATE INDEX learning_entries_algorithm
+          ON learning_journal_entries(epoch,input,algorithm_version,id)`);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
