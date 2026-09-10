@@ -74,11 +74,43 @@ try {
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
   await send('Runtime.enable'); await send('Page.enable');
+  // Expose the existing status poll to exercise its full render path without a 15-second wait.
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    const scheduleInterval = globalThis.setInterval.bind(globalThis);
+    globalThis.setInterval = (callback, delay, ...args) => {
+      if (delay === 15_000) globalThis.refreshSensorSmokeStatus = () => callback(...args);
+      return scheduleInterval(callback, delay, ...args);
+    };
+  ` });
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   const base = `http://127.0.0.1:${app.server.address().port}`;
   await send('Page.navigate', { url: base });
   await until("document.getElementById('history')?.dataset.ready === 'true' && document.getElementById('indoor')?.textContent === '21.0 °C'");
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
+  const sensorParents = '#learning-panel-details, #model-inputs-details, details[data-model-input=model_indoor_temperature]';
+  assert.equal(await evaluate("document.querySelectorAll('#sensor-change-details').length"), 1);
+  assert.equal(await evaluate("document.querySelector('#home-control #sensor-change-details') === null"), true,
+    'Home & heating has no sensor maintenance controls');
+  assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('[data-model-input]')?.dataset.modelInput"),
+    'model_indoor_temperature', 'Sensor changes belong to the Average indoor model input');
+  assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('article')?.id"), 'house-model');
+  assert.equal(await evaluate("document.querySelector('#sensor-change-details > summary span').textContent"), 'Sensor changes');
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('${sensorParents}, #sensor-change-details'), fold => fold.open).some(Boolean)`),
+    false, 'Sensor changes and the model input disclosures start collapsed');
+  for (const width of [1440, 375]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: width < 600 });
+    const heights = await evaluate(`(() => {
+      const cards = ['home-control', 'providers-controls'].map(id => document.getElementById(id));
+      const panel = document.getElementById('sensor-change-details'), parent = panel.parentNode, next = panel.nextSibling;
+      const present = cards.map(card => card.getBoundingClientRect().height);
+      panel.remove();
+      const absent = cards.map(card => card.getBoundingClientRect().height);
+      parent.insertBefore(panel, next);
+      return { present, absent };
+    })()`);
+    assert.deepEqual(heights.present, heights.absent, `Sensor maintenance adds no closed Home/Data height at ${width}px`);
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("document.querySelector('.indoor-readings, #upstairs, #downstairs, #bedroom') === null"), true);
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.metrics article > p'), node => node.textContent)"),
     ['INDOOR AVERAGE', 'OUTDOOR', 'HEATING REQUEST', 'ALL-IN PRICE']);
@@ -138,19 +170,48 @@ try {
     writeFileSync(`var/home-temperatures-${theme}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   }
   await evaluate("document.getElementById('theme-toggle').click()");
-  await evaluate("document.getElementById('sensor-change-details').open=true");
+  await evaluate(`document.querySelectorAll('${sensorParents}').forEach(fold => { fold.open = true; })`);
+  assert.equal(await evaluate("document.getElementById('sensor-change-submit').checkVisibility()"), false,
+    'Viewing the Average indoor explanation leaves the maintenance form collapsed');
+  assert.equal(await evaluate("document.querySelector('#sensor-change-details > summary').checkVisibility()"), true);
+  await evaluate("document.querySelector('#sensor-change-details > summary').focus()");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  assert.equal(await evaluate("document.getElementById('sensor-change-details').open"), true, 'Sensor maintenance opens with the keyboard');
   await until("!document.getElementById('sensor-change-submit').disabled");
   assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-signal').options, option => option.textContent)"),
     ['Upstairs', 'Downstairs', 'Bedroom', 'Outdoor']);
+  assert.equal(await evaluate("document.querySelector('label[for=sensor-change-reason]').firstChild.textContent"), 'Reason');
+  assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-reason').options, option => option.textContent)"),
+    ['Replacement', 'New location', 'Calibration', 'Other']);
+  assert.equal(await evaluate("document.getElementById('sensor-change-submit').textContent"), 'Record change now');
   await evaluate("document.getElementById('sensor-change-signal').value='downstairs_temperature'; document.getElementById('sensor-change-reason').value='moved'; document.getElementById('sensor-change-signal').focus();");
   await evaluate("document.getElementById('sensor-change-refresh').click()");
   await until("!document.getElementById('sensor-change-refresh').disabled");
   assert.equal(await evaluate("document.getElementById('sensor-change-signal').value"), 'downstairs_temperature');
   assert.equal(await evaluate("document.activeElement.id"), 'sensor-change-signal');
-  await evaluate("document.getElementById('sensor-change-submit').click()");
+  await evaluate("globalThis.sensorSmokeForm = document.getElementById('sensor-change-form'); globalThis.refreshSensorSmokeStatus()");
+  assert.equal(await evaluate("document.getElementById('sensor-change-form') === globalThis.sensorSmokeForm"), true,
+    'Status rendering keeps the existing sensor form mounted');
+  assert.equal(await evaluate("document.getElementById('sensor-change-signal').value"), 'downstairs_temperature');
+  assert.equal(await evaluate("document.getElementById('sensor-change-reason').value"), 'moved');
+  assert.equal(await evaluate("document.activeElement.id"), 'sensor-change-signal', 'Status refresh preserves sensor form focus');
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('${sensorParents}, #sensor-change-details'), fold => fold.open).every(Boolean)`),
+    true, 'Status refresh preserves all nested disclosure states');
+  await evaluate(`(() => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (url, options) => {
+      if (String(url).endsWith('/api/sensor-changes') && options?.method === 'POST') {
+        globalThis.sensorSmokeSavedRequest = JSON.parse(options.body);
+      }
+      return originalFetch(url, options);
+    };
+    document.getElementById('sensor-change-submit').click();
+  })()`);
   await until("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === '—'");
   assert.match(await evaluate("document.getElementById('sensor-change-message').textContent"), /Downstairs change recorded/);
-  assert.match(await evaluate("document.getElementById('sensor-change-entries').textContent"), /Downstairs · Moved/);
+  assert.match(await evaluate("document.getElementById('sensor-change-entries').textContent"), /Downstairs · New location/);
   const settling = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
   assert.equal(settling.downstairs.value, 20.2, 'raw sensor values remain available during settling');
   assert.equal(settling.downstairs.settling, true);
@@ -159,19 +220,44 @@ try {
   assert.equal(saved.events.length, 1); assert.equal(saved.events[0].signal, 'downstairs_temperature');
   assert.equal(saved.events[0].reason, 'moved'); assert.equal(saved.events[0].at, now);
   mkdirSync('var', { recursive: true });
-  for (const width of [1440, 375]) {
+  for (const width of [1440, 1024, 430, 390, 375]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: width < 600 });
     await evaluate("document.getElementById('sensor-change-details').scrollIntoView({block:'center'})");
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `sensor form fits ${width}px`);
     assert.equal(await evaluate("document.getElementById('sensor-change-submit').checkVisibility()"), true);
+    const controls = await evaluate(`Array.from(document.querySelectorAll('#sensor-change-form select, #sensor-change-form button'), node => {
+      const box = node.getBoundingClientRect(), parent = node.closest('[data-model-input]').getBoundingClientRect();
+      return { id: node.id, left: box.left - parent.left, right: parent.right - box.right, width: box.width };
+    })`);
+    assert.ok(controls.every(control => control.left >= 0 && control.right >= 0 && control.width >= 100),
+      `Nested sensor controls stay usable inside Average indoor at ${width}px`);
     writeFileSync(`var/sensor-change-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   }
+  // A lost response keeps the original request id. Reload must reveal the nested retry control.
+  const savedRequest = await evaluate('globalThis.sensorSmokeSavedRequest');
+  assert.equal(typeof savedRequest?.requestId, 'string');
+  await evaluate("sessionStorage.setItem('stmq-sensor-change-pending', JSON.stringify(globalThis.sensorSmokeSavedRequest))");
+  await send('Page.reload');
+  await until("document.getElementById('history')?.dataset.ready === 'true' && !document.getElementById('sensor-change-retry')?.disabled");
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('${sensorParents}, #sensor-change-details'), fold => fold.open).every(Boolean)`),
+    true, 'Reload opens every parent of an uncertain sensor change');
+  assert.equal(await evaluate("document.getElementById('sensor-change-retry').checkVisibility()"), true,
+    'The recovered retry action is visible inside the nested model input');
+  assert.equal(await evaluate("document.getElementById('sensor-change-signal').value"), 'downstairs_temperature');
+  assert.equal(await evaluate("document.getElementById('sensor-change-reason').value"), 'moved');
+  await evaluate("document.getElementById('sensor-change-retry').click()");
+  await until("document.getElementById('sensor-change-retry').hidden && document.getElementById('sensor-change-message').textContent.includes('Downstairs change recorded')");
+  const retried = await fetch(`${base}/api/sensor-changes`).then(response => response.json());
+  assert.equal(retried.events.length, 1, 'Retry after reload does not duplicate the saved sensor change');
+  assert.equal(await evaluate("sessionStorage.getItem('stmq-sensor-change-pending')"), null);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['room cards removed', 'raw room readings retained', 'weighted indoor average',
     'one Average indoor chart legend', 'garage stays on right axis', 'garage and other air group removed from drawer', 'all home temperatures on left axis',
     'Smartthings source with local MQTT', 'distinct room colours in both themes', 'average and outdoor preserve colours',
-    'configured sensor choices', 'selection and focus survive refresh', 'real sensor-change API submission',
-    'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout'] }));
+    'sensor maintenance under Average indoor', 'unchanged closed Home and Data card heights', 'keyboard disclosure access',
+    'configured sensor choices and reason labels', 'selection, focus and open state survive status refresh', 'real sensor-change API submission',
+    'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout',
+    'reload reveals pending retry through all ancestor disclosures', 'retry remains idempotent'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

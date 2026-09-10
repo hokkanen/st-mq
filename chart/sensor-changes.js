@@ -1,8 +1,8 @@
 const pendingKey = 'stmq-sensor-change-pending';
 const labels = Object.freeze({ indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs',
   bedroom_temperature: 'Bedroom', garage_temperature: 'Garage', outdoor_temperature: 'Outdoor' });
-const reasons = Object.freeze({ replacement: 'Replacement', moved: 'Moved', calibration: 'Calibration changed', other: 'Other change' });
-const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const reasons = Object.freeze({ replacement: 'Replacement', moved: 'New location', calibration: 'Calibration', other: 'Other' });
+const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const validChange = body => body && Object.hasOwn(labels, body.signal) && Object.hasOwn(reasons, body.reason);
 const available = view => view?.available === true && view.readOnly !== true;
 
@@ -106,7 +106,7 @@ export function createSensorChangePanel({ document, request, storage, beforeMuta
     if (state.pending) { sensor.value = state.pending.signal; reason.value = state.pending.reason; }
     const disabled = state.busy || !!state.pending || !available(state.view) || !sensors.length;
     sensor.disabled = disabled; reason.disabled = disabled; $('sensor-change-submit').disabled = disabled;
-    $('sensor-change-submit').textContent = state.busy ? 'Recording…' : 'Sensor changed';
+    $('sensor-change-submit').textContent = state.busy ? 'Recording…' : 'Record change now';
     $('sensor-change-content').setAttribute('aria-busy', String(state.busy || state.loading));
     $('sensor-change-message').textContent = state.message;
     $('sensor-change-message').classList.toggle('form-error', state.error);
@@ -131,6 +131,10 @@ export function createSensorChangePanel({ document, request, storage, beforeMuta
   $('sensor-change-refresh').addEventListener('click', () => { void actions.refresh(); });
   $('sensor-change-details').addEventListener('toggle', () => { if ($('sensor-change-details').open) void actions.refresh(); });
   render(actions.snapshot());
-  if (actions.snapshot().pending) { $('sensor-change-details').open = true; void actions.refresh(); }
+  if (actions.snapshot().pending) {
+    // A restored retry must remain visible inside the normally collapsed input guide.
+    for (let fold = $('sensor-change-details'); fold; fold = fold.parentElement?.closest('details')) fold.open = true;
+    void actions.refresh();
+  }
   return { update: actions.update, refresh: actions.refresh };
 }

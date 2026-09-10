@@ -509,9 +509,16 @@ details details { margin-inline-start: 24px; }
 .comfort-overview small { display: block; font-size: 11px; color: var(--muted); margin-top: 8px; }
 .comfort-limit { border-left: 1px solid var(--border); padding-left: 24px; }
 .comfort-limit strong { color: var(--muted); }
-.sensor-change-details.dashboard-disclosure { margin-top: 14px; }
-.sensor-change-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.sensor-change-form label { display: grid; gap: 6px; margin: 0; font-size: 12px; }
+.sensor-change-details { margin-top: 14px; }
+.sensor-change-details > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 12px; }
+.sensor-change-details > summary::before { content: '›'; color: var(--muted); }
+.sensor-change-details[open] > summary::before { transform: rotate(90deg); }
+.sensor-change-details > summary::marker { content: ''; }
+.sensor-change-details > summary::-webkit-details-marker { display: none; }
+.sensor-change-details > summary small { color: var(--muted); font-size: 11px; }
+.sensor-change-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.sensor-change-form label { display: grid; min-width: 0; gap: 6px; margin: 0; font-size: 12px; }
+.sensor-change-form select { width: 100%; min-width: 0; }
 .sensor-change-form button { justify-self: start; margin: 0; grid-column: 1 / -1; }
 .sensor-change-form :disabled { cursor: default; }
 #sensor-change-message:empty, #sensor-change-availability:empty { display: none; }

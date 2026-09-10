@@ -43,7 +43,10 @@ committed windows and a versioned replay journal. See
 [adaptive recording and migration](docs/recording.md), including local MQTT temperature sensors.
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
-comfort learning after adjustments to floor circulation thermostats.
+comfort learning after adjustments to floor circulation thermostats. Record rare
+sensor maintenance under **House model → Explore learning → Model inputs →
+Average indoor → Sensor changes**; **Reason** describes the history and does not
+change the model's response.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
@@ -151,8 +154,11 @@ and saves that choice. The chart is directly below the current readings.
   its `230 × (L1 + L2 + L3) / 1000` estimate. Neither path measures heat-pump consumption.
 - **Right axis:** **Average indoor**, Garage, outdoor temperature and electricity prices
   stay available with every left-axis selection, retaining their existing colours.
-  Average indoor is the same configured sensor average used by the house model;
-  select **All home temperatures** to compare the rooms. Outdoor stays blue,
+  Average indoor is the same configured sensor average used by the house model,
+  with equal contributions from Upstairs, Bedroom and Downstairs when all three
+  are configured with default weights. Saved inputs retain their original sensor
+  membership; imported learning keeps its original Upstairs measurement.
+  Select **All home temperatures** to compare the rooms. Outdoor stays blue,
   Average indoor green, Upstairs terracotta, Downstairs amber and Bedroom violet.
   The dashed outdoor continuation is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
   charges. Explicit saved legend choices are preserved. All-in prices combine

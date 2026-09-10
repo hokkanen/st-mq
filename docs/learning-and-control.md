@@ -51,9 +51,16 @@ Saved model-input temperatures remain selectable because they describe the input
 used for learning.
 
 Observed thermal drivers are outdoor temperature, archived solar radiation,
-space-heating compressor duty and space-heating auxiliary power. Indoor temperature
-is the measured state and prediction target. Requested phase, ROOM boost and comfort
-target describe control context; they do not create a direct heat credit. The eight
+space-heating compressor duty and space-heating auxiliary power. The configured
+average of Upstairs, Bedroom and Downstairs is the live indoor state and prediction
+target, with fixed membership and equal weights by default. Missing contributing
+readings leave gaps; imported CSV learning retains its original Upstairs input.
+The model also learns a comfort reference for each participating room and checks
+each room before permitting occupied heating reduction. See
+[indoor temperatures](temperature-sensors.md) for averaging, room limits and sensor
+changes, recorded inside the **Average indoor** model-input details.
+Requested phase, ROOM boost and comfort target describe control context; they do
+not create a direct heat credit. The eight
 **Model inputs · Calculated** axes include the indoor endpoint and these seven
 input/context values exactly as saved in the learning journal.
 **Manually recorded firewood additions** markers and calculated **Fireplace release input** provide

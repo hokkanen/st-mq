@@ -23,7 +23,7 @@ const coefficientInfo = {
   preheatCPerHourPerDegree: { unit: '1/h', digits: 4, legacy: true, detail: 'Legacy heating allowance per degree of requested preheat boost. The current model treats boost as control context, without a direct unmeasured heat contribution.' },
 };
 const inputSources = {
-  model_indoor_temperature: 'Recorded indoor sensor readings and their availability. The endpoint is compared with the predicted temperature after each completed interval.',
+  model_indoor_temperature: 'Upstairs, Downstairs and Bedroom readings contribute according to the configured weights. Every contributing sensor must be available; missing readings leave gaps. The saved average is compared with the predicted temperature after each completed interval.',
   model_outdoor_temperature: 'H66 outdoor sensor, then FMI station, then Open-Meteo estimate when the preceding source is unavailable. Source validity is checked at each segment.',
   model_solar_radiation: 'Archived FMI radiation forecast, with Open-Meteo as backup. Radiation is modeled, not measured at the house. It is expressed in W/m²; the model converts it to kW/m².',
   model_compressor_duty: 'Recorded compressor-active and DHW-routing states are intersected in time. Space-heating activity is 1, other known activity is 0; the chart expresses duty as a percentage.',
@@ -130,7 +130,7 @@ export function learningDisplay(learning = {}) {
 
 /** Static definitions stay mounted during status refreshes, preserving open
  * folds and keyboard focus while measurements and readiness continue updating. */
-export function renderModelInputs(root, rows = modelInputDescriptions()) {
+export function renderModelInputs(root, rows = modelInputDescriptions(), { sensorChanges } = {}) {
   if (!root || root.childElementCount) return;
   const intro = document.createElement('p'); intro.className = 'muted';
   intro.textContent = 'These inputs describe how the house model learns: recorded sensor readings, the temperature target, control context and logged firewood. Select Model inputs on the chart to inspect manual additions or calculated interval inputs. Fireplace release is reconstructed from its corrected history; unknown and rejected intervals remain gaps.';
@@ -140,7 +140,11 @@ export function renderModelInputs(root, rows = modelInputDescriptions()) {
     const summary = document.createElement('summary'); summary.textContent = `${row.title} · ${row.unit}`;
     const detail = document.createElement('p'); detail.textContent = row.detail;
     const sources = document.createElement('p'); sources.className = 'muted'; sources.textContent = row.sources;
-    fold.append(summary, detail, sources); root.append(fold);
+    fold.append(summary, detail, sources);
+    if (row.key === 'model_indoor_temperature' && sensorChanges) {
+      fold.append(sensorChanges); sensorChanges.hidden = false;
+    }
+    root.append(fold);
   }
 }
 

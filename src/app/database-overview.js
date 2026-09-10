@@ -8,7 +8,7 @@ const observationFields = fields(['Value and unit', 'A numeric value, or an expl
   ['Source and quality', 'Origin, availability and estimation flags; source details are not exposed here.']);
 const learningFields = fields(
   ['Time window', 'Sample timestamp and the completed interval start/end.'],
-  ['Temperatures and solar', 'Indoor temperature, outdoor temperature and estimated solar radiation; unavailable values remain missing.'],
+  ['Temperatures and solar', 'Configured indoor average, contributing upstairs/downstairs/bedroom readings and weights, outdoor temperature and estimated solar radiation; unavailable values remain missing. Imported learning retains its original upstairs-only temperature.'],
   ['Control and occupancy context', 'Requested phase, room boost, target temperature, occupied/away regime and associated episode reference.'],
   ['Estimated electrical input', 'Compressor duty, nominal compressor power, auxiliary kW, total estimated heat-pump kW and their estimation basis.'],
   ['Heat destination and equipment evidence', 'Space-heating compressor duty and auxiliary kW, hot-water/space-heating route, auxiliary stage and basis, observed activity and known-mode flags.'],
@@ -105,7 +105,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     const values = sum(signals.map(signal => observations.get(`${kind}:${signal}`) ?? empty()));
     const fact = importFacts.get(kind) ?? {};
     importItems.push(item(`csv-${kind}`, `${kind === 'stmq' ? 'st-mq' : 'Easee'} CSV observations`,
-      kind === 'stmq' ? 'Historical spot prices, requested heating commands, and indoor, garage and outdoor temperatures.'
+      kind === 'stmq' ? 'Historical spot prices, requested heating commands, and upstairs, garage and outdoor temperatures.'
         : 'Historical charger and property currents for each of three phases. These are current snapshots, not metered kWh.', values, {
       dateBasis: 'observation time', writeBehavior: 'Once when each CSV is imported; file digests and row identities prevent duplicates.',
       fields: signals.map(signal => ({ name: signalLabels[signal], description: 'Saved value, unit, timestamp, quality and original CSV row reference.' })),

@@ -519,8 +519,11 @@ are always recorded. A separate active-state measurement is not stored.
 | Settings/mode | Room setting, operating mode, room influence, heating curve, maximum supply, heat-stop and tariff-reduction settings | Explain controller behaviour/settings changes |
 | Alarms | Alarm active, alarm code | Abnormal-operation context |
 
-Garage temperature is additional to those 30 and is history-only initially.
-Collecting it does not add another free house-model coefficient.
+The local Upstairs, Bedroom and Downstairs sensors are recorded separately from
+H66 acquisition; H66 indoor is the Upstairs fallback when no dedicated topic is
+configured. The house model uses the configured indoor average described below.
+Garage temperature is also additional to those 30 and is history-only initially.
+Collecting another temperature does not add a free house-model coefficient.
 
 The house model fits a small regularized thermal response. Ordinary operation can
 teach cooling, normal heating response and solar response; it need not wait for a
@@ -631,8 +634,9 @@ their availability; each signal requires a usable new publication. Subscription
 failures are recorded separately from unchanged sensor values.
 
 The model's indoor temperature defaults to an equal average of Upstairs
-and each configured extra indoor sensor. Membership is fixed by configuration,
-including sensors temporarily missing or stale. It does not change when one
+and each configured extra indoor sensor: Upstairs, Bedroom and Downstairs each
+contribute one third when all three are configured. Membership is fixed by
+configuration, including sensors temporarily missing or stale. It does not change when one
 sensor stops reporting. The garage is excluded. Optional
 `controller.indoor_sensor_weights` assigns nonnegative weights by indoor signal
 name. Its default empty object `{}` selects the automatic equal average;
@@ -661,6 +665,10 @@ retains the original endpoints, weights and configuration needed for model repla
 Historical CSV `temp_in` remains an Upstairs reading and is never presented as a
 three-room average. Saved learning-input tooltip rows use the same short marker
 without repeating their journal source and interval beside each value.
+Sensor replacements, moves and calibrations are recorded under **House model →
+Explore learning → Model inputs → Average indoor → Sensor changes**. See
+[sensor changes](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)
+for their learning boundary and descriptive reason field.
 The left drawer lists historical axes in temperature, heating, hot-water,
 ground-loop, settings, equipment, runtime, electricity, weather and learning groups.
 Recorded and calculated roles are separate from model roles.

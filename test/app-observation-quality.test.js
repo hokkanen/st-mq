@@ -22,6 +22,35 @@ function reading({ signal = 'indoor_temperature', value = 21, sourceTime = begin
   return { source, device: 'fixture-house', signal, value, unit: 'degC', sourceTime, receivedAt, quality };
 }
 
+test('offline startup restores all three indoor readings for the configured average without freshening history', t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const rows = [['upstairs', 'indoor_temperature', 24], ['downstairs', 'downstairs_temperature', 20],
+    ['bedroom', 'bedroom_temperature', 19], ['garage', 'garage_temperature', 12],
+    ['outdoor', 'outdoor_temperature', 4]];
+  for (const [, signal, value] of rows) store.observation(reading({ signal, value,
+    sourceTime: beginning - MINUTE, receivedAt: beginning - MINUTE }));
+  let now = beginning;
+  const engine = new Engine({ store, config: { input: 'offline', control: {
+    indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 1 },
+  } }, clock: () => now });
+  const observations = engine.status().observations;
+  for (const [key, , value] of rows) {
+    assert.equal(observations[key].value, value);
+    assert.equal(observations[key].observedAt, beginning - MINUTE);
+    assert.equal(observations[key].stale, false);
+  }
+  assert.equal(observations.indoor.value, 21);
+  assert.equal(observations.indoor.source, 'indoor-average');
+  assert.equal(observations.indoor.stale, false);
+  now += 30 * MINUTE;
+  const stale = engine.status().observations;
+  assert.equal(stale.indoor.stale, true);
+  assert.equal(stale.indoor.observedAt, beginning - MINUTE);
+  for (const [key] of rows) assert.equal(stale[key].stale, true);
+  assert.equal(store.observations().length, rows.length);
+});
+
 test('garage status projects the existing reading and source without exposing device data or creating history', t => {
   const { engine, store, setTime } = setup(t, { input: 'mqtt' });
   assert.deepEqual(engine.tick().observations.garage, { value: null, stale: true });

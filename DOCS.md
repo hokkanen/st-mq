@@ -135,9 +135,14 @@ back or forward while preserving its length. The **Left axis** drawer offers
 Power, phase currents, home temperatures, live heating integral,
 solar radiation and all four historical learning metrics. **Average indoor**, Garage, outdoor temperature and prices remain
 available on the right with their existing colours. Average indoor is the configured
-sensor average used by the house model. **All home temperatures** in the left
-drawer adds the three individual room readings with synchronized air-temperature
-scales. Garage remains available on the right axis.
+sensor average used by the house model, with equal weights for Upstairs, Bedroom
+and Downstairs when all three are configured with defaults. Missing contributing
+readings remain gaps; imported learning keeps its original Upstairs measurement.
+**All home temperatures** in the left drawer adds the three individual room
+readings with synchronized air-temperature scales. Garage remains available on
+the right axis. For rare sensor replacements, moves or calibrations, open **House
+model → Explore learning → Model inputs → Average indoor → Sensor changes**. Its
+**Reason** field describes the saved history; it does not alter the learning effect.
 Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
 currents assume 230 V and unity power factor; older current-only history uses

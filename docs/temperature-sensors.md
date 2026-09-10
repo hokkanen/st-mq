@@ -18,7 +18,8 @@ the subscription fields do not use the wildcard `stmq/smoke/+/temperature`.
 
 The chart shows one **Average indoor** series on the right axis, using the existing
 indoor temperature colour. This is the same fixed average of configured indoor
-sensors used by the thermal model, with equal weights by default. The **Home
+sensors used by the thermal model: Upstairs, Bedroom and Downstairs each contribute
+one third when all three are configured with the default weights. The **Home
 temperatures · Recorded** section of the **Left axis** drawer contains one option,
 **All home temperatures**, which adds Upstairs, Bedroom and Downstairs on the left
 axis. Both air temperature axes then use the same scale. Garage remains a shared
@@ -49,11 +50,16 @@ continues using only the historical upstairs measurement.
 
 ## Replacing, moving or adjusting a sensor
 
-Open **Sensor changed** beside the comfort reference, select the sensor and a
-reason, then record the change after completing the replacement or move. Reasons
-cover replacement, moving, calibration and other measurement changes. The action
-records the current server time, including for changes that keep the same device
-identifier. It does not edit device configuration or backdate a change.
+Open **House model → Explore learning → Model inputs → Average indoor → Sensor
+changes** after completing a replacement, move or calibration. Select **Sensor**
+and **Reason**, then choose **Record change now**. The reason choices are
+**Replacement**, **New location**, **Calibration** and **Other**. Reason is saved
+as descriptive history; all four choices have the same learning effect for the
+selected sensor. The rarely used form and recent change history stay inside this
+closed maintenance section, leaving **Home & heating** for everyday controls.
+
+The action records the current server time, including for changes that keep the
+same device identifier. It does not edit device configuration or backdate a change.
 
 For a participating indoor sensor or the outdoor temperature, the action:
 

@@ -258,7 +258,7 @@ export class Engine {
     this.latest = Object.create(null);
     this.outdoorCandidates = Object.create(null);
     if (config.input === 'offline') {
-      for (const signal of ['indoor_temperature', 'outdoor_temperature']) {
+      for (const signal of [...INDOOR_SIGNALS, 'garage_temperature', 'outdoor_temperature']) {
         const observation = store.latestObservation(signal);
         if (observation) remember(this.latest, observation, clock());
       }

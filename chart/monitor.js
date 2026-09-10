@@ -70,6 +70,8 @@ async function api(path, data, options = {}) {
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
+// Mount the static input guide before restoring a possibly pending sensor change.
+renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sensor-change-details') });
 const sensorChangePanel = createSensorChangePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
@@ -243,7 +245,6 @@ function renderLearning(s) {
   }
   $('learning-detail').textContent = display.message;
   $('learning-process').textContent = display.process;
-  renderModelInputs($('model-inputs-content'), display.inputs);
   $('learning-metrics').replaceChildren();
   for (const metric of display.metrics) {
     const card = document.createElement('div'); card.className = 'learning-metric';
