@@ -47,21 +47,31 @@
 
     <section class="panel history-panel" aria-labelledby="history-title" data-snapshot-content>
       <div class="section-top chart-heading">
-        <div><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
-        <label class="axis-control">Left axis
-          <select id="left-axis">
-            <option value="power">Power</option>
-            <option value="phases">Phase currents</option>
-            <option value="integral">Heating integral</option>
-            <optgroup label="Learning">
-              <option value="learning_profit">Space-heating benefit after recovery</option>
-              <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
-              <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
-              <option value="learning_indoor_temperature">Learned normal temperature</option>
-            </optgroup>
-            <option value="solar_radiation">Solar radiation forecast</option>
-          </select>
-        </label>
+        <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
+        <div class="chart-explorer-controls" role="group" aria-label="Chart view controls">
+          <button id="chart-pan-back" type="button" aria-label="Pan chart earlier" title="Pan earlier">←</button>
+          <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+          <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+          <button id="chart-pan-forward" type="button" aria-label="Pan chart later" title="Pan later">→</button>
+          <button id="chart-zoom-reset" type="button" title="Reset zoom within selected dates">Reset view</button>
+        </div>
+        <div class="chart-axis-actions">
+          <label class="axis-control">Left axis
+            <select id="left-axis">
+              <option value="power">Power</option>
+              <option value="phases">Phase currents</option>
+              <option value="integral">Heating integral</option>
+              <optgroup label="Learning">
+                <option value="learning_profit">Space-heating benefit after recovery</option>
+                <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
+                <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
+                <option value="learning_indoor_temperature">Learned normal temperature</option>
+              </optgroup>
+              <option value="solar_radiation">Solar radiation forecast</option>
+            </select>
+          </label>
+          <button id="chart-fullscreen" type="button" aria-expanded="false" aria-controls="history">Fullscreen</button>
+        </div>
       </div>
       <div class="chart-range-controls">
         <form id="chart-range-form" class="date-range">
@@ -81,15 +91,7 @@
         </div>
       </div>
       <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
-      <div class="chart-explorer-controls" role="group" aria-label="Chart view controls">
-        <button id="chart-fullscreen" type="button" aria-expanded="false" aria-controls="history">Fullscreen</button>
-        <button id="chart-pan-back" type="button" aria-label="Pan chart earlier" title="Pan earlier">←</button>
-        <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
-        <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
-        <button id="chart-pan-forward" type="button" aria-label="Pan chart later" title="Pan later">→</button>
-        <button id="chart-zoom-reset" type="button" title="Reset zoom within selected dates">Reset view</button>
-      </div>
-      <div class="plot"><canvas id="history" tabindex="0" aria-describedby="chart-gesture-help" aria-label="Home energy, temperature and electricity prices for selected dates" role="img"></canvas></div>
+      <div class="plot"><canvas id="history" aria-label="Home energy, temperature and electricity prices for selected dates" role="img"></canvas></div>
       <div id="operating-modes" class="mode-history" aria-label="Heat-pump operating mode history"></div>
       <div id="dhwr-history" class="mode-history" aria-label="Hot-water recirculation request history"></div>
       <div id="fireplace-history" class="mode-history" aria-label="Fireplace activity from manually recorded firewood"></div>

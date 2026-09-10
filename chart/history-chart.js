@@ -54,12 +54,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   let pointBudget = 600, fastDraws = 0, detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
   const navigation = createChartNavigation({ canvas, getChart: () => graph, onSettle: () => {
     if (!overview || closed) return;
-    renderChart({ viewOnly: !pendingFullRender }); requestDetail();
+    renderChart({ viewOnly: navigation.fullscreen && !pendingFullRender }); requestDetail();
     if (refreshQueued) { const force = queuedForce; refreshQueued = queuedForce = false; refresh(status, { force }); }
   } });
   const detailLoader = createDetailLoader({ api, query: chartQuery,
     onData(result, request) {
-      if (closed || !sameSelection(request, selection) || !sameSelection(request, plottedSelection)) return;
+      if (closed || !navigation.fullscreen || !sameSelection(request, selection) || !sameSelection(request, plottedSelection)) return;
       const plotNow = chartObservationTime(status, result.now);
       detail = { ...result, now: plotNow, series: historySeriesAt(result, plotNow), points: request.points };
       if (!navigation.moving) renderChart({ viewOnly: true });
@@ -76,6 +76,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       : detailState === 'error' ? 'Detail unavailable · existing view retained' : payload?.meta?.detail ? 'Detail loaded' : 'Overview';
   }
   function requestDetail() {
+    if (!navigation.fullscreen) { detailLoader.request(null); return; }
     const view = navigation.view;
     if (!view || !overview || !sameSelection(selection, plottedSelection)) return;
     const span = view.to - view.from, fullSpan = overview.range.to - overview.range.from;
@@ -226,7 +227,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (navigation.moving) { if (!viewOnly) pendingFullRender = true; return; }
     viewOnly = viewOnly && !pendingFullRender; pendingFullRender = false;
     const view = navigation.view ?? overview.range;
-    payload = detail && detail.range.from <= view.from && detail.range.to >= view.to ? detail : overview;
+    payload = navigation.fullscreen && detail && detail.range.from <= view.from && detail.range.to >= view.to ? detail : overview;
     const started = performance.now();
     // A theme or legend change can occur during a request. Keep the previous
     // graph's labels and axes attached to its own data until the new data arrives.

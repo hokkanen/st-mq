@@ -33,6 +33,34 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
       `${description}: overview shows all selected dates`);
     assert.equal(view.zoom, 1, `${description}: baseline magnification`);
   };
+  const checkAxisButton = async description => {
+    assert.equal(await evaluate(`(() => {
+      const axis = document.getElementById('left-axis').getBoundingClientRect();
+      const button = document.getElementById('chart-fullscreen').getBoundingClientRect();
+      return axis.width > 0 && button.width > 0 && button.left >= axis.right
+        && button.left - axis.right <= 14 && Math.abs(axis.top + axis.height / 2 - button.top - button.height / 2) <= 2
+        && button.right <= innerWidth;
+    })()`), true, `${description}: fullscreen button sits immediately to the right of the axis selector`);
+  };
+  const checkToolbar = async (description, { portrait = false } = {}) => {
+    await checkAxisButton(description);
+    assert.equal(await evaluate(`(() => {
+      const heading = document.querySelector('.chart-heading').getBoundingClientRect();
+      const title = document.querySelector('.chart-heading h2').getBoundingClientRect();
+      const actions = document.querySelector('.chart-explorer-controls').getBoundingClientRect();
+      const axis = document.getElementById('left-axis').getBoundingClientRect();
+      const exit = document.getElementById('chart-fullscreen').getBoundingClientRect();
+      const buttons = [...document.querySelectorAll('.chart-explorer-controls button')].map(button => button.getBoundingClientRect());
+      const centered = rect => rect.top + rect.height / 2;
+      const oneActionRow = buttons.every(rect => Math.abs(centered(rect) - centered(buttons[0])) <= 2);
+      if (${portrait}) return oneActionRow && heading.height <= 108 && actions.left >= 0 && actions.right <= innerWidth
+        && actions.top >= Math.min(title.top, axis.top) && actions.bottom <= heading.bottom + 1;
+      const titleVisible = title.width > 0 && title.height > 0;
+      return oneActionRow && heading.height <= 56 && (!titleVisible || title.left < actions.left) && actions.right <= axis.left
+        && (!titleVisible || Math.abs(centered(title) - centered(exit)) <= 3) && Math.abs(centered(actions) - centered(exit)) <= 3
+        && (innerWidth <= 1000 || Math.abs(actions.left + actions.width / 2 - innerWidth / 2) <= 30);
+    })()`), true, `${description}: ${portrait ? 'compact toolbar uses at most two rows' : 'title, centered zoom actions and axis controls share one compact row'}`);
+  };
   const checkFits = async description => {
     assert.equal(await evaluate(`(() => {
       const panel = document.querySelector('.history-panel').getBoundingClientRect();
@@ -75,16 +103,72 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     const screenshot = await command('browsingContext.captureScreenshot', { context, origin: 'viewport' });
     writeFileSync(`var/home-energy-chart-fullscreen-${name}.png`, Buffer.from(screenshot.data, 'base64'));
   };
+  const checkNormal = async description => {
+    await until(`!(${fullscreen})`);
+    await settle();
+    checkWholeSelection(await state(), description);
+    await checkAxisButton(description);
+    assert.equal(await evaluate(`${canvas}.hasAttribute('tabindex') || ${canvas}.hasAttribute('aria-description')`), false,
+      `${description}: the normal canvas has no fullscreen gesture keyboard instructions`);
+    assert.equal(await evaluate(`['.chart-explorer-controls', '#chart-overview', '.chart-gesture-help', '#chart-visible-range', '#chart-detail-status']
+      .every(selector => [...document.querySelectorAll(selector)].every(node => !node.checkVisibility() && node.getClientRects().length === 0))`), true,
+    `${description}: zoom controls, navigator and help add no visible normal-chart layout`);
+    await evaluate(`(() => {
+      window.chartNormalFixture = { fetch: window.fetch.bind(window), detailRequests: 0 };
+      window.fetch = (...args) => {
+        const url = new URL(args[0], location.href);
+        if (url.pathname.endsWith('/api/chart') && url.searchParams.has('viewFrom')) window.chartNormalFixture.detailRequests++;
+        return window.chartNormalFixture.fetch(...args);
+      };
+      for (const id of ['chart-zoom-in', 'chart-zoom-in', 'chart-pan-forward', 'chart-zoom-out', 'chart-pan-back', 'chart-zoom-reset']) {
+        document.getElementById(id).click();
+      }
+      const navigator = document.getElementById('chart-navigator');
+      navigator.value = navigator.max; navigator.dispatchEvent(new Event('input', { bubbles: true }));
+      ${canvas}.focus({ preventScroll: true });
+      for (const key of ['+', '=', 'ArrowRight', '-', 'ArrowLeft', 'Home']) {
+        ${canvas}.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      }
+      return true;
+    })()`);
+    for (const ctrlKey of [false, true]) {
+      assert.equal(await evaluate(`(() => {
+        const r = ${canvas}.getBoundingClientRect();
+        const event = new WheelEvent('wheel', { deltaY: -240, ctrlKey: ${ctrlKey}, bubbles: true, cancelable: true,
+          clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 });
+        ${canvas}.dispatchEvent(event); return event.defaultPrevented;
+      })()`), false, `${description}: ${ctrlKey ? 'Ctrl-wheel' : 'wheel'} is not captured by normal chart zoom`);
+    }
+    await evaluate(`(() => {
+      const r = ${canvas}.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+      for (const [type, id, dx] of [['pointerdown', 101, -30], ['pointerdown', 102, 30],
+        ['pointermove', 101, -80], ['pointermove', 102, 80], ['pointerup', 101, -80], ['pointerup', 102, 80]]) {
+        ${canvas}.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'touch', clientX: x + dx,
+          clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1, bubbles: true, cancelable: true }));
+      }
+      return new Promise(resolve => setTimeout(() => resolve(true), 450));
+    })()`);
+    checkWholeSelection(await state(), `${description} after attempted interactions`);
+    assert.equal(await evaluate("document.querySelector('.chart-gesture-preview') === null"), true,
+      `${description}: normal chart does not create a gesture preview`);
+    assert.equal(await evaluate('window.chartNormalFixture.detailRequests'), 0,
+      `${description}: normal chart never starts refinement requests`);
+    await evaluate('window.fetch=window.chartNormalFixture.fetch; delete window.chartNormalFixture; true');
+  };
   await until(`${canvas}.dataset.ready === 'true' && Number.isFinite(Number(${canvas}.dataset.viewFrom))`);
   const initial = await state();
   const overflow = await evaluate('document.body.style.overflow');
   const theme = await evaluate('document.documentElement.dataset.theme');
   checkWholeSelection(initial, 'Initial desktop chart');
+  await checkNormal('Normal desktop chart');
+  await evaluate("document.querySelector('.history-panel').scrollIntoView({ block: 'start' }); true");
+  await capture('normal-desktop');
   await evaluate("document.getElementById('chart-fullscreen').focus(); document.getElementById('chart-fullscreen').click(); true");
   await until(fullscreen);
   await settle();
   checkSameView(await state(), initial, 'Entering fullscreen');
   await checkFits('Desktop fullscreen');
+  await checkToolbar('Desktop fullscreen');
   await capture('desktop');
 
   // Hold real detail requests at the browser boundary. Gestures must continue
@@ -235,6 +319,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   assert.ok(Math.abs(portrait.zoom - 1) < 0.001, 'Portrait starts at baseline magnification');
   checkBounds(portrait, initial, 'Portrait slice');
   await checkFits('Portrait fullscreen');
+  await checkToolbar('Portrait fullscreen', { portrait: true });
   await capture('portrait');
   // Put the slice against the beginning, so a left swipe must be able to reveal
   // later data even though no explicit zoom has occurred.
@@ -274,6 +359,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   await settle();
   checkWholeSelection(await state(), 'Landscape reset');
   await checkFits('Landscape fullscreen');
+  await checkToolbar('Landscape fullscreen');
   await capture('landscape');
 
   await viewport(1440, 1100);
@@ -282,11 +368,10 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   const beforeExit = await state();
   await click('chart-fullscreen');
   await until(`!(${fullscreen})`);
-  checkSameView(await state(), beforeExit, 'Leaving a magnified desktop chart');
+  await checkNormal('Normal chart after leaving a magnified view');
   await click('chart-fullscreen');
   await until(fullscreen);
   checkSameView(await state(), beforeExit, 'Reentering a magnified desktop chart');
-  await click('chart-zoom-reset');
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'chart-keyboard',
     actions: [{ type: 'keyDown', value: '\uE00C' }, { type: 'keyUp', value: '\uE00C' }] }] });
   await until(`!(${fullscreen})`);
@@ -311,6 +396,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   assert.ok(years.selectedTo - years.selectedFrom > 700 * 86400000, 'The selected window spans more than 700 days');
   await click('chart-fullscreen');
   await until(fullscreen);
+  checkWholeSelection(await state(), 'Changed dates clear the remembered fullscreen zoom');
   await evaluate("for(let i=0;i<8;i++)document.getElementById('chart-zoom-in').click(); true");
   await settle();
   const deep = await state();
@@ -334,5 +420,14 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     && ${canvas}.dataset.rangeEnd === ${JSON.stringify(initial.rangeEnd)}`);
   checkWholeSelection(await state(), 'Restored original selection');
   checkBounds(await state(), initial, 'Restored original dates');
+  for (const [width, height, name] of [[320, 568, 'small-portrait'], [390, 844, 'portrait'], [844, 390, 'landscape']]) {
+    await viewport(width, height);
+    await checkNormal(`Normal ${name} chart`);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
+      `Normal ${name} chart has no horizontal page overflow`);
+    await evaluate("document.querySelector('.history-panel').scrollIntoView({ block: 'start' }); true");
+    await capture(`normal-${name}`);
+  }
+  await viewport(1440, 1100);
   await evaluate('window.scrollTo(0, 0); true');
 }

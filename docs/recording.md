@@ -439,8 +439,14 @@ Raspberry Pi 5 timing guarantee follows from desktop tests.
 
 ## Fullscreen chart exploration
 
-The chart's **Fullscreen** button opens a view with zoom, pan, reset and a
-selected-period navigator. **Exit fullscreen** or Escape returns to the page.
+The chart's **Fullscreen** button, immediately right of the left-axis selector,
+opens a view with zoom, pan, reset and a selected-period navigator. The normal
+chart is fixed to the entire selected period, with no zoom controls or navigator.
+**Exit fullscreen** or Escape restores that fixed chart. Reopening fullscreen
+resumes its previous zoom and position while the selected dates remain the same.
+On desktop, the fullscreen heading is one compact row with zoom controls centered
+and the axis selector and exit button on the right. Narrow phones use two compact
+rows; landscape phones keep the controls in one row.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
 or use the navigator to move through the selection even at baseline zoom.
@@ -448,10 +454,10 @@ Rotation preserves magnification and the visible center where the date boundarie
 allow it. Axes and controls stay within the screen.
 
 In fullscreen, pinch or the mouse wheel zooms around the gesture position, dragging
-pans, and tapping inspects a value. The buttons also work in the normal chart;
-Ctrl-wheel zooms there without taking over ordinary page scrolling. With the chart
-focused, +/− zoom, arrow keys pan, and Home resets. The applied Finnish dates are
-fixed until another date, preset or date-navigation action is explicitly applied,
+pans, and tapping inspects a value. With the fullscreen chart focused, +/− zoom,
+arrow keys pan, and Home resets. Outside fullscreen, wheel, keyboard and touch
+retain their normal page behavior and do not zoom or pan the chart. The applied
+Finnish dates are fixed until another date, preset or date-navigation action is explicitly applied,
 including across midnight. Zooming, theme/series changes, refresh and fullscreen
 transitions never expand those dates. Reset restores baseline zoom; portrait still
 shows a movable slice. Native browser fullscreen is used when available, with a
