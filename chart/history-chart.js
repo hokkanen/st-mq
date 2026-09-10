@@ -44,6 +44,7 @@ function loadPreferences() {
 export function createHistoryChart({ api, getTheme = () => document.documentElement.dataset.theme }) {
   const $ = id => document.getElementById(id);
   const canvas = $('history');
+  const mobilePointer = window.matchMedia('(pointer: coarse)');
   populateHistoryAxes($('left-axis'));
   const loader = createChartLoader({ api });
   const timing = createTimingBenefit($('timing-benefit'));
@@ -270,8 +271,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(plot.left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitle, color: palette.muted } },
       right: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: 'Temperature · °C / Price · c/kWh', color: palette.muted } },
     };
+    // Touch devices keep datapoint popups in fullscreen in either orientation.
+    const tooltipsEnabled = navigation.fullscreen || !mobilePointer.matches;
     if (graph) {
       graph.data.datasets = datasets; graph.options.scales = scales;
+      graph.options.plugins.tooltip.enabled = tooltipsEnabled;
+      if (!tooltipsEnabled) graph.tooltip?.setActiveElements([], { x: 0, y: 0 });
       graph.options.plugins.tooltip.backgroundColor = getTheme() === 'light' ? '#f4faf6' : '#142b20';
       graph.options.plugins.tooltip.titleColor = palette.text; graph.options.plugins.tooltip.bodyColor = palette.text;
       graph.update('none');
@@ -285,6 +290,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
           plugins: {
             legend: { display: false },
             tooltip: {
+              enabled: tooltipsEnabled,
               backgroundColor: getTheme() === 'light' ? '#f4faf6' : '#142b20', titleColor: palette.text, bodyColor: palette.text,
               borderColor: palette.border, borderWidth: 1,
               callbacks: {
@@ -454,6 +460,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));
   listen($('range-back'), 'click', () => shiftRange(-1));
   listen($('range-forward'), 'click', () => shiftRange(1));
+  listen(mobilePointer, 'change', () => renderChart());
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
   return { refresh, updateTheme, close() { closed = true; navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
