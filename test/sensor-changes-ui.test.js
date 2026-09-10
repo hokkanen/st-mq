@@ -5,7 +5,7 @@ import { createSensorChangeActions, createSensorChangePanel } from '../chart/sen
 const now = Date.parse('2026-09-10T12:00:00Z');
 const event = (id = 1) => ({ id, at: now, signal: 'indoor_temperature', reason: 'replacement' });
 const view = (revision = 0, events = []) => ({ available: true, revision, events, sensors: [
-  { signal: 'indoor_temperature', label: 'Upstairs Hallway', configured: true },
+  { signal: 'indoor_temperature', label: 'Upstairs', configured: true },
   { signal: 'downstairs_temperature', label: 'Downstairs', configured: true },
   { signal: 'bedroom_temperature', label: 'Bedroom', configured: false },
 ] });
@@ -29,7 +29,7 @@ test('recording accepts a configured sensor and known reason, blocks duplicate c
   complete(view(1, [event()]));
   assert.equal(await first, true);
   assert.equal(actions.snapshot().pending, null);
-  assert.match(actions.snapshot().message, /Upstairs Hallway change recorded/);
+  assert.match(actions.snapshot().message, /Upstairs change recorded/);
 });
 
 test('an uncertain sensor change survives reload and retries exactly the original request', async () => {
@@ -135,7 +135,7 @@ test('panel preserves user selection and focus across status updates and display
   assert.equal(document.activeElement, $('sensor-change-signal'));
   assert.equal($('sensor-change-entries').children.length, 1);
   const row = $('sensor-change-entries').children[0];
-  assert.equal(row.children[0].textContent, 'Upstairs Hallway · Replacement');
+  assert.equal(row.children[0].textContent, 'Upstairs · Replacement');
   assert.match(row.children[1].textContent, /15:00/);
   panel.update({ ...view(2), readOnly: true });
   assert.equal($('sensor-change-submit').disabled, true);

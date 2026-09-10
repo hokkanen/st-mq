@@ -1,6 +1,6 @@
 # Indoor temperatures and sensor changes
 
-Upstairs Hallway is the existing `indoor_temperature` series. Optional Downstairs
+Upstairs is the existing `indoor_temperature` series. Optional Downstairs
 and Bedroom sensors use `downstairs_temperature` and `bedroom_temperature`.
 Their SmartThings configuration fields are `downstairs_temp_dev_id` and
 `bedroom_temp_dev_id`, alongside the existing `inside_temp_dev_id`. Keep those

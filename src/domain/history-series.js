@@ -6,7 +6,7 @@ const h66 = [
   ['brine_in_temperature', 'Brine in', '°C', 'Ground loop', 'History only'],
   ['brine_out_temperature', 'Brine out', '°C', 'Ground loop', 'History only'],
   ['outdoor_temperature', 'Outdoor temperature', '°C', 'Home temperatures', 'House input'],
-  ['indoor_temperature', 'Upstairs Hallway', '°C', 'Home temperatures', 'House input'],
+  ['indoor_temperature', 'Upstairs', '°C', 'Home temperatures', 'House input'],
   ['dhw_temperature', 'Hot-water temperature', '°C', 'Hot water', 'Equipment context'],
   ['heating_setpoint', 'Supply target', '°C', 'Heating', 'Equipment context'],
   ['heating_integral', 'Heating integral', '°min', 'Heating', 'Equipment context'],

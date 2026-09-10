@@ -60,13 +60,13 @@ try {
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
   assert.equal(await evaluate("document.getElementById('downstairs').textContent"), '20.2 °C');
   assert.equal(await evaluate("document.getElementById('bedroom').textContent"), '21.6 °C');
-  for (const label of ['Upstairs Hallway', 'Downstairs', 'Bedroom']) {
+  for (const label of ['Upstairs', 'Downstairs', 'Bedroom']) {
     assert.equal(await evaluate(`document.getElementById('chart-legend').textContent.includes(${JSON.stringify(label)})`), true);
   }
   await evaluate("document.getElementById('sensor-change-details').open=true");
   await until("!document.getElementById('sensor-change-submit').disabled");
   assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-signal').options, option => option.textContent)"),
-    ['Upstairs Hallway', 'Downstairs', 'Bedroom', 'Outdoor']);
+    ['Upstairs', 'Downstairs', 'Bedroom', 'Outdoor']);
   await evaluate("document.getElementById('sensor-change-signal').value='downstairs_temperature'; document.getElementById('sensor-change-reason').value='moved'; document.getElementById('sensor-change-signal').focus();");
   await evaluate("document.getElementById('sensor-change-refresh').click()");
   await until("!document.getElementById('sensor-change-refresh').disabled");

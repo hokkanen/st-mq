@@ -1,5 +1,5 @@
 export const TEMPERATURE_SENSORS = Object.freeze({
-  indoor_temperature: 'Upstairs Hallway',
+  indoor_temperature: 'Upstairs',
   downstairs_temperature: 'Downstairs',
   bedroom_temperature: 'Bedroom',
   garage_temperature: 'Garage',

@@ -1,5 +1,5 @@
 const pendingKey = 'stmq-sensor-change-pending';
-const labels = Object.freeze({ indoor_temperature: 'Upstairs Hallway', downstairs_temperature: 'Downstairs',
+const labels = Object.freeze({ indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs',
   bedroom_temperature: 'Bedroom', garage_temperature: 'Garage', outdoor_temperature: 'Outdoor' });
 const reasons = Object.freeze({ replacement: 'Replacement', moved: 'Moved', calibration: 'Calibration changed', other: 'Other change' });
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });

@@ -58,7 +58,7 @@ test('indoor locations retain separate chart identities, labels, colours and vis
   const series = { indoor_temperature: [{ x: 1, y: 23 }], downstairs_temperature: [{ x: 1, y: 20 }], bedroom_temperature: [{ x: 1, y: 19 }] };
   const datasets = historyDatasets(series, 'power', { downstairs_temperature: false });
   const indoors = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].map(key => datasets.find(row => row.key === key));
-  assert.deepEqual(indoors.map(row => row.label), ['Upstairs Hallway', 'Downstairs', 'Bedroom']);
+  assert.deepEqual(indoors.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom']);
   assert.deepEqual(indoors.map(row => row.data[0].y), [23, 20, 19]);
   assert.deepEqual(indoors.map(row => row.hidden), [false, true, false]);
   assert.equal(new Set(indoors.map(row => row.borderColor)).size, 3);

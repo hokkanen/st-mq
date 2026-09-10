@@ -589,7 +589,7 @@ private options file or add-on configuration:
 
 | SmartThings field | Recorded signal | Display name |
 | --- | --- | --- |
-| `inside_temp_dev_id` | `indoor_temperature` | Upstairs Hallway |
+| `inside_temp_dev_id` | `indoor_temperature` | Upstairs |
 | `downstairs_temp_dev_id` | `downstairs_temperature` | Downstairs |
 | `bedroom_temp_dev_id` | `bedroom_temperature` | Bedroom |
 | `garage_temp_dev_id` | `garage_temperature` | Garage |
@@ -598,7 +598,7 @@ The two additional indoor sensors are optional. Empty device fields generate no
 requests or artificial missing observations. All indoor locations are recorded
 separately, and an individual sensor failure does not replace the other readings.
 The existing indoor signal and imported CSV meaning remain unchanged; only its
-display name becomes Upstairs Hallway. Each configured sensor
+display name becomes Upstairs. Each configured sensor
 is queried every five minutes through the read-only
 [device status API](https://developer.smartthings.com/docs/service-integrations/query-and-list-devices).
 Source timestamps, units and quality flags are preserved; polling unchanged device
@@ -636,7 +636,7 @@ temperature sensors and included H66 signals. Reconnection alone does not recove
 their availability; each signal requires a usable new publication. Subscription
 failures are recorded separately from unchanged sensor values.
 
-The model's indoor temperature defaults to an equal average of Upstairs Hallway
+The model's indoor temperature defaults to an equal average of Upstairs
 and each configured extra indoor sensor. Membership is fixed by configuration,
 including sensors temporarily missing or stale. It does not change when one
 sensor stops reporting. The garage is excluded. Optional
@@ -647,7 +647,7 @@ or zero-weight sensors do not contribute. At least one weight in that map must
 be positive, and positive weights require the relevant extra sensor to be
 configured. For example, with both extra sensors configured,
 `{"indoor_temperature":1,"downstairs_temperature":2,"bedroom_temperature":2}`
-gives Upstairs Hallway one fifth of the contribution. Weights are normalized and
+gives Upstairs one fifth of the contribution. Weights are normalized and
 saved with learning configuration using logical signal names, without private
 device IDs or MQTT topics. Adding or changing contributing sensors changes the
 measurement setup; it must establish the corresponding learning boundary.

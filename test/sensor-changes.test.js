@@ -86,7 +86,7 @@ test('sensor status exposes logical labels and effective events without retry id
   assert.equal(view.sensors.find(row => row.signal === 'bedroom_temperature').configured, true);
   assert.equal(view.sensors.find(row => row.signal === 'downstairs_temperature').configured, true);
   assert.equal(view.sensors.find(row => row.signal === 'garage_temperature').configured, false);
-  assert.equal(view.sensors.find(row => row.signal === 'indoor_temperature').label, 'Upstairs Hallway');
+  assert.equal(view.sensors.find(row => row.signal === 'indoor_temperature').label, 'Upstairs');
   assert.equal(JSON.stringify(view).includes('invented-'), false);
   const readonly = sensorChangesView(store, 'providers', { now, config, readOnly: true });
   assert.equal(readonly.available, false); assert.equal(readonly.readOnly, true);

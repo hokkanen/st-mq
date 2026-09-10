@@ -226,7 +226,7 @@ test('indoor provider rows show the three physical sensors separately from their
     outdoor: temperature('fmi', 4),
   }, providers: { temperatures: { source: 'smartthings', status: 'ok', lastSuccessAt: now } } };
   const [grouped] = dashboardProviders(status, options);
-  assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs Hallway', 'Downstairs', 'Bedroom', 'Garage temperature', 'Outdoor temperature']);
+  assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom', 'Garage temperature', 'Outdoor temperature']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
   assert.match(grouped.display.title, /SmartThings, MQTT temperature sensor, FMI/);
   assert.equal(grouped.display.state, 'Available');

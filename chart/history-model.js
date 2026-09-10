@@ -103,7 +103,7 @@ const seriesInfo = {
   firewood_electricity_avoided: ['Firewood electricity avoided', 'kWh/day · retrospective model estimate, not metered savings', 'firewood', 'daily'],
   solar_radiation: ['Archived solar forecast', 'W/m² · forecast archived at the time, not a measured solar sensor', 'solar', 'learning'],
   solar_forecast: ['Solar forecast', 'W/m² · forecast', 'solar', 'forecast'],
-  indoor_temperature: ['Upstairs Hallway', '°C', 'indoor'],
+  indoor_temperature: ['Upstairs', '°C', 'indoor'],
   downstairs_temperature: ['Downstairs', '°C', 'downstairs'],
   bedroom_temperature: ['Bedroom', '°C', 'bedroom'],
   garage_temperature: ['Garage', '°C', 'garage'],
