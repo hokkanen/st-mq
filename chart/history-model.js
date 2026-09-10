@@ -264,7 +264,13 @@ export function chartQuery(selection) {
   if (!leftGroups[selection.left]) throw new RangeError('Choose a valid left axis.');
   const points = selection.points ?? 800;
   if (!Number.isInteger(points) || points < 100 || points > 2000) throw new RangeError('Invalid chart resolution.');
-  return `/api/chart?${new URLSearchParams({ start: selection.startDate, end: selection.endDate, left: selection.left, points: String(points) })}`;
+  const params = new URLSearchParams({ start: selection.startDate, end: selection.endDate, left: selection.left, points: String(points) });
+  if (selection.viewFrom !== undefined || selection.viewTo !== undefined) {
+    if (!Number.isSafeInteger(selection.viewFrom) || !Number.isSafeInteger(selection.viewTo) || selection.viewFrom >= selection.viewTo)
+      throw new RangeError('Invalid chart viewport.');
+    params.set('viewFrom', String(selection.viewFrom)); params.set('viewTo', String(selection.viewTo));
+  }
+  return `/api/chart?${params}`;
 }
 
 /** Small response cache plus last-request-wins cancellation, independent of the DOM. */

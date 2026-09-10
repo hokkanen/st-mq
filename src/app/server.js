@@ -37,6 +37,12 @@ function numberParam(url, key, fallback, max) {
   if (!Number.isSafeInteger(n) || n < 0 || n > max) throw new Error(`Invalid ${key}`);
   return n;
 }
+function optionalTimestampParam(url, key) {
+  const value = url.searchParams.get(key);
+  if (value === null) return undefined;
+  if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new TypeError(`Invalid ${key}`);
+  return Number(value);
+}
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '',
   getAccess, ingress = false, role = 'primary', getReadContext, replicationStatus,
@@ -178,7 +184,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             simulated: engine.plant ? simulatedOutlook(now) : null, now,
             startDate: url.searchParams.get('start') ?? undefined,
             endDate: url.searchParams.get('end') ?? undefined,
-            left: url.searchParams.get('left') ?? 'power', points: numberParam(url, 'points', 800, 4096) };
+            left: url.searchParams.get('left') ?? 'power', points: numberParam(url, 'points', 800, 4096),
+            viewFrom: optionalTimestampParam(url, 'viewFrom'), viewTo: optionalTimestampParam(url, 'viewTo') };
           const cancellation = new AbortController();
           const cancel = () => cancellation.abort();
           res.once('close', cancel);

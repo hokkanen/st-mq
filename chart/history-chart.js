@@ -1,14 +1,17 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
 import { outdoorSourceLabel, providerName } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
+import { createChartNavigation } from './chart-navigation.js';
+import { createDetailLoader, reduceSeries, viewportTicks } from './chart-viewport.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const shortDate = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short' });
+const datedYear = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric' });
 const visibilityStorage = 'home-energy-chart-visibility';
 const paletteVariables = {
   text: '--text', muted: '--muted', border: '--border', grid: '--grid',
@@ -44,10 +47,51 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const timing = createTimingBenefit($('timing-benefit'));
   const preferences = loadPreferences();
   const listeners = [];
-  let graph, payload, plottedSelection, fingerprint, status, initialized = false, closed = false;
+  let graph, payload, overview, detail, plottedSelection, fingerprint, status, initialized = false, closed = false;
   let palette = { ...defaultPalette }, lastContract, lastLiveRevision, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
-  let activePreset = 'today', previousToday, rangeEnabled = false;
+  let activePreset = 'today', rangeEnabled = false;
+  let pointBudget = 600, fastDraws = 0, detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
+  const navigation = createChartNavigation({ canvas, getChart: () => graph, onSettle: () => {
+    if (!overview || closed) return;
+    renderChart({ viewOnly: !pendingFullRender }); requestDetail();
+    if (refreshQueued) { const force = queuedForce; refreshQueued = queuedForce = false; refresh(status, { force }); }
+  } });
+  const detailLoader = createDetailLoader({ api, query: chartQuery,
+    onData(result, request) {
+      if (closed || !sameSelection(request, selection) || !sameSelection(request, plottedSelection)) return;
+      const plotNow = chartObservationTime(status, result.now);
+      detail = { ...result, now: plotNow, series: historySeriesAt(result, plotNow), points: request.points };
+      if (!navigation.moving) renderChart({ viewOnly: true });
+    },
+    onStatus(state) { detailState = state; renderDetailStatus(); },
+  });
+  function sameSelection(a, b) { return a && b && a.startDate === b.startDate && a.endDate === b.endDate && a.left === b.left; }
+  function invalidateDetail() { detail = undefined; detailLoader.invalidate(); }
+  function invalidate() { loader.invalidate(); invalidateDetail(); }
+  function renderDetailStatus() {
+    const node = $('chart-detail-status');
+    node.dataset.state = detailState;
+    node.textContent = !sameSelection(selection, plottedSelection) ? 'Loading selected series…' : detailState === 'loading' ? 'Loading detail…'
+      : detailState === 'error' ? 'Detail unavailable · existing view retained' : payload?.meta?.detail ? 'Detail loaded' : 'Overview';
+  }
+  function requestDetail() {
+    const view = navigation.view;
+    if (!view || !overview || !sameSelection(selection, plottedSelection)) return;
+    const span = view.to - view.from, fullSpan = overview.range.to - overview.range.from;
+    // Refinement is independent of gesture frames and full-selection totals.
+    // Quantized, overlapping windows make nearby movements reuse detail.
+    if (fullSpan / span < 2) { detailLoader.request(null); return; }
+    const step = Math.max(60_000, 2 ** Math.floor(Math.log2(span / 4)));
+    const viewFrom = Math.max(overview.range.from, Math.floor(view.from / step) * step - step);
+    const viewTo = Math.min(overview.range.to, Math.ceil(view.to / step) * step + step);
+    const points = Math.max(100, Math.min(800, Math.round(pointBudget)));
+    // A buffered request that cannot improve on the overview's bucket width
+    // would repeat a large scan without revealing additional information.
+    if ((viewTo - viewFrom) / points >= fullSpan / plottedSelection.points * 0.8) { detailLoader.request(null); return; }
+    const request = { ...plottedSelection, points, viewFrom, viewTo };
+    detailLoader.request(request);
+  }
 
   function listen(node, event, handler) { node.addEventListener(event, handler); listeners.push(() => node.removeEventListener(event, handler)); }
   function updateControls() {
@@ -66,11 +110,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const { ctx, chartArea, scales } = chart;
     if (!chartArea || !payload) return;
     ctx.save(); ctx.beginPath(); ctx.rect(chartArea.left, chartArea.top, chartArea.width, chartArea.height); ctx.clip();
+    const view = navigation.view ?? payload.range;
     for (const shade of shades) {
       if (!visible(shade.key, preferences)) continue;
       ctx.fillStyle = palette[shade.key];
       for (const interval of payload.shading?.[shade.key] ?? []) {
-        const from = Math.max(interval.start, payload.range.from), to = Math.min(interval.end, payload.range.to);
+        const from = Math.max(interval.start, view.from), to = Math.min(interval.end, view.to);
         if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) continue;
         // Dense historical ranges carry duty fractions instead of inventing continuous activity.
         ctx.globalAlpha = 0.18 * (interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1);
@@ -87,7 +132,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
         } else ctx.fillRect(left, chartArea.top, right - left, chartArea.height);
       }
     }
-    if (payload.now > payload.range.from && payload.now < payload.range.to) {
+    if (payload.now > view.from && payload.now < view.to) {
       const x = scales.x.getPixelForValue(payload.now);
       ctx.globalAlpha = 0.65; ctx.strokeStyle = palette.muted; ctx.lineWidth = 1; ctx.setLineDash([3, 5]);
       ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
@@ -131,6 +176,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
   }
   function renderModes() {
+    const view = navigation.view ?? payload.range;
     for (const descriptor of activityTracks) {
       const root = $(descriptor.id ?? `${descriptor.key}-history`); if (!root) continue;
       root.replaceChildren(); root.hidden = !visible(descriptor.key, preferences);
@@ -143,13 +189,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       root.title = descriptor.detail;
       const track = document.createElement('div'); track.className = 'mode-track';
       for (const interval of intervals) {
-        const from = Math.max(interval.start, payload.range.from), to = Math.min(interval.end, payload.range.to);
+        const from = Math.max(interval.start, view.from), to = Math.min(interval.end, view.to);
         if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) continue;
         const item = document.createElement('span'); item.className = 'mode-segment';
         const name = isMode ? operationModes[interval.value] ?? 'Unknown' : descriptor.label;
         const fraction = interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1;
-        item.style.left = `${100 * (from - payload.range.from) / (payload.range.to - payload.range.from)}%`;
-        item.style.width = `${100 * (to - from) / (payload.range.to - payload.range.from)}%`;
+        item.style.left = `${100 * (from - view.from) / (view.to - view.from)}%`;
+        item.style.width = `${100 * (to - from) / (view.to - view.from)}%`;
         item.style.opacity = String(fraction * 0.7);
         if (isMode && interval.aggregated) { item.style.top = `${interval.value * 20}%`; item.style.height = '20%'; }
         item.style.backgroundColor = isMode
@@ -160,12 +206,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       }
       if (!track.children.length) title.textContent += isMode ? ' · no H66 readback in this period'
         : descriptor.key === 'dhwr' ? ' · no requests recorded in this period' : ' · no burn windows from recorded additions in this period';
-      root.append(title, track);
+      const viewport = document.createElement('div'); viewport.className = 'mode-viewport'; viewport.append(track);
+      root.append(title, viewport);
     }
     alignActivityTracks(graph);
   }
   function renderTiming() {
-    timing.render(payload);
+    timing.render(overview);
   }
   function renderStatus(datasets) {
     const plot = plottedSelection;
@@ -174,22 +221,36 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const simulated = payload.input === 'simulated' ? ' · simulated data' : '';
     $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${availability ? ` · ${availability}` : ''}`;
   }
-  function renderChart() {
-    if (!payload) return;
+  function renderChart({ viewOnly = false } = {}) {
+    if (!overview) return;
+    if (navigation.moving) { if (!viewOnly) pendingFullRender = true; return; }
+    viewOnly = viewOnly && !pendingFullRender; pendingFullRender = false;
+    const view = navigation.view ?? overview.range;
+    payload = detail && detail.range.from <= view.from && detail.range.to >= view.to ? detail : overview;
+    const started = performance.now();
     // A theme or legend change can occur during a request. Keep the previous
     // graph's labels and axes attached to its own data until the new data arrives.
     const plot = plottedSelection;
-    const datasets = historyDatasets(payload.series, plot.left, preferences, palette);
+    const exploring = navigation.fullscreen || view.from !== overview.range.from || view.to !== overview.range.to;
+    // Reduce original components before stacking, so cumulative fills continue
+    // to share aligned edges and their tooltips retain each load's own value.
+    const series = exploring ? Object.fromEntries(Object.entries(payload.series).map(([key, points]) => [key, reduceSeries(points, view, pointBudget)])) : payload.series;
+    const datasets = historyDatasets(series, plot.left, preferences, palette);
+    if (exploring) for (const dataset of datasets) if (dataset.showLine && dataset.data.length < 80) {
+      dataset.pointRadius = dataset.data.map(point => Number.isFinite(point.y) ? 2 : 0);
+    }
     for (const dataset of datasets) if (dataset.kind === 'fill') dataset.backgroundColor = color(dataset.backgroundColor).alpha(0.25).rgbString();
     const leftTitle = leftTitles[plot.left];
     const scales = {
       x: {
-        type: 'linear', min: payload.range.from, max: payload.range.to,
-        afterBuildTicks: scale => { scale.ticks = calendarTicks(payload.range, canvas.clientWidth < 600 ? 5 : 9); },
+        type: 'linear', min: view.from, max: view.to,
+        afterBuildTicks: scale => { scale.ticks = exploring ? viewportTicks(navigation.view, canvas.clientWidth < 600 ? 5 : 9) : calendarTicks(overview.range, canvas.clientWidth < 600 ? 5 : 9); },
         grid: { color: palette.grid }, border: { color: palette.border },
         ticks: { color: palette.muted, autoSkip: false, maxTicksLimit: canvas.clientWidth < 600 ? 5 : 9, maxRotation: 0, callback: value => {
-          if (value === payload.range.to && plot.startDate === plot.endDate) return '24:00';
-          return plot.startDate === plot.endDate ? clock.format(value) : payload.range.to - payload.range.from > 3 * 86_400_000 ? shortDate.format(value) : [shortDate.format(value), clock.format(value)];
+          if (value === overview.range.to && plot.startDate === plot.endDate) return '24:00';
+          const span = navigation.view.to - navigation.view.from;
+          return span > 180 * 86_400_000 ? datedYear.format(value) : span > 3 * 86_400_000 ? shortDate.format(value)
+            : finnishDate(navigation.view.from) === finnishDate(navigation.view.to - 1) ? clock.format(value) : [shortDate.format(value), clock.format(value)];
         } },
       },
       left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(plot.left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitle, color: palette.muted } },
@@ -202,7 +263,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       graph.update('none');
     } else {
       graph = new Chart(canvas, {
-        type: 'line', data: { datasets }, plugins: [{ id: 'activityShading', beforeDatasetsDraw: paintShading, afterLayout: alignActivityTracks }],
+        type: 'line', data: { datasets }, plugins: [{ id: 'activityShading', beforeDatasetsDraw: paintShading, afterLayout: alignActivityTracks,
+          beforeEvent: () => navigation.moving ? false : undefined }],
         options: {
           animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: false,
           interaction: { mode: 'nearest', axis: 'x', intersect: false }, scales,
@@ -217,13 +279,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
                   const source = item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
                   const interval = Number.isFinite(item.raw?.intervalStart) && Number.isFinite(item.raw?.intervalEnd) ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
                   const reconstructed=item.dataset.key==='heat_pump_power'?' · reconstructed estimate':'';
+                  const boundary = item.raw?.displayBoundary ? ` · ${item.raw.interpolated ? 'interpolated line boundary' : 'held line boundary'} between recorded samples` : '';
                   const value = historyValueLabel(item.dataset.key, item.raw?.componentValue ?? item.parsed.y, item.dataset.unit);
                   const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
                   const firewood = firewoodPointDetail(item.dataset.key, item.raw);
                   const session = sessionPointDetail(item.raw);
                   const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
                     ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
-                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+                  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ` · ${item.raw.inputSource ?? 'Recorded history'} · saved learning input` : ''}${item.raw?.equivalentCurrent?' · equivalent at 230 V':''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly?' · meter check only':''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
                 },
               },
             },
@@ -231,8 +294,17 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
         },
       });
     }
-    renderLegend(datasets);
-    renderModes(); renderTiming();
+    const drawMs = performance.now() - started;
+    if (exploring) {
+      if (drawMs > 35) { pointBudget = Math.max(140, Math.round(pointBudget * 0.75)); fastDraws = 0; }
+      else if (drawMs < 12 && ++fastDraws >= 5) { pointBudget = Math.min(1000, Math.max(200, canvas.clientWidth), pointBudget + 100); fastDraws = 0; }
+      else if (drawMs >= 12) fastDraws = 0;
+    }
+    canvas.dataset.drawMs = String(Math.round(drawMs)); canvas.dataset.pointBudget = String(pointBudget);
+    canvas.dataset.dataFrom = String(payload.range.from); canvas.dataset.dataTo = String(payload.range.to);
+    renderModes(); renderDetailStatus();
+    if (viewOnly) return;
+    renderLegend(datasets); renderTiming();
     const loading = selection.startDate !== plot.startDate || selection.endDate !== plot.endDate || selection.left !== plot.left;
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.left = plot.left; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
@@ -281,43 +353,53 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   async function refresh(nextStatus = status, { force = false } = {}) {
     if (closed) return;
     status = nextStatus ?? { now: Date.now() };
+    if (navigation.moving && overview && sameSelection(selection, plottedSelection)) { refreshQueued = true; queuedForce ||= force; return; }
     const today = finnishDate(status.now);
-    if (!initialized || previousToday && today !== previousToday && activePreset) {
+    if (!initialized) {
       if (activePreset) selection = { ...selection, ...selectedRange(activePreset, status.now) };
       updateControls(); initialized = true;
     }
-    previousToday = today;
+    const requestedSelection = { ...selection };
+    // Applied dates are fixed even across midnight. A preset changes them only
+    // when the user explicitly chooses it again.
     const snapshot = replicaSnapshotKey(status);
-    if (lastReplicaSnapshot !== undefined && snapshot !== lastReplicaSnapshot) { loader.invalidate(); force = true; }
+    if (lastReplicaSnapshot !== undefined && snapshot !== lastReplicaSnapshot) { invalidate(); force = true; }
     lastReplicaSnapshot = snapshot;
     const contract = JSON.stringify(status.contract ?? null);
     const firewoodRevision = JSON.stringify({ revision: status.fireplace?.revision, rebuilding: status.fireplace?.rebuild?.status,
       model: status.learning?.adaptive?.model?.trainedAt });
-    if (lastFirewoodRevision !== undefined && firewoodRevision !== lastFirewoodRevision) { loader.invalidate(); force = true; }
+    if (lastFirewoodRevision !== undefined && firewoodRevision !== lastFirewoodRevision) { invalidate(); force = true; }
     lastFirewoodRevision = firewoodRevision;
     const liveRevision = status.recording?.historyRevision ?? JSON.stringify({ input: status.input, observations: status.observations,
       metrics: status.learning?.metrics, h66Readings: status.h66?.readings,
       providers: Object.fromEntries(Object.entries(status.providers ?? {}).map(([key, value]) => [key, value?.lastSuccessAt ?? value?.lastSuccess])) });
-    if (lastContract !== undefined && contract !== lastContract) { loader.invalidate(); force = true; }
+    if (lastContract !== undefined && contract !== lastContract) { invalidate(); force = true; }
+    if (lastInput !== undefined && lastInput !== status.input) { invalidate(); force = true; }
+    lastInput = status.input;
+    // Ordinary recorder progress expires through the detail TTL. Aborting on
+    // every poll would repeatedly kill slow queries for historical viewports.
     const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
     if (!longRange && lastLiveRevision !== undefined && liveRevision !== lastLiveRevision && selection.endDate >= today) force = true;
     lastContract = contract; lastLiveRevision = liveRevision;
     const generation = ++selectionGeneration;
     if (!payload || payload.range.startDate !== selection.startDate || payload.range.endDate !== selection.endDate || canvas.dataset.left !== selection.left) {
+      invalidateDetail();
       $('chart-status').textContent = 'Loading selected dates…'; canvas.dataset.ready = 'false';
     }
     try {
-      const result = await loader.load(selection, { force, today });
-      if (generation !== selectionGeneration || closed) return;
+      const result = await loader.load(requestedSelection, { force, today });
+      if (generation !== selectionGeneration || closed || !sameSelection(requestedSelection, selection)) return;
       // The response cache may contain unchanged measurements. Advance their
       // display tails and the now marker using each fresh server-status clock.
       const plotNow = chartObservationTime(status, result.now);
-      payload = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
-      const nextFingerprint = JSON.stringify({ range: payload.range, input: payload.input, series: payload.series, shading: payload.shading, meta: payload.meta, timingBenefit: payload.timingBenefit, heatingBenefit: payload.heatingBenefit, firewoodBenefit: payload.firewoodBenefit, left: selection.left,
-        now: plotNow >= payload.range.from && plotNow < payload.range.to ? plotNow : null });
-      plottedSelection = { ...selection };
+      overview = { ...result, now: plotNow, series: historySeriesAt(result, plotNow) };
+      const nextFingerprint = JSON.stringify({ range: overview.range, input: overview.input, series: overview.series, shading: overview.shading, meta: overview.meta, timingBenefit: overview.timingBenefit, heatingBenefit: overview.heatingBenefit, firewoodBenefit: overview.firewoodBenefit, left: selection.left,
+        now: plotNow >= overview.range.from && plotNow < overview.range.to ? plotNow : null });
+      plottedSelection = requestedSelection;
+      navigation.setRange(overview.range);
       if (nextFingerprint !== fingerprint) { fingerprint = nextFingerprint; renderChart(); }
       else if (canvas.dataset.ready !== 'true') renderChart();
+      if (!navigation.moving) requestDetail();
     } catch (error) {
       if (error.name === 'AbortError' || generation !== selectionGeneration || closed) return;
       $('chart-status').textContent = `Unable to load selected dates: ${error.message}`; canvas.dataset.ready = 'false';
@@ -365,5 +447,5 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen($('range-forward'), 'click', () => shiftRange(1));
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
-  return { refresh, updateTheme, close() { closed = true; loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  return { refresh, updateTheme, close() { closed = true; navigation.close(); detailLoader.close(); loader.close(); timing.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

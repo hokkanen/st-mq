@@ -446,7 +446,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     window.timingFoldFixture.polls = 0;
     window.fetch = async (...args) => {
       const response = await window.timingFoldFixture.fetch(...args);
-      if (args[0] === '/api/status') window.timingFoldFixture.polls++;
+      if (new URL(args[0], location.href).pathname === '/api/status') window.timingFoldFixture.polls++;
       return response;
     }; true`);
   try {

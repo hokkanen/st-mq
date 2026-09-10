@@ -7,6 +7,7 @@ import { loadConfig } from '../src/app/config.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { providerFixture } from './lib/provider-fixture.js';
 import { seedTimingBrowserFixture, checkTimingBrowser } from './lib/timing-browser-checks.js';
+import { checkChartZoomBrowser } from './lib/chart-zoom-browser-checks.js';
 import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
@@ -311,6 +312,7 @@ try {
     assert.equal(palette.charger2,palette.theme==='light'?'#8050a6':'#b493db','Charger 2 retains the earlier violet color');
   };
   await checkPowerDrawn();
+  await checkChartZoomBrowser({ evaluate, command, context, until });
   assert.match(await evaluate("document.getElementById('chart-notes').textContent"),/Auxiliary heat, Charger 1, Charger 2/);
   await evaluate("document.querySelector('[data-chart-key=auxiliary_power]').click(); document.querySelector('[data-chart-key=charger_power]').click(); true");
   await checkSeriesDrawn(['charger2_power'],'power');
@@ -625,7 +627,7 @@ try {
   // Pending edits survive blur and an actual background status poll.
   await evaluate(`document.getElementById('temporary-details').open = true;
     window.__statusPolls = 0; const originalFetch = window.fetch;
-    window.fetch = (...args) => { if (args[0] === '/api/status') window.__statusPolls++; return originalFetch(...args); };
+    window.fetch = (...args) => { if (new URL(args[0], location.href).pathname === '/api/status') window.__statusPolls++; return originalFetch(...args); };
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input'));
     document.getElementById('away-until').blur(); true`);
@@ -681,10 +683,17 @@ try {
   }));
   const testPublishes = [];
   let testConnections = 0, acknowledgeHeating;
-  const connectTestBroker = () => {
-    testConnections++;
+  const connectTestBroker = (_address, options = {}) => {
+    // Identity announcements use a separate startup connection; this fixture's
+    // connection/publish assertions describe only manual heating commands.
+    const identity = String(options.clientId ?? '').startsWith('stmq-identity-');
+    if (!identity) testConnections++;
     const client = new EventEmitter();
-    client.publish = (topic, payload, options, callback) => { testPublishes.push({ topic, payload, options }); acknowledgeHeating = callback; };
+    client.subscribe = (_topic, _options, callback) => callback?.();
+    client.publish = (topic, payload, options, callback) => {
+      if (identity) { callback?.(); return; }
+      testPublishes.push({ topic, payload, options }); acknowledgeHeating = callback;
+    };
     client.end = (force, options, callback) => callback?.();
     queueMicrotask(() => client.emit('connect'));
     return client;

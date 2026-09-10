@@ -157,3 +157,35 @@ test('Finnish DST chart days preserve 23 and 25 hours with explicit selected bou
     assert.equal((chart.range.to - chart.range.from) / 3600000, hours);
   }
 });
+
+test('chart viewport API validates immutable bounds and caches independent detail responses', async t => {
+  const { base, headers, now, store } = await fixture(t);
+  const viewFrom = now - 2 * 3_600_000, viewTo = now - 3_600_000;
+  const selected = 'start=2024-01-01&end=2026-09-07';
+  store.observation({ source: 'smartthings', device: 'synthetic-room', signal: 'indoor_temperature',
+    value: 21.3, unit: 'degC', sourceTime: viewFrom + 60_000, receivedAt: now, quality: [] });
+  for (const query of [`viewFrom=${viewFrom}`, `viewTo=${viewTo}`, 'viewFrom=&viewTo=',
+    `viewFrom=NaN&viewTo=${viewTo}`, `viewFrom=${viewFrom + 0.5}&viewTo=${viewTo}`,
+    `viewFrom=${viewTo}&viewTo=${viewFrom}`, `viewFrom=${viewTo}&viewTo=${viewTo}`,
+    `viewFrom=${Date.parse('2023-12-31T00:00:00Z')}&viewTo=${viewTo}`,
+    `viewFrom=${viewFrom}&viewTo=${Date.parse('2026-09-09T00:00:00Z')}`]) {
+    const response = await fetch(`${base}/api/chart?${selected}&${query}`, { headers });
+    assert.equal(response.status, 400, query);
+  }
+  const read = (from, to) => fetch(`${base}/api/chart?${selected}&viewFrom=${from}&viewTo=${to}`, { headers })
+    .then(async response => { assert.equal(response.status, 200); return response.json(); });
+  const first = await read(viewFrom, viewTo);
+  assert.equal(first.meta.detail, true);
+  assert.equal(first.range.from, viewFrom);
+  assert.equal(first.range.to, viewTo);
+  assert.equal(first.selection.from, Date.parse('2023-12-31T22:00:00Z'));
+  assert.equal(first.selection.to, Date.parse('2026-09-07T21:00:00Z'));
+  assert(first.series.indoor_temperature.some(point => point.y === 21.3));
+  assert(!Object.hasOwn(first, 'heatingBenefit'));
+  assert.equal((await read(viewFrom, viewTo)).meta.cacheHit, true);
+  const moved = await read(viewTo, viewTo + 60_000);
+  assert.notEqual(moved.meta.cacheHit, true);
+  assert(!moved.series.indoor_temperature.some(point => point.y === 21.3));
+  assert.equal((await read(viewTo, viewTo + 60_000)).meta.cacheHit, true);
+  assert.equal((await read(viewFrom, viewTo)).meta.cacheHit, true);
+});

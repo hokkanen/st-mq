@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { getChartData, chartRange } from './chart-data.js';
+import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview } from './database-overview.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
@@ -56,7 +56,7 @@ export function createChartService({ store, maxQueue = 8 } = {}) {
       if (signal?.aborted) return Promise.reject(aborted());
       args = { ...args, now: args?.now ?? Date.now() };
       // Validate dates before allocating a worker or queue slot.
-      try { if (operation !== 'overview') chartRange(args); } catch (error) { return Promise.reject(error); }
+      try { if (operation !== 'overview') chartRequestRange(args); } catch (error) { return Promise.reject(error); }
       if (store.path === ':memory:') {
         try { return Promise.resolve(operation === 'overview' ? getDatabaseOverview({ ...args, store }) : getChartData({ ...args, store })); }
         catch (error) { return Promise.reject(error); }

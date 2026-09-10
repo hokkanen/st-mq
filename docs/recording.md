@@ -437,6 +437,57 @@ available for reuse; the database file is not automatically vacuumed. Actual
 annual size and year-query latency must be measured on the deployment; no
 Raspberry Pi 5 timing guarantee follows from desktop tests.
 
+## Fullscreen chart exploration
+
+The chart's **Fullscreen** button opens a view with zoom, pan, reset and a
+selected-period navigator. **Exit fullscreen** or Escape returns to the page.
+Landscape shows the entire selected time window at baseline zoom. Portrait uses
+the full available chart height and shows a narrower time slice; drag sideways
+or use the navigator to move through the selection even at baseline zoom.
+Rotation preserves magnification and the visible center where the date boundaries
+allow it. Axes and controls stay within the screen.
+
+In fullscreen, pinch or the mouse wheel zooms around the gesture position, dragging
+pans, and tapping inspects a value. The buttons also work in the normal chart;
+Ctrl-wheel zooms there without taking over ordinary page scrolling. With the chart
+focused, +/− zoom, arrow keys pan, and Home resets. The applied Finnish dates are
+fixed until another date, preset or date-navigation action is explicitly applied,
+including across midnight. Zooming, theme/series changes, refresh and fullscreen
+transitions never expand those dates. Reset restores baseline zoom; portrait still
+shows a movable slice. Native browser fullscreen is used when available, with a
+viewport-filling fallback for browsers and embedded views that do not allow it.
+
+Gesture frames transform the currently rendered plot bitmap and activity strips.
+After movement settles, the chart redraws from loaded data and requests finer
+detail for an overlapping, bounded viewport when useful. The detail loader keeps
+one request in flight, coalesces later movement, ignores obsolete results and
+retains eight responses in memory for 30 seconds. Routine observation updates do
+not repeatedly abort slow historical detail queries. Selection/source changes and
+model corrections invalidate detail; closing the chart cleans up pending work.
+
+Drawing starts with a conservative point budget and adjusts it using measured
+redraw time. Display reduction retains original extrema, missing-data breaks and
+tooltip provenance; power components are reduced before their fills are aligned.
+Zoom currently stops at a one-minute visible interval, independently of network
+latency. This does not imply one-minute observations: source cadence, daily totals,
+committed learning intervals and missing history retain their existing meaning.
+Tooltips identify clipped interpolated/held scalar boundaries as display points.
+
+`/api/chart` optionally accepts both `viewFrom` and `viewTo` as integer UTC
+milliseconds within the selected `start`/`end` dates. A detail response has the
+queried `range`, the full calendar `selection`, and `meta.detail: true`. It omits
+`timingBenefit`, `heatingBenefit` and `firewoodBenefit`; existing cost comparisons
+continue to describe the full selection. Daily firewood outcome points still use
+their whole-day calculation. Necessary source context can be read around a
+viewport, while returned points and visible bounds remain clipped.
+
+Initial multi-year loading is unchanged. Fine detail can arrive later than the
+gesture, and some reconstructed series still require an earlier journal prefix.
+The current view stays available during loading or failure. No chart summary
+tables, model snapshots or additional recorded history are introduced. Browser
+checks use synthetic data in desktop, portrait and landscape viewports; they do
+not establish a frame-rate guarantee for physical phones or slower servers.
+
 ## H66 dataset and model roles
 
 The dataset retains **30 H66 variables**. `discharge_temperature` (`0012`) and

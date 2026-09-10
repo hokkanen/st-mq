@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
-import { getChartData, chartRange } from './chart-data.js';
+import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 
@@ -44,13 +44,13 @@ parentPort.on('message', ({ id, args, operation }) => {
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.
-    const bucket = chartRange(args).to <= args.now ? 0 : Math.floor(args.now / 15_000);
+    const bucket = chartRequestRange(args).range.to <= args.now ? 0 : Math.floor(args.now / 15_000);
     const key = JSON.stringify({ ...args, now: bucket });
     let entry = cache.get(key), result;
     // Cycle records can be corrected without a new telemetry or journal row.
     // Recheck their compact selected-period aggregate, retaining history cache
     // hits for unrelated recorder/checkpoint writes and active observation tapes.
-    if (entry && heatingFingerprint(entry.result.heatingBenefit) !== heatingFingerprint(
+    if (entry && !entry.result.meta.detail && heatingFingerprint(entry.result.heatingBenefit) !== heatingFingerprint(
       getHeatingBenefit({ ...args, store, range: entry.result.range }))) {
       cache.delete(key); cacheBytes -= entry.bytes; entry = null;
     }
