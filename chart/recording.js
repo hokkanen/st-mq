@@ -1,7 +1,7 @@
 import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
 
 // Frequent chart choices first; equipment diagnostics remain together at the end.
-const leftAxisGroups = ['Electricity', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
+const leftAxisGroups = ['Electricity', 'Home temperatures', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
   'Learning', 'Model coefficients', 'Model inputs', 'Equipment states', 'Settings', 'Runtime counters', 'Meter checks'];
 const leftAxes = HISTORY_AXES.filter(axis => !RIGHT_AXIS_SIGNALS.includes(axis.key));
 

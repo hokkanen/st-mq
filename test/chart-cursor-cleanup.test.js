@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
 import { chartRange, getChartData } from '../src/app/chart-data.js';
-import { RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY } from '../src/domain/history-series.js';
 
 const MINUTE = 60_000;
 const day = chartRange({ startDate: '2026-01-15', now: Date.parse('2026-01-16T00:00:00Z') });
@@ -69,7 +69,9 @@ for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors c
 
 for (const failure of ['prepare', 'prime', 'processing']) test(`scalar cursors close through CSV and coverage merges after ${failure} failure`, t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  for (const signal of RIGHT_AXIS_SIGNALS.filter(signal => signal.endsWith('_temperature')))
+  // Exercise real recorder channels, regardless of which derived temperatures
+  // the chart currently shares on its right axis.
+  for (const signal of HISTORY_AXIS_BY_KEY.temperatures.signals)
     store.observation({ source: 'fixture-temperature', device: 'invented-house', signal,
       value: 20, unit: 'degC', sourceTime: day.from, receivedAt: day.from, quality: [] });
   // Keep the surrounding merge cursors active while a native scalar fails.

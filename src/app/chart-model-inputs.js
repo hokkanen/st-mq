@@ -14,7 +14,7 @@ const fields = {
 
 /** Project immutable learning inputs. Do not rerun today's learner, read mutable
  * configuration, or expose journal payloads / source identifiers to the browser. */
-export function addModelInputs({ store, range, now, input, envelopes }) {
+export function addModelInputs({ store, range, now, input, envelopes, indoorLine }) {
   const selected = Object.keys(MODEL_INPUT_INFO).filter(key => envelopes[key] && !FIREPLACE_INPUT_NAMES.includes(key));
   const stats = { records: 0, rejectedIntervals: 0, basis: 'immutable-learning-journal' };
   if (!selected.length) return stats;
@@ -26,6 +26,13 @@ export function addModelInputs({ store, range, now, input, envelopes }) {
   const project = (key, start, end, value, metadata, endpoint = false) => {
     const line = envelopes[key];
     if (endpoint) {
+      // A narrow zoom can lie entirely between two saved endpoints. Reuse the
+      // scalar display clipping without adding a reading or extending live data.
+      if (indoorLine) {
+        if (lastEnd.has(key) && start > lastEnd.get(key)) indoorLine.add(start - 1, null);
+        indoorLine.add(end, value, metadata); lastEnd.set(key, end);
+        return;
+      }
       if (end >= range.from && end <= Math.min(range.to, now)) {
         if (lastEnd.has(key) && start > lastEnd.get(key)) line.add(start - 1, null);
         line.add(end, value, metadata); lastEnd.set(key, end);
@@ -78,7 +85,7 @@ export function addModelInputs({ store, range, now, input, envelopes }) {
   // the selected physical input wins if both provider modes recorded a window.
   let pending;
   const priority = row => row.input === input ? 2 : row.input === 'history' ? 0 : 1;
-  for (const row of query.iterate(...inputs, range.from, Math.min(now, range.to + WINDOW))) {
+  for (const row of query.iterate(...inputs, range.from - (indoorLine ? WINDOW : 0), Math.min(now, range.to + WINDOW))) {
     if (pending && pending.at !== row.at) { accept(pending); pending = null; }
     if (!pending || priority(row) >= priority(pending)) pending = row;
   }

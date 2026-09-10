@@ -1,24 +1,5 @@
 {
   "provenance": "Synthetic offline protocol fixtures using vendor status/observation field shapes; no household records or credentials.",
-  "smartthingsC": {
-    "components": {
-      "main": {
-        "temperatureMeasurement": {
-          "temperature": { "value": 21.75, "unit": "C", "timestamp": "2026-09-06T12:00:00.000Z" }
-        },
-        "unrelated": { "secret": "must-not-persist" }
-      }
-    }
-  },
-  "smartthingsF": {
-    "components": {
-      "main": {
-        "temperatureMeasurement": {
-          "temperature": { "value": 68, "unit": "F", "timestamp": "2026-09-06T12:01:00.000Z" }
-        }
-      }
-    }
-  },
   "charger": [
     { "id": 183, "value": "10.5", "timestamp": "2026-09-06T12:00:00.000Z", "unrelated": "must-not-persist" },
     { "id": 184, "value": 10.25, "timestamp": "2026-09-06T11:59:58.000Z" },

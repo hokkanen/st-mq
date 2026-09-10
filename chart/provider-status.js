@@ -1,8 +1,8 @@
 import { H66_HISTORY_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', smartthings: 'SmartThings', easee: 'Easee', teslamate: 'Teslamate' });
-const jobs = Object.freeze({ temperatures: 'SmartThings temperatures', smartthings: 'SmartThings temperatures',
+  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', easee: 'Easee', teslamate: 'Teslamate' });
+const jobs = Object.freeze({ temperatures: 'Temperature adapter',
   easee: 'Property & Charger 1 · Easee', teslamate: 'Charger 2 · Teslamate',
   market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
 const states = Object.freeze({ ok: 'Available', healthy: 'Available', available: 'Available', success: 'Available',
@@ -108,9 +108,9 @@ export function providerSeries(job, health = {}) {
     return [seriesRow(['outdoor_temperature'], 'Outdoor temperature', '°C',
       'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.', source)];
   }
-  if (['temperatures', 'smartthings', 'mqtt-temperature'].includes(job)) {
+  if (['temperatures', 'mqtt-temperature'].includes(job)) {
     const source = job === 'mqtt-temperature' ? 'MQTT temperature sensor'
-      : job === 'smartthings' || health?.source === 'smartthings' ? 'SmartThings' : 'Configured temperature adapter';
+      : 'Configured temperature adapter';
     return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
         ? 'Optional configured sensor, recorded for history.' : signal === 'outdoor_temperature'
@@ -120,8 +120,8 @@ export function providerSeries(job, health = {}) {
   return [];
 }
 
-const temperatureJobs = ['temperatures', 'smartthings', 'mqtt-temperature', 'outdoor'];
-const indoorSources = ['husdata-h66', 'mqtt-temperature', 'smartthings'];
+const temperatureJobs = ['temperatures', 'mqtt-temperature', 'outdoor'];
+const indoorSources = ['husdata-h66', 'mqtt-temperature'];
 const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
 const temperatureAvailable = (reading, now) => Number.isFinite(reading?.value) && reading.stale !== true
   && Number.isFinite(reading.observedAt) && reading.observedAt <= now && now - reading.observedAt <= 30 * 60_000;
@@ -192,7 +192,7 @@ function electricityDisplay(entries, options) {
  * enter these descriptors, and forecast data remains a separate final entry. */
 export function dashboardProviders(status, options) {
   const entries = Object.entries(status.providers ?? {}).filter(([key, health]) => health && typeof health === 'object'
-    && !(['temperatures', 'smartthings'].includes(key) && ['not-configured', 'disabled'].includes(health.status)));
+    && !(key === 'temperatures' && ['not-configured', 'disabled'].includes(health.status)));
   const temperatures = entries.filter(([key]) => temperatureJobs.includes(key));
   const electricity = entries.filter(([key]) => electricityJobs.includes(key));
   const describe = ([key, health]) => {

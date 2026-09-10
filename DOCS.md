@@ -31,6 +31,10 @@ for the algorithm, native-setting restoration and equipment testing limits.
    to operate heating; `shadow` calculates plans and `monitoring` observes.
    Retain the existing MQTT connection fields. The controller uses the existing
    `from_stmq/heat/action` relay integration; it does not replace that automation.
+   Configure local indoor temperature subscriptions under `mqtt`: smoke channel 1
+   supplies Upstairs, channel 2 Bedroom and channel 3 Downstairs. See
+   [temperature configuration](docs/recording.md#local-mqtt-temperature-sensors-and-interface)
+   for the topic fields and payload formats.
 7. Add `controller.h66_device` when H66 arrives. Both live inputs then subscribe
    to C60 telemetry and request snapshots; active mode additionally uses the four
    documented settings. Native baselines are read before each cycle. Optional
@@ -47,8 +51,9 @@ for the algorithm, native-setting restoration and equipment testing limits.
    ICON Seamless. Missing FMI radiation can use Open-Meteo while retaining FMI
    temperature. Radiation includes cloud effects and uses W/m². Current outdoor
    temperature uses H66 first, then FMI, then an Open-Meteo model estimate. Device
-   collection runs every five minutes, outdoor temperature every ten minutes,
-   prices/forecasts hourly and H66 snapshot requests every minute.
+   temperatures arrive through MQTT, Easee collection runs every 15 seconds,
+   outdoor weather every five minutes, forecasts every 30 minutes, prices hourly
+   and H66 snapshot requests every minute.
 8. Configure `electricity` in add-on options. Every monetary field explicitly
    **excludes VAT**; `vat_percent` applies VAT once to spot, margin, tax and transfer.
    Defaults are margin **0.33 c/kWh ex VAT**, tax **2.325 c/kWh ex VAT**, and
@@ -127,9 +132,13 @@ range and click **Show dates** to apply it. **Yesterday – today**, **Today**,
 **Today – tomorrow** shortcuts keep both observations and forecasts within the
 selected dates. The small outer arrows move the shown window one calendar day
 back or forward while preserving its length. The **Left axis** drawer offers
-Power, phase currents, live heating integral,
-solar radiation and all four historical learning metrics. Temperatures and prices
-remain available on the right. Whole-house and EV power estimates use recorded
+Power, phase currents, individual Upstairs, Bedroom, Downstairs and Garage
+temperatures, live heating integral, solar radiation and all four historical
+learning metrics. **Average indoor**, outdoor temperature and prices remain
+available on the right with their existing colours. Average indoor is the configured
+sensor average used by the house model. **All air temperatures** in the left
+drawer shows individual rooms, garage and outdoor readings together. Whole-house
+and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
 currents assume 230 V and unity power factor; older current-only history uses
 the nominal 230 V power estimate. H66 AUX power is a red fill derived from the
@@ -223,9 +232,8 @@ The outdoor card labels **H66 outdoor sensor**, **FMI nearby station**, or
 the house sensor reading when fresh. The station and model fallback describe the
 surrounding area. Missing or stale H66 readings fall back automatically; a fresh
 H66 reading regains priority. With valid configured coordinates, this chain owns
-outdoor temperature. SmartThings polls only configured indoor and garage sensors;
-its legacy outdoor device setting is ignored by automatic acquisition. FMI requires
-a fresh station reading within 50 km. Open-Meteo needs no key or
+outdoor temperature. Indoor and garage sensors publish through local MQTT. FMI
+requires a fresh station reading within 50 km. Open-Meteo needs no key or
 registration for noncommercial use within the free API limits; no weather token
 setting is needed. **Connection & provider details** names each selected provider and shows
 **Using backup**, a concise primary error and the next scheduled primary retry.

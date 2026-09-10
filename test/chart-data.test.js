@@ -412,10 +412,10 @@ test('mixed solar providers retain their own provenance through chart points and
 test('historical outdoor readings identify sources without turning model estimates into sensor readings', () => {
   const store = new Store(':memory:');
   try {
-    for (const [source, minutes] of [['husdata-h66', 3], ['fmi', 2], ['openmeteo', 1]])
+    for (const [source, minutes] of [['mqtt-temperature', 4], ['husdata-h66', 3], ['fmi', 2], ['openmeteo', 1]])
       put(store, 'outdoor_temperature', -minutes, now - minutes * MINUTE, { source });
     const result = get(store);
-    assert.deepEqual(result.series.outdoor_temperature.map(point => point.source), ['husdata-h66', 'fmi', 'openmeteo']);
+    assert.deepEqual(result.series.outdoor_temperature.map(point => point.source), ['mqtt-temperature', 'husdata-h66', 'fmi', 'openmeteo']);
     assert.equal(historySeriesAt(result, now).outdoor_temperature.at(-1).source, 'openmeteo');
     put(store, 'outdoor_temperature', 0, now, { source: 'https://synthetic.invalid/?token=private-fixture' });
     assert.doesNotMatch(JSON.stringify(get(store)), /private-fixture|synthetic\.invalid/);
@@ -801,6 +801,7 @@ test('native scalar readings remain authoritative when CSV history is imported l
       assert.equal(single.series.indoor_temperature[0].y, 23, `${left}: newest native temperature wins`);
       assert.equal(single.series.spot_price[0].y, 9, `${left}: native spot price wins`);
       assert.equal(single.series.garage_temperature[0].y, 12, `${left}: newest imported row wins without native data`);
+      assert.deepEqual(single.series.model_indoor_temperature, [], 'CSV temperatures stay raw until their original model inputs are committed');
       if (left === 'phases') assert.equal(single.series.property_current_l1[0].y, 11);
       assert.deepEqual(long.series, single.series, `${left}: range length cannot change source precedence`);
     }

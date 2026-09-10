@@ -10,18 +10,18 @@ const temperature = (source, value = 21, extra = {}) => ({ source, value, observ
 
 test('dashboard groups measured temperature channels under their actual sources and puts forecast last', () => {
   const entries = dashboardProviders({ input: 'providers', observations: {
-    indoor: temperature('smartthings'), garage: temperature('smartthings', 16), outdoor: temperature('fmi', 4),
-  }, providers: { temperatures: { source: 'smartthings', status: 'ok', lastSuccessAt: now },
+    indoor: temperature('mqtt-temperature'), garage: temperature('mqtt-temperature', 16), outdoor: temperature('fmi', 4),
+  }, providers: { temperatures: { source: 'mqtt-temperature', status: 'ok', lastSuccessAt: now },
     easee: { status: 'ok' }, market: { status: 'ok', source: 'entsoe' },
     weather: { status: 'ok', source: 'fmi' }, outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
   assert.deepEqual(entries.map(row => row.key), ['electricity', 'market', 'main-temperatures', 'weather']);
   const grouped = entries[2];
-  assert.equal(grouped.display.title, 'Main temperatures · SmartThings, FMI');
+  assert.equal(grouped.display.title, 'Main temperatures · MQTT temperature sensor, FMI');
   assert.equal(grouped.display.state, 'Available');
-  assert.equal(grouped.source, 'SmartThings, FMI');
+  assert.equal(grouped.source, 'MQTT temperature sensor, FMI');
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
   assert.match(grouped.series[1].detail, /Optional garage sensor, recorded for history/);
-  assert.match(grouped.display.detail, /Temperature downloads · SmartThings: Last successful download 10:00/);
+  assert.match(grouped.display.detail, /Temperature downloads · MQTT temperature sensor: Last successful download 10:00/);
   assert.match(grouped.display.detail, /Outdoor downloads · FMI: Observed at a nearby weather station. Last successful download 10:00/);
 });
 
@@ -43,8 +43,8 @@ test('selected live temperatures take precedence over downloaded provider source
 
 test('failed downloads stay actionable for selected temperatures while unrelated H66 backup diagnostics stay scoped', () => {
   const status = { input: 'providers', observations: {
-    indoor: temperature('smartthings'), outdoor: temperature('fmi', 4),
-  }, providers: { temperatures: { source: 'smartthings', status: 'degraded', qualityIssues: ['missing'] },
+    indoor: temperature('mqtt-temperature'), outdoor: temperature('fmi', 4),
+  }, providers: { temperatures: { source: 'mqtt-temperature', status: 'degraded', qualityIssues: ['missing'] },
     outdoor: { source: 'fmi', status: 'error', error: 'HTTP-503' } } };
   let [grouped] = dashboardProviders(status, options);
   assert.equal(grouped.display.state, 'Needs attention');
@@ -211,7 +211,6 @@ test('provider catalogue preserves market fallback and the separate weather sola
 
 test('temperature catalogue distinguishes the optional adapter and MQTT sensor history from live outdoor selection', () => {
   assert.equal(providerSeries('temperatures')[0].source, 'Configured temperature adapter');
-  assert.equal(providerSeries('smartthings')[0].source, 'SmartThings');
   const mqtt = providerSeries('mqtt-temperature');
   assert.equal(mqtt[0].source, 'MQTT temperature sensor');
   assert.deepEqual(mqtt.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
@@ -221,14 +220,14 @@ test('temperature catalogue distinguishes the optional adapter and MQTT sensor h
 
 test('indoor provider rows show the three physical sensors separately from their model average', () => {
   const status = { input: 'providers', observations: {
-    indoor: temperature('indoor-average', 21), upstairs: temperature('smartthings', 22),
-    downstairs: temperature('smartthings', 20), bedroom: temperature('mqtt-temperature', 21),
+    indoor: temperature('indoor-average', 21), upstairs: temperature('mqtt-temperature', 22),
+    downstairs: temperature('mqtt-temperature', 20), bedroom: temperature('mqtt-temperature', 21),
     outdoor: temperature('fmi', 4),
-  }, providers: { temperatures: { source: 'smartthings', status: 'ok', lastSuccessAt: now } } };
+  }, providers: { temperatures: { source: 'mqtt-temperature', status: 'ok', lastSuccessAt: now } } };
   const [grouped] = dashboardProviders(status, options);
   assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom', 'Garage temperature', 'Outdoor temperature']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
-  assert.match(grouped.display.title, /SmartThings, MQTT temperature sensor, FMI/);
+  assert.match(grouped.display.title, /MQTT temperature sensor, FMI/);
   assert.equal(grouped.display.state, 'Available');
   assert.match(grouped.series[0].detail, /recorded separately/);
   status.providers.temperatures.error = 'HTTP-401';

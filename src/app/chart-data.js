@@ -295,7 +295,7 @@ function knownIntervals(market, store, range, now) {
   return combined;
 }
 
-const WEATHER_SOURCES = new Set(['fmi', 'openmeteo', 'husdata-h66', 'smartthings', 'simulation']);
+const WEATHER_SOURCES = new Set(['fmi', 'openmeteo', 'husdata-h66', 'mqtt-temperature', 'simulation']);
 
 function weatherPointMetadata(row, solar = false) {
   const detail = solar ? row.solar ?? row : row;
@@ -551,7 +551,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (contract && (!projecting || _priceProjection)) { rates = validateContract(contract); if (rates.mode !== 'billing') throw new TypeError('Historical charts require dated billing rates'); }
   const leftNames = HISTORY_AXIS_BY_KEY[left].signals;
   const names = projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : leftNames
-    : [...TEMPERATURES, 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames];
+    : [...new Set([...TEMPERATURES, 'model_indoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price', ...leftNames])];
   const envelopes = Object.fromEntries(names.map(name => [name, projecting
     ? new RelatedStepSampler(range.from, range.to, _relatedTimes) : new Envelope(range.from, range.to, points)]));
   if (_priceProjection) for (const envelope of Object.values(envelopes)) envelope.mask = _priceProjection.marketIntervals;
@@ -860,7 +860,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
       rawRows, energyRows: recordedEnergy.rows };
   }
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
-  const modelInputs = addModelInputs({ store, range, now, input, envelopes });
+  const modelInputs = addModelInputs({ store, range, now, input, envelopes,
+    indoorLine: detail ? lines.model_indoor_temperature : undefined });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || FIREWOOD_OUTCOME_NAMES.includes(left);

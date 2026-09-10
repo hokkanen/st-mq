@@ -40,7 +40,7 @@ Electricity history stores three estimated phase-energy increments for Easee and
 property import, plus one total-energy increment for TeslaMate portable charging.
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
-[adaptive recording and migration](docs/recording.md), including SmartThings and MQTT temperature sensors.
+[adaptive recording and migration](docs/recording.md), including local MQTT temperature sensors.
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
 comfort learning after adjustments to floor circulation thermostats.
@@ -138,7 +138,9 @@ and saves that choice. The chart is directly below the current readings.
   from zero; they are not stacked. **Phase currents** shows the three property phase lines
   in amperes with corresponding charger fills. **Phase energy per interval** shows
   the three saved kWh increments per device. The drawer groups all retained H66
-  parameters, garage temperature, control, weather and learning series. **Heating
+  parameters, individual Upstairs, Bedroom, Downstairs and Garage temperatures,
+  control, weather and learning series. **All air temperatures** shows the
+  room, garage and outdoor readings together. **Heating
   integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
   with observed auxiliary recovery, recovery cost prediction error and learned
   normal indoor temperature. **Solar radiation** shows archived and future FMI
@@ -147,8 +149,10 @@ and saves that choice. The chart is directly below the current readings.
   actual intervals. Equivalent chart currents assume 230 V and unity power factor;
   they are not the acquired current snapshots. Older current-only history retains
   its `230 × (L1 + L2 + L3) / 1000` estimate. Neither path measures heat-pump consumption.
-- **Right axis:** indoor, garage and outdoor temperatures and electricity prices
-  stay available with every left-axis selection. The dashed outdoor continuation
+- **Right axis:** **Average indoor**, outdoor temperature and electricity prices
+  stay available with every left-axis selection, retaining their existing colours.
+  Average indoor is the same configured sensor average used by the house model;
+  select individual room temperatures in the left-axis drawer. The dashed outdoor continuation
   is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
   charges. Explicit saved legend choices are preserved. All-in prices combine
   historical spot prices with the contract rates for that date, or the nearest
@@ -337,14 +341,14 @@ Start read-only collection with:
 STMQ_INPUT=providers npm start
 ```
 
-This reuses `geoloc`, `entsoe`, `mqtt`, `smartthings` and `easee` connection fields from
+This reuses `geoloc`, `entsoe`, `mqtt` and `easee` connection fields from
 the existing options JSON. FMI, Open-Meteo and Elering need no API key or additional
 provider configuration. Weather uses the configured latitude/longitude;
 Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO-E
-bidding zone. SmartThings polls configured indoor and garage sensors using the existing
-`smartthings.token`, `inside_temp_dev_id` and `garage_temp_dev_id` fields in both
-`providers` and `mqtt` input modes. Indoor temperature can also come from H66;
-indoor/garage sensors can publish on configured MQTT topics. The garage
+bidding zone. Indoor and garage temperatures arrive on configured local MQTT topics
+in both `providers` and `mqtt` input modes. Smoke channel 1 is Upstairs, channel 2
+is Bedroom and channel 3 is Downstairs. Indoor temperature can also come from H66
+when no dedicated Upstairs topic is configured. The garage
 is recorded independently of heating optimization. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
@@ -353,7 +357,7 @@ and plans; active mode can use a configured command transport.
 | Electricity prices | ENTSO-E → Elering's own public API | 1 hour; 15-minute retry when next-day horizon is missing |
 | Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 30 minutes |
 | Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
-| Indoor/garage temperatures | SmartThings; H66 indoor; configured MQTT sensors | SmartThings every 5 minutes; MQTT publications; H66 GETALL every 60 seconds |
+| Indoor/garage temperatures | Configured local MQTT sensors; H66 indoor when no dedicated topic is configured | MQTT publications; H66 GETALL every 60 seconds |
 | Property/charger electrical observations | Easee REST | 15 seconds, one batched request per device |
 | Portable-charger total energy | TeslaMate MQTT | Changed fields and live health; integration checked every 5 seconds |
 
@@ -390,7 +394,6 @@ readings regain priority. FMI selects the nearest fresh station among up to thre
 returned candidates within 50 km. The station and model estimate describe the
 surrounding area. Weather forecasts and current-temperature acquisition are
 independent; an unavailable station therefore does not discard a good FMI forecast.
-No new SmartThings outdoor readings enter this chain.
 
 [Open-Meteo](https://open-meteo.com/en/docs/dwd-api) supplies DWD ICON forecasts
 without registration or a key for noncommercial use within the free API limits.
@@ -500,7 +503,7 @@ mode/drop settings. `temp_to_hours` is obsolete and has been removed.
 
 `recording.max_interval_minutes` defaults to `5` and
 `recording.annual_budget_gb` to `10`. Acquisition intervals have separate options;
-the complete example and MQTT replacement sensor payloads are in
+the complete example and local MQTT sensor payloads are in
 [docs/recording.md](docs/recording.md). A storage target is not a calendar quota or
 an automatic deletion policy.
 

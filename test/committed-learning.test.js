@@ -68,7 +68,7 @@ test('fast unsaved polls stay live while the house learner receives only recorde
     record(store, 'outdoor_temperature', 0, at);
   }
   const baseRows = store.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
-  engine.ingest({ source: 'smartthings', device: 'invented-room', signal: 'indoor_temperature', value: 28,
+  engine.ingest({ source: 'mqtt-temperature', device: 'invented-room', signal: 'indoor_temperature', value: 28,
     unit: 'degC', sourceTime: now, receivedAt: now, quality: [], raw: { acquisitionOnly: true } });
   engine.ingest({ source: 'easee', device: 'invented-meter', signal: 'property_energy_total', value: 123456,
     unit: 'kWh', sourceTime: now, receivedAt: now, quality: [], raw: { auditOnly: true } });
@@ -100,7 +100,7 @@ test('committed coverage never renews a cached measurement beyond its source tim
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
   const recorder = new Recorder(store, { clock: () => start });
-  for (const minute of [0, 25]) recorder.record({ source: 'smartthings', device: 'invented-room',
+  for (const minute of [0, 25]) recorder.record({ source: 'mqtt-temperature', device: 'invented-room',
     signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: start,
     receivedAt: start + minute * MINUTE, quality: [], raw: { cached: minute > 0 } });
   assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 30 * MINUTE, config }).indoorC, 21);

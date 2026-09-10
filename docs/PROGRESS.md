@@ -181,14 +181,14 @@ the full suite was run with the approved test-command escalation.
 
 - **Read-only provider path:** `STMQ_INPUT=providers` / add-on
   `controller.input: providers` reuses existing connections. ENTSO-E market and
-  the original forecast acquisition run hourly; optional SmartThings/Easee device
+  the original forecast acquisition run hourly; optional Easee device
   acquisition runs every five minutes independently. Durable cache timestamps
   preserve age across failures and restart. Physical writes remain disabled.
 - **Protocol semantics:** offline fixtures cover ENTSO-E A01/A03 curves,
   quarter-hour/hourly resolution, 92/100-quarter DST days, missing values,
   duplicates/revisions and ex-VAT normalization. Weather valid time is distinct
-  from fetch time; unknown forecast issuance stays explicit. SmartThings/Easee
-  adapters validate timestamps/units and preserve uncertainty in current snapshots.
+  from fetch time; unknown forecast issuance stays explicit. The Easee
+  adapter validates timestamps/units and preserves uncertainty in current snapshots.
   Easee authentication renewal and secret persistence are isolated from observations
   and browser responses; they do not alter charger settings.
 - **Compact contract setup:** dated margin/tax excluding VAT, VAT percentage and
@@ -374,7 +374,7 @@ now distinguish the observation request from the forecast request, which does
 accept `latlon`.
 
 Market and forecast polls remain hourly, outdoor observations run every ten
-minutes, and SmartThings/Easee polls remain every five minutes. Cached values keep
+minutes, and Easee polls remain every five minutes. Cached values keep
 their source timestamps across failures and restart. FMI recovery restores its
 primary role even when the backup's calculation timestamp is slightly newer.
 Provider errors are sanitized; backoff survives restart and honors bounded
@@ -403,14 +403,12 @@ used the existing options in memory and produced these results:
 | Elering | Direct public endpoint returned 100 intervals; all overlapping prices matched ENTSO-E within 0.000001 c/kWh. |
 | FMI forecast | 48 hourly forecast intervals, with distinct publication/model timestamps. |
 | FMI observation | Corrected configured-location query returned a fresh station reading, eight minutes old at verification. |
-| SmartThings | Both configured temperature devices returned readable values; the oldest source timestamp was about 40 minutes old. |
 | Easee | Charger and equalizer access succeeded and returned all six phase values; all were flagged stale, with the oldest about 45 hours old. |
 
 The retired weather integration's live-check rows were removed when its code and
 configuration were removed. Those old checks do not verify Open-Meteo.
 
-API access and measurement freshness are separate findings. SmartThings temperature
-ages are judged against the controller's 30-minute boundary. Easee's endpoint
+API access and measurement freshness are separate findings. Easee's endpoint
 returns last-reported state; its phase-current event timestamps cannot be replaced
 with the time of this successful request. Neither stale fields nor a successful
 GET alone establish current device connectivity or fresh power measurements.

@@ -46,13 +46,6 @@
     "entsoe": {
       "token": ""
     },
-    "smartthings": {
-      "token": "",
-      "inside_temp_dev_id": "",
-      "downstairs_temp_dev_id": "",
-      "bedroom_temp_dev_id": "",
-      "garage_temp_dev_id": ""
-    },
     "easee": {
       "user": "",
       "pw": "",
@@ -174,13 +167,6 @@
     "entsoe": {
       "token": "password?",
       "domain": "str?"
-    },
-    "smartthings": {
-      "token": "password?",
-      "inside_temp_dev_id": "str?",
-      "downstairs_temp_dev_id": "str?",
-      "bedroom_temp_dev_id": "str?",
-      "garage_temp_dev_id": "str?"
     },
     "easee": {
       "user": "str?",

@@ -22,7 +22,6 @@ hide a broken primary. The live checks cover:
 | `fmi-observation` | FMI returns a recent outdoor temperature observation. |
 | `openmeteo-forecast` | Open-Meteo ICON returns usable temperature and solar radiation forecasts without a key. |
 | `openmeteo-current` | Open-Meteo ICON returns a recent outdoor temperature model estimate without a key. |
-| `smartthings` | Every configured temperature device returns a valid reading. |
 | `easee` | Every configured charger/equalizer returns all three phase currents. |
 
 Open-Meteo uses the configured latitude and longitude; no API key is needed.
@@ -44,14 +43,12 @@ To check only a repaired service, select it explicitly:
 ```bash
 npm run test:live -- --services fmi-forecast,fmi-observation
 npm run test:live -- --services openmeteo-forecast,openmeteo-current
-npm run test:live -- --services smartthings
 ```
 
 Use the service names in the table. Checks and HTTP requests run serially. A run
 has at most 20 requests, each with a 12-second timeout and a 4 MiB response limit.
 There are no general retries. Easee permits at most one refresh and one login
-fallback, with one data retry after successful authentication. A denied
-SmartThings key stops further calls to that account immediately.
+fallback, with one data retry after successful authentication.
 Rate limiting stops the affected host, including calls already queued locally.
 
 The runner uses a local lock to prevent overlapping live test runs. It waits at

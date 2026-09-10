@@ -9,11 +9,11 @@ import { fileTokenStore } from '../src/acquisition/token-store.js';
 test('provider transport permits observations and auth only, refuses redirects and arbitrary origins', async () => {
   const calls = [];
   const http = createHttp({ fetchImpl: async (url, options) => { calls.push({ url, options }); return new Response('{"ok":true}'); } });
-  assert.deepEqual(await http.json('https://api.smartthings.com/v1/devices/example/status'), { ok: true });
+  assert.deepEqual(await http.json('https://api.easee.com/state/example/observations'), { ok: true });
   assert.equal(calls[0].options.redirect, 'error');
   await http.json('https://api.easee.com/api/accounts/login', { method: 'POST', body: '{}' });
   for (const [url, options] of [
-    ['https://attacker.invalid/?token=secret', {}], ['http://api.smartthings.com/', {}],
+    ['https://attacker.invalid/?token=secret', {}], ['http://api.easee.com/', {}],
     ['https://api.easee.com/api/chargers/example/commands/start_charging', { method: 'POST' }],
     ['https://user:secret@api.easee.com/', {}], ['https://api.easee.com:444/', {}],
   ]) await assert.rejects(http.json(url, options));

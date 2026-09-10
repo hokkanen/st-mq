@@ -28,7 +28,7 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   const select = node(); select.value = 'model_coefficient_heat_loss';
   populateHistoryAxes(select);
   assert.equal(select.value, 'model_coefficient_heat_loss');
-  assert.deepEqual(select.children.map(group => group.label.split(' · ')[0]), ['Electricity', 'Heating', 'Hot water',
+  assert.deepEqual(select.children.map(group => group.label.split(' · ')[0]), ['Electricity', 'Home temperatures', 'Heating', 'Hot water',
     'Ground loop', 'Control', 'Weather', 'Learning', 'Model coefficients', 'Model inputs', 'Equipment states',
     'Settings', 'Runtime counters', 'Meter checks']);
   const choices = new Set(select.children.flatMap(group => group.children.map(option => option.value)));
@@ -38,7 +38,13 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   assert.equal(coefficients.children.length, 5);
   assert.deepEqual(Object.values(MODEL_COEFFICIENT_INFO).map(info => info.parameter),
     ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh', 'fireplaceCPerKg']);
-  assert(choices.has('model_indoor_temperature') && choices.has('model_outdoor_temperature'), 'Saved learning inputs remain inspectable');
+  assert(choices.has('model_outdoor_temperature'), 'Saved outdoor learning inputs remain inspectable');
+  const rooms = select.children.find(group => group.label === 'Home temperatures · Recorded');
+  assert.deepEqual(rooms.children.map(option => [option.value, option.textContent]), [
+    ['temperatures', 'All air temperatures'],
+    ['indoor_temperature', 'Upstairs'], ['downstairs_temperature', 'Downstairs'],
+    ['bedroom_temperature', 'Bedroom'], ['garage_temperature', 'Garage temperature'],
+  ]);
   for (const key of ['firewood_load', 'model_fireplace_release', 'firewood_savings', 'firewood_electricity_avoided']) assert(choices.has(key));
   const meterChecks = select.children.find(group => group.label.split(' · ')[0] === 'Meter checks');
   assert.deepEqual(meterChecks.children.map(option => option.textContent), ['Property meter counter', 'Charger 1', 'Charger 2']);

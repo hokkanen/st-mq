@@ -18,7 +18,7 @@ function setup(t, { input = 'offline', cached = null } = {}) {
 }
 
 function reading({ signal = 'indoor_temperature', value = 21, sourceTime = beginning,
-  receivedAt = beginning, quality = [], source = 'smartthings' } = {}) {
+  receivedAt = beginning, quality = [], source = signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature' } = {}) {
   return { source, device: 'fixture-house', signal, value, unit: 'degC', sourceTime, receivedAt, quality };
 }
 
@@ -78,12 +78,12 @@ test('null provider outages retain the last valid value and original age, with s
   setTime(beginning + 5 * MINUTE);
   engine.ingest(reading({ value: null, sourceTime: null, receivedAt: beginning + 5 * MINUTE,
     quality: ['provider_error', 'missing', 'source_time_unknown'] }));
-  store.setState('providers:health', { smartthings: { status: 'error' } });
+  store.setState('providers:health', { fmi: { status: 'error' } });
   const recent = engine.tick();
   assert.equal(recent.observations.indoor.value, 21);
   assert.equal(recent.observations.indoor.observedAt, beginning);
   assert.equal(recent.observations.indoor.stale, false);
-  assert.equal(recent.providers.smartthings.status, 'error');
+  assert.equal(recent.providers.fmi.status, 'error');
   setTime(beginning + 31 * MINUTE);
   assert.equal(engine.status().observations.indoor.value, 21);
   assert.equal(engine.status().observations.indoor.stale, true);
@@ -120,23 +120,24 @@ test('verified Fahrenheit conversion is a benign provenance flag, with other err
   assert.equal(status.decision.reasons.includes('missing-or-stale-observations'), false);
 });
 
-test('provider restart hydrates bounded cached observations without freshening or duplicating history', t => {
-  const cached = [reading({ sourceTime: beginning - 20 * MINUTE, receivedAt: beginning - 19 * MINUTE }),
-    reading({ signal: 'outdoor_temperature', value: 4, sourceTime: beginning - 40 * MINUTE }),
-    reading({ value: 28, sourceTime: beginning + 86_400_000, quality: ['future_source_time'] }),
-    reading({ value: null, sourceTime: null, quality: ['provider_error', 'missing'] })];
+test('provider restart hydrates bounded weather observations without freshening or duplicating history', t => {
+  const cached = [reading({ signal: 'outdoor_temperature', value: 4, sourceTime: beginning - 20 * MINUTE, receivedAt: beginning - 19 * MINUTE }),
+    reading({ signal: 'outdoor_temperature', source: 'openmeteo', value: 3, sourceTime: beginning - 40 * MINUTE }),
+    reading({ signal: 'outdoor_temperature', value: 28, sourceTime: beginning + 86_400_000, quality: ['future_source_time'] }),
+    reading({ signal: 'outdoor_temperature', value: null, sourceTime: null, quality: ['provider_error', 'missing'] }),
+    reading()];
   const { engine, store, config, setTime } = setup(t, { input: 'providers', cached });
   const status = engine.tick();
-  assert.equal(status.observations.indoor.value, 21);
-  assert.equal(status.observations.indoor.observedAt, beginning - 20 * MINUTE);
-  assert.equal(status.observations.indoor.stale, false);
-  assert.equal(status.observations.outdoor.stale, true);
-  assert.equal(store.observations().filter(o=>['smartthings','fmi','openmeteo','easee'].includes(o.source)).length, 0);
+  assert.equal(status.observations.outdoor.value, 4);
+  assert.equal(status.observations.outdoor.observedAt, beginning - 20 * MINUTE);
+  assert.equal(status.observations.outdoor.stale, false);
+  assert.equal(status.observations.indoor.value, null, 'Cached MQTT packets cannot establish availability in a new broker session');
+  assert.equal(store.observations().filter(o=>['mqtt-temperature','fmi','openmeteo','easee'].includes(o.source)).length, 0);
   assert.deepEqual(store.getState('provider:observations'), cached);
   setTime(beginning + 11 * MINUTE);
   const restarted = new Engine({ store, config, clock: engine.clock });
-  assert.equal(restarted.tick().observations.indoor.stale, true);
-  assert.equal(restarted.status().observations.indoor.observedAt, beginning - 20 * MINUTE);
+  assert.equal(restarted.tick().observations.outdoor.stale, true);
+  assert.equal(restarted.status().observations.outdoor.observedAt, beginning - 20 * MINUTE);
 });
 
 test('a corrupt provider observation cache cannot prevent conservative startup', t => {

@@ -11,6 +11,8 @@ import { XMLParser } from 'fast-xml-parser';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
 import { createHttp } from '../src/acquisition/http.js';
 import { fetchOpenMeteoCurrent } from '../src/acquisition/weather.js';
+import { decodeMqttTemperature } from '../src/acquisition/mqtt.js';
+import { goodQuality } from '../src/control/learning.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -44,9 +46,7 @@ function config() {
         mqtt_address: '',
         mqtt_user: '',
         mqtt_pw: '',
-        st_temp_in_id: '',
-        st_temp_ga_id: '',
-        st_token: '',
+        temperature_topics: {},
         temp_to_hours: []
     };
 
@@ -61,9 +61,10 @@ function config() {
             mqtt_address: options.mqtt?.address || '',
             mqtt_user: options.mqtt?.user || '',
             mqtt_pw: options.mqtt?.pw || '',
-            st_temp_in_id: options.smartthings?.inside_temp_dev_id || '',
-            st_temp_ga_id: options.smartthings?.garage_temp_dev_id || '',
-            st_token: options.smartthings?.token || '',
+            temperature_topics: {
+                indoor_temperature: options.mqtt?.temperatureTopics?.indoor_temperature || '',
+                garage_temperature: options.mqtt?.temperatureTopics?.garage_temperature || '',
+            },
             temp_to_hours: options.temp_to_hours || []
         };
     } catch (error) {
@@ -79,8 +80,9 @@ class MqttHandler {
     #broker_address;
     #logged_topics = [];
     #client;
+    #temperatureReadings = new Map();
 
-    constructor(broker_address, username, password) {
+    constructor(broker_address, username, password, temperatureTopics = {}) {
         this.#broker_address = broker_address;
         const options = { username, password, reconnectPeriod: 1000 };
         this.#client = mqtt.connect(this.#broker_address, options);
@@ -90,22 +92,42 @@ class MqttHandler {
         });
 
         this.#client.on('connect', () => {
+            const topics = Object.values(temperatureTopics).filter(Boolean);
+            if (topics.length) this.#client.subscribe(topics, { qos: 0 }, error => {
+                if (error) console.log(`${BLUE}[ERROR ${date_string()}] MQTT temperature subscription failed${RESET}`);
+            });
             console.log(`${BLUE}[${date_string()}] MQTT client connected${RESET}`);
         });
 
         this.#client.on('offline', () => {
+            this.#temperatureReadings.clear();
             console.log(`${BLUE}[${date_string()}] MQTT client offline${RESET}`);
         });
+        this.#client.on('close', () => this.#temperatureReadings.clear());
 
         this.#client.on('reconnect', () => {
             console.log(`${BLUE}[${date_string()}] MQTT client reconnecting${RESET}`);
         });
 
-        this.#client.on('message', (topic, message) => {
+        this.#client.on('message', (topic, message, packet) => {
+            const signal = Object.keys(temperatureTopics).find(signal => temperatureTopics[signal] === topic);
+            if (signal) {
+                const reading = decodeMqttTemperature({ signal, payload: message, receivedAt: Date.now(), retained: packet?.retain === true });
+                if (reading) this.#temperatureReadings.set(signal, reading);
+                return;
+            }
             if (this.#logged_topics.includes(topic)) {
                 console.log(`${BLUE}[${date_string()}] MQTT received ${topic}:${message}${RESET}`);
             }
         });
+    }
+
+    temperature(signal) {
+        const reading = this.#temperatureReadings.get(signal), now = Date.now();
+        return Number.isFinite(reading?.value) && Number.isFinite(reading.sourceTime)
+            && goodQuality(reading.quality)
+            && (signal !== 'indoor_temperature' || reading.value > 2 && reading.value < 40)
+            && reading.sourceTime <= now && now - reading.sourceTime <= 30 * 60_000 ? reading.value : null;
     }
 
     get broker_address() {
@@ -162,8 +184,9 @@ class FetchData {
     #inside_temp = null;
     #garage_temp = null;
     #outside_temp = null;
+    #mqtt;
 
-    constructor() { }
+    constructor(mqttClient) { this.#mqtt = mqttClient; }
 
     get inside_temp() {
         return this.#inside_temp;
@@ -608,26 +631,6 @@ class FetchData {
         } finally { http.close(); }
     }
 
-    // Fetches temperature from SmartThings API
-    async query_st_temp(st_dev_id) {
-        if (!st_dev_id || st_dev_id.trim() === "" || typeof st_dev_id !== 'string') {
-            if (DEBUG) console.log(`${YELLOW}[DEBUG ${date_string()}] Skipped query_st_temp: invalid st_dev_id="${st_dev_id}" (type: ${typeof st_dev_id})${RESET}`);
-            return null;
-        }
-        try {
-            const response = await fetch(`https://api.smartthings.com/v1/devices/${st_dev_id}/status`, {
-                method: 'GET', headers: { Authorization: `Bearer ${config().st_token}`, 'Content-Type': 'application/json' }
-            });
-            if (this.check_response(response, `SmartThings (${st_dev_id.substring(0, 8)})`) !== 200) return null;
-            const temp = (await response.json()).components?.main?.temperatureMeasurement?.temperature?.value ?? null;
-            if (DEBUG && temp !== null) console.log(`${YELLOW}[DEBUG ${date_string()}] SmartThings Temperature: ${temp.toFixed(1)}°C${RESET}`);
-            return temp;
-        } catch (error) {
-            console.log(`${BLUE}[ERROR ${date_string()}] SmartThings failed: ${error.toString()}${RESET}`);
-            return null;
-        }
-    }
-
     // Fetches electricity prices for the next 48 hours, updating only if 12 or fewer hours remain
     async fetch_prices() {
         try {
@@ -683,8 +686,8 @@ class FetchData {
     async fetch_temperatures() {
         try {
             const cfg = config();
-            const new_inside_temp = await this.query_st_temp(cfg.st_temp_in_id);
-            const new_garage_temp = await this.query_st_temp(cfg.st_temp_ga_id);
+            const new_inside_temp = this.#mqtt.temperature('indoor_temperature');
+            const new_garage_temp = this.#mqtt.temperature('garage_temperature');
             // H66 is handled by the main controller; this legacy runner has no H66 input.
             let new_outside_temp = await this.query_fmi_temp(cfg.lat, cfg.lon);
             let outside_source = new_outside_temp !== null ? 'FMI' : 'No data';
@@ -693,8 +696,8 @@ class FetchData {
                 if (new_outside_temp !== null) outside_source = 'Open-Meteo';
             }
 
-            if (new_inside_temp !== null && new_inside_temp !== this.#inside_temp) this.#inside_temp = new_inside_temp;
-            if (new_garage_temp !== null && new_garage_temp !== this.#garage_temp) this.#garage_temp = new_garage_temp;
+            this.#inside_temp = new_inside_temp;
+            this.#garage_temp = new_garage_temp;
             if (new_outside_temp !== null && new_outside_temp !== this.#outside_temp) this.#outside_temp = new_outside_temp;
 
             // Always print temperatures in the specified format
@@ -844,8 +847,8 @@ class HeatAdjustment {
             throw new Error(`Missing required configuration fields: ${missingFields.concat(cfg.temp_to_hours.length === 0 ? ['temp_to_hours'] : []).join(', ')}`);
         }
 
-        const mqtt_client = new MqttHandler(cfg.mqtt_address, cfg.mqtt_user, cfg.mqtt_pw);
-        const fetch_data_instance = new FetchData();
+        const mqtt_client = new MqttHandler(cfg.mqtt_address, cfg.mqtt_user, cfg.mqtt_pw, cfg.temperature_topics);
+        const fetch_data_instance = new FetchData(mqtt_client);
         const heat_adjust_instance = new HeatAdjustment();
 
         await mqtt_client.log_topic('to_stmq/heat/receipt');

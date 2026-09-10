@@ -125,7 +125,7 @@ test('a replica renders without Engine status and never presents copied active f
 
 test('replica renders the recorded indoor average and each room without claiming current readings', () => {
   const { document, $ } = fixture();
-  const observation = value => ({ value, source: 'smartthings', observedAt: now - 60_000, stale: false });
+  const observation = value => ({ value, source: 'mqtt-temperature', observedAt: now - 60_000, stale: false });
   renderReplicaStatus(document, { ...ready(), observations: {
     indoor: { ...observation(21), source: 'indoor-average' }, upstairs: observation(22),
     downstairs: observation(20), bedroom: observation(21), outdoor: observation(5),

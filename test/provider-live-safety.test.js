@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createLiveHttp, selectedServices, readLiveState, writeLiveState, liveCooldowns, livePaths } from './live/support.js';
 
 const ok = () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
-const smart = id => `https://api.smartthings.com/v1/devices/${id}/status`;
+const device = id => `https://api.easee.com/state/${id}/observations`;
 
 test('live transport serializes provider calls even when the device adapter is concurrent', async () => {
   let active = 0, peak = 0, requests = 0;
@@ -15,28 +15,28 @@ test('live transport serializes provider calls even when the device adapter is c
     await new Promise(resolve => setImmediate(resolve)); active--; return ok();
   } });
   try {
-    await Promise.all([1, 2, 3].map(id => http.json(smart(id))));
-    assert.equal(requests, 3); assert.equal(peak, 1);
-    await assert.rejects(http.json(smart(4)), { code: 'live-request-budget-exhausted' });
-    assert.equal(requests, 3);
+    await Promise.all([1, 2, 3, 4].map(id => http.json(device(id))));
+    assert.equal(requests, 4); assert.equal(peak, 1);
+    await assert.rejects(http.json(device(5)), { code: 'live-request-budget-exhausted' });
+    assert.equal(requests, 4);
   } finally { http.close(); }
 });
 
-test('live transport stops a denied SmartThings host before its next queued request', async () => {
+test('live transport stops a denied weather host before its next queued request', async () => {
   let requests = 0, saved = 0;
   const state = { attemptedAt: {}, blockedUntil: {} };
   const http = createLiveHttp({ now: () => 1_000_000, state, saveState: () => { saved++; },
-    fetchImpl: async url => { requests++; return url.includes('smartthings') ? new Response('synthetic-secret', { status: 401 }) : ok(); } });
+    fetchImpl: async url => { requests++; return url.includes('open-meteo') ? new Response('synthetic-secret', { status: 401 }) : ok(); } });
   try {
-    const results = await Promise.allSettled([http.json(smart('one')), http.json(smart('two'))]);
+    const results = await Promise.allSettled([http.json('https://api.open-meteo.com/v1/forecast?current=temperature_2m'), http.json('https://api.open-meteo.com/v1/forecast?hourly=temperature_2m')]);
     assert(results.every(row => row.status === 'rejected'));
     assert.equal(requests, 1); assert.equal(saved, 1);
     assert.equal(results[1].reason.code, 'live-provider-cooldown');
     await http.json('https://dashboard.elering.ee/api/nps/price');
     assert.equal(requests, 2);
-    assert.deepEqual(http.summary().failures, { 'api.smartthings.com': 'HTTP 401' });
+    assert.deepEqual(http.summary().failures, { 'api.open-meteo.com': 'HTTP 401' });
     assert(!JSON.stringify(http.summary()).includes('synthetic-secret'));
-    assert.equal(state.blockedUntil['api.smartthings.com'], 2_800_000);
+    assert.equal(state.blockedUntil['api.open-meteo.com'], 2_800_000);
   } finally { http.close(); }
 });
 
@@ -88,7 +88,6 @@ test('live transport cannot issue device commands, contact arbitrary endpoints o
   const http = createLiveHttp({ fetchImpl: async () => { requests++; return ok(); } });
   try {
     for (const [url, method] of [
-      ['https://api.smartthings.com/v1/devices/device/commands', 'POST'],
       ['https://api.easee.com/api/chargers/charger/commands/start_charging', 'POST'],
       ['https://api.easee.com/api/chargers/charger/commands/start_charging', 'GET'],
       ['http://api.easee.com/state/device/observations', 'GET'],
@@ -97,7 +96,7 @@ test('live transport cannot issue device commands, contact arbitrary endpoints o
     ]) await assert.rejects(http.json(url, { method }));
     assert.equal(requests, 0);
     http.close();
-    await assert.rejects(http.json(smart('one')), { code: 'provider-client-closed' });
+    await assert.rejects(http.json(device('one')), { code: 'provider-client-closed' });
     assert.equal(requests, 0);
   } finally { http.close(); }
 });
@@ -107,14 +106,14 @@ test('live service selection and private cooldown state retain only known safe f
   try {
     assert.throws(() => selectedServices('easee,easee'));
     assert.throws(() => selectedServices('device-command'));
-    assert.deepEqual(selectedServices('smartthings,easee'), ['smartthings', 'easee']);
+    assert.deepEqual(selectedServices('openmeteo-current,easee'), ['openmeteo-current', 'easee']);
     assert.deepEqual(readLiveState(directory), { attemptedAt: {}, blockedUntil: {} });
-    const state = { attemptedAt: { easee: 100_000 }, blockedUntil: { 'api.smartthings.com': 200_000 } };
+    const state = { attemptedAt: { easee: 100_000 }, blockedUntil: { 'api.open-meteo.com': 200_000 } };
     writeLiveState(directory, state);
     assert.equal(statSync(join(directory, 'state.json')).mode & 0o777, 0o600);
     assert.deepEqual(readLiveState(directory), state);
-    assert.deepEqual(liveCooldowns(state, ['easee', 'smartthings', 'elering'], 110_000), [
-      { service: 'easee', seconds: 50 }, { service: 'smartthings', seconds: 90 },
+    assert.deepEqual(liveCooldowns(state, ['easee', 'openmeteo-current', 'elering'], 110_000), [
+      { service: 'easee', seconds: 50 }, { service: 'openmeteo-current', seconds: 90 },
     ]);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

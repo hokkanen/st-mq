@@ -24,7 +24,7 @@ import { indoorAverage, indoorWeights, INDOOR_SIGNALS, SENSOR_SETTLING_MS } from
 const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
-const PROVIDER_OBSERVATION_SOURCES = ['smartthings', 'easee', ...WEATHER_SOURCES];
+const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
 
 function trustworthy(observation, now) {
   const phaseCurrent = /^(?:ev1|property)_current_l[123]$/.test(observation?.signal ?? '');
@@ -91,10 +91,8 @@ export class Engine {
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
   sensorChangesStatus() {
     const connections = this.config.connections ?? {};
-    const configured = [['indoor_temperature', 'inside_temp_dev_id'], ['downstairs_temperature', 'downstairs_temp_dev_id'],
-      ['bedroom_temperature', 'bedroom_temp_dev_id'], ['garage_temperature', 'garage_temp_dev_id']]
-      .filter(([signal, key]) => connections.smartthings?.[key] || connections.mqtt?.temperatureTopics?.[signal])
-      .map(([signal]) => signal);
+    const configured = [...INDOOR_SIGNALS, 'garage_temperature']
+      .filter(signal => connections.mqtt?.temperatureTopics?.[signal]);
     return sensorChangesView(this.store, this.config.input, { now: this.clock(), config: this.control,
       observedSignals: [...Object.keys(this.latest), ...configured] });
   }

@@ -75,7 +75,6 @@ test('live configured providers (explicit opt-in)', { skip: !enabled, timeout: 2
   const state = readLiveState(directory);
   const http = createLiveHttp({ state, saveState: next => writeLiveState(directory, next) });
   const devices = createDeviceProviders({ connections, http, tokenStore: fileTokenStore(join(directory, 'easee-tokens.json'), connections.easee ?? {}) });
-  const temperatures = ['inside_temp_dev_id', 'garage_temp_dev_id', 'outside_temp_dev_id'];
   const currents = ['charger_id', 'equalizer_id'];
   const prices = new Map();
   const jobs = {
@@ -107,12 +106,6 @@ test('live configured providers (explicit opt-in)', { skip: !enabled, timeout: 2
       const now = Date.now();
       checkObservations(await weather.fetchOpenMeteoCurrent({ connections, now, http }),
         { expected: 1, source: 'openmeteo', outdoor: true, now }, child);
-    },
-    smartthings: async child => {
-      const expected = temperatures.filter(key => supplied(connections.smartthings?.[key])).length;
-      if (!expected) return child.skip('No SmartThings temperature devices configured');
-      const now = Date.now();
-      checkObservations(await devices.temperatures({ now }), { expected, source: 'smartthings', now }, child);
     },
     easee: async child => {
       const expected = currents.filter(key => supplied(connections.easee?.[key])).length * 3;

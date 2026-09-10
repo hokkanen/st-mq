@@ -171,8 +171,8 @@ export function controlConfiguration(input = {}) {
 export function indoorSensorWeightsConfiguration(input, connections = {}) {
   const signals = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'];
   const configured = new Set(['indoor_temperature']);
-  for (const [signal, key] of [['downstairs_temperature', 'downstairs_temp_dev_id'], ['bedroom_temperature', 'bedroom_temp_dev_id']]) {
-    if ([connections.smartthings?.[key], connections.mqtt?.temperatureTopics?.[signal],
+  for (const signal of ['downstairs_temperature', 'bedroom_temperature']) {
+    if ([connections.mqtt?.temperatureTopics?.[signal],
       connections.mqtt?.temperature_topics?.[signal], connections.mqtt?.[`${signal}_topic`]]
       .some(value => typeof value === 'string' && value.trim())) configured.add(signal);
   }
@@ -218,6 +218,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
+    if (new Set(Object.values(mqtt.temperatureTopics)).size !== Object.keys(mqtt.temperatureTopics).length)
+      throw new Error('Each temperature sensor must use a different MQTT topic');
     const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');

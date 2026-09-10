@@ -16,8 +16,6 @@ try {
   writeFileSync(configPath, '{}', { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: configPath, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   const fixture = providerFixture(now);
-  fixture.connections.smartthings.downstairs_temp_dev_id = 'synthetic-downstairs';
-  fixture.connections.smartthings.bedroom_temp_dev_id = 'synthetic-bedroom';
   const temperatures = fixture.providerOptions.devices.temperatures;
   fixture.providerOptions.temperatureProvider = async () => {
     const original = await temperatures();
@@ -60,9 +58,21 @@ try {
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
   assert.equal(await evaluate("document.getElementById('downstairs').textContent"), '20.2 °C');
   assert.equal(await evaluate("document.getElementById('bedroom').textContent"), '21.6 °C');
-  for (const label of ['Upstairs', 'Downstairs', 'Bedroom']) {
-    assert.equal(await evaluate(`document.getElementById('chart-legend').textContent.includes(${JSON.stringify(label)})`), true);
+  assert.equal(await evaluate("document.querySelectorAll('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').length"), 1);
+  assert.equal(await evaluate("document.querySelector('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
+  for (const [signal, label] of [['indoor_temperature', 'Upstairs'], ['downstairs_temperature', 'Downstairs'],
+    ['bedroom_temperature', 'Bedroom'], ['garage_temperature', 'Garage temperature']]) {
+    assert.equal(await evaluate(`document.querySelector('#chart-legend [data-chart-key="${signal}"]') === null`), true);
+    assert.equal(await evaluate(`document.querySelector('#left-axis option[value="${signal}"]').textContent`), label);
   }
+  await evaluate("document.getElementById('left-axis').value='bedroom_temperature'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
+  await until("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"bedroom_temperature\"]')?.textContent === 'Bedroom'");
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
+  assert.equal(await evaluate("document.querySelector('#left-axis option[value=\"temperatures\"]').textContent"), 'All air temperatures');
+  await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
+  await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 5");
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]'), node => node.textContent)"),
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Outdoor']);
   await evaluate("document.getElementById('sensor-change-details').open=true");
   await until("!document.getElementById('sensor-change-submit').disabled");
   assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-signal').options, option => option.textContent)"),
@@ -91,7 +101,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['separate room readings', 'weighted indoor average',
-    'three chart legends', 'configured sensor choices', 'selection and focus survive refresh', 'real sensor-change API submission',
+    'one Average indoor chart legend', 'individual room selection on left axis', 'all air temperatures on left axis', 'configured sensor choices', 'selection and focus survive refresh', 'real sensor-change API submission',
     'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout'] }));
   await send('Page.close');
 } finally {

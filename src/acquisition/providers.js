@@ -13,7 +13,7 @@ const present = value => typeof value === 'string' && value.trim().length > 0;
 const errorCode = error => Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599
   ? `HTTP-${error.status}` : 'provider-request-failed';
 const SOURCES = new Set(['entsoe', 'elering', 'fmi', 'openmeteo']);
-const OBSERVATION_SOURCES = ['smartthings', 'easee', 'fmi', 'openmeteo'];
+const OBSERVATION_SOURCES = ['easee', 'fmi', 'openmeteo'];
 const QUALITY_ISSUES = new Set(['future_source_time', 'source_time_unknown', 'stale', 'charger_stale', 'property_stale',
   'implausible_temperature', 'suspect_zero_indoor', 'implausible_current', 'negative_current',
   'all_zero_property_current', 'ev_exceeds_property_current']);
@@ -188,9 +188,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       engine.teslamate?.tick(clock());
     } catch { /* Only transient status, never a database experiment/error log. */ }
   };
-  const smartthings = connections.smartthings ?? {}, easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
+  const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};
   const readTemperatures = typeof temperatureProvider === 'function' ? temperatureProvider
-    : args => devices.temperatures({ ...args, signals: ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature'] });
+    : typeof devices.temperatures === 'function' ? args => devices.temperatures(args) : null;
   const integrationOptions = { maxAgeMs: cadence.electricityMaxAgeMs ?? 5 * MINUTE,
     maxTelemetryAgeMs: cadence.electricityTelemetryMaxAgeMs ?? 17 * MINUTE,
     maxGapMs: cadence.electricityMaxGapMs ?? MINUTE };
@@ -198,11 +198,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const configuredCurrents = [['charger', 'charger_id'], ['property', 'equalizer_id']]
     .filter(([, key]) => present(easee[key])).map(([group]) => group);
   const definitions = {
-    // SmartThings supplies indoor/garage readings alongside MQTT. Outdoor
-    // acquisition keeps the H66 → FMI → Open-Meteo selection.
-    temperatures: { enabled: typeof temperatureProvider === 'function'
-        || ['inside_temp_dev_id', 'downstairs_temp_dev_id', 'bedroom_temp_dev_id', 'garage_temp_dev_id'].some(key => present(smartthings[key])),
-      period: 5 * MINUTE, run: readTemperatures },
+    // Live temperatures arrive through MQTT. A supplied adapter supports
+    // isolated simulations and alternative in-process acquisition.
+    temperatures: { enabled: readTemperatures !== null, period: 5 * MINUTE, run: readTemperatures },
     easee: { enabled: ['charger_id', 'equalizer_id'].some(key => present(easee[key])),
       period: cadence.easeeIntervalMs ?? 15_000, run: args => (devices.electricity ?? devices.easee).call(devices, args) },
     market: { enabled: present(connections.entsoe?.token) || ['fi', 'ee', 'lv', 'lt'].includes(connections.geoloc?.country_code?.toLowerCase()) || Boolean(connections.elering),

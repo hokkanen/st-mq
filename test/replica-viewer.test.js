@@ -142,7 +142,7 @@ test('replica averages retain source freshness and the primary sensor settling b
   const directory = fixture(t), publication = snapshot(directory, 'sensor-change');
   const store = new Store(publication.dbPath);
   const control = { indoorSensorWeights: { indoor_temperature: 0.5, bedroom_temperature: 0.5 } };
-  store.observation({ source: 'smartthings', device: 'synthetic-bedroom', signal: 'bedroom_temperature',
+  store.observation({ source: 'mqtt-temperature', device: 'synthetic-bedroom', signal: 'bedroom_temperature',
     value: 19, unit: 'degC', sourceTime: at - 60_000, receivedAt: at - 60_000, quality: [] });
   addSensorChange(store, 'mqtt', { requestId: 'synthetic-move', signal: 'bedroom_temperature', reason: 'moved' }, at,
     { config: control });

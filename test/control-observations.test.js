@@ -76,7 +76,7 @@ test('live model evidence remains available without persisting it as original po
   t.after(() => store.close());
   const engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' } }, clock: () => now });
   for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0]]) engine.ingest({
-    source: signal === 'outdoor_temperature' ? 'fmi' : 'smartthings', device: 'synthetic-house', signal, value,
+    source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: 'synthetic-house', signal, value,
     unit: 'degC', sourceTime: now, receivedAt: now, quality: [],
   });
   engine.tick();

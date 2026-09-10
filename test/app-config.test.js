@@ -61,11 +61,14 @@ test('all indoor and garage MQTT topics are exact and keep private configuration
   assert.equal(readFileSync(path,'utf8'),original);
   writeFileSync(path,JSON.stringify({mqtt:{indoor_temperature_topic:'invented/#'}}));
   assert.throws(()=>loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic/);
+  writeFileSync(path,JSON.stringify({mqtt:{address:'mqtt://invented.invalid',
+    indoor_temperature_topic:'invented/shared',bedroom_temperature_topic:'invented/shared'}}));
+  assert.throws(()=>loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/different MQTT topic/);
 });
 test('indoor learning weights have stable configured membership, optional explicit preferences and no private identifiers', () => {
   assert.deepEqual(indoorSensorWeightsConfiguration(), { indoor_temperature: 1 });
-  const connections = { smartthings: { downstairs_temp_dev_id: 'invented-downstairs' },
-    mqtt: { temperatureTopics: { bedroom_temperature: 'invented/bedroom' } } };
+  const connections = { mqtt: { temperatureTopics: { downstairs_temperature: 'invented/downstairs',
+    bedroom_temperature: 'invented/bedroom' } } };
   const automatic = indoorSensorWeightsConfiguration(undefined, connections);
   assert.deepEqual(automatic, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
   assert.deepEqual(indoorSensorWeightsConfiguration({}, connections), automatic);
@@ -86,7 +89,7 @@ test('add-on default indoor weights include the required nested object and retai
   assert(Object.values(addon.schema.controller.indoor_sensor_weights).every(type => type.endsWith('?')));
   assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights), { indoor_temperature: 1 });
   assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights,
-    { smartthings: { downstairs_temp_dev_id: 'invented-downstairs', bedroom_temp_dev_id: 'invented-bedroom' } }),
+    { mqtt: { downstairs_temperature_topic: 'invented/downstairs', bedroom_temperature_topic: 'invented/bedroom' } }),
   { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
 });
 test('explicit indoor weights load through the public schema and survive disabled replica acquisition', t => {
@@ -95,7 +98,7 @@ test('explicit indoor weights load through the public schema and survive disable
   const path = join(directory, 'fixture.json');
   writeFileSync(path, JSON.stringify({ controller: { input: 'providers', indoor_sensor_weights: {
     indoor_temperature: 1, downstairs_temperature: 2, bedroom_temperature: 2,
-  } }, smartthings: { downstairs_temp_dev_id: 'invented-downstairs', bedroom_temp_dev_id: 'invented-bedroom' } }));
+  } }, mqtt: { downstairs_temperature_topic: 'invented/downstairs', bedroom_temperature_topic: 'invented/bedroom' } }));
   for (const role of ['primary', 'replica']) {
     const config = loadConfig({ STMQ_CONFIG: path, STMQ_ROLE: role }, directory);
     assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 0.2, downstairs_temperature: 0.4, bedroom_temperature: 0.4 });
@@ -125,9 +128,9 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'options.json');
-  const options = { smartthings: { token: 'synthetic', inside_temp_dev_id: 'fixture-room', downstairs_temp_dev_id: 'fixture-downstairs',
-    bedroom_temp_dev_id: 'fixture-bedroom', garage_temp_dev_id: 'fixture-garage' },
-    mqtt: { address: 'mqtt://invented.invalid', garage_temperature_topic: 'invented/garage' },
+  const options = { mqtt: { address: 'mqtt://invented.invalid', indoor_temperature_topic: 'invented/upstairs',
+    downstairs_temperature_topic: 'invented/downstairs', bedroom_temperature_topic: 'invented/bedroom',
+    garage_temperature_topic: 'invented/garage' },
     geoloc: { latitude: '60', longitude: '25', country_code: 'fi' } };
   for (const contents of [options, { options }]) for (const input of ['providers', 'mqtt']) {
     const original = JSON.stringify(contents);
@@ -135,9 +138,9 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
     const config = loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
     assert.equal(config.input, input);
     assert.equal(config.deviceId, undefined);
-    assert.deepEqual(config.connections.smartthings, options.smartthings);
     assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
-    assert.deepEqual(config.connections.mqtt.temperatureTopics, { garage_temperature: 'invented/garage' });
+    assert.deepEqual(config.connections.mqtt.temperatureTopics, { indoor_temperature: 'invented/upstairs',
+      downstairs_temperature: 'invented/downstairs', bedroom_temperature: 'invented/bedroom', garage_temperature: 'invented/garage' });
     assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
     assert.equal(config.settings.comfort.targetC, null);
     assert.equal(config.settings.comfort.maxDropC, 1);
@@ -154,7 +157,7 @@ test('explicit standalone options configure permanent settings without enabling 
     controller: { input: 'simulated', mode: 'monitoring', max_drop_c: 0.7, web_token: 'synthetic-token-is-long-enough' },
     electricity: { margin_ct_per_kwh_ex_vat: 0.8, vat_percent: 10, transfer_tariff: 'seasonal',
       winter_day_transfer_ct_per_kwh_ex_vat: 5, effective_date: '2026-01-01' },
-    smartthings: { token: 'synthetic-should-not-be-exposed' },
+    entsoe: { token: 'synthetic-should-not-be-exposed' },
   } }));
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_HOST: '0.0.0.0', STMQ_DATABASE_DIR: join(directory, 'shared') }, directory);
   assert.equal(config.settings.mode, 'monitoring');
@@ -179,7 +182,7 @@ test('standalone secrets use XDG config and repository options are no longer rea
   writeFileSync(join(directory, 'data/options.json'), JSON.stringify({ controller: { mode: 'active' } }));
   const path = join(directory, 'st-mq/secrets.json');
   writeFileSync(path, JSON.stringify({ controller: { mode: 'monitoring', max_drop_c: 0.6 },
-    electricity: { tax_ct_per_kwh_ex_vat: 2.3 }, smartthings: { token: 'synthetic' } }));
+    electricity: { tax_ct_per_kwh_ex_vat: 2.3 }, entsoe: { token: 'synthetic' } }));
   const config = loadConfig({ XDG_CONFIG_HOME: directory }, directory);
   assert.equal(config.input, 'simulated');
   assert.equal(config.settings.mode, 'monitoring');
@@ -268,8 +271,6 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.options.controller.max_drop_c, 1);
   assert.equal(addon.options.easee.charger_id, '');
   assert.equal(addon.schema.easee.charger_id, 'str?');
-  assert.deepEqual(addon.options.smartthings, { token: '', inside_temp_dev_id: '', downstairs_temp_dev_id: '', bedroom_temp_dev_id: '', garage_temp_dev_id: '' });
-  assert.deepEqual(addon.schema.smartthings, { token: 'password?', inside_temp_dev_id: 'str?', downstairs_temp_dev_id: 'str?', bedroom_temp_dev_id: 'str?', garage_temp_dev_id: 'str?' });
 });
 
 test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {

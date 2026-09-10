@@ -5,137 +5,14 @@ import { createDeviceProviders } from '../src/acquisition/devices.js';
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/provider-devices.json', import.meta.url), 'utf8'));
 const now = Date.parse('2026-09-06T12:05:00Z');
-const smartthings = { token: 'synthetic-smartthings-token', inside_temp_dev_id: 'indoor/device', outside_temp_dev_id: 'outdoor-device' };
 const easee = { access_token: 'synthetic-old-access', refresh_token: 'synthetic-old-refresh', charger_id: 'charger/device', equalizer_id: 'equalizer-device', user: 'synthetic-user', pw: 'synthetic-password' };
 const httpError = (status, message = 'provider included a synthetic-secret in its error') => Object.assign(new Error(message), { status });
 
 test('unconfigured device providers perform no HTTP requests', async () => {
   const providers = createDeviceProviders({ http: { json() { throw new Error('unexpected HTTP'); } } });
-  assert.deepEqual(await providers.temperatures({ now }), []);
   assert.deepEqual(await providers.easee({ now }), []);
   assert.throws(() => createDeviceProviders({}), /HTTP JSON/);
-  await assert.rejects(providers.temperatures({ now: NaN }), /timestamp/);
-});
-
-test('SmartThings reads status with encoded IDs, converts units and preserves source freshness', async () => {
-  const calls = []; const controller = new AbortController();
-  const providers = createDeviceProviders({ connections: { smartthings }, http: { async json(url, options) {
-    calls.push({ url, options });
-    return url.includes('indoor%2Fdevice') ? fixtures.smartthingsC : fixtures.smartthingsF;
-  } } });
-  const rows = await providers.temperatures({ now, signal: controller.signal });
-  assert.equal(rows[0].signal, 'indoor_temperature'); assert.equal(rows[0].value, 21.75);
-  assert.equal(rows[0].sourceTime, Date.parse('2026-09-06T12:00:00Z'));
-  assert.equal(rows[0].receivedAt, now); assert.equal(rows[1].value, 20); assert.equal(rows[1].unit, 'degC');
-  assert(rows[1].quality.includes('converted_fahrenheit'));
-  assert(calls.every(call => call.options.method === 'GET' && call.options.signal === controller.signal));
-  assert.equal(calls[0].options.headers.Authorization, 'Bearer synthetic-smartthings-token');
-  assert(!JSON.stringify(rows).includes('must-not-persist'));
-  assert(!JSON.stringify(rows).includes(smartthings.token));
-});
-
-test('SmartThings indoor and garage selection excludes the configured outdoor device before HTTP', async () => {
-  const calls = []; const controller = new AbortController();
-  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, garage_temp_dev_id: 'garage/device' } }, http: { async json(url, options) {
-    calls.push({ url, options });
-    return url.includes('garage%2Fdevice') ? fixtures.smartthingsF : fixtures.smartthingsC;
-  } } });
-  const signals = ['indoor_temperature', 'garage_temperature'];
-  const rows = await providers.temperatures({ now, signal: controller.signal, signals });
-  assert.deepEqual(rows.map(row => row.signal), signals);
-  assert.equal(rows[0].value, 21.75);
-  assert.equal(rows[1].device, 'garage/device'); assert.equal(rows[1].value, 20);
-  assert.equal(rows[1].source, 'smartthings'); assert.equal(rows[1].unit, 'degC');
-  assert.equal(rows[1].sourceTime, Date.parse('2026-09-06T12:01:00Z'));
-  assert(rows[1].quality.includes('converted_fahrenheit'));
-  assert.deepEqual(calls.map(call => call.url), [
-    'https://api.smartthings.com/v1/devices/indoor%2Fdevice/status',
-    'https://api.smartthings.com/v1/devices/garage%2Fdevice/status',
-  ]);
-  assert(calls.every(call => call.options.method === 'GET' && call.options.signal === controller.signal));
-  assert.deepEqual(await providers.temperatures({ now, signals: [] }), []);
-  assert.equal(calls.length, 2);
-});
-
-test('three configured indoor SmartThings sensors retain independent readings and failure quality', async () => {
-  const calls = [];
-  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, outside_temp_dev_id: '',
-    downstairs_temp_dev_id: 'invented/downstairs', bedroom_temp_dev_id: 'invented-bedroom' } }, http: { async json(url) {
-    calls.push(url);
-    if (url.includes('invented-bedroom')) throw httpError(503);
-    const payload = structuredClone(fixtures.smartthingsC);
-    payload.components.main.temperatureMeasurement.temperature.value = url.includes('downstairs') ? 19.25 : 22.5;
-    return payload;
-  } } });
-  const rows = await providers.temperatures({ now });
-  assert.deepEqual(rows.map(row => [row.signal, row.value]), [
-    ['indoor_temperature', 22.5], ['downstairs_temperature', 19.25], ['bedroom_temperature', null],
-  ]);
-  assert.equal(calls.length, 3);
-  assert(calls.some(url => url.includes('invented%2Fdownstairs')));
-  assert(rows[2].quality.includes('http_status_503'));
-  assert.equal(rows[0].quality.includes('provider_error'), false);
-  assert.equal(rows[1].quality.includes('provider_error'), false);
-});
-
-test('absent optional SmartThings indoor sensors produce no requests or placeholder observations', async () => {
-  let calls = 0;
-  const providers = createDeviceProviders({ connections: { smartthings: { token: 'synthetic', inside_temp_dev_id: 'invented-room',
-    downstairs_temp_dev_id: '', bedroom_temp_dev_id: ' ' } }, http: { async json() { calls++; return fixtures.smartthingsC; } } });
-  const rows = await providers.temperatures({ now });
-  assert.equal(calls, 1);
-  assert.deepEqual(rows.map(row => row.signal), ['indoor_temperature']);
-});
-
-test('SmartThings garage outage preserves indoor observations and sanitized failure quality', async () => {
-  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, garage_temp_dev_id: 'garage-device' } }, http: { async json(url) {
-    if (url.includes('garage')) throw httpError(503);
-    return fixtures.smartthingsC;
-  } } });
-  const rows = await providers.temperatures({ now, signals: ['indoor_temperature', 'garage_temperature'] });
-  assert.equal(rows.length, 2); assert.equal(rows[0].value, 21.75);
-  assert.equal(rows[1].signal, 'garage_temperature'); assert.equal(rows[1].value, null);
-  assert.equal(rows[1].sourceTime, null); assert(rows[1].quality.includes('http_status_503'));
-  assert(!JSON.stringify(rows).includes('synthetic-secret'));
-});
-
-test('temperature outage affects only its device and never yields false zero or leaks errors', async () => {
-  const providers = createDeviceProviders({ connections: { smartthings }, http: { async json(url) {
-    if (url.includes('indoor')) throw httpError(401);
-    return fixtures.smartthingsF;
-  } } });
-  const rows = await providers.temperatures({ now });
-  assert.equal(rows[0].value, null); assert.equal(rows[0].sourceTime, null);
-  assert(rows[0].quality.includes('http_status_401')); assert.equal(rows[1].value, 20);
-  assert(!JSON.stringify(rows).includes('synthetic-secret'));
-});
-
-test('missing, stale, future, unknown-unit and malformed temperature readings are explicit', async () => {
-  const samples = [
-    { value: null, unit: 'C' },
-    { value: 21, unit: 'K', timestamp: '2026-09-06T12:00:00Z' },
-    { value: 'secret', unit: 'C', timestamp: '2026-09-06T12:00:00Z' },
-    { value: 21, unit: 'C', timestamp: '2026-09-05T12:00:00Z' },
-    { value: 21, unit: 'C', timestamp: '2026-09-06T13:00:00Z' },
-    { value: 0, unit: 'C', timestamp: '2026-09-06T12:00:00' },
-  ];
-  const providers = createDeviceProviders({ connections: { smartthings: { ...smartthings, outside_temp_dev_id: '' } }, http: { async json() {
-    return { components: { main: { temperatureMeasurement: { temperature: samples.shift() } } } };
-  } } });
-  const rows = [];
-  for (let i = 0; i < 6; i++) rows.push((await providers.temperatures({ now }))[0]);
-  assert.equal(rows[0].value, null); assert(rows[0].quality.includes('source_time_unknown'));
-  assert.equal(rows[1].value, null); assert(rows[1].quality.includes('invalid_unit'));
-  assert.equal(rows[2].value, null); assert(rows[2].quality.includes('invalid_numeric'));
-  assert(rows[3].quality.includes('stale')); assert(rows[4].quality.includes('future_source_time'));
-  assert.equal(rows[5].value, 0); assert.equal(rows[5].sourceTime, null); assert(rows[5].quality.includes('suspect_zero_indoor'));
-  assert(!JSON.stringify(rows).includes('secret'));
-});
-
-test('configured temperature without a token remains missing and does not contact cloud', async () => {
-  const providers = createDeviceProviders({ connections: { smartthings: { inside_temp_dev_id: 'inside' } }, http: { json() { throw new Error('unexpected'); } } });
-  const [row] = await providers.temperatures({ now });
-  assert.equal(row.value, null); assert(row.quality.includes('missing_configuration'));
+  await assert.rejects(providers.easee({ now: NaN }), /timestamp/);
 });
 
 test('Easee uses replacement observations endpoint and preserves every phase timestamp and null', async () => {

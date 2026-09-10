@@ -1,7 +1,6 @@
 // Observation boundary, with a separately opted-in, one-minute charger
-// identification control. No circuit, permanent or SmartThings writes exist.
+// identification control. No circuit or permanent writes exist.
 // Protocol sources checked 2026-09-06:
-// https://developer.smartthings.com/docs/service-integrations/query-and-list-devices
 // https://developer.easee.com/reference/getobservations
 // https://developer.easee.com/reference/account_refreshtoken
 // https://developer.easee.com/docs/charger-observation-ids
@@ -13,13 +12,6 @@
 // https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
 
-const TEMPERATURES = [
-  ['inside_temp_dev_id', 'indoor_temperature'],
-  ['downstairs_temp_dev_id', 'downstairs_temperature'],
-  ['bedroom_temp_dev_id', 'bedroom_temperature'],
-  ['garage_temp_dev_id', 'garage_temperature'],
-  ['outside_temp_dev_id', 'outdoor_temperature'],
-];
 const CURRENT_DEVICES = [
   ['charger_id', [183, 184, 185], 'ev1_current'],
   ['equalizer_id', [31, 32, 33], 'property_current'],
@@ -79,23 +71,6 @@ function validNow(now) {
 function baseObservation({ source, device, signal, unit, now, quality = [], retryAfterMs }) {
   return { source, device, signal, value: null, unit, sourceTime: null, receivedAt: now,
     quality: [...quality, 'missing', 'source_time_unknown'], raw: Number.isFinite(retryAfterMs) ? { retryAfterMs } : null };
-}
-
-function temperatureObservation(payload, device, signal, now) {
-  const attribute = payload?.components?.main?.temperatureMeasurement?.temperature;
-  const input = number(attribute?.value); const unit = attribute?.unit;
-  const at = sourceTime(attribute?.timestamp);
-  const quality = timeQuality(at, now, 60 * 60_000);
-  let value = input;
-  if (!['C', 'F'].includes(unit)) { quality.push('invalid_unit'); value = null; }
-  else if (unit === 'F' && value !== null) { value = (value - 32) * 5 / 9; quality.push('converted_fahrenheit'); }
-  if (input === null) quality.push(attribute?.value === null || attribute?.value === undefined ? 'missing' : 'invalid_numeric');
-  if (value === null) quality.push('missing');
-  if (value !== null && (value < -60 || value > 70)) quality.push('implausible_temperature');
-  if (value === 0 && ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].includes(signal)) quality.push('suspect_zero_indoor');
-  return { source: 'smartthings', device, signal, value, unit: 'degC', sourceTime: at, receivedAt: now,
-    quality: [...new Set(quality)], raw: { attribute: 'temperature', reportedValue: input,
-      reportedUnit: ['C', 'F'].includes(unit) ? unit : null, timestamp: at } };
 }
 
 function currentObservations(payload, device, ids, prefix, now) {
@@ -306,7 +281,7 @@ function identificationSnapshot(payload, now) {
  */
 export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
-  const smartthings = { ...connections.smartthings }; const easee = { ...connections.easee };
+  const easee = { ...connections.easee };
   let tokens = { accessToken: easee.access_token ?? '', refreshToken: easee.refresh_token ?? '' };
   let loadFlight = null; let refreshFlight = null; let saveFlight = null; let dirtyTokens = false;
   const requestTimes = [];
@@ -475,21 +450,6 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           quality: failureFlags(result.reason) }),
         raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'), retryAfterMs: result.reason?.retryAfterMs },
       }))));
-    },
-
-    async temperatures({ now = Date.now(), signal, signals = TEMPERATURES.map(([, name]) => name) } = {}) {
-      validNow(now);
-      const jobs = TEMPERATURES.filter(([key, name]) => signals.includes(name) && supplied(smartthings[key]));
-      const results = await Promise.allSettled(jobs.map(async ([key, name]) => {
-        if (!supplied(smartthings.token)) return baseObservation({ source: 'smartthings', device: smartthings[key], signal: name, unit: 'degC', now, quality: ['missing_configuration'] });
-        const payload = await request(`https://api.smartthings.com/v1/devices/${encodeURIComponent(smartthings[key])}/status`, {
-          method: 'GET', headers: { accept: 'application/json', Authorization: `Bearer ${smartthings.token}` }, signal,
-        }, 'SmartThings');
-        return temperatureObservation(payload, smartthings[key], name, now);
-      }));
-      return results.map((result, index) => result.status === 'fulfilled' ? result.value : baseObservation({
-        source: 'smartthings', device: smartthings[jobs[index][0]], signal: jobs[index][1], unit: 'degC', now, quality: failureFlags(result.reason), retryAfterMs: result.reason?.retryAfterMs,
-      }));
     },
 
     async easee({ now = Date.now(), signal } = {}) {

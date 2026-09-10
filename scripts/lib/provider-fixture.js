@@ -6,11 +6,11 @@ export function providerFixture(now) {
     sourceTime: now - 300_000, receivedAt: now, quality: [], raw: { fixture: true } });
   return {
     connections: { geoloc: { country_code: 'fi', latitude: 60.4, longitude: 25.6 },
-      smartthings: { inside_temp_dev_id: 'synthetic-room' }, easee: { charger_id: 'synthetic-charger', equalizer_id: 'synthetic-equalizer' } },
+      easee: { charger_id: 'synthetic-charger', equalizer_id: 'synthetic-equalizer' } },
     providerOptions: {
       http: { json() { throw new Error('Fixture must never call a provider'); }, text() { throw new Error('Fixture must never call a provider'); }, close() {} },
       devices: {
-        temperatures: async () => [observation('smartthings', 'indoor_temperature', 21.2, 'degC')],
+        temperatures: async () => [observation('mqtt-temperature', 'indoor_temperature', 21.2, 'degC')],
         easee: async () => ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase =>
           observation('easee', `${prefix}_current_l${phase}`, prefix === 'property' ? 10 : 3, 'A'))),
       },

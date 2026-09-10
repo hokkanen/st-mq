@@ -59,7 +59,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
-  })) : [];
+  })).filter(row => !temperatureTopics.some(([signal]) => signal === row.signal)) : [];
   const temperatureSignals = temperatureTopics.map(([signal]) => ({ source: 'mqtt-temperature', device: signal, signal, unit: 'degC' }));
   const markUnavailable = (signals, quality) => {
     const at = engine.clock(), observations = [];
@@ -162,6 +162,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         dup: packet.dup, messageId: packet.messageId });
       if (!decoded || decoded.duplicate || decoded.signal === 'unknown') return;
       h66.ingest(decoded);
+      // An explicitly configured room sensor owns its logical temperature.
+      // Keep the gateway register available to H66 diagnostics, but do not mix
+      // its measurements into that room's recording or model input.
+      if (temperatureTopics.some(([signal]) => signal === decoded.signal)) return;
       engine.ingest({ source: decoded.source, device: decoded.deviceId,
         signal: decoded.signal === 'integral' ? 'heating_integral' : decoded.signal,
         value: decoded.value, unit: decoded.unit ?? 'unknown', sourceTime: decoded.observedAt,

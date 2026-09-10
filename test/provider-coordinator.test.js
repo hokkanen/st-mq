@@ -18,12 +18,12 @@ function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-providers-'));
   const config = { ...loadConfig({ XDG_CONFIG_HOME: dir, STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
     acquisition: { easeeIntervalMs: 5 * MINUTE, weatherIntervalMs: 60 * MINUTE, outdoorIntervalMs: 10 * MINUTE },
-    connections: { smartthings: { inside_temp_dev_id: 'fixture-room' }, easee: { charger_id: 'fixture-ev' },
+    connections: { easee: { charger_id: 'fixture-ev' },
       entsoe: { token: 'fixture-not-a-real-token' }, geoloc: { latitude: 60, longitude: 25 } } };
   const store = new Store(config.dbPath);
   let now = initial;
   const clock = () => now, engine = new Engine({ store, config, clock });
-  const temperature = () => [{ source: 'smartthings', device: 'fixture-room', signal: 'indoor_temperature',
+  const temperature = () => [{ source: 'mqtt-temperature', device: 'fixture-room', signal: 'indoor_temperature',
     value: 21.1, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const current = () => [{ source: 'easee', device: 'fixture-ev', signal: 'ev1_current_l1',
     value: 0, unit: 'A', sourceTime: now, receivedAt: now, quality: ['current_snapshot_not_energy'] }];
@@ -65,7 +65,7 @@ test('normal configuration acquires electricity every fifteen seconds with audit
       signal: `property_${name}`, unit, value: unit === 'A' ? 10 : unit === 'V' ? 230 : unit === 'kW' ? 6.9 : 100 + calls,
       sourceTime: now, receivedAt: now, quality: [], raw: { acquisitionOnly: true, auditOnly: unit === 'kWh', observationId: id } }));
   };
-  f.options.devices.temperatures = () => { throw new Error('Unconfigured SmartThings must never be contacted'); };
+  delete f.options.devices.temperatures;
   const providers = startProviders(f.options);
   try {
     await providers.runDue();
@@ -83,66 +83,7 @@ test('normal configuration acquires electricity every fifteen seconds with audit
   } finally { await providers.close(); }
 });
 
-test('normal configuration polls SmartThings indoor and garage every five minutes without requesting the legacy outdoor sensor', async t => {
-  const f = fixture(t);
-  delete f.options.devices;
-  f.config.connections = { smartthings: { token: 'synthetic-smartthings-token', inside_temp_dev_id: 'invented/room',
-    garage_temp_dev_id: 'invented-garage', outside_temp_dev_id: 'invented-outdoor' } };
-  const calls = [], sourceTime = initial - MINUTE;
-  f.options.http.json = async (url, options) => {
-    calls.push(url);
-    assert.equal(options.method, 'GET');
-    assert.equal(options.headers.Authorization, 'Bearer synthetic-smartthings-token');
-    assert.equal(options.signal.aborted, false);
-    return { components: { main: { temperatureMeasurement: { temperature: {
-      value: url.includes('invented%2Froom') ? 21.3 : 16.4, unit: 'C', timestamp: new Date(sourceTime).toISOString(),
-    } } } } };
-  };
-  const providers = startProviders(f.options);
-  try {
-    await providers.runDue();
-    assert.deepEqual(calls, ['https://api.smartthings.com/v1/devices/invented%2Froom/status',
-      'https://api.smartthings.com/v1/devices/invented-garage/status']);
-    const { observations } = f.engine.status();
-    assert.equal(observations.indoor.value, 21.3);
-    assert.equal(observations.garage.value, 16.4);
-    assert.equal(observations.indoor.source, 'smartthings');
-    assert.equal(observations.garage.source, 'smartthings');
-    assert.equal(observations.indoor.observedAt, sourceTime);
-    assert.equal(f.engine.latest.outdoor_temperature, undefined);
-    assert.equal(f.store.getState('providers:health').temperatures.status, 'ok');
-    assert.equal(f.store.getState('providers:health').temperatures.nextAttemptAt, initial + 5 * MINUTE);
-    f.setTime(initial + 5 * MINUTE - 1); await providers.runDue(); assert.equal(calls.length, 2);
-    f.setTime(initial + 5 * MINUTE); await providers.runDue(); assert.equal(calls.length, 4);
-    assert.equal(f.engine.status().observations.indoor.observedAt, sourceTime);
-  } finally { await providers.close(); }
-});
-
-test('any indoor or garage sensor alone enables SmartThings while an outdoor-only configuration stays disabled', async t => {
-  for (const [key, signal, enabled] of [['downstairs_temp_dev_id', 'downstairs_temperature', true],
-    ['bedroom_temp_dev_id', 'bedroom_temperature', true], ['garage_temp_dev_id', 'garage_temperature', true],
-    ['outside_temp_dev_id', 'outdoor_temperature', false]]) {
-    await t.test(key, async t => {
-      const f = fixture(t);
-      f.config.connections = { smartthings: { token: 'synthetic-smartthings-token', [key]: 'invented-sensor' } };
-      let calls = 0;
-      f.options.devices.temperatures = async ({ signals }) => {
-        calls++;
-        assert.deepEqual(signals, ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature']);
-        return f.temperature().map(row => ({ ...row, signal }));
-      };
-      const providers = startProviders(f.options);
-      try {
-        await providers.runDue();
-        assert.equal(calls, enabled ? 1 : 0);
-        assert.equal(f.engine.latest[signal]?.value, enabled ? 21.1 : undefined);
-        assert.equal(f.store.getState('providers:health').temperatures.status, enabled ? 'ok' : 'not-configured');
-      } finally { await providers.close(); }
-    });
-  }
-});
-
-test('an injected temperature provider remains usable without SmartThings configuration', async t => {
+test('an injected temperature provider remains usable without temperature connection configuration', async t => {
   const f = fixture(t);
   f.config.connections = {};
   f.options.devices.temperatures = () => { throw new Error('The injected temperature provider takes precedence'); };
@@ -179,7 +120,8 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
     assert.equal(snapshots.find(row => row.kind === 'weather').issuedAt, null);
     assert.equal(snapshots.find(row => row.kind === 'market').issuedAt, initial - MINUTE);
     assert.equal(f.store.getState('provider:weather').forecast[0].issuedAt, null);
-    assert.equal(f.store.getState('provider:observations').length, 3);
+    assert.equal(f.store.getState('provider:observations').length, 2);
+    assert(f.store.getState('provider:observations').every(row => row.source !== 'mqtt-temperature'));
   } finally { held.resolve(); await providers.close(); }
 });
 
@@ -240,6 +182,7 @@ test('unconfigured providers make no requests', async t => {
   const f = fixture(t);
   f.options.config.connections = {};
   delete f.options.temperatureProvider;
+  delete f.options.devices.temperatures;
   const providers = startProviders(f.options);
   try {
     await providers.runDue();
@@ -253,7 +196,7 @@ test('provider startup serves UI while a device request is pending and closes cl
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-start-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
-    connections: { smartthings: { inside_temp_dev_id: 'fixture-room' } } };
+    connections: {} };
   let pending = false, cancelled = false;
   const app = await start({ config, clock: () => initial, providerOptions: {
     temperatureProvider: ({ signal }) => new Promise((resolve, reject) => {
@@ -274,7 +217,7 @@ test('provider startup serves UI while a device request is pending and closes cl
 
 test('device retry backoff longer than poll cadence survives restart', async t => {
   const f = fixture(t);
-  f.options.config.connections = { smartthings: { inside_temp_dev_id: 'fixture-room' } };
+  f.options.config.connections = {};
   f.store.setState('providers:health', { temperatures: { failures: 3, nextAttemptAt: initial + 20 * MINUTE } });
   let calls = 0;
   f.options.devices.temperatures = async () => { calls++; return f.temperature(); };
@@ -291,7 +234,7 @@ test('device retry backoff longer than poll cadence survives restart', async t =
 
 test('a failed observation-cache transaction restores both SQLite history and in-memory current state', async t => {
   const f = fixture(t);
-  f.options.config.connections = { smartthings: { inside_temp_dev_id: 'fixture-room' } };
+  f.options.config.connections = {};
   f.engine.ingest(f.temperature()[0]);
   const before = structuredClone(f.engine.latest);
   const originalSetState = f.store.setState.bind(f.store);
@@ -319,6 +262,7 @@ test('failed outdoor cache writes restore provider candidates while H66 remains 
   const f = fixture(t);
   f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
   delete f.options.temperatureProvider;
+  delete f.options.devices.temperatures;
   const h66 = at => ({ source: 'husdata-h66', device: 'fixture-h66', signal: 'outdoor_temperature',
     value: 0, unit: 'degC', sourceTime: at, receivedAt: at, quality: [], raw: { usableForControl: true, retained: false } });
   f.engine.ingest(h66(initial));
@@ -363,6 +307,7 @@ test('weather candidates survive polling and restart while live H66 publications
   const f = fixture(t);
   f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
   delete f.options.temperatureProvider;
+  delete f.options.devices.temperatures;
   let source = 'fmi', now = initial;
   f.options.outdoor = async ({ now }) => [{ source, device: `fixture-${source}`, signal: 'outdoor_temperature',
     value: source === 'fmi' ? 12 : 13, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
@@ -456,7 +401,7 @@ test('all-zero and impossible relative currents need attention, while different 
 
 test('old unchanged temperatures and idle EV currents do not slow downloads of changing property currents', async t => {
   const f = fixture(t);
-  f.options.config.connections = { smartthings: { inside_temp_dev_id: 'fixture-room' },
+  f.options.config.connections = {
     easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
   const sourceAt = initial - 2 * 24 * 60 * MINUTE;
   let easeeCalls = 0, temperatureCalls = 0;
@@ -756,7 +701,7 @@ test('a missing configured Easee device is scoped as a failure while returned re
 
 test('old timestamp attention starts at 30 minutes for currents and two hours for all temperatures', async t => {
   const f = fixture(t);
-  f.config.connections = { smartthings: { inside_temp_dev_id: 'fixture-room' },
+  f.config.connections = {
     easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' },
     geoloc: { latitude: '60.4', longitude: '25.6', country_code: 'fi' } };
   let age = 0;
@@ -908,11 +853,10 @@ test('healthy backup respects primary Retry-After across polls and restart', asy
   } finally { await providers.close(); }
 });
 
-test('FMI outdoor selection cannot be overwritten by an optional SmartThings outside sensor', async t => {
+test('FMI outdoor selection cannot be overwritten by an optional injected outside sensor', async t => {
   const f = fixture(t);
   f.config.connections.geoloc = { latitude: 60.4, longitude: 25.6, country_code: 'fi' };
-  f.config.connections.smartthings.outside_temp_dev_id = 'fixture-outside';
-  f.options.devices.temperatures = async ({ now }) => [...f.temperature(), { source: 'smartthings', device: 'fixture-outside',
+  f.options.devices.temperatures = async ({ now }) => [...f.temperature(), { source: 'mqtt-temperature', device: 'fixture-outside',
     signal: 'outdoor_temperature', value: 30, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   f.options.outdoor = async ({ now }) => [{ source: 'fmi', device: 'fixture-station', signal: 'outdoor_temperature',
     value: 12, unit: 'degC', sourceTime: now - 5 * MINUTE, receivedAt: now, quality: [] }];
@@ -922,7 +866,7 @@ test('FMI outdoor selection cannot be overwritten by an optional SmartThings out
     f.setTime(initial + 5 * MINUTE); await providers.runDue();
     assert.equal(f.engine.status().observations.outdoor.value, 12);
     assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
-    assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).some(row => row.source === 'smartthings'), false);
+    assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).some(row => row.source === 'mqtt-temperature'), false);
   } finally { await providers.close(); }
 });
 

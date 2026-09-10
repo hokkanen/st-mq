@@ -1,14 +1,27 @@
 # Indoor temperatures and sensor changes
 
-Upstairs is the existing `indoor_temperature` series. Optional Downstairs
-and Bedroom sensors use `downstairs_temperature` and `bedroom_temperature`.
-Their SmartThings configuration fields are `downstairs_temp_dev_id` and
-`bedroom_temp_dev_id`, alongside the existing `inside_temp_dev_id`. Keep those
-identifiers in private configuration. [Recording configuration](recording.md)
-also describes MQTT support and optional averaging weights.
+Indoor sensors publish through the existing local MQTT broker. Smoke channel 1
+is Upstairs (`indoor_temperature`), channel 2 is Bedroom (`bedroom_temperature`)
+and channel 3 is Downstairs (`downstairs_temperature`). Configure each exact topic
+using `mqtt.indoor_temperature_topic`, `mqtt.bedroom_temperature_topic` and
+`mqtt.downstairs_temperature_topic`. Keep the actual broker details and device
+topics in private configuration. [Recording configuration](recording.md)
+describes the supported payloads and optional averaging weights.
 
-The dashboard shows all three readings separately. The thermal model learns the
-fixed average of the configured indoor sensors, using equal weights by default.
+The smoke publisher uses `stmq/smoke/1/temperature`, `stmq/smoke/2/temperature`
+and `stmq/smoke/3/temperature`. Assign each exact topic to its corresponding room;
+the subscription fields do not use the wildcard `stmq/smoke/+/temperature`.
+
+The chart shows one **Average indoor** series on the right axis, using the existing
+indoor temperature colour. This is the same fixed average of configured indoor
+sensors used by the thermal model, with equal weights by default. Upstairs,
+Bedroom, Downstairs and Garage can be selected individually in the **Left axis**
+drawer. **All air temperatures** shows rooms, garage and outdoor readings
+together. The dashboard's current readings also identify individual rooms.
+The Average indoor chart follows saved model inputs at the endpoints of completed
+15-minute learning windows. Invalid or missing windows remain gaps. It does not
+recalculate old averages from today's sensor membership or weights. Imported
+model history retains its saved original Upstairs input.
 Selecting different positive weights is a configuration choice; sensor outages
 never redistribute weights. A missing contributing sensor makes the average
 unavailable for control and learning. A retained stale reading remains labelled

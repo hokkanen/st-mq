@@ -57,7 +57,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
 // These describe values resolved for learning, not additional recorder channels.
 // Keep them separate from SIGNAL_INFO so Recording details remains a storage view.
 export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
-  ['model_indoor_temperature', 'Indoor temperature endpoint', '°C', 'indoor', 'Indoor temperature at the end of the completed learning interval. This is the observed prediction target, not another heat-input coefficient.'],
+  ['model_indoor_temperature', 'Average indoor', '°C', 'indoor', 'The configured indoor average saved at the end of each completed learning interval. Missing inputs remain gaps. Imported learning keeps its original upstairs-only temperature.'],
   ['model_outdoor_temperature', 'Outdoor temperature input', '°C', 'outdoor', 'Recorded outdoor values used within the completed interval, split at source and value changes. Older learning records retain their saved interval mean.'],
   ['model_solar_radiation', 'Solar radiation input', 'W/m²', 'solar', 'Radiation from the forecast available before the interval began. Missing forecasts remain unknown; later forecast updates do not rewrite this input.'],
   ['model_compressor_duty', 'Space-heating compressor duty', '%', 'auxiliary', 'The fraction of the interval with observed compressor activity routed to space heating. Hot-water operation contributes zero; unavailable attribution remains unknown.'],
@@ -79,10 +79,11 @@ export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
 
-export const RIGHT_AXIS_SIGNALS = Object.freeze(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
+export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
 
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],
+  ['temperatures', 'All air temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'outdoor_temperature'], '°C', 'Recorded'],
   ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
   ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],

@@ -134,3 +134,31 @@ test('Downstairs and Bedroom MQTT temperatures are recorded independently across
   assert(Math.abs(engine.latest.bedroom_temperature.value - 19) < 1e-10);
   assert.equal(engine.latest.indoor_temperature, undefined);
 });
+
+test('configured Upstairs MQTT sensor owns room history and model input alongside H66 indoor publications', async t => {
+  const store = new Store(':memory:');
+  const config = { ...loadConfig({ HOME: '/missing-stmq-test-home' }, '/missing-repository'), input: 'mqtt', deviceId: 'invented-h66',
+    connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: {
+      indoor_temperature: 'invented/smoke/1/temperature',
+    } } } };
+  let now = initial;
+  const engine = new Engine({ store, config, clock: () => now }), client = broker();
+  const reader = await startMqtt({ engine, store, config, connect: () => client });
+  t.after(async () => { await reader.close(); store.close(); });
+  client.emit('connect');
+  client.emit('message', 'invented-h66/HP/0008', Buffer.from('25'));
+  assert.equal(engine.latest.indoor_temperature, undefined, 'The configured room remains missing until its own sensor publishes');
+  client.emit('message', 'invented/smoke/1/temperature', Buffer.from('21'));
+  now += 60_000;
+  client.emit('message', 'invented-h66/HP/0008', Buffer.from('26'));
+  assert.equal(engine.status().observations.upstairs.value, 21);
+  assert.equal(engine.status().observations.indoor.value, 21);
+  assert.equal(engine.recorder.latestCommitted('indoor_temperature').source, 'mqtt-temperature');
+  assert(store.observations({ signal: 'indoor_temperature' }).every(row => row.source === 'mqtt-temperature'));
+  now += 31 * 60_000;
+  client.emit('message', 'invented-h66/HP/0008', Buffer.from('26'));
+  assert.equal(engine.status().observations.indoor.stale, true, 'Gateway updates cannot refresh a stale configured room sensor');
+  client.emit('offline');
+  assert(store.observations({ signal: 'indoor_temperature' }).every(row => row.source === 'mqtt-temperature'),
+    'Gateway availability transitions cannot contaminate the configured room history either');
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarTicks, chartQuery, createChartLoader, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries, sessionPointDetail } from '../chart/history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries, sessionPointDetail } from '../chart/history-model.js';
 import { MODEL_COEFFICIENT_INFO, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 import { Envelope } from '../src/app/chart-data.js';
 
@@ -16,8 +16,8 @@ test('calendar controls use Finnish dates across UTC midnight, leap days and bot
   assert.throws(() => shiftDate('2026-02-30', 1), /valid calendar/);
 });
 
-test('left axis groups remain exclusive while all shared temperatures and prices survive every choice', () => {
-  const shared = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
+test('left axis groups remain exclusive while average indoor, outdoor and prices survive every choice', () => {
+  const shared = ['model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
   for (const [left, expected] of [['power', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']],
     ...['learning_profit','learning_aux_profit','learning_recovery_error','learning_indoor_temperature'].map(name => [name, [name]]), ['solar_radiation', ['solar_radiation', 'solar_forecast']]]) {
     const datasets = historyDatasets({}, left);
@@ -54,14 +54,49 @@ test('axis ticks stay on whole Finnish hours and calendar days across DST with e
   assert.deepEqual(ticks.map(tick => finnishDate(tick.value)), ['2026-03-25', '2026-03-28', '2026-03-31', '2026-04-03', '2026-04-06']);
 });
 
-test('indoor locations retain separate chart identities, labels, colours and visibility', () => {
-  const series = { indoor_temperature: [{ x: 1, y: 23 }], downstairs_temperature: [{ x: 1, y: 20 }], bedroom_temperature: [{ x: 1, y: 19 }] };
-  const datasets = historyDatasets(series, 'power', { downstairs_temperature: false });
-  const indoors = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].map(key => datasets.find(row => row.key === key));
-  assert.deepEqual(indoors.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom']);
-  assert.deepEqual(indoors.map(row => row.data[0].y), [23, 20, 19]);
-  assert.deepEqual(indoors.map(row => row.hidden), [false, true, false]);
-  assert.equal(new Set(indoors.map(row => row.borderColor)).size, 3);
+test('one Average indoor uses the earlier indoor colour while individual rooms are selectable on the left', () => {
+  const series = { model_indoor_temperature: [{ x: 1, y: 20.5 }], indoor_temperature: [{ x: 1, y: 23 }],
+    downstairs_temperature: [{ x: 1, y: 20 }], bedroom_temperature: [{ x: 1, y: 19 }], garage_temperature: [{ x: 1, y: 12 }] };
+  const datasets = historyDatasets(series, 'power');
+  const average = datasets.find(row => row.key === 'model_indoor_temperature');
+  assert.equal(average.label, 'Average indoor');
+  assert.equal(average.data, series.model_indoor_temperature);
+  assert.equal(average.yAxisID, 'right');
+  assert.equal(average.borderColor, '#81ca99');
+  assert.equal(average.stepped, false);
+  for (const [key, label, color] of [['indoor_temperature', 'Upstairs', 'indoor'],
+    ['downstairs_temperature', 'Downstairs', 'downstairs'], ['bedroom_temperature', 'Bedroom', 'bedroom'],
+    ['garage_temperature', 'Garage', 'garage']]) {
+    assert(!datasets.some(row => row.key === key), `${label} is not another default indoor line`);
+    const selected = historyDatasets(series, key, { [key]: false });
+    const room = selected.find(row => row.key === key);
+    assert.equal(room.label, label);
+    assert.equal(room.yAxisID, 'left');
+    assert.equal(room.data, series[key]);
+    assert.equal(room.borderColor, defaultPalette[color]);
+    assert.equal(room.hidden, true);
+    assert.equal(selected.filter(row => row.key === 'model_indoor_temperature').length, 1);
+  }
+  const palette = { ...defaultPalette, indoor: '#112233', outdoor: '#445566' };
+  const themed = historyDatasets(series, 'power', {}, palette);
+  assert.equal(themed.find(row => row.key === 'model_indoor_temperature').borderColor, palette.indoor);
+  assert.equal(themed.find(row => row.key === 'outdoor_temperature').borderColor, palette.outdoor);
+});
+
+test('All air temperatures compares five sensor locations on the left while keeping Average indoor on the right', () => {
+  const signals = ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'outdoor_temperature'];
+  const series = Object.fromEntries(signals.map((key, index) => [key, [{ x: 1, y: 23 - index * 2 }]]));
+  series.model_indoor_temperature = [{ x: 1, y: 21 }];
+  const datasets = historyDatasets(series, 'temperatures');
+  assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.key), signals);
+  assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.label),
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Outdoor']);
+  for (const key of signals) {
+    assert.equal(datasets.filter(row => row.key === key).length, 1);
+    assert.equal(datasets.find(row => row.key === key).data, series[key]);
+  }
+  assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
+  assert(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'temperatures' }).includes('left=temperatures'));
 });
 
 test('charger fills and shared outdoor visibility retain exact missing and negative values', () => {

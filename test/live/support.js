@@ -5,17 +5,17 @@ import { createHttp, ProviderError } from '../../src/acquisition/http.js';
 
 export const LIVE_SERVICES = Object.freeze([
   'entsoe', 'elering', 'fmi-forecast', 'fmi-observation',
-  'openmeteo-forecast', 'openmeteo-current', 'smartthings', 'easee',
+  'openmeteo-forecast', 'openmeteo-current', 'easee',
 ]);
 export const SERVICE_HOSTS = Object.freeze({
   entsoe: 'web-api.tp.entsoe.eu', elering: 'dashboard.elering.ee',
   'fmi-forecast': 'opendata.fmi.fi', 'fmi-observation': 'opendata.fmi.fi',
   'openmeteo-forecast': 'api.open-meteo.com', 'openmeteo-current': 'api.open-meteo.com',
-  smartthings: 'api.smartthings.com', easee: 'api.easee.com',
+  easee: 'api.easee.com',
 });
 const HOSTS = new Set(Object.values(SERVICE_HOSTS));
 const LIMITS = Object.freeze({ entsoe: 1, elering: 1, fmi: 2, 'openmeteo-forecast': 1,
-  'openmeteo-current': 1, smartthings: 3, 'easee-read': 4, 'easee-refresh': 1, 'easee-login': 1 });
+  'openmeteo-current': 1, 'easee-read': 4, 'easee-refresh': 1, 'easee-login': 1 });
 const HALF_HOUR = 30 * 60_000;
 
 export function livePaths(env = process.env, cwd = process.cwd()) {
@@ -76,7 +76,6 @@ function classify(urlInput, options) {
     ['dashboard.elering.ee', /^\/api\/nps\/price\/?$/, 'elering'],
     ['opendata.fmi.fi', /^\/wfs\/?$/, 'fmi'],
     ['api.open-meteo.com', /^\/v1\/forecast$/, url.searchParams.has('hourly') ? 'openmeteo-forecast' : 'openmeteo-current'],
-    ['api.smartthings.com', /^\/v1\/devices\/[^/]+\/status$/, 'smartthings'],
     ['api.easee.com', /^\/state\/[^/]+\/observations$/, 'easee-read'],
   ];
   const route = routes.find(([host, path]) => host === url.hostname && path.test(url.pathname));

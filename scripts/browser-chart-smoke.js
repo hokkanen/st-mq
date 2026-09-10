@@ -178,7 +178,9 @@ try {
   for(const key of ['ev1_lifetime_energy_counter','ev1_session_energy_counter','ev2_energy'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} has no separate drawer entry`);
   for(const key of ['brine_pump_speed','phase_energy','alarm_code', ...coefficientKeys])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
-  for(const key of ['indoor_temperature','garage_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
+  for(const key of ['temperatures','indoor_temperature','downstairs_temperature','bedroom_temperature','garage_temperature'])
+    assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true,`${key} is selectable on the left axis`);
+  for(const key of ['model_indoor_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is already shown on the right axis`);
   assert.equal(await evaluate("document.querySelector('#left-axis optgroup[label=\"Model coefficients · Calculated\"]').children.length"), 5);
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
@@ -748,9 +750,9 @@ try {
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · SmartThings, FMI');
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT temperature sensor, FMI');
   assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
-    'Indoor temperature · °C,Garage temperature · °C,Outdoor temperature · °C');
+    'Upstairs · °C,Downstairs · °C,Bedroom · °C,Garage temperature · °C,Outdoor temperature · °C');
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-heading > strong').textContent"),
     'Electricity consumption · Easee, Teslamate');
   assert.equal(await evaluate("document.querySelectorAll('[data-provider=easee], [data-provider=teslamate]').length"), 0,

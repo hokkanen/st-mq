@@ -139,7 +139,7 @@ test('decoded Open-Meteo estimates are usable current fallback and retain proven
     current_units: { time: 'unixtime', interval: 'seconds', temperature_2m: '°C' },
     current: { time: (r.now - 5 * MINUTE) / 1000, interval: 900, temperature_2m: -2.5 } }, { fetchedAt: r.now });
   r.engine.ingest(estimate);
-  r.engine.ingest({ source: 'smartthings', device: 'synthetic-indoor', signal: 'indoor_temperature',
+  r.engine.ingest({ source: 'mqtt-temperature', device: 'synthetic-indoor', signal: 'indoor_temperature',
     value: 21, unit: 'degC', sourceTime: r.now, receivedAt: r.now, quality: [] });
   const status = r.engine.tick();
   assert.equal(status.observations.outdoor.source, 'openmeteo');
@@ -171,9 +171,9 @@ test('estimated provenance is permitted only for Open-Meteo outdoor temperature 
 test('all current sources unavailable remains missing for learning even when a temperature forecast exists', async t => {
   const r = await setup(t);
   r.weather('openmeteo', 5, beginning - 31 * MINUTE);
-  r.weather('smartthings', 6);
+  r.weather('mqtt-temperature', 6);
   r.publish(2, { retain: true });
-  r.engine.ingest({ source: 'smartthings', device: 'synthetic-indoor', signal: 'indoor_temperature',
+  r.engine.ingest({ source: 'mqtt-temperature', device: 'synthetic-indoor', signal: 'indoor_temperature',
     value: 21, unit: 'degC', sourceTime: r.now, receivedAt: r.now, quality: [] });
   r.store.setState('provider:weather', { fetchedAt: r.now, forecast: [{ start: r.now, end: r.now + 60 * MINUTE,
     outdoorC: 7, solarRadiationWm2: 300, fetchedAt: r.now, issuedAt: null, issuedAtBasis: 'fetched-snapshot' }] });

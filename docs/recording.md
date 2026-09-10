@@ -18,7 +18,7 @@ units, quality flags and import provenance remain supported.
 | H66 | Continuous MQTT publications, plus GETALL every 60 seconds | GETALL republishes the gateway's known values; receipt time is not proof of a new sensor measurement. |
 | Easee charger and Equalizer | REST every 15 seconds; one batched observations request per configured device | The endpoint returns last-reported observations. Polling faster does not force new measurements. |
 | TeslaMate | MQTT on the existing broker; integration checked every five seconds | Changed fields arrive separately. Live health and increasing session energy can confirm unchanged retained charging power. |
-| Indoor/garage replacement sensors | Configured MQTT topics | The publisher determines its measurement frequency; retained messages are marked explicitly. |
+| Indoor/garage sensors | Configured local MQTT topics | The publisher determines its measurement frequency; retained messages are marked explicitly. |
 | FMI outdoor observations, Open-Meteo backup | Every five minutes | A successful fetch can contain the same older station or model timestamp. |
 | FMI/Open-Meteo forecast | Every 30 minutes | Actual forecasts update on provider/model schedules; unchanged content is referenced rather than copied. |
 | ENTSO-E/Elering prices | Hourly, with 15-minute checks when the available horizon is shorter than the next 24 hours | Native hourly/quarter-hour delivery intervals remain unchanged. Missing current-day coverage and failed requests have separate backoff. |
@@ -581,42 +581,34 @@ complete caught-up checkpoint. See [the mandatory reconstruction and versioning
 contract](reconstruction-and-versioning.md) and [fireplace behavior](fireplace.md).
 This does not expand the storage contract to full control-choice replay.
 
-## SmartThings, MQTT temperature sensors and interface
+## Local MQTT temperature sensors and interface
 
-SmartThings indoor and garage acquisition is available in both `providers` and
-`mqtt` input modes. Set `smartthings.token` and the relevant device fields in the
-private options file or add-on configuration:
+Indoor and garage temperature acquisition uses exact topics on the existing local
+MQTT broker in both `providers` and `mqtt` input modes. These subscriptions work
+without an H66 device configured. The room mapping is:
 
-| SmartThings field | Recorded signal | Display name |
-| --- | --- | --- |
-| `inside_temp_dev_id` | `indoor_temperature` | Upstairs |
-| `downstairs_temp_dev_id` | `downstairs_temperature` | Downstairs |
-| `bedroom_temp_dev_id` | `bedroom_temperature` | Bedroom |
-| `garage_temp_dev_id` | `garage_temperature` | Garage |
+| Local sensor | MQTT configuration field | Recorded signal | Display name |
+| --- | --- | --- | --- |
+| Smoke channel 1 | `indoor_temperature_topic` | `indoor_temperature` | Upstairs |
+| Smoke channel 2 | `bedroom_temperature_topic` | `bedroom_temperature` | Bedroom |
+| Smoke channel 3 | `downstairs_temperature_topic` | `downstairs_temperature` | Downstairs |
+| Optional garage sensor | `garage_temperature_topic` | `garage_temperature` | Garage |
 
-The two additional indoor sensors are optional. Empty device fields generate no
-requests or artificial missing observations. All indoor locations are recorded
-separately, and an individual sensor failure does not replace the other readings.
-The existing indoor signal and imported CSV meaning remain unchanged; only its
-display name becomes Upstairs. Each configured sensor
-is queried every five minutes through the read-only
-[device status API](https://developer.smartthings.com/docs/service-integrations/query-and-list-devices).
-Source timestamps, units and quality flags are preserved; polling unchanged device
-state does not make it fresh. Failed requests back off through the provider scheduler.
-SmartThings outdoor acquisition remains disabled in the running application.
-
-Its existing temperature history remains available. H66 can provide indoor
-temperature when installed and representative; garage and optional indoor sensors
-can also publish to exact MQTT topics on the existing broker.
-These temperature subscriptions also work without an H66 device configured.
-For example, these invented topic names illustrate the configuration shape:
+These fields belong under `mqtt` in private configuration or add-on options.
+An empty topic disables that subscription. All indoor locations are recorded
+separately; an individual sensor failure does not replace the other readings.
+The existing indoor signal, imported CSV meaning and original temperature history
+remain unchanged. H66 can supply indoor temperature when installed and
+representative if no dedicated Upstairs topic is configured.
+The three smoke channels use these exact topics. The optional garage topic below
+is an invented example; replace it with the actual local topic or leave it empty:
 
 ```json
 {
   "mqtt": {
-    "indoor_temperature_topic": "example/sensors/indoor",
-    "downstairs_temperature_topic": "example/sensors/downstairs",
-    "bedroom_temperature_topic": "example/sensors/bedroom",
+    "indoor_temperature_topic": "stmq/smoke/1/temperature",
+    "bedroom_temperature_topic": "stmq/smoke/2/temperature",
+    "downstairs_temperature_topic": "stmq/smoke/3/temperature",
     "garage_temperature_topic": "example/sensors/garage"
   }
 }
@@ -630,7 +622,9 @@ number in Celsius, or an object such as
 `°C` and `F` are accepted; a supplied timestamp must include its time zone or be
 epoch milliseconds. Without a timestamp, a non-retained publication uses labelled
 MQTT receipt time. Retained data never gains a new measurement time on reconnect.
-No replacement topics or device configuration are guessed from old SmartThings IDs.
+Without a source timestamp, retained data stays unavailable until a live publication.
+Give each sensor a distinct exact local topic; the per-room fields do not accept the wildcard
+`stmq/smoke/+/temperature`.
 Broker disconnection records explicit unavailable transitions for configured
 temperature sensors and included H66 signals. Reconnection alone does not recover
 their availability; each signal requires a usable new publication. Subscription
@@ -649,10 +643,18 @@ configured. For example, with both extra sensors configured,
 `{"indoor_temperature":1,"downstairs_temperature":2,"bedroom_temperature":2}`
 gives Upstairs one fifth of the contribution. Weights are normalized and
 saved with learning configuration using logical signal names, without private
-device IDs or MQTT topics. Adding or changing contributing sensors changes the
+device identifiers or MQTT topics. Adding or changing contributing sensors changes the
 measurement setup; it must establish the corresponding learning boundary.
 
-The left drawer lists historical axes in temperature, heating, hot-water,
+The right axis has one **Average indoor** series: the same configured average
+used by the model, with the existing indoor colour. Individual Upstairs, Bedroom,
+Downstairs and Garage temperatures are selectable under **Home temperatures** in
+the left drawer. **All air temperatures** shows individual room, garage and
+outdoor readings together. Average indoor uses the saved model input at each completed
+15-minute learning window's endpoint. Missing or invalid windows remain gaps;
+changing configured weights does not recalculate historical inputs. Historical
+CSV `temp_in` remains an Upstairs reading and is never presented as a three-room
+average. The left drawer lists historical axes in temperature, heating, hot-water,
 ground-loop, settings, equipment, runtime, electricity, weather and learning groups.
 Recorded and calculated roles are separate from model roles.
 

@@ -94,7 +94,7 @@ test('every catalogue axis works, including historical meter references without 
 
 test('chart defaults to today in Finland and includes shared right-axis data for every left axis', async t => {
   const { base, headers, store, now } = await fixture(t);
-  store.observation({ source: 'smartthings', device: 'fixture-room', signal: 'indoor_temperature',
+  store.observation({ source: 'mqtt-temperature', device: 'fixture-room', signal: 'indoor_temperature',
     value: 21.3, unit: 'degC', sourceTime: now - 3600000, receivedAt: now, quality: [] });
   for (const left of ['power', 'phases', 'integral']) {
     const response = await fetch(`${base}/api/chart?left=${left}`, { headers });
@@ -162,7 +162,7 @@ test('chart viewport API validates immutable bounds and caches independent detai
   const { base, headers, now, store } = await fixture(t);
   const viewFrom = now - 2 * 3_600_000, viewTo = now - 3_600_000;
   const selected = 'start=2024-01-01&end=2026-09-07';
-  store.observation({ source: 'smartthings', device: 'synthetic-room', signal: 'indoor_temperature',
+  store.observation({ source: 'mqtt-temperature', device: 'synthetic-room', signal: 'indoor_temperature',
     value: 21.3, unit: 'degC', sourceTime: viewFrom + 60_000, receivedAt: now, quality: [] });
   for (const query of [`viewFrom=${viewFrom}`, `viewTo=${viewTo}`, 'viewFrom=&viewTo=',
     `viewFrom=NaN&viewTo=${viewTo}`, `viewFrom=${viewFrom + 0.5}&viewTo=${viewTo}`,

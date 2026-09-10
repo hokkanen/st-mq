@@ -11,7 +11,7 @@ import { appendLearningRecord, applyLearningRecord, committedLearningSample, rec
 const start = Date.parse('2026-01-01T00:00:00Z'), W = LEARNING_WINDOW_MS;
 const config = { indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 1 } };
 function record(store, signal, value, at, extra = {}) {
-  store.observation({ source: 'smartthings', device: `invented-${signal}`, signal, value,
+  store.observation({ source: 'mqtt-temperature', device: `invented-${signal}`, signal, value,
     unit: signal.endsWith('temperature') ? 'degC' : 'state', sourceTime: at, receivedAt: at, quality: [], ...extra });
 }
 function window(store, at, temperatures = [24, 20, 19]) {
@@ -129,7 +129,7 @@ test('a cold room blocks reductions against its own reference even when the aver
   function readings(downstairs) {
     for (const [signal, value] of [['indoor_temperature', 24], ['downstairs_temperature', downstairs],
       ['bedroom_temperature', 20], ['outdoor_temperature', 0]]) engine.ingest({ signal, value,
-      source: signal === 'outdoor_temperature' ? 'fmi' : 'smartthings', device: `invented-${signal}`,
+      source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: `invented-${signal}`,
       sourceTime: now, receivedAt: now, quality: [], unit: 'degC' });
   }
   readings(19);
