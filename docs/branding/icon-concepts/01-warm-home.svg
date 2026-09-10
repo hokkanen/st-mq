@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">ST-MQ — Warm home</title>
+  <desc id="description">A sage house enclosing two amber heat waves on a forest green rounded square.</desc>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#101e19"/>
+  <g fill="none" stroke="#b9d8b4" stroke-width="17" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M58 117 128 57 198 117"/>
+    <path d="M77 103v84a15 15 0 0 0 15 15h72a15 15 0 0 0 15-15v-84"/>
+  </g>
+  <g fill="none" stroke="#e7b778" stroke-width="14" stroke-linecap="round">
+    <path d="M109 177c-18-15 18-25 0-40"/>
+    <path d="M147 177c-18-15 18-25 0-40"/>
+  </g>
+</svg>

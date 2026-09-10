@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">ST-MQ — Smart timing</title>
+  <desc id="description">An amber lightning bolt inside a mint clock on a forest green rounded square, suggesting electricity use planned for the right time.</desc>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#101e19"/>
+  <circle cx="128" cy="128" r="73" fill="none" stroke="#81cbb2" stroke-width="17"/>
+  <g stroke="#b9d8b4" stroke-width="11" stroke-linecap="round">
+    <path d="M128 56v12M188 128h12M128 188v12M56 128h12"/>
+  </g>
+  <path d="m139 83-43 51a4 4 0 0 0 3 7h24l-10 29a3 3 0 0 0 5 3l44-51a4 4 0 0 0-3-7h-25l10-29a3 3 0 0 0-5-3Z" fill="#e7b778"/>
+</svg>
