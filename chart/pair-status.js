@@ -5,6 +5,7 @@ const validPreviewId = value => typeof value === 'string' && (/^[a-f0-9]{64}$/i.
 const stamp = value => Number.isFinite(value) && value > 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const roleName = role => ({ primary: 'Master', replica: 'Read-only slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
+const checkedPreview = view => view?.recovery?.state === 'ready' && validPreviewId(view.recovery.preview?.previewId);
 
 export function pairAllowsControl(status) {
   const pair = status?.pairing;
@@ -20,12 +21,16 @@ export function pairActionAllowed(view, action) {
   if (view?.enabled !== true || view.busy || view.transition || view.uiOperation?.state === 'running' || view.actions?.[action] !== true) return false;
   if (action === 'promote') return ['replica', 'protected'].includes(view.role);
   if (view.role !== 'primary') return false;
-  if (action === 'recover') return view.recovery?.state === 'ready' && validPreviewId(view.recovery?.preview?.previewId);
-  if (action === 'rejoin') return view.recovery?.state === 'complete';
+  if (action === 'recover') return checkedPreview(view);
+  if (action === 'rejoin') return view.recovery?.state === 'complete' || checkedPreview(view);
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action) {
+export function pairConfirmation(action, { discardUnrecovered = false, counts = {} } = {}) {
+  if (action === 'rejoin' && discardUnrecovered) {
+    const missing = count(counts.missing);
+    return `Skip recovery and replace the other computer’s database with this master’s database? ${missing !== null ? `The check found ${missing} missing entries that will NOT be recovered. ` : ''}All unmatched history on the other computer, including recoverable gaps, conflicting and unsupported entries, will be discarded. No separate archive is kept. This master’s history and learned model stay as they are. Only continue if you accept losing that history.`;
+  }
   return {
     promote: 'Promote this computer to master? Confirm that the previous master has failed or has been stopped or isolated from the home. If its host is still running, release its broker virtual IP or isolate the host first. An unreachable computer may still be controlling equipment. This uses the local history; data since its last snapshot may be missing.',
     handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. Devices will reconnect to the moved MQTT address.',
@@ -37,7 +42,7 @@ export function pairConfirmation(action) {
 const phaseText = {
   'check-recovery': 'Checking the other computer for missing history.', recover: 'Recovering gaps and rebuilding the model.',
   handover: 'Handing control to the other computer.', promote: 'Preparing this computer to become master.',
-  rejoin: 'Preparing verified mirroring after recovery.',
+  rejoin: 'Preparing a verified master copy to resume mirroring.',
   importing: 'Importing missing history.', 'catching-up': 'Catching the rebuilt model up to current observations.',
   publishing: 'Publishing the verified recovery result.',
   checking: 'Checking the other computer for missing history.', recovering: 'Recovering missing history.',
@@ -74,29 +79,73 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : state === 'primary' ? 'Waiting for this computer’s MQTT address.' : 'This computer does not own the MQTT address.';
   const sync = view.sync ?? {}, sourceAt = stamp(sync.sourceAt ?? sync.snapshotAt), verifiedAt = stamp(sync.verifiedAt);
   const syncText = state === 'protected' ? 'Mirroring is blocked to preserve the local history.'
+    : view.role === 'primary' ? 'This master supplies the database for one-way mirroring.'
     : sync.state === 'syncing' ? phaseText[sync.phase] ?? 'Synchronizing the database.'
       : sync.state === 'error' ? 'Synchronization needs attention. The last verified snapshot is kept.'
         : sourceAt ? `Last snapshot: ${formatTime(sourceAt)} · ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} minutes old.`
           : 'No verified snapshot has been reported yet.';
-  const syncDetail = [verifiedAt ? `Identity verified ${formatTime(verifiedAt)}.` : '',
+  const syncDetail = view.role === 'primary' ? 'The slave reports its snapshot time and identity checks in its own UI. A connection alone does not confirm that its database is current.'
+    : [verifiedAt ? `Identity verified ${formatTime(verifiedAt)}.` : '',
     count(sync.bytes) !== null ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(sync.bytes / 1e6)} MB.` : '',
     sync.state === 'syncing' && count(sync.completedBytes) !== null && sync.bytes > 0
       ? `${Math.min(100, Math.floor(sync.completedBytes / sync.bytes * 100))}% checked or transferred.` : ''].filter(Boolean).join(' ');
-  const progress = view.uiOperation?.progress;
+  const progress = view.uiOperation?.state === 'running' ? view.uiOperation.progress : null;
   const phase = [phaseText[progress?.phase ?? view.transition?.phase ?? view.phase] ?? (view.busy || view.uiOperation?.state === 'running' ? 'An operation is in progress.' : ''),
     count(progress?.processed) !== null ? `${progress.processed} entries processed.` : ''].filter(Boolean).join(' ');
   const recovery = view.recovery ?? {};
   const recoveryText = {
     idle: '', checking: 'Checking the other computer for missing data. No history is changed by this check.',
-    ready: 'Check complete. Review the missing data and skipped entries before recovering.',
+    ready: 'Check complete. Review the preview below, then recover the gaps or explicitly discard them and resume mirroring.',
     recovering: 'Recovering gaps and rebuilding the model. Home control continues with the available model.',
     complete: 'Recovery is complete. Review the result, then resume mirroring to make the slave match the master.',
-    resolved: 'Recovery and verified mirroring are complete. Normal one-way synchronization has resumed.',
+    resolved: recovery.report?.recoverySkipped === true ? 'Mirroring resumed without recovering gaps. The other computer’s unmatched history was discarded.'
+      : 'Recovery and verified mirroring are complete. Normal one-way synchronization has resumed.',
     error: 'Recovery needs attention. The donor history remains protected. Check it again before retrying.',
   }[recovery.state] ?? '';
-  return { state, title: `${roleName(view.role)}${state === 'transition' ? ' · changing role' : ''}`, summary,
+  const peerStat = peer.reachable === true ? 'Other computer connected' : 'Other computer offline';
+  const brokerStat = vip.error ? 'MQTT needs attention' : vip.owned && vip.ready ? 'MQTT active here' : 'MQTT not ready here';
+  const syncStat = state === 'protected' ? 'Mirroring blocked'
+    : view.role === 'primary' ? brokerStat
+      : sync.state === 'syncing' ? 'Syncing snapshot'
+        : sync.state === 'error' ? 'Sync needs attention'
+          : sourceAt > now ? 'Snapshot clock ahead'
+            : sourceAt ? `Snapshot ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} min old` : 'Waiting for first snapshot';
+  const attention = phase || (state === 'protected' && view.reason === 'activation_failed' ? 'Master could not start · open details to review local readiness.'
+    : state === 'protected' ? 'Local history is protected · resolve it from the master UI.'
+      : recovery.state === 'ready' ? `Check ready${count(recovery.preview?.counts?.missing) !== null ? ` · ${recovery.preview.counts.missing} missing entries` : ''} · review before continuing.`
+        : recovery.state === 'complete' ? 'Recovery complete · ready to resume mirroring.'
+          : recovery.state === 'error' || view.error ? 'An operation needs attention · open details before trying again.'
+            : sync.state === 'error' && view.role !== 'primary' ? 'Sync needs attention · the last verified snapshot is kept.' : '');
+  return { state, title: `${roleName(view.role)}${state === 'transition' ? ' · changing role' : ''}`, summary, peerStat, syncStat, attention,
     peer: peerText, broker: brokerText, sync: syncText, syncDetail, phase, recovery: recoveryText,
-    error: Boolean(view.error || recovery.error), preview: recovery.preview ?? null, report: recovery.report ?? null };
+    error: Boolean(view.error || recovery.error || vip.error || (view.role !== 'primary' && sync.state === 'error')),
+    preview: recovery.preview ?? null, report: recovery.report ?? null };
+}
+
+/** Explain the next step using confirmed server capabilities, never a local click alone. */
+export function pairActionHelp(view) {
+  const recovery = view?.recovery?.state;
+  const locked = view?.transition || view?.busy || view?.uiOperation?.state === 'running';
+  const wait = locked ? 'Wait for the current operation to finish.' : null;
+  const checked = checkedPreview(view);
+  return {
+    check: wait ?? (view?.actions?.['check-recovery'] === true ? 'Ready to compare. You can run this check again to refresh the preview.'
+      : view?.peer?.reachable !== true ? 'Connect the other computer before checking its history.' : 'Checking is unavailable until this master is ready.'),
+    recover: wait ?? (checked ? view?.actions?.recover === true ? 'The checked snapshot is ready. Review the preview, then confirm recovery.' : 'The preview is ready; wait for this master to be ready to recover.'
+      : recovery === 'complete' || recovery === 'resolved' ? 'Recovery is no longer pending. Run a new check to look for more gaps.'
+        : recovery === 'error' ? 'The previous operation failed. Complete a new check before recovering.'
+          : 'Locked until step 1 finishes successfully and provides a recovery preview.'),
+    rejoin: wait ?? (['ready', 'complete'].includes(recovery) && view?.peer?.reachable !== true ? 'Reconnect the other computer before replacing its database and resuming mirroring.'
+      : checked ? 'Optional: skip recovery and discard the other computer’s unmatched history. A separate confirmation is required.'
+      : recovery === 'complete' ? 'Recovery finished. Confirm replacement to resume mirroring.'
+        : recovery === 'resolved' ? 'Mirroring has resumed. No further action is needed.'
+          : 'Complete a check first. Then recover the gaps, or explicitly choose to discard them.'),
+    handover: wait ?? (view?.actions?.handover === true ? 'Both computers are ready for a deliberate handover.'
+      : view?.peer?.reachable !== true ? 'The other computer must be connected for a graceful handover.'
+        : 'The other computer must be a ready slave. Resolve protected history and resume mirroring first.'),
+    promote: wait ?? (view?.actions?.promote === true ? 'Manual confirmation required. The previous master must be stopped or isolated.'
+      : 'Promotion is unavailable until the local role and readiness are confirmed.'),
+  };
 }
 
 function makeRequestId() {
@@ -115,9 +164,11 @@ function restoredOperation(storage) {
     if (!actions.includes(body?.action) || !uuid.test(body?.requestId ?? '')) return null;
     if (body.action !== 'check-recovery' && body.confirmed !== true) return null;
     if (body.action === 'recover' && !validPreviewId(body.previewId)) return null;
+    if (body.action === 'rejoin' && body.discardUnrecovered === true && !validPreviewId(body.previewId)) return null;
     return { action: body.action, requestId: body.requestId,
       ...(body.action !== 'check-recovery' ? { confirmed: true } : {}),
-      ...(body.action === 'recover' ? { previewId: body.previewId } : {}) };
+      ...(body.action === 'recover' ? { previewId: body.previewId } : {}),
+      ...(body.action === 'rejoin' && body.discardUnrecovered === true ? { discardUnrecovered: true, previewId: body.previewId } : {}) };
   } catch { return null; }
 }
 
@@ -146,10 +197,15 @@ export function createPairActions({ request, storage, confirm = message => globa
     if (body && !pairActionAllowed(view, body.action)) return false;
     busy = true; notify();
     if (body) {
-      const confirmation = pairConfirmation(body.action);
+      const confirmation = pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered, counts: view.recovery?.preview?.counts });
       let accepted = !confirmation;
       try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
       if (!accepted || !available || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
+      if ((body.previewId && body.previewId !== view.recovery?.preview?.previewId)
+          || (body.discardUnrecovered && !checkedPreview(view))
+          || (body.action === 'rejoin' && !body.discardUnrecovered && view.recovery?.state !== 'complete')) {
+        busy = false; error = true; message = 'The recovery preview changed. Review the current check before confirming again.'; notify(); return false;
+      }
       pending = body; persist();
     }
     if (!pending) { busy = false; notify(); return false; }
@@ -179,7 +235,8 @@ export function createPairActions({ request, storage, confirm = message => globa
     run(action) {
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
       return send({ action, requestId: requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
-        ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}) });
+        ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
+        ...(action === 'rejoin' && checkedPreview(view) ? { discardUnrecovered: true, previewId: view.recovery.preview.previewId } : {}) });
     } };
 }
 
@@ -192,7 +249,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     if (!display) return;
     $('pairing-panel').dataset.state = display.state;
     $('pairing-panel').setAttribute('aria-busy', String(state.busy || state.view.busy === true));
-    for (const field of ['title', 'summary', 'peer', 'broker', 'sync', 'syncDetail', 'phase', 'recovery']) {
+    for (const field of ['title', 'summary', 'peer', 'broker', 'sync', 'syncDetail', 'phase', 'recovery', 'peerStat', 'syncStat']) {
       const node = $(`pairing-${field}`);
       if (node.textContent !== display[field]) node.textContent = display[field];
     }
@@ -200,6 +257,24 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       : state.message || (display.error ? 'An operation needs attention. The current role and protected history are retained.' : '');
     if ($('pairing-message').textContent !== message) $('pairing-message').textContent = message;
     $('pairing-message').classList.toggle('form-error', state.error || display.error || !state.available);
+    const attention = !state.available ? 'Connection to this computer lost · actions are paused.'
+      : state.error ? message : state.pending && !display.phase ? 'An operation is awaiting confirmation · open details to check its status.' : display.attention;
+    $('pairing-attention').textContent = attention;
+    $('pairing-attention').hidden = !attention;
+    $('pairing-panel').dataset.attention = String(Boolean(state.error || display.error || !state.available));
+    $('pairing-master-controls').hidden = state.view.role !== 'primary';
+    $('pairing-slave-controls').hidden = !['replica', 'protected'].includes(state.view.role);
+    $('pairing-standby-help').textContent = state.view.role === 'protected'
+      ? 'Local history may contain entries the master does not have, so incoming mirroring is blocked. In the master UI, check this computer’s history, then recover the gaps or explicitly discard them before resuming mirroring. This computer stays read-only until that is resolved or you deliberately promote it.'
+      : 'This computer reads the last copied snapshot and does not record measurements or send commands. While the master is unavailable, the history remains readable and grows older. Mirroring catches up when the master returns, provided the histories have not diverged.';
+    const help = pairActionHelp(state.view);
+    for (const field of ['check', 'recover', 'rejoin', 'handover', 'promote']) {
+      const node = $(`pairing-${field}-help`);
+      node.textContent = !state.available ? 'Reconnect to this computer before starting an action.'
+        : state.busy || state.pending ? 'Wait for the current request to be confirmed before starting another action.' : help[field];
+      node.dataset.ready = String(field === 'recover' && !state.pending && !state.busy && state.available && pairActionAllowed(state.view, 'recover'));
+    }
+    $('pairing-rejoin').textContent = checkedPreview(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
     for (const action of actions) {
       const button = $(`pairing-${action}`);
       button.hidden = action === 'promote' ? !['replica', 'protected'].includes(state.view.role) : state.view.role !== 'primary';
@@ -220,16 +295,17 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
 export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false } = {}) {
   root.replaceChildren(); root.hidden = !data;
   if (!data) return;
-  const heading = document.createElement('h3'); heading.textContent = report ? 'Recovery result' : 'Recovery preview'; root.append(heading);
-  const fields = [...(report ? [] : [['missing', 'Missing entries']]), ['conflicts', 'Conflicting entries'], ['duplicates', 'Already present'], ['skipped', 'Skipped entries']];
+  const heading = document.createElement('h3'); heading.textContent = data.recoverySkipped ? 'Mirroring resumed without recovery' : report ? 'Recovery result' : 'Recovery preview'; root.append(heading);
+  const fields = [...(!report || data.recoverySkipped ? [['missing', data.recoverySkipped ? 'Missing entries not recovered' : 'Missing entries']] : []), ['conflicts', 'Conflicting entries'], ['duplicates', 'Already present'], ['skipped', 'Skipped entries']];
   const totals = data.counts ?? {};
+  const counts = document.createElement('div'); counts.className = 'pairing-preview-counts'; root.append(counts);
   if (count(data.imported) !== null) { const line = document.createElement('p'); line.textContent = `Recovered entries: ${data.imported}.`; root.append(line); }
   for (const [key, title] of fields) if (count(totals[key]) !== null) {
-    const line = document.createElement('p'); line.textContent = `${title}: ${totals[key]}.`; root.append(line);
+    const line = document.createElement('p'); line.textContent = `${title}: ${totals[key]}.`; counts.append(line);
   }
   const from = stamp(data.period?.from ?? data.from), to = stamp(data.period?.to ?? data.to);
   if (from || to) { const line = document.createElement('p'); line.textContent = `Missing history period: ${from ? formatTime(from) : 'unknown'} – ${to ? formatTime(to) : 'unknown'}.`; root.append(line); }
-  if (data.model?.status === 'rebuild-required') {
+  if (data.model?.status === 'rebuild-required' && !data.recoverySkipped) {
     const line = document.createElement('p');
     line.textContent = report ? 'The recovered learning history is used to rebuild the model. Check the recovery status above for completion.' : 'Recovery includes rebuilding the learned model.';
     root.append(line);
@@ -241,6 +317,7 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
     const line = document.createElement('p'); line.textContent = `Unsupported learning entries skipped: ${data.model.unsupported}.`; root.append(line);
   }
   const policy = document.createElement('p'); policy.className = 'muted';
-  policy.textContent = 'Existing master history wins overlaps. Skipped donor entries are not kept as a separate archive after successful recovery and verified mirroring.';
+  policy.textContent = data.recoverySkipped ? 'Gap recovery was deliberately skipped. The master history and model were kept; the other computer’s unmatched history was discarded, without a separate archive.'
+    : 'Existing master history wins overlaps. Skipped donor entries are not kept as a separate archive after successful recovery and verified mirroring.';
   root.append(policy);
 }

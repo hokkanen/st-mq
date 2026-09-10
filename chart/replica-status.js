@@ -5,6 +5,63 @@ export const isReadOnlyReplica = status => ['replica', 'protected', 'transition'
   || status?.instance?.role === 'replica' || status?.controlAuthority?.state === 'protected' || !pairAllowsControl(status);
 const timestamp = value => Number.isFinite(value) && value > 0 ? value : null;
 
+/** The instance role is separate from whether the master is monitoring or controlling. */
+export function instanceRoleDisplay(status) {
+  const pairing = status?.pairing;
+  if (pairing?.enabled === true) {
+    if (pairing.transition || pairing.role === 'transition') return { state: 'transition', label: 'ROLE CHANGE',
+      detail: 'A role change is in progress. Wait for the new role to be confirmed.' };
+    if (pairing.role === 'protected') return { state: 'protected', label: 'PROTECTED',
+      detail: 'Local history is protected. Home control and incoming mirroring are stopped.' };
+    if (pairing.role === 'replica') return { state: 'replica', label: 'SLAVE',
+      detail: 'Read-only slave. This computer shows synchronized history and never takes control automatically.' };
+    if (pairing.role === 'primary') {
+      const waiting = pairing.canControl !== true || ['replica', 'protected', 'transition'].includes(status?.role)
+        || status?.instance?.role === 'replica';
+      return waiting ? { state: 'transition', label: 'MASTER · WAITING',
+        detail: 'Master role reported. Waiting for its current dashboard and control readiness.' }
+        : { state: 'primary', label: 'MASTER',
+          detail: 'This computer owns the master role. The operating mode shows whether automatic control is enabled.' };
+    }
+    return { state: 'transition', label: 'CHECKING ROLE', detail: 'Waiting for this computer’s paired role to be confirmed.' };
+  }
+  if (status?.controlAuthority?.state === 'protected') return { state: 'protected', label: 'CONTROL STOPPED',
+    detail: 'Another controller won authority. This computer preserves its local history without controlling devices.' };
+  if (isReadOnlyReplica(status)) return { state: 'replica', label: 'READ-ONLY REPLICA',
+    detail: 'This computer shows a synchronized database without controlling devices.' };
+  return { state: 'standalone', label: 'STANDALONE', detail: 'Paired operation is not enabled on this computer.' };
+}
+
+export function renderInstanceRole(document, status) {
+  const node = document.getElementById('instance-role');
+  if (!node) return;
+  const display = instanceRoleDisplay(status);
+  node.hidden = false;
+  node.dataset.state = display.state;
+  node.textContent = display.label;
+  node.title = display.detail;
+}
+
+/** A restarted receiver still has its durable, published snapshot to report. */
+export function pairPanelView(status) {
+  const pairing = status?.pairing ?? { enabled: false };
+  const publication = status?.replication;
+  if (pairing.enabled !== true || pairing.role !== 'replica' || !publication) return pairing;
+  const sync = pairing.sync ?? {};
+  const sourceAt = timestamp(sync.sourceAt), publishedAt = timestamp(publication.snapshotAt ?? publication.sourceAt);
+  // Handover/rejoin can publish directly without updating the receiver's last
+  // ordinary-sync timestamps. Always describe the newest confirmed snapshot.
+  const publishedNewer = publishedAt !== null && (sourceAt === null || publishedAt > sourceAt);
+  const bytes = publishedNewer && sync.state !== 'syncing' ? publication.bytes : sync.bytes;
+  return { ...pairing, sync: { ...sync,
+    state: ['syncing', 'error'].includes(sync.state) ? sync.state : publication.state ?? sync.state,
+    sourceAt: publishedNewer ? publishedAt : sourceAt,
+    verifiedAt: publishedNewer ? timestamp(publication.verifiedAt) : timestamp(sync.verifiedAt) ?? timestamp(publication.verifiedAt),
+    bytes: Number.isFinite(bytes) && bytes >= 0 ? bytes
+      : Number.isFinite(publication.bytes) && publication.bytes >= 0 ? publication.bytes : null,
+  } };
+}
+
 export function replicaSnapshotKey(status) {
   if (!isReadOnlyReplica(status)) return null;
   const sync = status.replication ?? {};
@@ -83,6 +140,8 @@ export function primaryReplicationDisplay(status, { formatTime = at => new Date(
 export function renderReplicaStatus(document, status, { formatTime = at => new Date(at).toISOString() } = {}) {
   const $ = id => document.getElementById(id);
   const replica = isReadOnlyReplica(status);
+  const paired = status.pairing?.enabled === true;
+  renderInstanceRole(document, status);
   document.documentElement.dataset.instanceRole = replica ? 'replica' : 'primary';
   const outgoing = primaryReplicationDisplay(status, { formatTime });
   $('primary-replication-notice').hidden = !outgoing;
@@ -91,7 +150,7 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     $('primary-replication-summary').textContent = outgoing.summary;
     $('primary-replication-detail').textContent = outgoing.detail;
   }
-  $('replica-notice').hidden = !replica;
+  $('replica-notice').hidden = !replica || paired;
   for (const node of document.querySelectorAll('[data-controller-only]')) {
     node.hidden = replica;
     for (const control of node.querySelectorAll('button, input, select, textarea')) {
@@ -119,8 +178,9 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
   $('connection').textContent = stoppedController ? 'CONTROLLER STOPPED · READ-ONLY HISTORY'
     : status.pairing?.role === 'protected' ? 'PROTECTED RECOVERY · HOME CONTROL DISABLED'
     : status.pairing?.transition ? 'ROLE CHANGE · WAITING FOR CONFIRMATION'
-      : `READ-ONLY REPLICA · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
+      : `${paired ? 'READ-ONLY HISTORY' : 'READ-ONLY REPLICA'} · ${display.state === 'ready' ? 'HISTORY AVAILABLE' : display.state === 'waiting' ? 'WAITING FOR SNAPSHOT' : 'SYNC NEEDS ATTENTION'}`;
   $('context').textContent = stoppedController ? 'Another ST-MQ controller owns control. This computer preserves its local history and remains read-only until its history is explicitly recovered.'
+    : paired && status.pairing.role === 'protected' ? 'Local history is protected for recovery. This computer does not record measurements or control devices. Use the master’s Paired computers section to check this history, then recover its gaps or explicitly discard them before resuming mirroring.'
     : 'Recorded history from the primary computer. This viewer does not connect to devices or control the home. The primary’s current operating state is unknown.';
   for (const node of document.querySelectorAll('[data-snapshot-content]')) node.hidden = !display.available;
   $('recording-adaptive-details').hidden = true;

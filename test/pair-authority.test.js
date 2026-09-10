@@ -156,6 +156,130 @@ test('manual recovery pins donor, keeps protection until verified rejoin, then r
   assert.deepEqual(clean.prepare('SELECT at FROM readings ORDER BY at').all().map(row => row.at), [100, 200]); clean.close();
 });
 
+test('recovery requires the latest successful check and a pending or failed recheck invalidates the old preview', async t => {
+  const root = await fixture(t);
+  let applyCalls = 0;
+  let preview = async () => ({ previewId: randomUUID(), counts: { missing: 1 } });
+  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+    recoveryPreview: () => preview(),
+    recoveryApply: async () => { applyCalls++; return { status: 'complete', imported: 1 }; },
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+
+  assert.equal(primary.status().actions.recover, false);
+  await assert.rejects(primary.action('recover', { ...command(), previewId: randomUUID() }), { code: 'invalid_transition' });
+  await primary.action('check-recovery', command());
+  const oldPreviewId = primary.status().recovery.preview.previewId;
+  assert.equal(primary.status().actions.recover, true);
+
+  let entered, fail;
+  const checking = new Promise(resolve => { entered = resolve; });
+  const comparison = new Promise((resolve, reject) => { fail = reject; });
+  preview = async () => { entered(); return comparison; };
+  const failedCheck = assert.rejects(primary.action('check-recovery', command()), { code: 'snapshot_unavailable' });
+  await checking;
+  assert.equal(primary.status().recovery.state, 'checking');
+  assert.equal(primary.status().recovery.preview, null);
+  assert.equal(primary.status().actions.recover, false);
+  await assert.rejects(primary.action('recover', { ...command(), previewId: oldPreviewId }), { code: 'peer_busy' });
+  fail(Object.assign(new Error('Synthetic snapshot failure'), { code: 'snapshot_unavailable' }));
+  await failedCheck;
+  assert.equal(primary.status().recovery.state, 'error');
+  assert.equal(primary.status().actions.recover, false);
+  await assert.rejects(primary.action('recover', { ...command(), previewId: oldPreviewId }), { code: 'invalid_transition' });
+
+  preview = async () => ({ previewId: randomUUID(), counts: { missing: 1 } });
+  await primary.action('check-recovery', command());
+  const currentPreviewId = primary.status().recovery.preview.previewId;
+  assert.notEqual(currentPreviewId, oldPreviewId);
+  await assert.rejects(primary.action('recover', { ...command(), previewId: oldPreviewId }), { code: 'invalid_transition' });
+  assert.equal(applyCalls, 0);
+  await primary.action('recover', { ...command(), previewId: currentPreviewId });
+  assert.equal(applyCalls, 1);
+  assert.equal(primary.status().recovery.state, 'complete');
+});
+
+test('explicit rejoin without recovery requires the checked preview and replaces donor history without importing it', async t => {
+  const root = await fixture(t);
+  let imported = false;
+  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 1, conflicts: 1 }, model: { status: 'rebuild_required' } }),
+    recoveryApply: async () => { imported = true; },
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  const original = new DatabaseSync(donor.state.value.activeDbPath);
+  original.exec('UPDATE readings SET value=99; INSERT INTO readings VALUES(200,21)'); original.close();
+  await donor.observeClaim(primary.state.claim());
+  await primary.poll();
+  await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId: randomUUID() }), { code: 'recovery_required' });
+  await primary.action('check-recovery', command());
+  const previewId = primary.status().recovery.preview.previewId;
+  assert.equal(primary.status().actions.rejoin, true);
+  await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
+  await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId: randomUUID() }), { code: 'invalid_transition' });
+  await assert.rejects(primary.action('rejoin', { requestId: randomUUID(), discardUnrecovered: true, previewId }), { code: 'confirmation_required' });
+  assert.equal(donor.state.value.role, 'protected');
+  const skipRequest = { ...command(), discardUnrecovered: true, previewId };
+  await primary.action('rejoin', skipRequest);
+  assert.equal(imported, false);
+  assert.equal(primary.status().recovery.state, 'resolved');
+  assert.equal(primary.status().recovery.report.recoverySkipped, true);
+  assert.equal(primary.status().recovery.report.imported, 0);
+  assert.equal(primary.status().recovery.report.model.status, 'unchanged');
+  assert.equal(donor.state.value.role, 'replica');
+  const publication = await readReplicaPublication(donor.config.replicaDirectory);
+  for (const path of [primary.state.value.activeDbPath, publication.dbPath]) {
+    const db = new DatabaseSync(path, { readOnly: true });
+    assert.deepEqual(db.prepare('SELECT at,value FROM readings ORDER BY at').all().map(row => ({ ...row })), [{ at: 100, value: 20 }]);
+    db.close();
+  }
+  assert.equal(publication.digest, donor.state.value.accepted.digest);
+  assert.equal((await primary.action('rejoin', skipRequest)).duplicate, true);
+  assert.equal((await readReplicaPublication(donor.config.replicaDirectory)).generation, publication.generation);
+});
+
+test('an uncertain discard request cannot authorize rejoin after another recovery has completed', async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0 } }),
+    recoveryApply: async () => ({ status: 'complete', imported: 0 }),
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery', command());
+  const uncertain = { ...command(), discardUnrecovered: true, previewId: primary.status().recovery.preview.previewId };
+  await primary.action('check-recovery', command());
+  const previewId = primary.status().recovery.preview.previewId;
+  assert.notEqual(previewId, uncertain.previewId);
+  await primary.action('recover', { ...command(), previewId });
+  await assert.rejects(primary.action('rejoin', uncertain), { code: 'recovery_required' });
+  await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId }), { code: 'recovery_required' });
+  assert.equal(donor.state.value.role, 'protected');
+  assert.equal(primary.status().recovery.state, 'complete');
+  await primary.action('rejoin', command());
+  assert.equal(donor.state.value.role, 'replica');
+  assert.equal(primary.status().recovery.report.recoverySkipped, undefined);
+});
+
+test('discarding unchecked donor changes is rejected and leaves the donor protected', async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'primary', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0 } }),
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery', command());
+  const previewId = primary.status().recovery.preview.previewId;
+  const changed = new DatabaseSync(donor.state.value.activeDbPath);
+  changed.exec('INSERT INTO readings VALUES(200,21)'); changed.close();
+  await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId }), { code: 'recovery_required' });
+  assert.equal(donor.state.value.role, 'protected');
+  assert.equal(primary.status().recovery.state, 'ready');
+  const preserved = new DatabaseSync(donor.state.value.activeDbPath, { readOnly: true });
+  assert.equal(preserved.prepare('SELECT value FROM readings WHERE at=200').get().value, 21); preserved.close();
+});
+
 test('lost handover acknowledgement never resumes the old master and leaves recovery possible', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source', { platform: 'hassio' });
   const target = await manager(t, root, 'target', { role: 'replica' }); connect(source, target);

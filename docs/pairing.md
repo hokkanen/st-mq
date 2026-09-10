@@ -255,6 +255,13 @@ the local broker or virtual-IP setup, then explicitly retry promotion. An
 unreadable donor remains protected and reports an error; its damaged file is
 not replaced merely because a comparison could not finish.
 
+The header shows this computer's role alongside its operating mode: owning
+the master role does not mean automatic control is enabled. Open **Paired
+computers**, just above **Event log**, for connection and snapshot details,
+recovery controls, handover or manual promotion. The section stays compact when
+closed and still shows important progress or attention messages. Slaves use
+the same layout, with recovery and handover performed from the master's UI.
+
 Recovery is initiated on the master:
 
 1. **Check other computer for missing data** takes a consistent donor snapshot
@@ -272,6 +279,15 @@ Recovery is initiated on the master:
 4. After successful recovery, explicitly **Resume mirroring**. A verified
    master snapshot makes the other database match the master, and normal
    one-way synchronization resumes.
+
+Recovery is optional after a successful check. To keep the master's history
+and model as they are, choose **Skip recovery and resume mirroring** after reviewing the preview
+and confirm that the other computer's unrecovered history may be discarded.
+This does not import gaps or rebuild the model. The other database is replaced
+with a verified master snapshot, including removal of entries absent from the
+master. The result says that mirroring resumed without recovery; missing entries
+shown in the preview were not recovered. A pending or failed check cannot enable
+this option, and a changed donor or an outdated preview requires a new check.
 
 Accepted historical entries are imported in bounded transactions and may
 become visible before the model rebuild finishes. An interruption can leave

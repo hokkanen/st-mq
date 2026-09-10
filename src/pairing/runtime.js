@@ -47,7 +47,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     status: () => ({ ...manager.status(), ...(latestOperation ? { uiOperation: latestOperation } : {}) }),
     requestAction(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
-        || Object.keys(input).some(key => !['action', 'requestId', 'confirmed', 'previewId'].includes(key))
+        || Object.keys(input).some(key => !['action', 'requestId', 'confirmed', 'previewId', 'discardUnrecovered'].includes(key))
+        || ('discardUnrecovered' in input && (input.action !== 'rejoin' || input.discardUnrecovered !== true))
         || !ACTIONS.has(input.action) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(input.requestId ?? ''))
         throw requestError('Choose a paired action with a unique request ID.');
       if (input.action !== 'check-recovery' && input.confirmed !== true)

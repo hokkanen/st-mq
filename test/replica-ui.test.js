@@ -1,9 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isReadOnlyReplica, replicaDisplay, primaryReplicationDisplay, replicaSnapshotKey, chartObservationTime, renderReplicaStatus } from '../chart/replica-status.js';
+import { isReadOnlyReplica, replicaDisplay, primaryReplicationDisplay, replicaSnapshotKey, chartObservationTime,
+  renderReplicaStatus, instanceRoleDisplay, renderInstanceRole, pairPanelView } from '../chart/replica-status.js';
 import { historySeriesAt } from '../chart/history-model.js';
 
 const now = Date.parse('2026-09-10T12:00:00Z');
+
+test('a newer rejoin publication replaces old ordinary-sync timestamps without hiding an active transfer', () => {
+  const status = { pairing: { enabled: true, role: 'replica', sync: {
+    state: 'ready', sourceAt: now - 86400_000, verifiedAt: now - 86300_000, bytes: 1e6 } },
+    replication: { state: 'ready', snapshotAt: now - 60000, verifiedAt: now - 30000, bytes: 2e6 } };
+  const view = pairPanelView(status);
+  assert.equal(view.sync.sourceAt, now - 60000);
+  assert.equal(view.sync.verifiedAt, now - 30000);
+  assert.equal(view.sync.bytes, 2e6);
+  status.pairing.sync = { ...status.pairing.sync, state: 'syncing', phase: 'transferring', bytes: 3e6, completedBytes: 1e6 };
+  const transfer = pairPanelView(status).sync;
+  assert.equal(transfer.sourceAt, now - 60000);
+  assert.equal(transfer.state, 'syncing');
+  assert.equal(transfer.bytes, 3e6);
+  assert.equal(transfer.completedBytes, 1e6);
+});
+
 const ready = (overrides = {}) => ({ role: 'replica', now,
   replication: { state: 'ready', generation: 'first-generation', snapshotAt: now - 60_000,
     verifiedAt: now - 30_000, lastSuccessAt: now - 30_000, ...overrides } });
@@ -64,7 +82,7 @@ function fixture() {
   }
   const ids = ['primary-replication-notice', 'primary-replication-summary', 'primary-replication-detail',
     'replica-notice', 'replica-summary', 'replica-snapshot', 'replica-success', 'replica-verification',
-    'connection', 'context', 'recording-adaptive-details', 'indoor', 'outdoor', 'indoor-age', 'outdoor-age',
+    'connection', 'instance-role', 'context', 'recording-adaptive-details', 'indoor', 'outdoor', 'indoor-age', 'outdoor-age',
     'requested', 'requested-label', 'actual', 'price', 'price-label', 'price-unit', 'updated'];
   const nodes = new Map(ids.map(id => [id, new Element()]));
   const controls = new Element(); controls.controls = Array.from({ length: 8 }, () => new Element());
@@ -135,4 +153,85 @@ test('primary sync notice reports progress and retries without exposing transpor
   assert.equal($('primary-replication-notice').hidden, false);
   assert.equal($('primary-replication-notice').dataset.state, 'error');
   assert.equal($('replica-notice').hidden, true);
+});
+
+test('the header separates paired authority from the master’s monitoring or active mode', () => {
+  const { document, $ } = fixture();
+  for (const liveWrites of [false, true]) {
+    const operatingMode = liveWrites ? 'LIVE CONTROL · ACTIVE' : 'LIVE OBSERVATION · MONITORING';
+    $('connection').textContent = operatingMode;
+    renderInstanceRole(document, { liveWrites, pairing: { enabled: true, role: 'primary', canControl: true } });
+    assert.equal($('instance-role').textContent, 'MASTER');
+    assert.equal($('instance-role').dataset.state, 'primary');
+    assert.equal($('connection').textContent, operatingMode, 'master authority must not imply active device control');
+  }
+  renderInstanceRole(document, { pairing: { enabled: false } });
+  assert.equal($('instance-role').textContent, 'STANDALONE');
+  assert.equal(instanceRoleDisplay({ role: 'replica' }).label, 'READ-ONLY REPLICA');
+  assert.equal(instanceRoleDisplay({ controlAuthority: { state: 'protected' } }).label, 'CONTROL STOPPED');
+});
+
+test('paired slaves use the compact pair section while retaining snapshot and read-only safeguards', () => {
+  const { document, controls, sections, $ } = fixture();
+  const pairing = { enabled: true, role: 'replica', canControl: false };
+  renderReplicaStatus(document, { ...ready(), pairing, liveWrites: true });
+  assert.equal($('instance-role').textContent, 'SLAVE');
+  assert.equal($('replica-notice').hidden, true, 'paired details replace the duplicate full-size replica notice');
+  assert.match($('connection').textContent, /READ-ONLY HISTORY · HISTORY AVAILABLE/);
+  assert(controls.hidden && controls.controls.every(node => node.disabled));
+  assert(sections.every(node => !node.hidden));
+  renderReplicaStatus(document, { role: 'replica', now, pairing, replication: { state: 'waiting' } });
+  assert.match($('connection').textContent, /WAITING FOR SNAPSHOT/);
+  assert(sections.every(node => node.hidden));
+  renderReplicaStatus(document, { ...ready({ state: 'error' }), pairing });
+  assert.match($('connection').textContent, /SYNC NEEDS ATTENTION/);
+  assert(sections.every(node => !node.hidden), 'the last verified history stays visible after a failed catch-up');
+  renderReplicaStatus(document, ready());
+  assert.equal($('replica-notice').hidden, false, 'unpaired database replicas keep their existing notice');
+});
+
+test('fast role updates cannot present a stale promoted viewer as a ready master', () => {
+  const { document, controls, $ } = fixture();
+  const promoted = { ...ready(), pairing: { enabled: true, role: 'primary', canControl: true } };
+  renderReplicaStatus(document, promoted);
+  assert.equal($('instance-role').textContent, 'MASTER · WAITING');
+  assert.equal($('instance-role').dataset.state, 'transition');
+  assert.equal(controls.hidden, true);
+  assert.doesNotMatch($('connection').textContent, /LIVE CONTROL/);
+  renderReplicaStatus(document, { pairing: promoted.pairing });
+  assert.equal($('instance-role').textContent, 'MASTER');
+  assert.equal(controls.hidden, false, 'a fresh primary runtime status releases the viewer guard');
+  renderReplicaStatus(document, { pairing: { ...promoted.pairing, transition: { kind: 'handover' } } });
+  assert.equal($('instance-role').textContent, 'ROLE CHANGE');
+  assert.equal(controls.hidden, true);
+  renderReplicaStatus(document, { ...ready(), pairing: { enabled: true, role: 'protected', canControl: false } });
+  assert.equal($('instance-role').textContent, 'PROTECTED');
+  assert.match($('connection').textContent, /HOME CONTROL DISABLED/);
+  assert.match($('context').textContent, /Local history is protected for recovery/);
+  assert.doesNotMatch($('context').textContent, /Recorded history from the primary/);
+  assert.equal($('replica-notice').hidden, true);
+});
+
+test('the compact slave panel preserves published verification across receiver restarts and live progress', () => {
+  const status = { ...ready({ bytes: 2e6 }), pairing: { enabled: true, role: 'replica', sync: { state: 'waiting' } } };
+  const restarted = pairPanelView(status);
+  assert.equal(restarted.sync.state, 'ready');
+  assert.equal(restarted.sync.sourceAt, status.replication.snapshotAt);
+  assert.equal(restarted.sync.verifiedAt, status.replication.verifiedAt);
+  assert.equal(restarted.sync.bytes, 2e6);
+  assert.deepEqual(status.pairing.sync, { state: 'waiting' }, 'public UI projection does not rewrite polled state');
+  for (const state of ['syncing', 'error']) {
+    const syncing = pairPanelView({ ...status, pairing: { ...status.pairing, sync: { state, phase: 'verifying', processed: 10 } } });
+    assert.equal(syncing.sync.state, state);
+    assert.equal(syncing.sync.phase, 'verifying');
+    assert.equal(syncing.sync.processed, 10);
+    assert.equal(syncing.sync.verifiedAt, status.replication.verifiedAt);
+  }
+  const latest = { state: 'ready', sourceAt: now, verifiedAt: now, bytes: 3e6 };
+  assert.equal(pairPanelView({ ...status, pairing: { ...status.pairing, sync: latest } }).sync.sourceAt, now);
+  for (const role of ['primary', 'protected']) {
+    const pairing = { ...status.pairing, role };
+    assert.equal(pairPanelView({ ...status, pairing }), pairing, 'an old receipt cannot verify the primary or protected local history');
+  }
+  assert.deepEqual(pairPanelView({}), { enabled: false });
 });

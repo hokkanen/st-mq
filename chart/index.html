@@ -12,33 +12,14 @@
   <header>
     <h1>Home Energy</h1>
     <div class="header-actions">
-      <div id="connection" role="status">Connecting…</div>
+      <div class="header-status">
+        <span id="instance-role" class="instance-role" role="status" hidden></span>
+        <div id="connection" role="status">Connecting…</div>
+      </div>
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to light theme">Light theme</button>
     </div>
   </header>
   <main>
-    <section id="pairing-panel" class="notice pairing-panel" aria-labelledby="pairing-title" hidden>
-      <h2 id="pairing-title">Paired computers</h2>
-      <p id="pairing-summary"></p>
-      <div class="pairing-facts">
-        <p id="pairing-peer"></p>
-        <p id="pairing-broker"></p>
-        <p id="pairing-sync"></p>
-        <p id="pairing-syncDetail" class="muted"></p>
-      </div>
-      <p id="pairing-phase" role="status" aria-live="polite"></p>
-      <p id="pairing-recovery" role="status" aria-live="polite"></p>
-      <div id="pairing-preview" class="pairing-preview" hidden></div>
-      <div class="pairing-actions" role="group" aria-label="Manage paired computers">
-        <button id="pairing-check-recovery" type="button" disabled>Check other computer for missing data</button>
-        <button id="pairing-recover" type="button" disabled>Recover gaps and rebuild model</button>
-        <button id="pairing-handover" class="secondary-button" type="button" disabled>Hand over to the other computer</button>
-        <button id="pairing-promote" class="secondary-button" type="button" disabled hidden>Force promote this computer</button>
-        <button id="pairing-rejoin" class="secondary-button" type="button" disabled>Resume mirroring</button>
-      </div>
-      <p id="pairing-message" role="status" aria-live="polite"></p>
-      <button id="pairing-retry" class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
-    </section>
     <section id="primary-replication-notice" class="notice replica-notice" aria-labelledby="primary-replication-title" role="status" hidden>
       <h2 id="primary-replication-title">Database replica</h2>
       <p id="primary-replication-summary"></p>
@@ -338,6 +319,66 @@
           </details>
         </article>
       </div>
+    </section>
+
+    <section id="pairing-panel" class="panel pairing-panel" aria-label="Paired computers" hidden>
+      <details id="pairing-details">
+        <summary class="pairing-opener">
+          <span class="pairing-heading">Paired computers <span id="pairing-title" class="pairing-role"></span></span>
+          <span class="pairing-compact-stats"><span id="pairing-peerStat"></span><span id="pairing-syncStat"></span></span>
+          <span class="pairing-open-label">Details &amp; controls</span>
+        </summary>
+        <div class="pairing-content">
+          <p id="pairing-summary"></p>
+          <div class="pairing-facts">
+            <div><h3>Connection</h3><p id="pairing-peer"></p><p id="pairing-broker"></p></div>
+            <div><h3>Database mirroring</h3><p id="pairing-sync"></p><p id="pairing-syncDetail" class="muted"></p></div>
+          </div>
+          <p class="muted">Mirroring copies the master’s database to the slave, including changes and deletions. After an outage, the slave catches up and verifies the copied snapshot before showing it. A verified snapshot matches the master at the time it was taken; newer measurements can still be waiting to sync.</p>
+          <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
+          <p id="pairing-recovery" class="pairing-progress" role="status" aria-live="polite"></p>
+          <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
+            <h3 id="pairing-recovery-title">Recover missing history</h3>
+            <p>Use this when the other computer recorded history while this master was offline. Recovery is manual. The master keeps its existing history wherever the two computers disagree, imports compatible missing entries, and rebuilds the learned model from the combined history.</p>
+            <ol class="pairing-steps">
+              <li>
+                <div class="pairing-step-copy"><h4>Check what can be recovered</h4><p>Compare a snapshot from the other computer with this master. This check changes no history. Review the missing period, counts and skipped entries below before continuing.</p></div>
+                <button id="pairing-check-recovery" type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
+                <p id="pairing-check-help" class="muted pairing-step-help"></p>
+                <div id="pairing-preview" class="pairing-preview" hidden></div>
+              </li>
+              <li>
+                <div class="pairing-step-copy"><h4>Recover the checked gaps</h4><p>Import the gaps from that checked snapshot. Conflicting or unsupported entries are skipped. The current model stays available for home control while the rebuilt model catches up and is published.</p></div>
+                <button id="pairing-recover" type="button" aria-describedby="pairing-recover-help" disabled>Recover gaps and rebuild model</button>
+                <p id="pairing-recover-help" class="muted pairing-step-help"></p>
+              </li>
+              <li>
+                <div class="pairing-step-copy"><h4>Make the slave match the master</h4><p>Replace the other computer’s database with a verified copy of this master and resume mirroring. Normally, recover the gaps first. You may instead skip recovery after reviewing the check: all unmatched history, including recoverable gaps, will be discarded. No separate archive is kept.</p></div>
+                <button id="pairing-rejoin" class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button>
+                <p id="pairing-rejoin-help" class="muted pairing-step-help"></p>
+              </li>
+            </ol>
+            <div class="pairing-role-action">
+              <div><h3>Move the master role</h3><p>When both computers are available and the slave is ready, hand over deliberately. This master finishes control and transfers a final verified snapshot before the other computer starts. The MQTT address moves with the role; devices reconnect and some measurements may be missed.</p></div>
+              <button id="pairing-handover" class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
+              <p id="pairing-handover-help" class="muted pairing-step-help"></p>
+            </div>
+          </section>
+          <section id="pairing-slave-controls" class="pairing-management" aria-labelledby="pairing-standby-title" hidden>
+            <h3 id="pairing-standby-title">A standby, with manual takeover</h3>
+            <p id="pairing-standby-help"></p>
+            <p>If the other computer is still available, use <strong>Hand over to the other computer</strong> in its master UI. If it has failed, you can promote this computer yourself using the history available here. It never takes over automatically.</p>
+            <div class="pairing-role-action">
+              <div><h3>Take over after a failure</h3><p>Before force promotion, stop or isolate the old master so it cannot control equipment or keep the MQTT address. Being unreachable alone does not prove it has stopped. Measurements after this computer’s last snapshot may be missing.</p></div>
+              <button id="pairing-promote" class="secondary-button" type="button" aria-describedby="pairing-promote-help" disabled hidden>Force promote this computer</button>
+              <p id="pairing-promote-help" class="muted pairing-step-help"></p>
+            </div>
+          </section>
+          <p id="pairing-message" role="status" aria-live="polite"></p>
+          <button id="pairing-retry" class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
+        </div>
+      </details>
+      <p id="pairing-attention" class="pairing-attention" role="status" aria-live="polite" hidden></p>
     </section>
 
     <section class="panel" data-snapshot-content>

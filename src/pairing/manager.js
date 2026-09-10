@@ -192,7 +192,7 @@ export class PairManager {
         promote: free && (local.role === 'replica' && !!local.accepted || local.role === 'protected' && local.everWritten && !!local.activeDbPath),
         'check-recovery': free && primary && this.peerState.reachable && this.peerState.role !== 'primary',
         recover: free && primary && recovery.state === 'ready',
-        rejoin: free && primary && recovery.state === 'complete' && this.peerState.reachable } };
+        rejoin: free && primary && ['ready', 'complete'].includes(recovery.state) && this.peerState.reachable } };
   }
 
   schedule(delay) {
@@ -391,7 +391,7 @@ export class PairManager {
       else if (name === 'handover') await this.handover();
       else if (name === 'check-recovery') await this.checkRecovery();
       else if (name === 'recover') await this.recover(body);
-      else await this.rejoin();
+      else await this.rejoin(body);
       await this.finishAction(body.requestId, 'complete');
       return { ok: true, status: this.status() };
     } catch (error) {
@@ -523,14 +523,20 @@ export class PairManager {
     }
   }
 
-  async rejoin() {
+  async rejoin(body = {}) {
     if (!this.canControl()) throw pairError('not_primary');
     const recovery = this.state.value.recovery;
-    if (recovery?.state !== 'complete') throw pairError('recovery_required');
+    const skipRecovery = body.discardUnrecovered === true;
+    if (skipRecovery) {
+      if (recovery?.state !== 'ready') throw pairError('recovery_required');
+      if (body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
+    } else if (recovery?.state !== 'complete') throw pairError('recovery_required');
     const metadata = await this.exportSnapshot({ force: true });
     const result = await this.peer.request('release', { donor: recovery.metadata, metadata }, { timeoutMs: this.config.timeoutMs });
     if (result.role !== 'replica' || result.accepted?.digest !== metadata.digest) throw pairError('verification_failed');
-    await this.state.update({ recovery: { state: 'resolved', report: recovery.report } });
+    const report = skipRecovery ? { ...recovery.preview, status: 'skipped', recoverySkipped: true,
+      imported: 0, model: { status: 'unchanged' } } : recovery.report;
+    await this.state.update({ recovery: { state: 'resolved', report } });
     await rm(recovery.donorPath, { force: true });
     this.peerState = { ...this.peerState, ...result, reachable: true, lastSeenAt: this.clock() };
   }

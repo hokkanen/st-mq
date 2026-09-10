@@ -110,3 +110,38 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
   await apiAction(b, command('promote'));
   assert.equal(b.store.getState('synthetic-donor-only-state'), null, 'later promotion uses clean mirrored database');
 });
+
+test('HTTP rejoin can explicitly skip checked gaps while preserving the master history and model', async t => {
+  const f = await fixture(t), master = await f.open('master', 'primary', 'hassio'), donor = await f.open('donor', 'primary', 'ubuntu');
+  observation(master.store, now - 4 * W, 20);
+  observation(donor.store, now - 3 * W, 21);
+  donor.store.setState('synthetic-donor-only-state', { obsolete: true });
+  connect(master, donor); await donor.pairing.observeClaim(master.pairing.state.claim());
+  await apiAction(master, command('check-recovery'));
+  const preview = master.status().recovery.preview;
+  assert.ok(preview.counts.missing > 0);
+  const before = { observations: master.store.observations(), checkpoint: structuredClone(master.engine.checkpoint),
+    epoch: master.store.learningEpoch('mqtt'), journal: master.store.db.prepare('SELECT * FROM learning_journal_all').all() };
+  for (const body of [command('recover', { previewId: preview.previewId, discardUnrecovered: true }),
+    command('rejoin', { previewId: preview.previewId, discardUnrecovered: 'true' })]) {
+    const rejected = await fetch(`${url(master)}/api/pairing/action`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal(rejected.status, 409);
+  }
+  await apiAction(master, command('rejoin', { previewId: preview.previewId, discardUnrecovered: true }));
+  assert.deepEqual(master.store.observations(), before.observations);
+  assert.deepEqual(master.engine.checkpoint, before.checkpoint);
+  assert.equal(master.store.learningEpoch('mqtt'), before.epoch);
+  assert.deepEqual(master.store.db.prepare('SELECT * FROM learning_journal_all').all(), before.journal);
+  assert.equal(master.status().recovery.report.recoverySkipped, true);
+  assert.equal(master.status().recovery.report.imported, 0);
+  assert.equal(donor.pairing.state.value.role, 'replica');
+  const publication = await readReplicaPublication(donor.pairing.config.replicaDirectory);
+  const replica = new Store(publication.dbPath, { readOnly: true });
+  try {
+    assert.deepEqual(replica.observations(), before.observations);
+    assert.equal(replica.getState('synthetic-donor-only-state'), null);
+    assert.equal(replica.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    assert.equal(replica.db.prepare('PRAGMA foreign_key_check').get(), undefined);
+  } finally { replica.close(); }
+});

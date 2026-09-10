@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPairActions, createPairPanel, isPairManagementRequest, pairActionAllowed, pairAllowsControl,
-  pairConfirmation, pairDisplay, renderRecoveryReport } from '../chart/pair-status.js';
+  pairConfirmation, pairDisplay, renderRecoveryReport, pairActionHelp } from '../chart/pair-status.js';
 import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../chart/replica-status.js';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
@@ -15,7 +15,7 @@ const standby = (overrides = {}) => primary({ role: 'replica', canControl: false
 const preview = () => ({ previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 5 },
   period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } });
 const checked = () => primary({ recovery: { state: 'ready', preview: preview() },
-  actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: false } });
+  actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
 const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
 function memoryStorage() {
   const values = new Map();
@@ -74,8 +74,8 @@ test('pair display distinguishes protected history, peer outages, broker readine
   assert.match(copied.summary, /explicitly resolves recovery/);
   assert.doesNotMatch(copied.summary, /automatically/);
   assert.match(pairDisplay(primary({ peer: { reachable: false } })).summary, /does not stop home control/);
-  assert.match(pairDisplay(primary({ sync: { state: 'syncing', phase: 'verifying' } })).sync, /Verifying/);
-  assert.match(pairDisplay(primary({ sync: { sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 } }), { now }).sync, /3 minutes old/);
+  assert.match(pairDisplay(standby({ sync: { state: 'syncing', phase: 'verifying' } })).sync, /Verifying/);
+  assert.match(pairDisplay(standby({ sync: { sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 } }), { now }).sync, /3 minutes old/);
   assert.match(pairDisplay(primary({ transition: { kind: 'handover', phase: 'quiescing' } })).phase, /Finishing control/);
 });
 
@@ -212,6 +212,99 @@ function fixture() {
 }
 const allText = root => [root.textContent, ...root.children.map(allText)].join(' ');
 
+test('the compact status separates master connectivity from slave snapshot verification and exposes important progress', () => {
+  const sync = { sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 };
+  const master = pairDisplay(primary({ sync }), { now });
+  assert.equal(master.peerStat, 'Other computer connected');
+  assert.equal(master.syncStat, 'MQTT active here');
+  assert.doesNotMatch(master.sync, /Last snapshot/);
+  assert.match(master.syncDetail, /connection alone does not confirm/);
+  const slave = pairDisplay(standby({ sync }), { now });
+  assert.equal(slave.syncStat, 'Snapshot 3 min old');
+  assert.match(slave.syncDetail, /Identity verified/);
+  assert.match(pairDisplay(checked()).attention, /12 missing entries/);
+  assert.match(pairDisplay(primary({ uiOperation: { state: 'running', progress: { phase: 'rebuilding' } } })).attention, /Rebuilding the model/);
+  const complete = pairDisplay(primary({ recovery: { state: 'complete' }, uiOperation: { state: 'complete', progress: { phase: 'publishing', processed: 12 } } }));
+  assert.equal(complete.phase, '', 'a completed operation must not keep showing its old progress');
+  assert.match(complete.attention, /Recovery complete/);
+  assert.match(pairDisplay(standby({ role: 'protected' })).syncStat, /blocked/);
+  assert.match(pairDisplay(standby({ sync: { state: 'error' } })).attention, /last verified snapshot is kept/);
+});
+
+test('recovery and skipping it both require a successful checked preview, including after a failed recheck', async () => {
+  const controller = createPairActions({ request: async () => { throw new Error('must not send an unchecked operation'); }, confirm: () => true });
+  for (const recovery of [{ state: 'idle' }, { state: 'checking', preview: preview() }, { state: 'error', preview: preview() }, { state: 'ready' }]) {
+    const view = primary({ recovery, actions: { recover: true, rejoin: true } });
+    controller.update(view);
+    assert.equal(await controller.run('recover'), false);
+    assert.equal(await controller.run('rejoin'), false);
+  }
+  assert.match(pairActionHelp(primary()).recover, /Locked until step 1 finishes successfully/);
+  assert.match(pairActionHelp(primary({ recovery: { state: 'error' } })).recover, /new check/);
+  assert.equal(pairActionAllowed(checked(), 'rejoin'), true);
+});
+
+test('skip recovery requires its own warning and sends the exact checked preview with explicit discard consent', async () => {
+  const sent = [], warnings = [];
+  let accept = false;
+  const controller = createPairActions({ requestId: () => id, confirm: message => { warnings.push(message); return accept; },
+    request: async (path, body) => { sent.push(body); return operation(primary(), 'running', 'rejoin'); } });
+  controller.update(checked());
+  assert.equal(await controller.run('rejoin'), false);
+  assert.equal(sent.length, 0);
+  assert.match(warnings[0], /12 missing entries that will NOT be recovered/);
+  assert.match(warnings[0], /will be discarded/);
+  assert.match(warnings[0], /No separate archive/);
+  accept = true;
+  assert.equal(await controller.run('rejoin'), true);
+  assert.deepEqual(sent[0], { action: 'rejoin', requestId: id, confirmed: true, discardUnrecovered: true, previewId });
+});
+
+test('a replaced preview cancels recovery or discard confirmation before sending a request', async () => {
+  for (const action of ['recover', 'rejoin']) {
+    let resolve;
+    const controller = createPairActions({ confirm: () => new Promise(done => { resolve = done; }),
+      request: async () => { throw new Error('must not send a stale confirmation'); } });
+    controller.update(checked());
+    const result = controller.run(action);
+    controller.update({ ...checked(), recovery: { state: 'ready', preview: { ...preview(), previewId: 'b'.repeat(64) } } });
+    resolve(true);
+    assert.equal(await result, false);
+    assert.equal(controller.snapshot().pending, null);
+    assert.match(controller.snapshot().message, /preview changed/);
+  }
+});
+
+test('an uncertain skip request retains its discard consent and preview across reloads, while normal rejoin needs neither', async () => {
+  const storage = memoryStorage(), sent = [];
+  const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
+    request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
+  first.update(checked()); await first.run('rejoin');
+  const restored = createPairActions({ storage, request: async (path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
+  restored.update(primary());
+  assert.equal(await restored.retry(), true);
+  assert.deepEqual(sent[1], sent[0]);
+  assert.equal(sent[1].discardUnrecovered, true);
+  assert.equal(sent[1].previewId, previewId);
+  const normal = createPairActions({ requestId: () => id, confirm: () => true,
+    request: async (path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
+  normal.update(primary({ recovery: { state: 'complete' }, actions: { rejoin: true } }));
+  await normal.run('rejoin');
+  assert.deepEqual(sent[2], { action: 'rejoin', requestId: id, confirmed: true });
+});
+
+test('skipped recovery reports explicitly describe discarded gaps without claiming a rebuild', () => {
+  const { document, $ } = fixture();
+  const report = { ...preview(), recoverySkipped: true, imported: 0, model: { status: 'unchanged' } };
+  renderRecoveryReport(document, $('report'), report, { report: true });
+  const text = allText($('report'));
+  assert.match(text, /Mirroring resumed without recovery/);
+  assert.match(text, /Missing entries not recovered: 12/);
+  assert.match(text, /unmatched history was discarded/);
+  assert.doesNotMatch(text, /rebuild|rebuilt/);
+  assert.match(pairDisplay(primary({ recovery: { state: 'resolved', report } })).recovery, /without recovering gaps/);
+});
+
 test('the paired panel hides when disabled, shows promotion only on a slave, and locks actions during reconnect', () => {
   const { document, $ } = fixture();
   const panel = createPairPanel({ document, request: async () => {}, now: () => now });
@@ -222,13 +315,27 @@ test('the paired panel hides when disabled, shows promotion only on a slave, and
   assert.equal($('pairing-promote').hidden, false);
   assert.equal($('pairing-promote').disabled, false);
   assert.equal($('pairing-handover').hidden, true);
+  assert.equal($('pairing-master-controls').hidden, true);
+  assert.equal($('pairing-slave-controls').hidden, false);
   panel.unavailable();
   assert.equal($('pairing-promote').disabled, true);
   assert.match($('pairing-message').textContent, /reconnecting/);
+  assert.match($('pairing-attention').textContent, /actions are paused/);
+  $('pairing-details').open = true;
   panel.update(checked());
+  assert.equal($('pairing-details').open, true, 'status updates do not collapse the controls being reviewed');
+  assert.equal($('pairing-master-controls').hidden, false);
+  assert.equal($('pairing-slave-controls').hidden, true);
   assert.equal($('pairing-promote').hidden, true);
   assert.equal($('pairing-recover').disabled, false);
   assert.match(allText($('pairing-preview')), /Missing entries: 12/);
+  assert.equal($('pairing-rejoin').textContent, 'Skip recovery and resume mirroring');
+  assert.equal($('pairing-rejoin').disabled, false);
+  assert.match($('pairing-recover-help').textContent, /checked snapshot is ready/);
+  panel.update(primary());
+  assert.equal($('pairing-recover').disabled, true);
+  assert.equal($('pairing-rejoin').disabled, true);
+  assert.match($('pairing-recover-help').textContent, /Locked until step 1/);
 });
 
 test('recovery reports render aggregate counts and periods while omitting donor rows and unknown fields', () => {

@@ -6,7 +6,7 @@ import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from '.
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
-import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey } from './replica-status.js';
+import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 
 const $ = id => document.getElementById(id);
@@ -351,7 +351,7 @@ function renderH66(s) {
 function render(s) {
   lastStatus = s;
   $('error').hidden = true;
-  pairPanel.update(s.pairing ?? { enabled: false });
+  pairPanel.update(pairPanelView(s));
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) {
     if (replica.available && s.recording && $('recording-details')?.open) renderRecording(s, $('recording-content'));
@@ -466,7 +466,8 @@ async function refreshPairing() {
     const previous = lastStatus.pairing;
     const changed = pairing.role !== previous.role || pairing.canControl !== previous.canControl || Boolean(pairing.transition) !== Boolean(previous.transition);
     lastStatus = { ...lastStatus, pairing };
-    pairPanel.update(pairing);
+    pairPanel.update(pairPanelView(lastStatus));
+    renderInstanceRole(document, lastStatus);
     if (isReadOnlyReplica(lastStatus)) renderReplicaStatus(document, lastStatus, { formatTime: time });
     if (changed) await refresh({ forceChart: true });
   } catch { pairPanel.unavailable(); }
