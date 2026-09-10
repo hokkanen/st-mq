@@ -1,11 +1,10 @@
 import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
 
 // Frequent chart choices first; equipment diagnostics remain together at the end.
-const leftAxisGroups = ['Electricity', 'Home temperatures', 'Other air temperatures', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
+const leftAxisGroups = ['Electricity', 'Home temperatures', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
   'Learning', 'Model coefficients', 'Model inputs', 'Equipment states', 'Settings', 'Runtime counters', 'Meter checks'];
 const roomSignals = new Set(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']);
-const leftAxes = HISTORY_AXES.filter(axis => !RIGHT_AXIS_SIGNALS.includes(axis.key) && !roomSignals.has(axis.key))
-  .map(axis => axis.key === 'garage_temperature' ? { ...axis, group: 'Other air temperatures' } : axis);
+const leftAxes = HISTORY_AXES.filter(axis => !RIGHT_AXIS_SIGNALS.includes(axis.key) && !roomSignals.has(axis.key));
 
 export function populateHistoryAxes(select) {
   const chosen = roomSignals.has(select.value) ? 'temperatures' : leftAxes.some(axis => axis.key === select.value) ? select.value : 'power';

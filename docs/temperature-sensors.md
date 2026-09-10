@@ -21,10 +21,11 @@ indoor temperature colour. This is the same fixed average of configured indoor
 sensors used by the thermal model, with equal weights by default. The **Home
 temperatures · Recorded** section of the **Left axis** drawer contains one option,
 **All home temperatures**, which adds Upstairs, Bedroom and Downstairs on the left
-axis. Both air temperature axes then use the same scale. Garage remains a separate
-left-axis choice under **Other air temperatures**. Average indoor keeps its green
-colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
-blue for Outdoor. The dashboard's current readings also identify individual rooms.
+axis. Both air temperature axes then use the same scale. Garage remains a shared
+right-axis series with its existing colour and legend control. Average indoor keeps
+its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
+blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
+individual rooms are available through the chart and source details.
 The Average indoor chart follows saved model inputs at the endpoints of completed
 15-minute learning windows. Invalid or missing windows remain gaps. It does not
 recalculate old averages from today's sensor membership or weights. Imported

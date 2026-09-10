@@ -83,7 +83,6 @@ function fixture() {
   const ids = ['primary-replication-notice', 'primary-replication-summary', 'primary-replication-detail',
     'replica-notice', 'replica-summary', 'replica-snapshot', 'replica-success', 'replica-verification',
     'connection', 'instance-role', 'context', 'recording-adaptive-details', 'indoor', 'outdoor', 'indoor-age', 'outdoor-age',
-    'upstairs', 'downstairs', 'bedroom', 'upstairs-age', 'downstairs-age', 'bedroom-age',
     'requested', 'requested-label', 'actual', 'price', 'price-label', 'price-unit', 'updated'];
   const nodes = new Map(ids.map(id => [id, new Element()]));
   const controls = new Element(); controls.controls = Array.from({ length: 8 }, () => new Element());
@@ -123,20 +122,20 @@ test('a replica renders without Engine status and never presents copied active f
   assert(sections.every(node => !node.hidden), 'outages leave the last verified history accessible');
 });
 
-test('replica renders the recorded indoor average and each room without claiming current readings', () => {
+test('replica renders the recorded indoor average and outdoor summary without room cards', () => {
   const { document, $ } = fixture();
   const observation = value => ({ value, source: 'mqtt-temperature', observedAt: now - 60_000, stale: false });
   renderReplicaStatus(document, { ...ready(), observations: {
     indoor: { ...observation(21), source: 'indoor-average' }, upstairs: observation(22),
     downstairs: observation(20), bedroom: observation(21), outdoor: observation(5),
   } });
-  for (const [key, value] of [['indoor', '21.0'], ['upstairs', '22.0'], ['downstairs', '20.0'], ['bedroom', '21.0']]) {
+  for (const [key, value] of [['indoor', '21.0'], ['outdoor', '5.0']]) {
     assert.equal($(key).textContent, `${value} °C`);
     assert.match($(`${key}-age`).textContent, /Recorded/);
   }
   renderReplicaStatus(document, { ...ready(), observations: { indoor: observation(21), upstairs: observation(22) } });
-  assert.equal($('downstairs').textContent, '—', 'missing copied rooms must not retain an old value');
-  assert($('downstairs').classes.has('stale'));
+  assert.equal($('outdoor').textContent, '—', 'a missing copied observation must not retain an old value');
+  assert($('outdoor').classes.has('stale'));
 });
 
 test('the primary keeps its dashboard and snapshot identity changes on replacement', () => {

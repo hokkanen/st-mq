@@ -138,11 +138,10 @@ and saves that choice. The chart is directly below the current readings.
   from zero; they are not stacked. **Phase currents** shows the three property phase lines
   in amperes with corresponding charger fills. **Phase energy per interval** shows
   the three saved kWh increments per device. The drawer groups all retained H66
-  parameters, Garage temperature, control, weather and learning series.
+  parameters, control, weather and learning series.
   **All home temperatures** is the sole **Home temperatures** drawer option;
   it shows Upstairs, Bedroom and Downstairs on the left with the two air-temperature
-  scales synchronized. Garage remains a separate left-axis choice under
-  **Other air temperatures**. **Heating integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
+  scales synchronized. Garage remains available on the right axis. **Heating integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
   with observed auxiliary recovery, recovery cost prediction error and learned
   normal indoor temperature. **Solar radiation** shows archived and future FMI
   forecasts in W/m², not a solar sensor. Only that group's legend items appear.
@@ -150,7 +149,7 @@ and saves that choice. The chart is directly below the current readings.
   actual intervals. Equivalent chart currents assume 230 V and unity power factor;
   they are not the acquired current snapshots. Older current-only history retains
   its `230 × (L1 + L2 + L3) / 1000` estimate. Neither path measures heat-pump consumption.
-- **Right axis:** **Average indoor**, outdoor temperature and electricity prices
+- **Right axis:** **Average indoor**, Garage, outdoor temperature and electricity prices
   stay available with every left-axis selection, retaining their existing colours.
   Average indoor is the same configured sensor average used by the house model;
   select **All home temperatures** to compare the rooms. Outdoor stays blue,

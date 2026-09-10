@@ -79,7 +79,7 @@ export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
 
-export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
+export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
 
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],

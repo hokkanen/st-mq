@@ -652,7 +652,7 @@ The **Home temperatures** drawer section contains only **All home temperatures**
 which adds Upstairs, Bedroom and Downstairs to the left axis. Both axes use the
 same numeric range in that view, including visible prices, so equal temperatures
 align. Room colours are distinct: terracotta Upstairs, amber Downstairs and violet
-Bedroom. Garage remains a separate left-axis choice under **Other air temperatures**.
+Bedroom. Garage remains a shared right-axis series with its existing colour and legend control.
 Average indoor reads the resolved value already included in each existing
 15-minute learning journal record; it creates no additional temperature recorder
 channel or chart-history table. Missing or invalid windows remain gaps, and

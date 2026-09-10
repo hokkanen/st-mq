@@ -368,7 +368,7 @@ function render(s) {
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
       : s.liveWrites ? 'Learning from the house and controlling heating through preheating, reduction and recovery.'
         : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
-  for (const key of ['indoor', 'upstairs', 'downstairs', 'bedroom', 'outdoor']) {
+  for (const key of ['indoor', 'outdoor']) {
     const obs = s.observations[key] ?? {};
     $(key).textContent = Number.isFinite(obs.value) ? `${obs.value.toFixed(1)} °C` : '—';
     $(key).classList.toggle('stale', obs.stale || !Number.isFinite(obs.value));

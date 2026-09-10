@@ -16,8 +16,8 @@ test('calendar controls use Finnish dates across UTC midnight, leap days and bot
   assert.throws(() => shiftDate('2026-02-30', 1), /valid calendar/);
 });
 
-test('left axis groups remain exclusive while average indoor, outdoor and prices survive every choice', () => {
-  const shared = ['model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
+test('left axis groups remain exclusive while average indoor, garage, outdoor and prices survive every choice', () => {
+  const shared = ['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price'];
   for (const [left, expected] of [['power', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power']], ['phases', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3']], ['integral', ['heating_integral']],
     ...['learning_profit','learning_aux_profit','learning_recovery_error','learning_indoor_temperature'].map(name => [name, [name]]), ['solar_radiation', ['solar_radiation', 'solar_forecast']]]) {
     const datasets = historyDatasets({}, left);
@@ -65,8 +65,7 @@ test('one Average indoor uses the earlier indoor colour while individual rooms a
   assert.equal(average.borderColor, '#81ca99');
   assert.equal(average.stepped, false);
   for (const [key, label, color] of [['indoor_temperature', 'Upstairs', 'upstairs'],
-    ['downstairs_temperature', 'Downstairs', 'downstairs'], ['bedroom_temperature', 'Bedroom', 'bedroom'],
-    ['garage_temperature', 'Garage', 'garage']]) {
+    ['downstairs_temperature', 'Downstairs', 'downstairs'], ['bedroom_temperature', 'Bedroom', 'bedroom']]) {
     assert(!datasets.some(row => row.key === key), `${label} is not another default indoor line`);
     const selected = historyDatasets(series, key, { [key]: false });
     const room = selected.find(row => row.key === key);
@@ -97,10 +96,15 @@ test('All home temperatures compares three rooms with distinct colours while ret
   }
   assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
   assert.equal(datasets.find(row => row.key === 'outdoor_temperature').yAxisID, 'right');
-  assert.equal(datasets.some(row => row.key === 'garage_temperature'), false);
+  assert.equal(datasets.find(row => row.key === 'garage_temperature').yAxisID, 'right');
   const roomAndAverage = datasets.filter(row => [...signals, 'model_indoor_temperature'].includes(row.key));
   assert.equal(new Set(roomAndAverage.map(row => row.borderColor)).size, 4);
-  assert.equal(historyDatasets(series, 'garage_temperature')[0].yAxisID, 'left');
+  const garage = historyDatasets({ garage_temperature: [{ x: 1, y: 12 }] }, 'power', { garage_temperature: false })
+    .find(row => row.key === 'garage_temperature');
+  assert.equal(garage.yAxisID, 'right');
+  assert.equal(garage.borderColor, defaultPalette.garage);
+  assert.equal(garage.hidden, true, 'Garage retains its own visibility preference');
+  assert.equal(garage.data[0].y, 12);
   assert(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'temperatures' }).includes('left=temperatures'));
 });
 

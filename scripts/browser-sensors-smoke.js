@@ -77,10 +77,15 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   const base = `http://127.0.0.1:${app.server.address().port}`;
   await send('Page.navigate', { url: base });
-  await until("document.getElementById('history')?.dataset.ready === 'true' && document.getElementById('upstairs')?.textContent === '21.2 °C'");
+  await until("document.getElementById('history')?.dataset.ready === 'true' && document.getElementById('indoor')?.textContent === '21.0 °C'");
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
-  assert.equal(await evaluate("document.getElementById('downstairs').textContent"), '20.2 °C');
-  assert.equal(await evaluate("document.getElementById('bedroom').textContent"), '21.6 °C');
+  assert.equal(await evaluate("document.querySelector('.indoor-readings, #upstairs, #downstairs, #bedroom') === null"), true);
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.metrics article > p'), node => node.textContent)"),
+    ['INDOOR AVERAGE', 'OUTDOOR', 'HEATING REQUEST', 'ALL-IN PRICE']);
+  const observations = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
+  for (const [key, value] of [['upstairs', 21.2], ['downstairs', 20.2], ['bedroom', 21.6]]) {
+    assert.equal(observations[key].value, value, `${key} remains available to the controller`);
+  }
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"),
     'Main temperatures · Smartthings, FMI');
   assert.equal(await evaluate("document.querySelectorAll('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').length"), 1);
@@ -90,22 +95,23 @@ try {
     assert.equal(await evaluate(`document.querySelector('#left-axis option[value="${signal}"]') === null`), true);
   }
   assert.deepEqual(await evaluate("Array.from(document.querySelector('#left-axis optgroup[label=\"Home temperatures · Recorded\"]').children, node => node.textContent)"), ['All home temperatures']);
-  await evaluate("document.getElementById('left-axis').value='garage_temperature'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
-  await until("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"garage_temperature\"]')?.textContent === 'Garage'");
+  assert.equal(await evaluate("document.querySelector('#left-axis option[value=\"garage_temperature\"]') === null"), true);
+  assert.equal(await evaluate("document.querySelector('#left-axis optgroup[label=\"Other air temperatures · Recorded\"]') === null"), true);
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
   assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
   await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
   await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 3");
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]'), node => node.textContent)"),
     ['Upstairs', 'Bedroom', 'Downstairs']);
-  assert.equal(await evaluate("document.querySelector('#chart-legend [data-chart-key=\"garage_temperature\"]') === null"), true);
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
   mkdirSync('var', { recursive: true });
   for (const theme of ['dark', 'light']) {
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click()`);
     const swatches = await evaluate(`(() => {
-      const keys = ['model_indoor_temperature', 'indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'outdoor_temperature'];
+      const keys = ['model_indoor_temperature', 'indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'outdoor_temperature', 'garage_temperature'];
       return Object.fromEntries(keys.map(key => [key, document.querySelector('#chart-legend [data-chart-key="' + key + '"] .chart-legend-swatch').style.backgroundColor]));
     })()`);
-    assert.equal(new Set(Object.values(swatches)).size, 5, `${theme}: rooms, average and outdoor use distinct colours`);
+    assert.equal(new Set(Object.values(swatches)).size, 6, `${theme}: rooms, average, outdoor and garage use distinct colours`);
     const expected = await evaluate(`(() => {
       const styles = getComputedStyle(document.documentElement), swatch = document.createElement('span');
       return Object.fromEntries(['indoor', 'outdoor'].map(key => {
@@ -115,14 +121,16 @@ try {
     })()`);
     assert.equal(swatches.model_indoor_temperature, expected.indoor, `${theme}: average retains indoor green`);
     assert.equal(swatches.outdoor_temperature, expected.outdoor, `${theme}: outdoor retains blue`);
-    for (const selection of ['garage_temperature', 'power']) {
+    for (const selection of ['power', 'phases']) {
       await evaluate(`document.getElementById('left-axis').value='${selection}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
-      const first = selection === 'power' ? 'property_power' : selection;
+      const first = selection === 'power' ? 'property_power' : 'property_current_l1';
       await until(`Boolean(document.querySelector('#chart-legend [aria-label="Left axis"] [data-chart-key="${first}"]'))`);
       assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"model_indoor_temperature\"] .chart-legend-swatch').style.backgroundColor"),
         swatches.model_indoor_temperature, `${theme}: the average keeps its colour with ${selection}`);
       assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"outdoor_temperature\"] .chart-legend-swatch').style.backgroundColor"),
         swatches.outdoor_temperature, `${theme}: outdoor keeps its colour with ${selection}`);
+      assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"] .chart-legend-swatch').style.backgroundColor"),
+        swatches.garage_temperature, `${theme}: garage stays on the right and keeps its colour with ${selection}`);
     }
     await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
     await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 3");
@@ -143,8 +151,10 @@ try {
   await until("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === '—'");
   assert.match(await evaluate("document.getElementById('sensor-change-message').textContent"), /Downstairs change recorded/);
   assert.match(await evaluate("document.getElementById('sensor-change-entries').textContent"), /Downstairs · Moved/);
-  assert.equal(await evaluate("document.getElementById('downstairs').textContent"), '20.2 °C', 'raw sensor values stay visible during settling');
-  assert.match(await evaluate("document.getElementById('downstairs-age').textContent"), /Settling after sensor change/);
+  const settling = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
+  assert.equal(settling.downstairs.value, 20.2, 'raw sensor values remain available during settling');
+  assert.equal(settling.downstairs.settling, true);
+  assert.match(await evaluate("document.getElementById('indoor-age').textContent"), /Settling after sensor change/);
   const saved = await fetch(`${base}/api/sensor-changes`).then(response => response.json());
   assert.equal(saved.events.length, 1); assert.equal(saved.events[0].signal, 'downstairs_temperature');
   assert.equal(saved.events[0].reason, 'moved'); assert.equal(saved.events[0].at, now);
@@ -157,8 +167,8 @@ try {
     writeFileSync(`var/sensor-change-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   }
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['separate room readings', 'weighted indoor average',
-    'one Average indoor chart legend', 'separate garage selection on left axis', 'all home temperatures on left axis',
+  console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['room cards removed', 'raw room readings retained', 'weighted indoor average',
+    'one Average indoor chart legend', 'garage stays on right axis', 'garage and other air group removed from drawer', 'all home temperatures on left axis',
     'Smartthings source with local MQTT', 'distinct room colours in both themes', 'average and outdoor preserve colours',
     'configured sensor choices', 'selection and focus survive refresh', 'real sensor-change API submission',
     'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout'] }));
