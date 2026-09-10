@@ -487,7 +487,7 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
           const description = describeProvider('easee', health, { now, formatTime: at => String(at) });
           assert.equal(description.attention, false);
           assert.equal(description.state, 'Available');
-          assert.match(description.detail, /Charger 1 readings have source timestamps older than/);
+          assert.match(description.detail, /Charger 1 current readings have source timestamps older than/);
           assert.ok(description.detail.startsWith(`Last successful download ${now}.`));
           assert.equal(description.detail.match(/successful download/g).length, 1);
           assert.doesNotMatch(description.detail, /different times/);
@@ -507,6 +507,39 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
     assert.equal(easeeCalls, 8); assert.equal(temperatureCalls, 8);
     assert(f.store.observations({ signal: 'ev1_current_l1' }).every(row => row.sourceTime === sourceAt));
     assert(f.store.observations({ signal: 'indoor_temperature' }).every(row => row.sourceTime === sourceAt));
+  } finally { await providers.close(); }
+});
+
+test('old Easee voltages do not need attention or contaminate current source ages', async t => {
+  const f = fixture(t);
+  f.options.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
+  let oldPropertyCurrent = false;
+  f.options.devices.easee = async ({ now }) => ['ev1', 'property'].flatMap(prefix =>
+    ['current', 'voltage'].flatMap(kind => [1, 2, 3].map(phase => {
+      const age = kind === 'voltage' ? 48 * 60 * MINUTE
+        : prefix === 'property' && phase === 2 && oldPropertyCurrent ? 30 * MINUTE : 0;
+      return { source: 'easee', device: `fixture-${prefix}`, signal: `${prefix}_${kind}_l${phase}`,
+        value: kind === 'voltage' ? 230 : 5, unit: kind === 'voltage' ? 'V' : 'A',
+        sourceTime: now - age, receivedAt: now, quality: age ? ['stale'] : [] };
+    })));
+  const providers = startProviders(f.options);
+  try {
+    for (const [i, stale] of [false, true, false].entries()) {
+      oldPropertyCurrent = stale;
+      const now = initial + i * 5 * MINUTE;
+      f.setTime(now); await providers.runDue();
+      const health = f.engine.status().providers.easee;
+      assert.equal(health.status, stale ? 'degraded' : 'ok');
+      assert.deepEqual(health.qualityIssues, stale ? ['property_stale'] : []);
+      assert.deepEqual(health.staleSourceTimes, stale ? { property_stale: now - 30 * MINUTE } : {});
+      assert.equal(health.lastSuccessAt, now);
+      assert.equal(health.failures, 0);
+      assert.equal(health.nextAttemptAt, now + 5 * MINUTE);
+      const display = describeProvider('easee', health, { now, formatTime: String });
+      assert.equal(display.attention, stale);
+      if (stale) assert.match(display.detail, /Property current readings have source timestamps older than 0.5 hours\./);
+      else assert.doesNotMatch(display.detail, /old|voltage/);
+    }
   } finally { await providers.close(); }
 });
 
