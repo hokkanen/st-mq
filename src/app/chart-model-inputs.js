@@ -1,6 +1,7 @@
 import { MODEL_INPUT_INFO } from '../domain/history-series.js';
 import { FIREPLACE_INPUT_NAMES } from './chart-fireplace.js';
 import { goodQuality } from '../control/learning.js';
+import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 
 const WINDOW = 15 * 60_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -11,6 +12,20 @@ const fields = {
   model_compressor_duty: 'thermalCompressorDuty', model_auxiliary_power: 'thermalAuxKw',
   model_room_boost: 'roomBoostC', model_target_temperature: 'targetC',
 };
+
+function indoorEndpointMetadata(sample, usable) {
+  const sensors = INDOOR_SIGNALS.flatMap(signal => {
+    const sensor = sample.indoorSensors?.[signal];
+    if (!sensor || !Number.isFinite(sensor.observedAt) || !sensor.held && !sensor.needsAttention) return [];
+    const reasons = Array.isArray(sensor.attentionReasons)
+      ? [...new Set(sensor.attentionReasons.filter(reason => ['old-reading', 'disconnected', 'invalid-reading'].includes(reason)))] : [];
+    return [{ signal, observedAt: sensor.observedAt, reasons }];
+  });
+  return { savedIndoorAverage: true, learningUsable: usable,
+    held: INDOOR_SIGNALS.some(signal => sample.indoorSensors?.[signal]?.held === true),
+    needsAttention: INDOOR_SIGNALS.some(signal => sample.indoorSensors?.[signal]?.needsAttention === true),
+    ...(sensors.length ? { attentionSensors: sensors } : {}) };
+}
 
 /** Project immutable learning inputs. Do not rerun today's learner, read mutable
  * configuration, or expose journal payloads / source identifiers to the browser. */
@@ -56,8 +71,14 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     const usable = sample.valid !== false && goodQuality(sample.quality);
     const common = { modelInput: true, journalId: row.id, algorithmVersion: row.algorithm_version,
       inputSource: sources[row.input], intervalStart: start, intervalEnd: end };
-    if (selected.includes('model_indoor_temperature'))
-      project('model_indoor_temperature', start, end, usable && finite(sample.indoorC) ? sample.indoorC : null, common, true);
+    if (selected.includes('model_indoor_temperature')) {
+      // v7 records indoor endpoint availability independently of the other
+      // learning inputs. A missing outdoor segment must not erase a known
+      // indoor average. Older algorithms retain their original chart gates.
+      const currentIndoor = row.algorithm_version === 'committed-house-v7-held-indoor';
+      project('model_indoor_temperature', start, end, (currentIndoor || usable) && finite(sample.indoorC) ? sample.indoorC : null,
+        currentIndoor ? { ...common, ...indoorEndpointMetadata(sample, usable) } : common, true);
+    }
     // Older entries retain their saved interval interpretation. They are never
     // filled from current sensor readings, model predictions, or contract state.
     const legacy = sample.intervalInputs;

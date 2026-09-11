@@ -1,4 +1,4 @@
-import { outdoorSourceLabel, providerName } from './provider-status.js';
+import { outdoorSourceLabel, providerName, temperatureReadingStatus } from './provider-status.js';
 import { pairAllowsControl } from './pair-status.js';
 
 export const isReadOnlyReplica = status => ['replica', 'protected', 'transition'].includes(status?.role)
@@ -187,10 +187,12 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
   for (const key of ['indoor', 'outdoor']) {
     const observation = status.observations?.[key] ?? {};
     const at = timestamp(observation.observedAt ?? observation.sourceTime ?? observation.receivedAt);
+    const readingStatus = temperatureReadingStatus(observation, { now: status.now ?? Date.now(), formatTime, outdoor: key === 'outdoor' });
     $(key).textContent = Number.isFinite(observation.value) ? `${observation.value.toFixed(1)} °C` : '—';
-    $(key).classList.toggle('stale', observation.stale === true || !Number.isFinite(observation.value) || display.state !== 'ready');
+    $(key).classList.toggle('stale', observation.stale === true || readingStatus.attention || !Number.isFinite(observation.value) || display.state !== 'ready');
     const source = key === 'outdoor' ? outdoorSourceLabel(observation.source) : providerName(observation.source);
-    $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time'].filter(Boolean).join(' · ');
+    $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time',
+      readingStatus.attention ? readingStatus.detail : null].filter(Boolean).join(' · ');
   }
   const decision = status.lastDecision?.payload ?? status.lastDecision ?? (stoppedController ? status.decision : null) ?? {};
   $('requested').textContent = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');

@@ -119,3 +119,16 @@ test('tooltips retain truthful source, interval and derived-input distinctions f
   assert.match(fireplace, /Calculated delayed release/);
   assert(!fireplace.includes('saved learning input'), 'Calculated manual-event projection is not a saved learning observation');
 });
+
+test('saved indoor average tooltip identifies held rooms, genuine observation times and excluded learning', () => {
+  const observedAt = Date.parse('2026-09-08T08:00:00Z');
+  const text = historyTooltipLabel({ dataset: { key: 'model_indoor_temperature', label: 'Average indoor', unit: '°C' },
+    parsed: { x: observedAt + 3 * 3_600_000, y: 21 }, raw: { modelInput: true, savedIndoorAverage: true,
+      learningUsable: false, held: true, needsAttention: true, attentionSensors: [
+        { signal: 'bedroom_temperature', observedAt, reasons: ['old-reading', 'disconnected', 'invented-private-reason'] },
+        { signal: 'invented-private-device', observedAt, reasons: [] },
+      ] } });
+  assert.match(text, /Average indoor: 21 °C · saved indoor average · excluded from learning/);
+  assert.match(text, /needs attention · using last known readings: Bedroom observed 8 Sept, 11:00 GMT\+3 \(over 2 hours old, sensor disconnected\)/);
+  assert.doesNotMatch(text, /invented-private/);
+});

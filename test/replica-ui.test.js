@@ -138,6 +138,18 @@ test('replica renders the recorded indoor average and outdoor summary without ro
   assert($('outdoor').classes.has('stale'));
 });
 
+test('replica explains held indoor contributions without confusing sensor age with snapshot freshness', () => {
+  const { document, $ } = fixture();
+  renderReplicaStatus(document, { ...ready(), observations: { indoor: {
+    value: 21, source: 'indoor-average', observedAt: now - 3 * 3_600_000, stale: false, needsAttention: true, held: true,
+    attentionSensors: [{ signal: 'bedroom_temperature', observedAt: now - 3 * 3_600_000, reasons: ['old-reading', 'disconnected'] }],
+  } } });
+  assert.equal($('indoor').textContent, '21.0 °C');
+  assert($('indoor').classes.has('stale'));
+  assert.match($('indoor-age').textContent, /Recorded.*Needs attention.*Bedroom.*over 2 hours old.*sensor disconnected/);
+  assert.equal($('replica-notice').dataset.state, 'ready', 'Sensor attention does not change the snapshot status');
+});
+
 test('the primary keeps its dashboard and snapshot identity changes on replacement', () => {
   const { document, controls, $ } = fixture();
   assert.equal(renderReplicaStatus(document, { role: 'primary' }), null);

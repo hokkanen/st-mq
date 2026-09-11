@@ -625,13 +625,18 @@ number in Celsius, or an object such as
 `°C` and `F` are accepted; a supplied timestamp must include its time zone or be
 epoch milliseconds. Without a timestamp, a non-retained publication uses labelled
 MQTT receipt time. Retained data never gains a new measurement time on reconnect.
-Without a source timestamp, retained data stays unavailable until a live publication.
+Retained indoor and garage data with a valid source timestamp can supply a last
+known reading even when old. Without a source timestamp, retained data cannot
+establish a new reading; an already recorded usable reading can still be held.
 Give each sensor a distinct exact local topic; the per-room fields do not accept the wildcard
 `stmq/smoke/+/temperature`.
 Broker disconnection records explicit unavailable transitions for configured
-temperature sensors and included H66 signals. Reconnection alone does not recover
-their availability; each signal requires a usable new publication. Subscription
-failures are recorded separately from unchanged sensor values.
+temperature sensors and included H66 signals. Reconnection alone does not confirm
+a fresh sensor measurement. Indoor and garage use their last genuine usable
+readings across an outage, preserving observation times and recording the outage
+separately. Outdoor temperature and H66 control signals retain their own freshness
+and availability requirements. Subscription failures are recorded separately from
+unchanged sensor values.
 
 The model's indoor temperature defaults to an equal average of Upstairs
 and each configured extra indoor sensor: Upstairs, Bedroom and Downstairs each
@@ -650,6 +655,16 @@ saved with learning configuration using logical signal names, without private
 device identifiers or MQTT topics. Adding or changing contributing sensors changes the
 measurement setup; it must establish the corresponding learning boundary.
 
+Indoor and garage readings have no age cutoff for last-known-value use. Up to
+and including two hours is normal; older readings or disconnected sensors request
+attention in the current temperature summary and source details. These warnings
+do not remove a configured room from the average or block control. No correlation
+or estimate from other rooms is constructed. A never-seen sensor still prevents
+its configured average, and sensor changes require a new genuine measurement.
+Outdoor readings keep their separate, shorter freshness limits. The v7 algorithm
+uses the same last-known readings for thermal and comfort learning, recording
+held-room flags and original timestamps separately from learning validity.
+
 The right axis has one **Average indoor** series: the same configured average
 used by the model, retaining its green colour alongside blue Outdoor readings.
 The **Home temperatures** drawer section contains only **All home temperatures**,
@@ -659,12 +674,16 @@ align. Room colours are distinct: terracotta Upstairs, amber Downstairs and viol
 Bedroom. Garage remains a shared right-axis series with its existing colour and legend control.
 Average indoor reads the resolved value already included in each existing
 15-minute learning journal record; it creates no additional temperature recorder
-channel or chart-history table. Missing or invalid windows remain gaps, and
-changing configured weights does not recalculate historical inputs. The journal
+channel or chart-history table. New v7 indoor endpoints remain visible when other
+learning inputs reject a window; missing indoor values and missing windows remain
+gaps. Earlier algorithms retain their recorded chart interpretation. Changing
+configured weights does not recalculate historical inputs. The journal
 retains the original endpoints, weights and configuration needed for model replay.
 Historical CSV `temp_in` remains an Upstairs reading and is never presented as a
-three-room average. Saved learning-input tooltip rows use the same short marker
-without repeating their journal source and interval beside each value.
+three-room average. Saved learning-input tooltip rows use a short marker without
+repeating their journal source and interval beside each value. New saved-average
+tooltips additionally identify held rooms, actual observation times and whether
+the window was excluded from learning.
 Sensor replacements, moves and calibrations are recorded under **House model →
 Explore learning → Model inputs → Average indoor → Sensor changes**. See
 [sensor changes](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)

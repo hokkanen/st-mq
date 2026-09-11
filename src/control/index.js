@@ -29,7 +29,7 @@ export function comfortPenalty(indoorC, targetC, maxDropC, durationHours = 1) {
 function fresh(reading, now, maxAge) {
   const age = now - instant(reading?.observedAt);
   return reading && finite(reading.value) && finite(age) && age >= 0 && age <= maxAge
-    && goodQuality(reading.quality);
+    && reading.stale !== true && goodQuality(reading.quality);
 }
 
 function getIntervals(prices, forecast, now) {
@@ -182,7 +182,7 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
     reasons.push('thermal-state-reconciliation');
   }
   const reconcile = instant(nextState.reconcileUntil);
-  const freshIndoor = fresh(indoor, timestamp, observationAge) && indoor.value > 2 && indoor.value < 40;
+  const freshIndoor = fresh(indoor, timestamp, Infinity) && indoor.value > 2 && indoor.value < 40;
   const freshOutdoor = fresh(outdoor, timestamp, observationAge) && outdoor.value >= -60 && outdoor.value <= 50;
   if (!finite(target) || target < 12 || target > 28) reasons.push('learning-normal-comfort-reference');
   if (!freshIndoor || !freshOutdoor) reasons.push('missing-or-stale-observations');

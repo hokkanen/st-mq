@@ -160,10 +160,72 @@ test('replica averages retain source freshness and the primary sensor settling b
   assert.equal((await request('/api/sensor-changes')).body.available, false);
   now += 60 * 60_000;
   const stale = (await request('/api/status')).body;
-  assert.equal(stale.observations.upstairs.stale, true);
+  assert.equal(stale.observations.upstairs.stale, false, 'Unchanged rooms do not expire while another sensor settles');
   assert.equal(stale.observations.bedroom.stale, true);
   assert.equal(stale.observations.indoor.stale, true);
+  assert.equal(stale.observations.indoor.value, null, 'Pre-change inputs cannot reappear after the settling timer');
   assert.equal(stale.observations.bedroom.observedAt, at - 60_000);
+});
+
+test('replica keeps fixed recorded room contributions through age and outages without renewing source times', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'held-rooms');
+  const store = new Store(publication.dbPath);
+  const control = { indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 1 } };
+  for (const [signal, value] of [['downstairs_temperature', 20], ['bedroom_temperature', 19], ['garage_temperature', 12], ['outdoor_temperature', 4]])
+    store.observation({ source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: `synthetic-${signal}`,
+      signal, value, unit: 'degC', sourceTime: at - 60_000, receivedAt: at - 60_000, quality: [] });
+  store.observation({ source: 'mqtt-temperature', device: 'synthetic-bedroom_temperature', signal: 'bedroom_temperature',
+    value: null, unit: 'degC', sourceTime: null, receivedAt: at, quality: ['mqtt-disconnected'], raw: { timeBasis: 'availability-transition' } });
+  // This reading exists in the copied bytes but was not known at publication.
+  store.observation({ source: 'mqtt-temperature', device: 'synthetic-bedroom_temperature', signal: 'bedroom_temperature',
+    value: 30, unit: 'degC', sourceTime: at + 60_000, receivedAt: at + 60_000, quality: [] });
+  store.setState('adaptive:mqtt', { learningConfiguration: control });
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  let now = at;
+  const { request } = await viewer(t, directory, async () => publication, { clock: () => now });
+  const current = (await request('/api/status')).body.observations;
+  assert.equal(current.indoor.value, 20);
+  assert.equal(current.indoor.stale, false);
+  assert.deepEqual(current.indoor.attentionSensors.map(row => row.signal), ['bedroom_temperature']);
+  assert.deepEqual(current.bedroom.attentionReasons, ['disconnected']);
+  assert.equal(current.garage.value, 12);
+  assert.equal(current.garage.needsAttention, undefined);
+  assert.equal(current.outdoor.stale, false);
+  now += 7 * 86_400_000;
+  const held = (await request('/api/status')).body.observations;
+  assert.equal(held.indoor.value, 20);
+  assert.equal(held.indoor.stale, false);
+  assert.equal(held.bedroom.value, 19, 'Advancing the viewer clock cannot reveal a post-publication measurement');
+  assert.deepEqual(held.bedroom.attentionReasons, ['disconnected', 'old-reading']);
+  for (const key of ['upstairs', 'downstairs', 'bedroom', 'garage']) {
+    assert.equal(held[key].observedAt, at - 60_000);
+    assert.equal(held[key].stale, false);
+    assert.equal(held[key].needsAttention, true);
+  }
+  assert.equal(held.outdoor.stale, true, 'Outdoor retains its existing expiry');
+  assert.equal(digest(publication.dbPath), publication.digest, 'Serving status does not write to the snapshot');
+});
+
+test('replica cannot invent a first room contribution from post-publication or retained-only data', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'unknown-room');
+  const store = new Store(publication.dbPath);
+  store.observation({ source: 'mqtt-temperature', device: 'synthetic-bedroom', signal: 'bedroom_temperature',
+    value: 19, unit: 'degC', sourceTime: at + 60_000, receivedAt: at + 60_000, quality: [] });
+  store.observation({ source: 'mqtt-temperature', device: 'synthetic-garage', signal: 'garage_temperature',
+    value: 12, unit: 'degC', sourceTime: at - 60_000, receivedAt: at, quality: ['retained'], raw: { retained: true } });
+  store.setState('adaptive:mqtt', { learningConfiguration: { indoorSensorWeights: { indoor_temperature: 1, bedroom_temperature: 1 } } });
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  const { request } = await viewer(t, directory, async () => publication, { clock: () => at + 3_600_000 });
+  const observations = (await request('/api/status')).body.observations;
+  assert.equal(observations.bedroom, null);
+  assert.equal(observations.garage, null);
+  assert.equal(observations.indoor.value, null);
+  assert.equal(observations.indoor.stale, true);
+  assert.equal(digest(publication.dbPath), publication.digest);
 });
 
 test('verified snapshots remain unchanged and viewer replaces charts and history after outage catch-up', async t => {

@@ -1,5 +1,5 @@
 import { createHistoryChart } from './history-chart.js';
-import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries } from './provider-status.js';
+import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
@@ -371,12 +371,11 @@ function render(s) {
         : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
   for (const key of ['indoor', 'outdoor']) {
     const obs = s.observations[key] ?? {};
+    const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
     $(key).textContent = Number.isFinite(obs.value) ? `${obs.value.toFixed(1)} °C` : '—';
-    $(key).classList.toggle('stale', obs.stale || !Number.isFinite(obs.value));
+    $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention);
     const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
-    const age = obs.settling ? 'Settling after sensor change' : obs.configured === false ? 'Not configured' : obs.stale || !Number.isFinite(obs.value) || !Number.isFinite(obs.observedAt)
-      ? 'Missing or stale reading' : `${obs.source === 'openmeteo' ? 'Valid at' : 'Observed'} ${time(obs.observedAt)}`;
-    $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${age}`;
+    $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${readingStatus.detail}`;
   }
   $('requested').textContent = label(s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'));
   $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;

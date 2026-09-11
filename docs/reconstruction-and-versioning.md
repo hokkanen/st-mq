@@ -72,13 +72,29 @@ sensor; imported learning remains separate from a live multi-sensor average.
 
 Sensor changes are compact immutable journal context events, with a server
 timestamp, logical signal, reason, settling deadline and retry identity. They
-start a new measurement period under the same v6 algorithm; an ordinary sensor
+start a new measurement period under the active algorithm; an ordinary sensor
 replacement does not create a new software algorithm version. Affected thermal
 and comfort evidence is cleared, with house coefficients retained only as starting
 estimates. Live updates and replay apply this same reset. Old observations and
 frozen cycle forecasts remain unchanged, and no calibration offset is invented.
 Configured average-membership or weight changes also establish a measurement
 boundary. See [temperature sensors](temperature-sensors.md) for operational rules.
+
+`committed-house-v7-held-indoor` keeps the latest genuine known reading for each
+configured indoor sensor through age and disconnection, with the configured
+weights unchanged. These held contributions remain usable for control and
+learning; no cross-room estimate or replacement timestamp is invented. Every
+committed member saves its original observation time and lineage, plus whether
+it was held and needed attention (older than two hours, disconnected or an
+invalid later update). Never-seen sensors remain missing. Invalid, retained,
+unknown-time and future measurements cannot replace a genuine reading. Sensor
+changes and their settling periods still exclude earlier measurement periods;
+outdoor and equipment freshness rules are unchanged.
+
+The v6 journal remains an archive requiring its matching code (Git revision
+`113e495`); the runtime does not replay it as v7. The first v7 entry records its
+explicit initial seed and starts the new learning epoch. Historical CSV indoor
+values retain their original Upstairs interpretation and import provenance.
 
 Existing experimental SQLite contents do not require a compatibility migration.
 Changes to numerical interpretation,

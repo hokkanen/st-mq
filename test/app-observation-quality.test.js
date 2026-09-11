@@ -45,9 +45,15 @@ test('offline startup restores all three indoor readings for the configured aver
   assert.equal(observations.indoor.stale, false);
   now += 30 * MINUTE;
   const stale = engine.status().observations;
-  assert.equal(stale.indoor.stale, true);
+  assert.equal(stale.indoor.stale, false);
   assert.equal(stale.indoor.observedAt, beginning - MINUTE);
-  for (const [key] of rows) assert.equal(stale[key].stale, true);
+  for (const [key] of rows) assert.equal(stale[key].stale, key === 'outdoor');
+  now = beginning + 2 * 60 * MINUTE;
+  const attention = engine.status().observations;
+  assert.equal(attention.indoor.value, 21);
+  assert.equal(attention.indoor.stale, false);
+  assert.equal(attention.indoor.needsAttention, true);
+  assert.equal(attention.indoor.attentionSensors.length, 3);
   assert.equal(store.observations().length, rows.length);
 });
 
@@ -62,10 +68,15 @@ test('garage status projects the existing reading and source without exposing de
   assert.deepEqual(engine.tick().observations.garage, expected);
   assert.equal(store.observations().length, recorded);
   setTime(beginning + 31 * MINUTE);
-  assert.deepEqual(engine.status().observations.garage, { ...expected, stale: true });
+  assert.deepEqual(engine.status().observations.garage, expected);
+  setTime(beginning + 2 * 60 * MINUTE);
+  assert.deepEqual(engine.status().observations.garage, expected);
+  setTime(beginning + 2 * 60 * MINUTE + 1);
+  assert.deepEqual(engine.status().observations.garage, { ...expected, needsAttention: true,
+    attentionReasons: ['old-reading'], held: true });
 });
 
-test('status and decision use the same 30-minute observation freshness boundary', t => {
+test('outdoor retains its 30-minute expiry while indoor readings remain usable', t => {
   const { engine, setTime } = setup(t);
   engine.ingest(reading());
   engine.ingest(reading({ signal: 'outdoor_temperature', value: 4 }));
@@ -74,9 +85,10 @@ test('status and decision use the same 30-minute observation freshness boundary'
   assert.equal(boundary.observations.indoor.stale, false);
   assert.equal(boundary.decision.reasons.includes('missing-or-stale-observations'), false);
   setTime(beginning + 30 * MINUTE + 1);
-  assert.equal(engine.status().observations.indoor.stale, true);
+  assert.equal(engine.status().observations.indoor.stale, false);
   const stale = engine.tick();
-  assert.equal(stale.observations.indoor.stale, true);
+  assert.equal(stale.observations.indoor.stale, false);
+  assert.equal(stale.observations.outdoor.stale, true);
   assert.ok(stale.decision.reasons.includes('missing-or-stale-observations'));
 });
 
@@ -115,14 +127,15 @@ test('null provider outages retain the last valid value and original age, with s
   assert.equal(recent.providers.fmi.status, 'error');
   setTime(beginning + 31 * MINUTE);
   assert.equal(engine.status().observations.indoor.value, 21);
-  assert.equal(engine.status().observations.indoor.stale, true);
+  assert.equal(engine.status().observations.indoor.stale, false);
+  assert.equal(engine.status().observations.indoor.needsAttention, true);
   assert.equal(store.observations().at(-1).value, null);
 });
 
 test('late deliveries and invalid quality do not displace the latest trustworthy observation', t => {
   const { engine, setTime } = setup(t);
   setTime(beginning + 10 * MINUTE);
-  engine.ingest(reading({ value: 21.4, sourceTime: beginning + 10 * MINUTE }));
+  engine.ingest(reading({ value: 21.4, sourceTime: beginning + 10 * MINUTE, receivedAt: beginning + 10 * MINUTE }));
   engine.ingest(reading({ value: 20, sourceTime: beginning, receivedAt: beginning + 10 * MINUTE }));
   engine.ingest(reading({ value: 99, sourceTime: beginning + 10 * MINUTE, quality: ['implausible_temperature'] }));
   assert.equal(engine.tick().observations.indoor.value, 21.4);
@@ -188,8 +201,9 @@ test('current-not-energy provenance does not discard a valid current snapshot du
   assert.deepEqual(engine.latest.ev1_current_l1.quality, ['current_snapshot_not_energy']);
 });
 
-for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} availability transitions immediately invalidate indoor and garage readings until live recovery`, t => {
+for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} outages retain genuine indoor and garage values with a warning until recovery`, t => {
   const { engine, setTime } = setup(t, { input: 'mqtt' });
+  engine.ingest(reading({ signal: 'outdoor_temperature', value: 4 }));
   const disconnectedAt = beginning + MINUTE;
   for (const signal of ['indoor_temperature', 'garage_temperature']) {
     const device = source === 'mqtt-temperature' ? signal : 'invented-gateway';
@@ -199,10 +213,14 @@ for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} availa
       receivedAt: disconnectedAt, quality: ['mqtt-disconnected'] }), device,
       raw: { usableForControl: false, timeBasis: 'availability-transition' } }, disconnectedAt);
     assert.equal(engine.latest[signal].value, null);
-    assert.equal(engine.status().observations[signal === 'indoor_temperature' ? 'indoor' : 'garage'].stale, true);
+    const retained = engine.status().observations[signal === 'indoor_temperature' ? 'indoor' : 'garage'];
+    assert.equal(retained.stale, false);
+    assert.equal(retained.value, 21);
+    assert.equal(retained.observedAt, beginning);
+    assert.equal(retained.needsAttention, true);
     if (signal === 'indoor_temperature') {
-      assert.equal(engine.status().observations.indoor.stale, true);
-      assert.ok(engine.tick().decision.reasons.includes('missing-or-stale-observations'));
+      assert.equal(engine.status().observations.indoor.stale, false);
+      assert.equal(engine.tick().decision.reasons.includes('missing-or-stale-observations'), false);
     }
     // A late pre-outage publication and retained reconnect data cannot revive it.
     for (const [sourceTime, raw, quality] of [[beginning, {}, []], [disconnectedAt, { retained: true }, ['retained']]])
@@ -230,7 +248,8 @@ test('delayed and unrelated availability failures cannot invalidate the current 
     assert.equal(engine.latest.indoor_temperature.value, 21);
   }
   engine.rememberObservation(failure(), at);
-  assert.equal(engine.status().observations.indoor.stale, true);
+  assert.equal(engine.status().observations.indoor.stale, false);
+  assert.equal(engine.status().observations.indoor.needsAttention, true);
 });
 
 
@@ -254,4 +273,70 @@ test('explicit H66 outdoor outage falls back to FMI without accepting delayed fa
   assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
   engine.rememberObservation({ ...failure, receivedAt: beginning }, at);
   assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+});
+
+test('restart retains recorded room contributions through an outage without extending their observation times', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  let now = beginning;
+  const config = { input: 'mqtt', control: { indoorSensorWeights: {
+    indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 1,
+  } } };
+  const engine = new Engine({ store, config, clock: () => now });
+  for (const [signal, value] of [['indoor_temperature', 24], ['downstairs_temperature', 20], ['bedroom_temperature', 19]])
+    engine.ingest({ ...reading({ signal, value }), device: signal });
+  now += 5 * MINUTE;
+  engine.recorder.recordFailure({ source: 'mqtt-temperature', device: 'bedroom_temperature',
+    signal: 'bedroom_temperature', unit: 'degC', at: now, quality: ['mqtt-disconnected'] });
+  const temperatureCount = () => store.observations().filter(row => row.source === 'mqtt-temperature').length;
+  const recorded = temperatureCount();
+  const restarted = new Engine({ store, config, clock: () => now });
+  const check = () => {
+    const observations = restarted.status().observations;
+    assert.equal(observations.indoor.value, 21);
+    assert.equal(observations.indoor.stale, false);
+    assert.equal(observations.bedroom.observedAt, beginning);
+    assert(observations.bedroom.attentionReasons.includes('disconnected'));
+  };
+  check(); now += 3 * 24 * 60 * MINUTE; check();
+  assert.equal(temperatureCount(), recorded, 'Status never turns held values into new telemetry');
+  restarted.ingest({ ...reading({ signal: 'bedroom_temperature', value: 22, sourceTime: now, receivedAt: now }), device: 'bedroom_temperature' });
+  assert.equal(restarted.status().observations.indoor.value, 22);
+  assert.equal(restarted.status().observations.bedroom.needsAttention, undefined);
+});
+
+test('old room values cannot return after a sensor measurement boundary has settled', async t => {
+  const store = new Store(':memory:');
+  let now = beginning;
+  const engine = new Engine({ store, config: { input: 'mqtt' }, clock: () => now });
+  t.after(async () => { await engine.closeFireplace(); store.close(); });
+  engine.ingest(reading());
+  now += MINUTE;
+  engine.changeSensor({ signal: 'indoor_temperature', reason: 'replacement', requestId: 'invented-new-room-sensor' });
+  now += 3 * 60 * MINUTE;
+  const unknown = engine.status().observations.indoor;
+  assert.equal(unknown.value, null);
+  assert.equal(unknown.stale, true);
+  engine.ingest(reading({ sourceTime: now, receivedAt: now, value: 22 }));
+  assert.equal(engine.status().observations.indoor.value, 22);
+  assert.equal(engine.status().observations.indoor.stale, false);
+});
+
+test('post-restart delayed packets cannot replace a more recently confirmed recorded temperature', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  let now = beginning;
+  const config = { input: 'mqtt' }, engine = new Engine({ store, config, clock: () => now });
+  engine.ingest(reading({ value: 20 }));
+  now += MINUTE;
+  assert.equal(engine.ingest(reading({ value: 20, sourceTime: now, receivedAt: now })).saved, false);
+  const restarted = new Engine({ store, config, clock: () => now });
+  for (let i = 0; i < 2; i++) {
+    now += MINUTE;
+    const result = restarted.ingest(reading({ value: 25, sourceTime: beginning + MINUTE / 2, receivedAt: now }));
+    assert.equal(result.rejectedSourceTime, true);
+    const indoor = restarted.status().observations.indoor;
+    assert.equal(indoor.value, 20);
+    assert.equal(indoor.observedAt, beginning);
+    assert.equal(indoor.stale, false);
+    assert(indoor.attentionSensors[0].reasons.includes('invalid-reading'));
+  }
 });

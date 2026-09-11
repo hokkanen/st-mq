@@ -443,7 +443,9 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
       }
       assert.equal(f.engine.latest.property_current_l1.value, 4 + i);
       assert.equal(f.store.observations({ signal: 'property_current_l1' }).length, 0);
-      assert.equal(f.engine.status().observations.indoor.stale, true);
+      assert.equal(f.engine.status().observations.indoor.stale, false);
+      assert.equal(f.engine.status().observations.indoor.needsAttention, true);
+      assert.equal(f.engine.status().observations.indoor.observedAt, sourceAt);
       if (i === 3) {
         await providers.close(); providers = startProviders(f.options);
         assert.equal(f.store.getState('providers:health').easee.status, 'ok');

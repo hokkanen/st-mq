@@ -27,14 +27,32 @@ right-axis series with its existing colour and legend control. Average indoor ke
 its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
 blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
 individual rooms are available through the chart and source details.
-The Average indoor chart follows saved model inputs at the endpoints of completed
-15-minute learning windows. Invalid or missing windows remain gaps. It does not
-recalculate old averages from today's sensor membership or weights. Imported
-model history retains its saved original Upstairs input.
+The Average indoor chart follows saved indoor endpoints of completed 15-minute
+learning windows. With `committed-house-v7-held-indoor`, a known indoor average
+remains visible even when another input, such as outdoor temperature, prevents
+that window from training the model. Missing indoor endpoints and missing windows
+remain gaps. Earlier algorithms retain their original chart interpretation. The
+chart does not recalculate old averages from today's membership or weights;
+imported model history retains its saved original Upstairs input.
 Selecting different positive weights is a configuration choice; sensor outages
-never redistribute weights. A missing contributing sensor makes the average
-unavailable for control and learning. A retained stale reading remains labelled
-stale; its old value is not evidence of the current temperature.
+never redistribute weights. Each contributing sensor keeps its last genuine
+usable reading when publications stop or the connection fails, with no age cutoff.
+A two-hour-old indoor reading is normal. Older readings, disconnected sensors
+and fallback after an invalid publication show **Needs attention** without
+removing that room from the average or blocking control. No room temperature is
+inferred from another sensor. Current Garage readings follow the same policy,
+while outdoor temperature retains its separate freshness limits. Raw sensor
+history still preserves the recorded availability gaps.
+
+The Average indoor summary and **Main temperatures** source details identify
+affected rooms and their actual observation times. New saved-average chart
+tooltips preserve the same warnings and identify windows excluded from learning.
+Holding a reading does not change its source timestamp or create new evidence of
+measurement. The v7 learner uses this same last-known-reading assumption for
+thermal and comfort learning, preserving held flags separately from validity.
+A sensor that has never supplied a usable reading still makes its
+configured average unavailable; sensor-change boundaries also require a genuine
+reading from the new measurement period.
 
 The committed journal saves each contributing endpoint and weight, observation
 lineage, the resolved average and its configuration. This remains one thermal

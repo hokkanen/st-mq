@@ -275,7 +275,7 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   if ((equipment.externalChangeRevision??0)!==(plan.equipment?.externalChangeRevision??0))
     return rejected('scheduled-cycle-native-settings-changed');
   if (!number(observations.indoor?.value) || observations.indoor.stale
-    || observations.indoor.observedAt > now || now-observations.indoor.observedAt > c.observationMaxAgeMs)
+    || !number(observations.indoor.observedAt) || observations.indoor.observedAt > now)
     return rejected('scheduled-cycle-observations-stale');
   const targetC = settings.comfort.targetC ?? checkpoint.baselineC;
   if (!number(targetC)) return rejected('scheduled-cycle-target-unavailable');
@@ -317,7 +317,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const targetC = settings.comfort.targetC ?? checkpoint?.baselineC;
   const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
     comfort: { targetC: targetC ?? null, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
-  if (!number(observations.indoor?.value) || now - observations.indoor.observedAt > c.observationMaxAgeMs
+  if (!number(observations.indoor?.value) || !number(observations.indoor.observedAt)
     || observations.indoor.observedAt > now) return normal('missing-or-stale-indoor');
   if (observations.indoor.stale === true) return normal('missing-or-stale-indoor');
   if (!number(targetC)) return normal('awaiting-normal-temperature-reference');

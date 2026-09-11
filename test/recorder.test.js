@@ -42,20 +42,69 @@ test('fresh unchanged samples compact coverage and maximum interval preserves a 
   assert.equal(historical.sourceTime,1000,'later coverage updates cannot leak into an earlier model window');
 });
 
-test('old source timestamps do not become fresh measurements; failures and recovery always persist',t=>{
+test('old outdoor source timestamps do not become fresh measurements; failures and recovery always persist',t=>{
   const {store,recorder,put,setNow}=fixture(t);
-  const extra={source:'husdata-h66'};
+  const extra={source:'husdata-h66',signal:'outdoor_temperature'};
   put(20,1000,extra);
   for(let i=1;i<=20;i++) put(20,1000+i*15000,{...extra,sourceTime:1000});
   assert.equal(store.observations().length,1);
   put(20,316000,{...extra,sourceTime:1000});
-  assert.equal(recorder.latestCommitted('indoor_temperature').value,null);
+  assert.equal(recorder.latestCommitted('outdoor_temperature').value,null);
   assert.equal(recorder.status().parameters[0].status,'stale');
   setNow(330000);
-  recorder.recordFailure({source:'husdata-h66',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:330000});
-  assert.equal(recorder.latestCommitted('indoor_temperature').value,null);
+  recorder.recordFailure({source:'husdata-h66',device:'fixture-house',signal:'outdoor_temperature',unit:'degC',at:330000});
+  assert.equal(recorder.latestCommitted('outdoor_temperature').value,null);
   assert.equal(put(20,340000,extra).reason,'quality-or-availability');
+  assert.equal(recorder.latestCommitted('outdoor_temperature').value,20);
+});
+
+test('room and garage recording accepts old source timestamps without inventing new measurements',t=>{
+  const {store,recorder,put}=fixture(t);
+  const sourceTime=1000;
+  for(const signal of ['indoor_temperature','downstairs_temperature','bedroom_temperature','garage_temperature']) {
+    const extra={source:'mqtt-temperature',signal,sourceTime};
+    put(20,sourceTime+2*HOUR,extra);
+    const first=recorder.latestCommitted(signal);
+    assert.equal(first.value,20);
+    assert.equal(first.sourceTime,sourceTime);
+    assert.equal(first.receivedAt,sourceTime+2*HOUR);
+    assert.equal(first.raw.recorder.status,'fresh');
+    assert.equal(put(20,sourceTime+7*24*HOUR,extra).saved,false,'Elapsed time alone cannot manufacture another observation');
+    const held=recorder.latestCommitted(signal);
+    assert.equal(held.sourceTime,sourceTime);
+    assert.equal(held.raw.recorder.originalSourceTime,sourceTime);
+    assert.equal(held.value,20);
+  }
+  assert.equal(store.observations().length,4);
+});
+
+test('H66 indoor source timestamps remain usable without relaxing H66 equipment expiry',t=>{
+  const {recorder,put}=fixture(t);
+  put(20,2*HOUR,{source:'husdata-h66',sourceTime:1000});
   assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
+  assert.equal(recorder.latestCommitted('indoor_temperature').sourceTime,1000);
+  put(30,2*HOUR,{source:'husdata-h66',signal:'supply_temperature',sourceTime:1000});
+  assert.equal(recorder.latestCommitted('supply_temperature').value,null);
+});
+
+test('held room readings still record unavailable, retained, future and out-of-order acquisitions honestly',t=>{
+  const {recorder,put}=fixture(t);
+  const extra={source:'mqtt-temperature',signal:'garage_temperature'};
+  put(12,1000,extra);
+  put(12,2*HOUR,{...extra,sourceTime:1000,quality:['retained'],raw:{retained:true}});
+  assert.equal(recorder.status().parameters[0].status,'unavailable');
+  assert.equal(recorder.latestCommitted('garage_temperature').value,null);
+  assert.equal(recorder.latestCommitted('garage_temperature').sourceTime,1000);
+  put(13,2*HOUR+1000,{...extra,sourceTime:2*HOUR});
+  assert.equal(recorder.latestCommitted('garage_temperature').value,13);
+  put(99,2*HOUR+2000,{...extra,sourceTime:500});
+  assert.equal(recorder.status().parameters[0].status,'stale');
+  put(99,2*HOUR+3000,{...extra,sourceTime:3*HOUR});
+  assert.equal(recorder.status().parameters[0].status,'stale');
+  put(null,2*HOUR+4000,{...extra,sourceTime:null,quality:['missing','source_time_unknown']});
+  assert.equal(recorder.status().parameters[0].status,'unavailable');
+  recorder.recordFailure({...extra,device:'fixture-house',unit:'degC',at:2*HOUR+5000});
+  assert.equal(recorder.status().parameters[0].status,'failed');
 });
 
 test('state changes and pump zero crossings bypass numeric deadband; excluded H66 values stay outside history',t=>{
@@ -72,10 +121,10 @@ test('state changes and pump zero crossings bypass numeric deadband; excluded H6
 
 test('recording spacing cannot change source freshness or turn repeated old timestamps into new readings',t=>{
   const {recorder,put}=fixture(t,{maxIntervalMs:1000});
-  put(20,1000,{source:'husdata-h66'});
-  assert.equal(put(20,31000,{source:'husdata-h66',sourceTime:1000}).saved,false);
+  put(20,1000,{source:'husdata-h66',signal:'outdoor_temperature'});
+  assert.equal(put(20,31000,{source:'husdata-h66',signal:'outdoor_temperature',sourceTime:1000}).saved,false);
   assert.equal(recorder.status().parameters[0].status,'fresh','H66 source remains within its independent five-minute validity');
-  assert.equal(recorder.latestCommitted('indoor_temperature').sourceTime,1000);
+  assert.equal(recorder.latestCommitted('outdoor_temperature').sourceTime,1000);
 });
 
 test('verification changes are recorded immediately even when value and numerical threshold are unchanged',t=>{

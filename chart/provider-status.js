@@ -1,4 +1,5 @@
 import { H66_HISTORY_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
+import { INDOOR_ATTENTION_MS, TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
   openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', easee: 'Easee', teslamate: 'Teslamate' });
@@ -126,8 +127,42 @@ const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
 // Main temperatures names the sensor platform; acquisition diagnostics retain
 // the local MQTT transport name. No SmartThings cloud connection is involved.
 const temperatureSourceLabel = source => source === 'mqtt-temperature' ? 'Smartthings' : providerName(source);
-const temperatureAvailable = (reading, now) => Number.isFinite(reading?.value) && reading.stale !== true
-  && Number.isFinite(reading.observedAt) && reading.observedAt <= now && now - reading.observedAt <= 30 * 60_000;
+const temperatureAvailable = (reading, now, outdoor = false) => Number.isFinite(reading?.value) && reading.stale !== true
+  && Number.isFinite(reading.observedAt) && reading.observedAt <= now
+  && (!outdoor || now - reading.observedAt <= 30 * 60_000);
+
+const attentionLabels = Object.freeze({ 'old-reading': 'over 2 hours old', disconnected: 'sensor disconnected',
+  'invalid-reading': 'latest publication was invalid' });
+const knownAttentionReasons = reasons => Array.isArray(reasons)
+  ? [...new Set(reasons.filter(reason => Object.hasOwn(attentionLabels, reason)))] : [];
+
+/** Keep warning text confined to known logical sensors and fixed reason labels. */
+export function temperatureAttentionDetails(sensors, formatTime) {
+  if (!Array.isArray(sensors)) return '';
+  return sensors.filter(sensor => Object.hasOwn(TEMPERATURE_SENSORS, sensor?.signal)
+    && Number.isFinite(sensor.observedAt)).map(sensor => {
+    const reasons = knownAttentionReasons(sensor.reasons).map(reason => attentionLabels[reason]);
+    return `${TEMPERATURE_SENSORS[sensor.signal]} observed ${formatTime(sensor.observedAt)}${reasons.length ? ` (${reasons.join(', ')})` : ''}`;
+  }).join('; ');
+}
+
+export function temperatureReadingStatus(reading, { now, formatTime, outdoor = false }) {
+  const usable = temperatureAvailable(reading, now, outdoor);
+  const reasons = knownAttentionReasons(reading?.attentionReasons);
+  if (usable && !outdoor && now - reading.observedAt > INDOOR_ATTENTION_MS && !reasons.includes('old-reading')) reasons.push('old-reading');
+  const attention = reading?.needsAttention === true || reasons.length > 0;
+  if (reading?.settling) return { usable, attention: true, detail: 'Settling after sensor change' };
+  if (reading?.configured === false) return { usable: false, attention: false, detail: 'Not configured' };
+  if (!usable) return { usable, attention, detail: Number.isFinite(reading?.observedAt) && reading.observedAt <= now
+    ? `Latest reading ${formatTime(reading.observedAt)} is out of date or unusable.` : 'No current reading received.' };
+  if (attention || reading.held) {
+    const sensors = temperatureAttentionDetails(reading.attentionSensors, formatTime);
+    return { usable, attention, detail: `${attention ? 'Needs attention · ' : ''}${sensors
+      ? `Using last known readings: ${sensors}.`
+      : `Using last known reading from ${formatTime(reading.observedAt)}${reasons.length ? ` (${reasons.map(reason => attentionLabels[reason]).join(', ')})` : ''}.`}` };
+  }
+  return { usable, attention, detail: `${reading.source === 'openmeteo' ? 'Valid at' : 'Observed'} ${formatTime(reading.observedAt)}` };
+}
 
 function temperatureDisplay(status, entries, options) {
   const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];
@@ -139,27 +174,29 @@ function temperatureDisplay(status, entries, options) {
     // weather provider's most recent successful download still names FMI.
     const source = reading?.source ?? (key === 'outdoor' ? outdoorHealth?.source ?? outdoorHealth?.acquisition?.selected : null);
     const label = allowed.includes(source) ? temperatureSourceLabel(source) : null;
-    const available = temperatureAvailable(reading, options.now);
-    const age = Number.isFinite(reading?.observedAt) && reading.observedAt > 0 && reading.observedAt <= options.now
-      ? `Latest reading ${options.formatTime(reading.observedAt)}${available ? '.' : ' is out of date or unusable.'}`
-      : 'No current reading received.';
+    const readingStatus = temperatureReadingStatus(reading, { ...options, outdoor: key === 'outdoor' });
     const detail = indoorKeys.includes(key) ? 'Individual indoor temperature, recorded separately and included in the home model average when configured and usable.'
       : key === 'garage' ? 'Optional garage sensor, recorded for history.'
         : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
     const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
-    return seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${age}`, label);
+    return seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label);
   });
   const sources = [...new Set(rows.map(row => row.source).filter(Boolean))].join(', ');
   const required = [observations.indoor, observations.outdoor];
-  const available = required.every(reading => temperatureAvailable(reading, options.now));
+  const available = temperatureAvailable(observations.indoor, options.now)
+    && temperatureAvailable(observations.outdoor, options.now, true);
   const downloadFailure = entries.some(([key, health]) => (health.error || health.status === 'error')
     && (key === 'outdoor' ? observations.outdoor?.source !== 'husdata-h66'
       : !health.source || [...required, ...indoorKeys.map(key => observations[key])].some(reading => reading?.source === health.source)));
-  const attention = Boolean(downloadFailure || !available && (required.some(reading => Number.isFinite(reading?.value))
+  const readingAttention = ['indoor', ...indoorKeys, 'garage', 'outdoor'].some(key =>
+    temperatureReadingStatus(observations[key], { ...options, outdoor: key === 'outdoor' }).attention);
+  const attention = Boolean(downloadFailure || readingAttention || !available && (required.some(reading => Number.isFinite(reading?.value))
     || entries.some(([key, health]) => describeProvider(key, health, options).attention)));
   const backup = outdoorHealth?.status === 'fallback' && observations.outdoor?.source !== 'husdata-h66';
   const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
   const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage readings are optional history.'];
+  const averageStatus = temperatureReadingStatus(observations.indoor, options);
+  if (averageStatus.attention && averageStatus.usable) details.push(`Average indoor: ${averageStatus.detail}`);
   for (const [key, health] of entries) {
     const scope = key === 'outdoor' ? 'Outdoor downloads' : 'Temperature downloads';
     const source = providerName(health.source ?? health.acquisition?.selected);

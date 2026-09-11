@@ -7,8 +7,8 @@ import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 import { historyDatasets, historySeriesAt, leftAxisAvailability, historyStateLabel } from '../chart/history-model.js';
 
 const MINUTE = 60_000, start = Date.parse('2026-09-08T08:00:00Z');
-function put(store, at, value, input = 'providers') {
-  store.appendLearningJournal(input, { kind: 'sample', at, algorithmVersion: 'synthetic-v1',
+function put(store, at, value, input = 'providers', algorithmVersion = 'synthetic-v1') {
+  store.appendLearningJournal(input, { kind: 'sample', at, algorithmVersion,
     payload: { value, configuration: { privateFixture: 'invented-configuration-must-stay-private' } } });
 }
 const segment = (a, b, overrides = {}) => ({ start: start + a * MINUTE, end: start + b * MINUTE,
@@ -114,6 +114,32 @@ test('a narrow zoom keeps the Average indoor segment between saved endpoints and
   const future = getChartData({ ...args, now: start + 27 * MINUTE,
     viewFrom: start + 20 * MINUTE, viewTo: start + 25 * MINUTE });
   assert.deepEqual(future.series.model_indoor_temperature, [], 'An endpoint recorded after now cannot supply a display segment');
+});
+
+test('v7 saved indoor averages survive unrelated rejected learning inputs and preserve held-room provenance', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const observedAt = start - 3 * 3_600_000;
+  const saved = { indoorC: 20.5, valid: false, quality: ['missing'], indoorSensors: {
+    indoor_temperature: { value: 21, weight: 0.5, observedAt: start, held: false, needsAttention: false, attentionReasons: [] },
+    bedroom_temperature: { value: 20, weight: 0.5, observedAt, held: true, needsAttention: true,
+      attentionReasons: ['old-reading', 'disconnected', 'invented-private-reason'], privateFixture: 'invented-private-device' },
+  } };
+  put(store, start + 15 * MINUTE, sample(0, 15, [segment(0, 15)], saved), 'mqtt', 'committed-house-v6-sensors');
+  put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30)], saved), 'mqtt', 'committed-house-v7-held-indoor');
+  put(store, start + 45 * MINUTE, sample(30, 45, [segment(30, 45)], { ...saved, indoorC: null }),
+    'mqtt', 'committed-house-v7-held-indoor');
+  const chart = getChartData({ store, input: 'mqtt', now: start + 60 * MINUTE, startDate: '2026-09-08', left: 'power' });
+  const points = chart.series.model_indoor_temperature;
+  assert.deepEqual(points.map(row => [row.x, row.y]), [[start + 15 * MINUTE, null],
+    [start + 30 * MINUTE, 20.5], [start + 45 * MINUTE, null]]);
+  const average = points[1];
+  assert.equal(average.savedIndoorAverage, true);
+  assert.equal(average.learningUsable, false);
+  assert.equal(average.held, true);
+  assert.equal(average.needsAttention, true);
+  assert.deepEqual(average.attentionSensors, [{ signal: 'bedroom_temperature', observedAt, reasons: ['old-reading', 'disconnected'] }]);
+  assert.doesNotMatch(JSON.stringify(chart), /invented-private/);
+  assert.deepEqual(historySeriesAt(chart).model_indoor_temperature, points, 'Held room values do not extend saved average endpoints beyond the journal');
 });
 
 test('DHWR left axis ends each request at its expiry and merges overlapping pulses', t => {

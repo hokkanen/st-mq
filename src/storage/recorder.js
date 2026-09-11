@@ -1,3 +1,5 @@
+import { HELD_TEMPERATURE_SIGNALS } from '../domain/indoor-sensors.js';
+
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 const VERSION = 'adaptive-recorder-v1';
 const GLOBAL_KEY = 'recorder:global:v1';
@@ -14,7 +16,9 @@ const semanticQuality = raw => Object.fromEntries(['usableForControl','verified'
   'verification','timeBasis','publicationMayUseGatewayCache','basis'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget/maximum spacing.
 // Increasing storage compression must never make old measurements fresher.
-const sourceAge = o => o.source === 'husdata-h66' ? 5 * MINUTE
+// Room and garage readings remain the last reported measurement until replaced.
+// Their source clock still controls ordering, recording and measurement lineage.
+const sourceAge = o => HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? 5 * MINUTE
   : /temperature$/.test(o.signal) ? 30 * MINUTE : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE;
 
 /** Acquisition may be fast; only this persisted, causal approximation trains.
@@ -136,6 +140,11 @@ export class Recorder {
     return this.store.transaction(() => {
       const s = this.signalState(o,o.receivedAt), g = this.global(o.receivedAt);
       if (s.lastPollAt !== null && o.receivedAt < s.lastPollAt) return { saved: false, reason: 'out-of-order-receipt', observation: null };
+      // Indoor age alone is usable. Keep source rollback distinguishable from
+      // age so restoring the last known reading cannot revive a delayed value.
+      if (HELD_TEMPERATURE_SIGNALS.includes(o.signal) && Number.isFinite(o.sourceTime)
+        && s.lastSourceTime != null && o.sourceTime < s.lastSourceTime)
+        o.quality = flags([...o.quality, 'out-of-order-source-time']);
       const status = this.classify(o,s), fresh = status === 'fresh';
       const freshUpdate = fresh && (s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
@@ -173,7 +182,8 @@ export class Recorder {
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
       this.store.setState(stateKey(s.key),s); this.store.setState(GLOBAL_KEY,g);
-      return { saved:Boolean(reason),id:committed?.id ?? null,observation:committed,reason:reason ?? (freshUpdate ? 'within-threshold' : 'unchanged-source-time') };
+      return { saved:Boolean(reason),id:committed?.id ?? null,observation:committed,reason:reason ?? (freshUpdate ? 'within-threshold' : 'unchanged-source-time'),
+        ...(o.quality.includes('out-of-order-source-time') ? { rejectedSourceTime: true } : {}) };
     });
   }
 

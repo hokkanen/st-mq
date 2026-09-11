@@ -96,7 +96,7 @@ test('phase energy remains separate context and cannot turn property consumption
   assert.equal(result.compressorDuty, null);
 });
 
-test('committed coverage never renews a cached measurement beyond its source timestamp', t => {
+test('held indoor input outlives freshness while retaining its actual source timestamp', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
   const recorder = new Recorder(store, { clock: () => start });
@@ -104,7 +104,12 @@ test('committed coverage never renews a cached measurement beyond its source tim
     signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: start,
     receivedAt: start + minute * MINUTE, quality: [], raw: { cached: minute > 0 } });
   assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 30 * MINUTE, config }).indoorC, 21);
-  assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 45 * MINUTE, config }).indoorC, null);
+  const held = committedLearningSample({ store, input: 'mqtt', at: start + 3 * HOUR, config });
+  assert.equal(held.indoorC, 21);
+  assert.equal(held.indoorSensors.indoor_temperature.observedAt, start);
+  assert.deepEqual(held.indoorSensors.indoor_temperature.attentionReasons, ['old-reading']);
+  assert.equal(held.indoorSensors.indoor_temperature.held, true);
+  assert.equal(held.outdoorC, null, 'Outdoor observations retain their own freshness requirement');
 });
 
 test('recorded outdoor windows preserve source priority and fall back only after the source expires', t => {
@@ -288,7 +293,7 @@ test('later unchanged polls cannot alter earlier resolved inputs with long recor
   assert.deepEqual(committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config }), before);
 });
 
-test('a later delayed receipt cannot extend freshness through an earlier information gap', t => {
+test('a delayed receipt cannot rejuvenate the source timestamp of an earlier held indoor input', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
   const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * MINUTE } });
@@ -297,9 +302,9 @@ test('a later delayed receipt cannot extend freshness through an earlier informa
     receivedAt: start + receiptMinute * MINUTE, quality: [], raw: { usableForControl: true, retained: false } });
   put(0, 0);
   const before = committedLearningSample({ store, input: 'mqtt', at: start + 7 * MINUTE, windowMs: 7 * MINUTE, config });
-  assert.equal(before.indoorC, null);
+  assert.equal(before.indoorC, 21);
+  assert.equal(before.indoorSensors.indoor_temperature.observedAt, start);
   put(5, 10);
-  assert.equal(store.db.prepare('SELECT COUNT(*) count FROM recorder_coverage').get().count, 2);
   assert.deepEqual(committedLearningSample({ store, input: 'mqtt', at: start + 7 * MINUTE, windowMs: 7 * MINUTE, config }), before);
 });
 
@@ -323,7 +328,10 @@ test('coverage prefixes remain stable through failure, repeated failure and reco
   }
   for (const prefix of prefixes) assert.deepEqual(committedLearningSample({ store, input: 'mqtt',
     at: prefix.at, windowMs: prefix.windowMs, config }), prefix.sample);
-  assert.equal(prefixes.find(row => row.at === start + 10 * MINUTE).sample.indoorC, null);
+  const failed = prefixes.find(row => row.at === start + 10 * MINUTE).sample;
+  assert.equal(failed.indoorC, 21);
+  assert.equal(failed.indoorSensors.indoor_temperature.observedAt, start);
+  assert.deepEqual(failed.indoorSensors.indoor_temperature.attentionReasons, ['invalid-reading']);
   assert.equal(prefixes.at(-1).sample.indoorC, 21);
   assert.ok(prefixes.at(-1).sample.quality.includes('missing'), 'An earlier outage remains a barrier after recovery');
 });
@@ -354,16 +362,16 @@ test('new algorithm starts its own journal while older entries remain explicitly
   assert.equal(replayLearningJournal(store, 'mqtt').algorithmVersion, LEARNING_ALGORITHM);
 });
 
-test('sensor learning semantics establish a v6 seed and replay without reinterpreting the v5 archive', t => {
+test('held indoor learning establishes a v7 seed without reinterpreting the v6 archive', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   store.appendLearningJournal('mqtt', { kind: 'context', at: start - HOUR,
-    algorithmVersion: 'committed-house-v5-fireplace', key: 'invented-v5-archive',
+    algorithmVersion: 'committed-house-v6-sensors', key: 'invented-v6-archive',
     payload: { value: { timestamp: start - HOUR }, configuration: {}, seed: null } });
-  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v5-fireplace'").get();
+  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v6-sensors'").get();
   const model = initialAdaptiveModel(); model.parameters.fireplaceCPerKg = 0.23;
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start }, { config, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v6-sensors');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v7-held-indoor');
   assert.equal(entry.payload.seed.model.parameters.fireplaceCPerKg, 0.23);
   const checkpoint = replayLearningJournal(store, 'mqtt');
   assert.equal(checkpoint.model.parameters.fireplaceCPerKg, 0.23);

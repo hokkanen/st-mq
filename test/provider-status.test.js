@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dashboardProviders, describeProvider, outdoorSourceLabel, providerName, providerSeries } from '../chart/provider-status.js';
+import { dashboardProviders, describeProvider, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from '../chart/provider-status.js';
 import { H66_REGISTERS } from '../src/domain/telemetry.js';
 import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
@@ -62,7 +62,8 @@ test('failed downloads stay actionable for selected temperatures while unrelated
 test('unusable required temperatures cannot inherit an Available state from successful downloads', () => {
   for (const key of ['indoor', 'outdoor']) {
     for (const unavailable of [null, { value: null, stale: true }, temperature('fmi', 4, { stale: true }),
-      temperature('fmi', 4, { observedAt: now + 1 }), temperature('fmi', 4, { observedAt: now - 31 * 60_000 })]) {
+      temperature('fmi', 4, { observedAt: now + 1 }),
+      ...(key === 'outdoor' ? [temperature('fmi', 4, { observedAt: now - 31 * 60_000 })] : [])]) {
       const observations = { indoor: temperature('mqtt-temperature'), outdoor: temperature('fmi', 4), [key]: unavailable };
       const [grouped] = dashboardProviders({ input: 'providers', observations,
         providers: { outdoor: { status: 'ok', source: 'fmi', lastSuccessAt: now } } }, options);
@@ -73,6 +74,56 @@ test('unusable required temperatures cannot inherit an Available state from succ
   const [waiting] = dashboardProviders({ input: 'mqtt' }, options);
   assert.equal(waiting.display.state, 'Waiting for readings');
   assert.equal(waiting.display.attention, false);
+});
+
+test('two-hour indoor readings remain normal while outdoor freshness stays separate', () => {
+  const indoor = temperature('mqtt-temperature', 21, { observedAt: now - 2 * 3_600_000 });
+  const status = { input: 'mqtt', observations: { indoor, outdoor: temperature('husdata-h66', 4) } };
+  const [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Available');
+  assert.equal(grouped.display.attention, false);
+  assert.deepEqual(temperatureReadingStatus(indoor, options), { usable: true, attention: false, detail: 'Observed 08:00' });
+  assert.equal(temperatureReadingStatus(indoor, { ...options, outdoor: true }).usable, false);
+  const older = temperatureReadingStatus({ ...indoor, observedAt: indoor.observedAt - 1 }, options);
+  assert.equal(older.usable, true);
+  assert.equal(older.attention, true);
+  assert.match(older.detail, /Needs attention.*Using last known reading.*over 2 hours old/);
+});
+
+test('last known indoor values show room warnings and timestamps without blocking the average', () => {
+  const observedAt = now - 48 * 3_600_000;
+  const held = { observedAt, held: true, needsAttention: true, attentionReasons: ['old-reading', 'disconnected'] };
+  const indoor = temperature('indoor-average', 21, { ...held,
+    attentionSensors: [{ signal: 'bedroom_temperature', observedAt, reasons: held.attentionReasons }] });
+  const status = { input: 'mqtt', observations: { indoor,
+    upstairs: temperature('mqtt-temperature', 22), downstairs: temperature('mqtt-temperature', 20),
+    bedroom: temperature('mqtt-temperature', 21, held), outdoor: temperature('husdata-h66', 4) } };
+  const [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Needs attention');
+  assert.match(grouped.display.detail, /Average indoor: Needs attention.*Using last known readings: Bedroom observed 10:00.*over 2 hours old, sensor disconnected/);
+  assert.match(grouped.series[2].detail, /Using last known reading from 10:00.*sensor disconnected/);
+  const summary = temperatureReadingStatus(indoor, options);
+  assert.equal(summary.usable, true);
+  assert.match(summary.detail, /Bedroom observed/);
+  status.observations.indoor.attentionSensors.push({ signal: 'invented-private-room', observedAt, reasons: ['invented-private-reason'] });
+  status.observations.bedroom.attentionReasons.push('invented-private-reason');
+  assert.doesNotMatch(JSON.stringify(dashboardProviders(status, options)), /invented-private/);
+});
+
+test('recent disconnected room and old optional garage remain usable with actionable source warnings', () => {
+  const status = { input: 'mqtt', observations: {
+    indoor: temperature('mqtt-temperature', 21, { held: true, needsAttention: true, attentionReasons: ['disconnected'] }),
+    outdoor: temperature('husdata-h66', 4),
+  } };
+  const reading = temperatureReadingStatus(status.observations.indoor, options);
+  assert.equal(reading.usable, true);
+  assert.match(reading.detail, /sensor disconnected/);
+  assert.doesNotMatch(reading.detail, /over 2 hours/);
+  status.observations.indoor = temperature('mqtt-temperature', 21);
+  status.observations.garage = temperature('mqtt-temperature', 16, { observedAt: now - 3 * 3_600_000 });
+  const [grouped] = dashboardProviders(status, options);
+  assert.equal(grouped.display.state, 'Needs attention');
+  assert.match(grouped.series[1].detail, /Using last known reading from 07:00.*over 2 hours old/);
 });
 
 test('temperature group retains outdoor fallback diagnostics without exposing unknown source data', () => {

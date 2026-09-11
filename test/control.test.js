@@ -75,8 +75,8 @@ test('quarter-hour prices preserve duration and support a 24-hour recovery horiz
   assert.equal(result.plan.horizonEnd, iso(now + 24 * HOUR));
 });
 
-test('missing, stale, suspect, future and zero indoor readings cause normal fallback', () => {
-  const readings = [undefined, { value: 21, observedAt: iso(now - HOUR) }, { value: 0, observedAt: iso(now) },
+test('missing, unusable, suspect, future and zero indoor readings cause normal fallback', () => {
+  const readings = [undefined, { value: 21, observedAt: iso(now - HOUR), stale: true }, { value: 0, observedAt: iso(now) },
     { value: 21, observedAt: iso(now), quality: 'suspect' }, { value: 21, observedAt: iso(now), quality: ['unverified-scaling'] },
     { value: 21, observedAt: iso(now), quality: ['retained'] }, { value: 21, observedAt: iso(now + 1000) }];
   for (const reading of readings) {
@@ -84,6 +84,19 @@ test('missing, stale, suspect, future and zero indoor readings cause normal fall
     const result = decide(input);
     assert.equal(result.action, 'normal');
     assert.ok(result.reasons.includes('missing-or-stale-observations'));
+  }
+});
+
+test('slow and disconnected indoor readings remain eligible with their original age', () => {
+  for (const age of [2 * HOUR, 24 * HOUR, 7 * 24 * HOUR]) {
+    const input = fixture();
+    input.observations.indoor = { value: 21, observedAt: iso(now - age), stale: false,
+      needsAttention: true, held: true, attentionReasons: ['disconnected', 'old-reading'] };
+    const result = decide(input);
+    assert.equal(result.action, 'reduction');
+    assert.equal(result.reasons.includes('missing-or-stale-observations'), false);
+    input.observations.outdoor.observedAt = iso(now - HOUR);
+    assert(decide(input).reasons.includes('missing-or-stale-observations'), 'Outdoor still expires');
   }
 });
 
@@ -265,7 +278,7 @@ test('away dispatch still requires trustworthy data and obeys pause and native p
     ['timed-normal-override', input => { input.override = { mode: 'normal', expiresAt: iso(now + HOUR) }; }],
     ['equipment-fault-native-protection', input => { input.observations.fault = { active: true }; }],
     ['verified-integral-recovery-warning', input => { input.observations.integral = { value: -900, recoveryThreshold: -800, verified: true, observedAt: iso(now) }; }],
-    ['missing-or-stale-observations', input => { input.observations.indoor.observedAt = iso(now - HOUR); }],
+    ['missing-or-stale-observations', input => { input.observations.outdoor.observedAt = iso(now - HOUR); }],
     ['unvalidated-heating-energy-model', input => { input.learned.model.energy = null; }],
     ['unvalidated-thermal-model', input => { input.learned.model.validation.accepted = false; }],
     ['stale-thermal-model', input => { input.learned.model.trainedAt = iso(now - 31 * 24 * HOUR); }],

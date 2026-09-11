@@ -24,7 +24,9 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
   if (sourceTime === null && !retained && object.timestamp == null) sourceTime = receivedAt;
   if (sourceTime === null) quality.push('source_time_unknown');
   if (sourceTime > receivedAt) quality.push('future_source_time');
-  if (Number.isFinite(sourceTime) && receivedAt - sourceTime > 300_000) quality.push('stale');
+  // Room and garage sensors may publish only when their measured value changes.
+  // Preserve that measurement's age without rejecting it for elapsed time alone.
+  if (signal === 'outdoor_temperature' && Number.isFinite(sourceTime) && receivedAt - sourceTime > 300_000) quality.push('stale');
   if (retained) quality.push('retained');
   if (value === null) quality.push('missing');
   return { source: 'mqtt-temperature', device: signal, signal, value, unit: 'degC', sourceTime, receivedAt, quality,

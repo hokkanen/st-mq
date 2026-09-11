@@ -1,7 +1,7 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
 import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
-import { outdoorSourceLabel, providerName } from './provider-status.js';
+import { outdoorSourceLabel, providerName, temperatureAttentionDetails } from './provider-status.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
@@ -73,7 +73,13 @@ export function historyTooltipLabel(item) {
   const session = sessionPointDetail(item.raw);
   const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
     ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
-  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : item.raw?.modelInput ? ' · saved learning input' : ''}${item.raw?.equivalentCurrent ? ' · equivalent at 230 V' : ''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly ? ' · meter check only' : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
+  const indoor = item.raw?.savedIndoorAverage;
+  const heldSensors = indoor ? temperatureAttentionDetails(item.raw.attentionSensors, at => dateTime.format(at)) : '';
+  const savedInput = indoor ? ` · saved indoor average${item.raw.learningUsable === false ? ' · excluded from learning' : ''}`
+    : item.raw?.modelInput ? ' · saved learning input' : '';
+  const held = indoor && (item.raw.held || item.raw.needsAttention)
+    ? ` · ${item.raw.needsAttention ? 'needs attention · ' : ''}using last known readings${heldSensors ? `: ${heldSensors}` : ''}` : '';
+  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : savedInput}${held}${item.raw?.equivalentCurrent ? ' · equivalent at 230 V' : ''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly ? ' · meter check only' : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
 }
 
 /** The chart owns only its controls and fetches; the monitor owns authentication. */
@@ -349,6 +355,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
       ? 'Lines carry the last recorded readings forward to the snapshot time; these extensions are not new measurements.'
       : 'Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
+    if (datasets.some(dataset => dataset.key === 'model_indoor_temperature' && !dataset.hidden
+      && dataset.data.some(point => point.needsAttention))) notes.push('Average indoor includes last known room readings while sensors need attention. Tooltips show which rooms and their original observation times.');
     if (plot.left === 'power') notes.push(payload.meta?.powerEstimate ?? 'Power is an interval average derived from estimated energy.');
     if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
@@ -358,7 +366,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     } else if (plot.left === 'model_fireplace_release') {
       notes.push('Fireplace release is calculated from corrected firewood additions using the delayed masonry response. Its kg/h unit is fuel equivalent, not a burn-rate measurement or delivered kW. Heat from additions before these dates can continue into the selection; periods before logging began remain unknown.');
     } else if (plot.left.startsWith('model_')) {
-      notes.push('Model inputs are the values saved with completed learning intervals. They are not recalculated using today’s model or settings. Missing or rejected intervals appear as gaps; the indoor endpoint is the observed prediction target.');
+      notes.push('Model inputs are the values saved with completed learning intervals. They are not recalculated using today’s model or settings. Missing or rejected input intervals appear as gaps. New indoor averages remain visible when another learning input is unavailable; tooltips identify last known room readings.');
       if (payload.meta?.modelInputs?.rejectedIntervals) notes.push(`${payload.meta.modelInputs.rejectedIntervals} input segments were excluded by recorded quality checks.`);
     }
     if (plot.left === 'firewood_load') notes.push('Triangles show manually added kilograms. Additions with exactly the same timestamp are combined and counted in the tooltip. Corrections exclude mistaken additions. The empty space between points does not describe fireplace heat release.');

@@ -326,7 +326,26 @@ test('generic MQTT temperatures preserve source age and retained availability', 
   assert.equal(basic.value, 12.25); assert.equal(basic.sourceTime, initial);
   const retained = decodeMqttTemperature({ signal: 'garage_temperature', payload: '12.25', receivedAt: initial, retained: true });
   assert.equal(retained.sourceTime, null); assert(retained.quality.includes('retained'));
-  const stale = decodeMqttTemperature({ signal: 'indoor_temperature', payload: JSON.stringify({ value: 68, unit: 'F', timestamp: initial - 600_000 }), receivedAt: initial });
+  const stale = decodeMqttTemperature({ signal: 'outdoor_temperature', payload: JSON.stringify({ value: 68, unit: 'F', timestamp: initial - 600_000 }), receivedAt: initial });
   assert.equal(stale.value, 20); assert(stale.quality.includes('stale'));
   assert.equal(decodeMqttTemperature({ signal: 'garage_temperature', payload: '{}', receivedAt: initial }).value, null);
+});
+
+test('room and garage MQTT measurements keep their original timestamps regardless of age', () => {
+  for (const signal of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature']) {
+    for (const age of [2 * 3_600_000, 7 * 24 * 3_600_000]) {
+      const sourceTime = initial - age;
+      const payload = JSON.stringify({ value: 68, unit: 'F', timestamp: sourceTime });
+      const reading = decodeMqttTemperature({ signal, payload, receivedAt: initial });
+      assert.equal(reading.value, 20);
+      assert.equal(reading.sourceTime, sourceTime);
+      assert.equal(reading.receivedAt, initial);
+      assert.deepEqual(reading.quality, ['converted_fahrenheit']);
+      const retained = decodeMqttTemperature({ signal, payload, receivedAt: initial, retained: true });
+      assert.equal(retained.sourceTime, sourceTime, 'Retained delivery cannot renew the measurement clock');
+      assert(retained.quality.includes('retained'));
+    }
+    const future = decodeMqttTemperature({ signal, payload: JSON.stringify({ value: 20, timestamp: initial + 1 }), receivedAt: initial });
+    assert(future.quality.includes('future_source_time'));
+  }
 });

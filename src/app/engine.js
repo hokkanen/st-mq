@@ -19,7 +19,8 @@ import { temporaryUpdate } from './temporary.js';
 import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
 import { addSensorChange, sensorChangesView } from './sensor-changes.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
-import { indoorAverage, indoorWeights, INDOOR_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention } from './indoor-readings.js';
 
 const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
@@ -127,7 +128,23 @@ export class Engine {
       const latest = this.latest[signal];
       const reading = latest ? { value: latest.value, observedAt: latest.sourceTime, quality: latest.quality, source: latest.source }
         : key === 'upstairs' ? observations.upstairs ?? observations.indoor : observations[key];
-      observations[key] = decorate(reading, signal, now);
+      const lastKnown = this.lastKnownTemperatures[signal];
+      if (lastKnown && indoorReadingUsable(lastKnown, now)) {
+        const attempt = this.temperatureAttempts[signal];
+        const attention = indoorReadingAttention(lastKnown, now, { latest: attempt ?? lastKnown });
+        // A restart restores the last actual reading and its recorded outage.
+        // Only a subsequent live publication can clear that source warning.
+        if (!attempt && lastKnown.needsAttention) {
+          attention.attentionReasons = [...new Set([...lastKnown.attentionReasons, ...attention.attentionReasons])];
+          attention.needsAttention = attention.held = true;
+        }
+        observations[key] = { value: lastKnown.value, observedAt: lastKnown.sourceTime,
+          quality: (lastKnown.quality ?? []).filter(flag => flag !== 'stale'), source: lastKnown.source, stale: false,
+          ...(attention.needsAttention ? attention : {}) };
+      } else {
+        observations[key] = decorate(reading, signal, now);
+        if (HELD_TEMPERATURE_SIGNALS.includes(signal) && !this.plant) observations[key].stale = true;
+      }
       const changedAt = boundaries[signal];
       if (Number.isFinite(changedAt) && (now < changedAt + SENSOR_SETTLING_MS || observations[key].observedAt < changedAt))
         observations[key] = { ...observations[key], stale: true, settling: now < changedAt + SENSOR_SETTLING_MS };
@@ -140,8 +157,10 @@ export class Engine {
     }
     observations.indoor = indoorAverage(Object.fromEntries(Object.entries(names)
       .map(([key, signal]) => [signal, observations[key]])), this.control);
-    if (Number.isFinite(checkpoint?.measurementEpochAt) && now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS)
-      observations.indoor = { ...observations.indoor, value: null, stale: true, settling: true };
+    if (Number.isFinite(checkpoint?.measurementEpochAt) && (now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS
+      || observations.indoor.observedAt < checkpoint.measurementEpochAt))
+      observations.indoor = { ...observations.indoor, value: null, stale: true,
+        settling: now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS };
     return observations;
   }
   replayLearning(checkpoint) {
@@ -256,6 +275,12 @@ export class Engine {
     this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport, config: this.control, clock });
     this.startupRestorationPending = this.executor.status().restorationPending;
     this.latest = Object.create(null);
+    this.lastKnownTemperatures = Object.create(null);
+    this.temperatureAttempts = Object.create(null);
+    for (const signal of HELD_TEMPERATURE_SIGNALS) {
+      const reading = lastIndoorReading(store, { signal, at: clock(), input: config.input });
+      if (reading) this.lastKnownTemperatures[signal] = reading;
+    }
     this.outdoorCandidates = Object.create(null);
     if (config.input === 'offline') {
       for (const signal of [...INDOOR_SIGNALS, 'garage_temperature', 'outdoor_temperature']) {
@@ -289,11 +314,27 @@ export class Engine {
   ingest(observation) {
     if (observation.raw?.auditOnly) return { saved: false, reason: 'audit-only' };
     const result = observation.raw?.acquisitionOnly ? { saved: false, reason: 'acquisition-only' } : this.recorder.record(observation);
-    this.rememberObservation(observation, this.clock());
+    const rejectedTime = HELD_TEMPERATURE_SIGNALS.includes(observation.signal)
+      && (result.rejectedSourceTime || result.reason === 'out-of-order-receipt');
+    this.rememberObservation(rejectedTime ? { ...observation,
+      quality: [...new Set([...(observation.quality ?? []), 'out-of-order-source-time'])] } : observation, this.clock());
     return result;
   }
   ingestEnergy(interval) { return this.recorder.recordEnergy(interval); }
   rememberObservation(observation, now) {
+    if (HELD_TEMPERATURE_SIGNALS.includes(observation?.signal)) {
+      const prior = this.lastKnownTemperatures[observation.signal];
+      if (indoorReadingUsable(observation, now) && (!prior || observation.sourceTime > prior.sourceTime
+        || observation.sourceTime === prior.sourceTime && observation.receivedAt >= prior.receivedAt))
+        this.lastKnownTemperatures[observation.signal] = observation;
+      const selected = this.lastKnownTemperatures[observation.signal];
+      const attempt = this.temperatureAttempts[observation.signal];
+      if (selected && selected.source === observation.source && selected.device === observation.device
+        && Number.isFinite(observation.receivedAt) && observation.receivedAt <= now
+        && observation.receivedAt >= Math.max(selected.receivedAt, attempt?.receivedAt ?? 0)
+        && !observation.raw?.retained && !observation.quality?.includes('retained'))
+        this.temperatureAttempts[observation.signal] = observation;
+    }
     if (['mqtt', 'providers'].includes(this.config.input) && observation?.signal === 'outdoor_temperature') {
       if (!OUTDOOR_SOURCES.includes(observation.source)) return;
       const prior = this.outdoorCandidates[observation.source];

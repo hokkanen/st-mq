@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { CycleTracker } from '../src/app/cycles.js';
 import { initialAdaptiveModel, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
-import { evaluateCycle, chooseCycle } from '../src/control/planner.js';
+import { evaluateCycle, chooseCycle, revalidatePlan } from '../src/control/planner.js';
 
 const HOUR = 3600000, start = Date.parse('2026-01-01T00:00:00Z');
 const intervals = (hours = 8, { outdoorC = 0, solarRadiationWm2 = 0, price = i => i < 2 ? 100 : 5 } = {}) =>
@@ -90,6 +90,24 @@ test('missing solar over a 48-hour horizon still permits a bounded startup trial
   assert.ok(decision.plan.schedule.reductionEnd - decision.plan.schedule.reductionStart <= HOUR / 2);
   assert.ok(decision.plan.trialAllowanceCents <= 50);
   assert.equal(decision.plan.trialSafety.comfortSafe,true);
+});
+
+test('cycle selection and revalidation accept old indoor values without renewing their timestamps', () => {
+  const rows = intervals(48, { solarRadiationWm2: null, price: () => 10 });
+  const args = { now: start, observations: { indoor: { value: 21, observedAt: start - 7 * 24 * HOUR,
+    stale: false, needsAttention: true, held: true } },
+    prices: rows.map(row => ({ ...row, allInCentsPerKWh: row.price })),
+    forecast: rows.map(row => ({ ...row, issuedAt: start })),
+    checkpoint: { model: initialAdaptiveModel(), baselineC: 21, health: { usableSamples: 4 } },
+    settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
+    equipment: { compressorOn: 1, dhwRouting: 0 }, trialBudgetRemainingCents: 100 };
+  const decision = chooseCycle(args);
+  assert.equal(decision.phase, 'reduction');
+  assert.equal(revalidatePlan({ ...args, plan: decision.plan }).valid, true);
+  assert.equal(args.observations.indoor.observedAt, start - 7 * 24 * HOUR);
+  args.observations.indoor.stale = true;
+  assert.equal(chooseCycle(args).phase, 'normal');
+  assert.equal(revalidatePlan({ ...args, plan: decision.plan }).reason, 'scheduled-cycle-observations-stale');
 });
 
 test('cycle accounting splits published price boundaries without duplicating coverage or stored trajectories', t => {

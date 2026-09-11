@@ -6,8 +6,9 @@ import { createChartService } from './chart-service.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
 import { sensorChangesView } from './sensor-changes.js';
-import { indoorAverage, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { indoorAverage, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { sensorBoundaries } from './sensor-inputs.js';
+import { lastIndoorReading, indoorReadingAttention } from './indoor-readings.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -22,7 +23,23 @@ function recordedInput(store) {
   return { input: contract ? contract.key.slice('contract:'.length) : 'offline', decision };
 }
 
-function observed(store, signal, now) {
+function observed(snapshot, signal, now) {
+  const store = snapshot?.store;
+  if (store && HELD_TEMPERATURE_SIGNALS.includes(signal)) {
+    // A copied database can contain observations newer than its published
+    // boundary. Select only evidence available at that boundary, then age the
+    // displayed reading without advancing its measurement timestamp.
+    const row = lastIndoorReading(store, { signal, at: Math.min(now, snapshot.publication.sourceAt), input: snapshot.input });
+    if (row) {
+      const current = indoorReadingAttention(row, now);
+      const attentionReasons = [...new Set([...row.attentionReasons, ...current.attentionReasons])];
+      const needsAttention = attentionReasons.length > 0;
+      return { value: row.value, observedAt: row.sourceTime, receivedAt: row.receivedAt, source: row.source,
+        quality: row.quality.filter(flag => flag !== 'stale'), ageMs: now - row.sourceTime, recorded: true, stale: false,
+        ...(needsAttention ? { needsAttention, attentionReasons, held: true } : {}) };
+    }
+    return null;
+  }
   const row = store?.latestObservation(signal);
   if (!row) return null;
   const observedAt = row.sourceTime ?? null;
@@ -101,7 +118,7 @@ export async function startReplica({ config, clock = Date.now,
     const observations = Object.fromEntries([['upstairs', 'indoor_temperature'], ['downstairs', 'downstairs_temperature'],
       ['bedroom', 'bedroom_temperature'], ['outdoor', 'outdoor_temperature'], ['garage', 'garage_temperature']]
       .map(([name, signal]) => {
-        const reading = observed(snapshot?.store, signal, now), changedAt = boundaries[signal];
+        const reading = observed(snapshot, signal, now), changedAt = boundaries[signal];
         if (reading && Number.isFinite(changedAt)
           && (now < changedAt + SENSOR_SETTLING_MS || reading.observedAt === null || reading.observedAt < changedAt))
           Object.assign(reading, { stale: true, settling: now < changedAt + SENSOR_SETTLING_MS });
@@ -109,8 +126,9 @@ export async function startReplica({ config, clock = Date.now,
       }));
     observations.indoor = indoorAverage({ indoor_temperature: observations.upstairs,
       downstairs_temperature: observations.downstairs, bedroom_temperature: observations.bedroom }, learningConfig);
-    if (Number.isFinite(checkpoint?.measurementEpochAt) && now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS)
-      Object.assign(observations.indoor, { value: null, stale: true, settling: true });
+    if (Number.isFinite(checkpoint?.measurementEpochAt) && (now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS
+      || observations.indoor.observedAt < checkpoint.measurementEpochAt))
+      Object.assign(observations.indoor, { value: null, stale: true, settling: now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS });
     return { role: 'replica', instance: { role: 'replica', readOnly: true }, readOnly: true,
       mode: 'monitoring', liveWrites: false, now, input: snapshot?.input ?? 'offline',
       replication: { state, generation: publication?.generation ?? null,
