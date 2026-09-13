@@ -216,8 +216,13 @@ application guard correctly kept the stale bedroom settings pending.
 The capture contained genuine temperature responses and forced capability events
 from laundry and bedroom, with no driver error log entries. The first bedroom
 wake returned the old 21,600 seconds followed by 4,200 seconds after the Set/Get
-sequence. No Configuration parameter send attempt has yet been observed after
-the preference refresh, and individual parameter acceptance is unverified.
+sequence. The final bedroom manual wake sent all nine Configuration settings, followed
+by the selected 4,200-second wake-up interval and fresh reading requests. Fresh
+battery/temperature and supported-interval responses arrived without driver
+errors, but no post-refresh `IntervalReport` arrived during this capture.
+Individual Configuration parameter acceptance is also unverified; logged sends
+are attempts, not readback. Further interval verification is left to a natural
+wake-up; no active 70-minute wait is required.
 Automatic 70-minute cadence and end-to-end MQTT delivery for this version remain
 separate checks; earlier manual duplicate-value forwarding evidence is retained
 in the historical trial below.
