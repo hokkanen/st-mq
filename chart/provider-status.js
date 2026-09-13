@@ -5,7 +5,7 @@ import { durationText } from './reading-status.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', 'shelly-mqtt': 'Shelly', easee: 'Easee', teslamate: 'Teslamate' });
+  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT', 'shelly-mqtt': 'MQTT-shelly', 'mqtt-equipment': 'MQTT', easee: 'Easee', teslamate: 'Teslamate' });
 const jobs = Object.freeze({ temperatures: 'Temperature adapter',
   easee: 'Property & Charger 1 · Easee', teslamate: 'Charger 2 · Teslamate',
   market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
@@ -118,7 +118,7 @@ export function providerSeries(job, health = {}) {
       'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.', source)];
   }
   if (['temperatures', 'mqtt-temperature'].includes(job)) {
-    const source = job === 'mqtt-temperature' ? 'MQTT temperature sensor'
+    const source = job === 'mqtt-temperature' ? 'MQTT'
       : 'Configured temperature adapter';
     return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
@@ -132,9 +132,8 @@ export function providerSeries(job, health = {}) {
 const temperatureJobs = ['temperatures', 'mqtt-temperature', 'outdoor'];
 const indoorSources = ['husdata-h66', 'mqtt-temperature', 'shelly-mqtt'];
 const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
-// Main temperatures names the sensor platform; acquisition diagnostics retain
-// the local MQTT transport name. No SmartThings cloud connection is involved.
-const temperatureSourceLabel = source => source === 'mqtt-temperature' ? 'Smartthings' : providerName(source);
+// Source labels describe the configured transport.
+const temperatureSourceLabel = providerName;
 
 function temperatureDisplay(status, entries, options) {
   const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];

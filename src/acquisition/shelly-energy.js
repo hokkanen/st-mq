@@ -7,11 +7,12 @@ const day = at => moment.tz(at, 'Europe/Helsinki').format('YYYY-MM-DD');
 /** Immutable completed UTC-hour totals, measured from consecutive meter counter
  * readings. A short boundary-straddling delta is allocated by elapsed time.
  * Unknown outages/resets stay partial: no power extrapolation or invented zero. */
-export function createCaravanEnergy({ store, device, maxGapMs }) {
-  let state = store.getState(KEY);
+export function createCaravanEnergy({ store, device, maxGapMs, signal = 'caravan_energy',
+  recordDevice = 'caravan', stateKey = KEY, source = 'shelly-mqtt' }) {
+  let state = store.getState(stateKey);
   if (state?.device !== device) state = null;
   state ??= { device, previous: null, pending: null, day: null, dailyKwh: 0, dailyCoveredMs: 0, reset: false };
-  const save = () => store.setState(KEY, state);
+  const save = () => store.setState(stateKey, state);
   const transaction = update => {
     // SQLite rollback must also rewind this bounded accumulator. Otherwise an
     // identical retry can be mistaken for a duplicate after a failed commit.
@@ -24,7 +25,7 @@ export function createCaravanEnergy({ store, device, maxGapMs }) {
     if (!bucket || bucket.start + HOUR > now) return;
     const quality = bucket.coveredMs < HOUR - 1 ? ['partial-coverage'] : [];
     if (bucket.allocated) quality.push('time-allocated');
-    store.observation({ source: 'shelly-mqtt', device: 'caravan', signal: 'caravan_energy', value: bucket.kwh,
+    store.observation({ source, device: recordDevice, signal, value: bucket.kwh,
       unit: 'kWh', sourceTime: bucket.start + HOUR, receivedAt: now, quality,
       raw: { intervalStart: bucket.start, intervalEnd: bucket.start + HOUR, coveredMs: bucket.coveredMs,
         basis: 'meter-counter-delta', timeBasis: 'completed-hour', learningRole: 'history-only' } });

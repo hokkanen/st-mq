@@ -42,7 +42,9 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   const rooms = select.children.find(group => group.label === 'Home temperatures · Recorded');
   assert.deepEqual(rooms.children.map(option => [option.value, option.textContent]), [
     ['temperatures', 'All home temperatures'],
-    ['garage_temperature_ha', 'Garage temperature via Home Assistant'],
+    ['garage_temperature_ha', 'Garage temperature · MQTT'],
+    ['garage_temperature_2', 'Garage temperature 2'],
+    ['garage_heat_pump_temperature', 'Garage heat-pump temperature'],
   ]);
   for (const signal of ['caravan_energy', 'caravan_power', 'caravan_current', 'caravan_active']) assert(choices.has(signal));
   assert(!choices.has('garage_temperature'), 'Garage is shared on the right axis');

@@ -137,7 +137,10 @@ test('Downstairs and Bedroom MQTT temperatures are recorded independently across
 
 test('configured Upstairs MQTT sensor owns room history and model input alongside H66 indoor publications', async t => {
   const store = new Store(':memory:');
-  const config = { ...loadConfig({ HOME: '/missing-stmq-test-home' }, '/missing-repository'), input: 'mqtt', deviceId: 'invented-h66',
+  const defaults = loadConfig({ HOME: '/missing-stmq-test-home' }, '/missing-repository');
+  const config = { ...defaults, input: 'mqtt', deviceId: 'invented-h66',
+    // This isolated fixture replaces the public equipment list with one room.
+    control: { ...defaults.control, indoorSensorWeights: { indoor_temperature: 1 } },
     connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: {
       indoor_temperature: 'invented/smoke/1/temperature',
     } } } };

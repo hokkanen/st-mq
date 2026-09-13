@@ -652,35 +652,36 @@ This does not expand the storage contract to full control-choice replay.
 
 ## Local MQTT temperature sensors and interface
 
-Indoor and garage temperature acquisition uses exact topics on the existing local
-MQTT broker in both `providers` and `mqtt` input modes. These subscriptions work
-without an H66 device configured. The room mapping is:
+Indoor and garage temperature acquisition uses the existing local MQTT broker in
+both `providers` and `mqtt` input modes. H66 is not required. Public topic defaults
+are in `config.json` under `options.equipment.devices`, with one explicit connection
+line per device:
 
-| Local sensor | MQTT configuration field | Recorded signal | Display name |
+| Equipment entry | Connection format | Recorded signal | Display name |
 | --- | --- | --- | --- |
-| Smoke channel 1 | `indoor_temperature_topic` | `indoor_temperature` | Upstairs |
-| Smoke channel 2 | `bedroom_temperature_topic` | `bedroom_temperature` | Bedroom |
-| Smoke channel 3 | `downstairs_temperature_topic` | `downstairs_temperature` | Downstairs |
-| Optional garage sensor | `garage_temperature_topic` | `garage_temperature` | Garage |
+| `upstairs` | `mqtt:<exact topic>` | `indoor_temperature` | Upstairs |
+| `bedroom` | `mqtt:<exact topic>` | `bedroom_temperature` | Bedroom |
+| `downstairs` | `mqtt:<exact topic>` | `downstairs_temperature` | Downstairs |
+| `garage` | `shelly:<native prefix>` | `garage_temperature` | Garage temperature |
+| `garage_mqtt` | `mqtt:<exact topic>` | `garage_temperature_ha` | Garage temperature · MQTT |
 
-These fields belong under `mqtt` in private configuration or add-on options.
-An empty topic disables that subscription. All indoor locations are recorded
-separately; an individual sensor failure does not replace the other readings.
-The existing indoor signal, imported CSV meaning and original temperature history
-remain unchanged. H66 can supply indoor temperature when installed and
-representative if no dedicated Upstairs topic is configured.
-The three smoke channels use these exact topics. The optional garage topic below
-is an invented example; replace it with the actual local topic or leave it empty:
+See [MQTT equipment](mqtt-equipment.md) for setup, the second garage probe, door
+states, and the device list schema. The connection line selects the handler;
+there is no protocol detection or source fallback. Broker credentials stay in the
+private configuration and topics need not be duplicated there. The old individual
+`mqtt.*_temperature_topic` fields remain accepted during configuration migration.
+
+All indoor locations are recorded separately; an individual sensor failure does
+not replace the other readings. Existing signals, CSV meanings, reporting metadata
+and original temperature history remain unchanged. H66 can provide the Upstairs
+input when no dedicated MQTT source is configured. The indoor reporting contract
+remains controlled by these shared settings:
 
 ```json
 {
   "mqtt": {
-    "indoor_temperature_topic": "stmq/smoke/1/temperature",
-    "bedroom_temperature_topic": "stmq/smoke/2/temperature",
-    "downstairs_temperature_topic": "stmq/smoke/3/temperature",
     "temperature_report_interval_minutes": 15,
-    "temperature_report_grace_seconds": 120,
-    "garage_temperature_topic": "example/sensors/garage"
+    "temperature_report_grace_seconds": 120
   }
 }
 ```

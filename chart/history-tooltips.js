@@ -49,8 +49,7 @@ export function historyTooltipTitle(items) {
 
 export function historyTooltipLabel(item) {
   const { key } = item.dataset, raw = item.raw ?? {}, details = [];
-  const source = raw.modelInput ? null : raw.source === 'shelly-mqtt' ? 'Shelly direct MQTT'
-    : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source) : providerName(raw.source);
+  const source = raw.modelInput ? null : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source) : providerName(raw.source);
   if (source) details.push(source);
   if (raw.modelCoefficient) {
     details.push('model result', coefficientStatusLabel(raw.coefficientStatus));

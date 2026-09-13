@@ -87,9 +87,9 @@ const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
-  caravan_power: ['Caravan power', 'kW · Shelly plug measurement', 'garage'],
-  caravan_current: ['Caravan current', 'A · measured on Gen2+; estimated from power on Gen1 plugs', 'garage'],
-  caravan_active: ['Caravan plug', 'state · Shelly plug output', 'garage'],
+  caravan_power: ['Caravan power', 'kW · reported power', 'garage'],
+  caravan_current: ['Caravan current', 'A · reported current; estimates are marked on the readings', 'garage'],
+  caravan_active: ['Caravan plug', 'state · reported output', 'garage'],
   caravan_energy: ['Caravan energy', 'kWh · hourly accumulated meter energy', 'garage'],
   ev2_energy: ['Charger 2 total energy', 'kWh · estimated from TeslaMate charging power over the recorded interval', 'ev2'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
@@ -149,6 +149,8 @@ export function leftAxisAvailability(datasets) {
 }
 
 export function historyStateLabel(key, value) {
+  if (/^garage_door[12]_open$/.test(key)) return value === 1 ? 'Open' : value === 0 ? 'Closed' : `Unknown (${value})`;
+  if (key === 'garage_heat_pump_active') return value === 1 ? 'Power enabled' : value === 0 ? 'Power disabled' : `Unknown (${value})`;
   if (key === 'operating_mode') return operationModes[value] ?? `Unknown mode (${value})`;
   if (['controller_phase', 'model_controller_phase'].includes(key))
     return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;

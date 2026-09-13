@@ -30,6 +30,12 @@ const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
 
+function directGarageDevice(config) {
+  return config.connections?.equipment?.devices?.find(device => device.enabled && device.protocol === 'shelly'
+    && device.ownedSignals.includes('garage_temperature'))?.id
+    ?? (config.connections?.shelly?.devices?.some(device => device.role === 'garage') ? 'garage' : null);
+}
+
 function trustworthy(observation, now) {
   const phaseCurrent = /^(?:ev1|property)_current_l[123]$/.test(observation?.signal ?? '');
   const modelOutdoor = observation?.source === 'openmeteo' && observation?.signal === 'outdoor_temperature';
@@ -351,8 +357,8 @@ export class Engine {
     this.temperatureReportPolicies = Object.create(null);
     for (const signal of HELD_TEMPERATURE_SIGNALS) {
       const reading = lastIndoorReading(store, { signal, at: clock(), input: config.input });
-      const directGarage = signal === 'garage_temperature' && config.connections?.shelly?.devices?.some(device => device.role === 'garage');
-      if (reading && (!directGarage || reading.source === 'shelly-mqtt' && reading.device === 'garage')) this.lastKnownTemperatures[signal] = reading;
+      const directGarage = signal === 'garage_temperature' && directGarageDevice(config);
+      if (reading && (!directGarage || reading.source === 'shelly-mqtt' && reading.device === directGarage)) this.lastKnownTemperatures[signal] = reading;
     }
     this.outdoorCandidates = Object.create(null);
     if (config.input === 'offline') {
@@ -405,8 +411,8 @@ export class Engine {
   }
   ingestEnergy(interval) { return this.recorder.recordEnergy(interval); }
   rememberObservation(observation, now) {
-    if (observation?.signal === 'garage_temperature' && this.config.connections?.shelly?.devices?.some(device => device.role === 'garage')
-      && (observation.source !== 'shelly-mqtt' || observation.device !== 'garage')) return;
+    const directGarage = observation?.signal === 'garage_temperature' && directGarageDevice(this.config);
+    if (directGarage && (observation.source !== 'shelly-mqtt' || observation.device !== directGarage)) return;
     if (HELD_TEMPERATURE_SIGNALS.includes(observation?.signal)) {
       const prior = this.lastKnownTemperatures[observation.signal];
       const previousAttempt = this.temperatureAttempts[observation.signal];
@@ -490,6 +496,51 @@ export class Engine {
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`) };
+  }
+  equipmentStatus() {
+    return this.equipment?.status(this.clock()) ?? { configured: false, connected: false, devices: [] };
+  }
+  equipmentTestStatus() {
+    return this.equipmentTests?.status() ?? { available: false, busy: false, active: null,
+      reason: 'Configure a controllable MQTT device to enable switch tests.' };
+  }
+  async recheckEquipment(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some(key => key !== 'deviceId')
+      || input.deviceId !== undefined && typeof input.deviceId !== 'string')
+      throw new Error('Choose a configured MQTT device or check all devices.');
+    if (!this.equipment) throw new Error('No MQTT equipment connection is configured.');
+    await this.equipment.recheck(input);
+    return this.status();
+  }
+  async testEquipment(input) {
+    if (!this.equipmentTests) throw new Error('MQTT equipment tests are unavailable.');
+    await this.equipmentTests.start(input);
+    return this.status();
+  }
+  async restoreEquipmentTest(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+      throw new Error('Restore the current equipment test with an empty request.');
+    if (!this.equipmentTests) throw new Error('MQTT equipment tests are unavailable.');
+    await this.equipmentTests.restore();
+    return this.status();
+  }
+  dhwrStatus() {
+    const state = this.executor.status(), now = this.clock();
+    return { active: Boolean(state.dhwrOutstanding && state.pulseUntil > now),
+      expiresAt: state.dhwrOutstanding ? state.pulseUntil : null,
+      durationMinutes: this.executor.pulseMs / 60_000,
+      restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
+      confirmed: false };
+  }
+  async stopDhwr(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+      throw new Error('Stop circulation with an empty request.');
+    if (!this.heatingTests().available) throw new Error('MQTT circulation control is unavailable.');
+    if (this.heatingTestBusy || this.dispatchPending || this.cycles.active())
+      throw new Error('Wait for the current heating operation to finish before stopping manual circulation.');
+    await this.executor.exclusive(() => this.executor.stopDhwr(this.clock()));
+    return this.status();
   }
   async testHeating(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -969,7 +1020,9 @@ export class Engine {
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
       heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
-      providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},contract:this.contract(),configuredPrices:this.config.priceSettings??null,
+      providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},
+      equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),dhwr:this.dhwrStatus(),
+      contract:this.contract(),configuredPrices:this.config.priceSettings??null,
       recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
@@ -988,6 +1041,9 @@ export class Engine {
     result.now = now;
     result.heatingTests = this.heatingTests();
     result.shelly = this.shelly?.status(now) ?? { configured: false, connected: false, devices: [] };
+    result.equipment = this.equipmentStatus();
+    result.equipmentTests = this.equipmentTestStatus();
+    result.dhwr = this.dhwrStatus();
     result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();
     result.sensorChanges = this.sensorChangesStatus();

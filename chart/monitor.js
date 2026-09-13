@@ -9,7 +9,7 @@ import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
-import { renderShellyEquipment } from './shelly-equipment.js';
+import { createEquipmentPanel } from './equipment.js';
 
 const $ = id => document.getElementById(id);
 const ingress = usesHomeAssistantLogin();
@@ -21,11 +21,13 @@ let temporaryBusy = false;
 let heatingTestBusy = false;
 let h66TestBusy = false;
 let settingsReloadBusy = false;
+let equipmentBusy = false;
 let lastHeatingTestResult;
 let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
+const heatingCommandLabel = command => ({ heatoff: 'Tariff reduction', heaton15: 'Normal heating', heaton60: 'Circulation' })[command] ?? 'Heating request';
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
@@ -78,6 +80,10 @@ const sensorChangePanel = createSensorChangePanel({ document, request: api, stor
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
   afterMutation: () => refresh({ forceChart: true }) });
+const equipmentPanel = createEquipmentPanel({ document, request: api,
+  beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
+  onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
+  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
 function renderContract(s) {
   const current = activeRates(s);
   const period = current ?? s.configuredPrices;
@@ -114,15 +120,17 @@ function renderContract(s) {
   table.append(caption, header, body);
   list.append(heading, table, tariff);
 }
-function updateTemporaryButtons() {
-  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy;
+function updateTemporaryButtons(updateEquipment = true) {
+  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || Boolean(lastStatus?.equipmentTests?.active || lastStatus?.equipmentTests?.busy);
   $('temporary-submit').disabled = busy || dirtyTemporary.size === 0;
   const saved = lastStatus ? temporaryValues(lastStatus) : {};
   $('home-now').disabled = busy || !($('away-until').value || saved.awayUntilLocal);
   $('resume-now').disabled = busy || !($('pause-until').value || saved.pauseUntilLocal);
   for (const button of heatingTestButtons) button.disabled = busy || !lastStatus?.heatingTests?.available;
+  $('dhwr-stop').disabled = busy || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending);
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
+  if (updateEquipment) equipmentPanel.refreshControls();
 }
 function renderTemporary(s) {
   const saved = temporaryValues(s);
@@ -144,8 +152,8 @@ function showHeatingTestResult(result) {
   const failed = result.status === 'failed' || !result.sent;
   $('heating-test-message').classList.toggle('form-error', failed);
   $('heating-test-message').textContent = failed
-    ? `${result.command} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
-    : `${result.command} sent via MQTT at ${time(result.at)}. Device response is not verified.`;
+    ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
+    : `${heatingCommandLabel(result.command)} sent via MQTT at ${time(result.at)}. Device response is not verified.`;
   lastHeatingTestResult = JSON.stringify(result);
 }
 function renderHeatingTests(s) {
@@ -396,7 +404,7 @@ function render(s) {
   $('price').textContent = current ? current.allInCentsPerKWh.toFixed(2) : spot ? spot.spotCtPerKwh.toFixed(2) : '—';
   $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
   $('price-unit').textContent = s.input === 'simulated' ? 'c/kWh · synthetic simulation data' : current ? 'c/kWh · import, variable charges' : spot ? 'c/kWh · excludes VAT and other charges' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
-  renderContract(s); renderProviders(s); renderH66(s); renderShellyEquipment($('shelly-equipment'), s.shelly);
+  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   $('control-mode').textContent = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
@@ -407,7 +415,9 @@ function render(s) {
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
-  $('dhwr').textContent = s.decision.dhwr?.requested ? '10-minute pulse requested' : 'No pulse requested';
+  $('dhwr').textContent = s.dhwr?.restorationPending ? 'Stop requested · awaiting confirmation'
+    : s.dhwr?.active ? `Circulation requested${Number.isFinite(s.dhwr.expiresAt) ? ` · ${Math.max(0, Math.ceil((s.dhwr.expiresAt - s.now) / 60000))} min remaining` : ''}`
+      : s.decision.dhwr?.requested ? 'Circulation requested' : 'Not requested';
   const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
@@ -459,7 +469,7 @@ async function events() {
   while ($('events').children.length > 100) $('events').lastChild.remove();
 }
 async function refresh({ forceChart = false } = {}) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy) return;
   const sequence = ++refreshSequence;
   try {
     const s = await api('/api/status');
@@ -493,7 +503,7 @@ async function refreshPairing() {
   finally { pairPollBusy = false; }
 }
 $('settings-reload').addEventListener('click', async () => {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !settingsReloadScope(lastStatus).available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !settingsReloadScope(lastStatus).available) return;
   settingsReloadBusy = true; ++refreshSequence;
   updateTemporaryButtons();
   $('settings-reload').setAttribute('aria-busy', 'true');
@@ -526,7 +536,7 @@ for (const [field, id] of Object.entries(temporaryFields)) {
   $(id).addEventListener('change', changed);
 }
 async function applyTemporary(values) {
-  if (!lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy) return;
+  if (!lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy) return;
   temporaryBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();
@@ -558,13 +568,13 @@ $('temporary-form').addEventListener('submit', event => {
 $('home-now').addEventListener('click', () => applyTemporary({ awayUntilLocal: null }));
 $('resume-now').addEventListener('click', () => applyTemporary({ pauseUntilLocal: null }));
 async function testHeating(command) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !lastStatus?.heatingTests?.available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !lastStatus?.heatingTests?.available) return;
   heatingTestBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();
   $('heating-test-buttons').setAttribute('aria-busy', 'true');
   $('heating-test-message').classList.remove('form-error');
-  $('heating-test-message').textContent = `Sending ${command}…`;
+  $('heating-test-message').textContent = `Sending ${heatingCommandLabel(command)}…`;
   try {
     const result = await api('/api/heating-test', { command });
     showHeatingTestResult(result);
@@ -581,11 +591,18 @@ async function testHeating(command) {
   await refresh();
 }
 for (const button of heatingTestButtons) button.addEventListener('click', () => testHeating(button.dataset.heatingCommand));
+$('dhwr-stop').addEventListener('click', async () => {
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
+  heatingTestBusy = true; ++refreshSequence; updateTemporaryButtons();
+  try { render(await api('/api/dhwr/stop', {})); $('heating-test-message').textContent = 'Circulation stop requested.'; }
+  catch { $('heating-test-message').textContent = 'Could not confirm the circulation stop request.'; $('heating-test-message').classList.add('form-error'); }
+  finally { heatingTestBusy = false; updateTemporaryButtons(); }
+});
 $('h66-test-register').addEventListener('change', () => updateH66Selector({ useReadback: true }));
 $('h66-test-form').addEventListener('submit', async event => {
   event.preventDefault();
   const register = $('h66-test-register').value;
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || !h66Control(lastStatus?.h66, register).available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !h66Control(lastStatus?.h66, register).available) return;
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('h66-test-form').setAttribute('aria-busy', 'true');
   $('h66-test-message').classList.remove('form-error');

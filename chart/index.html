@@ -130,9 +130,8 @@
       </details>
     </section>
 
-    <section class="controller-panels" aria-label="Home controller" data-controller-only>
-      <div class="controller-column">
-        <article id="home-control" class="panel home-control" aria-labelledby="control-title">
+    <section class="controller-panels" aria-label="Home and Garage equipment" data-controller-only>
+      <article id="home-control" class="panel home-control" aria-labelledby="control-title">
           <div class="dashboard-heading">
             <h2 id="control-title">Home &amp; heating</h2>
             <span class="control-badge"><span>Price control</span><strong id="control-price">—</strong></span>
@@ -182,6 +181,8 @@
               <p><span>Tariff control</span><span id="home-tariff-status">—</span></p>
             </div>
           </div>
+          <div id="home-equipment-readings" class="equipment-device-list"></div>
+          <p id="home-active-test" class="equipment-active-test" role="status" hidden></p>
           <div class="home-actions">
             <details id="temporary-details" class="dashboard-disclosure temporary-panel">
               <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
@@ -204,7 +205,7 @@
               </form>
             </details>
             <details id="equipment-details" class="dashboard-disclosure">
-              <summary><span>Equipment</span><small>Readings, data &amp; tests</small></summary>
+              <summary><span>Equipment &amp; tests</span><small>Home readings &amp; manual controls</small></summary>
               <section class="equipment-group" aria-labelledby="equipment-monitoring-title">
                 <h3 id="equipment-monitoring-title">Heat-pump monitoring</h3>
                 <details id="h66-readings-details" class="equipment-fold">
@@ -221,7 +222,7 @@
                   <div id="h66-series"></div>
                 </details>
               </section>
-              <div id="shelly-equipment"></div>
+
               <section class="equipment-group" aria-labelledby="equipment-tests-title">
                 <h3 id="equipment-tests-title">Manual tests</h3>
                 <details id="h66-test-details" class="heating-test-details equipment-fold">
@@ -229,10 +230,10 @@
                   <p class="muted">Apply a temporary setting to the heat pump. The test checks readback and restores the previous setting when its duration ends.</p>
                   <form id="h66-test-form" class="h66-test-form">
                     <label>Setting<select id="h66-test-register">
-                      <option value="0203">Room setting · 0203</option>
-                      <option value="0212">Hot water start · 0212</option>
-                      <option value="0208">Hot water stop · 0208</option>
-                      <option value="2201">Operating mode · 2201</option>
+                      <option value="0203">Room setting</option>
+                      <option value="0212">Hot water start</option>
+                      <option value="0208">Hot water stop</option>
+                      <option value="2201">Operating mode</option>
                     </select></label>
                     <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
                     <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
@@ -243,23 +244,37 @@
                   <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </details>
                 <details id="heating-test-details" class="heating-test-details equipment-fold">
-                  <summary>Test heating commands</summary>
+                  <summary>Test tariff control &amp; circulation</summary>
                   <p id="heating-test-help" class="muted">Each button controls the configured devices through MQTT. DHWR starts timed circulation; ST-MQ sends OFF when the configured duration ends. Normal heating follows the heat pump’s own controls.</p>
                   <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Send a test heating command" aria-describedby="heating-test-help heating-test-status">
-                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>heatoff</span><small>Tariff reduction</small></button>
-                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>heaton15</span><small>Normal heating</small></button>
+                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>Tariff reduction</span><small>Request reduced heating</small></button>
+                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>Normal heating</span><small>Resume pump controls</small></button>
                     <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>Start DHWR</span><small>Timed circulation</small></button>
                   </div>
+                  <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop circulation</button>
                   <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
                   <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </details>
               </section>
+              <details id="home-switch-tests-details" class="equipment-fold"><summary>Other Home switch tests</summary><div id="home-equipment-tests"></div></details>
             </details>
           </div>
         </article>
-      </div>
-      <div class="controller-column">
-        <article id="house-model" class="panel house-model" aria-labelledby="model-title">
+      <article id="garage-control" class="panel garage-control" aria-labelledby="garage-title">
+        <div class="dashboard-heading"><h2 id="garage-title">Garage</h2><span id="garage-equipment-status" class="muted">No devices configured</span></div>
+        <div id="garage-equipment-readings" class="equipment-device-list"></div>
+        <p id="garage-active-test" class="equipment-active-test" role="status" hidden></p>
+        <details id="garage-equipment-details" class="dashboard-disclosure">
+          <summary><span>Equipment &amp; tests</span><small>Garage readings &amp; manual controls</small></summary>
+          <p class="muted">Temperatures and door states come from their configured connections. Door report time is separate from connection health.</p>
+          <details id="garage-switch-tests-details" class="equipment-fold"><summary>Manual switch tests</summary>
+            <p class="muted">Apply a temporary switch state and restore the previous state when the timer ends. Power enabled does not confirm compressor activity.</p>
+            <div id="garage-equipment-tests"></div>
+          </details>
+          <p><a href="#mqtt-devices-details" data-open-mqtt-settings>Configure MQTT devices</a></p>
+        </details>
+      </article>
+      <article id="house-model" class="panel house-model" aria-labelledby="model-title">
           <div class="dashboard-heading"><h2 id="model-title">House model</h2><span class="card-kicker">LEARNING</span></div>
           <p id="learning-title" class="model-headline">Collecting observations</p>
           <p id="learning-overview" class="muted"></p>
@@ -333,13 +348,26 @@
             </details>
           </details>
         </article>
-        <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
+      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
           <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
           <div id="provider-overview" class="provider-overview"></div>
           <details id="connections-details" class="dashboard-disclosure">
             <summary><span>Connections &amp; settings</span><small>Sources, rates &amp; configuration</small></summary>
             <p id="provider-context" class="muted"></p>
             <p id="price-status" class="muted"></p><p id="weather-status" class="muted"></p>
+            <details id="mqtt-devices-details" class="controller-fold">
+              <summary>MQTT devices</summary>
+              <div class="equipment-connections-toolbar"><p class="muted">Connections are explicit. Rechecking requests readings without switching devices.</p><button id="equipment-recheck-all" type="button" class="secondary-button" disabled>Recheck all</button></div>
+              <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
+              <div id="equipment-connections"></div>
+              <details class="equipment-fold"><summary>Device setup</summary>
+                <p>Configure each device in the private configuration file shown under Configuration below, then choose Apply configuration. Use <code>shelly:example-garage</code> for a native MQTT-shelly prefix or <code>mqtt:example/garage/door/state</code> for one exact MQTT topic. Connections do not detect or switch protocols.</p>
+                <p>Enable MQTT on the device and point it to the shared broker. Enter the device’s broker username and password in its own setup; these may differ from this app’s credentials. Keep credentials in private configuration.</p>
+                <p>For MQTT-shelly, enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), and RPC over MQTT (<code>enable_rpc</code>) where the device exposes those options. Some older firmware has no separate RPC switch.</p>
+                <p>Give temperature probes physical names in the configuration. Door messages must explicitly map to open and closed; a quiet door is not automatically offline.</p>
+                <p><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration</a></p>
+              </details>
+            </details>
             <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
             <details id="electricity-details" class="controller-fold electricity-panel">
               <summary>Electricity rates</summary>
@@ -379,7 +407,6 @@
             </details>
           </details>
         </article>
-      </div>
     </section>
 
     <section id="pairing-panel" class="panel pairing-panel" aria-label="Paired computers" hidden>

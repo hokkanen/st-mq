@@ -1,5 +1,6 @@
 import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
 import { durationText, qualityReasonText } from './reading-status.js';
+import { providerName } from './provider-status.js';
 
 // Frequent chart choices first; equipment diagnostics remain together at the end.
 const leftAxisGroups = ['Electricity', 'Home temperatures', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
@@ -41,10 +42,11 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
   detail: row.status ? 'The stored status has no detailed freshness assessment.' : 'No acquisition has been recorded.' };
   const label = freshness.status === 'stale' ? freshness.reasons?.some(reason => ['source-expired', 'missing-report'].includes(reason))
     ? 'Out of date' : 'Reading rejected' : ({ fresh: 'Fresh', failed: 'Acquisition failed', unavailable: 'Reading unavailable',
-    held: 'Last known reading', 'held-attention': 'Last known reading · needs attention', 'recorded-interval': 'Recorded interval' })[freshness.status] ?? 'Waiting for source';
+    held: 'Last known reading', 'held-attention': 'Last known reading · needs attention', 'recorded-interval': 'Recorded interval',
+    'last-reported': 'Last reported state' })[freshness.status] ?? 'Waiting for source';
   const age = Number.isFinite(freshness.sourceObservedAt) ? now - freshness.sourceObservedAt : null;
   const limit = Number.isFinite(freshness.maxAgeMs) ? freshness.maxAgeMs : null;
-  const periodic = freshness.ageBasis === 'periodic-report', interval = freshness.ageBasis === 'completed-interval';
+  const periodic = freshness.ageBasis === 'periodic-report', interval = freshness.ageBasis === 'completed-interval', eventOnly = freshness.ageBasis === 'event-only';
   const messages = [];
   for (const reason of freshness.reasons ?? []) {
     if (reason === 'source-expired' || reason === 'missing-report') continue;
@@ -52,6 +54,7 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
     if (text) messages.push(`${text.replace(/^./, value => value.toUpperCase())}.`);
   }
   if (interval) messages.push('A saved, completed energy interval does not expire as a live reading.');
+  else if (eventOnly) messages.push(`This device reports state changes without a periodic heartbeat.${age !== null && age >= 0 ? ` The last report is ${durationText(age)} old.` : ' The report time is unavailable.'} Report age alone does not indicate a fault. Current connection availability is shown under Equipment.`);
   else if (age !== null && age >= 0) messages.push(`${periodic ? 'Latest source report' : 'Source reading'} is ${durationText(age)} old.${limit === null
     ? ' No age cutoff applies.' : ` Limit ${durationText(limit)}${periodic && Number.isFinite(freshness.reportIntervalMs)
       ? ` (${durationText(freshness.reportIntervalMs)} reporting interval + ${durationText(freshness.reportGraceMs ?? 0)} grace)` : ''}.`}`);
@@ -102,7 +105,7 @@ export function renderRecording(status, root) {
     const availability=recordingStatus(row,{now:status?.now ?? Date.now()});
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
-    if(row.source) {const source=document.createElement('small');source.textContent=readable(row.source);title.append(source);}tr.append(title);
+    if(row.source) {const source=document.createElement('small');source.textContent=providerName(row.source) ?? readable(row.source);title.append(source);}tr.append(title);
     for(const text of [
       [row.hour,row.day,row.week].map(period=>durationLabel(period?.averageIntervalMs)).join(' / '),
       Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${row.thresholdUnit ?? row.unit ?? ''}${row.grouped?' (phase group)':''}`:'Event / collecting',

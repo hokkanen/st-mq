@@ -152,6 +152,135 @@
       "vip_helper": "/usr/local/bin/st-mq-vip",
       "vip_socket": ""
     },
+    "equipment": {
+      "poll_seconds": 30,
+      "max_age_seconds": 120,
+      "devices": [
+        {
+          "id": "upstairs",
+          "label": "Upstairs",
+          "area": "home",
+          "kind": "temperature",
+          "connection": "mqtt:stmq/smoke/1/temperature",
+          "signal": "indoor_temperature",
+          "max_age_seconds": 1020,
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "downstairs",
+          "label": "Downstairs",
+          "area": "home",
+          "kind": "temperature",
+          "connection": "mqtt:stmq/smoke/3/temperature",
+          "signal": "downstairs_temperature",
+          "max_age_seconds": 1020,
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "bedroom",
+          "label": "Bedroom",
+          "area": "home",
+          "kind": "temperature",
+          "connection": "mqtt:stmq/smoke/2/temperature",
+          "signal": "bedroom_temperature",
+          "max_age_seconds": 1020,
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "heat_savings",
+          "label": "Tariff control",
+          "area": "home",
+          "kind": "switch",
+          "connection": "shelly:stmq/home/tariff",
+          "tariff_control": true,
+          "reduction_on": true,
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "garage",
+          "label": "Garage temperatures",
+          "area": "garage",
+          "kind": "temperature",
+          "connection": "shelly:stmq/garage/temperatures",
+          "signal": "garage_temperature",
+          "temperature_id": 100,
+          "enabled": true,
+          "readings": [
+            {
+              "key": "temperature_2",
+              "label": "Garage temperature 2",
+              "signal": "garage_temperature_2",
+              "unit": "degC",
+              "component": "temperature:101",
+              "required": false
+            }
+          ],
+          "mqtt": {}
+        },
+        {
+          "id": "garage_mqtt",
+          "label": "Garage temperature \u00b7 MQTT",
+          "area": "garage",
+          "kind": "temperature",
+          "connection": "mqtt:from_hass/garage/temp",
+          "signal": "garage_temperature_ha",
+          "max_age_seconds": 1020,
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "caravan",
+          "label": "Caravan",
+          "area": "garage",
+          "kind": "metered_switch",
+          "connection": "shelly:stmq/garage/caravan",
+          "switch_control": true,
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "garage_door1",
+          "label": "Door 1",
+          "area": "garage",
+          "kind": "door",
+          "connection": "mqtt:from_hass/garage_door1/sensor",
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "garage_door2",
+          "label": "Door 2",
+          "area": "garage",
+          "kind": "door",
+          "connection": "mqtt:from_hass/garage_door2/sensor",
+          "enabled": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "garage_heat_pump",
+          "label": "Garage heat pump",
+          "area": "garage",
+          "kind": "heat_pump",
+          "connection": "shelly:stmq/garage/heat-pump",
+          "switch_control": false,
+          "enabled": false,
+          "mqtt": {},
+          "readings": []
+        }
+      ]
+    },
     "shelly": {
       "poll_seconds": 30,
       "max_age_seconds": 120,
@@ -339,6 +468,56 @@
         "switch_id": "int(0,3)",
         "nominal_voltage": "int(100,260)"
       }
+    },
+    "equipment": {
+      "poll_seconds": "int(5,300)",
+      "max_age_seconds": "int(30,3600)",
+      "devices": [
+        {
+          "id": "str",
+          "label": "str?",
+          "area": "list(home|garage)",
+          "kind": "list(temperature|switch|metered_switch|door|heat_pump)",
+          "connection": "str",
+          "enabled": "bool?",
+          "signal": "str?",
+          "generation": "int(1,4)?",
+          "switch_id": "int(0,255)?",
+          "temperature_id": "int(0,255)?",
+          "switch_control": "bool?",
+          "tariff_control": "bool?",
+          "reduction_on": "bool?",
+          "max_age_seconds": "int(0,86400)?",
+          "readings": [
+            {
+              "key": "str",
+              "label": "str?",
+              "signal": "str?",
+              "unit": "str?",
+              "path": "str?",
+              "topic": "str?",
+              "component": "str?",
+              "required": "bool?",
+              "scale": "float?",
+              "offset": "float?"
+            }
+          ],
+          "mqtt": {
+            "command_topic": "str?",
+            "on_payload": "str?",
+            "off_payload": "str?",
+            "state_path": "str?",
+            "timestamp_path": "str?",
+            "availability_topic": "str?",
+            "online_payload": "str?",
+            "offline_payload": "str?",
+            "heartbeat_topic": "str?",
+            "request_topic": "str?",
+            "request_payload": "str?",
+            "heartbeat_seconds": "int(0,86400)?"
+          }
+        }
+      ]
     }
   },
   "host_network": true,

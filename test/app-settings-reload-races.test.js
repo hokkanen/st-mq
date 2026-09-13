@@ -18,7 +18,9 @@ const deferred = () => {
 async function setup(t, options = {}, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-reload-races-'));
   const path = join(directory, 'options.json');
-  const write = value => writeFileSync(path, JSON.stringify(value));
+  // These races exercise explicitly configured legacy topics, independently of
+  // the public equipment catalogue and its read-only discovery requests.
+  const write = value => writeFileSync(path, JSON.stringify({ equipment: { devices: [] }, ...value }));
   const read = () => loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
   write(options);
   const config = read();

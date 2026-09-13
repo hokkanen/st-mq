@@ -15,12 +15,13 @@ const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
-  'verification','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
+  'verification','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget/maximum spacing.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
 // Their source clock still controls ordering, recording and measurement lineage.
-const sourceAge = o => temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? H66_MAX_AGE_MS
+const sourceAge = o => o.source === 'mqtt-equipment' && o.unit === 'state' && (o.eventOnly || o.raw?.eventOnly) ? Infinity
+  : temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? H66_MAX_AGE_MS
   : /temperature$/.test(o.signal) ? OUTDOOR_MAX_AGE_MS : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE);
 
 const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric', 'invalid-unit', 'invalid-payload',
@@ -30,6 +31,7 @@ const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric
 /** Explain the recorded acquisition and its current deadline without writing a
  * new observation, extending coverage, or changing historical classification. */
 function recordingFreshness(state, coverage, now) {
+  const eventOnly = state.source === 'mqtt-equipment' && state.unit === 'state' && state.eventOnly === true;
   const periodicAge = temperatureReportMaxAge({ raw: state.reportPolicy });
   const interval = /_energy_l[123]$/.test(state.signal) || state.signal === 'ev2_energy';
   const held = !interval && periodicAge === null && HELD_TEMPERATURE_SIGNALS.includes(state.signal);
@@ -56,9 +58,10 @@ function recordingFreshness(state, coverage, now) {
   if (status === 'stale' && !reasons.length) reasons.push('invalid-quality');
   if (status === 'fresh' && interval) status = 'recorded-interval';
   if (status === 'fresh' && held) status = age > INDOOR_ATTENTION_MS ? 'held-attention' : 'held';
+  if (status === 'fresh' && eventOnly) status = 'last-reported';
   return { status, reasons: [...new Set(reasons)], sourceObservedAt, maxAgeMs,
     savedValueAt: state.last?.sourceTime ?? null, lastAcceptedSourceAt: state.lastSourceTime,
-    ageBasis: interval ? 'completed-interval' : periodicAge !== null ? 'periodic-report' : 'source-observation',
+    ageBasis: interval ? 'completed-interval' : eventOnly ? 'event-only' : periodicAge !== null ? 'periodic-report' : 'source-observation',
     ...(periodicAge !== null ? { reportIntervalMs: state.reportPolicy.reportIntervalMs,
       reportGraceMs: state.reportPolicy.reportGraceMs ?? 0 } : {}),
     ...(held ? { attentionAfterMs: INDOOR_ATTENTION_MS } : {}) };
@@ -196,6 +199,7 @@ export class Recorder {
       return { saved:false,reason:'retained-periodic-report',observation:null };
     return this.store.transaction(() => {
       const s = this.signalState(o,o.receivedAt), g = this.global(o.receivedAt);
+      if (o.source === 'mqtt-equipment' && o.unit === 'state' && typeof o.raw?.eventOnly === 'boolean') s.eventOnly = o.raw.eventOnly;
       if (o.raw?.reportIntervalMs === 0) {
         delete s.reportPolicy;
         delete s.reportUnavailableSince;

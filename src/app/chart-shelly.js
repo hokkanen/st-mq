@@ -1,12 +1,18 @@
 /** Hourly measured totals are interval quantities, never cumulative daily values.
  * Render one bounded interval per completed hour, with explicit partial coverage. */
 export function addShellyEnergy({ store, range, now, input, envelopes }) {
-  const envelope = envelopes.caravan_energy;
-  if (!envelope || input === 'simulated') return;
+  if (input === 'simulated') return;
+  for (const signal of ['caravan_energy', 'garage_heat_pump_energy']) {
+    const envelope = envelopes[signal];
+    if (envelope) addMeterIntervals({ store, range, now, envelope, signal });
+  }
+}
+
+function addMeterIntervals({ store, range, now, envelope, signal }) {
   let lastEnd = null;
   for (const row of store.db.prepare(`SELECT value,source_time,quality,raw FROM observations
-    WHERE source='shelly-mqtt' AND signal='caravan_energy' AND source_time>? AND source_time<=?
-    ORDER BY source_time,id`).iterate(range.from, Math.min(range.to + 3_600_000, now))) {
+    WHERE source IN ('shelly-mqtt','mqtt-equipment') AND signal=? AND source_time>? AND source_time<=?
+    ORDER BY source_time,id`).iterate(signal, range.from, Math.min(range.to + 3_600_000, now))) {
     let raw, quality;
     try { raw = JSON.parse(row.raw); quality = JSON.parse(row.quality); } catch { continue; }
     if (!Number.isFinite(raw?.intervalStart) || !Number.isFinite(raw?.intervalEnd) || raw.intervalEnd <= raw.intervalStart) continue;

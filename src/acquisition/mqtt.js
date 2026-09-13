@@ -1,44 +1,15 @@
+import { decodeMqttTemperature } from './mqtt-temperature.js';
 import { createShellyCapture } from './shelly.js';
+import { createEquipmentCapture } from './equipment.js';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
 import { createH66Controller } from '../control/h66.js';
 import { createTeslaMateCapture } from './teslamate.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
-import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
-  temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 
-// Alternative indoor/garage sensors publish a number in Celsius, or
-// {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.
-export function decodeMqttTemperature({ signal, payload, receivedAt, retained = false,
-  reportIntervalMs = null, reportGraceMs = 0 }) {
-  if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)) return null;
-  const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
-  if (text.length > 512) return null;
-  let input;
-  try { input = JSON.parse(text); } catch { return null; }
-  const object = input && typeof input === 'object' && !Array.isArray(input) ? input : { value: input };
-  let value = typeof object.value === 'number' && Number.isFinite(object.value) ? object.value : null;
-  const unit = object.unit ?? 'C', quality = [];
-  if (!['C', 'degC', '°C', 'F'].includes(unit)) { value = null; quality.push('invalid_unit'); }
-  if (unit === 'F' && value !== null) { value = (value - 32) * 5 / 9; quality.push('converted_fahrenheit'); }
-  if (value !== null && (value < -60 || value > 70)) { value = null; quality.push('implausible_temperature'); }
-  let sourceTime = typeof object.timestamp === 'number' && Number.isSafeInteger(object.timestamp) ? object.timestamp
-    : typeof object.timestamp === 'string' && /(?:Z|[+-]\d\d:\d\d)$/.test(object.timestamp) ? Date.parse(object.timestamp) : null;
-  if (!Number.isFinite(sourceTime) || sourceTime < 0) sourceTime = null;
-  if (sourceTime === null && !retained && object.timestamp == null) sourceTime = receivedAt;
-  if (sourceTime === null) quality.push('source_time_unknown');
-  if (sourceTime > receivedAt) quality.push('future_source_time');
-  const raw = { timeBasis: object.timestamp == null ? 'mqtt-received' : 'source-measured', retained,
-    ...(reportIntervalMs !== null ? { reportIntervalMs, reportGraceMs } : {}) };
-  const reportAge = temperatureReportMaxAge({ raw });
-  if (reportAge !== null && Number.isFinite(sourceTime) && receivedAt - sourceTime > reportAge) quality.push('stale');
-  if (signal === 'outdoor_temperature' && Number.isFinite(sourceTime) && receivedAt - sourceTime > 300_000) quality.push('stale');
-  if (retained) quality.push('retained');
-  if (value === null) quality.push('missing');
-  return { source: 'mqtt-temperature', device: signal, signal, value, unit: 'degC', sourceTime, receivedAt, quality,
-    raw };
-}
+export { decodeMqttTemperature } from './mqtt-temperature.js';
 
 // Observations and the four permitted native-setting writes share this connection.
 // Credentials and raw broker errors never enter event logs.
@@ -57,11 +28,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       mqttScaleByRegister: settings.mqttScaleByRegister });
   }
   const { address, user: username, pw: password } = config.connections.mqtt;
-  const directGarage = config.connections.shelly?.devices?.some(device => device.role === 'garage');
+  const equipmentSettings = config.connections.equipment?.devices?.length === 0 && config.connections.shelly?.devices?.length
+    ? null : config.connections.equipment;
+  const equipmentOwnedSignals = equipmentSettings?.ownedSignals ?? [];
+  const directGarage = equipmentSettings ? equipmentSettings.ownsGarage : config.connections.shelly?.devices?.some(device => device.role === 'garage');
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
     .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic))
-    .map(([signal, topic]) => [directGarage && signal === 'garage_temperature' ? 'garage_temperature_ha' : signal, topic]);
+    .map(([signal, topic]) => [directGarage && signal === 'garage_temperature' ? 'garage_temperature_ha' : signal, topic])
+    .filter(([signal]) => !equipmentOwnedSignals.includes(signal));
   for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal))
     engine.configureTemperatureReports?.(signal, {
       reportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
@@ -75,7 +50,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
-  })).filter(row => !(directGarage && row.signal === 'garage_temperature') && !temperatureTopics.some(([signal]) => signal === row.signal)) : [];
+  })).filter(row => !(directGarage && row.signal === 'garage_temperature') && !temperatureTopics.some(([signal]) => signal === row.signal) && !equipmentOwnedSignals.includes(row.signal)) : [];
   const temperatureSignals = temperatureTopics.map(([signal]) => ({
     source: signal === 'garage_temperature_ha' ? 'mqtt-temperature-ha' : 'mqtt-temperature',
     device: signal === 'garage_temperature_ha' ? 'garage-ha' : signal, signal, unit: 'degC' }));
@@ -123,8 +98,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     pendingPublications.add(finish);
     try { client.publish(topic, payload, options, finish); } catch { finish(new Error('MQTT publication failed')); }
   });
-  const shelly = config.connections.shelly?.devices?.length ? createShellyCapture({ engine, store,
-    settings: config.connections.shelly, publish, canControl, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000 }) : null;
+  const equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
+    brokerIdentity: { address, username }, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
+    temperatureReportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
+    temperatureReportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS }) : null;
+  const shelly = equipment ?? (config.connections.shelly?.devices?.length ? createShellyCapture({ engine, store,
+    settings: config.connections.shelly, publish, canControl, brokerIdentity: { address, username },
+    readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000 }) : null);
   if (shelly) engine.shelly = shelly;
   const requestSnapshot = async () => {
     if (!decoder) return;
@@ -148,10 +128,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
     });
     if (shelly) {
-      let subscriptions = shelly.topics.length, subscriptionFailed = false;
+      let subscriptions = shelly.topics.length; const failedTopics = [];
+      if (!subscriptions) shelly.setConnected(true);
       for (const topic of shelly.topics) client.subscribe(topic, { qos: 1 }, error => {
-        if (error) { subscriptionFailed = true; shelly.subscriptionFailed(topic); report('mqtt-shelly-subscribe-error'); }
-        if (--subscriptions === 0 && !subscriptionFailed) shelly.setConnected(true);
+        if (error) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
+        if (--subscriptions === 0) {
+          shelly.setConnected(true);
+          for (const failed of failedTopics) shelly.subscriptionFailed(failed);
+        }
       });
     }
     if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, error => {
@@ -202,7 +186,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // An explicitly configured room sensor owns its logical temperature.
       // Keep the gateway register available to H66 diagnostics, but do not mix
       // its measurements into that room's recording or model input.
-      if (directGarage && decoded.signal === 'garage_temperature' || temperatureTopics.some(([signal]) => signal === decoded.signal)) return;
+      if (directGarage && decoded.signal === 'garage_temperature' || temperatureTopics.some(([signal]) => signal === decoded.signal) || equipmentOwnedSignals.includes(decoded.signal)) return;
       engine.ingest({ source: decoded.source, device: decoded.deviceId,
         signal: decoded.signal === 'integral' ? 'heating_integral' : decoded.signal,
         value: decoded.value, unit: decoded.unit ?? 'unknown', sourceTime: decoded.observedAt,
@@ -232,7 +216,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   }, 5000) : null;
   teslaMaintenance?.unref?.();
   if (client.connected) connectedHandler();
-  return { h66, shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
+  return { h66, shelly, equipment: equipment ?? shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {

@@ -43,10 +43,11 @@ property import, plus one total-energy increment for TeslaMate portable charging
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
 [adaptive recording and migration](docs/recording.md), including local MQTT temperature sensors.
-For native garage temperature/relay, heating Mini and Caravan plug connections,
-see [direct Shelly MQTT setup](docs/shelly-mqtt.md). Home Assistant can stay connected
-in parallel. Caravan equipment readings include daily energy, with completed
-hourly meter totals available in chart history.
+Home and Garage equipment uses explicit `shelly:<prefix>` or `mqtt:<state topic>`
+connections, with public topic defaults and private broker credentials. See
+[MQTT equipment and device setup](docs/mqtt-equipment.md) for garage probes, doors,
+Caravan metering, connection checks and timed switch tests. Independent MQTT feeds
+remain separate; ST-MQ never guesses a protocol or switches sources automatically.
 
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
