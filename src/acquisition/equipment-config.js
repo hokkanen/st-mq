@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const KINDS = ['temperature', 'switch', 'metered_switch', 'door'];
+const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'power'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
   'switch_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
 const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic',
@@ -89,14 +89,16 @@ export function equipmentConfiguration(input = {}) {
     if ((controlsSwitch || controlsHeat) && !['switch', 'metered_switch'].includes(kind)) throw new Error('Only configured switch equipment can accept control');
     // DHWR commands belong to the executor's durable timed ON/OFF path. Its
     // equipment entry supplies independent device feedback, never another writer.
-    if (id === 'dhwr' && (protocol !== 'mqtt' || kind !== 'switch' || controlsSwitch || controlsHeat || row.signal && row.signal !== 'dhwr_active'))
-      throw new Error('DHWR feedback requires a monitoring-only MQTT switch with its dhwr_active signal');
+    if (kind === 'power' && protocol !== 'mqtt') throw new Error('Power-only equipment requires an MQTT measurement topic');
+    if (id === 'dhwr' && (protocol !== 'mqtt' || !['switch', 'power'].includes(kind) || controlsSwitch || controlsHeat
+      || row.signal && row.signal !== (kind === 'power' ? 'dhwr_power' : 'dhwr_active')))
+      throw new Error('DHWR feedback requires monitoring-only MQTT power or switch feedback with its DHWR signal');
     const record = bool(row.record, id !== 'dhwr');
-    if (!record && (protocol !== 'mqtt' || kind !== 'switch'))
-      throw new Error('Live-only equipment recording requires an MQTT switch');
+    if (!record && (protocol !== 'mqtt' || !['switch', 'power'].includes(kind)))
+      throw new Error('Live-only equipment recording requires an MQTT switch or power sensor');
     if (id === 'dhwr' && record) throw new Error('DHWR feedback stays live-only; requested circulation history is recorded separately');
-    const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, kind === 'door' ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
-    if (kind !== 'door' && age < pollIntervalMs) throw new Error('Equipment maximum age must allow its poll interval');
+    const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, ['door', 'power'].includes(kind) ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
+    if (!(kind === 'door' || kind === 'power' && age === 0) && age < pollIntervalMs) throw new Error('Equipment maximum age must allow its poll interval');
     schema(row.mqtt ?? {}, MQTT_KEYS, 'equipment MQTT mapping');
     const mapping = row.mqtt ?? {};
     const mqtt = { statePath: path(mapping.state_path), timestampPath: path(mapping.timestamp_path),
@@ -118,9 +120,10 @@ export function equipmentConfiguration(input = {}) {
     if (protocol === 'mqtt' && readings.some(value => value.component) || protocol === 'shelly' && readings.some(value => value.topic || !value.component))
       throw new Error('Equipment mapping must match its selected connection protocol');
     const mainSignal = signal(row.signal || undefined, kind === 'temperature' ? id === 'garage' ? 'garage_temperature' : `${id}_temperature`
-      : kind === 'door' ? `${id}_open` : id === 'garage' ? 'garage_relay_active' : `${id}_active`);
-    const stateSignal = kind === 'temperature' ? null : mainSignal;
-    const temperatureSignal = kind === 'temperature' ? mainSignal : id === 'garage' ? 'garage_temperature' : `${id}_temperature`;
+      : kind === 'power' ? `${id}_power` : kind === 'door' ? `${id}_open` : id === 'garage' ? 'garage_relay_active' : `${id}_active`);
+    const stateSignal = ['temperature', 'power'].includes(kind) ? null : mainSignal;
+    const powerSignal = kind === 'power' ? mainSignal : null;
+    const temperatureSignal = kind === 'power' ? null : kind === 'temperature' ? mainSignal : id === 'garage' ? 'garage_temperature' : `${id}_temperature`;
     const hasTemperature = kind === 'temperature' || id === 'garage';
     const metered = kind === 'metered_switch';
     if (hasTemperature && (!record || readings.some(value => value.signal === temperatureSignal && !value.record)))
@@ -135,12 +138,12 @@ export function equipmentConfiguration(input = {}) {
       if (mqtt.commandTopic && readTopics.includes(mqtt.commandTopic)) throw new Error('Switch commands require a separate topic from state confirmation');
       if ([mqtt.availabilityTopic, mqtt.heartbeatTopic].some(topic => topic && readTopics.includes(topic))) throw new Error('Availability and heartbeat must use separate topics from equipment readings');
     }
-    const defaultSignals = [...(stateSignal ? [stateSignal] : []), ...(hasTemperature ? [temperatureSignal] : []),
+    const defaultSignals = [...(powerSignal ? [powerSignal] : []), ...(stateSignal ? [stateSignal] : []), ...(hasTemperature ? [temperatureSignal] : []),
       ...(metered ? [`${id}_power`, `${id}_current`, `${id}_energy`] : [])];
     if (new Set(readings.map(value => value.signal)).size !== readings.length) throw new Error('Equipment reading signals must be distinct');
     for (const mapping of readings) if (defaultSignals.includes(mapping.signal)) {
       if (protocol === 'shelly') throw new Error('Native built-in readings use their explicit switch/temperature component IDs');
-      const expected = mapping.signal === stateSignal ? 'state' : mapping.signal === temperatureSignal ? 'degC'
+      const expected = mapping.signal === powerSignal ? 'W' : mapping.signal === stateSignal ? 'state' : mapping.signal === temperatureSignal ? 'degC'
         : mapping.signal.endsWith('_power') ? 'kW' : mapping.signal.endsWith('_current') ? 'A' : 'kWh';
       if (mapping.unit !== expected || mapping.signal.endsWith('_energy')) throw new Error('Equipment built-in reading mapping must preserve its unit and energy counter semantics');
       mapping.required = true;
@@ -149,7 +152,7 @@ export function equipmentConfiguration(input = {}) {
     return { id, role: id, label, area, kind, enabled, connection, protocol, source: protocol === 'shelly' ? 'Shelly' : 'MQTT',
       prefix: protocol === 'shelly' ? address : null, topic: protocol === 'mqtt' ? address : null,
       generation, switchId, temperatureId, controlsSwitch, controlsHeat, reductionOn, maxAgeMs: age, record,
-      stateSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
+      stateSignal, powerSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
   });
   if (new Set(devices.map(row => row.id)).size !== devices.length) throw new Error('Equipment IDs must be unique');
   const enabled = devices.filter(row => row.enabled), ownedSignals = enabled.flatMap(row => row.ownedSignals);

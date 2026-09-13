@@ -43,12 +43,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     device: device.connection, maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
     signal: `${device.id}_energy`, recordDevice: device.id, stateKey: `mqtt:equipment-energy:v1:${device.id}` })]));
   const definitions = device => [
-    { signal: device.stateSignal ?? device.temperatureSignal, unit: device.kind === 'temperature' ? 'degC' : 'state',
-      label: device.kind === 'temperature' ? 'Temperature' : device.kind === 'door' ? 'Door' : 'Switch', required: true },
+    { signal: device.powerSignal ?? device.stateSignal ?? device.temperatureSignal,
+      unit: device.kind === 'power' ? 'W' : device.kind === 'temperature' ? 'degC' : 'state',
+      label: device.kind === 'power' ? 'Power' : device.kind === 'temperature' ? 'Temperature' : device.kind === 'door' ? 'Door' : 'Switch', required: true },
     ...(device.metered ? [{ signal: `${device.id}_power`, unit: 'kW', label: 'Power', path: 'power', required: true },
       { signal: `${device.id}_current`, unit: 'A', label: 'Current', path: 'current', required: true }] : []),
   ].map(row => device.mappings.find(mapping => mapping.signal === row.signal) ?? row).concat(device.mappings.filter(mapping =>
-    ![device.stateSignal, device.temperatureSignal, ...(device.metered ? [`${device.id}_power`, `${device.id}_current`] : [])].includes(mapping.signal)));
+    ![device.powerSignal, device.stateSignal, device.temperatureSignal, ...(device.metered ? [`${device.id}_power`, `${device.id}_current`] : [])].includes(mapping.signal)));
   const identity = device => canonicalTemperature(device) ? { source: 'mqtt-temperature', device: device.temperatureSignal } : { source: 'mqtt-equipment', device: device.id };
   const age = device => INDOOR_SIGNALS.includes(device.temperatureSignal) && canonicalTemperature(device)
     ? temperatureReportIntervalMs + temperatureReportGraceMs : device.maxAgeMs;
@@ -56,7 +57,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))];
   const recheckMethod = device => device.mqtt.requestTopic ? 'request' : 'subscription';
   const topicDetails = device => [
-    { role: 'State', topic: device.topic, direction: 'subscribe' },
+    { role: device.kind === 'power' ? 'Power' : 'State', topic: device.topic, direction: 'subscribe' },
     ...device.mappings.filter(row => row.topic).map(row => ({ role: row.label, signal: row.signal, topic: row.topic, direction: 'subscribe' })),
     ...(device.mqtt.availabilityTopic ? [{ role: 'Availability', topic: device.mqtt.availabilityTopic, direction: 'subscribe' }] : []),
     ...(device.mqtt.heartbeatTopic ? [{ role: 'Heartbeat', topic: device.mqtt.heartbeatTopic, direction: 'subscribe' }] : []),
@@ -68,7 +69,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (scalar(at) && scalar(previous?.observedAt) && at < previous.observedAt) return false;
     const observation = { ...identity(device), signal: definition.signal, value, unit: definition.unit, sourceTime: at, receivedAt, quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
-        ...(device.kind === 'door' && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw,
+        ...(['door', 'power'].includes(device.kind) && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw,
         ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } };
     if (device.record !== false && definition.record !== false) {
       if (device.id === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(definition.signal))
@@ -78,7 +79,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         if (device.roomRouteSignature && (result?.rejectedSourceTime || result?.reason === 'out-of-order-receipt')) return false;
       }
     }
-    device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality, ...raw };
+    device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality,
+      ...(observation.raw.eventOnly ? { eventOnly: true } : {}), ...raw };
     if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
       signature: signature(device.id), reading: device.readings[definition.signal] });
     return true;
@@ -158,10 +160,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (updated && !packet.retain) reported.add(definition.signal);
       invalid = observation.value === null || observation.quality.some(flag => /invalid|missing|future|stale/.test(flag));
     } else for (const definition of applicable) {
-      const selectedPath = definition.path ?? (definition.signal === device.stateSignal || definition.signal === device.temperatureSignal ? mapping.statePath : null);
+      const selectedPath = definition.path ?? (definition.signal === device.powerSignal || definition.signal === device.stateSignal || definition.signal === device.temperatureSignal ? mapping.statePath : null);
       let value = selectedPath ? property(input, selectedPath) : input && typeof input === 'object' ? input.value : input;
       value = definition.unit === 'state' ? stateValue(value) : scalar(value) ? value : null;
       if (value !== null) value = value * (definition.scale ?? 1) + (definition.offset ?? 0);
+      if (!scalar(value)) value = null;
+      if (definition.signal === 'dhwr_power' && value !== null && (value < 0 || value * (definition.unit === 'kW' ? 1000 : 1) > 100000)) value = null;
       if (['degC', '°C'].includes(definition.unit) && (!scalar(value) || value < -60 || value > 150)) value = null;
       if (value === null && !definition.required && !device.readings[definition.signal]) continue;
       const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : []);

@@ -205,6 +205,18 @@
           "readings": []
         },
         {
+          "id": "dhwr",
+          "label": "Hot-water circulation",
+          "area": "home",
+          "kind": "power",
+          "connection": "mqtt:to_stmq/dhwr/power",
+          "enabled": true,
+          "max_age_seconds": 0,
+          "record": false,
+          "mqtt": {},
+          "readings": []
+        },
+        {
           "id": "garage",
           "label": "Garage temperatures",
           "area": "garage",
@@ -455,7 +467,7 @@
           "id": "str",
           "label": "str?",
           "area": "list(home|garage)",
-          "kind": "list(temperature|switch|metered_switch|door)",
+          "kind": "list(temperature|switch|metered_switch|door|power)",
           "connection": "str",
           "enabled": "bool?",
           "signal": "str?",

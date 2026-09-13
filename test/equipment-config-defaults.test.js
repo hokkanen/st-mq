@@ -26,6 +26,16 @@ test('public equipment defaults work with broker-only private settings and prese
   assert.equal(devices.filter(row => ['upstairs', 'downstairs', 'bedroom'].includes(row.id)).every(row => row.maxAgeMs === 4_500_000), true);
   assert.equal(config.connections.mqtt.temperatureReportIntervalMs + config.connections.mqtt.temperatureReportGraceMs, 4_500_000);
   assert.equal(devices.filter(row => row.kind === 'door').every(row => row.protocol === 'mqtt' && row.maxAgeMs === 0), true);
+  const dhwr = devices.find(row => row.id === 'dhwr');
+  assert.equal(dhwr.enabled, true);
+  assert.equal(dhwr.kind, 'power');
+  assert.equal(dhwr.topic, 'to_stmq/dhwr/power');
+  assert.equal(dhwr.powerSignal, 'dhwr_power');
+  assert.equal(dhwr.stateSignal, null);
+  assert.equal(dhwr.record, false);
+  assert.equal(dhwr.maxAgeMs, 0);
+  assert.equal(dhwr.controlsSwitch, false);
+  assert.equal(config.connections.mqtt.dhwr_topic, 'from_stmq/dhwr/set');
   assert.equal(readFileSync(privatePath, 'utf8'), privateText);
   assert.equal(config.connections.mqtt.pw, 'synthetic-password');
 });

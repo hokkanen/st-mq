@@ -8,8 +8,8 @@ or switch to another source when a device stops responding.
 - `shelly:stmq/garage/temperatures` selects native Shelly MQTT. The part after
   `shelly:` is a topic **prefix**; ST-MQ derives the native status and command topics.
 - `mqtt:home/door/state` selects the standard MQTT handler. The part after `mqtt:`
-  is an **exact state topic**. The device kind determines whether it carries a
-  temperature, an open/closed door state, or an on/off switch state.
+  is an **exact reading topic**. The device kind determines whether it carries a
+  temperature, watts, an open/closed door state, or an on/off switch state.
 
 The MQTT device entries and topic defaults live in the public `config.json`
 `options.equipment` section. Broker credentials remain in the private configuration
@@ -65,8 +65,8 @@ the complete public list; arrays are not merged by device ID.
 ```
 
 Use a stable device `id` and signal names so changing a display label does not
-create a new history series. Device kinds are `temperature`, `door`, `switch`
-and `metered_switch`. The kind describes the readings; write access
+create a new history series. Device kinds are `temperature`, `door`, `switch`,
+`metered_switch` and MQTT-only `power`. The kind describes the readings; write access
 requires `switch_control: true` or, for the home's reduction relay,
 `tariff_control: true`. A discovered output is never automatically made writable.
 `enabled: false` keeps an entry inactive. Add future equipment once its actual
@@ -129,7 +129,9 @@ References: [Shelly MQTT configuration](https://shelly-api-docs.shelly.cloud/gen
 
 ## Standard MQTT devices
 
-A plain temperature number and `open`/`closed` door payloads need no JSON mapping.
+A plain temperature number, a `power` number in watts and `open`/`closed` door
+payloads need no JSON mapping. MQTT `power` entries provide `<device-id>_power` in
+W and have no switch state or command control.
 Structured payloads can select a property with `mqtt.state_path`; a source timestamp
 can be selected with `mqtt.timestamp_path` as UTC epoch milliseconds or an ISO string
 with an explicit timezone. Without mappings, a metered switch accepts
@@ -167,12 +169,23 @@ mapping, for example `mqtt.request_topic: "example/device/get"` and
 command. A sensor that only publishes changes or scheduled reports cannot be made
 to answer by adding an arbitrary request topic.
 
-Set `record: false` on an MQTT `switch` entry to keep its state and extra readings
+Set `record: false` on an MQTT `switch` or `power` entry to keep its readings
 in live monitoring without adding database samples. Additional MQTT readings can
 individually use `record: false`; primary temperatures and cumulative energy
 counters retain their recording contracts. Native Shelly entries do not accept
-`record: false`. The `dhwr` switch is always live-only and uses SmartThings for
-timed control; see [DHWR MQTT feedback](dhwr-mqtt.md).
+`record: false`. DHWR feedback is always live-only. The public defaults enable
+`dhwr` as `kind: "power"` on `mqtt:to_stmq/dhwr/power`, with `record: false` and
+`max_age_seconds: 0`. Its SmartThings Rule publishes event-driven watts; ST-MQ
+owns the separate timed ON/OFF command path. See the
+[DHWR Rule, template and feedback setup](dhwr-mqtt.md).
+
+MQTT power feeds also default to an event-only maximum age of zero. The UI shows
+last reported watts with the original receive time while connected; this does
+not establish a reporting cadence or detect an upstream silent failure.
+Disconnecting invalidates the reading, and DHWR requires a new non-retained
+report after reconnection or restart. Choose a positive maximum age only after
+verifying genuine periodic reports. Plain power is a measurement, never implicit
+ON/OFF confirmation.
 
 Door feeds can report only changes. For those, the default maximum age is zero:
 the UI preserves the last reported state and time, while indicating that current
@@ -191,9 +204,9 @@ Successful room-topic subscriptions can restore a recent genuine reading after
 a connection failure when its saved route signature matches. This does not
 renew its timestamp or erase the outage. Older unsigned readings require one
 new genuine report before they can be recovered on a later reconnect.
-ST-MQ requests direct Shelly status every 30 seconds. A standard MQTT publisher
-must provide genuine periodic reports, preferably every minute, even when the
-value is unchanged. Broker connectivity, generic heartbeats and repeated source
+ST-MQ requests direct Shelly status every 30 seconds. Standard MQTT equipment
+with a finite deadline must provide genuine periodic reports, preferably every
+minute for a two-minute deadline, even when the value is unchanged. Broker connectivity, generic heartbeats and repeated source
 timestamps cannot extend measurement validity.
 
 ## Rechecks, controls and recording
@@ -231,7 +244,7 @@ under its equipment entry instead of being repeated as a legacy temperature feed
 Manual controls show current feedback alongside their actions. Ordinary switch
 controls require a fresh state and confirm the new output through live readback;
 they do not schedule a reversal. DHWR circulation retains its configured run length
-and automatic OFF through SmartThings. Legacy timed tests keep their saved original
+and automatic OFF through ST-MQ's durable executor and the MQTT switch integration. Legacy timed tests keep their saved original
 state and route until restoration completes; configuration cannot discard an
 unresolved restoration. Explicit manual controls can operate equipment in shadow
 mode; automatic control stays subject to the application's mode and controller

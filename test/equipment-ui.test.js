@@ -178,3 +178,55 @@ test('circulation requested state never replaces independent switch and live pow
   assert.equal(dhwrReadingSummary(live).state.value, 'On');
   assert.equal(dhwrReadingSummary(live).power.value, 'Unavailable');
 });
+
+test('DHWR power-only feedback displays measured zero without claiming relay state', () => {
+  const status = { dhwr: { active: true, feedback: { configured: true, available: true,
+    stateConfigured: false, powerConfigured: true,
+    power: { value: 0, unit: 'W', stale: false, observedAt: now } } } };
+  let summary = dhwrReadingSummary(status);
+  assert.equal(summary.power.value, '0 W');
+  assert.equal(summary.power.stale, false);
+  assert.equal(summary.state.value, 'Not configured');
+  assert.equal(summary.state.stale, false);
+  assert.match(summary.state.detail, /Power does not confirm.*switch state or water flow/);
+  assert.equal(summary.feedbackLabel, 'Power available');
+  assert.equal(summary.request, 'Circulation requested');
+  status.dhwr.active = false;
+  status.dhwr.feedback.power.value = 38.25;
+  summary = dhwrReadingSummary(status);
+  assert.equal(summary.power.value, '38.25 W');
+  assert.equal(summary.state.value, 'Not configured');
+  assert.equal(summary.request, 'No circulation requested');
+});
+
+test('change-only DHWR power identifies the last report and stays distinct from missing or invalidated readings', () => {
+  const status = { dhwr: { feedback: { configured: true, available: false,
+    stateConfigured: false, powerConfigured: true } } };
+  let summary = dhwrReadingSummary(status);
+  assert.equal(summary.power.value, 'Unavailable');
+  assert.match(summary.power.detail, /Waiting for a live MQTT report/);
+  assert.equal(summary.feedbackLabel, 'Waiting for power');
+  status.dhwr.feedback.available = true;
+  status.dhwr.feedback.power = { value: 0, unit: 'W', stale: false, eventOnly: true, observedAt: now - 7 * 86400000 };
+  summary = dhwrReadingSummary(status);
+  assert.equal(summary.power.value, '0 W', 'The UI follows source health instead of imposing periodic-report semantics');
+  assert.equal(summary.powerLabel, 'Last reported power');
+  assert.match(summary.powerReportedAt, /Reported 6 Sept.*GMT\+3/);
+  assert.equal(summary.feedbackLabel, 'Power reported');
+  assert.match(summary.power.detail, /Last reported.*Sept.*Updated when power changes/);
+  status.dhwr.feedback.available = false;
+  status.dhwr.feedback.power.stale = true;
+  summary = dhwrReadingSummary(status);
+  assert.equal(summary.power.value, 'Unavailable');
+  assert.equal(summary.feedbackLabel, 'Power unavailable');
+  assert.match(summary.power.detail, /Last reported 0 W/);
+  assert.equal(summary.state.value, 'Not configured');
+});
+
+test('monitoring-only power devices never gain ordinary switch or timed-test controls', () => {
+  const device = { id: 'dhwr', kind: 'power', available: true, controls: { switch: false },
+    readings: { dhwr_power: { value: 38, unit: 'W', stale: false, observedAt: now } } };
+  assert.equal(equipmentTestAllowed(status(), device), false);
+  assert.equal(equipmentControlAllowed(status({ equipmentControls: { available: true } }), device), false);
+  assert.deepEqual(equipmentReadingRows(device).map(row => row.value), ['38 W']);
+});

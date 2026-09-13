@@ -143,7 +143,7 @@ test('DHWR remains usable without feedback configuration', () => {
     clock: () => INITIAL, equipmentStatus: () => ({ devices: [] }), config: {} });
   assert.equal(status.actualOn, null);
   assert.equal(status.confirmed, false);
-  assert.deepEqual(status.feedback, { configured: false, deviceId: null, available: false, state: null, power: null });
+  assert.deepEqual(status.feedback, { configured: false, stateConfigured: false, powerConfigured: false, deviceId: null, available: false, state: null, power: null });
 });
 
 function externalPump(t, publishDhwr) {

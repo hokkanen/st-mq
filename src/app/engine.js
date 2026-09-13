@@ -565,8 +565,12 @@ export class Engine {
   dhwrStatus() {
     const state = this.executor.status(), now = this.clock();
     const device = this.equipmentStatus().devices.find(row => row.id === 'dhwr' && row.enabled !== false);
+    const configuredDevice = this.config.connections?.equipment?.devices?.find(row => row.enabled && row.id === 'dhwr');
     const reportedState = device?.readings?.dhwr_active ?? null, reportedPower = device?.readings?.dhwr_power ?? null;
-    const actualOn = reportedState && !reportedState.stale && [0, 1].includes(reportedState.value)
+    const stateConfigured = Boolean(device && (configuredDevice ? configuredDevice.stateSignal === 'dhwr_active' : device.kind !== 'power'));
+    const powerConfigured = Boolean(device && (device.kind === 'power' || reportedPower
+      || configuredDevice?.readings.some(row => row.signal === 'dhwr_power')));
+    const actualOn = stateConfigured && reportedState && !reportedState.stale && [0, 1].includes(reportedState.value)
       ? Boolean(reportedState.value) : null;
     const active = Boolean(state.dhwrOutstanding && state.pulseUntil > now);
     return { active,
@@ -575,7 +579,7 @@ export class Engine {
       restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
       commandTopic: this.config.connections?.mqtt?.dhwr_topic ?? 'from_stmq/dhwr/set',
       actualOn, confirmed: actualOn !== null && actualOn === active,
-      feedback: { configured: Boolean(device), deviceId: device?.id ?? null, available: device?.available === true,
+      feedback: { configured: Boolean(device), stateConfigured, powerConfigured, deviceId: device?.id ?? null, available: device?.available === true,
         state: reportedState, power: reportedPower } };
   }
   async stopDhwr(input = {}) {

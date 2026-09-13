@@ -153,10 +153,12 @@ function renderTemporary(s) {
 function showHeatingTestResult(result) {
   const failed = result.status === 'failed' || !result.sent;
   const message = $(result.command === 'heaton60' ? 'dhwr-message' : 'heating-test-message');
+  const confirmation = result.command === 'heaton60' && lastStatus?.dhwr?.feedback?.stateConfigured === false
+    ? 'Switch feedback is not configured.' : 'Check the reported state for confirmation.';
   message.classList.toggle('form-error', failed);
   message.textContent = failed
     ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
-    : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : 'Check the reported state for confirmation.'}`;
+    : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : confirmation}`;
   lastHeatingTestResult = JSON.stringify(result);
 }
 function renderHeatingTests(s) {
@@ -475,7 +477,7 @@ function render(s) {
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
   $('dhwr').textContent = s.dhwr?.actualOn === true ? 'On · device reported' : s.dhwr?.actualOn === false ? 'Off · device reported'
-    : s.dhwr?.restorationPending ? 'Stop delivery pending' : s.dhwr?.active ? 'On requested · awaiting feedback' : 'No request · state unknown';
+    : s.dhwr?.restorationPending ? 'Stop delivery pending' : s.dhwr?.active ? 'On requested · state unknown' : 'No request · state unknown';
   const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
@@ -655,7 +657,11 @@ $('dhwr-stop').addEventListener('click', async () => {
   heatingTestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('dhwr-message').classList.remove('form-error');
   $('dhwr-message').textContent = 'Requesting circulation stop…';
-  try { render(await api('/api/dhwr/stop', {})); $('dhwr-message').textContent = 'Stop sent. Check the reported switch state above.'; }
+  try {
+    render(await api('/api/dhwr/stop', {}));
+    $('dhwr-message').textContent = lastStatus?.dhwr?.feedback?.stateConfigured === false
+      ? 'Stop sent. Switch feedback is not configured.' : 'Stop sent. Check the reported switch state above.';
+  }
   catch { $('dhwr-message').textContent = 'Could not confirm the circulation stop request.'; $('dhwr-message').classList.add('form-error'); }
   finally { heatingTestBusy = false; updateTemporaryButtons(); }
 });

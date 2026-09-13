@@ -159,6 +159,43 @@ test('standalone loopback access remains token optional and accepts live token c
   assert.equal((await fetch(`${base}/api/status`)).status, 200);
 });
 
+test('a reserved startup listener rejects API requests until the controller is ready', async t => {
+  let starting = true, reads = 0;
+  const { access, mutations } = await setup(t, configuration({ addon: false }), {
+    settingsReloadStatus: () => ({ busy: starting }),
+    getEngine: () => { reads++; assert.equal(starting, false); return { status: () => ({ mode: 'monitoring' }) }; },
+  });
+  const base = endpoint(access.server);
+  assert.equal((await fetch(`${base}/api/status`)).status, 503);
+  assert.equal((await fetch(`${base}/api/temporary`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 503);
+  assert.equal(reads, 0);
+  assert.deepEqual(mutations, []);
+  starting = false;
+  assert.equal((await fetch(`${base}/api/status`)).status, 200);
+  assert.ok(reads > 0);
+});
+
+test('an occupied ingress port identifies the ingress setting and leaves no direct listener', async t => {
+  const blocker = createServer();
+  await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => blocker.close(resolve)));
+  const port = blocker.address().port;
+  const access = createWebAccess({ config: configuration({ token: firstToken, ingressPort: port }),
+    engine: { status: () => ({ mode: 'monitoring' }) }, store: {},
+    chartService: { overview: async () => ({ rows: [] }) } });
+  t.after(() => access.close());
+  await assert.rejects(access.start(), error => {
+    assert.equal(error.code, 'EADDRINUSE');
+    assert.equal(error.port, port);
+    assert.match(error.message, /STMQ_INGRESS_PORT/);
+    return true;
+  });
+  assert.equal(access.status().ingress.enabled, false);
+  assert.equal(access.status().direct.enabled, false);
+  assert.equal(blocker.listening, true);
+});
+
 test('invalid direct credentials and binding changes fail without changing active access', async t => {
   const { access, config } = await setup(t, configuration({ token: firstToken }));
   await assert.rejects(access.apply({ ...config, token: 'synthetic-short' }), /at least 24/);

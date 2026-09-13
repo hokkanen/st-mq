@@ -1,5 +1,10 @@
 # 0.9.0
 
+- Enable live DHWR watts from `to_stmq/dhwr/power`, with event-only freshness and
+  no power history or inferred switch confirmation. Document the SmartThings
+  forwarding Rule and include a sanitized recreation template; retain ST-MQ's
+  timed ON/OFF commands and requested-circulation chart history.
+
 - Add separate Upstairs, Downstairs and Bedroom temperatures, a stable
   configured indoor average and individual room comfort checks. Record sensor
   replacements, moves and calibration changes as replayable measurement boundaries.

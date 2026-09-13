@@ -356,8 +356,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         return await stoppedControllerViewer({ config, authority, clock, installSignalHandlers });
       }
     }
-    await createRuntime();
-    if (canControl()) engine.tick();
+    // Reserve HTTP before constructing a controller, connecting MQTT or ticking.
+    // A duplicate launch must fail without touching equipment. API requests are
+    // held by settingsReloadStatus().busy until startup has completed.
     chartService = createChartService({ store });
     webAccess = createWebAccess({ config, getEngine: () => engine, store, chartService,
       replicationStatus: () => replication?.status() ?? null,
@@ -366,8 +367,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null, settingsReloadStatus,
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
+    await createRuntime();
+    if (canControl()) engine.tick();
     if (canControl()) await startProviderRuntime();
-    // The first tick runs before the listener, as before; background work follows it.
+    // Background work follows the initial control tick and provider startup.
     learning = canControl() && config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     if (config.replication?.enabled) {
       const { ReplicationService } = await import('./replication/service.js');

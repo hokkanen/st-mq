@@ -3,7 +3,7 @@ import { setStatusDetail } from './status-details.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', metered_switch: 'Caravan', heat_pump: 'Heat pump' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly'].includes(device.source) ? 'Shelly' : 'MQTT';
 const isState = (signal, reading) => reading.unit === 'state' || /_(active|open)$/.test(signal) || typeof reading.value === 'boolean';
@@ -130,10 +130,25 @@ export function equipmentCheckText(device) {
 
 export function dhwrReadingSummary(status) {
   const dhwr = status.dhwr ?? {}, feedback = dhwr.feedback ?? {};
-  const reading = (value, signal) => value ? equipmentReadingRows({ kind: 'switch', available: feedback.available,
-    readings: { [signal]: value } })[0] : { value: signal === 'state' ? 'Unknown' : 'Unavailable', stale: true,
-    detail: feedback.configured ? 'Waiting for a live MQTT report.' : 'Configure DHWR MQTT feedback to see the reported switch and live power.' };
-  return { state: reading(feedback.state, 'state'), power: reading(feedback.power, 'power'),
+  const stateConfigured = feedback.stateConfigured ?? feedback.configured === true;
+  const powerConfigured = feedback.powerConfigured ?? feedback.configured === true;
+  const reading = (value, signal, configured) => {
+    if (feedback.configured && !configured) return { value: 'Not configured', stale: false,
+      detail: signal === 'state' ? 'Switch feedback is not configured. Power does not confirm the relay switch state or water flow.'
+        : 'Power feedback is not configured.' };
+    return value ? equipmentReadingRows({ kind: 'switch', available: feedback.available,
+      readings: { [signal]: value } })[0] : { value: signal === 'state' ? 'Unknown' : 'Unavailable', stale: true,
+      detail: configured ? 'Waiting for a live MQTT report.' : 'Configure DHWR MQTT feedback to see device reports.' };
+  };
+  const state = reading(feedback.state, 'state', stateConfigured), power = reading(feedback.power, 'power', powerConfigured);
+  const eventOnly = feedback.power?.eventOnly === true;
+  if (eventOnly) power.detail += '. Updated when power changes; there is no periodic measurement guarantee.';
+  const powerOnly = !stateConfigured && powerConfigured;
+  return { state, power, powerLabel: eventOnly ? 'Last reported power' : 'Live power',
+    powerReportedAt: eventOnly && Number.isFinite(feedback.power.observedAt) ? `Reported ${clock.format(feedback.power.observedAt)}` : '',
+    feedbackLabel: !feedback.configured ? 'Feedback not configured' : powerOnly
+      ? feedback.available ? eventOnly ? 'Power reported' : 'Power available' : feedback.power ? 'Power unavailable' : 'Waiting for power'
+      : feedback.available ? 'Available' : 'Needs attention',
     request: dhwr.restorationPending ? 'Stop requested · delivery pending'
       : dhwr.active ? 'Circulation requested' : 'No circulation requested',
     duration: dhwr.durationMinutes ?? 10,
@@ -297,13 +312,16 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     if (dhwrNode.parentElement !== dhwrAnchor.parentElement) dhwrAnchor.parentElement.insertBefore(dhwrNode, dhwrAnchor);
     $('dhwr-title').textContent = dhwrDevice?.label ?? 'Hot-water circulation';
     const dhwr = dhwrReadingSummary(status);
+    $('dhwr-live-power-label').textContent = dhwr.powerLabel;
+    $('dhwr-live-power-time').textContent = dhwr.powerReportedAt;
+    $('dhwr-live-power-time').hidden = !dhwr.powerReportedAt;
     for (const [key, row] of [['state', dhwr.state], ['power', dhwr.power]]) {
       const root = $(`dhwr-live-${key}`); root.classList.toggle('stale', row.stale);
       setStatusDetail(root, { key: `dhwr-live-${key}`, label: row.value,
-        title: key === 'state' ? 'Circulation · reported switch' : 'Circulation · live power',
+        title: key === 'state' ? 'Circulation · reported switch' : `Circulation · ${dhwr.powerLabel.toLowerCase()}`,
         detail: row.detail + (key === 'power' ? ' Live monitoring only; power samples are not stored.' : '') });
     }
-    $('dhwr-feedback-status').textContent = dhwr.available ? 'Available' : dhwr.configured ? 'Needs attention' : 'Feedback not configured';
+    $('dhwr-feedback-status').textContent = dhwr.feedbackLabel;
     $('dhwr-feedback-status').dataset.state = dhwr.available ? 'available' : dhwr.configured ? 'attention' : 'pending';
     $('dhwr-request-state').textContent = dhwr.request;
     $('dhwr-control-help').textContent = `Runs for ${dhwr.duration} minutes · stopped by ST-MQ.`;

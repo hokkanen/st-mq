@@ -7,6 +7,8 @@ import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
+import { Store } from '../src/storage/store.js';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
@@ -55,6 +57,44 @@ test('deployment metadata uses an explicit Node base, persistent storage and bot
   assert.ok(addon.map.includes('share:rw'));
   assert.equal(addon.backup, 'cold');
   assert.equal(addon.version, JSON.parse(readFileSync('package.json', 'utf8')).version);
+});
+
+test('an occupied web port fails before MQTT, providers or controller initialization', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-occupied-port-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const blocker = createServer();
+  await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => blocker.close(resolve)));
+  const port = blocker.address().port;
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory,
+    STMQ_PORT: String(port), STMQ_INPUT: 'providers' }, directory);
+  config.connections.mqtt.address = 'mqtt://fixture.invalid';
+  let connections = 0, requests = 0;
+  await assert.rejects(start({ config, installSignalHandlers: false,
+    mqttOptions: { connect: () => { connections++; throw new Error('Unexpected MQTT connection'); } },
+    providerOptions: { temperatureProvider: async () => { requests++; return []; } },
+  }), error => {
+    assert.equal(error.code, 'EADDRINUSE');
+    assert.equal(error.port, port);
+    assert.match(error.message, new RegExp(`127\\.0\\.0\\.1:${port}`));
+    assert.match(error.message, /existing ST-MQ process or service/);
+    assert.match(error.message, /STMQ_PORT/);
+    return true;
+  });
+  assert.equal(connections, 0);
+  assert.equal(requests, 0);
+  const store = new Store(config.dbPath);
+  try { assert.equal(store.getState('contract:providers'), null); }
+  finally { store.close(); }
+  assert.equal(blocker.listening, true, 'The process that already owns the port is left running');
+
+  const result = spawnSync(process.execPath, ['src/main.js'], { encoding: 'utf8', timeout: 5000,
+    env: { PATH: process.env.PATH, XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: join(directory, 'cli'),
+      STMQ_PORT: String(port), STMQ_INPUT: 'providers' } });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(result.error, undefined);
+  assert.match(result.stderr, /EADDRINUSE.*port is already in use/);
+  assert.doesNotMatch(result.stdout, /"event":"ready"/);
 });
 
 test('H66 observations coexist with weather and prices and acquisition only requests snapshots', async t => {

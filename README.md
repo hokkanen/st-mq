@@ -88,6 +88,8 @@ npm start
 ```
 
 Open **http://127.0.0.1:1234**. The UI labels simulated readings and example prices.
+If the port is already in use, follow [startup troubleshooting](docs/startup.md)
+to identify the running instance and restart it cleanly.
 `node scheduler.js` also starts the safe application unless the separate legacy
 live gate is explicitly enabled. The public `config.json.options` defaults are
 overridden by the permanent private `~/.config/st-mq/secrets.json` file (or
@@ -585,7 +587,11 @@ register `0208` is not a physical compressor temperature cap.
 
 DHWR uses explicit MQTT ON/OFF switch commands. ST-MQ owns the run timer, configured
 with `controller.dhwr_duration_minutes` (default 10; 1–60 minutes), and saves pending
-OFF commands for restart recovery. See [DHWR setup](docs/dhwr-mqtt.md).
+OFF commands for restart recovery. The default equipment entry listens for measured
+watts on `to_stmq/dhwr/power`, forwarded by a SmartThings Rule. It shows the last
+reported watts and timestamp without inferring relay state or recording power
+history; chart shading continues to show requested circulation. See
+[DHWR setup and Rule template](docs/dhwr-mqtt.md).
 The native periodic hygiene cycle remains unchanged, with an explicitly accepted
 possibility of delayed auxiliary availability during temporary control. No claim
 of a verified hygiene outcome or commissioned hardware follows from the tests.

@@ -11,9 +11,19 @@ function validate(config) {
     throw new Error('Direct network access requires a web token with at least 24 characters.');
 }
 
-async function listen(server, port, host) {
+async function listen(server, port, host, setting = 'STMQ_PORT') {
   await new Promise((resolve, reject) => {
-    const failed = error => { server.removeListener('listening', ready); reject(error); };
+    const failed = error => {
+      server.removeListener('listening', ready);
+      if (error.code === 'EADDRINUSE') {
+        const listenHost = error.address ?? host ?? '::';
+        const address = listenHost.includes(':') ? `[${listenHost}]:${port}` : `${listenHost}:${port}`;
+        error.message = `ST-MQ cannot listen on ${address} (EADDRINUSE): the port is already in use. `
+          + 'Check the existing ST-MQ process or service and stop it before restarting. '
+          + `If another application owns the port, configure ${setting}. See docs/startup.md.`;
+      }
+      reject(error);
+    };
     const ready = () => { server.removeListener('error', failed); resolve(); };
     server.once('error', failed);
     server.once('listening', ready);
@@ -122,7 +132,7 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
       try {
         if (config.addon) {
           ingressServer = createAppServer({ ...serverOptions, ingress: true, getAccess: () => ingressAccess });
-          await listen(ingressServer, config.ingressPort ?? 8099, config.ingressHost ?? '0.0.0.0');
+          await listen(ingressServer, config.ingressPort ?? 8099, config.ingressHost ?? '0.0.0.0', 'STMQ_INGRESS_PORT');
         }
         const transaction = await prepare(config);
         await transaction.commit();
