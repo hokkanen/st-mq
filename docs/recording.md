@@ -685,6 +685,15 @@ is an invented example; replace it with the actual local topic or leave it empty
 }
 ```
 
+The example above shows the **application defaults**, not an installed detector's
+confirmed reporting cadence. For the custom Fibaro 70-minute wake-up stream,
+verify physical acceptance and genuine MQTT delivery, then use an expected
+interval of `70` with the chosen grace (for example `120` seconds). This changes
+the report deadline, not temperature row spacing or 15-minute learning windows.
+See [the timing and installation instructions](smartthings-temperature-rule.md#matching-the-st-mq-report-deadline).
+Installing the driver does not add a recorded input or forwarding Rule; configure
+each intended source and its model membership separately.
+
 Standalone options also accept `mqtt.temperature_topics` mapping the signal names
 `indoor_temperature`, `downstairs_temperature`, `bedroom_temperature` and
 `garage_temperature` to topics. The payload can be a JSON

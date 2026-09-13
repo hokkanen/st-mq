@@ -1,102 +1,120 @@
 # Fibaro temperature-report Edge driver
 
-`driver/` is the complete, installable **ST-MQ Fibaro Temperature Reports**
-package, including device profiles, fingerprints, preferences, all original
-subdrivers, and upstream tests. Its package key is
-`stmq-fibaro-temperature-reports`. The source is small enough to retain here:
-31 upstream files, approximately 74 kB before packaging.
+This directory contains the complete **ST-MQ Fibaro Temperature Reports** driver,
+package key `stmq-fibaro-temperature-reports`, for forwarding genuine Fibaro
+smoke-sensor temperature reports through SmartThings to st-mq. Equal temperatures
+must still confirm that a report arrived; ordinary change filtering and the
+detector's change-conditional report interval cannot establish that evidence.
 
-Each valid physical Fibaro temperature report emits a capability event with
-boolean `state_change = true`, including a repeated value. The Celsius or
-Fahrenheit unit and source endpoint are preserved. Other sensor types, unknown
-scales, nonnumeric values, NaN, and infinities are ignored. The metadata is the
-second argument to the temperature event constructor, as specified by
-[SmartThings](https://developer.smartthings.com/docs/edge-device-drivers/capabilities.html#state-change).
-The explicit report handler takes precedence over the
-[default handler](https://developer.smartthings.com/docs/edge-device-drivers/zwave/defaults.html).
+Start with the [general installation guide](../../../docs/smartthings-temperature-rule.md)
+for the reasons, default selections, known legacy limitations, driver/channel
+setup, MQTT forwarding, report deadlines, verification and rollback.
 
-This driver does not schedule temperature events, copy cached readings, or
-change the detector's reporting interval. Its existing six-hour wake-up setting,
-wake-up battery and temperature requests, smoke/tamper/heat handlers, preferences,
-and other device support remain the stock implementation. In particular, the
-stock wake-up handler emits smoke `clear`; that behavior was not introduced or
-changed here. A 15-minute parameter 20 setting alone does not guarantee periodic
-unchanged reports. Follow the separate cadence and MQTT checks in the
-[installation and forwarding record](../../../docs/smartthings-temperature-rule.md).
+## What is kept here
 
-## Provenance and scope
+| Path | Purpose |
+| --- | --- |
+| [driver/](driver) | Complete buildable source, including profiles, fingerprints, supporting subdrivers and upstream SDK tests |
+| [changes.patch](changes.patch) | Exact complete difference from pinned upstream source |
+| [upstream.json](upstream.json) | Pinned revision and original source/license digests |
+| [LICENSE](LICENSE) | Original Apache-2.0 license |
+| [tests/verify_source.py](tests/verify_source.py) | Reverse-patch/hash verification, profile validation and focused Lua behavior checks |
 
-Source: [SmartThingsCommunity/SmartThingsEdgeDrivers](https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers/tree/19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c/drivers/SmartThings/zwave-smoke-alarm),
-revision `19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c`,
-directory `drivers/SmartThings/zwave-smoke-alarm`.
+The driver source is about **83 KiB across 31 files**. Retaining this small
+complete package alongside its patch makes it buildable without fetching upstream
+source and preserves the support files used by the original alarm implementation.
+No separate driver repository is required. Generated ZIPs, authentication and
+installation-specific backups remain outside Git.
 
-The original [Apache-2.0 license](LICENSE) and source copyright notices are
-retained. Vendored upstream files retain that license. `upstream.json` records
-the original source and license SHA-256 digests. `changes.patch` is the exact
-previously prepared st-mq patch: the only changed upstream files are `config.yml`
-(independent package name/key) and `src/fibaro-smoke-sensor/init.lua` (temperature
-report override). The full stock fingerprint list remains available, but a
-rollout must select the intended detector explicitly.
+Upstream is
+[SmartThingsCommunity/SmartThingsEdgeDrivers](https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers/tree/19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c/drivers/SmartThings/zwave-smoke-alarm),
+revision `19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c`, under
+`drivers/SmartThings/zwave-smoke-alarm`. All original copyright notices and the
+license are retained. The patch changes five files:
 
-## Validate and build
+- `config.yml`: custom package identity.
+- Two Fibaro smoke profiles: embedded defaults and the wake-up selector.
+- `src/fibaro-smoke-sensor/init.lua`: genuine-temperature event metadata and
+  wake-up selection, capabilities query and interval readback.
+- `src/init.lua`: local/legacy preference lookup, first-wake setting application
+  and diagnostic counts; the wake-up selector is excluded from Configuration.
 
-Run from the st-mq repository root. Validation needs Python 3.8+, `patch`, and
-Lua 5.3/5.4 or `texlua`. Packaging needs the authenticated SmartThings CLI.
+The temperature handler preserves Celsius/Fahrenheit units and the source
+endpoint, ignores invalid reports and emits valid reports with boolean
+`state_change = true`, including repeated values. Each actual wake requests fresh
+battery and temperature data. The selector defaults to 4,200 seconds and also
+offers two, three, six and twelve hours. The driver records accepted interval
+readback separately from attempted writes and retries missing/mismatching
+readback on later wakes. It does not publish cached values on a timer.
+
+New local preference IDs begin with the profile defaults. Existing saved local
+choices remain authoritative; original namespaced selections are not automatically
+migrated. Once all nine local Configuration settings are present, their current
+values are attempted once while awake. The persistent marker is a send-attempt
+record, not a parameter acknowledgement. The inherited alarm handlers and
+parameter mappings/sizes remain unchanged, including the documented threshold
+label/mapping mismatch. Review the guide's
+[defaults and limitations](../../../docs/smartthings-temperature-rule.md#default-selections-and-limitations)
+before using those settings.
+
+## Validate and build from st-mq
+
+From the st-mq repository root, use Python 3.8+ with PyYAML, `patch`, and Lua
+5.3/5.4 or `texlua` for validation. Packaging requires the SmartThings CLI.
 
 ```bash
 python3 integrations/smartthings/fibaro-temperature/tests/verify_source.py
-smartthings edge:drivers:package \
-  --build-only /tmp/stmq-fibaro-temperature-reports.zip \
-  integrations/smartthings/fibaro-temperature/driver
-sha256sum /tmp/stmq-fibaro-temperature-reports.zip
+smartthings edge:drivers:package --build-only /tmp/stmq-fibaro-temperature.zip integrations/smartthings/fibaro-temperature/driver
+sha256sum /tmp/stmq-fibaro-temperature.zip
 ```
 
-`--build-only` creates a ZIP without uploading. On 2026-09-13, SmartThings CLI
-2.1.2 built the package successfully. The build selected for the bedroom
-installation has SHA-256:
+`--build-only` creates the ZIP without uploading it. The package contains the
+26 deployable files; the CLI excludes the upstream `driver/src/test/` files.
+Keep the exact artifact, digest and upload response in a private installation
+backup. ZIP timestamps can change the archive digest between builds; source
+verification and comparison with the actual uploaded ZIP establish what was
+installed. Follow the [installation steps](../../../docs/smartthings-temperature-rule.md#build-and-install-the-driver)
+to upload, assign the channel version, install on a hub and assign devices.
 
-```text
-8ae4eb570e6e61743d5cb105d735f9a742359fb2da39360c3fd3312830eff082
-```
+The verifier checks all 31 original files and the license after reversing the
+patch, validates both profiles, and runs 74 Lua assertions against the actual
+subdriver and parent preference sender using small SDK stubs. Cases include
+repeated/changed reports, invalid inputs, original alarm events, wake choices,
+readback/retry, restarts, controller mismatch, reported limits, local/legacy
+settings, deferred application and interrupted sends. These are source checks,
+not a simulation of cloud filtering or radio delivery.
 
-The ZIP is a build artifact kept outside Git. Rebuilding reproduces the source
-package; ZIP timestamps can change the archive hash. Record the hash of the
-actual uploaded artifact in the private installation backup.
+The original SDK tests under `driver/src/test/` remain upstream reference; their
+old six-hour added/wake expectations are superseded by the focused modified-driver
+tests. The verifier does not run the full SmartThings Lua integration framework.
+Use the guide's [physical verification procedure](../../../docs/smartthings-temperature-rule.md#verify-and-troubleshoot)
+for an installation.
 
-The offline verifier reverses the patch in a temporary copy and checks every
-upstream file and the license against the recorded digests. This checks that
-alarm, battery, preferences, default registration, profiles, and all remaining
-code retain the pinned stock source. It also runs 21 Lua assertions against the
-actual Fibaro subdriver using small SmartThings API stubs: duplicate/changed
-reports, Celsius/Fahrenheit, negative/zero temperatures, endpoint routing,
-invalid input rejection, fingerprint selection, and existing added/wake-up
-behavior. These tests do not simulate SmartThings event filtering or the radio.
-The original `driver/src/test/` SDK integration tests are retained; they were
-not executed because the SmartThings Lua integration framework is not installed
-here. Hub and physical self-test results belong in the installation record.
+## Reconstruct from upstream
 
-## Recreate the vendored package from upstream
-
-In a temporary checkout of the upstream repository, use the pinned revision
-above, then apply `changes.patch` from this directory:
+The bundled `driver/` is sufficient for ordinary rebuilding. To independently
+recreate it, obtain the public upstream repository and check out the exact
+revision from `upstream.json`. Run the following from the **upstream repository
+root**, replacing the absolute patch path with the path in your st-mq checkout:
 
 ```bash
+git clone https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers.git /tmp/stmq-edge-upstream
+cd /tmp/stmq-edge-upstream
 git checkout --detach 19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c
 git apply --check --unidiff-zero /absolute/path/to/st-mq/integrations/smartthings/fibaro-temperature/changes.patch
 git apply --unidiff-zero /absolute/path/to/st-mq/integrations/smartthings/fibaro-temperature/changes.patch
 git diff --check
 ```
 
-Copy the complete `drivers/SmartThings/zwave-smoke-alarm` directory to `driver/`
-and the upstream root `LICENSE` beside this README. Re-run the offline verifier.
-For an intentional upstream update, review the entire upstream change and
-refresh the revision, digests, patch, and validation record together.
+The resulting `drivers/SmartThings/zwave-smoke-alarm` directory is the modified
+package. Compare it with `driver/`, or copy it there in a restoration checkout,
+retain the upstream root `LICENSE` beside this README, and rerun the verifier
+from the st-mq root. Apply the complete `changes.patch` here; any older standalone
+temperature-only patch elsewhere in repository history is not the current driver.
 
-## Installation and rollback
-
-The [st-mq installation record](../../../docs/smartthings-temperature-rule.md)
-contains the bedroom rollout status, installation steps, physical checks, and
-rollback procedure. Keep account/device/hub/channel/driver identifiers and raw
-logs in the private installation backup outside the checkout. Do not commit
-household mappings or authentication files. Keep the stock driver installed on
-the hub for rollback.
+For an intentional upstream upgrade, review upstream changes, update the pinned
+revision, original digests, complete patch and tests together, then validate and
+deploy a new package. Upstream changes and edits to st-mq do not automatically
+replace the package already installed on a hub. See the
+[update/reinstall/rollback instructions](../../../docs/smartthings-temperature-rule.md#update-reinstall-or-roll-back)
+for deployment and its effect on every device sharing the driver ID.
