@@ -45,8 +45,11 @@ See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for th
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
 comfort learning after adjustments to floor circulation thermostats. Record rare
 sensor maintenance under **House model → Explore learning → Model inputs →
-Average indoor → Sensor changes**; **Reason** describes the history and does not
-change the model's response.
+Average indoor → Sensor changes**, or **Outdoor temperature → Sensor changes**
+for the outdoor sensor. Recording requires confirmation; **Reason** describes the
+history and does not change the model's response. **Revert and relearn** undoes a
+mistaken entry by rebuilding from recorded history while heating control remains
+available. Reverted entries stay visible in the change history.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults

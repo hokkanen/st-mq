@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Envelope, getChartData } from '../src/app/chart-data.js';
 import { addModelInputs } from '../src/app/chart-model-inputs.js';
+import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
 import { historyDatasets, historySeriesAt, leftAxisAvailability, historyStateLabel } from '../chart/history-model.js';
 
@@ -179,4 +180,28 @@ test('right-axis data cannot hide missing or hidden left-axis values and states 
   assert.match(leftAxisAvailability(historyDatasets(series, 'model_compressor_duty', { model_compressor_duty: false })), /hidden in the legend/);
   assert.equal(historyStateLabel('model_controller_phase', 2), 'Tariff reduction');
   assert.equal(historyStateLabel('operating_mode', 2), 'Compressor only');
+});
+
+test('v9 indoor averages survive unrelated failures while the chart retains the originally recorded settling gap', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const covered = { indoorC: 20.5, valid: false, quality: ['missing'], indoorSensors: {
+    indoor_temperature: { value: 20.5, weight: 1, observedAt: start, reportCoverageComplete: true, held: false, needsAttention: false },
+  } };
+  put(store, start + 15 * MINUTE, sample(0, 15, [segment(0, 15, { outdoorC: null })], covered), 'mqtt', LEARNING_ALGORITHM);
+  const original = sample(15, 30, [segment(15, 30)], { sensorInputVersion: 1, indoorC: null,
+    quality: ['missing', 'sensor-change-settling'], indoorSensors: {
+      indoor_temperature: { value: null, weight: 1, observedAt: start + 30 * MINUTE },
+    }, measurementInputs: { indoorC: 21, indoorSensors: {
+      indoor_temperature: { value: 21, weight: 1, observedAt: start + 30 * MINUTE },
+    }, outdoorC: 8, quality: [], outdoorSegments: [{ outdoorC: 8, quality: [] }] } });
+  put(store, start + 30 * MINUTE, original, 'mqtt', LEARNING_ALGORITHM);
+  const before = project(store, 'mqtt');
+  assert.deepEqual(before.series.model_indoor_temperature.map(point => point.y), [20.5, null]);
+  assert.equal(before.series.model_indoor_temperature[0].savedIndoorAverage, true);
+  assert.equal(before.series.model_indoor_temperature[0].learningUsable, false);
+  store.appendLearningJournal('mqtt', { kind: 'context', at: start + 35 * MINUTE, algorithmVersion: LEARNING_ALGORITHM,
+    payload: { value: { sensorRevert: { id: 1, requestId: 'recorded-chart-revert' } } } });
+  assert.deepEqual(project(store, 'mqtt'), before, 'Original recorded chart inputs stay distinct from the corrected learner');
+  assert.equal(before.meta.basis, 'immutable-learning-journal');
+  assert.doesNotMatch(JSON.stringify(before), /measurementInputs|invented-configuration/);
 });

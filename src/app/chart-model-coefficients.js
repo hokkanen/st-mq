@@ -1,6 +1,7 @@
 import { MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { applyLearningRecord, LEARNING_ALGORITHM } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
+import { sensorLearningContext } from './sensor-inputs.js';
 
 const sources = { simulated: 'Simulation', history: 'Imported history', mqtt: 'Recorded MQTT inputs', providers: 'Recorded provider inputs' };
 // Derived timelines and resumable replay state stay private to this connection.
@@ -10,20 +11,20 @@ const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 
 function replay(store, input, through) {
   const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
-  const fireplaceContext = fireplaceLearningContext(store, input);
+  const replayContext = { ...fireplaceLearningContext(store, input), ...sensorLearningContext(store, input) };
   const bounds = store.db.prepare(`SELECT MAX(id) lastId,
     MIN(CASE WHEN at>? THEN id END) futureId FROM learning_journal WHERE input=?`).get(through, input);
   const lastId = bounds.futureId === null ? bounds.lastId ?? 0 : bounds.futureId - 1;
   let cache = caches.get(store.db);
   if (!cache) { cache = new Map(); caches.set(store.db, cache); }
-  const key = JSON.stringify([input, epoch, lastId, LEARNING_ALGORITHM, fireplaceContext.fireplaceRevision]);
+  const key = JSON.stringify([input, epoch, lastId, LEARNING_ALGORITHM, replayContext.fireplaceRevision, replayContext.sensorRevision]);
   if (cache.has(key)) {
     const hit = cache.get(key); cache.delete(key); cache.set(key, hit); return hit.result;
   }
   // Advancing the clock does not change an immutable journal prefix. New
   // entries resume its cached state instead of refitting all earlier samples.
   const base = [...cache.values()].filter(entry => entry.input === input && entry.epoch === epoch && entry.lastId < lastId
-    && entry.fireplaceRevision === fireplaceContext.fireplaceRevision)
+    && entry.fireplaceRevision === replayContext.fireplaceRevision && entry.sensorRevision === replayContext.sensorRevision)
     .sort((a, b) => b.lastId - a.lastId)[0];
   const result = base ? { ...base.result, events: [...base.result.events] }
     : { events: [], records: 0, replayedRecords: 0, unsupportedRecords: 0, invalidRecords: 0 };
@@ -60,7 +61,7 @@ function replay(store, input, through) {
         emit(null); continue;
       }
       const priorCheckpoint = blocked ? null : checkpoint;
-      const next = applyLearningRecord(priorCheckpoint, entry, fireplaceContext);
+      const next = applyLearningRecord(priorCheckpoint, entry, replayContext);
       const validation = next.model.validation;
       const seeded = !priorCheckpoint || Boolean(entry.payload.value.historySeed?.model);
       const accepted = next.health?.acceptedFits > (priorCheckpoint?.health?.acceptedFits ?? 0)
@@ -99,7 +100,7 @@ function replay(store, input, through) {
     }
   }
   const cached = { input, epoch, lastId, result, checkpoint, at, blocked, learned: [...learned], fitted: [...fitted],
-    fireplaceRevision: fireplaceContext.fireplaceRevision };
+    fireplaceRevision: replayContext.fireplaceRevision, sensorRevision: replayContext.sensorRevision };
   const bytes = Buffer.byteLength(JSON.stringify(cached));
   if (bytes <= MAX_CACHE_BYTES) {
     let used = [...cache.values()].reduce((sum, entry) => sum + entry.bytes, 0);

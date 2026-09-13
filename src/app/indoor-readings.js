@@ -56,7 +56,7 @@ const decode = row => ({ id: row.id, source: row.source, device: row.device, sig
  * the preceding source report expires. Its interior therefore proves continuous
  * availability, even after its compact end advances beyond this query. A later
  * span cannot fill an earlier gap. No discarded report timestamp is invented. */
-export function indoorReportCoverage(store, { reading, from, at, notBefore = -Infinity }) {
+export function indoorReportCoverage(store, { reading, from, at, notBefore = -Infinity, includeIntervals = false }) {
   let age = temperatureReportMaxAge(reading);
   if (age === null) {
     if (from === at) return null;
@@ -103,7 +103,7 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
   }
   events.sort((a, b) => a.start - b.start || (a.coverageId ?? a.observation.id) - (b.coverageId ?? b.observation.id));
   let coveredThrough = from, endpoint = null;
-  const observations = new Set(), coverage = new Set();
+  const observations = new Set(), coverage = new Set(), intervals = [];
   for (let i = 0; i < events.length; i++) {
     const event = events[i], observation = event.observation;
     if (event.status !== 'fresh' || observation.sourceTime < notBefore
@@ -114,6 +114,8 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     const next = Math.min(event.nextStart ?? Infinity, events[i + 1]?.start ?? Infinity);
     const end = Math.min(event.end, next);
     if (end < from || event.start > at || end < event.start) continue;
+    if (includeIntervals) intervals.push({ start: Math.max(from, event.start), end: Math.min(at, end), observedAt: observation.sourceTime,
+      endpoint: event.start <= at && event.end >= at && next > at });
     if (event.start <= coveredThrough) coveredThrough = Math.max(coveredThrough, Math.min(at, end));
     observations.add(observation.id); if (event.coverageId) coverage.add(event.coverageId);
     if (event.start <= at && event.end >= at && next > at)
@@ -121,7 +123,7 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
   }
   return { complete: coveredThrough >= at && endpoint !== null, available: endpoint !== null,
     coveredThrough, expiresAt: endpoint?.expiresAt ?? null,
-    observations: [...observations], coverage: [...coverage] };
+    observations: [...observations], coverage: [...coverage], ...(includeIntervals ? { intervals } : {}) };
 }
 
 /** Last genuine indoor measurement known at a causal boundary. Availability

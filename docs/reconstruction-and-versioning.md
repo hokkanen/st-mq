@@ -7,8 +7,8 @@ it does not add a general archive for reproducing every historical control choic
 ## What can be reconstructed
 
 Given an intact committed learning journal, its saved configuration and initial
-seed, the selected fireplace event revision, and the matching learning algorithm,
-replay must produce the same model checkpoint. Live learning and reconstruction
+seed, the selected fireplace and sensor-correction revisions, and the matching
+learning algorithm, replay must produce the same model checkpoint. Live learning and reconstruction
 must use the same ordered entry function. Checkpoints are replaceable caches with
 integrity digests and journal cursors; they are not the only source of model history.
 Original discarded polls are not required once their resolved learning inputs have
@@ -121,6 +121,37 @@ previous behavior. CSV interpretation and provenance are unchanged.
 The v7 journal remains an archive requiring its matching code (Git revision
 `b779b44`), and is never replayed as v8. The first v8 entry records the explicit
 initial seed and starts its own learning epoch.
+
+`committed-house-v9-reversible-sensors` adds append-only sensor-change reversals.
+A reversal references the original change; both records remain in the journal.
+Its selected correction revision retracts that measurement boundary throughout
+reconstruction while preserving other sensor changes and configuration boundaries.
+Only changes within the supported algorithm can be reverted; the v8 archive
+requires its matching code (Git revision `fc5ec60`) and is never relabelled as v9.
+The first v9 entry records the explicit initial seed for the new learning epoch.
+A seed after an archived reset is not evidence of the state before that reset.
+
+Acquisition and recording remain independent of resets. V9 resolves genuine
+indoor endpoints, periodic coverage and outdoor interval measurements before
+applying sensor exclusions. Reset-affected samples retain a compact patch of
+those original temperature inputs, including bounded coverage intervals. Other
+sample inputs are not duplicated. Live updates and corrected replay apply the
+same pure eligibility projection to these saved inputs. Thus a reverted reset
+recovers settling-period temperatures without new device polls, rewriting old
+journal payloads or relying on later mutable coverage. Real reporting gaps,
+invalid measurements and original historical configuration remain authoritative.
+This is a temperature-input addition, not a per-minute model snapshot or a full
+decision-input archive. Imported CSV interpretation and provenance are unchanged.
+
+A sensor reversal queues the shared background correction worker even before a
+subsequent sample exists, because the boundary itself cleared model state. The
+worker pins both correction revisions and the selected journal epoch, catches up
+the journal head, and publishes a complete checkpoint atomically. The previous
+model continues serving control until publication; pending intent survives restart
+and failed jobs can be retried. Reversal never resumes an interrupted historical
+cycle or invents the control actions that might have occurred without the reset.
+Original recorded model-input charts retain the inputs used at that time;
+coefficient charts show the selected corrected model assessment.
 
 Existing experimental SQLite contents do not require a compatibility migration.
 Changes to numerical interpretation,

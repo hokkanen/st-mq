@@ -17,7 +17,7 @@ import { Executor } from './executor.js';
 import { assembleOutlook, contractWithPeriod, reconcileConfiguredContract } from './contract.js';
 import { temporaryUpdate } from './temporary.js';
 import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
-import { addSensorChange, sensorChangesView } from './sensor-changes.js';
+import { addSensorChange, revertSensorChange, sensorChangesView } from './sensor-changes.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
@@ -121,6 +121,40 @@ export class Engine {
     catch { throw Object.assign(new Error('Sensor change save could not be confirmed. Retry the same request.'), { statusCode: 503 }); }
     return this.sensorChangesStatus();
   }
+  revertSensor(payload) {
+    const now = this.clock(), input = this.config.input;
+    const checkpoint = this.readAdaptive(now);
+    this.store.transaction(() => {
+      revertSensorChange(this.store, input, payload, now, { config: this.control, seed: checkpoint });
+      this.store.setState(`pending-plan:${input}`, null);
+    });
+    // A reversal changes the source revision, not the active model. The worker
+    // restores the pre-reset evidence and the engine publishes it after catchup.
+    // Recorded cycle outcomes and frozen forecasts remain observations of what
+    // actually happened, including any cycle cancelled by the original reset.
+    this.pendingPlan = null; this.lastSample = null; this.latestStatus = null;
+    try {
+      const job = this.store.getState(`fireplace:rebuild:${input}`);
+      if (['pending', 'running', 'ready', 'failed'].includes(job?.status)) this.fireplaceManager().start();
+      this.onTemporaryChange?.();
+      return this.sensorChangesStatus();
+    } catch {
+      throw Object.assign(new Error('Sensor reversal save could not be confirmed. Retry the same request.'), { statusCode: 503 });
+    }
+  }
+  retrySensorRebuild(payload) {
+    if (!['mqtt', 'providers', 'simulated'].includes(this.config.input))
+      throw new TypeError('Sensor changes are unavailable for this input');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length)
+      throw new TypeError('Retry learning with an empty JSON object');
+    const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
+    if (!job || job.status === 'idle')
+      throw Object.assign(new Error('There is no sensor learning rebuild to retry'), { statusCode: 409 });
+    // Repeated retry requests cannot create another correction or reset date.
+    if (['pending', 'running', 'ready', 'failed'].includes(job.status)) this.fireplaceManager().start();
+    this.latestStatus = null;
+    return this.sensorChangesStatus();
+  }
   configureTemperatureReports(signal, policy) {
     this.temperatureReportPolicies[signal] = policy;
     const prior = this.lastKnownTemperatures[signal];
@@ -193,7 +227,8 @@ export class Engine {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
     return replayCommittedLearning(this.store, this.config.input, checkpoint,
-      updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0 } : {});
+      updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
+        sensorRevision: checkpoint.sensorRevision ?? 0 } : {});
   }
   fireplaceManager() {
     return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input });
@@ -208,17 +243,23 @@ export class Engine {
       manager.start();
       const ready = manager.takeReady();
       if (ready) {
-        this.store.transaction(() => {
+        const published = this.store.transaction(() => {
+          // Another writer can commit between takeReady and BEGIN IMMEDIATE.
+          // Recheck the complete source selection while holding the writer lock.
+          if (!manager.current(ready) || manager.head() !== ready.head) return false;
           this.store.setState(`adaptive:${this.config.input}`, ready.checkpoint);
           this.store.setState(`fireplace:rebuild:${this.config.input}`, { ...manager.status(),
-            status: 'current', revision: ready.revision, requiresRebuild: false });
+            status: 'current', revision: ready.revision, sensorRevision: ready.sensorRevision,
+            requiresRebuild: false });
           this.store.setState(`pending-plan:${this.config.input}`, null);
+          return true;
         });
+        if (!published) { manager.takeReady(); return; }
         // Publish process state only after the durable transaction succeeds.
         manager.complete(ready.checkpoint, { persist: false });
         this.checkpoint = ready.checkpoint;
         this.fireplaceReserveOverride = null;
-        this.pendingPlan = null;
+        this.pendingPlan = null; this.lastSample = null; this.latestStatus = null;
       }
     }
   }

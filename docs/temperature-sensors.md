@@ -88,12 +88,14 @@ continues using only the historical upstairs measurement.
 ## Replacing, moving or adjusting a sensor
 
 Open **House model → Explore learning → Model inputs → Average indoor → Sensor
-changes** after completing a replacement, move or calibration. Select **Sensor**
-and **Reason**, then choose **Record change now**. The reason choices are
+changes** for indoor sensors, or **Outdoor temperature → Sensor changes** for
+the outdoor sensor, after completing a replacement, move or calibration. Select
+**Sensor** and **Reason**, then choose **Record change now…**. Review the
+confirmation, which explains the effect on learning, before accepting. The reason choices are
 **Replacement**, **New location**, **Calibration** and **Other**. Reason is saved
 as descriptive history; all four choices have the same learning effect for the
-selected sensor. The rarely used form and recent change history stay inside this
-closed maintenance section, leaving **Home & heating** for everyday controls.
+selected sensor. Each temperature section keeps its own form and change history.
+Choose **Show older changes** to reach entries beyond the first ten.
 
 The action records the current server time, including for changes that keep the
 same device identifier. It does not edit device configuration or backdate a change.
@@ -114,7 +116,30 @@ For a participating indoor sensor or the outdoor temperature, the action:
 Garage and zero-weight indoor sensor changes are recorded without resetting the
 house model. A change to indoor averaging membership or weights automatically
 establishes the corresponding model boundary. The event list also appears on a
-read-only replica; changes must be recorded on the controlling instance.
+read-only replica; changes must be managed on the controlling instance.
+
+To undo a mistaken entry, choose **Revert and relearn** beside it and confirm.
+The original event remains in history with its reversal time. Relearning uses
+recorded observations as if that reset had not happened, including measurements
+collected during its settling period. Other active sensor changes still apply.
+The corrected model is built in the background while heating control remains
+available; the complete, caught-up result replaces the previous model together.
+Original readings, actual heating operation and frozen forecasts stay intact.
+The **Average indoor** and **Model inputs** charts retain the inputs originally
+supplied to learning, including the original settling gaps. Those chart gaps do
+not mean the underlying readings were lost: the corrected learner can use them,
+and **Model coefficients** shows the resulting corrected reconstruction.
+Reverting a genuine change that introduced a measurement bias could combine
+incompatible observations, so use reversal for an incorrectly recorded change.
+
+The panel shows queued, running, completed or failed relearning. If saving was not
+confirmed after a connection failure, **Retry saving** reuses the original request
+and cannot duplicate the entry or reversal, including after a page reload. If the
+background work fails, **Retry relearning** restarts it while the previous model
+remains active. Garage and nonparticipating indoor entries use **Revert change**
+because they did not reset house learning. Entries from an archived learning
+version remain visible with an explanation that reversal is unavailable; they
+are not silently reinterpreted by a newer learner.
 
 No offset is inferred from the jump at a change. Comparing replacement sensors
 side by side can establish relative agreement, but matching their readings does

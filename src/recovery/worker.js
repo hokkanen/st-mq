@@ -5,9 +5,10 @@ import { dirname, join } from 'node:path';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { Store } from '../storage/store.js';
 import { HistoryMerge } from './merge.js';
-import { markRecoveryFailed } from './state.js';
+import { markRecoveryFailed, projectedSensorContext } from './state.js';
 import { applyLearningRecord, learningVersion, LEARNING_ALGORITHM, LEARNING_WINDOW_MS } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
+import { sensorRevision } from '../app/sensor-inputs.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -52,6 +53,12 @@ async function open() {
 
 function journalReferences(value, masterIds, donorIds, source) {
   const result = structuredClone(value);
+  if (result.value?.sensorRevert) {
+    const id = result.value.sensorRevert.id;
+    const target = id < 0 ? donorIds.get(-id) : masterIds.get(id);
+    if (!target) throw invalid('A sensor correction has no matching change in recovered history');
+    result.value.sensorRevert.id = target;
+  }
   const visit = node => {
     if (!node || typeof node !== 'object') return;
     for (const [key, item] of Object.entries(node)) {
@@ -73,6 +80,7 @@ async function createProjection(merge, runId) {
   // Sampling them before pinning could copy a concurrent append here and then
   // copy it a second time during catch-up.
   const sourceEpoch = epochOf(snapshot, input), sourceHead = head(snapshot, input);
+  const sourceSensorRevision = sensorRevision(snapshot, input);
   const epoch = `recovery-v1:${runId}`;
   target.db.prepare(`INSERT INTO recovery_runs(id,input,donor_digest,previous_epoch,epoch,status,started_at,report,previous_fireplace_revision,source_head)
     VALUES(?,?,?,?,?,'rebuilding',?,?,?,?)`).run(runId, input, merge.digest, sourceEpoch, epoch, Date.now(), json(merge.report), originalFireplaceRevision, sourceHead);
@@ -87,9 +95,15 @@ async function createProjection(merge, runId) {
     if (entry.row.kind === 'sample') {
       const value = entry.payload.value;
       conflicts = snapshot.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
-        AND json_valid(payload) AND json_type(payload,'$.value.indoorC') IN ('integer','real')
-        AND json_type(payload,'$.value.outdoorC') IN ('integer','real')
-        AND NOT EXISTS (SELECT 1 FROM json_each(learning_journal.payload,'$.value.quality') q
+        AND json_valid(payload) AND json_type(payload,CASE
+          WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+          THEN '$.value.measurementInputs.indoorC' ELSE '$.value.indoorC' END) IN ('integer','real')
+        AND json_type(payload,CASE
+          WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+          THEN '$.value.measurementInputs.outdoorC' ELSE '$.value.outdoorC' END) IN ('integer','real')
+        AND NOT EXISTS (SELECT 1 FROM json_each(learning_journal.payload,CASE
+          WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+          THEN '$.value.measurementInputs.quality' ELSE '$.value.quality' END) q
           WHERE q.value LIKE '%missing%' OR q.value LIKE '%invalid%' OR q.value LIKE '%stale%'
             OR q.value LIKE '%unavailable%' OR q.value LIKE '%failed%')
         AND COALESCE(json_extract(payload,'$.value.windowStart'),at-?)<?
@@ -106,7 +120,9 @@ async function createProjection(merge, runId) {
   const rejectedContext = value => {
     if (!value || typeof value !== 'object') return false;
     return Object.entries(value).some(([key, item]) => key === 'journal' && Array.isArray(item)
-      ? item.some(id => id < 0 && merge.maps.learning_journal.get(-id)?.disposition === 'conflicts') : rejectedContext(item));
+      ? item.some(id => id < 0 && merge.maps.learning_journal.get(-id)?.disposition === 'conflicts')
+      : key === 'sensorRevert' && item?.id < 0 && merge.maps.learning_journal.get(-item.id)?.disposition === 'conflicts'
+        || rejectedContext(item));
   };
   for (let index = recovered.length - 1; index >= 0; index--) if (rejectedContext(recovered[index].payload)) {
     const [entry] = recovered.splice(index, 1);
@@ -124,7 +140,9 @@ async function createProjection(merge, runId) {
     const key = origin === 'master' ? row.key : row.kind === 'sample' ? `${LEARNING_ALGORITHM}:sample:${row.at}`
       : `recovery:${runId}:${row.kind}:${row.id}`;
     const sourceId = origin === 'master' ? target.db.prepare('SELECT COALESCE(source_entry_id,id) id FROM learning_journal_entries WHERE id=?').get(row.id).id : null;
-    const value = origin === 'master' ? null : json(payload);
+    // Sensor targets are journal IDs. Copy only that compact correction before
+    // remapping it; ordinary master inputs keep their original source pointer.
+    const value = origin === 'master' ? (row.kind === 'context' && JSON.parse(row.payload).value?.sensorRevert ? row.payload : null) : json(payload);
     const forecast = origin === 'master' ? null : row.forecast_version === null ? null
       : json(merge.remap({ forecastVersion: JSON.parse(row.forecast_version) }, { strict: true }).forecastVersion);
     const id = Number(insert.run(epoch, input, key, row.kind, row.at, row.algorithm_version, origin === 'master' ? null : row.config_version,
@@ -161,7 +179,7 @@ async function createProjection(merge, runId) {
           if (!Object.hasOwn(payload, 'seed')) throw invalid('Recovered history has no valid seed before its first sample');
           firstProjection = false;
         }
-        if (sources.get(row.id).origin === 'donor') {
+        if (sources.get(row.id).origin === 'donor' || payload.value?.sensorRevert) {
           payload = journalReferences(payload, masterIds, donorIds, sources.get(row.id));
           target.db.prepare('UPDATE learning_journal_entries SET payload=? WHERE id=? AND epoch=?').run(json(payload), row.id, epoch);
         }
@@ -169,8 +187,8 @@ async function createProjection(merge, runId) {
     });
     after = rows.at(-1).id; await yieldTurn();
   }
-  const source = fireplaceLearningContext(target, input);
-  projection = { runId, epoch, sourceEpoch, sourceHead, source, sourceRevision: source.fireplaceRevision,
+  const source = { ...fireplaceLearningContext(target, input), ...projectedSensorContext(target, input, epoch) };
+  projection = { runId, epoch, sourceEpoch, sourceHead, sourceSensorRevision, source, sourceRevision: source.fireplaceRevision,
     masterIds, donorIds, checkpoint: null, after: 0, processed: 0, lastAt: -Infinity, merge };
   await replayProjection();
   return projection;
@@ -195,7 +213,8 @@ async function replayProjection() {
 
 async function catchup() {
   const p = projection, input = workerData.input;
-  if (epochOf(target, input) !== p.sourceEpoch || fireplaceLearningContext(target, input).fireplaceRevision !== p.sourceRevision)
+  if (epochOf(target, input) !== p.sourceEpoch || fireplaceLearningContext(target, input).fireplaceRevision !== p.sourceRevision
+    || sensorRevision(target, input) !== p.sourceSensorRevision)
     throw invalid('Recovery source changed; check the other instance again');
   const through = head(target, input);
   for (;;) {
@@ -215,6 +234,7 @@ async function catchup() {
   }
   await replayProjection();
   parentPort.postMessage({ type: 'ready', epoch: p.epoch, sourceEpoch: p.sourceEpoch, sourceHead: p.sourceHead,
+    sourceSensorRevision: p.sourceSensorRevision, sensorRevision: p.source.sensorRevision,
     fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, runId: p.runId, report: p.merge.report });
 }
 
@@ -252,6 +272,7 @@ async function start() {
   if (report.model.status === 'unchanged') {
     parentPort.postMessage({ type: 'ready', epoch: epochOf(target, workerData.input), sourceEpoch: epochOf(target, workerData.input),
       sourceHead: head(target, workerData.input), fireplaceRevision: fireplaceLearningContext(target, workerData.input).fireplaceRevision,
+      sourceSensorRevision: sensorRevision(target, workerData.input), sensorRevision: sensorRevision(target, workerData.input),
       checkpoint: target.getState(`adaptive:${workerData.input}`), runId: null, report });
     return;
   }
@@ -277,6 +298,7 @@ parentPort.on('message', async message => {
       if (projection) await catchup();
       else parentPort.postMessage({ type: 'ready', epoch: epochOf(target, workerData.input), sourceEpoch: epochOf(target, workerData.input),
         sourceHead: head(target, workerData.input), fireplaceRevision: fireplaceLearningContext(target, workerData.input).fireplaceRevision,
+        sourceSensorRevision: sensorRevision(target, workerData.input), sensorRevision: sensorRevision(target, workerData.input),
         checkpoint: target.getState(`adaptive:${workerData.input}`), runId: null, report: message.report });
     } else if (message.type === 'close') cleanup();
   } catch (error) { failed(error); }

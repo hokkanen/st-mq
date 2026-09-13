@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
+import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
 import { fireplaceActive, fireplaceIntegral, fireplaceRate, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated']);
@@ -44,6 +45,7 @@ function queueRevision(store, input, revision, at, affectedAt) {
     WHERE input=? AND kind='sample' AND algorithm_version=? AND at>? LIMIT 1`).get(input, LEARNING_ALGORITHM, affectedAt));
   const requiresRebuild = affected || ['pending', 'running', 'ready', 'failed'].includes(previous?.status);
   if (requiresRebuild) store.setState(jobKey(input), { status: 'pending', revision,
+    sensorRevision: sensorRevision(store, input), epoch: store.learningEpoch(input),
     requestedAt: at, affectedAt: affectedAt === null ? previous?.affectedAt ?? null
       : Math.min(affectedAt, previous?.affectedAt ?? affectedAt), requiresRebuild: true });
   return requiresRebuild;
@@ -114,38 +116,46 @@ export class FireplaceRebuildManager {
     this.store = store; this.input = validInput(input); this.workerFactory = workerFactory;
     this.worker = null; this.ready = null; this.generation = 0; this.closed = false;
   }
-  status() { return this.store.getState(jobKey(this.input)) ?? { status: 'idle', revision: fireplaceRevision(this.store, this.input) }; }
+  status() { return this.store.getState(jobKey(this.input)) ?? { status: 'idle',
+    revision: fireplaceRevision(this.store, this.input), sensorRevision: sensorRevision(this.store, this.input),
+    epoch: this.store.learningEpoch(this.input) }; }
   setStatus(value) { this.store.setState(jobKey(this.input), value); }
   head() { return this.store.db.prepare(`SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?
     AND algorithm_version=?`)
     .get(this.input, LEARNING_ALGORITHM).id; }
-  start(revision = fireplaceRevision(this.store, this.input)) {
+  current(selection) {
+    return selection.revision === fireplaceRevision(this.store, this.input)
+      && selection.sensorRevision === sensorRevision(this.store, this.input)
+      && selection.epoch === this.store.learningEpoch(this.input);
+  }
+  start(revision = fireplaceRevision(this.store, this.input), correctedSensors = sensorRevision(this.store, this.input), { force = false } = {}) {
     if (this.closed) return false;
-    if (revision !== fireplaceRevision(this.store, this.input)) return false;
-    if (this.worker && this.workerRevision === revision) return true;
+    const selection = { revision, sensorRevision: correctedSensors, epoch: this.store.learningEpoch(this.input) };
+    if (!this.current(selection)) return false;
+    if (!force && this.worker && this.current(this.workerSelection)) return true;
     const previousWorker = this.worker;
     this.worker = null; this.ready = null;
     if (previousWorker) void previousWorker.terminate();
     const generation = ++this.generation;
     const old = this.status();
-    this.setStatus({ ...old, status: 'running', revision, requiresRebuild: true, processed: 0, error: null });
+    this.setStatus({ ...old, ...selection, status: 'running', requiresRebuild: true, processed: 0, error: null });
     try {
       const worker = this.workerFactory({ workerData: { dbPath: this.store.path, input: this.input } });
-      this.worker = worker; this.workerRevision = revision;
+      this.worker = worker; this.workerSelection = selection;
       const fail = () => {
         if (this.closed || generation !== this.generation) return;
         this.worker = null; this.ready = null; this.generation++;
         void worker.terminate();
         this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
-          error: 'Fireplace model rebuild failed; the previous model remains active.' });
+          error: 'Model rebuild failed; the previous model remains active.' });
       };
       worker.on('error', fail);
       worker.on('exit', fail);
       worker.on('message', result => {
         if (this.closed || generation !== this.generation) return;
-        if (revision !== fireplaceRevision(this.store, this.input)) { this.start(); return; }
-        if (result.revision !== revision) return;
-        if (result.type === 'stale') { this.start(); return; }
+        if (!this.current(selection)) { this.start(); return; }
+        if (result.revision !== revision || result.sensorRevision !== correctedSensors || result.epoch !== selection.epoch) return;
+        if (result.type === 'stale') { this.start(undefined, undefined, { force: true }); return; }
         if (result.error) { fail(); return; }
         if (result.type === 'progress') {
           this.setStatus({ ...this.status(), status: 'running', processed: result.processed, journalCursor: result.journalCursor });
@@ -156,23 +166,25 @@ export class FireplaceRebuildManager {
           limit: 1, algorithmVersion: LEARNING_ALGORITHM })[0] : null;
         if (!Number.isSafeInteger(result.head) || result.head < 0
           || result.head > 0 && (!last || result.checkpoint?.journalCursor !== result.head
-            || (result.checkpoint?.fireplaceRevision ?? 0) !== revision || !validLearningCheckpoint(result.checkpoint, last))
+            || (result.checkpoint?.fireplaceRevision ?? 0) !== revision
+            || (result.checkpoint?.sensorRevision ?? 0) !== correctedSensors || !validLearningCheckpoint(result.checkpoint, last))
           || result.head === 0 && result.checkpoint !== null) { fail(); return; }
-        this.ready = { checkpoint: result.checkpoint, revision, head: result.head };
+        this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head };
         this.setStatus({ ...this.status(), status: 'ready', journalCursor: result.head, processed: result.processed });
       });
-      this.send({ type: 'rebuild', revision, head: this.head() });
+      this.send({ type: 'rebuild', ...selection, head: this.head() });
       return true;
     } catch {
       const worker = this.worker; this.worker = null; this.generation++;
       if (worker) void worker.terminate();
-      this.setStatus({ ...this.status(), status: 'failed', error: 'Fireplace model rebuild could not start.', requiresRebuild: true });
+      this.setStatus({ ...this.status(), status: 'failed', error: 'Model rebuild could not start.', requiresRebuild: true });
       return false;
     }
   }
   send(message) {
     if (this.store.path === ':memory:') {
-      const source = fireplaceLearningContext(this.store, this.input, message.revision);
+      const source = { ...fireplaceLearningContext(this.store, this.input, message.revision),
+        ...sensorLearningContext(this.store, this.input, message.sensorRevision) };
       const entries = [];
       let after = message.after ?? 0;
       for (;;) {
@@ -186,13 +198,13 @@ export class FireplaceRebuildManager {
   }
   takeReady() {
     if (!this.ready || this.closed) return null;
-    if (this.ready.revision !== fireplaceRevision(this.store, this.input)) { this.start(); return null; }
+    if (!this.current(this.ready)) { this.start(); return null; }
     const head = this.head();
     if (head !== this.ready.head) {
-      const after = this.ready.head, revision = this.ready.revision;
+      const after = this.ready.head, { revision, sensorRevision, epoch } = this.ready;
       this.ready = null;
       this.setStatus({ ...this.status(), status: 'running' });
-      this.send({ type: 'catchup', revision, head, after });
+      this.send({ type: 'catchup', revision, sensorRevision, epoch, head, after });
       return null;
     }
     return this.ready;
@@ -200,7 +212,8 @@ export class FireplaceRebuildManager {
   complete(checkpoint, { persist = true } = {}) {
     const candidate = this.takeReady();
     if (!candidate || candidate.checkpoint !== checkpoint) return false;
-    if (persist) this.setStatus({ ...this.status(), status: 'current', revision: candidate.revision, requiresRebuild: false });
+    if (persist) this.setStatus({ ...this.status(), status: 'current', revision: candidate.revision,
+      sensorRevision: candidate.sensorRevision, epoch: candidate.epoch, requiresRebuild: false });
     this.ready = null;
     const worker = this.worker; this.worker = null; this.generation++;
     if (worker) void worker.terminate();

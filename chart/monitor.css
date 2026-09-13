@@ -521,12 +521,14 @@ details details { margin-inline-start: 24px; }
 .sensor-change-form select { width: 100%; min-width: 0; }
 .sensor-change-form button { justify-self: start; margin: 0; grid-column: 1 / -1; }
 .sensor-change-form :disabled { cursor: default; }
-#sensor-change-message:empty, #sensor-change-availability:empty { display: none; }
+.sensor-change-status:empty { display: none; }
 .sensor-change-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 .sensor-change-history-heading h3 { font-size: 13px; font-weight: 550; margin: 0; }
 .sensor-change-history-heading button { margin: 0; font-size: 11px; }
 .sensor-change-entries { list-style: none; padding: 0; margin: 0; }
-.sensor-change-entries li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.sensor-change-entries li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.sensor-change-entry-status { color: var(--muted); }
+.sensor-change-entries button { margin: 0; font-size: 11px; }
 .sensor-change-entries time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 @media (max-width: 400px) {
   .sensor-change-form { grid-template-columns: 1fr; }

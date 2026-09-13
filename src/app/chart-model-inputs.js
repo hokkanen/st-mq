@@ -27,8 +27,10 @@ function indoorEndpointMetadata(sample, usable) {
     ...(sensors.length ? { attentionSensors: sensors } : {}) };
 }
 
-/** Project immutable learning inputs. Do not rerun today's learner, read mutable
- * configuration, or expose journal payloads / source identifiers to the browser. */
+/** Project inputs as originally supplied, including original sensor exclusions.
+ * Correction replay may restore preserved measurements behind these gaps; its
+ * changed assessments belong in the coefficient chart. Do not rerun today's
+ * learner, read mutable configuration or expose private source identifiers. */
 export function addModelInputs({ store, range, now, input, envelopes, indoorLine }) {
   const selected = Object.keys(MODEL_INPUT_INFO).filter(key => envelopes[key] && !FIREPLACE_INPUT_NAMES.includes(key));
   const stats = { records: 0, rejectedIntervals: 0, basis: 'immutable-learning-journal' };
@@ -75,7 +77,7 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
       // These algorithms record indoor availability independently of the other
       // learning inputs. A missing outdoor segment must not erase a known
       // indoor average. Older algorithms retain their original chart gates.
-      const currentIndoor = ['committed-house-v7-held-indoor','committed-house-v8-report-coverage'].includes(row.algorithm_version);
+      const currentIndoor = ['committed-house-v7-held-indoor','committed-house-v8-report-coverage','committed-house-v9-reversible-sensors'].includes(row.algorithm_version);
       project('model_indoor_temperature', start, end, (currentIndoor || usable) && finite(sample.indoorC) ? sample.indoorC : null,
         currentIndoor ? { ...common, ...indoorEndpointMetadata(sample, usable) } : common, true);
     }

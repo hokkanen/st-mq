@@ -71,7 +71,8 @@ function showError(error) { $('error').textContent = error.message; $('error').h
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
 // Mount the static input guide before restoring a possibly pending sensor change.
-renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sensor-change-details') });
+renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sensor-change-details'),
+  outdoorSensorChanges: $('outdoor-sensor-change-details') });
 const sensorChangePanel = createSensorChangePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,

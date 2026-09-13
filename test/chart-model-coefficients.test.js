@@ -8,6 +8,7 @@ import { Store } from '../src/storage/store.js';
 import { Envelope, getChartData } from '../src/app/chart-data.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { addModelCoefficients } from '../src/app/chart-model-coefficients.js';
+import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
 import { MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 import { appendLearningRecord, applyLearningRecord, learningConfiguration, learningVersion,
   LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
@@ -405,4 +406,70 @@ test('cached replay resumes only new effective-prefix rows and matches fresh con
   assert(values(afterFuture).some(point => point.x >= start + 90 * MINUTE && point.y === 0.07));
   compareFresh(start + 40 * MINUTE);
   assert.equal(readRows, 5, 'The earlier cached prefix remains intact after an incremental extension');
+});
+
+test('sensor reversal rebuilds a cached earlier coefficient prefix and later records resume the corrected model', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  let readRows = 0;
+  const counted = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    if (!/^SELECT \* FROM learning_journal\b/i.test(sql)) return statement;
+    return { *iterate(...args) {
+      for (const row of statement.iterate(...args)) { readRows++; yield row; }
+    } };
+  } } };
+  const seed = restoreAdaptiveCheckpoint(null);
+  seed.model.parameters.lossPerHour = 0.03;
+  seed.model.trainedAt = new Date(start - 60 * MINUTE).toISOString();
+  seed.model.validation = { accepted: true, fittedParameters: ['lossPerHour'],
+    parameterEvidence: { lossPerHour: { status: 'identified' } } };
+  seed.health = { status: 'learning', acceptedFits: 1, rejectedFits: 0 };
+  context(store, start, { seed });
+  const change = addSensorChange(store, 'providers', { signal: 'indoor_temperature', reason: 'replacement',
+    requestId: 'coefficient-reset' }, start + 20 * MINUTE);
+  const args = { now: start + 30 * MINUTE };
+  const original = project(counted, args);
+  assert(values(original).some(point => point.x >= change.at && point.coefficientStatus === 'retained'));
+  assert.equal(readRows, 2);
+  assert.deepEqual(project(counted, args), original);
+  assert.equal(readRows, 2, 'An unchanged journal prefix reuses its cache');
+
+  revertSensorChange(store, 'providers', { id: change.id, requestId: 'coefficient-revert' }, start + 45 * MINUTE);
+  const before = databaseSnapshot(store);
+  const corrected = project(counted, args);
+  assert.equal(readRows, 4, 'A later reversal invalidates the earlier cached prefix even though its last ID did not change');
+  assert(values(corrected).every(point => point.y === 0.03 && point.coefficientStatus === 'fitted'));
+  assert.deepEqual(project(counted, args), corrected);
+  assert.equal(readRows, 4);
+  assert.deepEqual(databaseSnapshot(store), before, 'Retrospective chart correction never writes a checkpoint or source record');
+
+  const caughtUp = project(counted);
+  assert.equal(readRows, 5, 'The reversal record extends the corrected cached prefix');
+  assert(values(caughtUp).every(point => point.coefficientStatus === 'fitted'));
+  context(store, start + 50 * MINUTE);
+  const extended = project(counted);
+  assert.equal(readRows, 6, 'Later records resume the corrected checkpoint');
+  assert.deepEqual(extended, project(store), 'Incremental correction replay matches a fresh chart cache');
+});
+
+test('sensor-corrected coefficient replay keeps the previous algorithm archived before the explicit current seed', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const configuration = learningConfiguration({});
+  store.appendLearningJournal('providers', { kind: 'context', at: start - 15 * MINUTE,
+    algorithmVersion: 'committed-house-v8-report-coverage', configVersion: learningVersion(configuration),
+    payload: { value: { timestamp: start - 15 * MINUTE }, configuration, seed: restoreAdaptiveCheckpoint(null) } });
+  const seed = restoreAdaptiveCheckpoint(null);
+  seed.model.parameters.lossPerHour = 0.04;
+  seed.model.trainedAt = new Date(start - 5 * MINUTE).toISOString();
+  seed.model.validation = { accepted: true, fittedParameters: ['lossPerHour'] };
+  seed.health = { status: 'learning', acceptedFits: 1, rejectedFits: 0 };
+  context(store, start, { seed });
+  const change = addSensorChange(store, 'providers', { signal: 'outdoor_temperature', reason: 'calibration',
+    requestId: 'archival-coefficient-reset' }, start + 20 * MINUTE);
+  revertSensorChange(store, 'providers', { id: change.id, requestId: 'archival-coefficient-revert' }, start + 30 * MINUTE);
+  const result = project(store, { from: start - 15 * MINUTE });
+  assert.equal(result.meta.unsupportedRecords, 1);
+  assert.equal(result.meta.replayedRecords, 3);
+  assert(values(result).every(point => point.x >= start && point.y === 0.04 && point.coefficientStatus === 'fitted'));
+  assert(result.series.model_coefficient_heat_loss.some(point => point.x < start && point.y === null));
 });

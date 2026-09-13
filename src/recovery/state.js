@@ -1,4 +1,14 @@
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
+import { sensorRevision } from '../app/sensor-inputs.js';
+
+/** A recovery projection is not selected until publication. Read its compact
+ * corrections without switching the live journal view. */
+export function projectedSensorContext(store, input, epoch) {
+  const rows = store.db.prepare(`SELECT id,json_extract(payload,'$.value.sensorRevert.id') target
+    FROM learning_journal_all WHERE epoch=? AND input=? AND kind='context'
+    AND json_type(payload,'$.value.sensorRevert')='object' ORDER BY id`).all(epoch, input);
+  return { sensorRevision: rows.at(-1)?.id ?? 0, revertedSensorChanges: [...new Set(rows.map(row => row.target))] };
+}
 
 /** A failed import may have accepted old manual source events already. Let the
  * normal background correction worker reconcile those against the still-active
@@ -7,8 +17,10 @@ export function markRecoveryFailed(store, input) {
   store.transaction(() => {
     const checkpoint = store.getState(`adaptive:${input}`);
     const revision = fireplaceLearningContext(store, input).fireplaceRevision;
-    if (checkpoint && (checkpoint.fireplaceRevision ?? 0) !== revision)
+    const correctedSensors = sensorRevision(store, input);
+    if (checkpoint && ((checkpoint.fireplaceRevision ?? 0) !== revision || (checkpoint.sensorRevision ?? 0) !== correctedSensors))
       store.setState(`fireplace:rebuild:${input}`, { status: 'pending', revision,
+        sensorRevision: correctedSensors, epoch: store.learningEpoch(input),
         requiresRebuild: true, requestedAt: Date.now(), reason: 'accepted-recovery-source-events' });
     store.setState(`recovery:active:${input}`, { status: 'failed',
       error: 'Recovery remains protected; accepted history is valid and the previous model remains available.' });

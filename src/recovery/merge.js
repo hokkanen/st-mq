@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, learningVersion } from '../app/committed-learning.js';
+import { originalSensorSample } from '../app/sensor-samples.js';
 
 export const RECOVERY_POLICY = 'master-wins-gaps-only-v1';
 const json = JSON.stringify;
@@ -346,11 +347,21 @@ export class HistoryMerge {
     for (const row of this.donor.db.prepare('SELECT * FROM learning_journal WHERE input=? ORDER BY at,id').iterate(this.input)) {
       let disposition = 'skipped';
       try {
-        const payload = decode(row.payload), configuration = payload?.configuration, value = payload?.value;
+        const payload = decode(row.payload), configuration = payload?.configuration;
+        let value = payload?.value;
         this.require(object(payload) && object(configuration) && object(value) && instant(row.at)
           && ['sample', 'context', 'episode'].includes(row.kind));
         if (row.algorithm_version !== LEARNING_ALGORITHM) { this.report.model.unsupported++; throw new TypeError('Unsupported donor algorithm'); }
         this.require(decode(row.config_version) === learningVersion(configuration));
+        if (value.sensorRevert) {
+          const target = this.known('learning_journal', value.sensorRevert.id);
+          this.require(row.kind === 'context' && Number.isSafeInteger(value.sensorRevert.id) && value.sensorRevert.id > 0
+            && target?.id != null && ['duplicates', 'missing'].includes(target.disposition));
+          this.require(this.donor.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND id=? AND kind='context'
+            AND algorithm_version=? AND json_type(payload,'$.value.sensorChange')='object'`)
+            .get(this.input, value.sensorRevert.id, LEARNING_ALGORITHM));
+          value = { ...value, sensorRevert: { ...value.sensorRevert, id: target.id } };
+        }
         const old = this.target.db.prepare('SELECT * FROM learning_journal WHERE input=? AND kind=? AND at=? ORDER BY id DESC LIMIT 1')
           .get(this.input, row.kind, row.at);
         if (old && same(decode(old.payload).value, value) && old.config_version === row.config_version) {
@@ -358,13 +369,20 @@ export class HistoryMerge {
         } else {
           if (row.kind === 'sample') {
             const start = value.windowStart ?? row.at - LEARNING_WINDOW_MS, end = value.windowEnd ?? row.at;
+            const measured = value.sensorInputVersion === 1 ? originalSensorSample(value) : value;
             this.require(instant(start) && instant(end) && end > start && end - start <= LEARNING_WINDOW_MS && end === row.at);
-            this.require(finite(value.indoorC) && finite(value.outdoorC) && flags(value.quality ?? [])
-              && !(value.quality ?? []).some(flag => /missing|invalid|stale|unavailable|failed/.test(flag)));
+            this.require(finite(measured.indoorC) && finite(measured.outdoorC) && flags(measured.quality ?? [])
+              && !(measured.quality ?? []).some(flag => /missing|invalid|stale|unavailable|failed/.test(flag)));
             const overlap = this.target.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
-              AND json_valid(payload) AND json_type(payload,'$.value.indoorC') IN ('integer','real')
-              AND json_type(payload,'$.value.outdoorC') IN ('integer','real')
-              AND NOT EXISTS (SELECT 1 FROM json_each(learning_journal.payload,'$.value.quality') q
+              AND json_valid(payload) AND json_type(payload,CASE
+                WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+                THEN '$.value.measurementInputs.indoorC' ELSE '$.value.indoorC' END) IN ('integer','real')
+              AND json_type(payload,CASE
+                WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+                THEN '$.value.measurementInputs.outdoorC' ELSE '$.value.outdoorC' END) IN ('integer','real')
+              AND NOT EXISTS (SELECT 1 FROM json_each(learning_journal.payload,CASE
+                WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
+                THEN '$.value.measurementInputs.quality' ELSE '$.value.quality' END) q
                 WHERE q.value LIKE '%missing%' OR q.value LIKE '%invalid%' OR q.value LIKE '%stale%'
                   OR q.value LIKE '%unavailable%' OR q.value LIKE '%failed%')
               AND COALESCE(json_extract(payload,'$.value.windowStart'),at-?)<?

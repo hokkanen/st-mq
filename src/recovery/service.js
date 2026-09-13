@@ -2,7 +2,8 @@ import { Worker } from 'node:worker_threads';
 import { rm } from 'node:fs/promises';
 import { learningVersion, validLearningCheckpoint, LEARNING_ALGORITHM } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
-import { markRecoveryFailed } from './state.js';
+import { sensorRevision } from '../app/sensor-inputs.js';
+import { markRecoveryFailed, projectedSensorContext } from './state.js';
 
 const running = new WeakSet();
 const validInput = input => {
@@ -41,15 +42,20 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
             throw unavailable('The selected model history changed during recovery');
           const revision = fireplaceLearningContext(store, input).fireplaceRevision;
           if (revision !== message.fireplaceRevision) throw unavailable('Manual source history changed; check the other instance again');
+          if (sensorRevision(store, input) !== message.sourceSensorRevision)
+            throw unavailable('Sensor correction history changed; check the other instance again');
           if (journalHead(store, input) !== message.sourceHead) return null;
           const checkpoint = message.checkpoint;
           if (message.runId) {
+            const projectedRevision = projectedSensorContext(store, input, message.epoch).sensorRevision;
             const row = store.db.prepare(`SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND algorithm_version=? ORDER BY id DESC LIMIT 1`)
               .get(message.epoch, input, LEARNING_ALGORITHM);
             const last = row && { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
               configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
               forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) };
-            if (last && (last.algorithmVersion !== LEARNING_ALGORITHM || !validLearningCheckpoint(checkpoint, last))
+            if (message.sensorRevision !== projectedRevision
+              || last && (last.algorithmVersion !== LEARNING_ALGORITHM || !validLearningCheckpoint(checkpoint, last)
+                || (checkpoint.fireplaceRevision ?? 0) !== revision || (checkpoint.sensorRevision ?? 0) !== projectedRevision)
               || !last && checkpoint !== null) throw unavailable('Reconstructed model verification failed');
             store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
               .run(input, message.epoch);
@@ -60,7 +66,7 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
           store.setState(`recovery:active:${input}`, { status: 'complete', epoch: message.epoch, completedAt: Date.now(), report });
           store.setState(`pending-plan:${input}`, null);
           if (message.runId) store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision,
-            requiresRebuild: false, recoveryEpoch: message.epoch });
+            sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false, recoveryEpoch: message.epoch });
           if (message.runId) store.db.prepare("UPDATE recovery_runs SET status='complete',completed_at=?,report=?,source_head=?,fireplace_revision=? WHERE id=?")
             .run(Date.now(), JSON.stringify(report), message.sourceHead, revision, message.runId);
           store.event('history-recovery-completed', { input, imported: report.imported, skipped: report.counts.skipped,

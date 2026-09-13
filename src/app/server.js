@@ -108,15 +108,16 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const engine = readContext?.engine ?? getEngine();
         const readerStore = readContext?.store ?? store;
         const readerCharts = readContext?.chartService ?? chartService;
-        const sensorChangesStatus = () => {
-          const view = (readContext ? engine : getEngine()).sensorChangesStatus();
+        const sensorChangesStatus = (view = (readContext ? engine : getEngine()).sensorChangesStatus()) => {
           const readOnly = role === 'replica' || controlAuthority && !controlAuthority.canControl()
             || pairContext && (!pairContext.canControl() || pairContext.recovering());
-          return readOnly ? { ...view, available: false, readOnly: true } : view;
+          return readOnly ? { ...view, available: false, readOnly: true, canRetryRebuild: false,
+            events: view.events.map(event => ({ ...event, canRevert: false })) } : view;
         };
         const status = () => {
           const replication = replicationStatus?.();
-          return { ...(readContext ? engine : getEngine()).status(), settingsReload: settingsReloadStatus(),
+          const current = (readContext ? engine : getEngine()).status();
+          return { ...current, ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
             ...(replication ? { replication } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
               ...(!controlAuthority.canControl() ? { readOnly: true, liveWrites: false } : {}) } : {}),
             ...(pairContext ? { pairing: pairContext.status(),
@@ -135,7 +136,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(409, { error: 'This instance does not own device control.' });
           if (controlAuthority && !controlAuthority.canControl())
             return json(409, { error: 'Another ST-MQ controller owns device control. This instance is protected.' });
-          if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes', '/api/settings/reload'].includes(url.pathname))
+          if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
+            '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
           return action(getEngine(), input);
         };
@@ -157,6 +159,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')
           return await mutate((current, input) => json(200, current.changeSensor(input)));
+        if (req.method === 'POST' && url.pathname === '/api/sensor-changes/revert')
+          return await mutate((current, input) => json(200, current.revertSensor(input)));
+        if (req.method === 'POST' && url.pathname === '/api/sensor-changes/retry-rebuild')
+          return await mutate((current, input) => json(200, current.retrySensorRebuild(input)));
         if (req.method === 'POST' && url.pathname === '/api/fireplace')
           return await mutate((current, input) => json(200, current.changeFireplace(input)));
         if (req.method === 'POST' && url.pathname === '/api/fireplace/remove')
@@ -237,7 +243,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
-        const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes)(?:\?|$)/.test(req.url);
+        const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.' : error.message });
       }

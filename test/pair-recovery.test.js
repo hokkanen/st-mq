@@ -9,6 +9,9 @@ import { appendLearningRecord, replayLearningJournal, recordLearningContext, LEA
   LEARNING_ALGORITHM, learningVersion } from '../src/app/committed-learning.js';
 import { recordChargingSessionCheck, chargingSessionCheckSummaries } from '../src/app/charging-session-checks.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
+import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
+import { sensorChangeEvents, sensorLearningContext, sensorRevision } from '../src/app/sensor-inputs.js';
+import { withSensorMeasurements } from '../src/app/sensor-samples.js';
 import { importCsv } from '../src/storage/history.js';
 import { Engine } from '../src/app/engine.js';
 
@@ -359,4 +362,125 @@ test('successive recoveries reuse source payloads directly and a no-op creates n
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries').get().n, before);
   assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM recovery_runs WHERE status='complete'").get().n, 2);
   assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), second.checkpoint);
+});
+
+test('recovery preserves master and donor sensor reversals across successive projection epochs', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W);
+  const donor = await f.donor();
+  const masterChange = addSensorChange(f.master, 'mqtt', { requestId: 'invented-master-change', signal: 'outdoor_temperature', reason: 'replacement' }, start + W + 1);
+  sample(f.master, start + 3 * W);
+  revertSensorChange(f.master, 'mqtt', { requestId: 'invented-master-revert', id: masterChange.id }, start + 3 * W + 1);
+  sample(donor, start + 2 * W);
+  const donorChange = addSensorChange(donor, 'mqtt', { requestId: 'invented-donor-change', signal: 'outdoor_temperature', reason: 'calibration' }, start + 2 * W + 1);
+  sample(donor, start + 4 * W);
+  revertSensorChange(donor, 'mqtt', { requestId: 'invented-donor-revert', id: donorChange.id }, start + 4 * W + 1);
+  const originals = f.master.db.prepare("SELECT * FROM learning_journal_entries WHERE epoch='original' ORDER BY id").all();
+  const inspect = result => {
+    const events = sensorChangeEvents(f.master, 'mqtt');
+    assert.equal(events.length, 2);
+    assert.ok(events.every(event => event.revertedAt !== null));
+    assert.deepEqual(new Set(sensorLearningContext(f.master, 'mqtt').revertedSensorChanges), new Set(events.map(event => event.id)));
+    assert.equal(result.checkpoint.measurementEpochAt ?? null, null, 'Neither reverted reset may restart learning after recovery');
+    assert.equal(result.checkpoint.sensorRevision, sensorRevision(f.master, 'mqtt'));
+    assert.equal(f.master.getState('fireplace:rebuild:mqtt').sensorRevision, result.checkpoint.sensorRevision);
+    assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), result.checkpoint);
+    assert.deepEqual(f.master.db.prepare("SELECT * FROM learning_journal_entries WHERE epoch='original' AND id<=? ORDER BY id")
+      .all(originals.at(-1).id), originals, 'Remapping never changes original source bytes');
+  };
+  const first = await recover(f, await f.snapshot(donor));
+  inspect(first);
+  assert.equal(first.report.model.acceptedSamples, 2);
+  sample(donor, start + 5 * W);
+  sample(f.master, start + 6 * W);
+  const secondPath = await f.snapshot(donor);
+  const second = await recover(f, secondPath);
+  inspect(second);
+  assert.notEqual(second.epoch, first.epoch);
+  assert.equal(second.report.model.acceptedSamples, 1);
+  const again = await recover(f, secondPath);
+  assert.equal(again.epoch, second.epoch);
+  assert.equal(again.report.model.status, 'unchanged');
+});
+
+test('a sensor reversal during recovery rejects the obsolete candidate and keeps correction rebuild intent', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W);
+  const change = addSensorChange(f.master, 'mqtt', { requestId: 'invented-racing-change', signal: 'outdoor_temperature', reason: 'replacement' }, start + W + 1);
+  sample(f.master, start + 2 * W);
+  const old = replayLearningJournal(f.master, 'mqtt');
+  const donor = await f.donor();
+  for (let i = 3; i <= 100; i++) sample(donor, start + i * W);
+  const donorPath = await f.snapshot(donor);
+  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  let reverted = false;
+  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview, onProgress(value) {
+    if (value.phase === 'rebuilding' && !reverted) {
+      reverted = true;
+      revertSensorChange(f.master, 'mqtt', { requestId: 'invented-racing-revert', id: change.id }, start + 101 * W);
+    }
+  } }), /source changed|correction history changed/);
+  assert.equal(reverted, true);
+  assert.equal(f.master.learningEpoch('mqtt'), 'original');
+  assert.deepEqual(f.master.getState('adaptive:mqtt'), old);
+  const job = f.master.getState('fireplace:rebuild:mqtt');
+  assert.equal(job.status, 'pending');
+  assert.equal(job.sensorRevision, sensorRevision(f.master, 'mqtt'));
+  const resumed = await recover(f, donorPath);
+  assert.equal(resumed.report.status, 'complete');
+  assert.equal(resumed.checkpoint.measurementEpochAt ?? null, null);
+  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), resumed.checkpoint);
+});
+
+test('recovery rejects a donor sensor reversal whose target is not a sensor change', async t => {
+  const f = fixture(t);
+  const sampleId = sample(f.master, start + W);
+  const donor = await f.donor();
+  appendLearningRecord(donor, 'mqtt', 'context', { timestamp: start + W + 1,
+    sensorRevert: { id: sampleId, requestId: 'invented-invalid-target' } });
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.counts.skipped, 1);
+  assert.equal(sensorRevision(f.master, 'mqtt'), 0);
+});
+
+function settlingSample(at, changedAt, { indoorC = 21, quality = [] } = {}) {
+  return withSensorMeasurements({ sensorInputVersion: 1, timestamp: at, windowStart: at - W, windowEnd: at,
+    indoorC, outdoorC: 0, quality,
+    indoorSensors: { indoor_temperature: { value: indoorC, weight: 1, observedAt: at } },
+    inputSegments: [{ start: at - W, end: at, outdoorC: 0, outdoorObservedAt: at, quality }],
+    intervalInputs: { outdoorC: 0 } }, { sensorEpochs: { outdoor_temperature: changedAt }, measurementEpochAt: changedAt });
+}
+
+test('recovery accepts reversible settling inputs while keeping genuine donor measurement gaps excluded', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W);
+  const donor = await f.donor();
+  const change = addSensorChange(donor, 'mqtt', { requestId: 'invented-settling-change', signal: 'outdoor_temperature', reason: 'replacement' }, start + W + 1);
+  const settling = settlingSample(start + 2 * W, change.at);
+  assert.equal(settling.indoorC, null); assert.equal(settling.outdoorC, null);
+  sample(donor, start + 2 * W, settling);
+  sample(donor, start + 3 * W, settlingSample(start + 3 * W, change.at, { indoorC: null, quality: ['missing'] }));
+  revertSensorChange(donor, 'mqtt', { requestId: 'invented-settling-revert', id: change.id }, start + 3 * W + 1);
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.model.acceptedSamples, 1);
+  assert.equal(result.report.counts.skipped, 1);
+  const saved = f.master.learningJournal({ input: 'mqtt' }).find(row => row.kind === 'sample' && row.at === start + 2 * W);
+  assert.equal(saved.payload.value.indoorC, null, 'The original exclusion remains in its saved input');
+  assert.deepEqual(saved.payload.value.measurementInputs, settling.measurementInputs);
+  assert.equal(result.checkpoint.samples.at(-1).indoorC, 21, 'The corrected projection recovers the original temperature');
+  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), result.checkpoint);
+});
+
+test('usable master temperatures masked by a reset still take precedence over conflicting donor samples', async t => {
+  const f = fixture(t);
+  sample(f.master, start + W);
+  const donor = await f.donor();
+  const change = addSensorChange(f.master, 'mqtt', { requestId: 'invented-master-settling', signal: 'outdoor_temperature', reason: 'replacement' }, start + W + 1);
+  sample(f.master, start + 2 * W, settlingSample(start + 2 * W, change.at));
+  sample(donor, start + 2 * W, { indoorC: 35 });
+  const original = f.master.learningJournal({ input: 'mqtt' });
+  const result = await recover(f, await f.snapshot(donor));
+  assert.equal(result.report.model.acceptedSamples, 0);
+  assert.equal(result.report.counts.conflicts, 1);
+  assert.deepEqual(f.master.learningJournal({ input: 'mqtt' }), original);
 });

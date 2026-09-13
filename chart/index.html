@@ -283,20 +283,45 @@
               <details id="sensor-change-details" class="sensor-change-details" hidden>
                 <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
                 <div id="sensor-change-content">
-                  <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. For sensors used by the model, this starts a new measurement baseline. Past readings stay unchanged.</p>
+                  <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
                   <form id="sensor-change-form" class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
                     <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
                     <label for="sensor-change-reason">Reason<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
-                    <button id="sensor-change-submit" type="submit" disabled>Record change now</button>
+                    <button id="sensor-change-submit" type="submit" disabled>Record change now…</button>
                   </form>
                   <p id="sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
-                  <p id="sensor-change-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  <p id="sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
                   <button id="sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
-                  <p id="sensor-change-availability" class="muted" role="status"></p>
-                  <div class="sensor-change-history-heading"><h3>Recent changes</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
+                  <p id="sensor-change-availability" class="muted sensor-change-status" role="status"></p>
+                  <p id="sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
+                  <div class="sensor-change-history-heading"><h3>Change history</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
                   <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
-                  <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Recent sensor changes"></ul>
+                  <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Indoor sensor changes"></ul>
                   <p id="sensor-change-empty" class="muted">No sensor changes recorded.</p>
+                  <button id="sensor-change-more" class="secondary-button" type="button" hidden>Show older changes</button>
+                </div>
+              </details>
+              <details id="outdoor-sensor-change-details" class="sensor-change-details" hidden>
+                <summary><span>Sensor changes</span><small id="outdoor-sensor-change-overview">Replacement, move or calibration</small></summary>
+                <div id="outdoor-sensor-change-content">
+                  <p id="outdoor-sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
+                  <form id="outdoor-sensor-change-form" class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
+                    <label for="outdoor-sensor-change-signal">Sensor<select id="outdoor-sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
+                    <label for="outdoor-sensor-change-reason">Reason<select id="outdoor-sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
+                    <button id="outdoor-sensor-change-submit" type="submit" disabled>Record change now…</button>
+                  </form>
+                  <p id="outdoor-sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
+                  <p id="outdoor-sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="outdoor-sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+                  <p id="outdoor-sensor-change-availability" class="muted sensor-change-status" role="status"></p>
+                  <p id="outdoor-sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="outdoor-sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
+                  <div class="sensor-change-history-heading"><h3>Change history</h3><button id="outdoor-sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
+                  <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
+                  <ul id="outdoor-sensor-change-entries" class="sensor-change-entries" aria-label="Outdoor sensor changes"></ul>
+                  <p id="outdoor-sensor-change-empty" class="muted">No sensor changes recorded.</p>
+                  <button id="outdoor-sensor-change-more" class="secondary-button" type="button" hidden>Show older changes</button>
                 </div>
               </details>
             </details>

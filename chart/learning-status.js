@@ -23,7 +23,7 @@ const coefficientInfo = {
   preheatCPerHourPerDegree: { unit: '1/h', digits: 4, legacy: true, detail: 'Legacy heating allowance per degree of requested preheat boost. The current model treats boost as control context, without a direct unmeasured heat contribution.' },
 };
 const inputSources = {
-  model_indoor_temperature: 'Upstairs, Downstairs and Bedroom readings contribute according to the configured weights. Every contributing sensor must be available; missing readings leave gaps. The saved average is compared with the predicted temperature after each completed interval.',
+  model_indoor_temperature: 'Upstairs, Downstairs and Bedroom readings contribute according to the configured weights. Every contributing sensor must be available; missing readings leave gaps. The saved average is compared with the predicted temperature after each completed interval. The chart preserves the originally supplied average, including gaps during sensor-change settling; a corrected learner can use preserved readings behind those gaps.',
   model_outdoor_temperature: 'H66 outdoor sensor, then FMI station, then Open-Meteo estimate when the preceding source is unavailable. Source validity is checked at each segment.',
   model_solar_radiation: 'Archived FMI radiation forecast, with Open-Meteo as backup. Radiation is modeled, not measured at the house. It is expressed in W/m²; the model converts it to kW/m².',
   model_compressor_duty: 'Recorded compressor-active and DHW-routing states are intersected in time. Space-heating activity is 1, other known activity is 0; the chart expresses duty as a percentage.',
@@ -124,16 +124,16 @@ export function learningDisplay(learning = {}) {
   if (episode) evidence.push(`Current cycle: ${words(episode.phase ?? episode.status ?? 'in progress')}. Space-heating benefit is assessed only after recovery is complete; an unfinished cycle does not enter the averages.`);
   return { title, message: learning.message ?? learning.reason ?? (validation?.accepted ? 'The current model has passed later temperature checks. Action prediction and economic readiness are assessed separately.' : 'Initial estimates remain in use while independent evidence is collected.'),
     process, metrics, evidence, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
-    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the five adjustable coefficients reconstructed from the learning journal and applicable firewood history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. Fixed building assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
+    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the five adjustable coefficients reconstructed from the learning journal and applicable firewood and sensor-change history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. Fixed building assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
     history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
 }
 
 /** Static definitions stay mounted during status refreshes, preserving open
  * folds and keyboard focus while measurements and readiness continue updating. */
-export function renderModelInputs(root, rows = modelInputDescriptions(), { sensorChanges } = {}) {
+export function renderModelInputs(root, rows = modelInputDescriptions(), { sensorChanges, outdoorSensorChanges } = {}) {
   if (!root || root.childElementCount) return;
   const intro = document.createElement('p'); intro.className = 'muted';
-  intro.textContent = 'These inputs describe how the house model learns: recorded sensor readings, the temperature target, control context and logged firewood. Select Model inputs on the chart to inspect manual additions or calculated interval inputs. Fireplace release is reconstructed from its corrected history; unknown and rejected intervals remain gaps.';
+  intro.textContent = 'These inputs describe how the house model learns: recorded sensor readings, the temperature target, control context and logged firewood. Select Model inputs on the chart to inspect manual additions or calculated interval inputs. Temperature inputs show what was originally supplied to learning, including sensor-change settling gaps. Relearning can use preserved readings behind those gaps; Model coefficients shows the corrected reconstruction. Fireplace release is reconstructed from its corrected history; unknown and rejected intervals remain gaps.';
   root.append(intro);
   for (const row of rows) {
     const fold = document.createElement('details'); fold.dataset.modelInput = row.key;
@@ -141,9 +141,9 @@ export function renderModelInputs(root, rows = modelInputDescriptions(), { senso
     const detail = document.createElement('p'); detail.textContent = row.detail;
     const sources = document.createElement('p'); sources.className = 'muted'; sources.textContent = row.sources;
     fold.append(summary, detail, sources);
-    if (row.key === 'model_indoor_temperature' && sensorChanges) {
-      fold.append(sensorChanges); sensorChanges.hidden = false;
-    }
+    const changes = row.key === 'model_indoor_temperature' ? sensorChanges
+      : row.key === 'model_outdoor_temperature' ? outdoorSensorChanges : null;
+    if (changes) { fold.append(changes); changes.hidden = false; }
     root.append(fold);
   }
 }

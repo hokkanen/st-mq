@@ -821,3 +821,16 @@ Pi 5 timings. Full-year cold queries remain substantial; the worker and slower
 long-view refresh keep them outside the control loop. The live optimizer measures
 actual database growth, including those additional tables, against the configured
 soft target.
+
+### Reversible sensor changes
+
+Sensor-change recording leaves acquisition and stored observations intact. Under
+`committed-house-v9-reversible-sensors`, learning saves the original temperature
+inputs needed to undo a reset's exclusions as a compact patch on affected samples.
+Periodic report coverage remains bounded to the original window; undo cannot
+fill genuine sensor outages. The journal, its seed/configuration and selected
+sensor/fireplace corrections reproduce the model without rereading mutable
+provider state. **Revert and relearn** runs in the background and preserves both
+the original maintenance event and its reversal. See
+[temperature sensors](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)
+for the indoor and outdoor maintenance controls, confirmation and rebuild status.
