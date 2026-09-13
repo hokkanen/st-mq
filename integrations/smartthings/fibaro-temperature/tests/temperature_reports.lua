@@ -26,9 +26,15 @@ local capabilities = {
 local cc = {SENSOR_MULTILEVEL = 0x31, WAKE_UP = 0x84}
 local function command_class(name, constants)
   return setmetatable(constants, {
-    __call = function(self) return self end,
-    __index = function(_, command)
-      return function(_, args) return {class = name, command = command, args = args} end
+    __call = function(_, options)
+      return setmetatable({version = options.version}, {
+        __index = function(instance, command)
+          if constants[command] ~= nil then return constants[command] end
+          return function(_, args)
+            return {class = name, command = command, args = args, version = instance.version}
+          end
+        end,
+      })
     end,
   })
 end
@@ -111,14 +117,22 @@ check(sends[2].class == "Battery" and sends[2].command == "Get"
 events, sends = {}, {}
 local wakeup_handler = driver.zwave_handlers[cc.WAKE_UP][wakeup.NOTIFICATION]
 wakeup_handler({}, device, {})
-check(#sends == 3 and sends[1].class == "WakeUp" and sends[1].command == "IntervalGetV1"
+check(#sends == 4 and sends[1].class == "WakeUp" and sends[1].command == "IntervalGetV1"
   and sends[2].class == "Battery" and sends[3].class == "SensorMultilevel",
   "first wake-up retains interval, battery and temperature requests")
+check(sends[4].class == "WakeUp" and sends[4].command == "IntervalCapabilitiesGet"
+  and sends[4].version == 2,
+  "first wake-up adds a read-only interval capabilities query")
+check(fields.__stmq_wakeup_capabilities_queried == true,
+  "capabilities query is guarded for the current runtime")
 check(#events == 1 and events[1].event.capability == "smokeDetector"
   and events[1].event.value == "clear", "stock wake-up smoke event retained")
 events, sends = {}, {}
 wakeup_handler({}, device, {})
 check(#sends == 2 and sends[1].class == "Battery" and sends[2].class == "SensorMultilevel",
-  "subsequent wake-up does not repeat interval discovery")
+  "subsequent wake-up does not repeat interval discovery or capabilities query")
+check(driver.zwave_handlers[cc.WAKE_UP][6] == nil
+  and driver.zwave_handlers[cc.WAKE_UP][10] == nil,
+  "current-interval and capabilities-report default dispatch remain untouched")
 check(driver.health_check == false, "stock health-check policy retained")
 print(string.format("Passed %d Lua behavior assertions", count))

@@ -11,6 +11,7 @@ local Battery = (require "st.zwave.CommandClass.Battery")({ version=1 })
 local SensorMultilevel = (require "st.zwave.CommandClass.SensorMultilevel")({ version=5 })
 --- @type st.zwave.CommandClass.WakeUp
 local WakeUp = (require "st.zwave.CommandClass.WakeUp")({version=1})
+local WakeUpV2 = (require "st.zwave.CommandClass.WakeUp")({version=2})
 
 local FIBARO_SMOKE_SENSOR_WAKEUP_INTERVAL = 21600 --seconds
 
@@ -40,6 +41,12 @@ local function wakeup_notification_handler(self, device, cmd)
   device:emit_event(capabilities.smokeDetector.smoke.clear())
   device:send(Battery:Get({}))
   device:send(SensorMultilevel:Get({sensor_type = SensorMultilevel.sensor_type.TEMPERATURE}))
+  -- Read the detector's actual supported limits once per driver runtime.
+  -- The decoded response is available in private logcat; no interval is changed.
+  if not device:get_field("__stmq_wakeup_capabilities_queried") then
+    device:send(WakeUpV2:IntervalCapabilitiesGet({}))
+    device:set_field("__stmq_wakeup_capabilities_queried", true)
+  end
 end
 
 -- Forward every genuine Fibaro temperature report, including equal values.

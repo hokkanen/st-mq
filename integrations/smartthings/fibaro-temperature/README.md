@@ -24,6 +24,15 @@ changed here. A 15-minute parameter 20 setting alone does not guarantee periodic
 unchanged reports. Follow the separate cadence and MQTT checks in the
 [installation and forwarding record](../../../docs/smartthings-temperature-rule.md).
 
+The first wake-up after each driver runtime starts also sends a read-only
+`WakeUp` v2 `IntervalCapabilitiesGet`. This asks the detector for its supported
+minimum, maximum, default, and step in seconds. The decoded response is captured
+in private logcat. No interval is written by this diagnostic; a missing response
+is inconclusive. Existing interval-report and capabilities-report dispatch are
+left to the framework. See the official
+[query](https://developer.smartthings.com/docs/edge-device-drivers/zwave/generated/WakeUp/IntervalCapabilitiesGet.html)
+and [report fields](https://developer.smartthings.com/docs/edge-device-drivers/zwave/generated/WakeUp/IntervalCapabilitiesReport.html).
+
 ## Provenance and scope
 
 Source: [SmartThingsCommunity/SmartThingsEdgeDrivers](https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers/tree/19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c/drivers/SmartThings/zwave-smoke-alarm),
@@ -32,10 +41,10 @@ directory `drivers/SmartThings/zwave-smoke-alarm`.
 
 The original [Apache-2.0 license](LICENSE) and source copyright notices are
 retained. Vendored upstream files retain that license. `upstream.json` records
-the original source and license SHA-256 digests. `changes.patch` is the exact
-previously prepared st-mq patch: the only changed upstream files are `config.yml`
+the original source and license SHA-256 digests. `changes.patch` is the current
+complete st-mq patch: the only changed upstream files are `config.yml`
 (independent package name/key) and `src/fibaro-smoke-sensor/init.lua` (temperature
-report override). The full stock fingerprint list remains available, but a
+report override and read-only wake-up-limits query). The full stock fingerprint list remains available, but a
 rollout must select the intended detector explicitly.
 
 ## Validate and build
@@ -52,11 +61,11 @@ sha256sum /tmp/stmq-fibaro-temperature-reports.zip
 ```
 
 `--build-only` creates a ZIP without uploading. On 2026-09-13, SmartThings CLI
-2.1.2 built the package successfully. The build selected for the bedroom
-installation has SHA-256:
+2.1.2 built the package successfully. The current diagnostic build uploaded to
+the bedroom driver has SHA-256:
 
 ```text
-8ae4eb570e6e61743d5cb105d735f9a742359fb2da39360c3fd3312830eff082
+0d956b98e9fc3d39a2a0ddffd4954d4fc08944fd16a5c9a09cef340bde3bdae4
 ```
 
 The ZIP is a build artifact kept outside Git. Rebuilding reproduces the source
@@ -66,11 +75,11 @@ actual uploaded artifact in the private installation backup.
 The offline verifier reverses the patch in a temporary copy and checks every
 upstream file and the license against the recorded digests. This checks that
 alarm, battery, preferences, default registration, profiles, and all remaining
-code retain the pinned stock source. It also runs 21 Lua assertions against the
+code retain the pinned stock source. It also runs 24 Lua assertions against the
 actual Fibaro subdriver using small SmartThings API stubs: duplicate/changed
 reports, Celsius/Fahrenheit, negative/zero temperatures, endpoint routing,
-invalid input rejection, fingerprint selection, and existing added/wake-up
-behavior. These tests do not simulate SmartThings event filtering or the radio.
+invalid input rejection, fingerprint selection, existing added/wake-up behavior,
+and the single v2 diagnostic query without replacing report dispatch. These tests do not simulate SmartThings event filtering or the radio.
 The original `driver/src/test/` SDK integration tests are retained; they were
 not executed because the SmartThings Lua integration framework is not installed
 here. Hub and physical self-test results belong in the installation record.

@@ -7,7 +7,16 @@
 +packageKey: 'stmq-fibaro-temperature-reports'
 --- a/drivers/SmartThings/zwave-smoke-alarm/src/fibaro-smoke-sensor/init.lua
 +++ b/drivers/SmartThings/zwave-smoke-alarm/src/fibaro-smoke-sensor/init.lua
-@@ -44,0 +45,17 @@
+@@ -13,0 +14 @@
++local WakeUpV2 = (require "st.zwave.CommandClass.WakeUp")({version=2})
+@@ -42,0 +44,6 @@
++  -- Read the detector's actual supported limits once per driver runtime.
++  -- The decoded response is available in private logcat; no interval is changed.
++  if not device:get_field("__stmq_wakeup_capabilities_queried") then
++    device:send(WakeUpV2:IntervalCapabilitiesGet({}))
++    device:set_field("__stmq_wakeup_capabilities_queried", true)
++  end
+@@ -44,0 +52,17 @@
 +-- Forward every genuine Fibaro temperature report, including equal values.
 +local function temperature_report_handler(self, device, cmd)
 +  if cmd.args.sensor_type ~= SensorMultilevel.sensor_type.TEMPERATURE then return end
@@ -25,7 +34,7 @@
 +    capabilities.temperatureMeasurement.temperature(
 +      { value = value, unit = unit }, { state_change = true }))
 +end
-@@ -46,0 +64,3 @@
+@@ -46,0 +71,3 @@
 +    [cc.SENSOR_MULTILEVEL] = {
 +      [SensorMultilevel.REPORT] = temperature_report_handler
 +    },

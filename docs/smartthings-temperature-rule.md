@@ -78,7 +78,7 @@ temperature: that produces a fresh MQTT receipt without a fresh measurement.
 
 ## Reproducible physical-driver package
 
-The [temperature-report patch](smartthings/fibaro-temperature-reports.patch)
+The [current driver patch](../integrations/smartthings/fibaro-temperature/changes.patch)
 applies to public SmartThingsEdgeDrivers revision
 `19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c`. It changes only
 `drivers/SmartThings/zwave-smoke-alarm/config.yml` and
@@ -86,8 +86,10 @@ applies to public SmartThingsEdgeDrivers revision
 own name and package key. The Fibaro subdriver overrides only
 `SENSOR_MULTILEVEL.REPORT`, checks temperature type, finite numeric value and
 Celsius/Fahrenheit scale, then emits to the original endpoint with
-`state_change=true`. Its existing wake-up handler and lifecycle handlers remain
-unchanged. The relevant [dispatch precedence](https://developer.smartthings.com/docs/edge-device-drivers/zwave/defaults.html)
+`state_change=true`. Its wake-up handler retains the stock requests and adds
+one read-only capabilities query per runtime, described below. The lifecycle
+handlers remain unchanged. The [original temperature-only patch](smartthings/fibaro-temperature-reports.patch)
+is retained for reproducing the first installation. The relevant [dispatch precedence](https://developer.smartthings.com/docs/edge-device-drivers/zwave/defaults.html)
 and [sensor constants](https://developer.smartthings.com/docs/edge-device-drivers/zwave/generated/SensorMultilevel/constants.html)
 are documented by SmartThings.
 
@@ -103,11 +105,11 @@ smartthings edge:drivers:package \
 sha256sum /tmp/stmq-fibaro-temperature-reports.zip
 ```
 
-SmartThings CLI **2.1.2** built the package successfully. The uploaded ZIP has
+SmartThings CLI **2.1.2** built the initial package successfully. Its uploaded ZIP has
 SHA-256 `8ae4eb570e6e61743d5cb105d735f9a742359fb2da39360c3fd3312830eff082`.
 All 31 vendored upstream files and the license passed the reverse-patch/hash
 check; the archive matches the 26 deployed files (the CLI excludes upstream
-tests). The 21 Lua behavior assertions passed for duplicate/changed values,
+tests). The initial 21 Lua behavior assertions passed for duplicate/changed values,
 Celsius/Fahrenheit, endpoints, invalid input, fingerprint selection, and the
 original added/wake-up behavior. These use API stubs; the full SmartThings Lua
 SDK tests have not run. Actual hub checks are recorded below. The
@@ -290,6 +292,68 @@ self-test procedure and confirm the audible result and expected SmartThings
 smoke notifications. Preserve the stock
 driver until those checks succeed, and complete the cadence verification below
 before relying on uninterrupted temperature coverage.
+
+## Reading the detector's wake-up limits
+
+The bedroom detector's received `WakeUp.IntervalReport` during the initial
+manual test reported **21,600 seconds (six hours)**. Its ordinary temperature
+report interval (parameter 20) is separate from this scheduled wake-up interval.
+The [newer FGSD-002 manual](https://manuals.fibaro.com/wp-content/uploads/2025/07/FGSD-002-EN-A-v1.3_11.07.25.pdf)
+allows a 4,200-second minimum (70 minutes), while an
+[older manual](https://manuals.fibaro.com/content/manuals/en/FGSD-002/FGSD-002-EN-A-v1.00.pdf)
+allows a 21,600-second minimum. Query the actual detector before selecting an
+interval; neither document alone establishes this unit's supported minimum.
+
+A small update on 2026-09-13 adds one read-only `IntervalCapabilitiesGet` using
+WakeUp v2 after the existing battery/temperature requests on the first wake-up
+of each driver runtime. It does not send `IntervalSet`, change the six-hour
+setting, replace framework report handlers, or generate temperature events.
+The diagnostic ZIP has SHA-256:
+
+```text
+0d956b98e9fc3d39a2a0ddffd4954d4fc08944fd16a5c9a09cef340bde3bdae4
+```
+
+The package passes all 31 upstream-file hashes after reversing the current
+patch, all 24 Lua assertions, and CLI packaging. All 26 deployed ZIP entries
+match source. The same cloud driver identity and private channel are used;
+the diagnostic is assigned only to the bedroom detector.
+
+Its private archive is `~/.config/st-mq/smartthings/wakeup-limits-2026-09-13/`
+(directory `0700`, files `0600`). `driver-uploaded.json` stores the new version,
+`probe-package.zip` the exact artifact, `package-validation.json` its digest,
+`installation-status.json` the assignment/settings verification, and
+`capabilities-summary.json` plus `driver-logcat.log` the query evidence.
+The original bedroom installation archive remains intact for restoring its
+previous version using the reinstall instructions above. To reinstall this
+revision, use its `driver-uploaded.json` for the uploaded version while retaining
+the original `target.json` and `channel-created.json` mappings.
+
+After the diagnostic version is verified on the hub, capture the private driver
+log and briefly press the B-button once. Look for a received
+`INTERVAL_CAPABILITIES_REPORT` containing `minimum_wake_up_interval_seconds`,
+`maximum_wake_up_interval_seconds`, `default_wake_up_interval_seconds`, and
+`wake_up_interval_step_seconds`. No response is inconclusive. Supported limits,
+accepted interval readback, and an observed automatic temperature stream are
+separate checks.
+
+**Verified on the bedroom detector:** the next manual wake-up returned these
+actual capabilities, with no runtime errors:
+
+| Field | Reported seconds | Meaning |
+| --- | ---: | --- |
+| Minimum | 4,200 | 70 minutes; a shorter scheduled wake-up is unsupported |
+| Maximum | 65,535 | 18 hours, 12 minutes, 15 seconds |
+| Default | 21,600 | Six hours |
+| Step | 1 | One-second adjustments within the supported range |
+
+The current interval readback remains **21,600 seconds**. This check discovers
+supported values; it does not apply 4,200 seconds or verify an automatic
+70-minute temperature stream. The installed driver's existing wake-up handler
+requests a fresh temperature on each wake-up, but the proposed interval must be
+set and read back before its automatic delivery and st-mq timeout can be verified.
+The minimum, current interval, and temperature-report hysteresis are distinct:
+changing parameter 20 to five minutes does not change this wake-up interval.
 
 ## Private backup and restoration
 
