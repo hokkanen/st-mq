@@ -55,14 +55,13 @@ test('Caravan and future heat-pump monitoring preserve estimation, coverage and 
 });
 
 test('transport labels match throughout equipment, providers and chart tooltips', () => {
-  assert.equal(equipmentSource(plug), 'MQTT-shelly');
+  assert.equal(equipmentSource(plug), 'Shelly');
   assert.equal(equipmentSource({ source: 'MQTT' }), 'MQTT');
-  assert.equal(providerName('mqtt-temperature'), 'MQTT'); assert.equal(providerName('shelly-mqtt'), 'MQTT-shelly');
+  assert.equal(providerName('mqtt-temperature'), 'MQTT'); assert.equal(providerName('shelly-mqtt'), 'Shelly');
   assert.equal(historyValueLabel('garage_door1_open', 1, 'state'), 'Open');
   assert.equal(historyValueLabel('garage_door2_open', 0, 'state'), 'Closed');
-  assert.equal(historyValueLabel('garage_heat_pump_active', 1, 'state'), 'Power enabled');
-  for (const key of ['garage_temperature_2', 'garage_heat_pump_temperature']) {
-    const dataset = historyDatasets({}, key).find(row => row.key === key);
+  for (const key of ['garage_temperature', 'garage_temperature_2']) {
+    const dataset = historyDatasets({}, 'temperatures').find(row => row.key === key);
     assert.equal(dataset.cubicInterpolationMode, 'monotone'); assert.equal(dataset.stepped, false);
   }
 });
@@ -90,6 +89,7 @@ test('recheck posts only the explicit device identity, prevents repeated clicks 
   assert.equal(await actions.recheck('unknown-device'), false);
   const pending = actions.recheck('caravan'); assert.equal(await actions.recheck(), false);
   assert.deepEqual(calls, [{ path: '/api/equipment/recheck', body: { deviceId: 'caravan' } }]);
+  assert.equal(actions.snapshot().actionKind, 'recheck');
   const next = status({ now: now + 1000 }); finish(next); assert.equal(await pending, true);
   assert.equal(received[0], next);
   const all = actions.recheck(); assert.deepEqual(calls[1], { path: '/api/equipment/recheck', body: {} });
@@ -106,11 +106,13 @@ test('timed tests use exact values, preserve an active test through polling and 
   assert.equal(await actions.test('caravan', 'off', 5), false);
   const pending = actions.test('caravan', false, 5);
   assert.deepEqual(calls[0], { path: '/api/equipment/test', body: { deviceId: 'caravan', on: false, durationMinutes: 5 } });
+  assert.equal(actions.snapshot().actionKind, 'test'); assert.equal(actions.snapshot().actionDeviceId, 'caravan');
   actions.update(status({ now: now - 1000 }));
   const active = status({ equipmentTests: { available: true, active: { deviceId: 'caravan', on: false, previousOn: true, until: now + 300000 } } });
   finish(active); await pending;
   assert.equal(await actions.test('caravan', true, 5), false);
   const restore = actions.restore(); assert.deepEqual(calls[1], { path: '/api/equipment/test/restore', body: {} });
+  assert.equal(actions.snapshot().actionDeviceId, 'caravan', 'Restoration feedback remains scoped to its device after active state clears');
   finish(status()); await restore;
   assert.equal(actions.snapshot().status.equipmentTests.active, undefined);
 });

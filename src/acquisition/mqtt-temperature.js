@@ -24,7 +24,7 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
   const raw = { timeBasis: object.timestamp == null ? 'mqtt-received' : 'source-measured', retained,
     ...(reportIntervalMs !== null ? { reportIntervalMs, reportGraceMs } : {}) };
   const reportAge = temperatureReportMaxAge({ raw });
-  if (reportAge !== null && Number.isFinite(sourceTime) && receivedAt - sourceTime > reportAge) quality.push('stale');
+  if (reportAge !== null && Number.isFinite(sourceTime) && receivedAt - sourceTime >= reportAge) quality.push('stale');
   if (signal === 'outdoor_temperature' && Number.isFinite(sourceTime) && receivedAt - sourceTime > 300_000) quality.push('stale');
   if (retained) quality.push('retained');
   if (value === null) quality.push('missing');

@@ -39,7 +39,7 @@
     </form>
     <p id="error" role="alert" hidden></p>
     <section class="metrics" aria-label="Latest recorded home conditions" data-snapshot-content>
-      <article><p>INDOOR AVERAGE</p><strong id="indoor">—</strong><small id="indoor-age">Waiting for readings</small></article>
+      <article><p>INDOOR AVERAGE <a id="indoor-issue" class="metric-issue" href="#indoor-status-detail" aria-label="View indoor sensor issue" hidden>!</a></p><strong id="indoor">—</strong><small id="indoor-age">Waiting for readings</small></article>
       <article><p>OUTDOOR</p><strong id="outdoor">—</strong><small id="outdoor-age">Waiting for readings</small></article>
       <article><p id="requested-label">HEATING REQUEST</p><strong id="requested">—</strong><small id="actual">Actual state unknown</small></article>
       <article><p id="price-label">ALL-IN PRICE</p><strong id="price">—</strong><small id="price-unit">Waiting for prices and contract rates</small></article>
@@ -130,7 +130,8 @@
       </details>
     </section>
 
-    <section class="controller-panels" aria-label="Home and Garage equipment" data-controller-only>
+    <section class="controller-panels" aria-label="Home controller" data-controller-only>
+      <div class="controller-column">
       <article id="home-control" class="panel home-control" aria-labelledby="control-title">
           <div class="dashboard-heading">
             <h2 id="control-title">Home &amp; heating</h2>
@@ -181,8 +182,6 @@
               <p><span>Tariff control</span><span id="home-tariff-status">—</span></p>
             </div>
           </div>
-          <div id="home-equipment-readings" class="equipment-device-list"></div>
-          <p id="home-active-test" class="equipment-active-test" role="status" hidden></p>
           <div class="home-actions">
             <details id="temporary-details" class="dashboard-disclosure temporary-panel">
               <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
@@ -205,7 +204,12 @@
               </form>
             </details>
             <details id="equipment-details" class="dashboard-disclosure">
-              <summary><span>Equipment &amp; tests</span><small>Home readings &amp; manual controls</small></summary>
+              <summary><span>Equipment &amp; tests</span><small>Home &amp; Garage</small></summary>
+              <section class="equipment-area" aria-labelledby="home-equipment-title">
+                <h3 id="home-equipment-title">Home</h3>
+                <p id="indoor-status-detail" class="muted" tabindex="-1"></p>
+                <div id="home-equipment-readings" class="equipment-device-list"></div>
+                <p id="home-active-test" class="equipment-active-test" role="status" hidden></p>
               <section class="equipment-group" aria-labelledby="equipment-monitoring-title">
                 <h3 id="equipment-monitoring-title">Heat-pump monitoring</h3>
                 <details id="h66-readings-details" class="equipment-fold">
@@ -224,7 +228,7 @@
               </section>
 
               <section class="equipment-group" aria-labelledby="equipment-tests-title">
-                <h3 id="equipment-tests-title">Manual tests</h3>
+                <h3 id="equipment-tests-title">Home manual controls</h3>
                 <details id="h66-test-details" class="heating-test-details equipment-fold">
                   <summary>Test H66 controls</summary>
                   <p class="muted">Apply a temporary setting to the heat pump. The test checks readback and restores the previous setting when its duration ends.</p>
@@ -257,23 +261,22 @@
                 </details>
               </section>
               <details id="home-switch-tests-details" class="equipment-fold"><summary>Other Home switch tests</summary><div id="home-equipment-tests"></div></details>
+              </section>
+              <section id="garage-equipment-details" class="equipment-area" aria-labelledby="garage-title">
+                <div class="equipment-area-heading"><h3 id="garage-title">Garage</h3><span id="garage-equipment-status" class="equipment-device-status">No devices configured</span></div>
+                <div id="garage-equipment-readings" class="equipment-device-list"></div>
+                <p id="garage-active-test" class="equipment-active-test" role="status" hidden></p>
+                <details id="garage-switch-tests-details" class="equipment-fold"><summary>Garage manual controls</summary>
+                  <p class="muted">Apply a temporary switch state and restore the previous state when the timer ends.</p>
+                  <div id="garage-equipment-tests"></div>
+                </details>
+                <p><a href="#mqtt-devices-details" data-open-mqtt-settings>Configure MQTT devices</a></p>
+              </section>
             </details>
           </div>
         </article>
-      <article id="garage-control" class="panel garage-control" aria-labelledby="garage-title">
-        <div class="dashboard-heading"><h2 id="garage-title">Garage</h2><span id="garage-equipment-status" class="muted">No devices configured</span></div>
-        <div id="garage-equipment-readings" class="equipment-device-list"></div>
-        <p id="garage-active-test" class="equipment-active-test" role="status" hidden></p>
-        <details id="garage-equipment-details" class="dashboard-disclosure">
-          <summary><span>Equipment &amp; tests</span><small>Garage readings &amp; manual controls</small></summary>
-          <p class="muted">Temperatures and door states come from their configured connections. Door report time is separate from connection health.</p>
-          <details id="garage-switch-tests-details" class="equipment-fold"><summary>Manual switch tests</summary>
-            <p class="muted">Apply a temporary switch state and restore the previous state when the timer ends. Power enabled does not confirm compressor activity.</p>
-            <div id="garage-equipment-tests"></div>
-          </details>
-          <p><a href="#mqtt-devices-details" data-open-mqtt-settings>Configure MQTT devices</a></p>
-        </details>
-      </article>
+      </div>
+      <div class="controller-column">
       <article id="house-model" class="panel house-model" aria-labelledby="model-title">
           <div class="dashboard-heading"><h2 id="model-title">House model</h2><span class="card-kicker">LEARNING</span></div>
           <p id="learning-title" class="model-headline">Collecting observations</p>
@@ -355,20 +358,20 @@
             <summary><span>Connections &amp; settings</span><small>Sources, rates &amp; configuration</small></summary>
             <p id="provider-context" class="muted"></p>
             <p id="price-status" class="muted"></p><p id="weather-status" class="muted"></p>
+            <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
             <details id="mqtt-devices-details" class="controller-fold">
               <summary>MQTT devices</summary>
-              <div class="equipment-connections-toolbar"><p class="muted">Connections are explicit. Rechecking requests readings without switching devices.</p><button id="equipment-recheck-all" type="button" class="secondary-button" disabled>Recheck all</button></div>
+              <div class="equipment-connections-toolbar"><p class="muted">Refresh device status.</p><button id="equipment-recheck-all" type="button" class="secondary-button" disabled>Recheck all</button></div>
               <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
               <div id="equipment-connections"></div>
               <details class="equipment-fold"><summary>Device setup</summary>
-                <p>Configure each device in the private configuration file shown under Configuration below, then choose Apply configuration. Use <code>shelly:example-garage</code> for a native MQTT-shelly prefix or <code>mqtt:example/garage/door/state</code> for one exact MQTT topic. Connections do not detect or switch protocols.</p>
+                <p>Configure each device in the private configuration file shown under Configuration below, then choose Apply configuration. Use <code>shelly:example-garage</code> for a native Shelly prefix or <code>mqtt:example/garage/door/state</code> for one exact MQTT topic. Connections do not detect or switch protocols.</p>
                 <p>Enable MQTT on the device and point it to the shared broker. Enter the device’s broker username and password in its own setup; these may differ from this app’s credentials. Keep credentials in private configuration.</p>
-                <p>For MQTT-shelly, enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), and RPC over MQTT (<code>enable_rpc</code>) where the device exposes those options. Some older firmware has no separate RPC switch.</p>
+                <p>For Shelly, enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), and RPC over MQTT (<code>enable_rpc</code>) where the device exposes those options. Some older firmware has no separate RPC switch.</p>
                 <p>Give temperature probes physical names in the configuration. Door messages must explicitly map to open and closed; a quiet door is not automatically offline.</p>
                 <p><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration</a></p>
               </details>
             </details>
-            <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
             <details id="electricity-details" class="controller-fold electricity-panel">
               <summary>Electricity rates</summary>
               <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
@@ -407,6 +410,7 @@
             </details>
           </details>
         </article>
+      </div>
     </section>
 
     <section id="pairing-panel" class="panel pairing-panel" aria-label="Paired computers" hidden>

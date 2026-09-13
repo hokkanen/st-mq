@@ -1,4 +1,5 @@
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { isInterpolatedTemperature } from '../domain/chart-temperatures.js';
 
 /** Availability has an acquisition clock, distinct from the measurement clock.
  * A failed request must break a line when it failed, not overwrite the last
@@ -43,7 +44,7 @@ function* availabilityRows(store,{from,to,input,signals}) {
  * repair an earlier expired deadline, and explicit failures truncate at receipt.
  */
 function* periodicTemperatureRows(store,{from,to,input,signals,now=to}) {
-  const wanted=[...signals].filter(signal=>signal.endsWith('_temperature'));
+  const wanted=[...signals].filter(isInterpolatedTemperature);
   if (!wanted.length) return;
   const sql=`SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
     (SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device

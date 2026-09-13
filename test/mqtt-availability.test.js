@@ -65,7 +65,7 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
   } finally { await app.close(); }
 });
 
-test('H66 broker loss records all thirty included signals once and preserves canonical units and recovery', async t => {
+test('H66 broker loss records all twenty-nine included signals once and preserves canonical units and recovery', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-mqtt-availability-'));
   const store = new Store(join(directory, 'test.sqlite'));
   let now = initial;
@@ -80,7 +80,7 @@ test('H66 broker loss records all thirty included signals once and preserves can
   now += 15_000;
   client.emit('offline'); client.emit('close'); client.emit('offline');
   const missing = store.db.prepare("SELECT * FROM observations WHERE source='husdata-h66' AND value IS NULL").all();
-  assert.equal(missing.length, 30);
+  assert.equal(missing.length, 29);
   assert.deepEqual(missing.map(row => row.signal).sort(), Object.values(H66_REGISTERS)
     .map(row => row.signal === 'integral' ? 'heating_integral' : row.signal).sort());
   for (const row of missing) {
@@ -96,7 +96,7 @@ test('H66 broker loss records all thirty included signals once and preserves can
   assert.equal(engine.recorder.latestCommitted('heating_integral').value, null);
   client.emit('message', 'invented-h66/HP/8105', Buffer.from('-100'));
   assert.equal(engine.recorder.latestCommitted('heating_integral').value, -100);
-  assert.equal(engine.recorder.latestCommitted('indoor_temperature').value, null);
+  assert.equal(engine.recorder.latestCommitted('indoor_temperature'), null);
 });
 
 test('temperature subscription rejection records failure without exposing broker errors', async t => {
@@ -158,7 +158,7 @@ test('configured Upstairs MQTT sensor owns room history and model input alongsid
   assert.equal(engine.status().observations.indoor.value, 21);
   assert.equal(engine.recorder.latestCommitted('indoor_temperature').source, 'mqtt-temperature');
   assert(store.observations({ signal: 'indoor_temperature' }).every(row => row.source === 'mqtt-temperature'));
-  now += 31 * 60_000;
+  now += 75 * 60_000;
   client.emit('message', 'invented-h66/HP/0008', Buffer.from('26'));
   assert.equal(engine.status().observations.indoor.stale, true, 'H66 publications cannot hide a missed dedicated room report');
   assert.equal(engine.status().observations.indoor.value, null);

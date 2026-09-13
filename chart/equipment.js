@@ -4,7 +4,7 @@ const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', mo
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', metered_switch: 'Caravan', heat_pump: 'Heat pump' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
-export const equipmentSource = device => device.source === 'MQTT-shelly' ? 'MQTT-shelly' : 'MQTT';
+export const equipmentSource = device => ['Shelly', 'MQTT-shelly'].includes(device.source) ? 'Shelly' : 'MQTT';
 const isState = (signal, reading) => reading.unit === 'state' || /_(active|open)$/.test(signal) || typeof reading.value === 'boolean';
 const stateNumber = value => value === true || value === 'open' || value === 'on' ? 1
   : value === false || value === 'closed' || value === 'off' ? 0 : value;
@@ -51,11 +51,13 @@ export function equipmentTestAllowed(status, device, busy = false) {
 /** Independent action state allows duplicate-click and stale-status protection
  * to be verified without replacing real DOM interaction with implementation tests. */
 export function createEquipmentActions({ request, onChange = () => {}, onStatus = () => {}, beforeRequest = () => {} }) {
-  let status, busy = false, message = '', error = false;
-  const snapshot = () => ({ status, busy, message, error });
+  let status, busy = false, message = '', error = false, actionKind = null, actionDeviceId = null;
+  const snapshot = () => ({ status, busy, message, error, actionKind, actionDeviceId });
   const emit = () => onChange(snapshot());
   async function send(path, body, success) {
     if (!status || isReadOnlyReplica(status) || busy) return false;
+    actionKind = path.endsWith('/recheck') ? 'recheck' : 'test';
+    actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
     busy = true; error = false; message = path.endsWith('/recheck') ? 'Checking configured connections…' : 'Applying request…';
     beforeRequest(); emit();
     try {
@@ -149,7 +151,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     node = { form, title, choice, duration, submit, detail, area };
     testNodes.set(device.id, node); $(`${area}-equipment-tests`).append(form); return node;
   }
-  function render({ status, busy, message, error }) {
+  function render({ status, busy, message, error, actionKind, actionDeviceId }) {
     if (!status) return;
     const devices = status.equipment?.devices ?? [], active = status.equipmentTests?.active;
     const readOnly = isReadOnlyReplica(status), locked = busy || blocked();
@@ -169,6 +171,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     }
     const garage = devices.filter(device => device.area === 'garage' && device.enabled !== false);
     $('garage-equipment-status').textContent = garage.length ? garage.every(device => device.available) ? 'Available' : 'Needs attention' : 'No devices enabled';
+    $('garage-equipment-status').dataset.state = !garage.length ? 'pending' : garage.every(device => device.available) ? 'available' : 'attention';
     for (const device of devices) {
       if (device.enabled !== false && device.controls?.switch && !device.controls?.tariff) {
         const area = device.area ?? 'garage', node = ensureTest(device, area);
@@ -181,17 +184,20 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       }
       let node = connectionNodes.get(device.id);
       if (!node) {
-        const row = make('section', '', 'equipment-connection'), heading = make('div', '', 'equipment-device-heading');
-        const name = make('h4'), source = make('span', '', 'equipment-source'), state = make('p', '', 'muted'), connection = make('code');
+        const row = make('section', '', 'equipment-connection'), description = make('div', '', 'equipment-connection-description'), aside = make('div', '', 'equipment-connection-actions');
+        const name = make('h4'), source = make('span', '', 'equipment-source'), state = make('span', '', 'equipment-device-status'), area = make('span'), statusLine = make('p', '', 'equipment-connection-status muted'), checked = make('small', '', 'muted'), connection = make('code');
         const check = button('Recheck', () => void actions.recheck(device.id));
         check.setAttribute('aria-label', `Recheck ${device.label ?? 'device'}`);
-        heading.append(name, source); row.append(heading, state, connection, check);
-        node = { row, name, source, state, connection, check }; connectionNodes.set(device.id, node); $('equipment-connections').append(row);
+        statusLine.append(area, document.createTextNode(' · '), state); description.append(name, statusLine, connection, checked); aside.append(source, check); row.append(description, aside);
+        node = { row, name, source, state, area, checked, connection, check }; connectionNodes.set(device.id, node); $('equipment-connections').append(row);
       }
       node.name.textContent = device.label ?? labels[device.kind]; node.source.textContent = equipmentSource(device);
       node.connection.textContent = device.connection ?? 'Connection unavailable';
-      const check = device.check, checkTime = Number.isFinite(check?.checkedAt) ? ` · checked ${clock.format(check.checkedAt)}` : '';
-      node.state.textContent = `${device.area === 'home' ? 'Home' : 'Garage'} · ${device.enabled === false ? 'Not enabled' : device.available ? 'Available' : 'Needs attention'}${check?.checking ? ' · checking' : checkTime}`;
+      const check = device.check;
+      node.area.textContent = device.area === 'home' ? 'Home' : 'Garage';
+      node.state.textContent = device.enabled === false ? 'Not enabled' : device.available ? 'Available' : 'Needs attention';
+      node.state.dataset.state = device.enabled === false ? 'pending' : device.available ? 'available' : 'attention';
+      node.checked.textContent = check?.checking ? 'Checking…' : Number.isFinite(check?.checkedAt) ? `Checked ${clock.format(check.checkedAt)}` : '';
       node.check.disabled = locked || readOnly || device.enabled === false || check?.checking;
       node.row.dataset.state = device.enabled === false ? 'pending' : device.available ? 'available' : 'attention';
     }
@@ -205,11 +211,15 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       const last = status.equipmentTests?.lastResult, lastDevice = devices.find(device => device.id === last?.deviceId);
       const recorded = last && (lastDevice?.area ?? 'garage') === area
         ? `${lastDevice?.label ?? 'Device'} · ${pretty(last.status)}${last.confirmed === true ? ' · device confirmed' : last.sent ? ' · command sent, awaiting device confirmation' : ''}${Number.isFinite(last.at) ? ` · ${clock.format(last.at)}` : ''}` : '';
-      result.textContent = message || recorded; result.classList.toggle('form-error', error); if (!result.parentElement) root.append(result);
+      const actionArea = devices.find(device => device.id === actionDeviceId)?.area ?? 'garage';
+      const testMessage = actionKind === 'test' && actionArea === area ? message : '';
+      result.textContent = testMessage || recorded; result.classList.toggle('form-error', Boolean(testMessage && error)); if (!result.parentElement) root.append(result);
     }
     $('equipment-recheck-all').disabled = !devices.length || locked || readOnly;
-    $('equipment-check-message').textContent = message || (devices.length ? 'Checking reads the configured connections without operating switches.' : 'No MQTT devices configured.');
-    $('equipment-check-message').classList.toggle('form-error', error);
+    const checkMessage = actionKind === 'recheck' ? message : '';
+    $('equipment-check-message').textContent = checkMessage || (devices.length ? '' : 'No MQTT devices configured.');
+    $('equipment-check-message').hidden = !checkMessage && devices.length > 0;
+    $('equipment-check-message').classList.toggle('form-error', Boolean(checkMessage && error));
   }
   $('equipment-recheck-all').addEventListener('click', () => void actions.recheck());
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {

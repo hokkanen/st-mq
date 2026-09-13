@@ -219,22 +219,23 @@ inputs. Configure the desired st-mq topics and membership separately using
 | --- | --- |
 | Detector parameter 20, default 15 minutes | Change-conditional temperature reporting |
 | Driver wake-up selector, default 70 minutes | Request fresh temperature on actual wake-up after the interval is accepted |
-| st-mq expected report interval, default 15 minutes plus 120 seconds grace | Deadline for genuine incoming MQTT evidence; does not program the detector |
+| st-mq expected report interval, default 70 minutes plus 300 seconds grace | Deadline for genuine incoming MQTT evidence; does not program the detector |
 | Recorder's usual five-minute maximum spacing | Other adaptive signals' policy; periodic indoor temperatures do not force equal-value rows |
 | Learning windows, 15 minutes | Existing journal/learning cadence, independent of wake-up interval |
 
 For a verified 70-minute physical/MQTT stream, set
-`mqtt.temperature_report_interval_minutes` to `70` and choose delivery grace,
-for example `mqtt.temperature_report_grace_seconds: 120`, in the active private
-configuration or add-on options. That example gives a 72-minute deadline.
-Keeping the application default of 17 minutes would mark a stable sensor missing
-before its next expected wake. The interval/grace policy is shared by the
+`mqtt.temperature_report_interval_minutes` to `70` and
+`mqtt.temperature_report_grace_seconds` to `300`. These are the public defaults
+and give an exact 75-minute deadline. Older 15-minute interval settings should
+be removed or updated to avoid declaring stable sensors missing before their
+next expected wake. The interval/grace policy is shared by the
 configured dedicated indoor MQTT topics; it is not set per detector.
 
 Save/apply through the normal configuration workflow and check the active policy
 in the temperature availability details. The driver selector does not change
-st-mq configuration. Changing the deadline establishes an availability boundary
-and requires a genuine new report; it cannot fill past gaps or renew retained data.
+st-mq configuration. Changing the deadline establishes a forward-only boundary;
+a genuine report younger than the new limit can remain valid from that point,
+but the change cannot fill past gaps or renew retained data.
 Use interval `0` only for the explicit older change-only policy, which retains a
 known value indefinitely and gives up missed-periodic-report detection.
 

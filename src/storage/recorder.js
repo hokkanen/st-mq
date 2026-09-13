@@ -1,6 +1,7 @@
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { isRecordedDataset } from './recorded-datasets.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 const VERSION = 'adaptive-recorder-v1';
@@ -51,7 +52,8 @@ function recordingFreshness(state, coverage, now) {
     reasons.push('future-source-time');
     if (status === 'fresh') status = 'unavailable';
   }
-  if (!interval && age !== null && maxAgeMs !== null && age > maxAgeMs) {
+  if (!interval && age !== null && maxAgeMs !== null
+    && (periodicAge !== null ? age >= maxAgeMs : age > maxAgeMs)) {
     reasons.push(periodicAge !== null ? 'missing-report' : 'source-expired');
     if (status === 'fresh') status = 'stale';
   }
@@ -116,12 +118,71 @@ export class Recorder {
       lastFreshAt: null, coverageId: null, status: null };
   }
 
+  /** Apply a report deadline prospectively, retaining an already known genuine
+   * report. This is a policy event, never a new sensor report or an extension of
+   * an old coverage span. Earlier missed-report intervals remain untouched. */
+  transitionTemperatureReportPolicy(reading, policy, at = this.clock()) {
+    const age = temperatureReportMaxAge({ raw: policy });
+    if (!HELD_TEMPERATURE_SIGNALS.includes(reading?.signal) || age === null || !finiteTime(at))
+      throw new TypeError('A held temperature and valid reporting policy are required');
+    return this.store.transaction(() => {
+      const s = this.signalState(reading, at);
+      if (!s.last || s.lastPollAt > at) return { changed: false };
+      const span = this.store.db.prepare(`SELECT c.*,o.value,o.unit,o.source_time AS observed_source_time,
+        o.received_at AS observed_received_at,o.quality,o.raw FROM recorder_coverage c
+        JOIN observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
+        AND c.status='fresh' AND c.start_at<=? AND c.end_at<=? ORDER BY c.id DESC LIMIT 1`)
+        .get(reading.source, reading.device, reading.signal, at, at);
+      const previousRaw = span?.raw ? JSON.parse(span.raw) : reading.raw ?? {};
+      const sourceTime = span?.source_time ?? reading.sourceTime;
+      const receivedAt = span ? span.source_time === span.observed_source_time
+        ? previousRaw.originalReportReceivedAt ?? span.end_at : span.end_at : reading.receivedAt;
+      const value = span?.value ?? reading.value, unit = span?.unit ?? reading.unit;
+      if (same(s.reportPolicy, policy)) return { changed: false, reportSourceTime: sourceTime, reportReceivedAt: receivedAt,
+        observation: { source: reading.source, device: reading.device, signal: reading.signal, ...s.last, unit,
+          raw: { ...policy, timeBasis: s.last.semanticQuality?.timeBasis } } };
+      const quality = span?.quality ? JSON.parse(span.quality) : reading.quality ?? [];
+      const lastQuality = s.last.quality ?? [];
+      const ageOnly = lastQuality.every(flag => ['missing', 'missing-report', 'report-policy-changed', 'stale', 'unavailable'].includes(flag))
+        && (s.status === 'stale' || lastQuality.some(flag => ['missing-report', 'report-policy-changed'].includes(flag)));
+      const genuine = finiteTime(sourceTime) && finiteTime(receivedAt) && sourceTime <= receivedAt && receivedAt <= at
+        && Number.isFinite(value) && ['degC', '°C'].includes(unit)
+        && (reading.signal === 'garage_temperature' ? value >= -60 && value <= 70 : value > 2 && value < 40)
+        && quality.every(flag => ['good', 'simulated', 'historical', 'converted_fahrenheit', 'stale'].includes(flag))
+        && !previousRaw.retained && !previousRaw.acquisitionOnly && !previousRaw.auditOnly;
+      const fresh = genuine && (s.status === 'fresh' || ageOnly) && at < sourceTime + age;
+      const q = fresh ? quality.filter(flag => flag !== 'stale') : flags(['missing',
+        ...(s.status !== 'fresh' && !ageOnly ? lastQuality : ['missing-report'])]);
+      const raw = compactRaw({ ...previousRaw, ...policy, timeBasis: 'report-policy-change',
+        reportPolicyChangedAt: at, originalReportReceivedAt: receivedAt,
+        originalReportSourceTime: sourceTime });
+      raw.recorder = { version: VERSION, reason: 'report-policy-change', status: fresh ? 'fresh' : 'unavailable',
+        originalSourceTime: sourceTime, temporalBasis: 'policy-change' };
+      const observation = { source: reading.source, device: reading.device, signal: reading.signal,
+        value: fresh ? value : null, unit, sourceTime: fresh ? sourceTime : null, receivedAt: at, quality: q, raw };
+      const id = this.store.observation(observation);
+      observation.id = id;
+      s.last = { id, value: observation.value, sourceTime: observation.sourceTime, receivedAt: at,
+        quality: q, semanticQuality: semanticQuality(raw) };
+      s.unit = unit; s.reportPolicy = { ...policy }; s.status = fresh ? 'fresh' : 'unavailable';
+      s.coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
+        (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,0)`)
+        .run(reading.source, reading.device, reading.signal, s.status, at, at, fresh ? sourceTime : null, id).lastInsertRowid);
+      s.coverageObservationId = id; s.lastPollAt = at;
+      s.reportUnavailableSince = fresh ? null : s.reportUnavailableSince ?? at;
+      this.count(s, at, { saved: true, bytes: Buffer.byteLength(JSON.stringify(observation)), polls: 0 });
+      this.store.setState(stateKey(s.key), s);
+      return { changed: true, observation, reportSourceTime: sourceTime, reportReceivedAt: receivedAt };
+    });
+  }
+
   classify(o, state) {
     const q = flags(o.quality);
     if (q.some(x => /failed|disconnected|fetch-error|acquisition-failed|provider[-_]error/.test(x))) return 'failed';
     if (o.value === null || !Number.isFinite(o.sourceTime) || q.some(x => /missing|invalid|retained|unavailable/.test(x))) return 'unavailable';
     if (q.some(x => /stale|out-of-order/.test(x)) || o.sourceTime > o.receivedAt
-      || o.receivedAt - o.sourceTime > sourceAge(o)
+      || (temperatureReportMaxAge(o) !== null
+        ? o.receivedAt - o.sourceTime >= sourceAge(o) : o.receivedAt - o.sourceTime > sourceAge(o))
       || temperatureReportMaxAge(o) !== null && state.status && state.status !== 'fresh'
         && o.sourceTime <= state.lastSourceTime
       || temperatureReportMaxAge(o) !== null && state.reportUnavailableSince != null
@@ -190,7 +251,7 @@ export class Recorder {
     const o = { ...observation, receivedAt: observation.receivedAt ?? this.clock(), sourceTime: observation.sourceTime ?? null,
       quality: flags(observation.quality), raw: observation.raw ?? null };
     if (!finiteTime(o.receivedAt)) throw new TypeError('Invalid recorder receipt timestamp');
-    if (o.raw?.acquisitionOnly || o.raw?.auditOnly || o.source === 'husdata-h66' && DISABLED_H66.has(o.signal))
+    if (!isRecordedDataset(o) || o.raw?.acquisitionOnly || o.raw?.auditOnly || o.source === 'husdata-h66' && DISABLED_H66.has(o.signal))
       return { saved: false, reason: 'not-in-recorded-dataset', observation: null };
     if ((o.raw?.retained === true || o.quality.includes('retained')) && o.raw?.reportIntervalMs !== 0
       && (temperatureReportMaxAge(o) !== null || this.store.getState(stateKey(keyOf(o)))?.reportPolicy))
@@ -407,7 +468,7 @@ export class Recorder {
     const revision = this.store.db.prepare(`SELECT (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
     const rows = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all();
-    const states = rows.map(row=>JSON.parse(row.value));
+    const states = rows.map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
     // Constant temperatures extend existing coverage rows. Give their report
     // deadlines a separate revision so long plots can refresh without following
     // every fast power acquisition. Device identifiers stay out of the revision.
@@ -451,6 +512,7 @@ function compactRaw(raw) {
   const allowed = ['usableForControl','timeBasis','sensorMeasuredAt','installationVerified','verification','register',
     'verified','retained','cached','publicationMayUseGatewayCache','verificationEvidence',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
-    'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs'];
+    'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs',
+    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime'];
   return Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
 }

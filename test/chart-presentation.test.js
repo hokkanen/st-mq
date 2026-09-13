@@ -214,11 +214,9 @@ test('phone tooltip wrapping retains all content within the available canvas wid
   assert(lines.every(line => chart.ctx.measureText(line).width <= chart.width - 52));
 });
 
-test('Caravan popups distinguish measured current, Gen1 estimates, and apportioned partial hourly energy', () => {
+test('Caravan energy popups distinguish apportioned partial hourly energy', () => {
   const label = (key, raw) => historyTooltipLabel({ dataset: { key, label: 'Caravan', unit: key === 'caravan_energy' ? 'kWh' : 'A' },
     parsed: { x: 1, y: 1.2 }, raw: { source: 'shelly-mqtt', ...raw } });
-  assert.equal(label('caravan_current', {}), 'Caravan: 1.2 A · MQTT-shelly · not used for learning');
-  assert.match(label('caravan_current', { estimated: true, basis: 'power-over-nominal-voltage' }), /estimated from power and nominal voltage.*not used for learning/);
   assert.match(label('caravan_energy', { partialCoverage: true, timeAllocated: true }), /hourly meter energy · partial hour · meter change apportioned across hour boundaries · not used for learning/);
 });
 

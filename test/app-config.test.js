@@ -82,7 +82,7 @@ test('indoor learning weights have stable configured membership, optional explic
   assert.throws(() => indoorSensorWeightsConfiguration({ downstairs_temperature: 1 }), /configured/);
 });
 
-test('indoor report deadlines default to fifteen minutes plus grace and can match change-only publishers', t => {
+test('indoor report deadlines default to seventy minutes plus five-minute grace and remain configurable', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-report-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
@@ -90,8 +90,8 @@ test('indoor report deadlines default to fifteen minutes plus grace and can matc
     writeFileSync(path, JSON.stringify({ mqtt: { address: 'mqtt://invented.invalid', ...mqtt } }), { mode: 0o600 });
     return loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: path }, directory).connections.mqtt;
   };
-  assert.equal(read({}).temperatureReportIntervalMs, 900_000);
-  assert.equal(read({}).temperatureReportGraceMs, 120_000);
+  assert.equal(read({}).temperatureReportIntervalMs, 4_200_000);
+  assert.equal(read({}).temperatureReportGraceMs, 300_000);
   assert.equal(read({ temperature_report_interval_minutes: 0 }).temperatureReportIntervalMs, 0);
   assert.equal(read({ temperature_report_interval_minutes: 20, temperature_report_grace_seconds: 30 }).temperatureReportGraceMs, 30_000);
   for (const settings of [{ temperature_report_interval_minutes: -1 }, { temperature_report_interval_minutes: '15' },

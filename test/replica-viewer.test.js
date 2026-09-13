@@ -241,12 +241,12 @@ test('replica expires periodic room coverage at the report deadline while preser
   store.close();
   const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
   publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
-  let now = at + 2 * 60_000;
+  let now = at + 2 * 60_000 - 1;
   const { app } = await viewer(t, directory, async () => publication, { clock: () => now });
   let observations = app.status().observations;
   assert.equal(observations.bedroom.observedAt, at - 45 * 60_000);
   assert.equal(observations.bedroom.lastReportAt, at - 15 * 60_000);
-  assert.equal(observations.bedroom.reportExpiresAt, now);
+  assert.equal(observations.bedroom.reportExpiresAt, now + 1);
   assert.equal(observations.bedroom.periodicReports, true);
   assert.equal(observations.indoor.value, 20);
   assert.equal(observations.indoor.stale, false);

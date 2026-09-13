@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { startMqtt, decodeMqttTemperature } from '../src/acquisition/mqtt.js';
+import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../src/domain/temperature-reports.js';
 import { Store } from '../src/storage/store.js';
 
 const initial = Date.parse('2026-09-10T12:00:00Z');
@@ -23,7 +24,7 @@ function fixture(t, rows, options = {}) {
   let now = initial, authority = true;
   const observations = [], publications = [], reportPolicies = [], cleanups = [];
   const engine = { clock: () => now, ingest: row => { observations.push(row); store.observation(row); },
-    configureTemperatureReports: (...args) => reportPolicies.push(args) };
+    configureTemperatureReports: (...args) => reportPolicies.push(args), rememberObservation: row => observations.push(row) };
   const settings = equipmentConfiguration({ devices: rows });
   const capture = createEquipmentCapture({ engine, store, settings, canControl: () => authority,
     brokerIdentity: { address: 'mqtt://example.invalid', username: 'invented' },
@@ -112,11 +113,12 @@ test('home equipment preserves the original temperature identity, report policy,
   const payload = JSON.stringify({ value: 68, unit: 'F', timestamp: initial });
   f.capture.receive('invented/upstairs', payload);
   assert.deepEqual(f.observations.at(-1), decodeMqttTemperature({ signal: 'indoor_temperature', payload, receivedAt: initial,
-    reportIntervalMs: 900_000, reportGraceMs: 120_000 }));
-  assert.deepEqual(f.reportPolicies, [['indoor_temperature', { reportIntervalMs: 900_000, reportGraceMs: 120_000 }]]);
-  f.now(initial + 900_000); assert.equal(f.capture.status().devices[0].available, true);
-  f.now(initial + 1_021_000); f.capture.tick(); assert.equal(f.capture.status().devices[0].available, false);
-  f.capture.receive('invented/upstairs', JSON.stringify({ value: 20, timestamp: initial + 1_021_000 }), { retain: true });
+    reportIntervalMs: DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, reportGraceMs: DEFAULT_TEMPERATURE_REPORT_GRACE_MS }));
+  assert.deepEqual(f.reportPolicies, [['indoor_temperature', { reportIntervalMs: DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, reportGraceMs: DEFAULT_TEMPERATURE_REPORT_GRACE_MS }]]);
+  const deadline = initial + DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS + DEFAULT_TEMPERATURE_REPORT_GRACE_MS;
+  f.now(deadline - 1); assert.equal(f.capture.status().devices[0].available, true);
+  f.now(deadline); f.capture.tick(); assert.equal(f.capture.status().devices[0].available, false);
+  f.capture.receive('invented/upstairs', JSON.stringify({ value: 20, timestamp: deadline }), { retain: true });
   assert.equal(f.observations.at(-1).raw.retained, true); assert.equal(f.capture.status().devices[0].available, false);
 });
 
@@ -158,18 +160,8 @@ test('signatures include broker, physical topic and command mappings while exclu
   assert.notEqual(a.capture.signature('relay'), d.capture.signature('relay'));
 });
 
-test('future metered heat pump supports independent state, power, current, optional probes and hourly energy', t => {
-  const f = fixture(t, [{ id: 'garage_heat_pump', kind: 'heat_pump', area: 'garage', connection: 'shelly:invented/heat-pump',
-    switch_control: true, readings: [{ key: 'temperature', label: 'Heat pump outlet', unit: 'degC', component: 'temperature:100' }] }]);
-  f.capture.setConnected(true);
-  f.status('invented/heat-pump', { 'switch:0': { output: true, apower: 1000, current: 4.4, aenergy: { total: 1000 } }, 'temperature:100': { tC: 35 } });
-  for (let minute = 1; minute <= 60; minute++) {
-    f.now(initial + minute * 60_000);
-    f.capture.receive('invented/heat-pump/status/switch:0', JSON.stringify({ output: true, apower: 1000, current: 4.4, aenergy: { total: 1000 + minute * 1000 / 60 } }));
-  }
-  const rows = f.store.db.prepare("SELECT signal,value FROM observations WHERE signal='garage_heat_pump_energy'").all();
-  assert.equal(rows.length, 1); assert(Math.abs(rows[0].value - 1) < 1e-9);
-  assert.equal(f.capture.status().devices[0].readings.garage_heat_pump_temperature.label, 'Heat pump outlet');
+test('unsupported hypothetical heat-pump equipment kind is rejected', () => {
+  assert.throws(() => equipmentConfiguration({ devices: [{ id: 'future_controller', kind: 'heat_pump', connection: 'shelly:invented/future' }] }), /kind/);
 });
 
 test('MQTT equipment mappings can explicitly override meter field paths without duplicate signals', t => {
@@ -253,12 +245,24 @@ test('explicit modern native RPC accepts Gen3 identity without changing protocol
   assert(f.publications.every(row => row.topic === 'invented/mini/rpc'));
 });
 
-test('independent garage MQTT feed preserves its recorder identity and Fahrenheit/timestamp decoding', t => {
-  const f = fixture(t, [{ id: 'garage_mqtt', kind: 'temperature', connection: 'mqtt:invented/garage-backup', signal: 'garage_temperature_ha' }]);
-  f.capture.setConnected(true); f.capture.receive('invented/garage-backup', JSON.stringify({ value: 50, unit: 'F', timestamp: initial }));
+test('configured garage MQTT connection uses one canonical signal and expires at two minutes without heartbeat extension', t => {
+  const f = fixture(t, [{ id: 'garage', kind: 'temperature', connection: 'mqtt:invented/garage', signal: 'garage_temperature',
+    mqtt: { heartbeat_topic: 'invented/garage/heartbeat', heartbeat_seconds: 60 } }]);
+  f.capture.setConnected(true);
+  f.capture.receive('invented/garage', JSON.stringify({ value: 50, unit: 'F', timestamp: initial }));
+  f.capture.receive('invented/garage/heartbeat', 'alive');
   const observation = f.observations.at(-1);
-  assert.equal(observation.value, 10); assert.equal(observation.source, 'mqtt-temperature-ha'); assert.equal(observation.device, 'garage-ha');
-  assert.equal(observation.signal, 'garage_temperature_ha'); assert.equal(observation.sourceTime, initial);
+  assert.equal(observation.value, 10); assert.equal(observation.source, 'mqtt-temperature'); assert.equal(observation.device, 'garage_temperature');
+  assert.equal(observation.signal, 'garage_temperature'); assert.equal(observation.sourceTime, initial);
+  assert.equal(observation.raw.reportIntervalMs + observation.raw.reportGraceMs, 120_000);
+  f.now(initial + 119_999); f.capture.receive('invented/garage/heartbeat', 'alive');
+  assert.equal(f.capture.status().devices[0].available, true);
+  f.now(initial + 120_000); f.capture.receive('invented/garage/heartbeat', 'alive');
+  assert.equal(f.capture.status().devices[0].available, false);
+  f.capture.receive('invented/garage', JSON.stringify({ value: 10, timestamp: initial }), { retain: true });
+  assert.equal(f.capture.status().devices[0].available, false);
+  f.capture.receive('invented/garage', JSON.stringify({ value: 10, timestamp: initial + 120_000 }));
+  assert.equal(f.capture.status().devices[0].available, true);
 });
 
 test('one equipment subscription rejection leaves successfully subscribed equipment available on the same broker', async t => {
@@ -272,4 +276,48 @@ test('one equipment subscription rejection leaves successfully subscribed equipm
   const status = acquisition.equipment.status(); assert.equal(status.connected, true);
   assert.equal(status.devices.find(row => row.id === 'upstairs').available, true);
   assert.equal(status.devices.find(row => row.id === 'garage_door1').available, false);
+});
+
+test('Caravan instantaneous values and tariff/garage relay states stay live without database datasets', t => {
+  const f = fixture(t, [plug, garage, { id: 'heat_savings', kind: 'switch', connection: 'shelly:invented/tariff' }]);
+  const ingested = [], ingest = f.engine.ingest;
+  f.engine.ingest = observation => { ingested.push(observation.signal); ingest(observation); };
+  f.capture.setConnected(true);
+  f.status('invented/plug', { 'switch:0': { output: true, apower: 500, current: 2.2, aenergy: { total: 1000 } } });
+  f.status('invented/garage', { 'switch:0': { output: true }, 'temperature:100': { tC: 11 } });
+  f.status('invented/tariff', { 'switch:0': { output: false } });
+  const caravanStatus = f.capture.status().devices.find(row => row.id === 'caravan');
+  assert.equal(caravanStatus.readings.caravan_active.value, 1); assert.equal(caravanStatus.readings.caravan_power.value, 0.5);
+  assert.equal(caravanStatus.readings.caravan_current.value, 2.2);
+  assert.equal(caravanStatus.source, 'Shelly');
+  for (const signal of ['caravan_active', 'caravan_power', 'caravan_current', 'heat_savings_active', 'garage_relay_active']) {
+    assert(!ingested.includes(signal)); assert.equal(f.store.observations({ signal }).length, 0);
+  }
+  assert.equal(f.store.observations({ signal: 'garage_temperature' }).length, 1);
+});
+
+test('generic Caravan state/current/power remain runtime-only while completed hourly energy persists', t => {
+  const f = fixture(t, [{ id: 'caravan', kind: 'metered_switch', connection: 'mqtt:invented/generic-caravan' }]);
+  const ingested = [], ingest = f.engine.ingest;
+  f.engine.ingest = observation => { ingested.push(observation.signal); ingest(observation); };
+  f.capture.setConnected(true);
+  f.now(initial + 3_540_000);
+  f.capture.receive('invented/generic-caravan', JSON.stringify({ value: true, power: 0.6, current: 2.6, energy: 1 }));
+  f.now(initial + 3_600_000);
+  f.capture.receive('invented/generic-caravan', JSON.stringify({ value: true, power: 0.6, current: 2.6, energy: 1.01 }));
+  assert.deepEqual(ingested, []);
+  assert.equal(f.capture.status().devices[0].readings.caravan_power.value, 0.6);
+  const hourly = f.store.observations({ signal: 'caravan_energy' }); assert.equal(hourly.length, 1);
+  assert(Math.abs(hourly[0].value - 0.01) < 1e-9);
+});
+
+test('retained room replay cannot replace a genuine live reading or alter its deadline', t => {
+  const f = fixture(t, [home]); f.capture.setConnected(true);
+  f.capture.receive('invented/upstairs', JSON.stringify({ value: 20, timestamp: initial }));
+  const deadline = initial + DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS + DEFAULT_TEMPERATURE_REPORT_GRACE_MS;
+  f.now(deadline - 1000);
+  f.capture.receive('invented/upstairs', JSON.stringify({ value: 25, timestamp: deadline - 1000 }), { retain: true });
+  const reading = f.capture.status().devices[0].readings.indoor_temperature;
+  assert.equal(reading.value, 20); assert.equal(reading.observedAt, initial); assert.equal(reading.stale, false);
+  f.now(deadline); assert.equal(f.capture.status().devices[0].available, false);
 });

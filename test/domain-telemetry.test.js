@@ -151,3 +151,10 @@ test('phase-current snapshots flag data problems and preserve uncertainty about 
   assert.ok(zero.issues.includes('ev-exceeds-property-snapshot'));
   assert.deepEqual(assessPhaseCurrents({ ...normal, eq_curr2: 26 }).phasesAboveFuse, [2]);
 });
+
+test('uninstalled H66 indoor sensor is neither catalogued nor decoded, including legacy scaling metadata', () => {
+  assert.equal(H66_REGISTERS['0008'], undefined);
+  const decoder = make({ verifiedRegisters: { '0008': { scale: 1, evidence: 'old installation metadata' } }, mqttScaleByRegister: { '0008': 1 } });
+  for (const retained of [false, true]) assert.equal(decoder.decode({ ...base, topic: 'fixture-device/HP/0008', retained, payload: '21' }), null);
+  assert.equal(decoder.decode({ ...base, topic: 'fixture-device/HP/0203', payload: '20' }).signal, 'room_setting');
+});

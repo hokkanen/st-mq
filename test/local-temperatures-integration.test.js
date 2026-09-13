@@ -10,8 +10,10 @@ import { getChartData } from '../src/app/chart-data.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { Store } from '../src/storage/store.js';
+import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../src/domain/temperature-reports.js';
 import { dashboardProviders } from '../chart/provider-status.js';
 
+const ROOM_MAX_AGE = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS + DEFAULT_TEMPERATURE_REPORT_GRACE_MS;
 const MINUTE = 60_000, initial = Date.parse('2026-09-09T10:00:00Z');
 function fixture(t, input) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-local-temperatures-'));
@@ -160,7 +162,7 @@ test('unchanged room reports survive compression and restart, then expire indepe
     assert.equal(resumed.observations.indoor.value, 21);
     assert.equal(resumed.observations.indoor.stale, false);
     assert.equal(resumed.observations.upstairs.observedAt, initial, 'Restoring compressed coverage preserves original value time');
-    f.setTime(initial + 197 * MINUTE + 1);
+    f.setTime(initial + 180 * MINUTE + ROOM_MAX_AGE);
     assert.equal(f.engine.status().observations.indoor.value, null);
     assert.equal(restored.status().observations.indoor.value, null, 'Restart cannot extend a report deadline');
     m.publish('invented/smoke/1', 22); m.publish('invented/smoke/3', 20);
@@ -178,12 +180,12 @@ test('retransmissions and cached timestamps cannot renew a periodic report deadl
   const f = fixture(t, 'mqtt'), m = await connect(f);
   try {
     for (const channel of [1, 2, 3]) m.publish(`invented/smoke/${channel}`, 21);
-    f.setTime(initial + 16 * MINUTE);
+    f.setTime(initial + ROOM_MAX_AGE - MINUTE);
     for (const channel of [1, 2, 3]) {
       m.client.emit('message', `invented/smoke/${channel}`, Buffer.from('21'), { dup: true });
       m.publish(`invented/smoke/${channel}`, 21, initial);
     }
-    f.setTime(initial + 17 * MINUTE + 1);
+    f.setTime(initial + ROOM_MAX_AGE);
     assert.equal(f.engine.status().observations.indoor.value, null);
     for (const signal of ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'])
       assert.equal(f.store.observations({ signal }).length, 1);

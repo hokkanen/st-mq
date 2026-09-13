@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'heat_pump'];
+const KINDS = ['temperature', 'switch', 'metered_switch', 'door'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
   'switch_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'readings', 'mqtt'];
 const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic',
@@ -85,7 +85,7 @@ export function equipmentConfiguration(input = {}) {
     const generation = number(row.generation, 2, 1, 4, true), switchId = number(row.switch_id, 0, 0, 255, true);
     const temperatureId = number(row.temperature_id, generation === 1 ? 0 : 100, 0, 255, true);
     const controlsSwitch = bool(row.switch_control, false), controlsHeat = bool(row.tariff_control, false);
-    if ((controlsSwitch || controlsHeat) && !['switch', 'metered_switch', 'heat_pump'].includes(kind)) throw new Error('Only configured switch equipment can accept control');
+    if ((controlsSwitch || controlsHeat) && !['switch', 'metered_switch'].includes(kind)) throw new Error('Only configured switch equipment can accept control');
     const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, kind === 'door' ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
     if (kind !== 'door' && age < pollIntervalMs) throw new Error('Equipment maximum age must allow its poll interval');
     schema(row.mqtt ?? {}, MQTT_KEYS, 'equipment MQTT mapping');
@@ -110,8 +110,8 @@ export function equipmentConfiguration(input = {}) {
       : kind === 'door' ? `${id}_open` : id === 'garage' ? 'garage_relay_active' : `${id}_active`);
     const stateSignal = kind === 'temperature' ? null : mainSignal;
     const temperatureSignal = kind === 'temperature' ? mainSignal : id === 'garage' ? 'garage_temperature' : `${id}_temperature`;
-    const hasTemperature = kind === 'temperature' || id === 'garage' || row.temperature_id !== undefined && kind === 'heat_pump';
-    const metered = ['metered_switch', 'heat_pump'].includes(kind);
+    const hasTemperature = kind === 'temperature' || id === 'garage';
+    const metered = kind === 'metered_switch';
     const counters = readings.filter(mapping => mapping.key === 'energy_counter');
     if (counters.length > 1 || counters.some(mapping => !metered || !['kWh', 'Wh'].includes(mapping.unit)))
       throw new Error('Energy counter mapping requires metered equipment and kWh or Wh units');
@@ -131,7 +131,7 @@ export function equipmentConfiguration(input = {}) {
       mapping.required = true;
     }
     const ownedSignals = [...new Set([...defaultSignals, ...readings.map(value => value.signal)])];
-    return { id, role: id, label, area, kind, enabled, connection, protocol, source: protocol === 'shelly' ? 'MQTT-shelly' : 'MQTT',
+    return { id, role: id, label, area, kind, enabled, connection, protocol, source: protocol === 'shelly' ? 'Shelly' : 'MQTT',
       prefix: protocol === 'shelly' ? address : null, topic: protocol === 'mqtt' ? address : null,
       generation, switchId, temperatureId, controlsSwitch, controlsHeat, reductionOn, maxAgeMs: age,
       stateSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
@@ -149,5 +149,5 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('MQTT equipment topics cannot overlap a native equipment prefix');
   }
   return { configured: devices.length > 0, devices, pollIntervalMs, maxAgeMs,
-    ownsGarage: enabled.some(row => row.protocol === 'shelly' && row.ownedSignals.includes('garage_temperature')), ownedSignals };
+    ownsGarage: enabled.some(row => row.ownedSignals.includes('garage_temperature')), ownedSignals };
 }

@@ -3,14 +3,14 @@
 Indoor sensors publish through the existing local MQTT broker. Smoke channel 1
 is Upstairs (`indoor_temperature`), channel 2 is Bedroom (`bedroom_temperature`)
 and channel 3 is Downstairs (`downstairs_temperature`). Configure each exact topic
-using `mqtt.indoor_temperature_topic`, `mqtt.bedroom_temperature_topic` and
-`mqtt.downstairs_temperature_topic`. Keep the actual broker details and device
-topics in private configuration. [Recording configuration](recording.md)
+using one `connection` line per room in public `config.json` under
+`options.equipment.devices`. Broker credentials stay private; topic defaults are
+public. [Recording configuration](recording.md)
 describes the supported payloads and optional averaging weights.
 
-The dashboard labels these sensors **Smartthings** in **Main temperatures** and
-lists the selected outdoor source beside them. Readings arrive through local
-MQTT; st-mq does not connect to the SmartThings cloud API.
+The dashboard labels these sensors **MQTT** and native devices **Shelly**.
+H66 has no indoor sensor in this installation; its indoor register is not acquired,
+recorded or used as an Upstairs fallback.
 
 The smoke publisher uses `stmq/smoke/1/temperature`, `stmq/smoke/2/temperature`
 and `stmq/smoke/3/temperature`. Assign each exact topic to its corresponding room;
@@ -21,29 +21,30 @@ indoor temperature colour. This is the same fixed average of configured indoor
 sensors used by the thermal model: Upstairs, Bedroom and Downstairs each contribute
 one third when all three are configured with the default weights. The **Home
 temperatures · Recorded** section of the **Left axis** drawer contains one option,
-**All home temperatures**, which adds Upstairs, Bedroom and Downstairs on the left
+**All home temperatures**, which adds the room and configured garage probes on the left
 axis. Both air temperature axes then use the same scale. Garage remains a shared
 right-axis series with its existing colour and legend control. Average indoor keeps
 its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
 blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
 individual rooms are available through the chart and source details.
 By default, st-mq expects a genuine report on each dedicated indoor MQTT topic
-every 15 minutes, with two minutes allowed for delivery delay. This is an
+every 70 minutes, with five minutes allowed for delivery delay. This is an
 application policy, not a guarantee about the detector. Set
 `mqtt.temperature_report_interval_minutes` and
 `mqtt.temperature_report_grace_seconds` to match the publisher. Interval `0`
 selects the earlier change-only, last-known-reading policy after the next genuine
-report. Enabling or changing a periodic deadline records one availability boundary
-and requires a genuine report under the new policy; reloading settings or
-restarting cannot refresh a cached reading. These
-settings apply to the three indoor MQTT topics; Garage and the H66 indoor sensor
-retain their existing policy, and outdoor freshness limits remain separate.
+report. A configured periodic deadline is applied from its change time forward;
+an existing genuine report younger than the new limit can remain valid without
+pretending another report arrived. Earlier gaps and explicit sensor-change
+exclusions remain intact. Reloading or restarting cannot renew the source timestamp.
+These settings apply to the three indoor MQTT topics. Garage has a two-minute
+expiry for either its single Shelly or MQTT connection; outdoor limits remain separate.
 
-The custom Fibaro driver offers a 70-minute wake-up default. Once that
-physical interval and genuine MQTT delivery are verified, configure the expected
-report interval to 70 minutes; 120 seconds of grace then gives a 72-minute
-deadline. Leaving the default 17-minute deadline would cause gaps before the
-next expected wake-up. The driver selector does not change st-mq configuration.
+The installed room sensors have a 70-minute maximum delay for unchanged values.
+ST-MQ's five-minute grace makes the expiry exactly 75 minutes after the last
+genuine report. Age alone produces no earlier warning. At expiry the room is
+outdated and stops contributing to learning. The driver selector does not change
+ST-MQ configuration.
 See the [installation reasons and timing instructions](smartthings-temperature-rule.md#matching-the-st-mq-report-deadline).
 
 Installing a sensor driver does not create a forwarding Rule, MQTT subscription
@@ -86,8 +87,9 @@ reading from the new measurement period.
 
 ### Availability messages and clocks
 
-The temperature summary and **Connections & settings → Main temperatures** use
-the same availability explanation. An expired reading shows its elapsed age and
+The indoor-average summary shows only a small issue indicator. Detailed room
+reasons and timestamps are inside **Equipment & tests → Home** and source details.
+An expired reading shows its elapsed age and
 the applicable limit. A missed periodic report shows the last genuine report time
 when known, interval plus grace, deadline and overdue duration. This is separate
 from the timestamp of an unchanged saved temperature. An unavailable indoor
@@ -98,8 +100,9 @@ not recorded instead of guessing.
 
 | Input | Availability rule | Warning or learning effect |
 | --- | --- | --- |
-| Periodic indoor MQTT | Report interval plus grace, 17 minutes with application defaults, or 72 minutes with a 70-minute interval and two-minute grace; the exact deadline is still allowed | After the deadline, or on an explicit source failure, control falls back. Learning rejects a whole window containing a report gap. |
-| Indoor without a periodic contract; Garage | Keep the last genuine valid value until replaced or excluded by a sensor change | Age above two hours requests attention. Age alone does not prevent using an indoor member for control or learning. Garage is history only. |
+| Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, control falls back. Learning rejects a whole window containing a report gap. |
+| Garage | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. Garage is monitoring/history only. |
+| Legacy indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
 | H66 outdoor and equipment | Five-minute source validity, shared by live selection, recording, chart reconstruction and learning | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
 | FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
 

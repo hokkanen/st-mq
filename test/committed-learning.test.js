@@ -16,8 +16,13 @@ function knownContext(store, at = start, changes = {}, configuration = config) {
   return recordLearningContext(store, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21,
     roomBoostC: 0, ...changes }, at, { config: configuration });
 }
+function sourceFor(signal) {
+  return signal === 'indoor_temperature'
+    ? { source: 'mqtt-temperature', device: 'invented-room' }
+    : { source: 'husdata-h66', device: 'invented-gateway' };
+}
 function record(store, signal, value, at, extra = {}) {
-  return store.observation({ source: 'husdata-h66', device: 'invented-gateway', signal, value,
+  return store.observation({ ...sourceFor(signal), signal, value,
     unit: signal.endsWith('_temperature') ? 'degC' : signal.endsWith('_active') || signal === 'dhw_routing' ? 'state' : '%',
     sourceTime: at, receivedAt: at, quality: [], raw: { usableForControl: true, retained: false }, ...extra });
 }
@@ -35,7 +40,7 @@ test('causal windows use committed H66 heat inputs and frozen forecasts, never r
   for (let minute = 0; minute <= 15; minute++) {
     for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0],
       ['compressor_active', 1], ['dhw_routing', 0], ['auxiliary_output', 0], ['alarm_active', 0], ['operating_mode', 1]]) {
-      recorder.record({ source: 'husdata-h66', device: 'invented-gateway', signal, value,
+      recorder.record({ ...sourceFor(signal), signal, value,
         unit: signal.endsWith('_temperature') ? 'degC' : 'state', sourceTime: start + minute * MINUTE,
         receivedAt: start + minute * MINUTE, quality: [], raw: { usableForControl: true, retained: false } });
     }
@@ -224,7 +229,7 @@ function equipmentWindow(store, { minutes = 15, routing = () => 0, auxiliary = (
       ['compressor_active', 1], ['dhw_routing', routing(minute)], ['auxiliary_output', auxiliary(minute)],
       ['alarm_active', 0], ['operating_mode', 1]]) {
       const at = start + minute * MINUTE;
-      if (recorder) recorder.record({ source: 'husdata-h66', device: 'invented-gateway', signal, value,
+      if (recorder) recorder.record({ ...sourceFor(signal), signal, value,
         unit: signal.endsWith('_temperature') ? 'degC' : 'state', sourceTime: at, receivedAt: at,
         quality: [], raw: { usableForControl: true, retained: false } });
       else record(store, signal, value, at);
@@ -286,7 +291,7 @@ test('later unchanged polls cannot alter earlier resolved inputs with long recor
   assert.equal(before.compressorDuty, 1);
   for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0],
     ['compressor_active', 1], ['dhw_routing', 0], ['auxiliary_output', 0], ['alarm_active', 0], ['operating_mode', 1]]) {
-    recorder.record({ source: 'husdata-h66', device: 'invented-gateway', signal, value,
+    recorder.record({ ...sourceFor(signal), signal, value,
       unit: signal.endsWith('_temperature') ? 'degC' : 'state', sourceTime: start + 16 * MINUTE,
       receivedAt: start + 16 * MINUTE, quality: [], raw: { usableForControl: true, retained: false } });
   }
@@ -297,7 +302,7 @@ test('a delayed receipt cannot rejuvenate the source timestamp of an earlier hel
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
   const recorder = new Recorder(store, { config: { maxIntervalMs: 60 * MINUTE } });
-  const put = (sourceMinute, receiptMinute) => recorder.record({ source: 'husdata-h66', device: 'invented-gateway',
+  const put = (sourceMinute, receiptMinute) => recorder.record({ ...sourceFor('indoor_temperature'),
     signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: start + sourceMinute * MINUTE,
     receivedAt: start + receiptMinute * MINUTE, quality: [], raw: { usableForControl: true, retained: false } });
   put(0, 0);
@@ -318,7 +323,7 @@ test('coverage prefixes remain stable through failure, repeated failure and reco
   for (let minute = 0; minute <= 20; minute++) {
     for (const [signal, value] of signals) {
       const failed = minute >= 6 && minute <= 11;
-      recorder.record({ source: 'husdata-h66', device: 'invented-gateway', signal,
+      recorder.record({ ...sourceFor(signal), signal,
         value: failed ? null : value, unit: signal.endsWith('_temperature') ? 'degC' : 'state',
         sourceTime: failed ? null : start + minute * MINUTE, receivedAt: start + minute * MINUTE,
         quality: failed ? ['acquisition-failed'] : [], raw: { usableForControl: !failed, retained: false } });

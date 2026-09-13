@@ -68,7 +68,7 @@ export function temperatureTimeMetadata(observation, now) {
  * and replay selection must not change when diagnostic fields are added. */
 export function indoorStatusMetadata(reading, now, { latest = reading, store, knownAt = now, stale = false } = {}) {
   const maxAge = temperatureReportMaxAge(reading), metadata = temperatureTimeMetadata(reading, now);
-  let lastReportAt = reading?.sourceTime ?? null, reportExpiresAt;
+  let lastReportAt = reading?.raw?.originalReportSourceTime ?? reading?.sourceTime ?? null, reportExpiresAt;
   if (store && reading) {
     const span = store.db.prepare(`SELECT source_time,end_at FROM recorder_coverage
       WHERE source=? AND device=? AND signal=? AND status='fresh' AND start_at<=?
@@ -92,7 +92,7 @@ export function indoorStatusMetadata(reading, now, { latest = reading, store, kn
     { lastAttemptAt: latest.receivedAt, lastAttemptReasons });
   metadata.availabilityReasons = stale ? unique([
     ...(!reading || !indoorReadingUsable(reading, now) ? temperatureFailureReasons(reading, now) : []),
-    ...(maxAge !== null && now > metadata.reportExpiresAt ? ['missing-report'] : []),
+    ...(maxAge !== null && now >= metadata.reportExpiresAt ? ['missing-report'] : []),
     ...lastAttemptReasons,
   ]) : [];
   if (stale && !metadata.availabilityReasons.length) metadata.availabilityReasons.push(maxAge !== null ? 'missing-report' : 'missing-reading');

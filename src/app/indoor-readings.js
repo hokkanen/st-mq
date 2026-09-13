@@ -8,6 +8,7 @@ const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenhei
  * additionally rejects them so the learner sees only recorded observations. */
 export function indoorReadingUsable(observation, at) {
   if (!observation || !HELD_TEMPERATURE_SIGNALS.includes(observation.signal)
+    || observation.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')
     || !Number.isFinite(observation.value) || !Number.isFinite(observation.sourceTime)
     || !Number.isFinite(observation.receivedAt) || observation.sourceTime > at
     || observation.receivedAt > at || observation.sourceTime > observation.receivedAt
@@ -26,7 +27,8 @@ export function indoorReadingAttention(reading, at, { latest = reading } = {}) {
   const reportAge = temperatureReportMaxAge(reading);
   if (reportAge !== null) {
     const expiresAt = reading.reportExpiresAt ?? reading.sourceTime + reportAge;
-    if (at > expiresAt) attentionReasons.push('missing-report');
+    const coveredBoundary = reading.reportCoverage?.available && reading.reportCoverage.knownAt === at;
+    if (at >= expiresAt && !coveredBoundary) attentionReasons.push('missing-report');
   } else if (reading && at - reading.sourceTime > INDOOR_ATTENTION_MS) attentionReasons.push('old-reading');
   if (latest && reading && latest !== reading && latest.receivedAt >= reading.receivedAt
     && latest.source === reading.source && latest.device === reading.device && latest.signal === reading.signal
@@ -44,7 +46,8 @@ export function indoorReportStatus(reading, at, attention = indoorReadingAttenti
   if (maxAge === null) return {};
   const reportExpiresAt = reading.reportExpiresAt ?? reading.sourceTime + maxAge;
   return { periodicReports: true, reportExpiresAt,
-    stale: at > reportExpiresAt || attention.attentionReasons.some(reason => ['disconnected', 'invalid-reading'].includes(reason)) };
+    stale: at >= reportExpiresAt && !(reading.reportCoverage?.available && reading.reportCoverage.knownAt === at)
+      || attention.attentionReasons.some(reason => ['disconnected', 'invalid-reading'].includes(reason)) };
 }
 
 const decode = row => ({ id: row.id, source: row.source, device: row.device, signal: row.signal,
@@ -115,13 +118,13 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     const end = Math.min(event.end, next);
     if (end < from || event.start > at || end < event.start) continue;
     if (includeIntervals) intervals.push({ start: Math.max(from, event.start), end: Math.min(at, end), observedAt: observation.sourceTime,
-      endpoint: event.start <= at && event.end >= at && next > at });
+      endpoint: event.start <= at && event.end > at && next > at });
     if (event.start <= coveredThrough) coveredThrough = Math.max(coveredThrough, Math.min(at, end));
     observations.add(observation.id); if (event.coverageId) coverage.add(event.coverageId);
-    if (event.start <= at && event.end >= at && next > at)
+    if (event.start <= at && event.end > at && next > at)
       endpoint = { expiresAt: event.receivedAt <= at ? event.end : at };
   }
-  return { complete: coveredThrough >= at && endpoint !== null, available: endpoint !== null,
+  return { complete: coveredThrough >= at && endpoint !== null, available: endpoint !== null, knownAt: at,
     coveredThrough, expiresAt: endpoint?.expiresAt ?? null,
     observations: [...observations], coverage: [...coverage], ...(includeIntervals ? { intervals } : {}) };
 }

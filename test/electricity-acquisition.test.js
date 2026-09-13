@@ -294,9 +294,10 @@ test('missing Easee credentials never contact the API and failed devices remain 
   assert(!JSON.stringify(rows).includes('secrets'));
 });
 
-test('the H66 dataset contains thirty registers, retaining brine pump speed only', () => {
-  assert.equal(Object.keys(H66_REGISTERS).length, 30);
+test('the H66 dataset contains twenty-nine registers, omitting the uninstalled indoor sensor', () => {
+  assert.equal(Object.keys(H66_REGISTERS).length, 29);
   assert.equal(H66_REGISTERS['3110'].signal, 'brine_pump_speed');
+  assert.equal(H66_REGISTERS['0008'], undefined);
   assert.equal(H66_REGISTERS['0012'], undefined); assert.equal(H66_REGISTERS['1A04'], undefined);
   assert.doesNotThrow(() => createH66Decoder({ deviceId: 'invented-h66', verifiedRegisters: { '0012': { scale: 1, evidence: 'retired' } }, mqttScaleByRegister: { '1A04': 1 } }));
 });
@@ -315,6 +316,7 @@ test('MQTT receives configured garage temperatures alongside H66 while excluding
     assert.deepEqual(topics, ['invented-h66/HP/#', 'invented/garage']);
     client.emit('message', 'invented/garage', Buffer.from('11.2'));
     client.emit('message', 'invented-h66/HP/3110', Buffer.from('70'));
+    client.emit('message', 'invented-h66/HP/0008', Buffer.from('99'));
     client.emit('message', 'invented-h66/HP/0012', Buffer.from('85'));
     client.emit('message', 'invented-h66/HP/1A04', Buffer.from('1'));
     assert.deepEqual(observations.map(row => row.signal), ['garage_temperature', 'brine_pump_speed']);

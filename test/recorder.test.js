@@ -52,7 +52,7 @@ test('recording diagnostics expire report coverage without changing saved acquis
   const savedState=store.db.prepare('SELECT key,value FROM state ORDER BY key').all();
   const savedCoverage=store.db.prepare('SELECT * FROM recorder_coverage').all();
   const deadline=1000+47*MINUTE;
-  const fresh=recorder.status(deadline).parameters[0];
+  const fresh=recorder.status(deadline-1).parameters[0];
   assert.equal(fresh.freshness.status,'fresh');
   assert.equal(fresh.freshness.sourceObservedAt,1000+30*MINUTE);
   assert.equal(fresh.freshness.savedValueAt,1000);
@@ -61,7 +61,7 @@ test('recording diagnostics expire report coverage without changing saved acquis
   assert.equal(fresh.freshness.reportGraceMs,2*MINUTE);
   assert.equal(fresh.freshness.ageBasis,'periodic-report');
   assert.equal(fresh.hour.averageIntervalMs,null,'One saved value still has no average saving interval');
-  const stale=recorder.status(deadline+1).parameters[0];
+  const stale=recorder.status(deadline).parameters[0];
   assert.equal(stale.status,'fresh','The recorded acquisition remains classified as fresh');
   assert.equal(stale.freshness.status,'stale');
   assert.deepEqual(stale.freshness.reasons,['missing-report']);
@@ -240,11 +240,10 @@ test('room and garage recording accepts old source timestamps without inventing 
   assert.equal(store.observations().length,4);
 });
 
-test('H66 indoor source timestamps remain usable without relaxing H66 equipment expiry',t=>{
+test('H66 indoor is not recorded while H66 equipment retains its expiry',t=>{
   const {recorder,put}=fixture(t);
   put(20,2*HOUR,{source:'husdata-h66',sourceTime:1000});
-  assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
-  assert.equal(recorder.latestCommitted('indoor_temperature').sourceTime,1000);
+  assert.equal(recorder.latestCommitted('indoor_temperature'),null);
   put(30,2*HOUR,{source:'husdata-h66',signal:'supply_temperature',sourceTime:1000});
   assert.equal(recorder.latestCommitted('supply_temperature').value,null);
 });
@@ -291,8 +290,8 @@ test('recording spacing cannot change source freshness or turn repeated old time
 
 test('verification changes are recorded immediately even when value and numerical threshold are unchanged',t=>{
   const {put}=fixture(t);
-  put(20,1000,{source:'husdata-h66',raw:{verified:false,usableForControl:true}});
-  assert.equal(put(20,2000,{source:'husdata-h66',raw:{verified:true,usableForControl:true}}).reason,'quality-or-availability');
+  put(20,1000,{source:'husdata-h66',signal:'supply_temperature',raw:{verified:false,usableForControl:true}});
+  assert.equal(put(20,2000,{source:'husdata-h66',signal:'supply_temperature',raw:{verified:true,usableForControl:true}}).reason,'quality-or-availability');
 });
 
 function energy(start,end,power=3,extra={}) {

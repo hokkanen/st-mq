@@ -371,8 +371,8 @@ provider configuration. Weather uses the configured latitude/longitude;
 Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO-E
 bidding zone. Indoor and garage temperatures arrive on configured local MQTT topics
 in both `providers` and `mqtt` input modes. Smoke channel 1 is Upstairs, channel 2
-is Bedroom and channel 3 is Downstairs. Indoor temperature can also come from H66
-when no dedicated Upstairs topic is configured. The garage
+is Bedroom and channel 3 is Downstairs. These three MQTT sensors are the indoor
+inputs; there is no H66 indoor sensor or fallback. The garage
 is recorded independently of heating optimization. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
@@ -381,7 +381,8 @@ and plans; active mode can use a configured command transport.
 | Electricity prices | ENTSO-E → Elering's own public API | 1 hour; 15-minute retry when next-day horizon is missing |
 | Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 30 minutes |
 | Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
-| Indoor/garage temperatures | Configured local MQTT sensors; H66 indoor when no dedicated topic is configured | MQTT publications; H66 GETALL every 60 seconds |
+| Indoor temperatures | Configured local MQTT room sensors | 70-minute maximum reporting interval plus five minutes of grace |
+| Garage temperatures | One configured Shelly or MQTT connection | Shelly polled every 30 seconds; either connection expires after two minutes |
 | Property/charger electrical observations | Easee REST | 15 seconds, one batched request per device |
 | Portable-charger total energy | TeslaMate MQTT | Changed fields and live health; integration checked every 5 seconds |
 

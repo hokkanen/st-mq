@@ -82,22 +82,24 @@ test('one Average indoor uses the earlier indoor colour while individual rooms a
   assert.equal(themed.find(row => row.key === 'outdoor_temperature').borderColor, palette.outdoor);
 });
 
-test('All home temperatures compares three rooms with distinct colours while retaining shared right-axis readings', () => {
-  const signals = ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'];
+test('All home temperatures includes three rooms and both garage probes once, while retaining shared right-axis readings', () => {
+  const rooms = ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'];
+  const signals = [...rooms, 'garage_temperature', 'garage_temperature_2'];
   const series = Object.fromEntries(signals.map((key, index) => [key, [{ x: 1, y: 23 - index * 2 }]]));
   series.model_indoor_temperature = [{ x: 1, y: 21 }];
   const datasets = historyDatasets(series, 'temperatures');
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.key), signals);
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.label),
-    ['Upstairs', 'Bedroom', 'Downstairs']);
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Garage probe 2']);
+  assert.equal(new Set(datasets.map(row => row.key)).size, datasets.length, 'The shared garage reading is not duplicated on the right axis');
   for (const key of signals) {
     assert.equal(datasets.filter(row => row.key === key).length, 1);
     assert.equal(datasets.find(row => row.key === key).data, series[key]);
   }
   assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
   assert.equal(datasets.find(row => row.key === 'outdoor_temperature').yAxisID, 'right');
-  assert.equal(datasets.find(row => row.key === 'garage_temperature').yAxisID, 'right');
-  const roomAndAverage = datasets.filter(row => [...signals, 'model_indoor_temperature'].includes(row.key));
+  assert.equal(datasets.find(row => row.key === 'garage_temperature').yAxisID, 'left');
+  const roomAndAverage = datasets.filter(row => [...rooms, 'model_indoor_temperature'].includes(row.key));
   assert.equal(new Set(roomAndAverage.map(row => row.borderColor)).size, 4);
   const garage = historyDatasets({ garage_temperature: [{ x: 1, y: 12 }] }, 'power', { garage_temperature: false })
     .find(row => row.key === 'garage_temperature');

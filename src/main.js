@@ -2,6 +2,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
+import { pruneRetiredDatasets } from './storage/recorded-datasets.js';
 import { loadConfig, configurationReader, configurationSource } from './app/config.js';
 import { Engine } from './app/engine.js';
 import { createEquipmentTests } from './app/equipment-tests.js';
@@ -125,6 +126,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     requireRunning();
     await authority?.reconfigure(config.connections.mqtt);
     requireRunning();
+    pruneRetiredDatasets(store);
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
       commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect,
         canControl });

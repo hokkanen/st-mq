@@ -35,11 +35,14 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   const emit = (device, signal, value, unit, at, quality = [], raw = {}) => {
     if (scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
     const definition = definitions(device).find(row => row.signal === signal);
-    engine.ingest({ source: 'shelly-mqtt', device: device.role, signal, value, unit,
+    const observation = { source: 'shelly-mqtt', device: device.role, signal, value, unit,
       sourceTime: at, receivedAt: engine.clock(), quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
         ...((unit === 'degC' || unit === '°C') ? { reportIntervalMs: settings.pollIntervalMs,
-          reportGraceMs: Math.max(0, maxAge(device) - settings.pollIntervalMs) } : {}), ...raw } });
+          reportGraceMs: Math.max(0, maxAge(device) - settings.pollIntervalMs) } : {}), ...raw } };
+    if (device.role === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(signal))
+      engine.rememberObservation?.(observation, engine.clock());
+    else engine.ingest(observation);
     device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, quality, ...raw };
   };
   const unavailable = (device, reason) => {
@@ -151,9 +154,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     }
     return false;
   }
-  const available = (device, now) => connected && device.available && (maxAge(device) === 0 || now - device.lastAt <= maxAge(device))
+  const available = (device, now) => connected && device.available && (maxAge(device) === 0 || now - device.lastAt < maxAge(device))
     && definitions(device).filter(row => row.required).every(row => scalar(device.readings[row.signal]?.value)
-      && (maxAge(device) === 0 || now - device.readings[row.signal].observedAt <= maxAge(device)));
+      && (maxAge(device) === 0 || now - device.readings[row.signal].observedAt < maxAge(device)));
   async function switchDevice(device, output) {
     if (!device || typeof output !== 'boolean') throw error('invalid switch selection');
     if (device.waiters.size) throw error('switch operation already in progress');
@@ -257,7 +260,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (closed) return;
       for (const energy of energies.values()) energy.tick(now);
       for (const [id, request] of requests) if (now - request.at > readbackTimeoutMs) { requests.delete(id); request.complete?.('timeout'); }
-      for (const device of devices) if (device.available && maxAge(device) > 0 && now - device.lastAt > maxAge(device)) unavailable(device, 'missing-report');
+      for (const device of devices) if (device.available && maxAge(device) > 0 && now - device.lastAt >= maxAge(device)) unavailable(device, 'missing-report');
       if (connected && now - lastPollAt >= settings.pollIntervalMs) { lastPollAt = now; for (const device of devices) { identify(device); requestStatus(device).catch(() => {}); } }
     },
     async recheck({ deviceId } = {}) {
@@ -300,10 +303,10 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         lastCheckedAt: Math.max(0, ...devices.map(device => device.check?.checkedAt ?? 0)) || null,
         devices: devices.map(device => ({ id: device.id, role: device.role, label: device.label ?? LABELS[device.role] ?? device.role,
           area: device.area ?? (device.role === 'heat_savings' ? 'home' : 'garage'), kind: device.kind ?? (metered(device) ? 'metered_switch' : 'switch'),
-          source: 'MQTT-shelly', connection: `shelly:${device.prefix}`, controlsHeat: Boolean(device.controlsHeat),
+          source: 'Shelly', connection: `shelly:${device.prefix}`, controlsHeat: Boolean(device.controlsHeat),
           controls: { switch: device.controlsSwitch === true && (!needsIdentity(device) || Boolean(device.identity)), tariff: device.controlsHeat === true }, available: available(device, now), observedAt: device.lastAt, check: device.check,
           readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
-            { ...reading, stale: !connected || !device.available || !scalar(reading.value) || !scalar(reading.observedAt) || maxAge(device) > 0 && now - reading.observedAt > maxAge(device) }])),
+            { ...reading, stale: !connected || !device.available || !scalar(reading.value) || !scalar(reading.observedAt) || maxAge(device) > 0 && now - reading.observedAt >= maxAge(device) }])),
           ...(energies.has(device.id) ? { energy: energies.get(device.id).status(now) } : {}) })) };
     },
     close() { api.setConnected(false); closed = true; requests.clear(); },

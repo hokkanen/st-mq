@@ -1,6 +1,7 @@
 # MQTT equipment
 
-Equipment is grouped by the system it serves: **Home** or **Garage**. Each device
+Equipment is inside **Home & heating → Equipment & tests**, grouped into **Home**
+and **Garage** monitoring with separate manual controls. Each device
 has one explicit connection string. ST-MQ does not guess protocols, search the LAN,
 or switch to another source when a device stops responding.
 
@@ -64,19 +65,20 @@ the complete public list; arrays are not merged by device ID.
 ```
 
 Use a stable device `id` and signal names so changing a display label does not
-create a new history series. Device kinds are `temperature`, `door`, `switch`,
-`metered_switch` and `heat_pump`. The kind describes the readings; write access
+create a new history series. Device kinds are `temperature`, `door`, `switch`
+and `metered_switch`. The kind describes the readings; write access
 requires `switch_control: true` or, for the home's reduction relay,
 `tariff_control: true`. A discovered output is never automatically made writable.
-`enabled: false` keeps a prepared entry inactive; the garage heat-pump default is
-inactive until its controller is installed and its connection is configured.
+`enabled: false` keeps an entry inactive. Add future equipment once its actual
+device capabilities and intended measurements are known.
 
 The garage addon uses external sensor 100. Sensor 101 is an optional second probe:
 its absence does not make the existing probe unavailable. Set its physical label
 once installed, and change the component mapping if the device assigns a different
 ID. The relay's internal electronics temperature is not the garage temperature.
-For a future heat-pump controller, map only measurements it actually reports; a
-relay being ON means power is enabled, not that its compressor is running.
+There is one garage temperature entry. Its connection selects either the native
+Shelly prefix or one standard MQTT topic. ST-MQ does not configure or subscribe to
+an alternative route.
 
 Additional readings can specify a `signal`, `label`, `unit`, and either a native
 `component` with a `path` within that component, or an MQTT `topic`/JSON `path`.
@@ -107,7 +109,7 @@ and monitoring data and is not automatically added to the home temperature avera
    cloud settings and unrelated schedules as configured. Ensure independent
    automations do not fight an output deliberately assigned to ST-MQ control.
 6. Apply ST-MQ configuration and use **Recheck devices**. Check the displayed
-   measurements and source **MQTT-shelly** before using a manual control test.
+   measurements and source **Shelly** before using a manual control test.
 
 No device administrator password is needed by ST-MQ for native MQTT RPC. The local
 administrator login and the MQTT broker login are separate mechanisms. ST-MQ needs
@@ -166,9 +168,17 @@ availability has not been established. A retained value is historical context,
 not proof that the door is currently closed. Invalid payloads show unknown state.
 
 Use different exact topics for different publishers and for status versus commands.
-MQTT does not assign source priority to publishers sharing a topic. Native and
-standard feeds can appear as separate device entries, with distinct signals, for
-comparison. They never automatically overwrite or take over one another.
+MQTT does not assign source priority to publishers sharing a topic. Each configured
+measurement has one selected connection and recorded signal; there is no backup
+feed, automatic source comparison or takeover.
+
+Room reports have a 70-minute expected interval plus five minutes of grace. At
+75 minutes they become outdated and stop contributing to learning. The garage
+uses the same deadline rule with a two-minute limit for both connection formats.
+ST-MQ requests direct Shelly status every 30 seconds. A standard MQTT publisher
+must provide genuine periodic reports, preferably every minute, even when the
+value is unchanged. Broker connectivity, generic heartbeats and repeated source
+timestamps cannot extend measurement validity.
 
 ## Checks, tests and recording
 
@@ -186,17 +196,20 @@ configuration cannot discard the old route while restoration is unresolved.
 Explicit manual tests can operate equipment in shadow mode; automatic control stays
 subject to the application's mode and controller authority.
 
-The Caravan and a metering garage heat-pump controller report on/off, kW, A and
-energy today. Successive cumulative meter readings produce completed UTC-hour kWh
+The Caravan reports on/off, kW, A and energy today in live monitoring. Only its
+hourly energy is recorded in the database and offered in the chart. Successive
+cumulative meter readings produce completed UTC-hour kWh
 intervals. Daily totals use Europe/Helsinki, including daylight-saving boundaries.
 The unfinished hour is saved as a checkpoint and contributes to the daily display;
 it appears as an hourly chart interval after completion. Outages, first partial days
 and counter resets retain partial coverage. No outage energy is invented.
 
-The chart includes both garage probes, door states, Caravan state/power/current/hourly
-energy and the prepared garage heat-pump channels. Extra custom mapped readings are
-recorded and visible in equipment details; adding a new chart axis beyond the public
-catalogue remains an explicit catalogue change. Old source history remains unchanged.
+The chart includes all configured home/garage probes through **All home
+temperatures**, door states and Caravan hourly energy. Tariff status already comes
+from heating control; duplicate relay-state datasets are not recorded. Future
+garage heat-pump datasets are absent until that equipment is specified. Retired
+development datasets and their recorder caches are removed at startup; immutable
+learning records and imported history are preserved.
 
 ## Moving from the earlier configuration
 

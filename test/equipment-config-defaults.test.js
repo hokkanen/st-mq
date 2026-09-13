@@ -18,11 +18,13 @@ test('public equipment defaults work with broker-only private settings and prese
   const devices = config.connections.equipment.devices;
   assert.deepEqual(devices.filter(row => row.enabled && row.protocol === 'shelly').map(row => row.id).sort(),
     ['caravan', 'garage', 'heat_savings']);
-  assert.equal(devices.find(row => row.id === 'garage_heat_pump').enabled, false);
+  assert.equal(devices.some(row => row.id === 'garage_heat_pump' || row.id === 'garage_mqtt'), false);
   assert.deepEqual(config.control.indoorSensorWeights,
     { indoor_temperature: 1 / 3, downstairs_temperature: 1 / 3, bedroom_temperature: 1 / 3 });
   assert.equal(devices.find(row => row.id === 'garage').readings.find(row => row.key === 'temperature_2').required, false);
-  assert.equal(devices.find(row => row.id === 'garage_mqtt').temperatureSignal, 'garage_temperature_ha');
+  assert.equal(devices.find(row => row.id === 'garage').maxAgeMs, 120_000);
+  assert.equal(devices.filter(row => ['upstairs', 'downstairs', 'bedroom'].includes(row.id)).every(row => row.maxAgeMs === 4_500_000), true);
+  assert.equal(config.connections.mqtt.temperatureReportIntervalMs + config.connections.mqtt.temperatureReportGraceMs, 4_500_000);
   assert.equal(devices.filter(row => row.kind === 'door').every(row => row.protocol === 'mqtt' && row.maxAgeMs === 0), true);
   assert.equal(readFileSync(privatePath, 'utf8'), privateText);
   assert.equal(config.connections.mqtt.pw, 'synthetic-password');

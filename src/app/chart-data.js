@@ -1,4 +1,5 @@
 import { addShellyEnergy } from './chart-shelly.js';
+import { isRecordedDataset } from '../storage/recorded-datasets.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isInterpolatedTemperature } from '../domain/chart-temperatures.js';
 import moment from 'moment-timezone';
@@ -26,7 +27,7 @@ import { RelatedStepSampler, alignRelatedSamples } from './chart-related-series.
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
 const CHARGING_MIN_POWER_KW = 0.1;
-const TEMPERATURES = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'];
+const TEMPERATURES = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'];
 const DOOR_SIGNALS = ['garage_door1_open', 'garage_door2_open'];
 const PHASES = ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`));
 const LEARNING = ['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'];
@@ -591,11 +592,11 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const requested = new Set(projecting ? _priceProjection ? ['spot_price']
     : left === 'power' ? [...PHASES, 'auxiliary_output', 'auxiliary_power', 'charger_power'] : PHASES
     : [...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS,
-    ...(left === 'integral' ? [] : PHASES), ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'garage_heat_pump_energy', 'property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
+    ...(left === 'integral' ? [] : PHASES), ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     json_extract(o.raw,'$.reportIntervalMs') AS report_interval_ms,
-    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('caravan_current','caravan_power','caravan_active','heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
+    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
   // Read only the selected signals from their index. A chronological full-table
@@ -723,7 +724,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
         }
       } else {
         let metadata;
-        if (signal.startsWith('caravan_') || signal.startsWith('garage_heat_pump_') || DOOR_SIGNALS.includes(signal)) {
+        if (DOOR_SIGNALS.includes(signal)) {
           let raw; try { raw = JSON.parse(row.raw); } catch { /* Optional telemetry basis. */ }
           metadata = { source: row.source, estimated: raw?.estimated === true, basis: raw?.basis, learningRole: 'history-only' };
           if (DOOR_SIGNALS.includes(signal)) Object.assign(metadata, { basis: 'last-reported-state', lastReported: true,
@@ -816,6 +817,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested,now});
   for (const row of left === 'power' ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
+    if (!isRecordedDataset(row)) continue;
     // Periodic reports have their own explicit availability projection, including
     // unchanged spans beginning before the normal three-hour context query.
     if (!row.coverage && row.import_id == null && row.report_interval_ms>0) continue;
