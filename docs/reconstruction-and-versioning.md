@@ -122,6 +122,17 @@ The v7 journal remains an archive requiring its matching code (Git revision
 `b779b44`), and is never replayed as v8. The first v8 entry records the explicit
 initial seed and starts its own learning epoch.
 
+The current 70-minute reporting interval plus five-minute grace is a recorded
+configuration choice under the existing report-coverage rules. A policy change
+now saves an explicitly marked policy event at its effective time. It may carry
+an already genuine report that remains within the new deadline, retaining that
+report's source time and original receipt lineage. Its new coverage span starts
+at the configuration time with zero new reports; earlier spans, outages and
+committed learning samples remain unchanged. Restart cannot renew that deadline.
+Explicit acquisition failures and sensor-change exclusions still require genuine
+recovery evidence. This forward-only configuration event does not reinterpret
+archived journal entries or change the ordered learning update and replay rules.
+
 `committed-house-v9-reversible-sensors` adds append-only sensor-change reversals.
 A reversal references the original change; both records remain in the journal.
 Its selected correction revision retracts that measurement boundary throughout

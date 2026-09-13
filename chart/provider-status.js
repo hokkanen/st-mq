@@ -5,7 +5,7 @@ import { durationText } from './reading-status.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT', 'shelly-mqtt': 'MQTT-shelly', 'mqtt-equipment': 'MQTT', easee: 'Easee', teslamate: 'Teslamate' });
+  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT', 'shelly-mqtt': 'Shelly', 'mqtt-equipment': 'MQTT', easee: 'Easee', teslamate: 'Teslamate' });
 const jobs = Object.freeze({ temperatures: 'Temperature adapter',
   easee: 'Property & Charger 1 · Easee', teslamate: 'Charger 2 · Teslamate',
   market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });

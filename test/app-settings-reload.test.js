@@ -163,22 +163,22 @@ test('changing the H66 device starts with empty live readings and uses only the 
   const options = { controller: { input: 'mqtt', h66_device: 'invented-first' }, mqtt: { address: 'mqtt://synthetic.invalid' } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
   const first = mqtt.clients[0];
-  first.emit('message', 'invented-first/HP/0008', Buffer.from('21'), { retain: false });
+  first.emit('message', 'invented-first/HP/0001', Buffer.from('31'), { retain: false });
   first.emit('message', 'invented-first/HP/0007', Buffer.from('8'), { retain: false });
-  assert.equal(app.engine.latest.indoor_temperature.value, 21);
+  assert.equal(app.engine.latest.return_temperature.value, 31);
   assert.equal(app.engine.outdoorCandidates['husdata-h66'].value, 8);
   write({ ...options, controller: { input: 'mqtt', h66_device: 'invented-second' } });
   const response = await post();
   assert.equal(response.status, 200);
   assert.equal(first.endCalls, 1);
   assert.deepEqual(mqtt.clients[1].subscriptions, ['invented-second/HP/#']);
-  assert.equal(app.engine.latest.indoor_temperature, undefined);
+  assert.equal(app.engine.latest.return_temperature, undefined);
   assert.equal(app.engine.outdoorCandidates['husdata-h66'], undefined);
   assert.deepEqual(app.engine.status().h66.readings, {});
-  first.emit('message', 'invented-first/HP/0008', Buffer.from('29'), { retain: false });
-  assert.equal(app.engine.latest.indoor_temperature, undefined);
-  mqtt.clients[1].emit('message', 'invented-second/HP/0008', Buffer.from('22'), { retain: false });
-  assert.equal(app.engine.latest.indoor_temperature.value, 22);
+  first.emit('message', 'invented-first/HP/0001', Buffer.from('39'), { retain: false });
+  assert.equal(app.engine.latest.return_temperature, undefined);
+  mqtt.clients[1].emit('message', 'invented-second/HP/0001', Buffer.from('32'), { retain: false });
+  assert.equal(app.engine.latest.return_temperature.value, 32);
 });
 
 test('controller-only reload retains provider snapshots and rate-limit backoff', async t => {

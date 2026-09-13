@@ -47,15 +47,15 @@ test('door transitions remain discrete and explicit acquisition failures interru
   assert(rows.filter(point => point.x >= start + 10 * HOUR).every(point => point.y === null));
 });
 
-test('garage heat-pump hourly energy plots native and explicitly mapped MQTT meter intervals with coverage', t => {
+test('Caravan hourly energy plots native and explicitly mapped MQTT meter intervals with coverage', t => {
   for (const source of ['shelly-mqtt', 'mqtt-equipment']) {
     const store = new Store(':memory:'); t.after(() => store.close());
-    const counter = createCaravanEnergy({ store, device: 'fixture-meter', source, signal: 'garage_heat_pump_energy',
-      recordDevice: 'garage_heat_pump', stateKey: 'fixture-hourly', maxGapMs: 120_000 });
+    const counter = createCaravanEnergy({ store, device: 'fixture-meter', source, signal: 'caravan_energy',
+      recordDevice: 'caravan', stateKey: 'fixture-hourly', maxGapMs: 120_000 });
     counter.receive(10, start + HOUR - 30_000); counter.receive(10.02, start + HOUR + 30_000);
     const result = getChartData({ store, input: 'mqtt', startDate: date, endDate: date, now: start + 2 * HOUR,
-      left: 'garage_heat_pump_energy' });
-    const points = result.series.garage_heat_pump_energy.filter(point => Number.isFinite(point.y));
+      left: 'caravan_energy' });
+    const points = result.series.caravan_energy.filter(point => Number.isFinite(point.y));
     assert(points.length >= 2);
     assert(points.every(point => Math.abs(point.y - 0.01) < 1e-9));
     assert(points.every(point => point.partialCoverage && point.intervalEnd === start + HOUR));

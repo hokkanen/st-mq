@@ -2,10 +2,8 @@
  * Render one bounded interval per completed hour, with explicit partial coverage. */
 export function addShellyEnergy({ store, range, now, input, envelopes }) {
   if (input === 'simulated') return;
-  for (const signal of ['caravan_energy', 'garage_heat_pump_energy']) {
-    const envelope = envelopes[signal];
-    if (envelope) addMeterIntervals({ store, range, now, envelope, signal });
-  }
+  const signal = 'caravan_energy', envelope = envelopes[signal];
+  if (envelope) addMeterIntervals({ store, range, now, envelope, signal });
 }
 
 function addMeterIntervals({ store, range, now, envelope, signal }) {

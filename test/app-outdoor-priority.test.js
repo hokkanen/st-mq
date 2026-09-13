@@ -83,7 +83,7 @@ test('retained, invalid and disconnected H66 readings use the current weather fa
   r.client.emit('offline');
   assert.equal(r.engine.status().observations.outdoor.source, 'fmi');
   r.client.emit('connect');
-  r.publish(21, {}, '0008');
+  r.publish(31, {}, '0001');
   r.publish(2.2, { retain: true });
   assert.equal(r.engine.status().observations.outdoor.source, 'fmi', 'other live registers cannot revive an old outdoor reading');
   r.publish(2.3);

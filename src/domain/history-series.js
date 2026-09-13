@@ -6,7 +6,6 @@ const h66 = [
   ['brine_in_temperature', 'Brine in', '°C', 'Ground loop', 'History only'],
   ['brine_out_temperature', 'Brine out', '°C', 'Ground loop', 'History only'],
   ['outdoor_temperature', 'Outdoor temperature', '°C', 'Home temperatures', 'House input'],
-  ['indoor_temperature', 'Upstairs', '°C', 'Home temperatures', 'House input'],
   ['dhw_temperature', 'Hot-water temperature', '°C', 'Hot water', 'Equipment context'],
   ['heating_setpoint', 'Supply target', '°C', 'Heating', 'Equipment context'],
   ['heating_integral', 'Heating integral', '°min', 'Heating', 'Equipment context'],
@@ -45,20 +44,12 @@ export const SESSION_CHECK_INFO = Object.freeze({
 });
 export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...h66.map(([signal, label, unit, group, role]) => [signal, { label, unit, group, role, kind: 'Recorded' }]),
+  ['indoor_temperature', { label: 'Upstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['downstairs_temperature', { label: 'Downstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['bedroom_temperature', { label: 'Bedroom', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['caravan_energy', { label: 'Caravan hourly energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Completed hourly totals from the meter counter; partial hours retain measured coverage, excluded from learning' }],
-  ['caravan_power', { label: 'Caravan power', unit: 'kW', group: 'Electricity', role: 'History only', kind: 'Recorded' }],
-  ['caravan_current', { label: 'Caravan current', unit: 'A', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Reported current; older plug estimates use power divided by configured nominal voltage and are marked on the readings' }],
-  ['caravan_active', { label: 'Caravan plug state', unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded' }],
-  ['garage_temperature_ha', { label: 'Garage temperature · MQTT', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded', detail: 'Independent MQTT reading, retained separately from the MQTT-shelly garage probes' }],
   ['garage_temperature_2', { label: 'Garage temperature 2', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded', detail: 'Second configured garage probe; physical placement is named in Equipment' }],
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
-  ...[['active', 'Garage heat-pump power enabled', 'state'], ['power', 'Garage heat-pump power', 'kW'],
-    ['current', 'Garage heat-pump current', 'A'], ['energy', 'Garage heat-pump hourly energy', 'kWh'],
-    ['temperature', 'Garage heat-pump temperature', '°C']].map(([suffix, label, unit]) => [`garage_heat_pump_${suffix}`,
-      { label, unit, group: unit === 'state' ? 'Equipment states' : unit === '°C' ? 'Home temperatures' : 'Electricity',
-        role: 'History only', kind: 'Recorded', detail: suffix === 'active' ? 'Relay output; does not confirm compressor activity' : 'Configured garage heat-pump telemetry' }]),
   ['garage_temperature', { label: 'Garage temperature', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
@@ -95,7 +86,7 @@ export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'ga
 
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],
-  ['temperatures', 'All home temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'], '°C', 'Recorded'],
+  ['temperatures', 'All home temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2'], '°C', 'Recorded'],
   ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
   ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],

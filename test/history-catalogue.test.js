@@ -5,7 +5,7 @@ import { H66_REGISTERS } from '../src/domain/telemetry.js';
 import { recordingRows, populateHistoryAxes } from '../chart/recording.js';
 
 test('every retained H66 parameter and garage temperature is selectable independently of model use',()=>{
-  assert.equal(H66_HISTORY_SIGNALS.length,30);
+  assert.equal(H66_HISTORY_SIGNALS.length,29);
   assert.deepEqual(new Set(Object.values(H66_REGISTERS).map(row=>row.signal==='integral'?'heating_integral':row.signal)),new Set(H66_HISTORY_SIGNALS));
   const selectable=new Set(HISTORY_AXES.flatMap(axis=>axis.signals));
   for(const signal of [...H66_HISTORY_SIGNALS,'downstairs_temperature','bedroom_temperature','garage_temperature',...PHASE_ENERGY_SIGNALS])assert(selectable.has(signal),signal);
@@ -42,11 +42,12 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   const rooms = select.children.find(group => group.label === 'Home temperatures · Recorded');
   assert.deepEqual(rooms.children.map(option => [option.value, option.textContent]), [
     ['temperatures', 'All home temperatures'],
-    ['garage_temperature_ha', 'Garage temperature · MQTT'],
-    ['garage_temperature_2', 'Garage temperature 2'],
-    ['garage_heat_pump_temperature', 'Garage heat-pump temperature'],
   ]);
-  for (const signal of ['caravan_energy', 'caravan_power', 'caravan_current', 'caravan_active']) assert(choices.has(signal));
+  assert(choices.has('caravan_energy'));
+  for (const signal of ['caravan_power', 'caravan_current', 'caravan_active', 'garage_temperature_ha', 'garage_temperature_2', 'garage_heat_pump_power', 'garage_heat_pump_temperature', 'garage_relay_active', 'heat_savings_active']) assert(!choices.has(signal));
+  for (const signal of ['caravan_power', 'caravan_current', 'caravan_active', 'garage_temperature_ha', 'garage_heat_pump_active', 'garage_heat_pump_power', 'garage_heat_pump_current', 'garage_heat_pump_energy', 'garage_heat_pump_temperature', 'garage_relay_active', 'heat_savings_active'])
+    assert(!HISTORY_AXES.some(axis => axis.signals.includes(signal)), `${signal} is not part of a chart dataset`);
+  assert.deepEqual(HISTORY_AXES.find(axis => axis.key === 'temperatures').signals, ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2']);
   assert(!choices.has('garage_temperature'), 'Garage is shared on the right axis');
   for (const room of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']) assert(!choices.has(room));
   for (const key of ['firewood_load', 'model_fireplace_release', 'firewood_savings', 'firewood_electricity_avoided']) assert(choices.has(key));

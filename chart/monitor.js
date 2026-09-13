@@ -395,7 +395,12 @@ function render(s) {
     $(key).textContent = Number.isFinite(obs.value) ? `${obs.value.toFixed(1)} °C` : '—';
     $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention);
     const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
-    $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${readingStatus.detail}`;
+    if (key === 'indoor') {
+      const issue = !readingStatus.usable || readingStatus.attention;
+      $('indoor-issue').hidden = !issue;
+      $('indoor-age').textContent = `${source ? `${source} · ` : ''}${!readingStatus.usable ? 'Unavailable' : readingStatus.attention ? 'Needs attention' : 'Readings current'}`;
+      $('indoor-status-detail').textContent = `Indoor average · ${readingStatus.detail}`;
+    } else $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${readingStatus.detail}`;
   }
   $('requested').textContent = label(s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'));
   $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;
@@ -456,6 +461,10 @@ function render(s) {
   fireplacePanel.update(s.fireplace, s.now);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
+$('indoor-issue').addEventListener('click', () => {
+  $('equipment-details').open = true;
+  $('indoor-status-detail').focus({ preventScroll: true });
+});
 async function events() {
   const rows = await api(`/api/events?after=${lastEvent}&limit=50`);
   for (const event of rows) {

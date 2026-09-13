@@ -42,8 +42,8 @@
       "indoor_temperature_topic": "",
       "downstairs_temperature_topic": "",
       "bedroom_temperature_topic": "",
-      "temperature_report_interval_minutes": 15,
-      "temperature_report_grace_seconds": 120,
+      "temperature_report_interval_minutes": 70,
+      "temperature_report_grace_seconds": 300,
       "garage_temperature_topic": ""
     },
     "entsoe": {
@@ -163,7 +163,7 @@
           "kind": "temperature",
           "connection": "mqtt:stmq/smoke/1/temperature",
           "signal": "indoor_temperature",
-          "max_age_seconds": 1020,
+          "max_age_seconds": 4500,
           "enabled": true,
           "mqtt": {},
           "readings": []
@@ -175,7 +175,7 @@
           "kind": "temperature",
           "connection": "mqtt:stmq/smoke/3/temperature",
           "signal": "downstairs_temperature",
-          "max_age_seconds": 1020,
+          "max_age_seconds": 4500,
           "enabled": true,
           "mqtt": {},
           "readings": []
@@ -187,7 +187,7 @@
           "kind": "temperature",
           "connection": "mqtt:stmq/smoke/2/temperature",
           "signal": "bedroom_temperature",
-          "max_age_seconds": 1020,
+          "max_age_seconds": 4500,
           "enabled": true,
           "mqtt": {},
           "readings": []
@@ -223,19 +223,8 @@
               "required": false
             }
           ],
-          "mqtt": {}
-        },
-        {
-          "id": "garage_mqtt",
-          "label": "Garage temperature \u00b7 MQTT",
-          "area": "garage",
-          "kind": "temperature",
-          "connection": "mqtt:from_hass/garage/temp",
-          "signal": "garage_temperature_ha",
-          "max_age_seconds": 1020,
-          "enabled": true,
           "mqtt": {},
-          "readings": []
+          "max_age_seconds": 120
         },
         {
           "id": "caravan",
@@ -265,17 +254,6 @@
           "kind": "door",
           "connection": "mqtt:from_hass/garage_door2/sensor",
           "enabled": true,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "garage_heat_pump",
-          "label": "Garage heat pump",
-          "area": "garage",
-          "kind": "heat_pump",
-          "connection": "shelly:stmq/garage/heat-pump",
-          "switch_control": false,
-          "enabled": false,
           "mqtt": {},
           "readings": []
         }
@@ -477,7 +455,7 @@
           "id": "str",
           "label": "str?",
           "area": "list(home|garage)",
-          "kind": "list(temperature|switch|metered_switch|door|heat_pump)",
+          "kind": "list(temperature|switch|metered_switch|door)",
           "connection": "str",
           "enabled": "bool?",
           "signal": "str?",

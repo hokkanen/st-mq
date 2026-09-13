@@ -20,7 +20,7 @@ export const H66_DOCUMENTATION = Object.freeze({
 export const H66_REGISTERS = Object.freeze(Object.fromEntries([
   ['0001', 'return_temperature', '°C'], ['0002', 'supply_temperature', '°C'],
   ['0005', 'brine_in_temperature', '°C'], ['0006', 'brine_out_temperature', '°C'],
-  ['0007', 'outdoor_temperature', '°C'], ['0008', 'indoor_temperature', '°C'],
+  ['0007', 'outdoor_temperature', '°C'],
   ['0009', 'dhw_temperature', '°C'], ['0107', 'heating_setpoint', '°C'],
   ['8105', 'integral', 'degree-minutes'], ['3104', 'auxiliary_output', '%'],
   ['6C60', 'compressor_hours', 'h'], ['6C63', 'auxiliary_3kw_hours', 'h'],
@@ -35,7 +35,7 @@ export const H66_REGISTERS = Object.freeze(Object.fromEntries([
   ['0233', 'tariff_reduction_setting', '°C'],
   ['1A20', 'alarm_active', 'state'], ['2A91', 'alarm_code', 'code'],
 ].map(([index, signal, unit]) => [index, Object.freeze({ index, signal, unit })])));
-const OMITTED_REGISTERS = new Set(['0012', '1A04']);
+const OMITTED_REGISTERS = new Set(['0008', '0012', '1A04']);
 
 /** Read-only decoder: no MQTT connection, subscription side effects, or command encoding. */
 export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = H66_MAX_AGE_MS,
@@ -69,6 +69,7 @@ export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = 
     if (typeof topic !== 'string' || !topic.startsWith(`${deviceId}/HP/`)) return null;
     const index = topic.slice(deviceId.length + 4);
     if (!/^[0-9A-Fa-f]{4}$/.test(index)) return null; // Excludes SET, CMD and status subtopics.
+    if (index.toUpperCase() === '0008') return null; // This installation has no H66 indoor sensor.
     const register = H66_REGISTERS[index.toUpperCase()];
     const received = instantMs(receivedAt), source = sourceAt == null ? null : instantMs(sourceAt);
     const raw = Buffer.isBuffer(payload) ? payload.toString('utf8') : typeof payload === 'string' ? payload : '';

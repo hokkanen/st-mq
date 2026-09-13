@@ -30,10 +30,21 @@ const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
 
-function directGarageDevice(config) {
-  return config.connections?.equipment?.devices?.find(device => device.enabled && device.protocol === 'shelly'
-    && device.ownedSignals.includes('garage_temperature'))?.id
-    ?? (config.connections?.shelly?.devices?.some(device => device.role === 'garage') ? 'garage' : null);
+function garageOwner(config, signal) {
+  if (!['garage_temperature', 'garage_temperature_2'].includes(signal)) return null;
+  const device = config.connections?.equipment?.devices?.find(device => device.ownedSignals?.includes(signal));
+  if (device) return !device.enabled ? { disabled: true } : device.protocol === 'shelly'
+    ? { source: 'shelly-mqtt', device: device.id }
+    : device.kind === 'temperature' && device.temperatureSignal === 'garage_temperature'
+      ? { source: 'mqtt-temperature', device: 'garage_temperature' } : { source: 'mqtt-equipment', device: device.id };
+  if (config.connections?.shelly?.devices?.some(device => device.role === 'garage')) return { source: 'shelly-mqtt', device: 'garage' };
+  if (signal === 'garage_temperature' && (config.connections?.mqtt?.temperatureTopics?.garage_temperature
+    || config.connections?.mqtt?.garage_temperature_topic)) return { source: 'mqtt-temperature', device: signal };
+  return null;
+}
+function acceptsGarageObservation(config, observation) {
+  const owner = garageOwner(config, observation?.signal);
+  return !owner || !owner.disabled && observation.source === owner.source && observation.device === owner.device;
 }
 
 function trustworthy(observation, now) {
@@ -170,15 +181,16 @@ export class Engine {
       || temperatureReportMaxAge({ raw: policy }) === null
       || prior.raw?.reportIntervalMs === policy.reportIntervalMs
         && (prior.raw?.reportGraceMs ?? 0) === policy.reportGraceMs) return;
-    const at = this.clock(), source = 'mqtt-temperature', device = signal;
-    const state = this.recorder.signalState({ source, device, signal }, at);
-    if (state.status && state.status !== 'fresh' && state.reportPolicy?.reportIntervalMs === policy.reportIntervalMs
-      && state.reportPolicy.reportGraceMs === policy.reportGraceMs) return;
-    // A reporting-policy change is an availability boundary, not a new room
-    // measurement. Preserve the old source value and wait for a genuine report
-    // under the new contract. This compact boundary survives another restart.
-    this.ingest({ source, device, signal, value: null, unit: 'degC', sourceTime: null, receivedAt: at,
-      quality: ['missing', 'report-policy-changed'], raw: { ...policy, timeBasis: 'availability-transition' } });
+    const at = this.clock();
+    const transition = this.recorder.transitionTemperatureReportPolicy(prior, policy, at);
+    if (!transition.observation) return;
+    const known = lastIndoorReading(this.store, { signal, at, input: this.config.input });
+    if (known) this.lastKnownTemperatures[signal] = { ...known,
+      raw: { ...known.raw, ...policy, reportPolicyChangedAt: at,
+        originalReportSourceTime: transition.reportSourceTime, originalReportReceivedAt: transition.reportReceivedAt },
+      reportExpiresAt: transition.reportSourceTime + temperatureReportMaxAge({ raw: policy }) };
+    this.temperatureAttempts[signal] = transition.observation;
+    this.latestStatus = null;
   }
   temperatureObservations(observations, now, checkpoint = this.checkpoint) {
     const boundaries = sensorBoundaries(this.store, this.config.input, now);
@@ -210,16 +222,6 @@ export class Engine {
         indoorStatusMetadata(lastKnown ?? latest, now, { latest: this.temperatureAttempts[signal] ?? latest,
           ...(!this.temperatureAttempts[signal] && lastKnown ? { store: this.store } : {}), stale: observations[key].stale }));
       else Object.assign(observations[key], outdoorReadingStatus(latest, now));
-      const policy = this.temperatureReportPolicies[signal];
-      if (lastKnown?.source === 'mqtt-temperature' && lastKnown.device === signal
-        && temperatureReportMaxAge({ raw: policy }) !== null
-        && (lastKnown.raw?.reportIntervalMs !== policy.reportIntervalMs
-          || (lastKnown.raw?.reportGraceMs ?? 0) !== policy.reportGraceMs))
-        observations[key] = { ...observations[key], stale: true, periodicReports: true, needsAttention: true, held: true,
-          reportMaxAgeMs: temperatureReportMaxAge({ raw: policy }), reportIntervalMs: policy.reportIntervalMs,
-          reportGraceMs: policy.reportGraceMs ?? 0, lastReportAt: null, reportExpiresAt: null,
-          availabilityReasons: ['report-policy-changed'],
-          attentionReasons: [...new Set([...(observations[key].attentionReasons ?? []), 'missing-report'])] };
       const changedAt = boundaries[signal];
       observations[key] = temperatureBoundaryStatus(observations[key], changedAt, now);
     }
@@ -357,14 +359,14 @@ export class Engine {
     this.temperatureReportPolicies = Object.create(null);
     for (const signal of HELD_TEMPERATURE_SIGNALS) {
       const reading = lastIndoorReading(store, { signal, at: clock(), input: config.input });
-      const directGarage = signal === 'garage_temperature' && directGarageDevice(config);
-      if (reading && (!directGarage || reading.source === 'shelly-mqtt' && reading.device === directGarage)) this.lastKnownTemperatures[signal] = reading;
+      if (reading && acceptsGarageObservation(config, reading)) this.lastKnownTemperatures[signal] = reading;
     }
     this.outdoorCandidates = Object.create(null);
     if (config.input === 'offline') {
       for (const signal of [...INDOOR_SIGNALS, 'garage_temperature', 'outdoor_temperature']) {
         const observation = store.latestObservation(signal);
-        if (observation) remember(this.latest, observation, clock());
+        if (observation && !(signal === 'indoor_temperature' && observation.source?.startsWith('husdata'))
+          && acceptsGarageObservation(config, observation)) remember(this.latest, observation, clock());
       }
     }
     if (['providers', 'mqtt'].includes(config.input)) {
@@ -391,6 +393,9 @@ export class Engine {
     }
   }
   ingest(observation) {
+    if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata'))
+      return { saved: false, reason: 'disabled-h66-indoor' };
+    if (!acceptsGarageObservation(this.config, observation)) return { saved: false, reason: 'unconfigured-garage-source' };
     if (observation.raw?.auditOnly) return { saved: false, reason: 'audit-only' };
     const now = this.clock();
     let force = false;
@@ -411,8 +416,8 @@ export class Engine {
   }
   ingestEnergy(interval) { return this.recorder.recordEnergy(interval); }
   rememberObservation(observation, now) {
-    const directGarage = observation?.signal === 'garage_temperature' && directGarageDevice(this.config);
-    if (directGarage && (observation.source !== 'shelly-mqtt' || observation.device !== directGarage)) return;
+    if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')) return;
+    if (!acceptsGarageObservation(this.config, observation)) return;
     if (HELD_TEMPERATURE_SIGNALS.includes(observation?.signal)) {
       const prior = this.lastKnownTemperatures[observation.signal];
       const previousAttempt = this.temperatureAttempts[observation.signal];

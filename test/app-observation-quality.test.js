@@ -203,7 +203,8 @@ test('current-not-energy provenance does not discard a valid current snapshot du
   assert.deepEqual(engine.latest.ev1_current_l1.quality, ['current_snapshot_not_energy']);
 });
 
-for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} outages retain genuine indoor and garage values with a warning until recovery`, t => {
+test('change-only MQTT outages retain genuine indoor and garage values with a warning until recovery', t => {
+  const source = 'mqtt-temperature';
   const { engine, setTime } = setup(t, { input: 'mqtt' });
   engine.ingest(reading({ signal: 'outdoor_temperature', value: 4 }));
   const disconnectedAt = beginning + MINUTE;
@@ -235,6 +236,19 @@ for (const source of ['mqtt-temperature', 'husdata-h66']) test(`${source} outage
     assert.equal(engine.status().observations[signal === 'indoor_temperature' ? 'indoor' : 'garage'].stale, false);
     setTime(beginning);
   }
+});
+
+test('removed H66 indoor readings and outages cannot replace the room MQTT source', t => {
+  const { engine, store } = setup(t, { input: 'mqtt' });
+  engine.ingest(reading({ source: 'mqtt-temperature' }));
+  for (const extra of [{ value: 29 }, { value: null, sourceTime: null, quality: ['mqtt-disconnected'] }]) {
+    const ignored = { ...reading({ source: 'husdata-h66', ...extra }), raw: { usableForControl: true } };
+    assert.equal(engine.ingest(ignored).reason, 'disabled-h66-indoor');
+    engine.rememberObservation(ignored, beginning);
+    assert.equal(engine.latest.indoor_temperature.source, 'mqtt-temperature');
+    assert.equal(engine.status().observations.indoor.value, 21);
+  }
+  assert.equal(store.observations().filter(row => row.source === 'husdata-h66').length, 0);
 });
 
 test('delayed and unrelated availability failures cannot invalidate the current temperature source', t => {

@@ -16,7 +16,7 @@ function fixture(t, options = {}, initialAt = initial) {
   const store = new Store(join(directory, 'test.sqlite'));
   let now = initialAt, authority = true;
   const observations = [], publications = [];
-  const engine = { clock: () => now, ingest: row => { observations.push(row); store.observation(row); } };
+  const engine = { clock: () => now, ingest: row => { observations.push(row); store.observation(row); }, rememberObservation: row => observations.push(row) };
   const settings = shellyConfiguration(options);
   const capture = createShellyCapture({ engine, store, settings,
     publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); },
@@ -157,7 +157,7 @@ test('Full invalid switch status and unrelated partial changes cannot restore co
   assert.equal(f.capture.status(initial + 151_000).devices[0].available, false, 'The external temperature still expired');
 });
 
-test('Native garage and existing Home Assistant MQTT feed stay separate in Engine recording and fail independently', async t => {
+test('Selected native garage ignores unselected MQTT topics and never creates an alternate garage stream', async t => {
   const { EventEmitter } = await import('node:events');
   const { startMqtt } = await import('../src/acquisition/mqtt.js');
   const { Engine } = await import('../src/app/engine.js');
@@ -168,10 +168,7 @@ test('Native garage and existing Home Assistant MQTT feed stay separate in Engin
     connections: { mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { garage_temperature: 'invented-ha/garage' } },
       shelly: shellyConfiguration({ garage: { enabled: true, topic_prefix: 'invented-direct-garage' }, caravan }) } };
   let now = initial;
-  store.observation({ source: 'mqtt-temperature', device: 'garage_temperature', signal: 'garage_temperature',
-    value: 18, unit: 'degC', sourceTime: initial - 60_000, receivedAt: initial - 60_000 });
   const engine = new Engine({ store, config, clock: () => now });
-  assert.equal(engine.status().observations.garage?.value ?? null, null, 'Enabling direct acquisition cannot reuse an old HA reading');
   const client = new EventEmitter();
   client.subscribe = (topic, options, done) => done();
   client.publish = (topic, payload, options, done) => done();
@@ -182,14 +179,13 @@ test('Native garage and existing Home Assistant MQTT feed stay separate in Engin
   client.emit('message', 'invented-direct-garage/status/temperature:100', Buffer.from('{"tC":11}'));
   client.emit('message', 'invented-ha/garage', Buffer.from('18.5'));
   assert.equal(engine.latest.garage_temperature.value, 11);
-  assert.equal(engine.latest.garage_temperature_ha.value, 18.5);
-  assert.equal(engine.latest.garage_temperature_ha.source, 'mqtt-temperature-ha');
+  assert.equal(Object.keys(engine.latest).filter(signal => signal.startsWith('garage_temperature')).length, 1);
+  assert.equal(store.observations({ signal: 'garage_temperature' }).length, 1);
   assert.equal(engine.status().shelly.devices.length, 2);
   now += 30_000;
   client.emit('message', 'invented-ha/garage', Buffer.from('invalid-json'));
   assert.equal(engine.latest.garage_temperature.value, 11);
-  assert.equal(engine.latest.garage_temperature_ha.value, null);
-  assert.equal(engine.latest.garage_temperature_ha.source, 'mqtt-temperature-ha');
+  assert.equal(store.observations({ signal: 'garage_temperature' }).length, 1);
   client.emit('offline');
   assert.equal(engine.latest.garage_temperature.value, null);
 });

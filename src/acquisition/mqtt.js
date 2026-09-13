@@ -30,17 +30,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const { address, user: username, pw: password } = config.connections.mqtt;
   const equipmentSettings = config.connections.equipment?.devices?.length === 0 && config.connections.shelly?.devices?.length
     ? null : config.connections.equipment;
-  const equipmentOwnedSignals = equipmentSettings?.ownedSignals ?? [];
-  const directGarage = equipmentSettings ? equipmentSettings.ownsGarage : config.connections.shelly?.devices?.some(device => device.role === 'garage');
+  const equipmentOwnedSignals = equipmentSettings?.ownedSignals ?? (config.connections.shelly?.devices?.some(device => device.role === 'garage') ? ['garage_temperature'] : []);
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
     .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic))
-    .map(([signal, topic]) => [directGarage && signal === 'garage_temperature' ? 'garage_temperature_ha' : signal, topic])
     .filter(([signal]) => !equipmentOwnedSignals.includes(signal));
-  for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal))
+  for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal) || signal === 'garage_temperature')
     engine.configureTemperatureReports?.(signal, {
-      reportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
-      reportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
+      reportIntervalMs: signal === 'garage_temperature' ? 30_000 : config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
+      reportGraceMs: signal === 'garage_temperature' ? 90_000 : config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
     });
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
@@ -50,10 +48,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
-  })).filter(row => !(directGarage && row.signal === 'garage_temperature') && !temperatureTopics.some(([signal]) => signal === row.signal) && !equipmentOwnedSignals.includes(row.signal)) : [];
+  })).filter(row => !temperatureTopics.some(([signal]) => signal === row.signal) && !equipmentOwnedSignals.includes(row.signal)) : [];
   const temperatureSignals = temperatureTopics.map(([signal]) => ({
-    source: signal === 'garage_temperature_ha' ? 'mqtt-temperature-ha' : 'mqtt-temperature',
-    device: signal === 'garage_temperature_ha' ? 'garage-ha' : signal, signal, unit: 'degC' }));
+    source: 'mqtt-temperature', device: signal, signal, unit: 'degC' }));
   const markUnavailable = (signals, quality) => {
     const at = engine.clock(), observations = [];
     const record = () => {
@@ -169,11 +166,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         // MQTT retransmissions cannot serve as new evidence from the sensor.
         if (packet.dup) return;
         const periodic = INDOOR_SIGNALS.includes(temperature[0]);
-        const observation = decodeMqttTemperature({ signal: temperature[0] === 'garage_temperature_ha' ? 'garage_temperature' : temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
-          reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : null,
-          reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : 0 });
-        if (observation) engine.ingest(temperature[0] === 'garage_temperature_ha'
-          ? { ...observation, signal: 'garage_temperature_ha', device: 'garage-ha', source: 'mqtt-temperature-ha' } : observation);
+        const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
+          reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : temperature[0] === 'garage_temperature' ? 30_000 : null,
+          reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : temperature[0] === 'garage_temperature' ? 90_000 : 0 });
+        if (observation) engine.ingest(observation);
         else markUnavailable(temperatureSignals.filter(row => row.signal === temperature[0]), ['invalid-temperature-message']);
         return;
       }
@@ -183,10 +179,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         dup: packet.dup, messageId: packet.messageId });
       if (!decoded || decoded.duplicate || decoded.signal === 'unknown') return;
       h66.ingest(decoded);
-      // An explicitly configured room sensor owns its logical temperature.
-      // Keep the gateway register available to H66 diagnostics, but do not mix
-      // its measurements into that room's recording or model input.
-      if (directGarage && decoded.signal === 'garage_temperature' || temperatureTopics.some(([signal]) => signal === decoded.signal) || equipmentOwnedSignals.includes(decoded.signal)) return;
+      // A configured equipment or temperature source owns its logical signal.
+      if (temperatureTopics.some(([signal]) => signal === decoded.signal) || equipmentOwnedSignals.includes(decoded.signal)) return;
       engine.ingest({ source: decoded.source, device: decoded.deviceId,
         signal: decoded.signal === 'integral' ? 'heating_integral' : decoded.signal,
         value: decoded.value, unit: decoded.unit ?? 'unknown', sourceTime: decoded.observedAt,

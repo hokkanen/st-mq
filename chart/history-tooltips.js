@@ -66,7 +66,6 @@ export function historyTooltipLabel(item) {
     if (raw.partialCoverage || raw.partial || raw.quality?.includes('partial-coverage')) details.push('partial hour');
     if (raw.timeAllocated) details.push('meter change apportioned across hour boundaries');
   }
-  else if (key === 'caravan_current' && raw.estimated) details.push('estimated from power and nominal voltage');
   else if (raw.equivalentCurrent) details.push('interval average', 'equivalent at 230 V');
   else if (['property_power', 'charger_power', 'charger2_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');

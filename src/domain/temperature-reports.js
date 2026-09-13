@@ -1,5 +1,5 @@
-export const DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS = 15 * 60_000;
-export const DEFAULT_TEMPERATURE_REPORT_GRACE_MS = 2 * 60_000;
+export const DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS = 70 * 60_000;
+export const DEFAULT_TEMPERATURE_REPORT_GRACE_MS = 5 * 60_000;
 
 // The policy is recorded with the observation so later configuration changes
 // cannot reinterpret an older period's report deadline.

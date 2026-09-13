@@ -153,7 +153,7 @@ export function renderModelInputs(root, rows = modelInputDescriptions(), { senso
 export const h66Registers = {
   '0007': { label: 'Outdoor temperature', unit: '°C' }, '0002': { label: 'Supply temperature', unit: '°C' },
   '0001': { label: 'Return temperature', unit: '°C' }, '0009': { label: 'Hot water temperature', unit: '°C' },
-  '0008': { label: 'Pump indoor temperature', unit: '°C' }, '0107': { label: 'Supply temperature target', unit: '°C' },
+  '0107': { label: 'Supply temperature target', unit: '°C' },
   '1A20': { label: 'Pump alarm', unit: '' },
   '8105': { label: 'Heating integral', unit: '°min' }, '0203': { label: 'ROOM setting', unit: '°C', min: 10, max: 30 },
   '0212': { label: 'DHW start temperature', unit: '°C', min: 30, max: 60 },

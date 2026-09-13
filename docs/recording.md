@@ -568,7 +568,8 @@ not establish a frame-rate guarantee for physical phones or slower servers.
 
 ## H66 dataset and model roles
 
-The dataset retains **30 H66 variables**. `discharge_temperature` (`0012`) and
+The dataset retains **29 H66 variables**. The unused indoor sensor (`0008`),
+`discharge_temperature` (`0012`) and
 `brine_pump_active` (`1A04`) are omitted from new acquisition. Existing historical
 rows are not deleted, and old installation verification metadata for those
 registers does not prevent startup. Brine pump speed remains; its zero transitions
@@ -576,7 +577,7 @@ are always recorded. A separate active-state measurement is not stored.
 
 | Group | Recorded H66 signals | Typical model role |
 | --- | --- | --- |
-| Temperatures | Indoor, outdoor | House input |
+| Temperatures | Outdoor | House input |
 | Heating water | Supply, return, supply target | Equipment context |
 | Ground loop | Brine in, brine out, brine pump speed | History/diagnostics |
 | Hot water | DHW temperature, DHW routing, DHW start/stop settings | Separate hot-water context |
@@ -586,9 +587,9 @@ are always recorded. A separate active-state measurement is not stored.
 | Alarms | Alarm active, alarm code | Abnormal-operation context |
 
 The local Upstairs, Bedroom and Downstairs sensors are recorded separately from
-H66 acquisition; H66 indoor is the Upstairs fallback when no dedicated topic is
-configured. The house model uses the configured indoor average described below.
-Garage temperature is also additional to those 30 and is history-only initially.
+H66 acquisition. H66 indoor register `0008` is ignored and cannot supply a fallback.
+The house model uses the configured indoor average described below.
+Garage temperature is additional to those 29 and is history only.
 Collecting another temperature does not add a free house-model coefficient.
 
 The house model fits a small regularized thermal response. Ordinary operation can
@@ -662,8 +663,7 @@ line per device:
 | `upstairs` | `mqtt:<exact topic>` | `indoor_temperature` | Upstairs |
 | `bedroom` | `mqtt:<exact topic>` | `bedroom_temperature` | Bedroom |
 | `downstairs` | `mqtt:<exact topic>` | `downstairs_temperature` | Downstairs |
-| `garage` | `shelly:<native prefix>` | `garage_temperature` | Garage temperature |
-| `garage_mqtt` | `mqtt:<exact topic>` | `garage_temperature_ha` | Garage temperature · MQTT |
+| `garage` | `shelly:<native prefix>` or `mqtt:<exact topic>` | `garage_temperature` | Garage temperature |
 
 See [MQTT equipment](mqtt-equipment.md) for setup, the second garage probe, door
 states, and the device list schema. The connection line selects the handler;
@@ -673,24 +673,24 @@ private configuration and topics need not be duplicated there. The old individua
 
 All indoor locations are recorded separately; an individual sensor failure does
 not replace the other readings. Existing signals, CSV meanings, reporting metadata
-and original temperature history remain unchanged. H66 can provide the Upstairs
-input when no dedicated MQTT source is configured. The indoor reporting contract
+and original temperature history remain unchanged. H66 cannot provide an indoor
+input. The indoor reporting contract
 remains controlled by these shared settings:
 
 ```json
 {
   "mqtt": {
-    "temperature_report_interval_minutes": 15,
-    "temperature_report_grace_seconds": 120
+    "temperature_report_interval_minutes": 70,
+    "temperature_report_grace_seconds": 300
   }
 }
 ```
 
-The example above shows the **application defaults**, not an installed detector's
-confirmed reporting cadence. For the custom Fibaro 70-minute wake-up stream,
-verify physical acceptance and genuine MQTT delivery, then use an expected
-interval of `70` with the chosen grace (for example `120` seconds). This changes
-the report deadline, not temperature row spacing or 15-minute learning windows.
+The installed room sensors can take 70 minutes to report an unchanged value.
+The five-minute grace gives an exact 75-minute expiry. No age warning is raised
+before that deadline; at the deadline the reading is outdated and unavailable
+for learning. This changes the report deadline, not temperature row spacing or
+15-minute learning windows.
 See [the timing and installation instructions](smartthings-temperature-rule.md#matching-the-st-mq-report-deadline).
 Installing the driver does not add a recorded input or forwarding Rule; configure
 each intended source and its model membership separately.
@@ -711,8 +711,11 @@ Give each sensor a distinct exact local topic; the per-room fields do not accept
 Broker disconnection records explicit unavailable transitions for configured
 temperature sensors and included H66 signals. Reconnection alone does not confirm
 a fresh sensor measurement. Periodic indoor coverage ends immediately on a known
-outage. Garage and nonperiodic indoor sources retain their last-known-reading
-policy. Outdoor temperature and H66 control signals retain their own freshness
+outage. Garage readings expire two minutes after their last genuine report,
+whether the single configured connection uses Shelly or MQTT. Direct Shelly
+status is requested every 30 seconds; a standard MQTT publisher should report
+within one minute, including unchanged values. A broker heartbeat does not renew
+the measurement clock. Outdoor temperature and H66 control signals retain their own freshness
 and availability requirements. Subscription failures are recorded separately from
 unchanged sensor values.
 
@@ -733,7 +736,7 @@ saved with learning configuration using logical signal names, without private
 device identifiers or MQTT topics. Adding or changing contributing sensors changes the
 measurement setup; it must establish the corresponding learning boundary.
 
-Indoor MQTT topics default to a genuine report every 15 minutes with 120 seconds
+Indoor MQTT topics default to a genuine report every 70 minutes with 300 seconds
 of grace. The interval and grace settings above are independent of recorder
 spacing. An unchanged report extends a compact coverage span; only value changes
 and quality/availability transitions require temperature observation rows. A
@@ -745,9 +748,10 @@ cannot renew coverage. Timer-based cached republishes must not feed these topics
 Set `temperature_report_interval_minutes` to `0` for indoor publishers that only
 report changes. After the next genuine report, this selects their old indefinite
 last-known-value behavior. Enabling or changing a periodic deadline records one
-availability boundary and waits for a genuine report under the new policy;
-earlier missing intervals stay missing. Garage and H66 indoor readings use the
-last-known-value policy by default. Periodic
+forward-only configuration boundary. A recent genuine report can remain valid
+under the new deadline from that boundary onward; no old gap is filled and no
+new sensor report is invented. Explicit acquisition failures and sensor-change
+exclusions still require recovery evidence. Periodic
 indoor outages instead make the configured average unavailable and suspend
 thermal and comfort learning across the affected interval. No room is removed
 from the weights or estimated from another room. Normal heating stays available.

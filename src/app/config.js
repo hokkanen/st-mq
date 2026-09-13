@@ -248,9 +248,9 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     }
     if (new Set(Object.values(mqtt.temperatureTopics)).size !== Object.keys(mqtt.temperatureTopics).length)
       throw new Error('Each temperature sensor must use a different MQTT topic');
-    mqtt.temperatureReportIntervalMs = Math.round(interval(mqtt.temperature_report_interval_minutes, 15, 0, 1440,
+    mqtt.temperatureReportIntervalMs = Math.round(interval(mqtt.temperature_report_interval_minutes, 70, 0, 1440,
       'temperature_report_interval_minutes') * 60_000);
-    mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 120, 0, 900,
+    mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 300, 0, 900,
       'temperature_report_grace_seconds') * 1000);
     const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
