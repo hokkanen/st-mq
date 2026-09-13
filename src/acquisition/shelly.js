@@ -22,7 +22,7 @@ const property = (object, path) => path?.split('.').reduce((value, key) => value
 
 /** Native protocol is selected by configuration; no host detection or fallback.
  * Modern command readbacks retain the exact command identity through both RPCs. */
-export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null }) {
+export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null, topicGroups = [] }) {
   const devices = settings.devices.filter(config => config.enabled !== false).map(config => ({ ...config,
     id: config.id ?? config.role, role: config.role ?? config.id, customReadings: config.readings ?? [], connected: false,
     available: false, lastAt: null, readings: {}, state: null, identity: null, identityPending: null, waiters: new Set(), checks: new Set(), check: null }));
@@ -32,6 +32,24 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     device: device.prefix, maxGapMs: device.maxAgeMs ?? settings.maxAgeMs, signal: `${device.role}_energy`, recordDevice: device.role,
     ...(device.role === 'caravan' ? {} : { stateKey: `shelly:equipment-energy:v1:${device.id}` }) })]));
   const maxAge = device => device.maxAgeMs ?? settings.maxAgeMs;
+  const topicDetails = device => {
+    const subscribe = (role, suffix) => ({ role, topic: `${device.prefix}/${suffix}`, direction: 'subscribe' });
+    const publishTopic = (role, suffix) => ({ role, topic: `${device.prefix}/${suffix}`, direction: 'publish' });
+    return [subscribe('Device subscription', '#'), subscribe('Availability', 'online'), ...(device.generation === 1 ? [
+      ...(stateName(device) ? [subscribe('State', `relay/${device.switchId}`)] : []),
+      ...(hasTemperature(device) ? [subscribe('Temperature', `ext_temperature/${device.temperatureId}`)] : []),
+      ...(metered(device) ? [subscribe('Power', `relay/${device.switchId}/power`), subscribe('Energy counter', `relay/${device.switchId}/energy`)] : []),
+      ...device.customReadings.filter(row => row.component?.startsWith('temperature:')).map(row => subscribe(row.label, `ext_temperature/${row.component.split(':')[1]}`)),
+      publishTopic('Status request', 'command'),
+      ...(device.controlsSwitch || device.controlsHeat ? [publishTopic('Switch command', `relay/${device.switchId}/command`)] : []),
+    ] : [
+      subscribe('Status notifications', 'events/rpc'),
+      ...(stateName(device) ? [subscribe('State', `status/${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`)] : []),
+      ...(hasTemperature(device) ? [subscribe('Temperature', `status/temperature:${device.temperatureId}`)] : []),
+      ...device.customReadings.map(row => subscribe(row.label, `status/${row.component}`)),
+      publishTopic('RPC requests', 'rpc'), { role: 'RPC replies', topic: replyTopic, direction: 'subscribe' },
+    ])];
+  };
   const emit = (device, signal, value, unit, at, quality = [], raw = {}) => {
     if (scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
     const definition = definitions(device).find(row => row.signal === signal);
@@ -271,11 +289,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         const startedAt = engine.clock(); let finished = false;
         const check = { finish: reason => {
           if (finished) return; finished = true; clearTimeout(timer); device.checks.delete(check);
-          device.check = { checking: false, checkedAt: engine.clock(), status: reason === 'received' ? available(device, engine.clock()) ? 'available' : 'needs-attention' : reason };
+          device.check = { checking: false, checkedAt: engine.clock(), method: 'native', status: reason === 'received' ? available(device, engine.clock()) ? 'available' : 'needs-attention' : reason };
           resolve();
         } };
         const timer = setTimeout(() => check.finish('timeout'), readbackTimeoutMs);
-        device.checks.add(check); device.check = { checking: true, startedAt, status: 'checking' };
+        device.checks.add(check); device.check = { checking: true, startedAt, status: 'checking', method: 'native' };
         if (!connected || closed) { check.finish('unavailable'); return; }
         const request = device.generation === 1 ? requestStatus(device) : send(device, 'Shelly.GetStatus', {}, { purpose: 'check', complete: check.finish });
         request.catch(() => check.finish('unavailable'));
@@ -300,10 +318,13 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     },
     status(now = engine.clock()) {
       return { configured: devices.length > 0, connected, checking: devices.some(device => device.check?.checking),
+        topicGroups,
         lastCheckedAt: Math.max(0, ...devices.map(device => device.check?.checkedAt ?? 0)) || null,
         devices: devices.map(device => ({ id: device.id, role: device.role, label: device.label ?? LABELS[device.role] ?? device.role,
           area: device.area ?? (device.role === 'heat_savings' ? 'home' : 'garage'), kind: device.kind ?? (metered(device) ? 'metered_switch' : 'switch'),
           source: 'Shelly', connection: `shelly:${device.prefix}`, controlsHeat: Boolean(device.controlsHeat),
+          topics: topicDetails(device), recheck: { method: 'native', requestSupported: true,
+            description: device.generation === 1 ? 'Request native status and wait for live readings.' : 'Request native status and wait for its matching RPC reply.' },
           controls: { switch: device.controlsSwitch === true && (!needsIdentity(device) || Boolean(device.identity)), tariff: device.controlsHeat === true }, available: available(device, now), observedAt: device.lastAt, check: device.check,
           readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
             { ...reading, stale: !connected || !device.available || !scalar(reading.value) || !scalar(reading.observedAt) || maxAge(device) > 0 && now - reading.observedAt >= maxAge(device) }])),

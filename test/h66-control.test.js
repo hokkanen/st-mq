@@ -29,7 +29,8 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
       const index = topic.split('/').at(-1);
       sent.push({ index, payload, options });
       const saved = store.getState(`h66:control:${deviceId}`);
-      assert.ok(saved.obligations[index], 'restoration obligation is durable before publication');
+      assert.ok(saved.obligations[index] || saved.lastManual?.status === 'pending' && saved.lastManual.register === index,
+        'restoration obligation or explicit permanent request is durable before publication');
       if (behavior && await behavior({ index, payload, sent, feed, native }) === 'silent') return;
       native[index] = Number(payload);
       queueMicrotask(() => feed(index));
@@ -50,6 +51,56 @@ test('H66 transport settings can tighten but cannot extend the shared five-minut
     r.setNow(initialTime + effective + 1);
     assert.equal(r.controller.status().readings['0203'].available, false);
   }
+});
+
+test('manual native settings become the new normal without expiry or restart restoration', async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  const result = await r.controller.setSetting({ register: '0203', value: 21 });
+  assert.equal(result.confirmed, true); assert.equal(result.sent, true);
+  assert.equal(result.previousValue, 20); assert.equal(result.readback, 21);
+  assert.deepEqual(r.controller.status().obligations, {});
+  assert.equal(r.controller.status().expiresAt, null);
+  r.setNow(initialTime + 24 * 3_600_000); await r.controller.reconcile();
+  assert.equal(r.native['0203'], 21); assert.equal(r.sent.length, 1);
+  await r.controller.close();
+  const restarted = rig({ store: r.store, values: r.native });
+  t.after(() => restarted.controller.close());
+  await nextTurn(); await restarted.controller.reconcile();
+  assert.equal(restarted.sent.length, 0);
+  await restarted.controller.setPhase({ phase: 'preheat', roomBoostC: 1 });
+  assert.equal(restarted.native['0203'], 22);
+  await restarted.controller.restore();
+  assert.equal(restarted.native['0203'], 21, 'Automatic cycles restore to the newly chosen native setting');
+});
+
+test('manual native changes respect controller ownership and cannot make a stale value look confirmed', async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'preheat', roomBoostC: 1 });
+  assert.equal(r.controller.status().controls['0203'].available, false);
+  await assert.rejects(r.controller.setSetting({ register: '0203', value: 22 }), { code: 'H66_MANUAL_CONFLICT' });
+  await nextTurn();
+  assert.equal(r.controller.status().phase, 'preheat');
+  assert.equal(r.sent.length, 1, 'Rejected manual input does not interrupt or restore the automatic cycle');
+  await r.controller.restore();
+  r.setNow(initialTime + 300_001);
+  await assert.rejects(r.controller.setSetting({ register: '0203', value: 20 }), { code: 'H66_UNAVAILABLE' });
+  assert.equal(r.sent.length, 2);
+  for (const [register, value] of [['invalid', 20], ['0203', 50], ['2201', 1.5]])
+    await assert.rejects(r.controller.setSetting({ register, value }), { code: 'H66_SETTINGS_INVALID' });
+});
+
+test('an unconfirmed manual native change is visible but is neither reversed nor replayed', async t => {
+  const r = rig({ behavior: () => 'silent' }); t.after(() => r.controller.close());
+  await assert.rejects(r.controller.setSetting({ register: '0203', value: 21 }), { code: 'H66_READBACK_TIMEOUT' });
+  assert.equal(r.controller.status().lastManual.confirmed, false);
+  assert.equal(r.controller.status().lastManual.status, 'unconfirmed');
+  assert.equal(r.controller.status().restorationPending, false);
+  assert.deepEqual(r.controller.status().obligations, {});
+  await r.controller.reconcile();
+  r.controller.setConnected(false); r.controller.setConnected(true);
+  r.feed('0203', 21); await nextTurn();
+  assert.equal(r.sent.length, 1);
+  assert.equal(r.controller.status().readings['0203'].value, 21);
 });
 
 test('preheat and reduction restore exact original native settings, never write ROOM10', async t => {

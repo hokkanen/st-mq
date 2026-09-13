@@ -9,6 +9,8 @@ import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { createAppServer } from '../src/app/server.js';
 import { createEquipmentTests } from '../src/app/equipment-tests.js';
+import { createH66Controller } from '../src/control/h66.js';
+import { createH66Decoder } from '../src/domain/telemetry.js';
 import { loadConfig, validateSettings } from '../src/app/config.js';
 import { start } from '../src/main.js';
 import { CONTROL_SCOPE } from '../src/control/authority.js';
@@ -19,6 +21,7 @@ const KEY = 'equipment-tests:v1', TOKEN = 'synthetic-equipment-api-access-token'
 const TEST = { deviceId: 'caravan', on: true, durationMinutes: 1 };
 const ROUTES = [
   ['/api/equipment/recheck', {}], ['/api/equipment/test', TEST], ['/api/equipment/test/restore', {}],
+  ['/api/equipment/switch', { deviceId: 'caravan', on: true }], ['/api/equipment/h66', { register: '0203', value: 21 }],
 ];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -37,7 +40,7 @@ async function serverFixture(t, serverOptions = {}) {
       checks.push(input);
     },
     async setSwitch(id, on) {
-      assert.equal(store.getState(KEY).active.deviceId, id);
+      assert.equal((store.getState(KEY).active ?? store.getState(KEY).lastManual).deviceId, id);
       calls.push({ id, on });
       if (confirmation) device.readings.caravan_active = { value: Number(on), unit: 'state', stale: false, observedAt: ++now };
       return { confirmed: confirmation, sent: true };
@@ -50,6 +53,7 @@ async function serverFixture(t, serverOptions = {}) {
   t.after(async () => {
     await new Promise(resolve => server.close(resolve));
     await engine.equipmentTests.close({ restore: false });
+    await engine.h66?.close();
     await engine.closeFireplace(); await engine.executor.close({ restore: false }); store.close();
   });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -110,6 +114,49 @@ test('explicit shadow-mode switch tests persist and confirm both the test and re
   assert.equal(restored.body.equipmentTests.lastResult.status, 'restored');
   assert.deepEqual(f.calls, [{ id: 'caravan', on: true }, { id: 'caravan', on: false }]);
   assert.equal(f.store.getState(KEY).active, null);
+});
+
+test('manual switch HTTP controls change and confirm state without scheduling a reversal', async t => {
+  const f = await serverFixture(t);
+  const changed = await f.post('/api/equipment/switch', { deviceId: 'caravan', on: true });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.equipmentControls.lastResult.confirmed, true);
+  assert.equal(changed.body.equipmentControls.lastResult.on, true);
+  assert.equal(changed.body.equipment.devices[0].readings.caravan_active.value, 1);
+  assert.equal(changed.body.equipmentTests.active, null);
+  assert.equal((await f.post('/api/equipment/switch', TEST)).status, 400);
+  assert.deepEqual(f.calls, [{ id: 'caravan', on: true }]);
+  f.confirm(false);
+  const uncertain = await f.post('/api/equipment/switch', { deviceId: 'caravan', on: false });
+  assert.equal(uncertain.status, 400);
+  assert.equal(f.engine.status().equipmentControls.lastResult.confirmed, false);
+  assert.equal(f.engine.status().equipmentControls.lastResult.sent, true);
+});
+
+test('manual H66 HTTP changes validate native settings and report device readback without expiry', async t => {
+  const f = await serverFixture(t), sent = [], deviceId = 'synthetic-h66';
+  const decoder = createH66Decoder({ deviceId });
+  let h66;
+  const feed = (register, value) => h66.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`,
+    payload: String(value), receivedAt: f.engine.clock() }));
+  h66 = createH66Controller({ deviceId, store: f.store, clock: f.engine.clock,
+    config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload) => {
+      sent.push({ topic, payload }); queueMicrotask(() => feed(topic.split('/').at(-1), Number(payload)));
+    } });
+  h66.setConnected(true);
+  for (const [register, value] of Object.entries({ '0203': 20, '0212': 44, '0208': 60, '2201': 1 })) feed(register, value);
+  f.engine.setH66(h66);
+  for (const input of [null, [], {}, { register: '0203', value: 40 }, { register: 'invalid', value: 20 },
+    { register: '0203', value: 21, durationMinutes: 2 }])
+    assert.equal((await f.post('/api/equipment/h66', input)).status, 400);
+  assert.equal(sent.length, 0);
+  const changed = await f.post('/api/equipment/h66', { register: '0203', value: 21 });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.h66.lastManual.confirmed, true);
+  assert.equal(changed.body.h66.readings['0203'].value, 21);
+  assert.equal(changed.body.h66.expiresAt, null);
+  assert.deepEqual(changed.body.h66.obligations, {});
+  assert.equal(sent.length, 1);
 });
 
 test('an unconfirmed HTTP switch command leaves a visible durable restoration obligation', async t => {

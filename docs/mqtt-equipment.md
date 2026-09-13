@@ -1,7 +1,7 @@
 # MQTT equipment
 
-Equipment is inside **Home & heating → Equipment & tests**, grouped into **Home**
-and **Garage** monitoring with separate manual controls. Each device
+Equipment is inside **Home & heating → Equipment & controls**, grouped into **Home**
+and **Garage** monitoring with manual controls and live feedback. Each device
 has one explicit connection string. ST-MQ does not guess protocols, search the LAN,
 or switch to another source when a device stops responding.
 
@@ -13,7 +13,7 @@ or switch to another source when a device stops responding.
 
 The MQTT device entries and topic defaults live in the public `config.json`
 `options.equipment` section. Broker credentials remain in the private configuration
-file shown by **Connections & settings → Configuration**. Device topics do not
+file shown by **Data & settings → Configuration**. Device topics do not
 need to be repeated in that file. A private `equipment.devices` override replaces
 the complete public list; arrays are not merged by device ID.
 
@@ -108,8 +108,8 @@ and monitoring data and is not automatically added to the home temperature avera
 5. Enable any attached addon sensors in the device UI. Keep existing integrations,
    cloud settings and unrelated schedules as configured. Ensure independent
    automations do not fight an output deliberately assigned to ST-MQ control.
-6. Apply ST-MQ configuration and use **Recheck devices**. Check the displayed
-   measurements and source **Shelly** before using a manual control test.
+6. Apply ST-MQ configuration and use **Recheck connections**. Check the displayed
+   measurements and source **Shelly** before using a manual control.
 
 No device administrator password is needed by ST-MQ for native MQTT RPC. The local
 administrator login and the MQTT broker login are separate mechanisms. ST-MQ needs
@@ -161,6 +161,18 @@ a broker acknowledgement is not confirmation of the output. Use
 `mqtt.availability_topic` or a configured heartbeat if the publisher provides one.
 An optional read-only request requires its own explicitly configured topic and
 payload. ST-MQ never guesses that publishing to a sensor topic will request status.
+For a publisher that actually implements a read request, configure its documented
+mapping, for example `mqtt.request_topic: "example/device/get"` and
+`mqtt.request_payload: "status"`. These are invented examples, not a universal MQTT
+command. A sensor that only publishes changes or scheduled reports cannot be made
+to answer by adding an arbitrary request topic.
+
+Set `record: false` on an MQTT `switch` entry to keep its state and extra readings
+in live monitoring without adding database samples. Additional MQTT readings can
+individually use `record: false`; primary temperatures and cumulative energy
+counters retain their recording contracts. Native Shelly entries do not accept
+`record: false`. The `dhwr` switch is always live-only and uses SmartThings for
+timed control; see [DHWR MQTT feedback](dhwr-mqtt.md).
 
 Door feeds can report only changes. For those, the default maximum age is zero:
 the UI preserves the last reported state and time, while indicating that current
@@ -184,21 +196,46 @@ must provide genuine periodic reports, preferably every minute, even when the
 value is unchanged. Broker connectivity, generic heartbeats and repeated source
 timestamps cannot extend measurement validity.
 
-## Checks, tests and recording
+## Rechecks, controls and recording
 
-**Recheck devices** and per-device **Recheck** refresh subscriptions/requests using
-the configured format. A healthy broker connection is kept open. These checks do
-not operate relays, change device settings, or change connection type. An MQTT feed
-without a status-request mechanism waits for its publisher's next report.
+**Recheck connections** and per-device **Recheck** use the configured protocol while
+keeping a healthy broker connection open. Native Shelly devices receive a status
+request; modern devices must send its matching RPC reply. For ordinary MQTT,
+ST-MQ resubscribes to the exact configured state, extra-reading, availability and
+heartbeat topics and checks the broker's subscription acknowledgement. A rejected
+subscription appears unavailable and can be retried without reconnecting unrelated
+devices.
 
-Home tests remain under Home equipment: H66 setting tests, tariff reduction/normal
-heating and timed DHWR circulation. Garage switch tests use the configured output,
-require a fresh state, and run for 1–15 minutes. The original state and exact route
-are saved before sending the test command. Expiry, **Restore now**, shutdown and
-restart restore the original state. A failed command or restoration remains pending;
-configuration cannot discard the old route while restoration is unresolved.
-Explicit manual tests can operate equipment in shadow mode; automatic control stays
-subject to the application's mode and controller authority.
+If a generic device has a configured status request, ST-MQ sends it after refreshing
+subscriptions and waits for fresh reports for every required reading. Split state
+and power topics can arrive separately; the first packet does not finish the check.
+A broker publish acknowledgement or retained replay cannot count as the live reply.
+The request times out when the required readings do not arrive.
+
+Without a configured request, a successful recheck means ST-MQ is **listening**.
+A retained-only result means the broker supplied historical context. An already
+usable value stays **last reported**, preserving its original observation time.
+None of these claims that the publisher has just responded. Its next genuine report
+updates live monitoring as usual. Rechecking never operates a relay, changes device
+settings, changes protocol, or renews a measurement's validity.
+
+Each device's connection details show complete MQTT topics and their roles,
+including native Shelly status, RPC request and temporary reply topics. Generic
+MQTT also exposes last live/retained packet receipt and subscription status, so a
+quiet publisher can be distinguished from a missing broker route. Command payloads,
+broker credentials and native hardware identities are not exposed in diagnostics.
+Additional connection groups list configured H66, legacy temperature, TeslaMate
+and heating command topics. A reading owned by the equipment catalogue appears
+under its equipment entry instead of being repeated as a legacy temperature feed.
+
+Manual controls show current feedback alongside their actions. Ordinary switch
+controls require a fresh state and confirm the new output through live readback;
+they do not schedule a reversal. DHWR circulation retains its configured run length
+and automatic OFF through SmartThings. Legacy timed tests keep their saved original
+state and route until restoration completes; configuration cannot discard an
+unresolved restoration. Explicit manual controls can operate equipment in shadow
+mode; automatic control stays subject to the application's mode and controller
+authority.
 
 The Caravan reports on/off, kW, A and energy today in live monitoring. Only its
 hourly energy is recorded in the database and offered in the chart. Successive

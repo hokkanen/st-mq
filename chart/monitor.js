@@ -122,13 +122,14 @@ function renderContract(s) {
   list.append(heading, table, tariff);
 }
 function updateTemporaryButtons(updateEquipment = true) {
-  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || Boolean(lastStatus?.equipmentTests?.active || lastStatus?.equipmentTests?.busy);
+  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || Boolean(lastStatus?.equipmentTests?.active || lastStatus?.equipmentTests?.busy || lastStatus?.equipmentControls?.busy);
   $('temporary-submit').disabled = busy || dirtyTemporary.size === 0;
   const saved = lastStatus ? temporaryValues(lastStatus) : {};
   $('home-now').disabled = busy || !($('away-until').value || saved.awayUntilLocal);
   $('resume-now').disabled = busy || !($('pause-until').value || saved.pauseUntilLocal);
   for (const button of heatingTestButtons) button.disabled = busy || !lastStatus?.heatingTests?.available;
-  $('dhwr-stop').disabled = busy || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending);
+  $('test-heaton60').disabled ||= Boolean(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending);
+  $('dhwr-stop').disabled = busy || !lastStatus?.heatingTests?.available || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending || lastStatus?.dhwr?.actualOn === true);
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
   if (updateEquipment) equipmentPanel.refreshControls();
@@ -151,17 +152,19 @@ function renderTemporary(s) {
 }
 function showHeatingTestResult(result) {
   const failed = result.status === 'failed' || !result.sent;
-  $('heating-test-message').classList.toggle('form-error', failed);
-  $('heating-test-message').textContent = failed
+  const message = $(result.command === 'heaton60' ? 'dhwr-message' : 'heating-test-message');
+  message.classList.toggle('form-error', failed);
+  message.textContent = failed
     ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
-    : `${heatingCommandLabel(result.command)} sent via MQTT at ${time(result.at)}. Device response is not verified.`;
+    : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : 'Check the reported state for confirmation.'}`;
   lastHeatingTestResult = JSON.stringify(result);
 }
 function renderHeatingTests(s) {
   const capability = s.heatingTests;
-  $('heating-test-status').textContent = capability?.available
-    ? 'Manual MQTT heating tests are enabled. These commands do not provide verified device readback.'
-    : capability?.reason || 'Live MQTT tests are unavailable in this installation.';
+  setStatusDetail($('heating-test-status'), { key: 'manual-heating-availability', title: 'Heating control',
+    label: capability?.available ? 'Control available' : 'Control unavailable', detail: capability?.available
+      ? 'Requests are sent over MQTT. The reported state updates when device feedback arrives.'
+      : capability?.reason || 'Manual heating control is unavailable in this installation.' });
   if (!heatingTestBusy && capability?.lastResult
     && JSON.stringify(capability.lastResult) !== lastHeatingTestResult) showHeatingTestResult(capability.lastResult);
 }
@@ -331,23 +334,30 @@ function updateH66Selector({ useReadback = false } = {}) {
     if (mode) $('h66-test-mode').value = [1, 2, 4].includes(current) ? current : 1;
     else $('h66-test-value').value = Number.isFinite(current) ? current : register === '0208' ? 50 : register === '0212' ? 40 : 20;
   }
+  const reading = lastStatus?.h66?.readings?.[register];
+  const health = h66ReadingStatus(lastStatus?.h66 ?? {}, reading, { now: lastStatus?.now });
+  setStatusDetail($('h66-manual-state'), { key: 'h66-manual-state', title: control.label ?? 'Heat-pump setting',
+    label: health.usable ? h66ReadingValue(register, reading) : 'Unavailable', detail: health.detail });
+  $('h66-manual-state').classList.toggle('stale', !health.usable);
   $('h66-test-status').textContent = control.available
-    ? `${control.label}. The current value is saved before the timed test and restored afterward. A sent command is shown separately from its device readback.`
+    ? `${control.label}. The setting stays in effect until changed again. Automatic heating may adjust it temporarily.`
     : control.reason;
   updateTemporaryButtons();
 }
 function showH66Test(result) {
-  const failure = result?.status === 'failed' || result?.error;
+  const failure = ['failed', 'unconfirmed'].includes(result?.status) || result?.error;
   $('h66-test-message').classList.toggle('form-error', Boolean(failure));
   const register = result?.register;
   $('h66-test-message').textContent = result ? [h66Registers[register]?.label ?? register,
     label(result.status ?? 'requested'), result.value != null ? `requested ${result.value}` : '',
     result.readback != null ? `readback ${result.readback}` : '',
-    result.originalValue != null ? `restore ${result.originalValue}` : '',
-    result.expiresAt ? `until ${time(result.expiresAt)}` : '', result.error ?? result.reason ?? label(result.code ?? '')].filter(Boolean).join(' · ') : '';
+    result.previousValue != null ? `previously ${result.previousValue}` : '',
+    result.confirmed === true ? 'device confirmed' : result.sent ? 'awaiting device confirmation' : '', result.error ?? result.reason ?? label(result.code ?? '')].filter(Boolean).join(' · ') : '';
 }
 function renderH66(s) {
   const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
+  $('manual-h66-status').dataset.state = h66.connected ? 'available' : 'attention';
+  $('manual-h66-status').textContent = h66.connected ? 'H66 connected' : 'H66 unavailable';
   for (const key of ['mode', 'dhw', 'room']) {
     const row = summary.find(row => row.key === key);
     let detail = root.querySelector(`[data-h66-summary=${key}]`);
@@ -372,6 +382,8 @@ function renderH66(s) {
     label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
     title: 'Tariff control', detail: `${tariff.value}. ${tariff.detail}` });
   $('home-tariff-status').dataset.h66Summary = 'tariff';
+  setStatusDetail($('manual-tariff-state'), { key: 'manual-tariff-state', label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
+    title: 'Reported tariff control', detail: tariff.detail });
   const connectionDetail = h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
     : 'Waiting for a live H66 connection and fresh values from the heat pump.');
@@ -415,8 +427,7 @@ function renderH66(s) {
         ? ` Last reported value: ${h66ReadingValue(register, reading)}.` : ''}${at.textContent !== '—' ? ` Received ${at.textContent}.` : ''}` });
   }
   updateH66Selector();
-  if (!h66TestBusy && h66.lastTest) showH66Test(h66.lastTest.expiresAt <= s.now && h66.lastTest.status !== 'failed'
-    ? { ...h66.lastTest, status: h66.restorationPending ? 'restoration pending' : 'expired; no pending overrides' } : h66.lastTest);
+  if (!h66TestBusy && h66.lastManual) showH66Test(h66.lastManual);
 }
 function render(s) {
   lastStatus = s;
@@ -463,9 +474,8 @@ function render(s) {
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
-  $('dhwr').textContent = s.dhwr?.restorationPending ? 'Stop requested · awaiting confirmation'
-    : s.dhwr?.active ? `Circulation requested${Number.isFinite(s.dhwr.expiresAt) ? ` · ${Math.max(0, Math.ceil((s.dhwr.expiresAt - s.now) / 60000))} min remaining` : ''}`
-      : s.decision.dhwr?.requested ? 'Circulation requested' : 'Not requested';
+  $('dhwr').textContent = s.dhwr?.actualOn === true ? 'On · device reported' : s.dhwr?.actualOn === false ? 'Off · device reported'
+    : s.dhwr?.restorationPending ? 'Stop delivery pending' : s.dhwr?.active ? 'On requested · awaiting feedback' : 'No request · state unknown';
   const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
@@ -621,16 +631,17 @@ async function testHeating(command) {
   ++refreshSequence;
   updateTemporaryButtons();
   $('heating-test-buttons').setAttribute('aria-busy', 'true');
-  $('heating-test-message').classList.remove('form-error');
-  $('heating-test-message').textContent = `Sending ${heatingCommandLabel(command)}…`;
+  const message = $(command === 'heaton60' ? 'dhwr-message' : 'heating-test-message');
+  message.classList.remove('form-error');
+  message.textContent = `Sending ${heatingCommandLabel(command)}…`;
   try {
     const result = await api('/api/heating-test', { command });
     showHeatingTestResult(result);
     // Keep the success visible even if the subsequent status refresh fails.
     if (lastStatus.heatingTests) lastStatus.heatingTests.lastResult = result;
   } catch (error) {
-    $('heating-test-message').classList.add('form-error');
-    $('heating-test-message').textContent = error.message;
+    message.classList.add('form-error');
+    message.textContent = error.message;
   } finally {
     heatingTestBusy = false;
     $('heating-test-buttons').removeAttribute('aria-busy');
@@ -642,8 +653,10 @@ for (const button of heatingTestButtons) button.addEventListener('click', () => 
 $('dhwr-stop').addEventListener('click', async () => {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
   heatingTestBusy = true; ++refreshSequence; updateTemporaryButtons();
-  try { render(await api('/api/dhwr/stop', {})); $('heating-test-message').textContent = 'Circulation stop requested.'; }
-  catch { $('heating-test-message').textContent = 'Could not confirm the circulation stop request.'; $('heating-test-message').classList.add('form-error'); }
+  $('dhwr-message').classList.remove('form-error');
+  $('dhwr-message').textContent = 'Requesting circulation stop…';
+  try { render(await api('/api/dhwr/stop', {})); $('dhwr-message').textContent = 'Stop sent. Check the reported switch state above.'; }
+  catch { $('dhwr-message').textContent = 'Could not confirm the circulation stop request.'; $('dhwr-message').classList.add('form-error'); }
   finally { heatingTestBusy = false; updateTemporaryButtons(); }
 });
 $('h66-test-register').addEventListener('change', () => updateH66Selector({ useReadback: true }));
@@ -654,13 +667,12 @@ $('h66-test-form').addEventListener('submit', async event => {
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('h66-test-form').setAttribute('aria-busy', 'true');
   $('h66-test-message').classList.remove('form-error');
-  $('h66-test-message').textContent = 'Sending timed test…';
+  $('h66-test-message').textContent = 'Applying heat-pump setting…';
   try {
-    const result = await api('/api/test/h66', { register,
-      value: Number($(register === '2201' ? 'h66-test-mode' : 'h66-test-value').value),
-      durationMinutes: Number($('h66-test-duration').value) });
-    showH66Test(result);
-    if (lastStatus.h66) lastStatus.h66.lastTest = result;
+    const result = await api('/api/equipment/h66', { register,
+      value: Number($(register === '2201' ? 'h66-test-mode' : 'h66-test-value').value) });
+    render(result);
+    showH66Test(result.h66?.lastManual);
   } catch (error) {
     $('h66-test-message').classList.add('form-error'); $('h66-test-message').textContent = error.message;
   } finally {

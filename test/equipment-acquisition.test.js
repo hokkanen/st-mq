@@ -323,3 +323,170 @@ test('retained room replay cannot replace a genuine live reading or alter its de
   assert.equal(reading.value, 20); assert.equal(reading.observedAt, initial); assert.equal(reading.stale, false);
   f.now(deadline); assert.equal(f.capture.status().devices[0].available, false);
 });
+
+test('passive MQTT recheck refreshes exact subscriptions and identifies retained context without publishing', async t => {
+  const refreshed = [];
+  const f = fixture(t, [{ ...door, mqtt: { availability_topic: 'invented/online' } }], {
+    refreshSubscriptions: async topics => {
+      refreshed.push(topics);
+      f.capture.receive('invented/door', 'closed', { retain: true });
+    },
+  });
+  f.capture.setConnected(true);
+  let device = (await f.capture.recheck()).devices[0];
+  assert.deepEqual(refreshed, [['invented/door', 'invented/online']]);
+  assert.equal(f.publications.length, 0);
+  assert.equal(device.available, false);
+  assert.equal(device.check.status, 'retained-only');
+  assert.equal(device.check.subscriptionStatus, 'subscribed');
+  assert.equal(device.recheck.requestSupported, false);
+  assert.equal(device.recheck.method, 'subscription');
+  assert.equal(device.mqttStatus.lastLiveAt, null);
+  assert.equal(device.mqttStatus.lastRetainedAt, initial);
+  assert.equal(device.readings.garage_door1_open.stale, true);
+  f.capture.receive('invented/door', 'open');
+  f.now(initial + 60_000);
+  device = (await f.capture.recheck()).devices[0];
+  assert.equal(device.check.status, 'last-reported');
+  assert.equal(device.readings.garage_door1_open.observedAt, initial, 'Rechecking does not renew a measurement');
+  assert.equal(device.readings.garage_door1_open.value, 1, 'A retained replay cannot overwrite the live contact');
+});
+
+test('passive MQTT recheck reports listening when only the broker subscription is established', async t => {
+  const f = fixture(t, [home], { refreshSubscriptions: async () => {} });
+  f.capture.setConnected(true);
+  const device = (await f.capture.recheck()).devices[0];
+  assert.equal(device.check.status, 'listening');
+  assert.equal(device.available, false);
+  assert.equal(device.mqttStatus.subscriptionStatus, 'subscribed');
+  assert.equal(f.observations.length, 0);
+  assert.equal(f.publications.length, 0);
+});
+
+test('a live MQTT report arriving during subscription refresh is recognized without inventing a device reply', async t => {
+  const f = fixture(t, [home], { refreshSubscriptions: async () => f.capture.receive('invented/upstairs', '21.5') });
+  f.capture.setConnected(true);
+  const device = (await f.capture.recheck()).devices[0];
+  assert.equal(device.check.status, 'available');
+  assert.equal(device.check.method, 'subscription');
+  assert.equal(device.available, true);
+  assert.equal(f.publications.length, 0);
+});
+
+test('generic status requests wait for every required live topic and a usable heartbeat', async t => {
+  const f = fixture(t, [{ ...genericSwitch,
+    mqtt: { ...genericSwitch.mqtt, request_topic: 'invented/get', request_payload: 'status', heartbeat_topic: 'invented/heartbeat', heartbeat_seconds: 30 },
+    readings: [{ key: 'power', label: 'Power', unit: 'W', topic: 'invented/power', required: true }],
+  }]);
+  f.capture.setConnected(true);
+  f.capture.receive('invented/state', 'OFF'); f.capture.receive('invented/power', '0');
+  const pending = f.capture.recheck(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.publications.map(row => [row.topic, row.payload]), [['invented/get', 'status']]);
+  f.capture.receive('invented/state', 'ON');
+  assert.equal(f.capture.status().devices[0].check.checking, true, 'Old readings from another topic cannot complete the request');
+  f.capture.receive('invented/power', '300', { retain: true });
+  assert.equal(f.capture.status().devices[0].check.checking, true);
+  f.capture.receive('invented/power', '300');
+  assert.equal(f.capture.status().devices[0].check.checking, true, 'Missing required heartbeat still prevents availability');
+  f.capture.receive('invented/heartbeat', 'alive');
+  const device = (await pending).devices[0];
+  assert.equal(device.check.status, 'available');
+  assert.equal(device.check.method, 'request');
+  assert.equal(device.check.retainedReceived, true);
+  assert.equal(device.readings.relay_power.value, 300);
+});
+
+test('a configured generic request that gets only retained data times out without claiming a live reply', async t => {
+  const f = fixture(t, [{ ...genericSwitch, mqtt: { ...genericSwitch.mqtt, request_topic: 'invented/get', request_payload: 'status' } }], {
+    publish: async () => f.capture.receive('invented/state', 'ON', { retain: true }), readbackTimeoutMs: 15,
+  });
+  f.capture.setConnected(true);
+  const device = (await f.capture.recheck()).devices[0];
+  assert.equal(device.check.status, 'timeout');
+  assert.equal(device.check.retainedReceived, true);
+  assert.equal(device.available, false);
+  assert.equal(f.observations.length, 0);
+});
+
+test('runtime MQTT recheck verifies broker grants and recovers a denied subscription on the existing connection', async t => {
+  const f = fixture(t, [home]), client = new EventEmitter(), subscriptions = [];
+  let rejected = true, connections = 0;
+  client.subscribe = (topic, options, done) => { subscriptions.push(topic); done(null, [{ topic, qos: rejected ? 128 : 1 }]); };
+  client.publish = (topic, payload, options, done) => { assert.fail('Passive recheck must not publish'); done(); };
+  client.end = (force, options, done) => done();
+  const acquisition = await startMqtt({ engine: f.engine, store: f.store, config: { connections: { equipment: f.settings,
+    mqtt: { address: 'mqtt://example.invalid' } } }, connect: () => { connections++; return client; } });
+  f.cleanups.push(() => acquisition.close()); client.emit('connect');
+  assert.equal(acquisition.equipment.status().devices[0].mqttStatus.subscriptionStatus, 'failed');
+  assert.equal((await acquisition.equipment.recheck()).devices[0].check.status, 'unavailable');
+  rejected = false;
+  const device = (await acquisition.equipment.recheck()).devices[0];
+  assert.equal(device.check.status, 'listening');
+  assert.equal(device.check.subscriptionStatus, 'subscribed');
+  client.emit('message', 'invented/upstairs', Buffer.from('21.5'));
+  assert.equal(acquisition.equipment.status().devices[0].available, true);
+  assert.deepEqual(subscriptions, ['invented/upstairs', 'invented/upstairs', 'invented/upstairs']);
+  assert.equal(connections, 1);
+});
+
+test('MQTT and Shelly diagnostics expose complete topic roles without command payloads or native hardware identity', t => {
+  const f = fixture(t, [genericSwitch, plug]); f.capture.setConnected(true);
+  const [mqttDevice, nativeDevice] = [genericSwitch, plug].map(config => f.capture.status().devices.find(row => row.id === config.id));
+  assert.deepEqual(mqttDevice.topics, [
+    { role: 'State', topic: 'invented/state', direction: 'subscribe' },
+    { role: 'Switch command', topic: 'invented/command', direction: 'publish' },
+  ]);
+  assert(nativeDevice.topics.some(row => row.role === 'Device subscription' && row.topic === 'invented/plug/#'));
+  assert(nativeDevice.topics.some(row => row.role === 'State' && row.topic === 'invented/plug/status/switch:0'));
+  assert(nativeDevice.topics.some(row => row.role === 'RPC requests' && row.topic === 'invented/plug/rpc'));
+  assert(nativeDevice.topics.some(row => row.role === 'RPC replies' && row.topic.startsWith('stmq-shelly-') && row.topic.endsWith('/rpc')));
+  assert.equal(nativeDevice.recheck.method, 'native');
+  assert.equal(JSON.stringify(f.capture.status()).includes('onPayload'), false);
+});
+
+test('an unanswered subscription refresh finishes unavailable and never leaves diagnostics refreshing', async t => {
+  const f = fixture(t, [home], { refreshSubscriptions: () => new Promise(() => {}), readbackTimeoutMs: 15 });
+  f.capture.setConnected(true);
+  const device = (await f.capture.recheck()).devices[0];
+  assert.equal(device.check.status, 'unavailable');
+  assert.equal(device.mqttStatus.subscriptionStatus, 'failed');
+  assert.equal(device.check.checking, false);
+});
+
+test('disconnect during MQTT recheck cancels subscription waiting and prevents a late status publication', async t => {
+  const f = fixture(t, [{ ...genericSwitch, mqtt: { ...genericSwitch.mqtt, request_topic: 'invented/get', request_payload: 'status' } }]);
+  const client = new EventEmitter(), publications = []; let refresh = false, acknowledge;
+  client.subscribe = (topic, options, done) => { if (refresh) acknowledge = done; else done(null, [{ topic, qos: 1 }]); };
+  client.publish = (topic, payload, options, done) => { publications.push(topic); done(); };
+  client.end = (force, options, done) => done();
+  const acquisition = await startMqtt({ engine: f.engine, store: f.store, config: { connections: { equipment: f.settings,
+    mqtt: { address: 'mqtt://example.invalid' } } }, connect: () => client });
+  f.cleanups.push(() => acquisition.close()); client.emit('connect'); refresh = true;
+  const pending = acquisition.equipment.recheck(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof acknowledge, 'function');
+  client.emit('offline');
+  assert.equal((await pending).devices[0].check.status, 'unavailable');
+  acknowledge(null, [{ topic: 'invented/state', qos: 1 }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(publications, []);
+  assert.equal(acquisition.equipment.status().devices[0].mqttStatus.subscriptionStatus, 'disconnected');
+});
+
+test('additional topic groups expose configured H66 and legacy temperature routes without repeating equipment-owned feeds', async t => {
+  const f = fixture(t, [home, { ...genericSwitch, tariff_control: true }]), client = new EventEmitter();
+  client.subscribe = (topic, options, done) => done();
+  client.publish = (topic, payload, options, done) => done(); client.end = (force, options, done) => done();
+  const acquisition = await startMqtt({ engine: f.engine, store: f.store, config: {
+    h66: { deviceId: 'invented-h66', writeEnabled: true }, connections: { equipment: f.settings,
+      mqtt: { address: 'mqtt://example.invalid', temperatureTopics: { indoor_temperature: 'invented/upstairs', bedroom_temperature: 'invented/bedroom' } },
+    } }, connect: () => client });
+  f.cleanups.push(() => acquisition.close()); client.emit('connect');
+  const groups = acquisition.equipment.status().topicGroups;
+  assert.deepEqual(groups.find(group => group.id === 'temperatures').topics.map(row => row.topic), ['invented/bedroom']);
+  assert.deepEqual(groups.find(group => group.id === 'h66').topics.map(row => row.topic), [
+    'invented-h66/HP/#', 'invented-h66/HP/CMD', 'invented-h66/HP/SET/0203',
+    'invented-h66/HP/SET/0212', 'invented-h66/HP/SET/0208', 'invented-h66/HP/SET/2201',
+  ]);
+  assert.equal(groups.find(group => group.id === 'heating'), undefined, 'The equipment relay owns the selected heating route');
+  assert.equal(JSON.stringify(groups).includes('example.invalid'), false, 'Broker addresses remain private');
+});

@@ -5,18 +5,23 @@ const timestamp = value => Number.isSafeInteger(value) && value >= 0;
 const signatureValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 const messages = {
-  EQUIPMENT_TEST_CLOSED: 'Equipment testing is closed.',
-  EQUIPMENT_TEST_BUSY: 'An equipment test or restoration is already in progress.',
+  EQUIPMENT_TEST_CLOSED: 'Equipment control is closed.',
+  EQUIPMENT_TEST_BUSY: 'An equipment operation is already in progress.',
   EQUIPMENT_TEST_ACTIVE: 'Restore the current equipment test before starting another.',
   EQUIPMENT_TEST_INPUT: 'Choose a switch, ON or OFF, and a whole duration from 1 to 15 minutes.',
-  EQUIPMENT_TEST_UNAVAILABLE: 'This equipment is unavailable for a switch test.',
+  EQUIPMENT_TEST_UNAVAILABLE: 'This equipment is unavailable for manual control.',
   EQUIPMENT_TEST_TARIFF: 'Heating reduction relays must use the heating controls.',
-  EQUIPMENT_TEST_STATE: 'A fresh confirmed switch state is required before testing.',
+  EQUIPMENT_TEST_STATE: 'A fresh confirmed switch state is required before manual control.',
   EQUIPMENT_TEST_AUTHORITY: 'This instance does not own equipment control.',
   EQUIPMENT_TEST_ROUTE: 'The original equipment connection is unavailable or has changed. Restoration is pending.',
   EQUIPMENT_TEST_UNCONFIRMED: 'The switch command is unconfirmed. Restoring its previous state is still required.',
   EQUIPMENT_TEST_RESTORE: 'The previous switch state could not be confirmed. Restoration is pending.',
   EQUIPMENT_TEST_STORAGE: 'Equipment test state could not be saved. Restoration may still be required.',
+  EQUIPMENT_SWITCH_INPUT: 'Choose a configured switch and ON or OFF.',
+  EQUIPMENT_SWITCH_UNCONFIRMED: 'The requested switch state was not confirmed. Check the live state before trying again.',
+  EQUIPMENT_SWITCH_INTERRUPTED: 'The application restarted before confirming this switch command. Check the live state.',
+  EQUIPMENT_SWITCH_STORAGE: 'The switch request could not be saved.',
+  EQUIPMENT_SWITCH_ROUTE: 'The equipment connection is unavailable or has changed. Check its live state.',
 };
 const failure = code => Object.assign(new Error(messages[code]), { code });
 const publicActive = active => active ? Object.fromEntries(['deviceId', 'on', 'previousOn', 'until', 'status'].map(key => [key, active[key]])) : null;
@@ -29,6 +34,14 @@ function publicResult(result) {
   if (Object.hasOwn(messages, result.code)) { visible.code = result.code; visible.reason = messages[result.code]; }
   else if (result.status === 'superseded') visible.reason = SUPERSEDED_REASON;
   else if (['manual', 'expiry', 'startup', 'shutdown', 'settings-reload'].includes(result.reason)) visible.reason = result.reason;
+  return visible;
+}
+function publicManual(result) {
+  if (!result || !idValid(result.deviceId) || !['pending', 'confirmed', 'unconfirmed'].includes(result.status)) return null;
+  const visible = { deviceId: result.deviceId, status: result.status };
+  for (const key of ['on', 'previousOn', 'confirmed', 'sent']) if (typeof result[key] === 'boolean') visible[key] = result[key];
+  for (const key of ['at', 'confirmedAt']) if (timestamp(result[key])) visible[key] = result[key];
+  if (Object.hasOwn(messages, result.code)) { visible.code = result.code; visible.reason = messages[result.code]; }
   return visible;
 }
 
@@ -53,6 +66,9 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
     || saved.confirmedAt !== undefined && !timestamp(saved.confirmedAt) || !MODES.has(saved.status)))
     throw new Error('Saved equipment test state could not be validated.');
   state = structuredClone(state);
+  // A direct manual request is never replayed or reversed after a restart.
+  if (state.lastManual?.status === 'pending') state.lastManual = { ...state.lastManual,
+    status: 'unconfirmed', confirmed: false, code: 'EQUIPMENT_SWITCH_INTERRUPTED' };
   let startupRestore = Boolean(saved), pending = null, timer = null, closed = false, closing = false, retryAt = 0;
   const authority = () => { try { return canControl() === true; } catch { return false; } };
   const adapter = () => { try { return getEquipment?.() ?? null; } catch { return null; } };
@@ -124,6 +140,50 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
     }
   }
   const api = {
+    setSwitch(input) {
+      if (closing) return Promise.reject(failure('EQUIPMENT_TEST_CLOSED'));
+      return exclusive(async () => {
+        if (!input || typeof input !== 'object' || Array.isArray(input)
+          || Object.keys(input).some(key => !['deviceId', 'on'].includes(key))
+          || !idValid(input.deviceId) || typeof input.on !== 'boolean') throw failure('EQUIPMENT_SWITCH_INPUT');
+        if (state.active) throw failure('EQUIPMENT_TEST_ACTIVE');
+        if (!authority()) throw failure('EQUIPMENT_TEST_AUTHORITY');
+        const equipment = adapter(), device = devices(equipment).find(row => row.id === input.deviceId);
+        if (device?.controls?.tariff) throw failure('EQUIPMENT_TEST_TARIFF');
+        if (!device?.controls?.switch || !device.available || typeof equipment?.setSwitch !== 'function')
+          throw failure('EQUIPMENT_TEST_UNAVAILABLE');
+        const previousOn = freshState(device, clock()), signature = route(equipment, input.deviceId);
+        if (previousOn === null) throw failure('EQUIPMENT_TEST_STATE');
+        if (!signatureValid(signature)) throw failure('EQUIPMENT_SWITCH_ROUTE');
+        const requested = { deviceId: input.deviceId, on: input.on, previousOn,
+          at: clock(), status: 'pending', confirmed: false };
+        try { persist({ ...state, lastManual: requested }); }
+        catch { throw failure('EQUIPMENT_SWITCH_STORAGE'); }
+        let sent;
+        try {
+          checkRoute({ deviceId: input.deviceId, signature }, adapter());
+          const result = await equipment.setSwitch(input.deviceId, input.on);
+          sent = result?.sent;
+          if (result?.confirmed !== true) throw failure('EQUIPMENT_SWITCH_UNCONFIRMED');
+          checkRoute({ deviceId: input.deviceId, signature }, adapter());
+          const lastManual = { ...requested, status: 'confirmed', confirmed: true, sent,
+            confirmedAt: clock() };
+          persist({ ...state, lastManual });
+          return publicManual(lastManual);
+        } catch (error) {
+          const code = error?.code === 'EQUIPMENT_TEST_AUTHORITY' ? error.code
+            : error?.code === 'EQUIPMENT_TEST_ROUTE' ? 'EQUIPMENT_SWITCH_ROUTE' : 'EQUIPMENT_SWITCH_UNCONFIRMED';
+          const next = { ...state, lastManual: { ...requested, status: 'unconfirmed', confirmed: false, sent, code } };
+          try { persist(next); } catch { state = next; }
+          throw failure(code);
+        }
+      });
+    },
+    manualStatus() {
+      const legacy = api.status();
+      return { available: legacy.available, busy: legacy.busy, lastResult: publicManual(state.lastManual),
+        reason: legacy.reason };
+    },
     start(input) {
       if (closing) return Promise.reject(failure('EQUIPMENT_TEST_CLOSED'));
       return exclusive(async () => {

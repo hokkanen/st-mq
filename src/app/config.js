@@ -239,6 +239,10 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       if (mqtt.temperatureTopics[signal]) device.connection = `mqtt:${mqtt.temperatureTopics[signal]}`;
     }
     const equipment = equipmentConfiguration(equipmentInput);
+    const dhwrFeedback = equipment.devices.find(device => device.enabled && device.id === 'dhwr');
+    if (dhwrFeedback && [dhwrFeedback.topic, dhwrFeedback.mqtt.requestTopic,
+      ...dhwrFeedback.readings.map(reading => reading.topic)].includes(mqtt.dhwr_topic))
+      throw new Error('DHWR feedback and read-only requests must use topics separate from the DHWR switch command');
     for (const device of equipment.devices) if (device.enabled && device.protocol === 'mqtt' && device.kind === 'temperature'
       && ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].includes(device.temperatureSignal))
       mqtt.temperatureTopics[device.temperatureSignal] = device.topic;

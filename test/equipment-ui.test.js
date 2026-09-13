@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEquipmentActions, equipmentReadingRows, equipmentTestAllowed, equipmentSource } from '../chart/equipment.js';
+import { createEquipmentActions, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
 import { historyDatasets, historyValueLabel } from '../chart/history-model.js';
 import { providerName } from '../chart/provider-status.js';
 
@@ -127,4 +127,54 @@ test('failed requests retain monitoring, hide transport error details and replic
   actions.update(status({ role: 'replica' }));
   assert.equal(await actions.recheck(), false); assert.equal(await actions.test('caravan', true, 5), false);
   assert.equal(count, 1);
+});
+
+
+test('direct controls use no duration, require current state and serialize requests', async () => {
+  let finish; const calls = [];
+  const actions = createEquipmentActions({ request: (path, body) => {
+    calls.push({ path, body }); return new Promise(resolve => { finish = resolve; });
+  } });
+  const current = status({ equipmentControls: { available: true } });
+  actions.update(current);
+  assert.equal(equipmentControlAllowed(current, plug), true);
+  assert.equal(equipmentControlAllowed(status(), plug), false);
+  for (const next of [{ ...current, role: 'replica' }, { ...current, equipmentControls: { available: true, busy: true } }])
+    assert.equal(equipmentControlAllowed(next, plug), false);
+  assert.equal(await actions.switch('unknown', false), false);
+  assert.equal(await actions.switch('caravan', 'off'), false);
+  const pending = actions.switch('caravan', false);
+  assert.equal(await actions.switch('caravan', false), false);
+  assert.equal(await actions.recheck(), false);
+  assert.deepEqual(calls, [{ path: '/api/equipment/switch', body: { deviceId: 'caravan', on: false } }]);
+  const next = status({ equipmentControls: { available: true, lastResult: { deviceId: 'caravan', on: false, confirmed: true } } });
+  finish(next); await pending;
+  assert.equal(actions.snapshot().status, next);
+  assert.equal(actions.snapshot().actionKind, 'control');
+});
+
+test('MQTT check explanations distinguish request results from current availability and later reports', () => {
+  const previous = { available: true, check: { status: 'timeout', checkedAt: now }, mqttStatus: { lastLiveAt: now - 1 } };
+  assert.match(equipmentCheckText(previous), /Last check:.*no complete live response/);
+  assert.doesNotMatch(equipmentCheckText(previous), /received since/);
+  assert.match(equipmentCheckText({ ...previous, mqttStatus: { lastLiveAt: now + 1 } }), /received since/);
+  assert.match(equipmentCheckText({ available: false, check: { status: 'last-reported' } }), /Last check:.*were still usable/);
+  assert.match(equipmentCheckText({ available: true, check: { status: 'unavailable' } }), /Last check:/);
+  assert.match(equipmentCheckText({ check: { status: 'retained-only' } }), /live state unconfirmed/);
+  assert.match(equipmentCheckText({ check: { status: 'listening' } }), /subscriptions confirmed/);
+});
+
+test('circulation requested state never replaces independent switch and live power feedback', () => {
+  const missing = dhwrReadingSummary({ dhwr: { active: true, durationMinutes: 12 } });
+  assert.equal(missing.state.value, 'Unknown'); assert.equal(missing.power.value, 'Unavailable');
+  assert.equal(missing.request, 'Circulation requested'); assert.equal(missing.duration, 12);
+  const live = { dhwr: { active: false, feedback: { configured: true, available: true,
+    state: { value: 1, unit: 'state', stale: false, observedAt: now },
+    power: { value: 38, unit: 'W', stale: false, observedAt: now } } } };
+  assert.equal(dhwrReadingSummary(live).state.value, 'On');
+  assert.equal(dhwrReadingSummary(live).power.value, '38 W');
+  assert.equal(dhwrReadingSummary(live).request, 'No circulation requested');
+  live.dhwr.feedback.power.stale = true;
+  assert.equal(dhwrReadingSummary(live).state.value, 'On');
+  assert.equal(dhwrReadingSummary(live).power.value, 'Unavailable');
 });

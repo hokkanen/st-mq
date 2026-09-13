@@ -4,7 +4,7 @@ import { createEquipmentCapture } from './equipment.js';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
-import { createH66Controller } from '../control/h66.js';
+import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { createTeslaMateCapture } from './teslamate.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
@@ -46,6 +46,25 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     });
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
+  const hasEquipmentHeating = (equipmentSettings?.devices ?? config.connections.shelly?.devices ?? [])
+    .some(device => device.enabled !== false && device.controlsHeat);
+  const topicGroups = [
+    ...(decoder ? [{ id: 'h66', label: 'Heat pump · H66', source: 'MQTT', topics: [
+      { role: 'Telemetry subscription', topic: `${deviceId}/HP/#`, direction: 'subscribe' },
+      { role: 'Status request', topic: `${deviceId}/HP/CMD`, direction: 'publish' },
+      ...(settings.writeEnabled === true ? H66_WRITABLE_REGISTERS.map(index => ({ role: `Setting ${index}`, topic: `${deviceId}/HP/SET/${index}`, direction: 'publish' })) : []),
+    ] }] : []),
+    ...(temperatureTopics.length ? [{ id: 'temperatures', label: 'Temperature feeds', source: 'MQTT', topics: temperatureTopics.map(([signal, topic]) => ({
+      role: { indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs', bedroom_temperature: 'Bedroom',
+        garage_temperature: 'Garage', outdoor_temperature: 'Outdoor' }[signal], signal, topic, direction: 'subscribe',
+    })) }] : []),
+    ...(teslamate ? [{ id: 'teslamate', label: 'TeslaMate', source: 'MQTT', topics: [
+      { role: 'Vehicle subscription', topic: teslamate.topic, direction: 'subscribe' },
+    ] }] : []),
+    ...(!hasEquipmentHeating ? [{ id: 'heating', label: 'Heating commands', source: 'MQTT', topics: [
+      { role: 'Heating mode command', topic: 'from_stmq/heat/action', direction: 'publish' },
+    ] }] : []),
+  ];
   if (teslamate) engine.teslamate = teslamate;
   // Every connect explicitly subscribes below. MQTT.js automatic resubscription
   // can otherwise report cached success before the broker acknowledges a route.
@@ -71,7 +90,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (store.transaction) store.transaction(record); else record();
     for (const observation of observations) engine.rememberObservation?.(observation, at);
   };
-  const pendingPublications = new Set();
+  const pendingPublications = new Set(), pendingSubscriptions = new Set();
+  const subscriptionRejected = (topic, error, granted) => Boolean(error || Array.isArray(granted)
+    && (!granted.length || !granted.some(row => row.topic === topic && [0, 1, 2].includes(row.qos))));
   const lastErrorAt = new Map();
   const report = (type, cause) => {
     const now = engine.clock();
@@ -103,12 +124,29 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     pendingPublications.add(finish);
     try { client.publish(topic, payload, options, finish); } catch { finish(new Error('MQTT publication failed')); }
   });
+  const refreshSubscriptions = topics => Promise.all([...new Set(topics)].map(topic => new Promise((resolve, reject) => {
+    if (!connected || stopping || stopped) { reject(new Error('MQTT unavailable')); return; }
+    const generation = connectionGeneration; let finished = false;
+    const finish = error => {
+      if (finished) return;
+      finished = true; clearTimeout(timer); pendingSubscriptions.delete(finish);
+      if (error) reject(new Error('MQTT subscription refresh failed')); else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error('MQTT subscription timeout')), settings.readbackTimeoutMs ?? 10_000);
+    pendingSubscriptions.add(finish);
+    try {
+      // Re-subscribing asks the broker to confirm this exact route and may replay
+      // retained context. It does not request a new measurement from a publisher.
+      client.subscribe(topic, { qos: 1 }, (error, granted) => finish(subscriptionRejected(topic, error, granted)
+        || !connected || stopping || stopped || generation !== connectionGeneration ? new Error('MQTT subscription unavailable') : null));
+    } catch { finish(new Error('MQTT subscription failed')); }
+  })));
   const equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
-    brokerIdentity: { address, username }, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
+    brokerIdentity: { address, username }, refreshSubscriptions, topicGroups, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
     temperatureReportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
     temperatureReportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS }) : null;
   const shelly = equipment ?? (config.connections.shelly?.devices?.length ? createShellyCapture({ engine, store,
-    settings: config.connections.shelly, publish, canControl, brokerIdentity: { address, username },
+    settings: config.connections.shelly, publish, canControl, brokerIdentity: { address, username }, topicGroups,
     readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000 }) : null);
   if (shelly) engine.shelly = shelly;
   const requestSnapshot = async () => {
@@ -144,9 +182,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       const buffered = { messages: [], bytes: 0, overflow: new Set() };
       equipmentSubscriptionBuffer = subscriptions ? buffered : null;
       if (!subscriptions) shelly.setConnected(true);
-      for (const topic of shelly.topics) client.subscribe(topic, { qos: 1 }, error => {
+      for (const topic of shelly.topics) client.subscribe(topic, { qos: 1 }, (error, granted) => {
         if (!currentSubscription()) return;
-        if (error) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
+        if (subscriptionRejected(topic, error, granted)) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
         else confirmedTopics.push(topic);
         if (--subscriptions === 0) {
           equipmentSubscriptionBuffer = null;
@@ -177,6 +215,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     teslamate?.setConnected(false);
     shelly?.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
+    for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT disconnected'));
     if (!disconnectedRecorded) {
       markUnavailable([...h66Signals, ...temperatureSignals], ['mqtt-disconnected']);
       disconnectedRecorded = true;
@@ -257,6 +296,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     close: async ({ restore = true } = {}) => {
       if (stopped || stopping) return;
       stopping = true; connectionGeneration++; equipmentSubscriptionBuffer = null;
+      for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT closed'));
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
       clearInterval(shellyMaintenance);

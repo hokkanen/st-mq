@@ -14,12 +14,15 @@ function fixture(t, { saved = new Map(), command, on = false } = {}) {
     setState: (key, value) => saved.set(key, structuredClone(value)) };
   const equipment = { status: () => ({ devices: [device] }), signature: id => id === device.id ? route : null,
     async setSwitch(id, nextOn) {
-      assert.equal(saved.get(KEY).active.deviceId, id, 'The device route is saved before a command');
-      assert.equal(saved.get(KEY).active.signature, digest, 'Restoration stays bound to the original connection');
+      const active = saved.get(KEY).active;
+      if (active) {
+        assert.equal(active.deviceId, id, 'The device route is saved before a command');
+        assert.equal(active.signature, digest, 'Restoration stays bound to the original connection');
+      } else assert.equal(saved.get(KEY).lastManual.deviceId, id, 'The manual request is saved before a command');
       calls.push({ id, on: nextOn, at: now });
       if (command) return command({ id, on: nextOn, calls, device, now });
       device.readings.active = { value: Number(nextOn), unit: 'state', stale: false, observedAt: now };
-      return { confirmed: true };
+      return { confirmed: true, sent: true };
     } };
   let availableAdapter = equipment;
   const options = { store, clock: () => now, getEquipment: () => availableAdapter, canControl: () => allowed,
@@ -31,6 +34,51 @@ function fixture(t, { saved = new Map(), command, on = false } = {}) {
     setAdapter(value) { availableAdapter = value; }, get now() { return now; } };
 }
 const request = (on = true, durationMinutes = 1) => ({ deviceId: 'caravan', on, durationMinutes });
+
+test('direct manual switches have live confirmation and no timer, shutdown reversal or restart replay', async t => {
+  const f = fixture(t);
+  const result = await f.manager.setSwitch({ deviceId: 'caravan', on: true });
+  assert.equal(result.status, 'confirmed'); assert.equal(result.confirmed, true);
+  assert.equal(result.previousOn, false); assert.equal(result.on, true); assert.equal(result.sent, true);
+  assert.equal(f.manager.status().active, null); assert.equal('until' in result, false);
+  f.advance(24 * 60 * 60_000); await f.manager.tick(); await f.manager.close();
+  const restarted = createEquipmentTests(f.options);
+  t.after(() => restarted.close());
+  await restarted.tick();
+  assert.deepEqual(f.calls.map(row => row.on), [true]);
+  assert.equal(restarted.manualStatus().lastResult.confirmed, true);
+});
+
+test('direct manual switches reject unsafe inputs, stale states, tariff outputs and missing authority', async t => {
+  const f = fixture(t);
+  for (const input of [null, [], {}, { deviceId: 'caravan', on: 'ON' }, request(),
+    { deviceId: 'caravan', on: true, topic: 'synthetic/arbitrary' }])
+    await assert.rejects(f.manager.setSwitch(input), { code: 'EQUIPMENT_SWITCH_INPUT' });
+  f.setAuthority(false);
+  await assert.rejects(f.manager.setSwitch({ deviceId: 'caravan', on: true }), { code: 'EQUIPMENT_TEST_AUTHORITY' });
+  f.setAuthority(true); f.device.controls.tariff = true;
+  await assert.rejects(f.manager.setSwitch({ deviceId: 'caravan', on: true }), { code: 'EQUIPMENT_TEST_TARIFF' });
+  f.device.controls.tariff = false; f.device.readings.active.stale = true;
+  await assert.rejects(f.manager.setSwitch({ deviceId: 'caravan', on: true }), { code: 'EQUIPMENT_TEST_STATE' });
+  assert.deepEqual(f.calls, []);
+});
+
+test('direct switches share serialization with legacy restoration and never turn publish acknowledgements into live confirmation', async t => {
+  let finish;
+  const f = fixture(t, { command: () => new Promise(resolve => { finish = resolve; }) });
+  const command = f.manager.setSwitch({ deviceId: 'caravan', on: true });
+  await Promise.resolve();
+  assert.equal(f.manager.manualStatus().busy, true);
+  await assert.rejects(f.manager.start(request()), { code: 'EQUIPMENT_TEST_BUSY' });
+  await assert.rejects(f.manager.setSwitch({ deviceId: 'caravan', on: false }), { code: 'EQUIPMENT_TEST_BUSY' });
+  finish({ sent: true });
+  await assert.rejects(command, { code: 'EQUIPMENT_SWITCH_UNCONFIRMED' });
+  assert.equal(f.manager.manualStatus().lastResult.sent, true);
+  assert.equal(f.manager.manualStatus().lastResult.confirmed, false);
+  assert.equal(f.manager.status().active, null);
+  await f.manager.close();
+  assert.deepEqual(f.calls.map(row => row.on), [true]);
+});
 
 test('a manual test saves its route, confirms the requested state, and restores at its bounded deadline', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

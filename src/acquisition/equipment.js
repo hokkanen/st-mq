@@ -20,7 +20,7 @@ const fail = message => new Error(`Equipment ${message}`);
  * Event-only contacts preserve last-reported values without inventing heartbeats. */
 export function createEquipmentCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000,
   temperatureReportIntervalMs = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
-  temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null }) {
+  temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null, refreshSubscriptions = null, topicGroups = [] }) {
   const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
   const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity }) : null;
@@ -29,7 +29,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     roomRouteSignature: config.kind === 'temperature' && INDOOR_SIGNALS.includes(config.temperatureSignal)
       ? temperatureRouteSignature({ brokerIdentity, topic: config.topic, statePath: config.mqtt.statePath, timestampPath: config.mqtt.timestampPath,
         mappings: config.readings.filter(mapping => mapping.signal === config.temperatureSignal) }) : null,
-    online: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false }));
+    online: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
+    subscriptionStatus: 'unconfirmed', lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null }));
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
@@ -51,6 +52,17 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   const identity = device => canonicalTemperature(device) ? { source: 'mqtt-temperature', device: device.temperatureSignal } : { source: 'mqtt-equipment', device: device.id };
   const age = device => INDOOR_SIGNALS.includes(device.temperatureSignal) && canonicalTemperature(device)
     ? temperatureReportIntervalMs + temperatureReportGraceMs : device.maxAgeMs;
+  const readTopics = device => [...new Set([device.topic, ...device.mappings.map(row => row.topic),
+    device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))];
+  const recheckMethod = device => device.mqtt.requestTopic ? 'request' : 'subscription';
+  const topicDetails = device => [
+    { role: 'State', topic: device.topic, direction: 'subscribe' },
+    ...device.mappings.filter(row => row.topic).map(row => ({ role: row.label, signal: row.signal, topic: row.topic, direction: 'subscribe' })),
+    ...(device.mqtt.availabilityTopic ? [{ role: 'Availability', topic: device.mqtt.availabilityTopic, direction: 'subscribe' }] : []),
+    ...(device.mqtt.heartbeatTopic ? [{ role: 'Heartbeat', topic: device.mqtt.heartbeatTopic, direction: 'subscribe' }] : []),
+    ...(device.mqtt.requestTopic ? [{ role: 'Status request', topic: device.mqtt.requestTopic, direction: 'publish' }] : []),
+    ...(device.mqtt.commandTopic ? [{ role: 'Switch command', topic: device.mqtt.commandTopic, direction: 'publish' }] : []),
+  ];
   function record(device, definition, value, at, receivedAt, quality = [], raw = {}) {
     const previous = device.readings[definition.signal];
     if (scalar(at) && scalar(previous?.observedAt) && at < previous.observedAt) return false;
@@ -58,11 +70,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
         ...(device.kind === 'door' && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw,
         ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } };
-    if (device.id === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(definition.signal))
-      engine.rememberObservation?.(observation, receivedAt);
-    else {
-      const result = engine.ingest(observation);
-      if (device.roomRouteSignature && (result?.rejectedSourceTime || result?.reason === 'out-of-order-receipt')) return false;
+    if (device.record !== false && definition.record !== false) {
+      if (device.id === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(definition.signal))
+        engine.rememberObservation?.(observation, receivedAt);
+      else {
+        const result = engine.ingest(observation);
+        if (device.roomRouteSignature && (result?.rejectedSourceTime || result?.reason === 'out-of-order-receipt')) return false;
+      }
     }
     device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality, ...raw };
     if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
@@ -85,6 +99,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     && (!age(device) || now - reading.observedAt < age(device))
     && !reading.quality?.some(flag => /invalid|missing|retained|stale|future|disconnected|offline|unavailable/.test(flag)));
   const healthy = (device, now) => connected && device.liveSinceConnect && device.online !== false && !device.invalid
+    && !['failed', 'disconnected'].includes(device.subscriptionStatus)
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
     && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
   function signature(id) {
@@ -100,12 +115,18 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   }
   function receiveDevice(device, topic, body, packet, receivedAt) {
     const mapping = device.mqtt;
+    device.lastReceivedAt = receivedAt;
+    if (packet.retain) device.lastRetainedAt = receivedAt; else device.lastLiveAt = receivedAt;
+    for (const check of device.checks) if (packet.retain) check.retainedReceived = true;
     if (topic === mapping.availabilityTopic) {
       if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline', receivedAt); }
-      else if (body === mapping.onlinePayload && !packet.retain) device.online = true;
+      else if (body === mapping.onlinePayload && !packet.retain) { device.online = true; completeChecks(device, receivedAt); }
       return;
     }
-    if (topic === mapping.heartbeatTopic) { if (!packet.retain) device.heartbeatAt = receivedAt; return; }
+    if (topic === mapping.heartbeatTopic) {
+      if (!packet.retain) { device.heartbeatAt = receivedAt; completeChecks(device, receivedAt); }
+      return;
+    }
     if (packet.retain && canonicalTemperature(device) && device.liveSinceConnect) return;
     const input = parse(body), explicitTimestamp = mapping.timestampPath ? property(input, mapping.timestampPath) : input && typeof input === 'object' ? input.timestamp : undefined;
     const at = explicitTimestamp === undefined ? packet.retain ? null : receivedAt : sourceTime(explicitTimestamp);
@@ -123,7 +144,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       return;
     }
     if (invalidTime && !canonicalTemperature(device)) { unavailable(device, 'invalid-source-time', receivedAt); return; }
-    let updated = false, invalid = false;
+    let updated = false, invalid = false; const reported = new Set();
     if (canonicalTemperature(device) && topic === device.topic) {
       const selected = mapping.statePath || mapping.timestampPath ? { value: mapping.statePath ? property(input, mapping.statePath) : input?.value,
         ...(explicitTimestamp === undefined ? {} : { timestamp: explicitTimestamp }), ...(input?.unit ? { unit: input.unit } : {}) } : input;
@@ -134,6 +155,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (!observation) { unavailable(device, 'invalid-temperature-message', receivedAt); return; }
       const definition = definitions(device)[0];
       updated = record(device, definition, observation.value, observation.sourceTime, receivedAt, observation.quality, observation.raw);
+      if (updated && !packet.retain) reported.add(definition.signal);
       invalid = observation.value === null || observation.quality.some(flag => /invalid|missing|future|stale/.test(flag));
     } else for (const definition of applicable) {
       const selectedPath = definition.path ?? (definition.signal === device.stateSignal || definition.signal === device.temperatureSignal ? mapping.statePath : null);
@@ -142,7 +164,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (value !== null) value = value * (definition.scale ?? 1) + (definition.offset ?? 0);
       if (['degC', '°C'].includes(definition.unit) && (!scalar(value) || value < -60 || value > 150)) value = null;
       if (value === null && !definition.required && !device.readings[definition.signal]) continue;
-      updated = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : []) || updated;
+      const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : []);
+      if (accepted) reported.add(definition.signal);
+      updated = accepted || updated;
       invalid ||= definition.required && value === null;
     }
     if (!updated) return;
@@ -158,7 +182,14 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (receivedAt >= waiter.at && main.observedAt >= waiter.at && main.value === Number(waiter.on)) {
         waiter.observed = true; if (waiter.published) waiter.finish();
       }
-    for (const check of [...device.checks]) if (receivedAt >= check.at) check.finish(healthy(device, receivedAt) ? 'available' : 'needs-attention');
+    for (const check of device.checks) if (receivedAt >= check.at) for (const signal of reported) check.reported.add(signal);
+    completeChecks(device, receivedAt);
+  }
+  function completeChecks(device, now) {
+    for (const check of [...device.checks]) if (check.ready && definitions(device).filter(row => row.required).every(row => check.reported.has(row.signal))) {
+      if (healthy(device, now)) check.finish('available');
+      else if (device.invalid) check.finish('needs-attention');
+    }
   }
   async function switchDevice(device, on) {
     if (!device || typeof on !== 'boolean') throw fail('invalid switch selection');
@@ -186,11 +217,15 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     ownsGarage: settings.ownsGarage === true, hasHeating: enabled.some(device => device.controlsHeat), signature,
     setConnected(value) {
       connected = value; native?.setConnected(value);
-      for (const device of devices) { if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.liveSinceConnect = false; } }
+      for (const device of devices) {
+        device.subscriptionStatus = value ? 'unconfirmed' : 'disconnected';
+        if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.liveSinceConnect = false; }
+      }
     },
     confirmSubscriptions(topics) {
       if (!connected || closed) return;
       const confirmed = new Set(topics);
+      for (const device of devices) if (readTopics(device).every(topic => confirmed.has(topic))) device.subscriptionStatus = 'subscribed';
       for (const device of devices.filter(row => row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
         const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic,
           ...device.mappings.filter(mapping => mapping.required).map(mapping => mapping.topic)].filter(Boolean);
@@ -213,7 +248,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     },
     subscriptionFailed(topic) {
       native?.subscriptionFailed(topic);
-      for (const device of devices) if ([device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic, ...device.mappings.map(row => row.topic)].includes(topic)) unavailable(device, 'mqtt-subscription-failed');
+      for (const device of devices) if (readTopics(device).includes(topic)) {
+        device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
+      }
     },
     receive(topic, payload, packet = {}, receivedAt = engine.clock()) {
       if (native?.receive(topic, payload, packet, receivedAt)) return true;
@@ -237,15 +274,44 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (native && (!deviceId || enabled.some(row => row.id === deviceId && row.protocol === 'shelly'))) tasks.push(native.recheck({ deviceId }));
       for (const device of devices.filter(row => !deviceId || row.id === deviceId)) tasks.push(new Promise(resolve => {
         let completed = false;
-        const check = { at: engine.clock(), finish: status => {
+        const method = recheckMethod(device);
+        const check = { at: engine.clock(), reported: new Set(), retainedReceived: false, ready: false, finish: status => {
           if (completed) return; completed = true; clearTimeout(timer); device.checks.delete(check);
-          device.check = { checking: false, checkedAt: engine.clock(), status }; resolve();
+          device.check = { checking: false, startedAt: check.at, checkedAt: engine.clock(), status, method,
+            subscriptionStatus: device.subscriptionStatus, retainedReceived: check.retainedReceived }; resolve();
         } };
-        const timer = setTimeout(() => check.finish('awaiting-report'), readbackTimeoutMs);
-        device.checks.add(check); device.check = { checking: true, startedAt: check.at, status: 'checking' };
+        const timer = setTimeout(() => {
+          if (device.subscriptionStatus === 'refreshing') {
+            device.subscriptionStatus = 'failed';
+            try { unavailable(device, 'mqtt-subscription-failed'); }
+            catch { check.finish('unavailable'); }
+          } else check.finish(method === 'request' ? 'timeout' : 'unavailable');
+        }, readbackTimeoutMs);
+        device.checks.add(check); device.check = { checking: true, startedAt: check.at, status: 'checking', method };
         if (!connected || closed) { check.finish('unavailable'); return; }
-        if (device.mqtt.requestTopic) Promise.resolve().then(() => publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 0, retain: false })).catch(() => check.finish('unavailable'));
-        else check.finish(healthy(device, engine.clock()) ? 'last-reported' : 'awaiting-report');
+        Promise.resolve().then(async () => {
+          if (refreshSubscriptions) {
+            device.subscriptionStatus = 'refreshing';
+            try { await refreshSubscriptions(readTopics(device)); }
+            catch {
+              if (!completed && connected && !closed) {
+                device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
+              }
+              throw fail('subscription refresh failed');
+            }
+            if (completed || !connected || closed) return;
+            device.subscriptionStatus = 'subscribed';
+          }
+          if (completed || !connected || closed) return;
+          // Reports replayed by subscription refresh are not replies to a later request.
+          if (method === 'request') {
+            check.reported.clear(); check.at = engine.clock();
+            await publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 0, retain: false });
+          }
+          check.ready = true; completeChecks(device, engine.clock());
+          if (method === 'subscription') check.finish(healthy(device, engine.clock()) ? 'last-reported'
+            : check.retainedReceived ? 'retained-only' : 'listening');
+        }).catch(() => check.finish('unavailable'));
       }));
       await Promise.all(tasks); return api.status();
     },
@@ -269,11 +335,17 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const nativeStatus = native?.status(now), rows = [...(nativeStatus?.devices ?? []), ...devices.map(device => ({ id: device.id, role: device.id,
         label: device.label, area: device.area, kind: device.kind, source: 'MQTT', connection: device.connection, available: healthy(device, now),
         observedAt: device.lastAt, controls: { switch: device.controlsSwitch, tariff: device.controlsHeat }, check: device.check,
+        topics: topicDetails(device), recheck: { method: recheckMethod(device), requestSupported: Boolean(device.mqtt.requestTopic),
+          description: device.mqtt.requestTopic ? 'Refresh subscriptions and send the configured status request.'
+            : 'Refresh subscriptions. This publisher has no configured status request; live values arrive on its next report.' },
+        mqttStatus: { subscriptionStatus: device.subscriptionStatus, lastReceivedAt: device.lastReceivedAt,
+          lastLiveAt: device.lastLiveAt, lastRetainedAt: device.lastRetainedAt },
         readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
           { ...reading, stale: !connected || !device.liveSinceConnect || device.online === false || !fresh(device, reading, now)
             || Boolean(device.mqtt.heartbeatMs && (!scalar(device.heartbeatAt) || now - device.heartbeatAt > device.mqtt.heartbeatMs)) }])),
         ...(energy.has(device.id) ? { energy: energy.get(device.id).status(now) } : {}) }))];
       return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),
+        topicGroups,
         lastCheckedAt: Math.max(0, ...rows.map(row => row.check?.checkedAt ?? 0)) || null,
         devices: configured.map(config => rows.find(row => row.id === config.id) ?? { id: config.id, role: config.id, label: config.label,
           area: config.area, kind: config.kind, source: config.source, connection: config.connection, enabled: false, available: false,

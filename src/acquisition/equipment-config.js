@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto';
 
 const KINDS = ['temperature', 'switch', 'metered_switch', 'door'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
-  'switch_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'readings', 'mqtt'];
+  'switch_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
 const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic',
   'online_payload', 'offline_payload', 'heartbeat_topic', 'heartbeat_seconds', 'request_topic', 'request_payload'];
-const READING_KEYS = ['key', 'label', 'signal', 'unit', 'path', 'topic', 'component', 'required', 'scale', 'offset'];
+const READING_KEYS = ['key', 'label', 'signal', 'unit', 'path', 'topic', 'component', 'required', 'record', 'scale', 'offset'];
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => typeof value === 'string' && value.length > 0;
 const schema = (value, keys, context) => {
@@ -53,7 +53,8 @@ function reading(input, id) {
   return { key, signal: signal(input.signal, `${id}_${key}`), label: text(input.label, key.replaceAll('_', ' ')),
     unit: text(input.unit, key.startsWith('temperature') ? 'degC' : 'state', 30), path: path(input.path),
     topic: exactEquipmentTopic(input.topic, true), component,
-    required: bool(input.required, false), scale: number(input.scale, 1, -1e6, 1e6), offset: number(input.offset, 0, -1e6, 1e6) };
+    required: bool(input.required, false), record: bool(input.record, true),
+    scale: number(input.scale, 1, -1e6, 1e6), offset: number(input.offset, 0, -1e6, 1e6) };
 }
 
 export function equipmentSignature(device) {
@@ -62,7 +63,7 @@ export function equipmentSignature(device) {
     generation: device.generation, switchId: device.switchId, controlsSwitch: device.controlsSwitch,
     controlsHeat: device.controlsHeat, reductionOn: device.reductionOn, stateSignal: device.stateSignal,
     mqtt: device.protocol === 'mqtt' ? device.mqtt : null,
-    stateMapping: (device.readings ?? []).filter(row => row.signal === device.stateSignal).map(({ label, ...row }) => row) })).digest('hex');
+    stateMapping: (device.readings ?? []).filter(row => row.signal === device.stateSignal).map(({ label, record, ...row }) => row) })).digest('hex');
 }
 
 /** Connection syntax selects the protocol. No host/topic inspection or failed
@@ -86,6 +87,14 @@ export function equipmentConfiguration(input = {}) {
     const temperatureId = number(row.temperature_id, generation === 1 ? 0 : 100, 0, 255, true);
     const controlsSwitch = bool(row.switch_control, false), controlsHeat = bool(row.tariff_control, false);
     if ((controlsSwitch || controlsHeat) && !['switch', 'metered_switch'].includes(kind)) throw new Error('Only configured switch equipment can accept control');
+    // DHWR commands belong to the executor's durable timed ON/OFF path. Its
+    // equipment entry supplies independent device feedback, never another writer.
+    if (id === 'dhwr' && (protocol !== 'mqtt' || kind !== 'switch' || controlsSwitch || controlsHeat || row.signal && row.signal !== 'dhwr_active'))
+      throw new Error('DHWR feedback requires a monitoring-only MQTT switch with its dhwr_active signal');
+    const record = bool(row.record, id !== 'dhwr');
+    if (!record && (protocol !== 'mqtt' || kind !== 'switch'))
+      throw new Error('Live-only equipment recording requires an MQTT switch');
+    if (id === 'dhwr' && record) throw new Error('DHWR feedback stays live-only; requested circulation history is recorded separately');
     const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, kind === 'door' ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
     if (kind !== 'door' && age < pollIntervalMs) throw new Error('Equipment maximum age must allow its poll interval');
     schema(row.mqtt ?? {}, MQTT_KEYS, 'equipment MQTT mapping');
@@ -104,6 +113,8 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Controllable MQTT equipment needs explicit command topic and distinct ON/OFF payloads');
     if (!Array.isArray(row.readings ?? []) || row.readings?.length > 32) throw new Error('Equipment readings must be an array of at most 32 mappings');
     const readings = (row.readings ?? []).map(value => reading(value, id));
+    if (readings.some(value => !value.record && (protocol !== 'mqtt' || value.key === 'energy_counter')))
+      throw new Error('Live-only reading mappings require MQTT and cannot disable cumulative energy accounting');
     if (protocol === 'mqtt' && readings.some(value => value.component) || protocol === 'shelly' && readings.some(value => value.topic || !value.component))
       throw new Error('Equipment mapping must match its selected connection protocol');
     const mainSignal = signal(row.signal || undefined, kind === 'temperature' ? id === 'garage' ? 'garage_temperature' : `${id}_temperature`
@@ -112,6 +123,10 @@ export function equipmentConfiguration(input = {}) {
     const temperatureSignal = kind === 'temperature' ? mainSignal : id === 'garage' ? 'garage_temperature' : `${id}_temperature`;
     const hasTemperature = kind === 'temperature' || id === 'garage';
     const metered = kind === 'metered_switch';
+    if (hasTemperature && (!record || readings.some(value => value.signal === temperatureSignal && !value.record)))
+      throw new Error('Main temperature readings must preserve recorded history');
+    if (id === 'dhwr' && readings.some(value => value.signal === 'dhwr_power' && !['W', 'kW'].includes(value.unit)))
+      throw new Error('DHWR power feedback must declare W or kW units');
     const counters = readings.filter(mapping => mapping.key === 'energy_counter');
     if (counters.length > 1 || counters.some(mapping => !metered || !['kWh', 'Wh'].includes(mapping.unit)))
       throw new Error('Energy counter mapping requires metered equipment and kWh or Wh units');
@@ -133,7 +148,7 @@ export function equipmentConfiguration(input = {}) {
     const ownedSignals = [...new Set([...defaultSignals, ...readings.map(value => value.signal)])];
     return { id, role: id, label, area, kind, enabled, connection, protocol, source: protocol === 'shelly' ? 'Shelly' : 'MQTT',
       prefix: protocol === 'shelly' ? address : null, topic: protocol === 'mqtt' ? address : null,
-      generation, switchId, temperatureId, controlsSwitch, controlsHeat, reductionOn, maxAgeMs: age,
+      generation, switchId, temperatureId, controlsSwitch, controlsHeat, reductionOn, maxAgeMs: age, record,
       stateSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
   });
   if (new Set(devices.map(row => row.id)).size !== devices.length) throw new Error('Equipment IDs must be unique');

@@ -71,6 +71,21 @@ test('native setting tests remain active for their bounded interval across contr
   assert.equal(native.values['0212'],47);r.engine.tick();await r.settle();assert.deepEqual(r.commands.at(-1),['heaton15']);
 });
 
+test('direct native settings remain chosen through controller ticks without a manual expiry', async t => {
+  const r = setup(t, { mode: 'shadow' }), native = r.native();
+  await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 20, durationMinutes: 2 }), /Choose an H66/);
+  const changed = await r.engine.setH66Setting({ register: '0203', value: 20 });
+  assert.equal(changed.h66.lastManual.confirmed, true);
+  assert.equal(native.values['0203'], 20);
+  assert.equal(r.engine.heatingTestBusy, false);
+  assert.equal(changed.h66.expiresAt, null);
+  r.advance(3 * 60_000); r.engine.tick(); await r.settle();
+  assert.equal(native.values['0203'], 20);
+  r.engine.dispatchPending = Promise.resolve();
+  await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 21 }), /current heating operation/);
+  r.engine.dispatchPending = null;
+});
+
 test('a restarted interrupted live cycle is incomplete while relay restoration remains durable',async t=>{
   const r=setup(t);r.plan();r.engine.tick();await r.settle();assert.ok(r.engine.cycles.active());
   clearTimeout(r.engine.executor.timer);

@@ -179,6 +179,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'POST' && url.pathname === '/api/equipment/recheck')
           return await mutate(async (current, input) => { await current.recheckEquipment(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/switch')
+          return await mutate(async (current, input) => { await current.switchEquipment(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/h66')
+          return await mutate(async (current, input) => { await current.setH66Setting(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/test')
           return await mutate(async (current, input) => { await current.testEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/test/restore')

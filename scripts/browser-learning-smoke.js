@@ -57,7 +57,7 @@ try {
     for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
-  const checkNestedFolds = async selector => {
+  const checkNestedFolds = async (selector, minimumIndent = 16) => {
     const folds = await evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)}), fold => {
       const summary = fold.querySelector(':scope > summary');
       const parent = fold.parentElement.closest('details')?.querySelector(':scope > summary');
@@ -67,7 +67,7 @@ try {
     assert.ok(folds.length > 0, `Nested disclosures exist for ${selector}`);
     for (const fold of folds) {
       assert.equal(fold.visible, true, `${fold.label} is visible inside its expanded parent`);
-      assert.ok(fold.indent >= 16, `${fold.label} is visibly indented from its parent (${fold.indent}px)`);
+      assert.ok(fold.indent >= minimumIndent, `${fold.label} is visibly indented from its parent (${fold.indent}px)`);
     }
   };
   await send('Runtime.enable'); await send('Page.enable'); await send('Page.bringToFront');
@@ -89,10 +89,19 @@ try {
   assert.equal(await evaluate("document.querySelector('#h66-provider-details > summary').textContent"), 'About these readings');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
-  assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
+  assert.equal(await evaluate("document.querySelectorAll('.controller-column > article, .controller-panels > article').length"), 4);
   assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home & heating');
   assert.equal(await evaluate("document.getElementById('model-title').textContent"), 'House model');
   assert.equal(await evaluate("document.getElementById('providers-title').textContent"), 'Data & settings');
+  assert.equal(await evaluate("document.getElementById('equipment-title').textContent"), 'Equipment & controls');
+  assert.equal(await evaluate("document.getElementById('h66-test-duration')"), null, 'Manual settings have no expiration input');
+  assert.equal(await evaluate(`(() => {
+    const equipment = document.getElementById('equipment-panel'), box = equipment.getBoundingClientRect();
+    const panels = document.querySelector('.controller-panels').getBoundingClientRect();
+    return equipment.parentElement.matches('.controller-panels') && !equipment.closest('.controller-column')
+      && Math.abs(box.left - panels.left) < 1 && Math.abs(box.right - panels.right) < 1
+      && [...document.querySelectorAll('.controller-column')].every(column => column.getBoundingClientRect().bottom <= box.top);
+  })()`), true, 'Equipment occupies its own full-width row below the home, model and data cards');
   assert.equal(await evaluate("[...document.querySelectorAll('.controller-panels details')].every(fold => !fold.open)"), true);
   const checkClosedColumns = async () => {
     assert.equal(await evaluate(`(() => {
@@ -275,44 +284,57 @@ try {
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('home-manual-controls').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
-    await checkNestedFolds('#providers .provider-fold, #controls-details, #electricity-details');
+    await evaluate("document.getElementById('connections-details').open=true; document.getElementById('data-sources-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    await checkNestedFolds('#providers .provider-fold', 12);
+    assert.equal(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => ({
+        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary') }));
+      return rows.length === 4 && rows.every((row, index) => row.summary.checkVisibility()
+        && Math.abs(row.summary.getBoundingClientRect().left - rows[0].summary.getBoundingClientRect().left) < 1
+        && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
+    })()`), true, 'Sources, MQTT topics, rates and configuration form aligned rows without vertical overlap');
     assert.equal(await evaluate(`(() => {
       const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
-        'home-manual-controls': 'equipment-details', 'h66-test-details': 'home-manual-controls', 'heating-test-details': 'home-manual-controls' };
+        'h66-test-details': 'equipment-details' };
       return Object.entries(parents).every(([id,parent]) => {
         const fold=document.getElementById(id),summary=fold.querySelector(':scope > summary');
         const parentSummary=document.querySelector('#'+parent+' > summary');
         return summary.checkVisibility() && fold.parentElement.closest('details').id === parent
           && summary.getBoundingClientRect().left >= parentSummary.getBoundingClientRect().left + 15;
       });
-    })()`), true, 'Equipment guidance and tests are visibly nested under readings and manual controls');
+    })()`), true, 'Heat-pump settings and readings are visibly nested inside equipment');
+    assert.equal(await evaluate("document.getElementById('home-manual-controls').tagName === 'SECTION' && document.getElementById('heating-test-details').tagName === 'DIV' && document.getElementById('heating-test-buttons').checkVisibility()"), true,
+      'Tariff controls are visible beside their reported state without another disclosure');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");
   }
-  await evaluate("document.getElementById('connections-details').open=true; document.querySelector('#providers .provider-fold').open=true; document.getElementById('temporary-details').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
+  await evaluate("document.getElementById('connections-details').open=true; document.getElementById('data-sources-details').open=true; document.querySelector('#providers .provider-fold').open=true; document.getElementById('temporary-details').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
   await evaluate("document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input')); document.getElementById('temporary-form').requestSubmit()");
   await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
-  await evaluate("document.getElementById('equipment-details').open=true; document.getElementById('home-manual-controls').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-duration').value='1'; document.getElementById('h66-test-form').requestSubmit()");
+  await evaluate("document.getElementById('equipment-details').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
   assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
-  assert.equal(h66.status().readings['0208'].baseline, 55);
-  assert.equal(await evaluate("document.getElementById('h66-readings').textContent.includes('original 55 °C')"), true);
-  assert.equal(await evaluate("document.getElementById('h66-readings').textContent.includes('requested 50 °C')"), true);
+  assert.equal(h66.status().readings['0208'].baseline, null);
+  assert.equal(h66.status().lastManual.previousValue, 55);
+  assert.equal(h66.status().lastManual.readback, 50);
+  assert.equal(h66.status().expiresAt, null);
+  assert.equal(await evaluate("document.getElementById('h66-test-message').textContent.includes('previously 55')"), true);
+  assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('50 °C')"), true);
   await evaluate("document.getElementById('h66-readings-details').open=true;document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Received/);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   now += 61_000; await h66.reconcile({ now }); app.engine.tick();
   await send('Page.reload');
-  await until("document.getElementById('h66-test-message')?.textContent.includes('no pending overrides')");
-  assert.equal(publications.at(-1).value, '55');
+  await until("document.getElementById('h66-test-message')?.textContent.includes('device confirmed')");
+  assert.equal(publications.length, 1, 'Controller ticks and page reload neither reverse nor replay a manual setting');
+  assert.equal(h66.status().readings['0208'].value, 50);
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'aligned closed dashboard columns', 'independent expanded dashboard cards', 'alignment with hidden nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'timed H66 API write, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'aligned closed dashboard columns', 'independent expanded dashboard cards', 'full-width equipment row', 'alignment with hidden nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'persistent manual H66 API setting and live readback with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

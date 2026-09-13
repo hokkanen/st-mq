@@ -546,13 +546,13 @@ try {
     await command('input.performActions', { context, actions: [{ type: 'key', id: 'equipment-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
     assert.equal(await evaluate("document.getElementById('equipment-details').open"), true, 'Equipment opens by keyboard');
     const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
-      'home-manual-controls': 'equipment-details', 'h66-test-details': 'home-manual-controls', 'heating-test-details': 'home-manual-controls' };
+      'h66-test-details': 'equipment-details' };
     assert.equal(await evaluate(`Object.entries(${JSON.stringify(parents)}).every(([id,parent]) => {
       const fold = document.getElementById(id);
       return !fold.open && fold.parentElement.closest('details').id === parent;
     })`), true, 'Equipment groups readings, their guide, and manual controls separately');
-    assert.equal(await evaluate("['h66-readings-details','home-manual-controls'].every(id=>document.querySelector('#'+id+' > summary').checkVisibility())"), true);
-    assert.equal(await evaluate("['h66-provider-details','h66-test-details','heating-test-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Secondary guidance and tests stay behind their parent disclosure');
+    assert.equal(await evaluate("['h66-readings-details','h66-test-details'].every(id=>document.querySelector('#'+id+' > summary').checkVisibility())"), true);
+    assert.equal(await evaluate("['h66-provider-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Secondary guidance and tests stay behind their parent disclosure');
     for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
       await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
       await evaluate("document.getElementById('equipment-details').scrollIntoView({block:'start'}); true");
@@ -615,7 +615,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
   assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
   assert.equal(await evaluate("document.getElementById('h66-provider-details').open"), false);
-  assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('equipment-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
   assert.equal(await evaluate("document.getElementById('home-control').contains(document.getElementById('temporary-details')) && document.getElementById('providers-controls').contains(document.getElementById('electricity-details'))"), true);
   await evaluate(`document.getElementById('temporary-details').open = true;
@@ -808,7 +808,7 @@ try {
   };
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Available', attention: false });
-  await evaluate(`document.getElementById('connections-details').open = true;
+  await evaluate(`document.getElementById('connections-details').open = true; document.getElementById('data-sources-details').open = true;
     document.querySelector('[data-provider=electricity] summary').focus(); true`);
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'electricity-keyboard',
     actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
@@ -836,10 +836,8 @@ try {
   assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'Weather forecast is last in the closed overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
-  assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('equipment-details').open"), false);
   await evaluate(`document.getElementById('equipment-details').open = true;
-    document.getElementById('home-manual-controls').open = true;
-    document.getElementById('heating-test-details').open = true;
     document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input')); true`);
@@ -850,10 +848,10 @@ try {
     for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(typeof acknowledgeHeating, 'function');
     assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
-    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent.includes('sent via MQTT')"), false);
+    assert.equal(await evaluate(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('sent at')`), false);
     acknowledgeHeating();
     const commandLabel = { heatoff: 'Tariff reduction', heaton15: 'Normal heating', heaton60: 'Circulation' }[command];
-    await until(`document.getElementById('heating-test-message').textContent.includes('${commandLabel} sent via MQTT') && !document.getElementById('test-${command}').disabled`);
+    await until(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} sent at') && document.getElementById('test-${command}').disabled === ${command === 'heaton60'}`);
     assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
   }
   assert.deepEqual(testPublishes, [
@@ -872,7 +870,7 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('h66-readings-details').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('h66-readings-details').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.getElementById('data-sources-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
@@ -886,7 +884,7 @@ try {
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-total-series-and-session-check',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
-    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'garage-restore-with-collapsed-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

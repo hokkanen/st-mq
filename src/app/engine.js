@@ -532,6 +532,15 @@ export class Engine {
     return this.equipmentTests?.status() ?? { available: false, busy: false, active: null,
       reason: 'Configure a controllable MQTT device to enable switch tests.' };
   }
+  equipmentControlStatus() {
+    return this.equipmentTests?.manualStatus() ?? { available: false, busy: false, lastResult: null,
+      reason: 'Configure a controllable MQTT device to enable manual controls.' };
+  }
+  async switchEquipment(input) {
+    if (!this.equipmentTests) throw new Error('MQTT equipment controls are unavailable.');
+    await this.equipmentTests.setSwitch(input);
+    return this.status();
+  }
   async recheckEquipment(input = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || Object.keys(input).some(key => key !== 'deviceId')
@@ -555,11 +564,19 @@ export class Engine {
   }
   dhwrStatus() {
     const state = this.executor.status(), now = this.clock();
-    return { active: Boolean(state.dhwrOutstanding && state.pulseUntil > now),
+    const device = this.equipmentStatus().devices.find(row => row.id === 'dhwr' && row.enabled !== false);
+    const reportedState = device?.readings?.dhwr_active ?? null, reportedPower = device?.readings?.dhwr_power ?? null;
+    const actualOn = reportedState && !reportedState.stale && [0, 1].includes(reportedState.value)
+      ? Boolean(reportedState.value) : null;
+    const active = Boolean(state.dhwrOutstanding && state.pulseUntil > now);
+    return { active,
       expiresAt: state.dhwrOutstanding ? state.pulseUntil : null,
       durationMinutes: this.executor.pulseMs / 60_000,
       restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
-      confirmed: false };
+      commandTopic: this.config.connections?.mqtt?.dhwr_topic ?? 'from_stmq/dhwr/set',
+      actualOn, confirmed: actualOn !== null && actualOn === active,
+      feedback: { configured: Boolean(device), deviceId: device?.id ?? null, available: device?.available === true,
+        state: reportedState, power: reportedPower } };
   }
   async stopDhwr(input = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
@@ -567,7 +584,7 @@ export class Engine {
     if (!this.heatingTests().available) throw new Error('MQTT circulation control is unavailable.');
     if (this.heatingTestBusy || this.dispatchPending || this.cycles.active())
       throw new Error('Wait for the current heating operation to finish before stopping manual circulation.');
-    await this.executor.exclusive(() => this.executor.stopDhwr(this.clock()));
+    await this.executor.exclusive(() => this.executor.stopDhwr(this.clock(), { force: this.dhwrStatus().actualOn === true }));
     return this.status();
   }
   async testHeating(input) {
@@ -656,6 +673,18 @@ export class Engine {
     const minutes = input.durationMinutes ?? 2;
     if (!Number.isFinite(minutes) || minutes < 1 || minutes > 15) throw new Error('H66 tests must last 1–15 minutes');
     return this.h66.test({ register: input.register, value: input.value, durationSeconds: minutes * 60, now: this.clock() });
+  }
+  async setH66Setting(input) {
+    if (!this.h66 || !['mqtt', 'providers'].includes(this.config.input)) throw new Error('H66 is not available.');
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some(key => !['register', 'value'].includes(key))) throw new Error('Choose an H66 register and value.');
+    if (this.dispatchPending || this.heatingTestBusy || this.cycles.active())
+      throw new Error('Wait for the current heating operation to finish before changing a native setting.');
+    this.heatingTestBusy = true;
+    try {
+      await this.h66.setSetting({ register: input.register, value: input.value, now: this.clock() });
+    } finally { this.heatingTestBusy = false; }
+    return this.status();
   }
   readAdaptive(now) {
     this.reconcileFireplace();
@@ -1049,7 +1078,7 @@ export class Engine {
       heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},
-      equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),dhwr:this.dhwrStatus(),
+      equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),equipmentControls:this.equipmentControlStatus(),dhwr:this.dhwrStatus(),
       contract:this.contract(),configuredPrices:this.config.priceSettings??null,
       recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
@@ -1071,6 +1100,7 @@ export class Engine {
     result.shelly = this.shelly?.status(now) ?? { configured: false, connected: false, devices: [] };
     result.equipment = this.equipmentStatus();
     result.equipmentTests = this.equipmentTestStatus();
+    result.equipmentControls = this.equipmentControlStatus();
     result.dhwr = this.dhwrStatus();
     result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();

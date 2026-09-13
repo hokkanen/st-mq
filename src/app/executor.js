@@ -101,8 +101,14 @@ export class Executor {
     this.state.acknowledgedAt = this.clock(); this.persist();
     return result;
   }
-  async stopDhwr(now = this.clock()) {
-    if (!this.state.dhwrOutstanding) return false;
+  async stopDhwr(now = this.clock(), { force = false } = {}) {
+    if (!this.state.dhwrOutstanding) {
+      if (!force) return false;
+      // An explicit stop can also address a pump started outside ST-MQ. Save
+      // its OFF obligation before attempting delivery, just like a timed run.
+      this.state.dhwrOutstanding = true; this.state.pulseUntil = now;
+      this.persist();
+    }
     if (typeof this.commandTransport?.publishDhwr !== 'function')
       throw failure('DHWR_UNAVAILABLE', 'DHWR OFF is pending until MQTT switch control is available.');
     const result = await this.commandTransport.publishDhwr(false);

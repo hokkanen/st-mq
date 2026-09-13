@@ -203,74 +203,6 @@
                 <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
               </form>
             </details>
-            <details id="equipment-details" class="dashboard-disclosure">
-              <summary><span>Equipment &amp; tests</span><small>Home &amp; garage</small></summary>
-              <section class="equipment-area" aria-labelledby="home-equipment-title">
-                <div class="equipment-area-heading"><h3 id="home-equipment-title">Home</h3><span id="home-equipment-status" class="equipment-device-status"></span></div>
-                <div id="home-equipment-readings" class="equipment-device-list"></div>
-                <details id="h66-readings-details" class="equipment-fold">
-                  <summary><span>Heat-pump readings</span><small>Husdata H66</small></summary>
-                  <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
-                  <p id="h66-context" class="muted"></p>
-                  <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
-                  <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a status for freshness details.</p>
-                <details id="h66-provider-details" class="equipment-fold">
-                  <summary>About these readings</summary>
-                  <p class="muted">A readback is a value reported by the pump; a requested setting is what this controller asked it to use. H66 usually reports receipt time, not measurement time.</p>
-                  <p class="muted">These series are available for recording and history. Equipment states and configured capacity also help estimate electrical power.</p>
-                  <div id="h66-series"></div>
-                </details>
-                </details>
-
-              <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" class="equipment-active-test" role="status" hidden></p></div>
-              <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-              <details id="home-manual-controls" class="equipment-fold equipment-controls">
-                <summary><span>Manual controls</span><small>Home</small></summary>
-                <details id="h66-test-details" class="heating-test-details equipment-fold">
-                  <summary>Heat-pump settings</summary>
-                  <p class="muted">Checks the reported setting and restores the previous value when the timer ends.</p>
-                  <form id="h66-test-form" class="h66-test-form">
-                    <label>Setting<select id="h66-test-register">
-                      <option value="0203">Room setting</option>
-                      <option value="0212">Hot water start</option>
-                      <option value="0208">Hot water stop</option>
-                      <option value="2201">Operating mode</option>
-                    </select></label>
-                    <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-                    <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
-                    <label>Duration · minutes<input id="h66-test-duration" type="number" min="1" max="15" step="1" value="5" required></label>
-                    <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply temporary test</button>
-                  </form>
-                  <p id="h66-test-status" class="muted">H66 is not connected.</p>
-                  <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </details>
-                <details id="heating-test-details" class="heating-test-details equipment-fold">
-                  <summary>Tariff control &amp; circulation</summary>
-                  <p id="heating-test-help" class="muted">Send a command through MQTT. Circulation stops after its configured duration. Normal heating follows the pump’s own controls.</p>
-                  <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Send a test heating command" aria-describedby="heating-test-help heating-test-status">
-                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>Tariff reduction</span><small>Request reduced heating</small></button>
-                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>Normal heating</span><small>Resume pump controls</small></button>
-                    <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>Start DHWR</span><small>Timed circulation</small></button>
-                  </div>
-                  <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop circulation</button>
-                  <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
-                  <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </details>
-              <details id="home-switch-tests-details" class="equipment-fold" hidden><summary>Switch tests</summary><div id="home-equipment-tests"></div></details>
-              </details>
-              </section>
-              <section id="garage-equipment-details" class="equipment-area" aria-labelledby="garage-title">
-                <div class="equipment-area-heading"><h3 id="garage-title">Garage</h3><span id="garage-equipment-status" class="equipment-device-status">No devices configured</span></div>
-                <div id="garage-equipment-readings" class="equipment-device-list"></div>
-                <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" class="equipment-active-test" role="status" hidden></p></div>
-                <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-                <details id="garage-switch-tests-details" class="equipment-fold equipment-controls" hidden><summary><span>Manual controls</span><small>Garage</small></summary>
-                  <p class="muted">The previous switch state is restored when the timer ends.</p>
-                  <div id="garage-equipment-tests"></div>
-                </details>
-              </section>
-              <div class="equipment-footer"><a href="#mqtt-devices-details" data-open-mqtt-settings>Device connections &amp; setup</a></div>
-            </details>
           </div>
         </article>
       </div>
@@ -353,15 +285,18 @@
           <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
           <div id="provider-overview" class="provider-overview"></div>
           <details id="connections-details" class="dashboard-disclosure">
-            <summary><span>Connections &amp; settings</span><small>Sources, rates &amp; configuration</small></summary>
+            <summary><span>Sources &amp; configuration</span><small>Connections, topics &amp; rates</small></summary>
+            <details id="data-sources-details" class="controller-fold"><summary>Data sources</summary>
             <p id="provider-context" class="muted"></p>
             <p id="price-status" class="muted"></p><p id="weather-status" class="muted"></p>
             <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
+            </details>
             <details id="mqtt-devices-details" class="controller-fold">
-              <summary>MQTT devices</summary>
-              <div class="equipment-connections-toolbar"><p class="muted">Refresh device status.</p><button id="equipment-recheck-all" type="button" class="secondary-button" disabled>Recheck all</button></div>
+              <summary>MQTT connections &amp; topics</summary>
+              <div class="equipment-connections-toolbar"><p class="muted">Check subscriptions and request status where supported.</p><button id="equipment-recheck-all" type="button" class="secondary-button" disabled>Recheck connections</button></div>
               <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
               <div id="equipment-connections"></div>
+              <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
               <details class="equipment-fold"><summary>Device setup</summary>
                 <p>Configure each device in the private configuration file shown under Configuration below, then choose Apply configuration. Use <code>shelly:example-garage</code> for a native Shelly prefix or <code>mqtt:example/garage/door/state</code> for one exact MQTT topic. Connections do not detect or switch protocols.</p>
                 <p>Enable MQTT on the device and point it to the shared broker. Enter the device’s broker username and password in its own setup; these may differ from this app’s credentials. Keep credentials in private configuration.</p>
@@ -409,6 +344,78 @@
           </details>
         </article>
       </div>
+      <article id="equipment-panel" class="panel equipment-panel" aria-labelledby="equipment-title">
+        <details id="equipment-details" class="dashboard-disclosure equipment-disclosure">
+          <summary><span id="equipment-title">Equipment &amp; controls</span><small id="equipment-overview-state">Live state · home &amp; garage</small></summary>
+          <div class="equipment-areas">
+            <section class="equipment-area" aria-labelledby="home-equipment-title">
+              <div class="equipment-area-heading"><h3 id="home-equipment-title">Home</h3><span id="home-equipment-status" class="equipment-device-status"></span></div>
+              <section id="home-manual-controls" class="equipment-device equipment-heat-pump" aria-labelledby="manual-heat-pump-title">
+                <div class="equipment-device-heading"><h4 id="manual-heat-pump-title">Heat pump</h4><span id="manual-h66-status" class="equipment-source">H66</span></div>
+                <div id="heating-test-details">
+                  <div class="equipment-control-state"><span>Tariff control</span><strong id="manual-tariff-state">Unknown</strong></div>
+                  <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Manual heating control" aria-describedby="heating-test-help heating-test-status">
+                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled>Reduce heating</button>
+                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled>Normal heating</button>
+                  </div>
+                  <p id="heating-test-help" class="muted">The heat pump manages heating within the selected tariff state. Normal control resumes automatically.</p>
+                  <p id="heating-test-status" class="muted"></p>
+                  <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </div>
+                <details id="h66-test-details" class="equipment-fold">
+                  <summary>Adjust heat-pump settings</summary>
+                  <form id="h66-test-form" class="h66-test-form">
+                    <label>Setting<select id="h66-test-register">
+                      <option value="0203">Room setting</option><option value="0212">Hot water start</option>
+                      <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
+                    </select></label>
+                    <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                    <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                    <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
+                    <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                  </form>
+                  <p id="h66-test-status" class="muted">H66 is not connected.</p>
+                  <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </details>
+                <details id="h66-readings-details" class="equipment-fold">
+                  <summary>All heat-pump readings</summary>
+                  <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
+                  <p id="h66-context" class="muted"></p>
+                  <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
+                  <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
+                  <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
+                    <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
+                    <div id="h66-series"></div>
+                  </details>
+                </details>
+              </section>
+              <div id="home-equipment-readings" class="equipment-device-list"></div>
+              <section id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
+                <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></div>
+                <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt>Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong></dd></dl>
+                <div id="dhwr-controls" class="equipment-inline-controls">
+                  <p id="dhwr-request-state" class="muted"></p>
+                  <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation">
+                    <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
+                    <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+                  </div>
+                  <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  <p id="dhwr-control-help" class="muted">Stops automatically after the configured run duration.</p>
+                </div>
+              </section>
+              <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
+              <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+            </section>
+            <section id="garage-equipment-details" class="equipment-area" aria-labelledby="garage-title">
+              <div class="equipment-area-heading"><h3 id="garage-title">Garage</h3><span id="garage-equipment-status" class="equipment-device-status">No devices configured</span></div>
+              <div id="garage-equipment-readings" class="equipment-device-list"></div>
+              <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
+              <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+            </section>
+          </div>
+          <div class="equipment-footer"><span>Values show device reports. Open an underlined value for details.</span><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+        </details>
+      </article>
     </section>
 
     <section id="pairing-panel" class="panel pairing-panel" aria-label="Paired computers" hidden>

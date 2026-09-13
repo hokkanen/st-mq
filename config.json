@@ -466,6 +466,7 @@
           "tariff_control": "bool?",
           "reduction_on": "bool?",
           "max_age_seconds": "int(0,86400)?",
+          "record": "bool?",
           "readings": [
             {
               "key": "str",
@@ -476,6 +477,7 @@
               "topic": "str?",
               "component": "str?",
               "required": "bool?",
+              "record": "bool?",
               "scale": "float?",
               "offset": "float?"
             }
