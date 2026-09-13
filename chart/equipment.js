@@ -1,4 +1,5 @@
 import { isReadOnlyReplica } from './replica-status.js';
+import { setStatusDetail } from './status-details.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -34,7 +35,7 @@ export function equipmentReadingRows(device) {
   });
   if (device.energy) {
     const energy = device.energy, available = Number.isFinite(energy.dailyKwh) && Number.isFinite(energy.observedAt);
-    rows.push({ signal: 'daily_energy', label: 'Energy today', value: available ? `${energy.dailyKwh.toFixed(3)} kWh` : 'Unavailable',
+    rows.push({ signal: 'daily_energy', label: 'Energy today', qualifier: energy.partial && available ? 'Partial' : '', value: available ? `${energy.dailyKwh.toFixed(3)} kWh` : 'Unavailable',
       stale: !available, detail: available ? `Finnish day${energy.partial ? ' · partial coverage' : ''} · updated ${clock.format(energy.observedAt)}` : 'Awaiting meter readings' });
   }
   return rows;
@@ -97,7 +98,7 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
 }
 
 export function createEquipmentPanel({ document, request, onStatus, beforeRequest, onBusy = () => {}, blocked = () => false }) {
-  const $ = id => document.getElementById(id), testNodes = new Map(), connectionNodes = new Map(), restoreNodes = new Map();
+  const $ = id => document.getElementById(id), testNodes = new Map(), connectionNodes = new Map(), restoreNodes = new Map(), readingNodes = new Map();
   let current;
   const make = (tag, text = '', className = '') => {
     const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
@@ -109,25 +110,43 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     current = snapshot; onBusy(snapshot.busy); render(snapshot);
   } });
   function renderReadingList(root, devices) {
-    const sections = devices.map(device => {
-      const section = make('section', '', 'equipment-device'), heading = make('div', '', 'equipment-device-heading');
-      section.dataset.deviceId = device.id;
-      heading.append(make('h3', device.label ?? labels[device.kind] ?? 'Device'), make('span', equipmentSource(device), 'equipment-source'));
-      const state = make('p', device.available ? 'Available' : 'Needs attention · waiting for usable readings', 'equipment-device-status');
-      state.dataset.state = device.available ? 'available' : 'attention';
-      section.append(heading, state);
-      const rows = equipmentReadingRows(device), list = make('dl', '', 'equipment-readings');
-      for (const row of rows) {
-        const term = make('dt', row.label), description = make('dd');
-        description.append(make('strong', row.value, row.stale ? 'stale' : ''), make('small', row.detail, 'muted'));
-        list.append(term, description);
+    for (const [index, device] of devices.entries()) {
+      let node = readingNodes.get(device.id);
+      if (!node) {
+        const section = make('section', '', 'equipment-device'), heading = make('div', '', 'equipment-device-heading');
+        section.dataset.deviceId = device.id;
+        const title = make('h4'), source = make('span', '', 'equipment-source');
+        const list = make('dl', '', 'equipment-readings'), empty = make('p', 'Waiting for readings', 'muted');
+        heading.append(title, source); section.append(heading, list, empty);
+        node = { section, title, source, list, empty, rows: new Map() }; readingNodes.set(device.id, node);
       }
-      if (!rows.length) section.append(make('p', 'Waiting for configured device readings.', 'muted'));
-      else section.append(list);
-      if (device.kind === 'heat_pump') section.append(make('p', 'Power enabled describes the relay. Compressor activity is shown only when separately reported.', 'muted'));
-      return section;
-    });
-    root.replaceChildren(...sections);
+      if (root.children[index] !== node.section) root.insertBefore(node.section, root.children[index] ?? null);
+      node.title.textContent = device.label ?? labels[device.kind] ?? 'Device';
+      node.source.textContent = equipmentSource(device);
+      node.source.dataset.state = device.available ? 'available' : 'attention';
+      node.source.setAttribute('aria-label', `${equipmentSource(device)} · ${device.available ? 'Available' : 'Needs attention'}`);
+      const rows = equipmentReadingRows(device);
+      node.empty.hidden = rows.length > 0; node.list.hidden = !rows.length;
+      for (const [index, row] of rows.entries()) {
+        let cells = node.rows.get(row.signal);
+        if (!cells) {
+          const term = make('dt'), description = make('dd'), value = make('strong'), qualifier = make('small', '', 'equipment-reading-qualifier');
+          description.append(value, qualifier); cells = { term, description, value, qualifier }; node.rows.set(row.signal, cells);
+        }
+        cells.term.textContent = row.label; cells.value.className = row.stale ? 'stale' : '';
+        const relayNote = device.kind === 'heat_pump' && /_active$/.test(row.signal)
+          ? ' Power enabled describes the relay, not compressor activity.' : '';
+        setStatusDetail(cells.value, { label: row.value, title: `${device.label ?? 'Device'} · ${row.label}`,
+          detail: row.detail + relayNote, key: `equipment:${device.id}:${row.signal}` });
+        cells.qualifier.textContent = row.qualifier ?? ''; cells.qualifier.hidden = !row.qualifier;
+        if (node.list.children[index * 2] !== cells.term) node.list.insertBefore(cells.term, node.list.children[index * 2] ?? null);
+        if (node.list.children[index * 2 + 1] !== cells.description) node.list.insertBefore(cells.description, node.list.children[index * 2 + 1] ?? null);
+      }
+      for (const [signal, cells] of node.rows) if (!rows.some(row => row.signal === signal)) {
+        cells.term.remove(); cells.description.remove(); node.rows.delete(signal);
+      }
+    }
+    for (const child of [...root.children]) if (!devices.some(device => device.id === child.dataset.deviceId)) child.remove();
   }
   function ensureTest(device, area) {
     let node = testNodes.get(device.id);
@@ -158,29 +177,34 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     for (const area of ['home', 'garage']) {
       const members = devices.filter(device => (device.area ?? 'garage') === area && device.enabled !== false);
       renderReadingList($(`${area}-equipment-readings`), members);
-      if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'Add Garage devices in Connections & settings → MQTT devices.', 'muted'));
+      if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'No garage devices enabled.', 'muted equipment-empty'));
+      const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available).length;
+      overview.textContent = !members.length ? area === 'home' ? 'Heat pump' : 'No devices enabled'
+        : unavailable ? `${unavailable} ${unavailable === 1 ? 'needs' : 'need'} attention` : `${members.length} ${members.length === 1 ? 'device' : 'devices'}`;
+      overview.hidden = !members.length && area === 'garage';
+      overview.dataset.state = unavailable ? 'attention' : members.length ? 'available' : 'pending';
       const activeNode = $(`${area}-active-test`), activeDevice = devices.find(device => device.id === active?.deviceId);
       activeNode.hidden = !active || (activeDevice?.area ?? 'garage') !== area;
       if (!activeNode.hidden) activeNode.textContent = `${activeDevice?.label ?? 'Device'} · ${pretty(active.status ?? 'timed test')}${Number.isFinite(active.until) ? ` · restores at ${clock.format(active.until)}` : ''}`;
+      $(`${area}-test-notice`).hidden = activeNode.hidden;
       let restore = restoreNodes.get(area);
       if (!restore) {
         restore = button('Restore previous state now', () => { if (!blocked()) void actions.restore(); });
-        restore.classList.add('equipment-restore'); restoreNodes.set(area, restore); $(`${area}-equipment-tests`).append(restore);
+        restore.classList.add('equipment-restore'); restoreNodes.set(area, restore); $(`${area}-test-notice`).append(restore);
       }
       restore.hidden = activeNode.hidden; restore.disabled = activeNode.hidden || readOnly || locked;
     }
-    const garage = devices.filter(device => device.area === 'garage' && device.enabled !== false);
-    $('garage-equipment-status').textContent = garage.length ? garage.every(device => device.available) ? 'Available' : 'Needs attention' : 'No devices enabled';
-    $('garage-equipment-status').dataset.state = !garage.length ? 'pending' : garage.every(device => device.available) ? 'available' : 'attention';
     for (const device of devices) {
       if (device.enabled !== false && device.controls?.switch && !device.controls?.tariff) {
         const area = device.area ?? 'garage', node = ensureTest(device, area);
         node.title.textContent = device.label ?? labels[device.kind];
         node.submit.disabled = !equipmentTestAllowed(status, device, locked);
-        node.detail.textContent = node.submit.disabled ? readOnly ? 'Tests are available on the primary computer.'
+        const detail = node.submit.disabled ? readOnly ? 'Tests are available on the primary computer.'
           : active ? 'Another test is active or restoring.' : !device.available ? 'Fresh device state is required for a timed test.'
             : status.equipmentTests?.reason ?? 'Tests are currently unavailable.'
           : 'The previous state is restored when the timer ends. A sent request is separate from device confirmation.';
+        setStatusDetail(node.detail, { label: node.submit.disabled ? 'Test unavailable' : 'Restores automatically',
+          title: `${device.label ?? 'Device'} · timed test`, detail, key: `equipment-test:${device.id}` });
       }
       let node = connectionNodes.get(device.id);
       if (!node) {
@@ -204,17 +228,17 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     for (const [id, node] of testNodes) if (!devices.some(device => device.id === id && device.enabled !== false && device.controls?.switch && !device.controls?.tariff)) { node.form.remove(); testNodes.delete(id); }
     for (const [id, node] of connectionNodes) if (!devices.some(device => device.id === id)) { node.row.remove(); connectionNodes.delete(id); }
     for (const area of ['home', 'garage']) {
-      const root = $(`${area}-equipment-tests`), previous = root.querySelector('.equipment-test-empty'); previous?.remove();
-      if (![...testNodes.values()].some(node => node.area === area)) root.append(make('p', 'No additional switch tests configured.', 'muted equipment-test-empty'));
-      const result = root.querySelector('.equipment-test-result') ?? make('p', '', 'equipment-test-result');
-      result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
+      $(`${area}-switch-tests-details`).hidden = ![...testNodes.values()].some(node => node.area === area);
+      const result = $(`${area}-equipment-result`);
       const last = status.equipmentTests?.lastResult, lastDevice = devices.find(device => device.id === last?.deviceId);
       const recorded = last && (lastDevice?.area ?? 'garage') === area
         ? `${lastDevice?.label ?? 'Device'} · ${pretty(last.status)}${last.confirmed === true ? ' · device confirmed' : last.sent ? ' · command sent, awaiting device confirmation' : ''}${Number.isFinite(last.at) ? ` · ${clock.format(last.at)}` : ''}` : '';
       const actionArea = devices.find(device => device.id === actionDeviceId)?.area ?? 'garage';
       const testMessage = actionKind === 'test' && actionArea === area ? message : '';
-      result.textContent = testMessage || recorded; result.classList.toggle('form-error', Boolean(testMessage && error)); if (!result.parentElement) root.append(result);
+      result.textContent = testMessage || recorded; result.hidden = !result.textContent;
+      result.classList.toggle('form-error', Boolean(testMessage && error));
     }
+    for (const [id, node] of readingNodes) if (!devices.some(device => device.id === id && device.enabled !== false)) { node.section.remove(); readingNodes.delete(id); }
     $('equipment-recheck-all').disabled = !devices.length || locked || readOnly;
     const checkMessage = actionKind === 'recheck' ? message : '';
     $('equipment-check-message').textContent = checkMessage || (devices.length ? '' : 'No MQTT devices configured.');

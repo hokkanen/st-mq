@@ -10,6 +10,7 @@ import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from '.
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel } from './equipment.js';
+import { setStatusDetail } from './status-details.js';
 
 const $ = id => document.getElementById(id);
 const ingress = usesHomeAssistantLogin();
@@ -165,16 +166,34 @@ function renderHeatingTests(s) {
     && JSON.stringify(capability.lastResult) !== lastHeatingTestResult) showHeatingTestResult(capability.lastResult);
 }
 function renderProviderSeries(root, rows) {
-  const list = document.createElement('ul'); list.className = 'provider-series';
-  for (const row of rows) {
-    const item = document.createElement('li'), title = document.createElement('strong'), detail = document.createElement('span');
+  let list = root.querySelector('.provider-series');
+  if (!list) { list = document.createElement('ul'); root.append(list); }
+  list.className = `provider-series${rows.some(row => row.state) ? ' provider-series-live' : ''}`;
+  const keys = new Set(rows.map(row => row.signals.join(',')));
+  for (const item of [...list.children]) if (!keys.has(item.dataset.series)) item.remove();
+  for (const [index, row] of rows.entries()) {
+    const key = row.signals.join(',');
+    let item = [...list.children].find(item => item.dataset.series === key);
+    if (!item) {
+      item = document.createElement('li'); item.dataset.series = key;
+      item.append(document.createElement('strong'), document.createElement('span'), document.createElement('small'));
+    }
+    if (list.children[index] !== item) list.insertBefore(item, list.children[index] ?? null);
     item.dataset.state = row.tone ?? 'pending';
-    if (row.state) item.setAttribute('aria-label', `${row.label}: ${row.state}`);
+    if (row.state) item.setAttribute('aria-label', `${row.label}: ${row.value ?? row.state}${row.value ? `, ${row.state}` : ''}`);
+    const title = item.children[0], value = item.children[1], source = item.children[2];
     title.textContent = `${row.label}${row.unit ? ` · ${row.unit}` : ''}`;
-    detail.textContent = `${row.detail}${row.source ? ` Source: ${row.source}.` : ''}`;
-    item.append(title, document.createElement('br'), detail); list.append(item);
+    if (row.state) {
+      value.className = 'provider-series-value';
+      setStatusDetail(value, { key: `provider-series-${key}`, label: row.value ?? row.state,
+        title: row.label, detail: `${row.state}. ${row.statusDetail ? `${row.statusDetail} ` : ''}${row.detail}${row.source ? ` Source: ${row.source}.` : ''}` });
+      source.className = 'provider-series-source'; source.textContent = row.source ?? ''; source.hidden = !row.source;
+    } else {
+      value.className = 'provider-series-description';
+      value.textContent = `${row.detail}${row.source ? ` Source: ${row.source}.` : ''}`;
+      source.hidden = true;
+    }
   }
-  root.replaceChildren(list);
 }
 function renderH66Series(root) {
   const groups = new Map();
@@ -198,24 +217,29 @@ function renderProviders(s) {
   $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
     : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Indoor measurements, electricity prices and weather forecasts are updated independently. Gaps remain visible in the chart.';
   const entries = dashboardProviders(s, { now: s.now, formatTime: time });
-  $('provider-overview').replaceChildren();
+  const overview = $('provider-overview'), retained = new Set(entries.map(({ key }) => key));
+  for (const item of [...overview.children]) if (!retained.has(item.dataset.sourceKey)) item.remove();
   let attentionCount = 0, backupCount = 0;
-  for (const { display, backup, overviewTitle, source: sourceLabel, sourceStates } of entries) {
+  for (const [index, { key, display, backup, overviewTitle, source: sourceLabel, sourceStates }] of entries.entries()) {
     if (display.attention) attentionCount++;
     if (backup) backupCount++;
-    const item = document.createElement('div'); item.className = 'source-overview';
+    let item = [...overview.children].find(item => item.dataset.sourceKey === key);
+    if (!item) {
+      item = document.createElement('div'); item.className = 'source-overview'; item.dataset.sourceKey = key;
+      item.append(document.createElement('span'), document.createElement('strong'), document.createElement('small'));
+    }
+    if (overview.children[index] !== item) overview.insertBefore(item, overview.children[index] ?? null);
     item.dataset.state = display.attention ? 'attention' : backup ? 'backup'
       : display.state === 'Available' ? 'available' : 'pending';
-    const title = document.createElement('span'); title.textContent = overviewTitle;
-    const state = document.createElement('strong'); state.textContent = display.state;
-    const source = document.createElement('small');
+    const [title, state, source] = item.children; title.textContent = overviewTitle;
+    setStatusDetail(state, { key: `provider-overview-${key}`, label: display.state, title: overviewTitle, detail: display.detail });
+    source.replaceChildren();
     for (const [index, entry] of (sourceStates ?? [{ label: sourceLabel, tone: item.dataset.state, state: display.state }]).entries()) {
       if (index) source.append(document.createTextNode(', '));
       const name = document.createElement('span'); name.className = 'provider-name'; name.dataset.state = entry.tone;
       name.textContent = entry.label; name.title = `${entry.label}: ${entry.state}`;
       name.setAttribute('aria-label', name.title); source.append(name);
     }
-    item.append(title, state, source); $('provider-overview').append(item);
   }
   $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
     : backupCount ? `${backupCount} using backup` : entries.length ? `${entries.length} data feeds`
@@ -227,7 +251,6 @@ function renderProviders(s) {
       : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : 'Waiting for provider status.';
     $('provider-overview').append(note);
   }
-  const retained = new Set(entries.map(({ key }) => key));
   for (const row of [...$('providers').children]) if (!retained.has(row.dataset.provider)) row.remove();
   for (const [index, { key: name, display, series }] of entries.entries()) {
     let row = [...$('providers').children].find(row => row.dataset.provider === name);
@@ -246,7 +269,8 @@ function renderProviders(s) {
     const state = row.querySelector('.provider-heading > span');
     state.textContent = display.state;
     state.className = display.attention ? 'stale' : 'muted';
-    row.querySelector('.provider-health').textContent = display.detail;
+    setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${name}`,
+      label: 'Connection details', title: display.title, detail: `${display.state}. ${display.detail}` });
     renderProviderSeries(row.querySelector('.provider-series-content'), series);
   }
 }
@@ -323,53 +347,73 @@ function showH66Test(result) {
     result.expiresAt ? `until ${time(result.expiresAt)}` : '', result.error ?? result.reason ?? label(result.code ?? '')].filter(Boolean).join(' · ') : '';
 }
 function renderH66(s) {
-  const h66 = s.h66 ?? {};
-  const summary = h66HomeSummary(s);
-  $('home-h66-summary').replaceChildren();
+  const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
   for (const key of ['mode', 'dhw', 'room']) {
     const row = summary.find(row => row.key === key);
-    const detail = document.createElement('div'); detail.className = 'equipment-value'; detail.dataset.h66Summary = row.key;
-    const title = document.createElement('span'); title.textContent = ({ mode: 'Operating mode', dhw: 'Hot water target', room: 'ROOM setting' })[key];
-    const value = document.createElement('strong'); value.textContent = row.available ? row.value : 'Unavailable';
-    value.title = row.detail;
-    if (!row.available) value.className = 'muted';
-    detail.append(title, value); $('home-h66-summary').append(detail);
+    let detail = root.querySelector(`[data-h66-summary=${key}]`);
+    if (!detail) {
+      detail = document.createElement('div'); detail.className = 'equipment-value'; detail.dataset.h66Summary = key;
+      detail.append(document.createElement('span'), document.createElement('strong')); root.append(detail);
+    }
+    const [title, value] = detail.children;
+    title.textContent = ({ mode: 'Operating mode', dhw: 'Hot water target', room: 'ROOM setting' })[key];
+    value.classList.toggle('muted', !row.available);
+    setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
+      title: title.textContent, detail: row.detail });
   }
+  let notice = root.querySelector('.equipment-alarm');
   const alarm = summary.find(row => row.key === 'alarm');
   if (alarm?.available && alarm.value === 'Alarm active') {
-    const notice = document.createElement('p'); notice.className = 'equipment-alarm'; notice.textContent = 'Heat-pump alarm active';
-    $('home-h66-summary').append(notice);
-  }
+    if (!notice) { notice = document.createElement('p'); notice.className = 'equipment-alarm'; root.append(notice); }
+    notice.textContent = 'Heat-pump alarm active';
+  } else notice?.remove();
   const tariff = summary.find(row => row.key === 'tariff');
-  $('home-tariff-status').textContent = tariff.value; $('home-tariff-status').title = tariff.detail;
+  setStatusDetail($('home-tariff-status'), { key: 'home-tariff',
+    label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
+    title: 'Tariff control', detail: `${tariff.value}. ${tariff.detail}` });
   $('home-tariff-status').dataset.h66Summary = 'tariff';
-  $('h66-status').textContent = h66.connected ? 'H66 connected' : h66.brokerConnected ? 'Waiting for live H66 readings' : 'Not connected';
-  if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
-  $('h66-context').textContent = h66.restorationPending ? 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.' : h66.reason ?? (h66.connected
+  const connectionDetail = h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
     : 'Waiting for a live H66 connection and fresh values from the heat pump.');
-  const table = document.createElement('table'); table.className = 'h66-table';
-  const caption = document.createElement('caption'); caption.textContent = 'Latest values reported through H66'; table.append(caption);
-  const head = document.createElement('thead'), header = document.createElement('tr');
-  for (const text of ['Reading', 'Value', 'Received', 'Availability']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
-  head.append(header); table.append(head);
-  const body = document.createElement('tbody');
-  const readings = h66.readings ?? {};
-  const registers = [...new Set([...Object.keys(h66Registers), ...Object.keys(readings)])];
-  for (const register of registers) {
-    const reading = readings[register], row = document.createElement('tr');
-    const title = document.createElement('th'); title.scope = 'row'; title.textContent = h66Registers[register]?.label ?? label(reading?.signal ?? `Register ${register}`);
-    const value = document.createElement('td'); value.textContent = h66ReadingValue(register, reading);
-    if (Number.isFinite(reading?.requested)) value.textContent += ` · requested ${h66ReadingValue(register, { ...reading, value: reading.requested })}`;
-    if (Number.isFinite(reading?.baseline)) value.textContent += ` · original ${h66ReadingValue(register, { ...reading, value: reading.baseline })}`;
-    const availability = h66ReadingStatus(h66, reading, { now: s.now }), reason = document.createElement('td');
-    reason.textContent = availability.detail;
-    if (!availability.usable) { value.className = 'stale'; value.textContent += ' · unavailable for control'; }
-    const at = document.createElement('td'), timestamp = reading?.receivedAt ?? reading?.at;
-    at.textContent = timestamp && Number.isFinite(new Date(timestamp).getTime()) ? time(timestamp) : '—';
-    row.append(title, value, at, reason); body.append(row);
+  setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'H66 connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
+    title: 'Heat-pump connection', detail: connectionDetail });
+  if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
+  if (h66.restorationPending) setStatusDetail($('h66-context'), { key: 'h66-context',
+    label: 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.', detail: '' });
+  else setStatusDetail($('h66-context'), { key: 'h66-context', label: 'Connection details', title: 'Heat-pump connection', detail: connectionDetail });
+  let table = $('h66-readings').querySelector('table');
+  if (!table) {
+    table = document.createElement('table'); table.className = 'h66-table';
+    const caption = document.createElement('caption'); caption.textContent = 'Latest values reported through H66'; table.append(caption);
+    const head = document.createElement('thead'), header = document.createElement('tr');
+    for (const text of ['Reading', 'Value', 'Received']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
+    head.append(header); table.append(head, document.createElement('tbody')); $('h66-readings').append(table);
   }
-  table.append(body); $('h66-readings').replaceChildren(table);
+  const body = table.querySelector('tbody'), readings = h66.readings ?? {};
+  const registers = [...new Set([...Object.keys(h66Registers), ...Object.keys(readings)])];
+  for (const row of [...body.children]) if (!registers.includes(row.dataset.register)) row.remove();
+  for (const [index, register] of registers.entries()) {
+    const reading = readings[register];
+    let row = [...body.children].find(row => row.dataset.register === register);
+    if (!row) {
+      row = document.createElement('tr'); row.dataset.register = register;
+      const title = document.createElement('th'); title.scope = 'row';
+      row.append(title, document.createElement('td'), document.createElement('td'));
+    }
+    if (body.children[index] !== row) body.insertBefore(row, body.children[index] ?? null);
+    const [title, value, at] = row.children;
+    title.textContent = h66Registers[register]?.label ?? label(reading?.signal ?? `Register ${register}`);
+    const availability = h66ReadingStatus(h66, reading, { now: s.now });
+    let valueLabel = availability.usable ? h66ReadingValue(register, reading) : 'Unavailable';
+    value.classList.toggle('stale', !availability.usable);
+    if (Number.isFinite(reading?.requested)) valueLabel += ` · requested ${h66ReadingValue(register, { ...reading, value: reading.requested })}`;
+    if (Number.isFinite(reading?.baseline)) valueLabel += ` · original ${h66ReadingValue(register, { ...reading, value: reading.baseline })}`;
+    const timestamp = reading?.receivedAt ?? reading?.at;
+    at.textContent = timestamp && Number.isFinite(new Date(timestamp).getTime()) ? time(timestamp) : '—';
+    setStatusDetail(value, { key: `h66-reading-${register}`, label: valueLabel,
+      title: title.textContent, detail: `${availability.detail}${!availability.usable && Number.isFinite(reading?.value)
+        ? ` Last reported value: ${h66ReadingValue(register, reading)}.` : ''}${at.textContent !== '—' ? ` Received ${at.textContent}.` : ''}` });
+  }
   updateH66Selector();
   if (!h66TestBusy && h66.lastTest) showH66Test(h66.lastTest.expiresAt <= s.now && h66.lastTest.status !== 'failed'
     ? { ...h66.lastTest, status: h66.restorationPending ? 'restoration pending' : 'expired; no pending overrides' } : h66.lastTest);
@@ -392,15 +436,14 @@ function render(s) {
   for (const key of ['indoor', 'outdoor']) {
     const obs = s.observations[key] ?? {};
     const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
-    $(key).textContent = Number.isFinite(obs.value) ? `${obs.value.toFixed(1)} °C` : '—';
+    const title = key === 'indoor' ? 'Indoor average' : 'Outdoor temperature';
+    setStatusDetail($(key), { key: `metric-${key}`, label: readingStatus.usable ? `${obs.value.toFixed(1)} °C` : 'Unavailable',
+      title, detail: readingStatus.detail });
     $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention);
+    $(key).classList.toggle('metric-unavailable', !readingStatus.usable);
     const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
-    if (key === 'indoor') {
-      const issue = !readingStatus.usable || readingStatus.attention;
-      $('indoor-issue').hidden = !issue;
-      $('indoor-age').textContent = `${source ? `${source} · ` : ''}${!readingStatus.usable ? 'Unavailable' : readingStatus.attention ? 'Needs attention' : 'Readings current'}`;
-      $('indoor-status-detail').textContent = `Indoor average · ${readingStatus.detail}`;
-    } else $(`${key}-age`).textContent = `${source ? `${source} · ` : ''}${readingStatus.detail}`;
+    const state = !readingStatus.usable ? '' : readingStatus.attention ? 'Needs attention' : 'Readings current';
+    $(`${key}-age`).textContent = [source, state].filter(Boolean).join(' · ');
   }
   $('requested').textContent = label(s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'));
   $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;
@@ -461,10 +504,6 @@ function render(s) {
   fireplacePanel.update(s.fireplace, s.now);
   $('updated').textContent = `Updated ${time(s.now)}`;
 }
-$('indoor-issue').addEventListener('click', () => {
-  $('equipment-details').open = true;
-  $('indoor-status-detail').focus({ preventScroll: true });
-});
 async function events() {
   const rows = await api(`/api/events?after=${lastEvent}&limit=50`);
   for (const event of rows) {

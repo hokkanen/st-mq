@@ -75,10 +75,33 @@ test('replica observation tails stay at the copied snapshot while primary charts
 });
 
 function fixture() {
+  const document = {};
   class Element {
-    constructor() { this.dataset = {}; this.disabled = false; this.hidden = false; this.controls = []; this.classes = new Set();
-      this.classList = { toggle: (key, on) => on ? this.classes.add(key) : this.classes.delete(key) }; }
+    constructor() {
+      Object.assign(this, { ownerDocument: document, dataset: {}, disabled: false, hidden: false, controls: [], children: [],
+        classes: new Set(), attributes: {}, listeners: new Map(), style: {}, ownText: '', className: '', scrollTop: 0 });
+      this.classList = { toggle: (key, on) => on ? this.classes.add(key) : this.classes.delete(key) };
+    }
+    get isConnected() { return true; }
+    get textContent() { return this.ownText + this.children.map(child => child.textContent).join(''); }
+    set textContent(value) { this.children = []; this.ownText = String(value); }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; this.ownText = ''; }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+    getAttribute(name) { return this.attributes[name] ?? null; }
+    addEventListener(name, callback) { this.listeners.set(name, [...this.listeners.get(name) ?? [], callback]); }
+    click() { for (const callback of this.listeners.get('click') ?? []) callback({ target: this }); }
+    focus() { document.activeElement = this; }
     querySelectorAll() { return this.controls; }
+    querySelector(selector) {
+      for (const child of this.children) {
+        if (selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1)) : child.id === selector.slice(1)) return child;
+        const nested = child.querySelector(selector);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    getBoundingClientRect() { return { left: 20, top: 20, right: 300, bottom: 60, width: 280, height: 40 }; }
   }
   const ids = ['primary-replication-notice', 'primary-replication-summary', 'primary-replication-detail',
     'replica-notice', 'replica-summary', 'replica-snapshot', 'replica-success', 'replica-verification',
@@ -87,9 +110,11 @@ function fixture() {
   const nodes = new Map(ids.map(id => [id, new Element()]));
   const controls = new Element(); controls.controls = Array.from({ length: 8 }, () => new Element());
   const sections = [new Element(), new Element(), new Element()];
-  const document = { documentElement: new Element(), getElementById: id => nodes.get(id),
-    querySelectorAll: selector => selector === '[data-controller-only]' ? [controls] : sections };
-  return { document, controls, sections, $: id => nodes.get(id) };
+  Object.assign(document, { documentElement: new Element(), body: new Element(), createElement: () => new Element(),
+    defaultView: { innerWidth: 390, innerHeight: 844, addEventListener() {} }, addEventListener() {},
+    getElementById: id => nodes.get(id) ?? document.body.querySelector(`#${id}`),
+    querySelectorAll: selector => selector === '[data-controller-only]' ? [controls] : sections });
+  return { document, controls, sections, $: id => document.getElementById(id) };
 }
 
 test('a replica renders without Engine status and never presents copied active flags as a live controller', () => {
@@ -109,7 +134,7 @@ test('a replica renders without Engine status and never presents copied active f
   assert.equal(controls.hidden, true);
   assert(controls.controls.every(node => node.disabled));
   assert.equal($('indoor').textContent, '21.3 °C');
-  assert.equal($('outdoor').textContent, '—');
+  assert.equal($('outdoor').textContent, 'Unavailable');
   assert.match($('indoor-age').textContent, /Recorded/);
   assert.equal($('requested').textContent, 'reduction');
   assert.equal($('requested-label').textContent, 'RECORDED HEATING REQUEST');
@@ -134,7 +159,7 @@ test('replica renders the recorded indoor average and outdoor summary without ro
     assert.match($(`${key}-age`).textContent, /Recorded/);
   }
   renderReplicaStatus(document, { ...ready(), observations: { indoor: observation(21), upstairs: observation(22) } });
-  assert.equal($('outdoor').textContent, '—', 'a missing copied observation must not retain an old value');
+  assert.equal($('outdoor').textContent, 'Unavailable', 'a missing copied observation must not retain an old value');
   assert($('outdoor').classes.has('stale'));
 });
 
@@ -146,7 +171,10 @@ test('replica explains held indoor contributions without confusing sensor age wi
   } } });
   assert.equal($('indoor').textContent, '21.0 °C');
   assert($('indoor').classes.has('stale'));
-  assert.match($('indoor-age').textContent, /Recorded.*Needs attention.*Bedroom.*over 2 hours old.*sensor disconnected/);
+  assert.equal($('indoor-age').textContent, 'Recorded · Needs attention');
+  $('indoor').querySelector('.status-detail-trigger').click();
+  assert.match($('status-detail-popover').textContent, /Recorded.*Needs attention.*Bedroom.*over 2 hours old.*sensor disconnected/);
+  assert.doesNotMatch($('indoor-age').textContent, /Bedroom|sensor disconnected/);
   assert.equal($('replica-notice').dataset.state, 'ready', 'Sensor attention does not change the snapshot status');
 });
 

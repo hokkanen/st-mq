@@ -1,6 +1,7 @@
 import { outdoorSourceLabel, providerName, temperatureReadingStatus } from './provider-status.js';
 import { durationText } from './reading-status.js';
 import { pairAllowsControl } from './pair-status.js';
+import { setStatusDetail } from './status-details.js';
 
 export const isReadOnlyReplica = status => ['replica', 'protected', 'transition'].includes(status?.role)
   || status?.instance?.role === 'replica' || status?.controlAuthority?.state === 'protected' || !pairAllowsControl(status);
@@ -191,11 +192,14 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     const observation = status.observations?.[key] ?? {};
     const at = timestamp(observation.observedAt ?? observation.sourceTime ?? observation.receivedAt);
     const readingStatus = temperatureReadingStatus(observation, { now: status.now ?? Date.now(), formatTime, outdoor: key === 'outdoor' });
-    $(key).textContent = Number.isFinite(observation.value) ? `${observation.value.toFixed(1)} °C` : '—';
-    $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention || display.state !== 'ready');
     const source = key === 'outdoor' ? outdoorSourceLabel(observation.source) : providerName(observation.source);
-    $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time',
-      !readingStatus.usable || readingStatus.attention ? readingStatus.detail : null].filter(Boolean).join(' · ');
+    const recorded = at ? `Recorded ${formatTime(at)}.` : 'No recorded measurement time.';
+    setStatusDetail($(key), { key: `metric-${key}`, title: key === 'indoor' ? 'Recorded indoor average' : 'Recorded outdoor temperature',
+      label: readingStatus.usable ? `${observation.value.toFixed(1)} °C` : 'Unavailable',
+      detail: `${recorded} ${readingStatus.detail}${display.state !== 'ready' ? ` ${display.summary}` : ''}` });
+    $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention || display.state !== 'ready');
+    $(key).classList.toggle('metric-unavailable', !readingStatus.usable);
+    $(`${key}-age`).textContent = [source, 'Recorded', readingStatus.usable && readingStatus.attention ? 'Needs attention' : null].filter(Boolean).join(' · ');
   }
   const decision = status.lastDecision?.payload ?? status.lastDecision ?? (stoppedController ? status.decision : null) ?? {};
   $('requested').textContent = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');

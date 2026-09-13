@@ -138,7 +138,7 @@ try {
     assert.equal(observations[key].value, value, `${key} remains available to the controller`);
   }
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"),
-    'Main temperatures · Smartthings, FMI');
+    'Main temperatures · MQTT, FMI');
   assert.equal(await evaluate("document.querySelectorAll('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').length"), 1);
   assert.equal(await evaluate("document.querySelector('#chart-legend [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
   for (const signal of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']) {
@@ -151,10 +151,10 @@ try {
   assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
   assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
   await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
-  await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 3");
+  await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 5");
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]'), node => node.textContent)"),
-    ['Upstairs', 'Bedroom', 'Downstairs']);
-  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Garage probe 2']);
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
   mkdirSync('var', { recursive: true });
   for (const theme of ['dark', 'light']) {
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click()`);
@@ -184,7 +184,7 @@ try {
         swatches.garage_temperature, `${theme}: garage stays on the right and keeps its colour with ${selection}`);
     }
     await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
-    await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 3");
+    await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 5");
     await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-temperatures-${theme}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   }
@@ -243,13 +243,15 @@ try {
     'Cancelling the confirmation does not record a sensor change');
   assert.equal(await evaluate('globalThis.sensorSmokeSavedRequest === undefined'), true);
   await confirmClick('#sensor-change-submit', true, /Recorded readings are kept/);
-  await until("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === '—'");
+  await until("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === 'Unavailable'");
   assert.match(await evaluate("document.getElementById('sensor-change-message').textContent"), /Downstairs change recorded/);
   assert.match(await evaluate("document.getElementById('sensor-change-entries').textContent"), /Downstairs · New location/);
   const settling = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
   assert.equal(settling.downstairs.value, 20.2, 'raw sensor values remain available during settling');
   assert.equal(settling.downstairs.settling, true);
-  assert.match(await evaluate("document.getElementById('indoor-age').textContent"), /Settling after sensor change/);
+  await evaluate("document.querySelector('#indoor .status-detail-trigger').click();true");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Settling after sensor change/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   const saved = await fetch(`${base}/api/sensor-changes`).then(response => response.json());
   assert.equal(saved.events.length, 1); assert.equal(saved.events[0].signal, 'downstairs_temperature');
   assert.equal(saved.events[0].reason, 'moved'); assert.equal(saved.events[0].at, now);
@@ -319,8 +321,8 @@ try {
   assert.deepEqual(historicalReadings(), originalReadings, 'Recording and reverting leave historical raw temperatures intact');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['room cards removed', 'raw room readings retained', 'weighted indoor average',
-    'one Average indoor chart legend', 'garage stays on right axis', 'garage and other air group removed from drawer', 'all home temperatures on left axis',
-    'Smartthings source with local MQTT', 'distinct room colours in both themes', 'average and outdoor preserve colours',
+    'one Average indoor chart legend', 'garage stays on right axis for power and joins home temperatures', 'garage and other air group removed from drawer', 'all home temperatures on left axis',
+    'MQTT temperature source', 'distinct room colours in both themes', 'average and outdoor preserve colours',
     'separate indoor and outdoor sensor maintenance folds', 'unchanged closed Home and Data card heights', 'keyboard disclosure access',
     'configured sensor choices and reason labels', 'selection, focus and open state survive status refresh', 'real sensor-change API submission',
     'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout',

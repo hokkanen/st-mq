@@ -86,7 +86,7 @@ try {
   await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-temperature-field').hidden"), false);
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
-  assert.equal(await evaluate("document.querySelector('#h66-provider-details > summary').textContent"), 'Husdata H66 data guide');
+  assert.equal(await evaluate("document.querySelector('#h66-provider-details > summary').textContent"), 'About these readings');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
   assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
@@ -219,6 +219,17 @@ try {
     await evaluate("document.getElementById('left-axis').value='power'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
     await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === 'power'");
   }
+  for (const width of [320, 390, 1440]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: width < 600 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
+    await evaluate("document.getElementById('equipment-details').open=true;document.getElementById('h66-readings-details').open=true;document.getElementById('h66-readings-details').scrollIntoView({block:'start'});true");
+    assert.equal(await evaluate(`(() => {
+      const table=document.querySelector('#h66-readings table'),labels=[...table.querySelectorAll('.status-detail-label')];
+      return document.documentElement.scrollWidth<=innerWidth && labels.every(label=>{
+        const range=document.createRange();range.selectNodeContents(label);return range.getClientRects().length===1;
+      }) && getComputedStyle(table.querySelector('thead th:last-child')).display${width < 600 ? '===' : '!=='}'none';
+    })()`), true, `H66 values stay readable with an appropriate received-time column at ${width}px`);
+    writeFileSync(`var/home-energy-h66-compact-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+  }
   // Exercise the real Engine/status/API/H66 controller with an in-memory MQTT
   // publication function. It has no broker address or physical connection.
   await app.close(); app = null;
@@ -243,9 +254,12 @@ try {
   assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=mode]').textContent.includes('Auto')"), true);
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=dhw]').textContent.includes('40–55 °C')"), true);
-  assert.equal(await evaluate("document.getElementById('home-tariff-status').textContent.includes('Unknown · no device readback')"), true);
+  assert.equal(await evaluate("document.getElementById('home-tariff-status').textContent"), 'Unknown');
+  await evaluate("document.querySelector('#home-tariff-status .status-detail-trigger').click();true");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /no device readback/i);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · Smartthings, FMI');
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT, FMI');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
     ['Upstairs · °C', 'Downstairs · °C', 'Bedroom · °C', 'Garage temperature · °C', 'Outdoor temperature · °C']);
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
@@ -261,17 +275,18 @@ try {
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('home-manual-controls').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     await checkNestedFolds('#providers .provider-fold, #controls-details, #electricity-details');
     assert.equal(await evaluate(`(() => {
-      const folds = ['h66-readings-details', 'h66-provider-details', 'h66-test-details', 'heating-test-details'].map(id => document.getElementById(id));
-      const left = folds[0].querySelector('summary').getBoundingClientRect().left;
-      return folds.every(fold => {
-        const summary = fold.querySelector('summary');
-        return summary.checkVisibility() && fold.parentElement.closest('details').id === 'equipment-details'
-          && Math.abs(summary.getBoundingClientRect().left - left) < 1;
+      const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
+        'home-manual-controls': 'equipment-details', 'h66-test-details': 'home-manual-controls', 'heating-test-details': 'home-manual-controls' };
+      return Object.entries(parents).every(([id,parent]) => {
+        const fold=document.getElementById(id),summary=fold.querySelector(':scope > summary');
+        const parentSummary=document.querySelector('#'+parent+' > summary');
+        return summary.checkVisibility() && fold.parentElement.closest('details').id === parent
+          && summary.getBoundingClientRect().left >= parentSummary.getBoundingClientRect().left + 15;
       });
-    })()`), true, 'Equipment readings, data guide and tests are visible, aligned peer folds');
+    })()`), true, 'Equipment guidance and tests are visibly nested under readings and manual controls');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");
@@ -282,11 +297,15 @@ try {
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
-  await evaluate("document.getElementById('equipment-details').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-duration').value='1'; document.getElementById('h66-test-form').requestSubmit()");
+  await evaluate("document.getElementById('equipment-details').open=true; document.getElementById('home-manual-controls').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-duration').value='1'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
   assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
   assert.equal(h66.status().readings['0208'].baseline, 55);
   assert.equal(await evaluate("document.getElementById('h66-readings').textContent.includes('original 55 °C')"), true);
+  assert.equal(await evaluate("document.getElementById('h66-readings').textContent.includes('requested 50 °C')"), true);
+  await evaluate("document.getElementById('h66-readings-details').open=true;document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Received/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   now += 61_000; await h66.reconcile({ now }); app.engine.tick();
   await send('Page.reload');
   await until("document.getElementById('h66-test-message')?.textContent.includes('no pending overrides')");

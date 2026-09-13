@@ -545,24 +545,26 @@ try {
     await evaluate("document.querySelector('#equipment-details > summary').focus(); true");
     await command('input.performActions', { context, actions: [{ type: 'key', id: 'equipment-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
     assert.equal(await evaluate("document.getElementById('equipment-details').open"), true, 'Equipment opens by keyboard');
-    const folds = ['h66-readings-details', 'h66-provider-details', 'h66-test-details', 'heating-test-details'];
-    assert.equal(await evaluate(`(${JSON.stringify(folds)}).every(id => {
+    const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
+      'home-manual-controls': 'equipment-details', 'h66-test-details': 'home-manual-controls', 'heating-test-details': 'home-manual-controls' };
+    assert.equal(await evaluate(`Object.entries(${JSON.stringify(parents)}).every(([id,parent]) => {
       const fold = document.getElementById(id);
-      return !fold.open && fold.parentElement.closest('details').id === 'equipment-details'
-        && fold.querySelector('summary').checkVisibility();
-    })`), true, 'Readings, data guide and tests are directly accessible peer folds');
+      return !fold.open && fold.parentElement.closest('details').id === parent;
+    })`), true, 'Equipment groups readings, their guide, and manual controls separately');
+    assert.equal(await evaluate("['h66-readings-details','home-manual-controls'].every(id=>document.querySelector('#'+id+' > summary').checkVisibility())"), true);
+    assert.equal(await evaluate("['h66-provider-details','h66-test-details','heating-test-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Secondary guidance and tests stay behind their parent disclosure');
     for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
       await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
       await evaluate("document.getElementById('equipment-details').scrollIntoView({block:'start'}); true");
       await capture(`home-energy-equipment-${viewport.width}`);
       for (const id of ['h66-readings-details', 'h66-provider-details']) {
-        await evaluate(`document.querySelector('#${id} > summary').click(); document.getElementById('${id}').scrollIntoView({block:'start'}); true`);
+        await evaluate(`(() => {const fold=document.getElementById('${id}');for(let parent=fold.parentElement.closest('details');parent;parent=parent.parentElement.closest('details'))parent.open=true;fold.querySelector(':scope > summary').click();fold.scrollIntoView({block:'start'});return true;})()`);
         assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
         assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded equipment content fits the viewport');
         await capture(`home-energy-${id}-${viewport.width}`);
         await evaluate(`document.querySelector('#${id} > summary').click(); true`);
       }
-      await evaluate("document.getElementById('theme-toggle').click(); true");
+      await evaluate("document.querySelectorAll('#equipment-details details').forEach(fold=>fold.open=false);document.getElementById('theme-toggle').click(); true");
     }
     await evaluate("document.getElementById('equipment-details').open = false; true");
     await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
@@ -756,7 +758,9 @@ try {
   await checkPowerDrawn();
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
-  assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Next ENTSO-E try')"), true);
+  await evaluate("document.querySelector('#provider-overview [data-source-key=market] .status-detail-trigger').click();true");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Next ENTSO-E try/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT, FMI');
   assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
     'Upstairs · °C,Downstairs · °C,Bedroom · °C,Garage temperature · °C,Outdoor temperature · °C');
@@ -818,8 +822,10 @@ try {
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
   await checkProviderColors(true);
-  assert.match(await evaluate("document.querySelector('[data-provider=electricity] .provider-health').textContent"),
+  await evaluate("document.querySelector('[data-provider=electricity] .provider-health .status-detail-trigger').click();true");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"),
     /Charger 2.*MQTT connection is unavailable/i, 'The connection failure identifies Charger 2');
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'Updating capture health preserves the expanded connection');
   charger2Status = { ...charger2Status, status: 'ok', reason: 'recording',
@@ -832,6 +838,7 @@ try {
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
   assert.equal(await evaluate("document.getElementById('heating-test-details').open"), false);
   await evaluate(`document.getElementById('equipment-details').open = true;
+    document.getElementById('home-manual-controls').open = true;
     document.getElementById('heating-test-details').open = true;
     document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-10T18:00';
@@ -865,7 +872,7 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('h66-readings-details').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
@@ -879,7 +886,7 @@ try {
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-total-series-and-session-check',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
-    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'garage-restore-with-collapsed-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

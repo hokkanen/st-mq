@@ -16,7 +16,8 @@ const states = Object.freeze({ ok: 'Available', healthy: 'Available', available:
 export const providerTone = display => display.attention ? 'attention'
   : display.state === 'Using backup' ? 'backup' : display.state === 'Available' ? 'available' : 'pending';
 const sourceStatus = (label, display) => ({ label, state: display.state, tone: providerTone(display) });
-const withStatus = (row, display) => ({ ...row, state: display.state, tone: providerTone(display) });
+const withStatus = (row, display) => ({ ...row, state: display.state, tone: providerTone(display),
+  ...(display.detail && display.state !== 'Available' ? { statusDetail: display.detail } : {}) });
 
 const qualityLabels = Object.freeze({
   stale: 'Some readings have old source timestamps.',
@@ -150,11 +151,13 @@ function temperatureDisplay(status, entries, options) {
       : key === 'garage' ? 'Optional garage sensor, recorded for history.'
         : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
     const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
-    return withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
+    const row = withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
       state: readingStatus.attention ? 'Needs attention' : readingStatus.usable
         ? key === 'outdoor' && outdoorHealth?.status === 'fallback' && source !== 'husdata-h66' ? 'Using backup' : 'Available'
         : reading?.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
     });
+    return { ...row, value: readingStatus.usable ? `${reading.value.toFixed(1)} °C`
+      : reading?.configured === false ? 'Not configured' : 'Unavailable' };
   });
   const sources = [...new Set(rows.map(row => row.source).filter(Boolean))].join(', ');
   const required = [observations.indoor, observations.outdoor];
