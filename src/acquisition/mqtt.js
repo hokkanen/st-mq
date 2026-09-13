@@ -1,4 +1,4 @@
-import { decodeMqttTemperature } from './mqtt-temperature.js';
+import { decodeMqttTemperature, temperatureRouteSignature } from './mqtt-temperature.js';
 import { createShellyCapture } from './shelly.js';
 import { createEquipmentCapture } from './equipment.js';
 import { readFileSync } from 'node:fs';
@@ -35,6 +35,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic))
     .filter(([signal]) => !equipmentOwnedSignals.includes(signal));
+  const roomRoutes = new Map(temperatureTopics.filter(([signal]) => INDOOR_SIGNALS.includes(signal)).map(([signal, topic]) => [signal,
+    { reportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
+      reportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
+      routeSignature: temperatureRouteSignature({ brokerIdentity: { address, username }, topic }) }]));
   for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal) || signal === 'garage_temperature')
     engine.configureTemperatureReports?.(signal, {
       reportIntervalMs: signal === 'garage_temperature' ? 30_000 : config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
@@ -43,7 +47,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
   if (teslamate) engine.teslamate = teslamate;
-  const client = connect(address, { username, password, reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false });
+  // Every connect explicitly subscribes below. MQTT.js automatic resubscription
+  // can otherwise report cached success before the broker acknowledges a route.
+  const client = connect(address, { username, password, reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false, resubscribe: false });
+  let connectionGeneration = 0, stopping = false, equipmentSubscriptionBuffer = null;
   let connected = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
@@ -55,9 +62,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const at = engine.clock(), observations = [];
     const record = () => {
       for (const signal of signals) {
-        engine.recorder?.recordFailure({ ...signal, at, quality });
-        observations.push({ ...signal, value: null, sourceTime: null, receivedAt: at, quality,
-          raw: { usableForControl: false, timeBasis: 'availability-transition' } });
+        const raw = { usableForControl: false, timeBasis: 'availability-transition',
+          ...(roomRoutes.has(signal.signal) ? { temperatureRouteSignature: roomRoutes.get(signal.signal).routeSignature } : {}) };
+        engine.recorder?.recordFailure({ ...signal, at, quality, raw });
+        observations.push({ ...signal, value: null, sourceTime: null, receivedAt: at, quality, raw });
       }
     };
     if (store.transaction) store.transaction(record); else record();
@@ -111,31 +119,52 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   };
   const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings }) : null;
   const connectedHandler = () => {
-    if (connected || stopped) return;
+    if (connected || stopped || stopping) return;
+    const generation = ++connectionGeneration;
+    const currentSubscription = () => connected && !stopped && !stopping && generation === connectionGeneration;
     connected = true; disconnectedRecorded = false; h66?.setConnected(true);
     store.event('mqtt-connected', { source, writesEnabled: Boolean(h66 && settings.writeEnabled === true) }, engine.clock());
     if (h66) client.subscribe(`${deviceId}/HP/#`, { qos: 0 }, error => {
+      if (!currentSubscription()) return;
       if (error) { markUnavailable(h66Signals, ['mqtt-subscription-failed']); report('mqtt-subscribe-error'); return; }
       requestSnapshot().catch(() => report('mqtt-snapshot-request-failed'));
     });
     for (const [signal, topic] of temperatureTopics) client.subscribe(topic, { qos: 0 }, error => {
+      if (!currentSubscription()) return;
       if (error) {
         markUnavailable(temperatureSignals.filter(row => row.signal === signal), ['mqtt-subscription-failed']);
         report('mqtt-temperature-subscribe-error');
+      } else if (roomRoutes.has(signal)) {
+        try { engine.confirmTemperatureConnection?.(signal, roomRoutes.get(signal)); }
+        catch (error) { report('mqtt-temperature-recovery-failed', error); }
       }
     });
     if (shelly) {
-      let subscriptions = shelly.topics.length; const failedTopics = [];
+      let subscriptions = shelly.topics.length; const failedTopics = [], confirmedTopics = [];
+      const buffered = { messages: [], bytes: 0, overflow: new Set() };
+      equipmentSubscriptionBuffer = subscriptions ? buffered : null;
       if (!subscriptions) shelly.setConnected(true);
       for (const topic of shelly.topics) client.subscribe(topic, { qos: 1 }, error => {
+        if (!currentSubscription()) return;
         if (error) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
+        else confirmedTopics.push(topic);
         if (--subscriptions === 0) {
+          equipmentSubscriptionBuffer = null;
           shelly.setConnected(true);
-          for (const failed of failedTopics) shelly.subscriptionFailed(failed);
+          // Packets can arrive after their own SUBACK while unrelated routes
+          // still subscribe. Keep their original receipt clocks when replaying.
+          for (const message of buffered.messages) {
+            try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt); }
+            catch { report('mqtt-observation-rejected'); }
+          }
+          for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed);
+          try { shelly.confirmSubscriptions?.(confirmedTopics.filter(topic => !buffered.overflow.has(topic))); }
+          catch (error) { report('mqtt-temperature-recovery-failed', error); }
         }
       });
     }
     if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, error => {
+      if (!currentSubscription()) return;
       if (error) { teslamate.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
       else teslamate.setConnected(true);
     });
@@ -144,7 +173,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('error', () => report('mqtt-error'));
   const disconnected = () => {
     if (stopped) return;
-    connected = false; h66?.setConnected(false);
+    connected = false; connectionGeneration++; equipmentSubscriptionBuffer = null; h66?.setConnected(false);
     teslamate?.setConnected(false);
     shelly?.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
@@ -159,6 +188,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('message', (topic, payload, packet = {}) => {
     if (!connected || stopped) return;
     try {
+      if (equipmentSubscriptionBuffer) {
+        const matched = shelly.topics.filter(subscription => subscription.endsWith('/#')
+          ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic);
+        if (matched.length) {
+          const buffered = equipmentSubscriptionBuffer, bytes = Buffer.byteLength(payload);
+          if (buffered.messages.length >= 256 || bytes > 65_536 || buffered.bytes + bytes > 262_144)
+            for (const subscription of matched) buffered.overflow.add(subscription);
+          else { buffered.messages.push({ topic, payload: Buffer.from(payload), packet: { retain: packet.retain, dup: packet.dup }, receivedAt: engine.clock() }); buffered.bytes += bytes; }
+          return;
+        }
+      }
       if (shelly?.receive(topic, payload, packet, engine.clock())) return;
       if (teslamate?.receive(topic, payload, packet, engine.clock())) return;
       const temperature = temperatureTopics.find(([, configured]) => configured === topic);
@@ -169,7 +209,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
           reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : temperature[0] === 'garage_temperature' ? 30_000 : null,
           reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : temperature[0] === 'garage_temperature' ? 90_000 : 0 });
-        if (observation) engine.ingest(observation);
+        if (observation) engine.ingest(roomRoutes.has(temperature[0]) ? { ...observation,
+          raw: { ...observation.raw, temperatureRouteSignature: roomRoutes.get(temperature[0]).routeSignature } } : observation);
         else markUnavailable(temperatureSignals.filter(row => row.signal === temperature[0]), ['invalid-temperature-message']);
         return;
       }
@@ -214,7 +255,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
-      if (stopped) return;
+      if (stopped || stopping) return;
+      stopping = true; connectionGeneration++; equipmentSubscriptionBuffer = null;
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
       clearInterval(shellyMaintenance);

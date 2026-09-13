@@ -57,7 +57,9 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
     assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM observations WHERE source='mqtt-temperature' AND value IS NULL").get().n, 2);
     now += 15_000;
     client.emit('connect');
-    assert.equal(app.engine.recorder.latestCommitted('indoor_temperature').value, null, 'Broker reconnection alone is not a new measurement');
+    assert.equal(app.engine.recorder.latestCommitted('indoor_temperature').value, 20.25, 'Successful subscription restores a signed room report within its original deadline');
+    assert.equal(app.engine.status().observations.upstairs.observedAt, initial, 'Recovery does not become a new measurement');
+    assert.equal(app.engine.recorder.latestCommitted('garage_temperature').value, null, 'Garage requires its own live sensor report');
     client.emit('message', 'invented/indoor', Buffer.from('20.25'));
     assert.equal(app.engine.recorder.latestCommitted('indoor_temperature').value, 20.25);
     assert.equal(app.engine.latest.indoor_temperature.value, 20.25);

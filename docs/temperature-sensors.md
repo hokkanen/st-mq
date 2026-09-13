@@ -37,6 +37,12 @@ report. A configured periodic deadline is applied from its change time forward;
 an existing genuine report younger than the new limit can remain valid without
 pretending another report arrived. Earlier gaps and explicit sensor-change
 exclusions remain intact. Reloading or restarting cannot renew the source timestamp.
+After successful MQTT subscriptions, a room reading interrupted only by a
+connection failure can resume for the remainder of its original deadline. Its
+saved broker/topic signature must match; invalid reports and sensor-change
+exclusions still require a genuine new reading. The outage remains a recorded
+gap. Records from before route signatures were introduced need one genuine
+publication before this restart recovery is available.
 These settings apply to the three indoor MQTT topics. Garage has a two-minute
 expiry for either its single Shelly or MQTT connection; outdoor limits remain separate.
 

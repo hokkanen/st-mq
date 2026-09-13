@@ -1,5 +1,5 @@
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
-import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
+import { INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { isRecordedDataset } from './recorded-datasets.js';
 
@@ -16,7 +16,7 @@ const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
-  'verification','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
+  'verification','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget/maximum spacing.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
@@ -118,10 +118,18 @@ export class Recorder {
       lastFreshAt: null, coverageId: null, status: null };
   }
 
+  /** A successful subscription repairs a transport outage, not a sensor's age.
+   * The caller must confirm the configured route before using this method. */
+  recoverTemperatureConnection(reading, policy, at = this.clock(), { routeSignature } = {}) {
+    if (!INDOOR_SIGNALS.includes(reading?.signal) || reading.source !== 'mqtt-temperature' || reading.device !== reading.signal)
+      return { changed: false };
+    return this.transitionTemperatureReportPolicy(reading, policy, at, { recoverConnection: true, routeSignature });
+  }
+
   /** Apply a report deadline prospectively, retaining an already known genuine
    * report. This is a policy event, never a new sensor report or an extension of
    * an old coverage span. Earlier missed-report intervals remain untouched. */
-  transitionTemperatureReportPolicy(reading, policy, at = this.clock()) {
+  transitionTemperatureReportPolicy(reading, policy, at = this.clock(), { recoverConnection = false, routeSignature } = {}) {
     const age = temperatureReportMaxAge({ raw: policy });
     if (!HELD_TEMPERATURE_SIGNALS.includes(reading?.signal) || age === null || !finiteTime(at))
       throw new TypeError('A held temperature and valid reporting policy are required');
@@ -138,7 +146,7 @@ export class Recorder {
       const receivedAt = span ? span.source_time === span.observed_source_time
         ? previousRaw.originalReportReceivedAt ?? span.end_at : span.end_at : reading.receivedAt;
       const value = span?.value ?? reading.value, unit = span?.unit ?? reading.unit;
-      if (same(s.reportPolicy, policy)) return { changed: false, reportSourceTime: sourceTime, reportReceivedAt: receivedAt,
+      if (!recoverConnection && same(s.reportPolicy, policy)) return { changed: false, reportSourceTime: sourceTime, reportReceivedAt: receivedAt,
         observation: { source: reading.source, device: reading.device, signal: reading.signal, ...s.last, unit,
           raw: { ...policy, timeBasis: s.last.semanticQuality?.timeBasis } } };
       const quality = span?.quality ? JSON.parse(span.quality) : reading.quality ?? [];
@@ -150,14 +158,43 @@ export class Recorder {
         && (reading.signal === 'garage_temperature' ? value >= -60 && value <= 70 : value > 2 && value < 40)
         && quality.every(flag => ['good', 'simulated', 'historical', 'converted_fahrenheit', 'stale'].includes(flag))
         && !previousRaw.retained && !previousRaw.acquisitionOnly && !previousRaw.auditOnly;
-      const fresh = genuine && (s.status === 'fresh' || ageOnly) && at < sourceTime + age;
+      if (recoverConnection) {
+        const previousSignature = previousRaw.temperatureRouteSignature;
+        if (typeof routeSignature !== 'string' || !/^[a-f0-9]{64}$/.test(routeSignature)
+          || previousSignature !== routeSignature)
+          return { changed: false };
+        if (!genuine || at >= sourceTime + age) return { changed: false };
+        if (s.status === 'fresh') return { changed: false, reportSourceTime: sourceTime, reportReceivedAt: receivedAt,
+          observation: { ...reading, sourceTime, receivedAt, value, unit, quality,
+            raw: { ...previousRaw, ...policy, temperatureRouteSignature: routeSignature } } };
+        const transport = flag => ['mqtt-disconnected', 'mqtt-subscription-failed'].includes(flag);
+        const allowed = flag => transport(flag) || ['missing', 'failed', 'unavailable', 'stale', 'missing-report', 'report-policy-changed'].includes(flag);
+        if (!lastQuality.some(transport) || !lastQuality.every(allowed)) return { changed: false };
+        // A subsequent disconnect must not hide an earlier invalid payload.
+        // Start at the genuine receipt, not a later policy/recovery event time.
+        const attempts = this.store.db.prepare(`SELECT quality,raw FROM observations WHERE source=? AND device=? AND signal=?
+          AND received_at>=? AND received_at<=? AND id>? ORDER BY received_at,id`)
+          .all(reading.source, reading.device, reading.signal, receivedAt, at, span?.observation_id ?? reading.id ?? 0);
+        for (const attempt of attempts) {
+          const attemptRaw = attempt.raw ? JSON.parse(attempt.raw) : {}, attemptQuality = JSON.parse(attempt.quality);
+          if (attemptRaw.retained || attemptQuality.includes('retained')) continue;
+          const valid = attemptQuality.every(flag => ['good', 'converted_fahrenheit'].includes(flag))
+            && (!attemptRaw.recorder || attemptRaw.recorder.status === 'fresh');
+          const transportOnly = attemptQuality.some(transport) && attemptQuality.every(allowed);
+          const ageOnly = attemptQuality.some(flag => ['missing-report', 'report-policy-changed'].includes(flag))
+            && attemptQuality.every(flag => ['missing', 'stale', 'unavailable', 'missing-report', 'report-policy-changed'].includes(flag));
+          if (!valid && !transportOnly && !ageOnly) return { changed: false };
+        }
+      }
+      const fresh = genuine && (s.status === 'fresh' || ageOnly || recoverConnection) && at < sourceTime + age;
       const q = fresh ? quality.filter(flag => flag !== 'stale') : flags(['missing',
         ...(s.status !== 'fresh' && !ageOnly ? lastQuality : ['missing-report'])]);
-      const raw = compactRaw({ ...previousRaw, ...policy, timeBasis: 'report-policy-change',
-        reportPolicyChangedAt: at, originalReportReceivedAt: receivedAt,
-        originalReportSourceTime: sourceTime });
-      raw.recorder = { version: VERSION, reason: 'report-policy-change', status: fresh ? 'fresh' : 'unavailable',
-        originalSourceTime: sourceTime, temporalBasis: 'policy-change' };
+      const raw = compactRaw({ ...previousRaw, ...policy, timeBasis: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change',
+        ...(recoverConnection ? { transportRecoveredAt: at, temperatureRouteSignature: routeSignature } : { reportPolicyChangedAt: at }), originalReportReceivedAt: receivedAt,
+        originalReportSourceTime: sourceTime,
+        originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis });
+      raw.recorder = { version: VERSION, reason: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change', status: fresh ? 'fresh' : 'unavailable',
+        originalSourceTime: sourceTime, temporalBasis: recoverConnection ? 'transport-recovery' : 'policy-change' };
       const observation = { source: reading.source, device: reading.device, signal: reading.signal,
         value: fresh ? value : null, unit, sourceTime: fresh ? sourceTime : null, receivedAt: at, quality: q, raw };
       const id = this.store.observation(observation);
@@ -321,8 +358,8 @@ export class Recorder {
     });
   }
 
-  recordFailure({ source, device, signal, unit, at = this.clock(), quality = ['acquisition-failed'] }) {
-    return this.record({source,device,signal,unit,value:null,sourceTime:null,receivedAt:at,quality});
+  recordFailure({ source, device, signal, unit, at = this.clock(), quality = ['acquisition-failed'], raw }) {
+    return this.record({source,device,signal,unit,value:null,sourceTime:null,receivedAt:at,quality,...(raw ? {raw} : {})});
   }
 
   /** Input intervals already integrate every usable fast acquisition. Pending
@@ -513,6 +550,6 @@ function compactRaw(raw) {
     'verified','retained','cached','publicationMayUseGatewayCache','verificationEvidence',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs',
-    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime'];
+    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature'];
   return Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
 }

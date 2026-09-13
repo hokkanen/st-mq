@@ -175,6 +175,10 @@ feed, automatic source comparison or takeover.
 Room reports have a 70-minute expected interval plus five minutes of grace. At
 75 minutes they become outdated and stop contributing to learning. The garage
 uses the same deadline rule with a two-minute limit for both connection formats.
+Successful room-topic subscriptions can restore a recent genuine reading after
+a connection failure when its saved route signature matches. This does not
+renew its timestamp or erase the outage. Older unsigned readings require one
+new genuine report before they can be recovered on a later reconnect.
 ST-MQ requests direct Shelly status every 30 seconds. A standard MQTT publisher
 must provide genuine periodic reports, preferably every minute, even when the
 value is unchanged. Broker connectivity, generic heartbeats and repeated source

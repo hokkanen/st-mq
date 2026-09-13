@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createShellyCapture } from './shelly.js';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature } from './equipment-config.js';
-import { decodeMqttTemperature } from './mqtt-temperature.js';
+import { decodeMqttTemperature, temperatureRouteSignature } from './mqtt-temperature.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 
@@ -26,6 +26,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity }) : null;
   let connected = false, closed = false, heatingBusy = false, sequence = 0;
   const devices = enabled.filter(row => row.protocol === 'mqtt').map(config => ({ ...config, readings: {}, mappings: config.readings,
+    roomRouteSignature: config.kind === 'temperature' && INDOOR_SIGNALS.includes(config.temperatureSignal)
+      ? temperatureRouteSignature({ brokerIdentity, topic: config.topic, statePath: config.mqtt.statePath, timestampPath: config.mqtt.timestampPath,
+        mappings: config.readings.filter(mapping => mapping.signal === config.temperatureSignal) }) : null,
     online: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false }));
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
@@ -53,22 +56,26 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (scalar(at) && scalar(previous?.observedAt) && at < previous.observedAt) return false;
     const observation = { ...identity(device), signal: definition.signal, value, unit: definition.unit, sourceTime: at, receivedAt, quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
-        ...(device.kind === 'door' && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw } };
+        ...(device.kind === 'door' && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw,
+        ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } };
     if (device.id === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(definition.signal))
       engine.rememberObservation?.(observation, receivedAt);
-    else engine.ingest(observation);
+    else {
+      const result = engine.ingest(observation);
+      if (device.roomRouteSignature && (result?.rejectedSourceTime || result?.reason === 'out-of-order-receipt')) return false;
+    }
     device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality, ...raw };
     if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
       signature: signature(device.id), reading: device.readings[definition.signal] });
     return true;
   }
-  function unavailable(device, reason) {
+  function unavailable(device, reason, receivedAt = engine.clock()) {
     device.liveSinceConnect = false; device.invalid = true;
     for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
     for (const check of [...device.checks]) check.finish('unavailable');
     for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
       const previous = device.readings[definition.signal];
-      record(device, definition, null, null, engine.clock(), [reason]);
+      record(device, definition, null, null, receivedAt, [reason]);
       if (device.kind === 'door' && previous?.value != null) device.readings[definition.signal] = {
         ...previous, unavailable: true, quality: [...new Set([...(previous.quality ?? []), reason, 'last-reported'])] };
     }
@@ -94,7 +101,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   function receiveDevice(device, topic, body, packet, receivedAt) {
     const mapping = device.mqtt;
     if (topic === mapping.availabilityTopic) {
-      if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline'); }
+      if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline', receivedAt); }
       else if (body === mapping.onlinePayload && !packet.retain) device.online = true;
       return;
     }
@@ -115,7 +122,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       }
       return;
     }
-    if (invalidTime && !canonicalTemperature(device)) { unavailable(device, 'invalid-source-time'); return; }
+    if (invalidTime && !canonicalTemperature(device)) { unavailable(device, 'invalid-source-time', receivedAt); return; }
     let updated = false, invalid = false;
     if (canonicalTemperature(device) && topic === device.topic) {
       const selected = mapping.statePath || mapping.timestampPath ? { value: mapping.statePath ? property(input, mapping.statePath) : input?.value,
@@ -124,7 +131,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const observation = decodeMqttTemperature({ signal: device.temperatureSignal, payload: mapping.statePath || mapping.timestampPath ? JSON.stringify(selected) : body, receivedAt, retained: packet.retain,
         reportIntervalMs: periodic ? temperatureReportIntervalMs : device.temperatureSignal === 'garage_temperature' ? settings.pollIntervalMs : null,
         reportGraceMs: periodic ? temperatureReportGraceMs : device.temperatureSignal === 'garage_temperature' ? Math.max(0, device.maxAgeMs - settings.pollIntervalMs) : 0 });
-      if (!observation) { unavailable(device, 'invalid-temperature-message'); return; }
+      if (!observation) { unavailable(device, 'invalid-temperature-message', receivedAt); return; }
       const definition = definitions(device)[0];
       updated = record(device, definition, observation.value, observation.sourceTime, receivedAt, observation.quality, observation.raw);
       invalid = observation.value === null || observation.quality.some(flag => /invalid|missing|future|stale/.test(flag));
@@ -180,6 +187,29 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     setConnected(value) {
       connected = value; native?.setConnected(value);
       for (const device of devices) { if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.liveSinceConnect = false; } }
+    },
+    confirmSubscriptions(topics) {
+      if (!connected || closed) return;
+      const confirmed = new Set(topics);
+      for (const device of devices.filter(row => row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
+        const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic,
+          ...device.mappings.filter(mapping => mapping.required).map(mapping => mapping.topic)].filter(Boolean);
+        if (!requiredTopics.every(topic => confirmed.has(topic))) continue;
+        const recovered = engine.confirmTemperatureConnection?.(device.temperatureSignal, {
+          reportIntervalMs: temperatureReportIntervalMs, reportGraceMs: temperatureReportGraceMs, routeSignature: device.roomRouteSignature,
+        });
+        if (!recovered || recovered.signal !== device.temperatureSignal || recovered.source !== 'mqtt-temperature'
+          || recovered.device !== device.temperatureSignal || !scalar(recovered.value)
+          || !scalar(recovered.sourceTime) || !scalar(recovered.receivedAt) || recovered.receivedAt > engine.clock()
+          || recovered.sourceTime > recovered.receivedAt || engine.clock() >= recovered.sourceTime + age(device)) continue;
+        const previous = device.readings[device.temperatureSignal];
+        if (previous && scalar(previous.observedAt) && previous.observedAt > recovered.sourceTime) continue;
+        const definition = definitions(device)[0];
+        device.readings[device.temperatureSignal] = { value: recovered.value, unit: recovered.unit, label: definition.label,
+          observedAt: recovered.sourceTime, receivedAt: recovered.receivedAt, quality: recovered.quality ?? [],
+          ...recovered.raw, reportExpiresAt: recovered.reportExpiresAt };
+        device.lastAt = recovered.receivedAt; device.liveSinceConnect = true; device.invalid = false;
+      }
     },
     subscriptionFailed(topic) {
       native?.subscriptionFailed(topic);

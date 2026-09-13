@@ -61,7 +61,7 @@ export function temperatureFailureReasons(observation, now) {
 
 export function temperatureTimeMetadata(observation, now) {
   return { ageMs: Number.isFinite(observation?.sourceTime) ? Math.max(0, now - observation.sourceTime) : null,
-    sourceTimeBasis: observation?.raw?.timeBasis === 'mqtt-received' ? 'received-at' : 'measurement' };
+    sourceTimeBasis: (observation?.raw?.originalReportTimeBasis ?? observation?.raw?.timeBasis) === 'mqtt-received' ? 'received-at' : 'measurement' };
 }
 
 /** Metadata is separate from lastIndoorReading: learning's frozen sample

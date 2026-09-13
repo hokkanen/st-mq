@@ -192,6 +192,29 @@ export class Engine {
     this.temperatureAttempts[signal] = transition.observation;
     this.latestStatus = null;
   }
+  confirmTemperatureConnection(signal, options = {}) {
+    if (!['mqtt', 'providers'].includes(this.config.input) || !INDOOR_SIGNALS.includes(signal)) return null;
+    const prior = this.lastKnownTemperatures[signal];
+    const { routeSignature } = options;
+    const policy = { reportIntervalMs: options.reportIntervalMs ?? this.temperatureReportPolicies[signal]?.reportIntervalMs,
+      reportGraceMs: options.reportGraceMs ?? this.temperatureReportPolicies[signal]?.reportGraceMs ?? 0 };
+    if (!prior || temperatureReportMaxAge({ raw: policy }) === null) return null;
+    const now = this.clock(), recovered = this.recorder.recoverTemperatureConnection(prior, policy, now,
+      { routeSignature });
+    if (!recovered.observation) return null;
+    const known = lastIndoorReading(this.store, { signal, at: now, input: this.config.input });
+    if (!known) return null;
+    this.lastKnownTemperatures[signal] = { ...known, raw: { ...known.raw, ...recovered.observation.raw },
+      reportExpiresAt: recovered.reportSourceTime + temperatureReportMaxAge({ raw: policy }) };
+    this.temperatureAttempts[signal] = recovered.observation;
+    this.latestStatus = null;
+    const boundary = Math.max(sensorBoundaries(this.store, this.config.input, now)[signal] ?? -Infinity,
+      this.checkpoint?.measurementEpochAt ?? -Infinity);
+    // Confirming a route does not prove that a replacement sensor supplied data.
+    if (recovered.reportSourceTime < boundary || Number.isFinite(boundary) && now < boundary + SENSOR_SETTLING_MS) return null;
+    return { ...recovered.observation, sourceTime: recovered.reportSourceTime, receivedAt: recovered.reportReceivedAt,
+      reportExpiresAt: recovered.reportSourceTime + temperatureReportMaxAge({ raw: policy }) };
+  }
   temperatureObservations(observations, now, checkpoint = this.checkpoint) {
     const boundaries = sensorBoundaries(this.store, this.config.input, now);
     const names = { upstairs: 'indoor_temperature', downstairs: 'downstairs_temperature', bedroom: 'bedroom_temperature',
