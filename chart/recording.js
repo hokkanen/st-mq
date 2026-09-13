@@ -1,4 +1,5 @@
 import { HISTORY_AXES, HISTORY_GROUPS, RIGHT_AXIS_SIGNALS, SIGNAL_INFO } from '../src/domain/history-series.js';
+import { durationText, qualityReasonText } from './reading-status.js';
 
 // Frequent chart choices first; equipment diagnostics remain together at the end.
 const leftAxisGroups = ['Electricity', 'Home temperatures', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
@@ -33,6 +34,35 @@ export function durationLabel(ms) {
 const number = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB',{maximumSignificantDigits:3}).format(value) : '—';
 const readable = value => String(value ?? '').replaceAll('_',' ');
 
+export function recordingStatus(row = {}, { now = Date.now() } = {}) {
+  const freshness = row.freshness;
+  if (!freshness) return { label: ({ fresh: 'Recorded acquisition', stale: 'Reading rejected',
+    failed: 'Acquisition failed', unavailable: 'Reading unavailable' })[row.status] ?? 'Waiting for source',
+  detail: row.status ? 'The stored status has no detailed freshness assessment.' : 'No acquisition has been recorded.' };
+  const label = freshness.status === 'stale' ? freshness.reasons?.some(reason => ['source-expired', 'missing-report'].includes(reason))
+    ? 'Out of date' : 'Reading rejected' : ({ fresh: 'Fresh', failed: 'Acquisition failed', unavailable: 'Reading unavailable',
+    held: 'Last known reading', 'held-attention': 'Last known reading · needs attention', 'recorded-interval': 'Recorded interval' })[freshness.status] ?? 'Waiting for source';
+  const age = Number.isFinite(freshness.sourceObservedAt) ? now - freshness.sourceObservedAt : null;
+  const limit = Number.isFinite(freshness.maxAgeMs) ? freshness.maxAgeMs : null;
+  const periodic = freshness.ageBasis === 'periodic-report', interval = freshness.ageBasis === 'completed-interval';
+  const messages = [];
+  for (const reason of freshness.reasons ?? []) {
+    if (reason === 'source-expired' || reason === 'missing-report') continue;
+    const text = qualityReasonText(reason);
+    if (text) messages.push(`${text.replace(/^./, value => value.toUpperCase())}.`);
+  }
+  if (interval) messages.push('A saved, completed energy interval does not expire as a live reading.');
+  else if (age !== null && age >= 0) messages.push(`${periodic ? 'Latest source report' : 'Source reading'} is ${durationText(age)} old.${limit === null
+    ? ' No age cutoff applies.' : ` Limit ${durationText(limit)}${periodic && Number.isFinite(freshness.reportIntervalMs)
+      ? ` (${durationText(freshness.reportIntervalMs)} reporting interval + ${durationText(freshness.reportGraceMs ?? 0)} grace)` : ''}.`}`);
+  else if (age === null) messages.push('No source timestamp is available.');
+  if (periodic && freshness.reasons?.includes('missing-report')) messages.push('The expected report is missing.');
+  if (periodic && Number.isFinite(freshness.savedValueAt) && freshness.savedValueAt !== freshness.sourceObservedAt && freshness.savedValueAt <= now)
+    messages.push(`The unchanged saved value is ${durationText(now - freshness.savedValueAt)} old; report age determines current availability.`);
+  if (Number.isFinite(freshness.attentionAfterMs)) messages.push(`Attention starts after ${durationText(freshness.attentionAfterMs)}.`);
+  return { label, detail: [...new Set(messages)].join(' ') };
+}
+
 export function recordingRows(status = {}) {
   const known = new Map(Object.entries(SIGNAL_INFO).filter(([,info])=>info.role!=='Audit only').map(([signal,info]) => [signal,{signal,...info}]));
   const result=[],seen=new Set();
@@ -60,7 +90,7 @@ export function renderRecording(status, root) {
   const description=document.createElement('p');description.className='muted';
   description.textContent='Devices can be polled or streamed more often than values are recorded. Each new reading is compared with the last saved value. A shared learned tolerance adjusts the change thresholds toward the rolling storage target; most fresh readings are recorded by the maximum interval even when unchanged. Periodic indoor temperatures save value changes and compact report coverage instead of repeated values. Equipment-state and quality changes are recorded immediately. Failed requests and old source timestamps are distinguished from fresh, unchanged readings.';
   const note=document.createElement('p');note.className='muted';
-  note.textContent='These are achieved average intervals, not fixed schedules. Included measurements receive the same normalized accuracy treatment. Recording a parameter does not imply that it is used to fit the house model.';
+  note.textContent='These are achieved average saving intervals, not source expiry limits or fixed schedules. Status details show source expiry separately. Included measurements receive the same normalized accuracy treatment. Recording a parameter does not imply that it is used to fit the house model.';
   const table=document.createElement('table');table.className='recording-table';
   const head=document.createElement('thead'),headers=document.createElement('tr');
   for(const name of ['Parameter / source','Average · 1 h / 24 h / 7 d','Change threshold','Normalized error · 24 h','Status']) {
@@ -69,6 +99,7 @@ export function renderRecording(status, root) {
   head.append(headers);table.append(head);
   const body=document.createElement('tbody');let previousGroup;
   for(const row of recordingRows(recording)) {
+    const availability=recordingStatus(row,{now:status?.now ?? Date.now()});
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
     if(row.source) {const source=document.createElement('small');source.textContent=readable(row.source);title.append(source);}tr.append(title);
@@ -76,13 +107,11 @@ export function renderRecording(status, root) {
       [row.hour,row.day,row.week].map(period=>durationLabel(period?.averageIntervalMs)).join(' / '),
       Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${row.thresholdUnit ?? row.unit ?? ''}${row.grouped?' (phase group)':''}`:'Event / collecting',
       Number.isFinite(row.day?.normalizedRmsError)?`${number(row.day.normalizedRmsError*100)}%`:'—',
-      row.status?readable(row.status):'Waiting for source',
+      availability.label,
     ]) {const cell=document.createElement('td');cell.textContent=text;tr.append(cell);}
-    if (Number.isFinite(row.lastSourceTime)) {
-      const detail=document.createElement('small');
-      detail.textContent=`Source age ${durationLabel(Math.max(1000,(status?.now ?? Date.now())-row.lastSourceTime))} · ${number((row.day?.estimatedBytes ?? 0)/1000)} kB / 24 h`;
-      tr.lastChild.append(detail);
-    }
+    const detail=document.createElement('small');
+    detail.textContent=`${availability.detail}${row.day ? ` ${number((row.day.estimatedBytes ?? 0)/1000)} kB / 24 h.` : ''}`;
+    tr.lastChild.append(detail);
     body.append(tr);
   }
   table.append(body);

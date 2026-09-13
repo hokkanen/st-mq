@@ -1,4 +1,5 @@
-import { HELD_TEMPERATURE_SIGNALS } from '../domain/indoor-sensors.js';
+import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
@@ -19,8 +20,49 @@ const semanticQuality = raw => Object.fromEntries(['usableForControl','verified'
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
 // Their source clock still controls ordering, recording and measurement lineage.
-const sourceAge = o => temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? 5 * MINUTE
-  : /temperature$/.test(o.signal) ? 30 * MINUTE : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE);
+const sourceAge = o => temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? H66_MAX_AGE_MS
+  : /temperature$/.test(o.signal) ? OUTDOOR_MAX_AGE_MS : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE);
+
+const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric', 'invalid-unit', 'invalid-payload',
+  'retained', 'source-time-unknown', 'future-source-time', 'out-of-order-source-time', 'conflicting-duplicate',
+  'disconnected', 'mqtt-disconnected', 'subscription-failed', 'provider-error', 'implausible-temperature', 'suspect-zero-indoor']);
+
+/** Explain the recorded acquisition and its current deadline without writing a
+ * new observation, extending coverage, or changing historical classification. */
+function recordingFreshness(state, coverage, now) {
+  const periodicAge = temperatureReportMaxAge({ raw: state.reportPolicy });
+  const interval = /_energy_l[123]$/.test(state.signal) || state.signal === 'ev2_energy';
+  const held = !interval && periodicAge === null && HELD_TEMPERATURE_SIGNALS.includes(state.signal);
+  const maximumAge = interval ? null : sourceAge({ ...state, raw: state.reportPolicy });
+  const maxAgeMs = Number.isFinite(maximumAge) ? maximumAge : null;
+  const sourceObservedAt = Number.isFinite(coverage?.source_time) ? coverage.source_time
+    : Number.isFinite(state.lastSourceTime) ? state.lastSourceTime : null;
+  const age = sourceObservedAt === null ? null : now - sourceObservedAt;
+  const reasons = state.status === 'fresh' ? [] : (state.last?.quality ?? []).filter(flag => typeof flag === 'string')
+    .map(flag => flag.replaceAll('_', '-')).filter(flag => DIAGNOSTIC_QUALITY.has(flag));
+  let status = state.status ?? 'waiting';
+  if (status === 'failed' && !reasons.length) reasons.push('provider-error');
+  if (status === 'unavailable' && !reasons.length) reasons.push('invalid-quality');
+  if (Number.isFinite(state.last?.sourceTime) && Number.isFinite(state.last?.receivedAt)
+    && state.last.sourceTime > state.last.receivedAt) reasons.push('source-time-after-receipt');
+  if (age !== null && age < 0) {
+    reasons.push('future-source-time');
+    if (status === 'fresh') status = 'unavailable';
+  }
+  if (!interval && age !== null && maxAgeMs !== null && age > maxAgeMs) {
+    reasons.push(periodicAge !== null ? 'missing-report' : 'source-expired');
+    if (status === 'fresh') status = 'stale';
+  }
+  if (status === 'stale' && !reasons.length) reasons.push('invalid-quality');
+  if (status === 'fresh' && interval) status = 'recorded-interval';
+  if (status === 'fresh' && held) status = age > INDOOR_ATTENTION_MS ? 'held-attention' : 'held';
+  return { status, reasons: [...new Set(reasons)], sourceObservedAt, maxAgeMs,
+    savedValueAt: state.last?.sourceTime ?? null, lastAcceptedSourceAt: state.lastSourceTime,
+    ageBasis: interval ? 'completed-interval' : periodicAge !== null ? 'periodic-report' : 'source-observation',
+    ...(periodicAge !== null ? { reportIntervalMs: state.reportPolicy.reportIntervalMs,
+      reportGraceMs: state.reportPolicy.reportGraceMs ?? 0 } : {}),
+    ...(held ? { attentionAfterMs: INDOOR_ATTENTION_MS } : {}) };
+}
 
 /** Acquisition may be fast; only this persisted, causal approximation trains.
  * All continuous signals share one normalized error tolerance. Signal scale is
@@ -367,6 +409,7 @@ export class Recorder {
     // every fast power acquisition. Device identifiers stay out of the revision.
     const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy)
       .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status]).sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
+    const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');
     const parameters = states.map(s => {
       const stats = {};
       const history = this.store.db.prepare('SELECT * FROM recorder_metrics WHERE key=? AND bucket>=? ORDER BY bucket')
@@ -382,6 +425,7 @@ export class Recorder {
       const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = s.signal==='ev2_energy', exact = Boolean(s.reportPolicy) || ['state','code'].includes(s.unit) || EXACT.test(s.signal);
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
+        freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
         threshold:exact ? null : s.scale*g.tolerance,thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));

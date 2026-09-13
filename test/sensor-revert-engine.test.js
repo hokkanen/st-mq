@@ -12,6 +12,7 @@ import { appendLearningRecord, applyLearningRecord, LEARNING_ALGORITHM, validLea
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { sensorLearningContext } from '../src/app/sensor-inputs.js';
 import { revertSensorChange } from '../src/app/sensor-changes.js';
+import { temperatureReadingStatus } from '../chart/provider-status.js';
 
 const start = Date.parse('2026-09-10T12:00:00Z'), HOUR = 3_600_000;
 const pause = () => new Promise(resolve => setTimeout(resolve, 10));
@@ -124,6 +125,30 @@ test('sensor undo keeps the old model available, catches up and atomically resto
     assert.equal(f.externalState('fireplace:rebuild:providers').sensorRevision, reversed.revision);
     assert.equal(f.externalState('pending-plan:providers'), null);
     assert.deepEqual(f.store.learningJournal({ input: 'providers' }).slice(0, prefix.length), prefix);
+  });
+
+test('sensor reversal clears obsolete availability reasons when the corrected checkpoint publishes',
+  { timeout: 30_000 }, async t => {
+    const f = fixture(t), observedAt = f.now - 60_000;
+    f.engine.ingest({ source: 'mqtt-temperature', device: 'invented-room', signal: 'indoor_temperature',
+      value: 21.5, unit: 'degC', sourceTime: observedAt, receivedAt: observedAt, quality: [] });
+    const changed = f.engine.changeSensor({ requestId: 'invented-status-reset', signal: 'indoor_temperature', reason: 'calibration' });
+    const before = f.engine.temperatureObservations({}, f.now).indoor;
+    assert.equal(before.stale, true);
+    assert.ok(before.availabilityReasons.includes('sensor-settling'));
+    const recorded = f.store.observations();
+    f.now++;
+    f.engine.revertSensor({ id: changed.events[0].id, requestId: 'invented-status-revert' });
+    await waitReady(f.engine);
+    f.engine.readAdaptive(f.now);
+    const restored = f.engine.temperatureObservations({}, f.now).indoor;
+    assert.equal(restored.stale, false);
+    assert.equal(restored.observedAt, observedAt);
+    assert.deepEqual(restored.availabilityReasons, []);
+    const display = temperatureReadingStatus(restored, { now: f.now, formatTime: at => new Date(at).toISOString() });
+    assert.equal(display.usable, true);
+    assert.doesNotMatch(display.detail, /settling|predates|unavailable/i);
+    assert.deepEqual(f.store.observations(), recorded);
   });
 
 test('restart resumes a sensor reversal with both source revisions pinned until reconstruction completes',

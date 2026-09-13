@@ -1,3 +1,4 @@
+import { H66_MAX_AGE_MS } from './reading-freshness.js';
 import { instantMs } from './prices.js';
 
 export function auxiliaryPowerFromOutput(percent, ratedKw = 9) {
@@ -37,12 +38,15 @@ export const H66_REGISTERS = Object.freeze(Object.fromEntries([
 const OMITTED_REGISTERS = new Set(['0012', '1A04']);
 
 /** Read-only decoder: no MQTT connection, subscription side effects, or command encoding. */
-export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = 300_000,
+export function createH66Decoder({ deviceId, verifiedRegisters = {}, maxAgeMs = H66_MAX_AGE_MS,
   mqttScaleByRegister = {}, maxDuplicates = 512, duplicateWindowMs = 300_000 } = {}) {
   if (typeof deviceId !== 'string' || !deviceId || /[\/# +\u0000]/.test(deviceId)) throw new TypeError('Exact MQTT device identifier required');
   for (const [label, value] of Object.entries({ maxAgeMs, maxDuplicates, duplicateWindowMs })) {
     if (!Number.isFinite(value) || value <= 0) throw new RangeError(`${label} must be positive`);
   }
+  // Transport configuration may be stricter, but cannot extend the recorded
+  // source-validity contract used by charts and the learner.
+  maxAgeMs = Math.min(maxAgeMs, H66_MAX_AGE_MS);
   if (!Number.isInteger(maxDuplicates)) throw new TypeError('maxDuplicates must be an integer');
   const verification = new Map(Object.keys(H66_REGISTERS).map(index => [index,
     { scale: 1, offset: 0, evidence: 'documented-C60-MQTT-engineering-units', installed: false }]));

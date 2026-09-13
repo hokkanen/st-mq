@@ -22,8 +22,10 @@ import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
 
-const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
+const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
@@ -198,29 +200,31 @@ export class Engine {
         if (HELD_TEMPERATURE_SIGNALS.includes(signal) && !this.plant) observations[key].stale = true;
         if (temperatureReportMaxAge(latest) !== null) observations[key].periodicReports = true;
       }
+      if (HELD_TEMPERATURE_SIGNALS.includes(signal)) Object.assign(observations[key],
+        indoorStatusMetadata(lastKnown ?? latest, now, { latest: this.temperatureAttempts[signal] ?? latest,
+          ...(!this.temperatureAttempts[signal] && lastKnown ? { store: this.store } : {}), stale: observations[key].stale }));
+      else Object.assign(observations[key], outdoorReadingStatus(latest, now));
       const policy = this.temperatureReportPolicies[signal];
       if (lastKnown?.source === 'mqtt-temperature' && lastKnown.device === signal
         && temperatureReportMaxAge({ raw: policy }) !== null
         && (lastKnown.raw?.reportIntervalMs !== policy.reportIntervalMs
           || (lastKnown.raw?.reportGraceMs ?? 0) !== policy.reportGraceMs))
         observations[key] = { ...observations[key], stale: true, periodicReports: true, needsAttention: true, held: true,
+          reportMaxAgeMs: temperatureReportMaxAge({ raw: policy }), reportIntervalMs: policy.reportIntervalMs,
+          reportGraceMs: policy.reportGraceMs ?? 0, lastReportAt: null, reportExpiresAt: null,
+          availabilityReasons: ['report-policy-changed'],
           attentionReasons: [...new Set([...(observations[key].attentionReasons ?? []), 'missing-report'])] };
       const changedAt = boundaries[signal];
-      if (Number.isFinite(changedAt) && (now < changedAt + SENSOR_SETTLING_MS || observations[key].observedAt < changedAt))
-        observations[key] = { ...observations[key], stale: true, settling: now < changedAt + SENSOR_SETTLING_MS };
+      observations[key] = temperatureBoundaryStatus(observations[key], changedAt, now);
     }
     if (['mqtt', 'providers'].includes(this.config.input)) {
       observations.outdoor = this.outdoorObservation(now);
       const changedAt = boundaries.outdoor_temperature;
-      if (Number.isFinite(changedAt) && (now < changedAt + SENSOR_SETTLING_MS || observations.outdoor.observedAt < changedAt))
-        observations.outdoor.stale = true;
+      observations.outdoor = temperatureBoundaryStatus(observations.outdoor, changedAt, now);
     }
     observations.indoor = indoorAverage(Object.fromEntries(Object.entries(names)
       .map(([key, signal]) => [signal, observations[key]])), this.control);
-    if (Number.isFinite(checkpoint?.measurementEpochAt) && (now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS
-      || observations.indoor.observedAt < checkpoint.measurementEpochAt))
-      observations.indoor = { ...observations.indoor, value: null, stale: true,
-        settling: now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS };
+    observations.indoor = temperatureBoundaryStatus(observations.indoor, checkpoint?.measurementEpochAt, now, { clearValue: true });
     return observations;
   }
   replayLearning(checkpoint) {
@@ -420,25 +424,13 @@ export class Engine {
     if (['mqtt', 'providers'].includes(this.config.input) && observation?.signal === 'outdoor_temperature') {
       if (!OUTDOOR_SOURCES.includes(observation.source)) return;
       const prior = this.outdoorCandidates[observation.source];
-      const sourceLatest = { outdoor_temperature: prior };
-      remember(sourceLatest, observation, now);
-      // A live sensor error makes H66 unavailable immediately. Broker-retained
-      // messages cannot replace a usable publication from the current session.
-      if (observation.source === 'husdata-h66' && !availabilityTransition(observation) && !observation.raw?.retained
-        && !observation.quality?.includes('retained') && (observation.receivedAt ?? 0) >= (prior?.receivedAt ?? 0)
-        && (!trustworthy(observation, now) || observation.raw?.usableForControl !== true))
-        sourceLatest.outdoor_temperature = observation;
-      this.outdoorCandidates[observation.source] = sourceLatest.outdoor_temperature;
+      this.outdoorCandidates[observation.source] = rememberOutdoorReading(prior, observation, now);
       this.selectOutdoor(now);
     } else remember(this.latest, observation, now);
   }
   outdoorUsable(observation, now, h66) {
-    if (!trustworthy(observation, now)) return false;
-    if (observation.source !== 'husdata-h66') return now - observation.sourceTime <= OBSERVATION_MAX_AGE_MS;
-    const maxAgeMs = h66?.maxAgeMs ?? this.config.h66?.maxAgeMs ?? 300_000;
-    return observation.raw?.usableForControl === true && observation.raw?.retained !== true
-      && now - observation.sourceTime <= maxAgeMs
-      && (!h66 || h66.readings?.['0007']?.available === true);
+    const maxAgeMs = h66?.maxAgeMs ?? this.config.h66?.maxAgeMs ?? H66_MAX_AGE_MS;
+    return !outdoorReadingStatus(observation, now, { maxAgeMs, h66 }).stale;
   }
   selectOutdoor(now) {
     const h66 = this.h66Status?.();
@@ -451,9 +443,9 @@ export class Engine {
     return { observation: selected, stale: !this.outdoorUsable(selected, now, h66) };
   }
   outdoorObservation(now) {
-    const { observation, stale } = this.selectOutdoor(now);
-    return observation ? { value: observation.value, observedAt: observation.sourceTime,
-      quality: observation.quality, source: observation.source, stale } : { value: null, stale: true };
+    const { observation } = this.selectOutdoor(now), h66 = this.h66Status?.();
+    return outdoorReadingStatus(observation, now,
+      { maxAgeMs: h66?.maxAgeMs ?? this.config.h66?.maxAgeMs ?? H66_MAX_AGE_MS, h66 });
   }
   providerObservations() {
     // Keep both weather providers available through H66 updates and restarts,

@@ -1,4 +1,5 @@
 import { outdoorSourceLabel, providerName, temperatureReadingStatus } from './provider-status.js';
+import { durationText } from './reading-status.js';
 import { pairAllowsControl } from './pair-status.js';
 
 export const isReadOnlyReplica = status => ['replica', 'protected', 'transition'].includes(status?.role)
@@ -101,7 +102,9 @@ export function replicaDisplay(status, { now = status?.now ?? Date.now(), format
     : state === 'error' ? available ? 'Synchronization needs attention. The last verified history remains available.'
       : 'No verified snapshot is available. Synchronization needs attention.'
       : state === 'clock-warning' ? 'The snapshot time is ahead of this computer. Check the clocks on both computers.'
-        : state === 'stale' ? 'History is out of date. It will catch up automatically when synchronization resumes.'
+        : state === 'stale' ? `History is out of date: ${snapshotAt !== null && now >= snapshotAt
+          ? `snapshot age ${durationText(now - snapshotAt)}; limit ${durationText(staleAfterMs)}${now - snapshotAt <= staleAfterMs ? '; synchronization reports this snapshot as stale' : ''}`
+          : 'synchronization reports stale history; snapshot age is unavailable'}. It will catch up automatically when synchronization resumes.`
           : 'Showing the most recently synchronized history.';
   const snapshot = snapshotAt === null ? 'Snapshot time unavailable.'
     : `Primary snapshot: ${formatTime(snapshotAt)}${future ? '' : ` · ${ageLabel(Math.max(0, now - snapshotAt))}`}.`;
@@ -189,10 +192,10 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     const at = timestamp(observation.observedAt ?? observation.sourceTime ?? observation.receivedAt);
     const readingStatus = temperatureReadingStatus(observation, { now: status.now ?? Date.now(), formatTime, outdoor: key === 'outdoor' });
     $(key).textContent = Number.isFinite(observation.value) ? `${observation.value.toFixed(1)} °C` : '—';
-    $(key).classList.toggle('stale', observation.stale === true || readingStatus.attention || !Number.isFinite(observation.value) || display.state !== 'ready');
+    $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention || display.state !== 'ready');
     const source = key === 'outdoor' ? outdoorSourceLabel(observation.source) : providerName(observation.source);
     $(`${key}-age`).textContent = [source, at ? `Recorded ${formatTime(at)}` : 'No recorded measurement time',
-      readingStatus.attention ? readingStatus.detail : null].filter(Boolean).join(' · ');
+      !readingStatus.usable || readingStatus.attention ? readingStatus.detail : null].filter(Boolean).join(' · ');
   }
   const decision = status.lastDecision?.payload ?? status.lastDecision ?? (stoppedController ? status.decision : null) ?? {};
   $('requested').textContent = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');

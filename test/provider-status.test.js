@@ -100,7 +100,7 @@ test('last known indoor values show room warnings and timestamps without blockin
     bedroom: temperature('mqtt-temperature', 21, held), outdoor: temperature('husdata-h66', 4) } };
   const [grouped] = dashboardProviders(status, options);
   assert.equal(grouped.display.state, 'Needs attention');
-  assert.match(grouped.display.detail, /Average indoor: Needs attention.*Using last known readings: Bedroom observed 10:00.*over 2 hours old, sensor disconnected/);
+  assert.match(grouped.display.detail, /Average indoor: Needs attention.*Using last known readings: Bedroom observed 10:00.*over 2 hours old.*sensor disconnected/);
   assert.match(grouped.series[2].detail, /Using last known reading from 10:00.*sensor disconnected/);
   const summary = temperatureReadingStatus(indoor, options);
   assert.equal(summary.usable, true);
@@ -435,7 +435,7 @@ test('scoped charger age stays informational and scopes all other current notes'
   const display = describeProvider('easee', informational, options);
   assert.equal(display.state, 'Available');
   assert.equal(display.attention, false);
-  assert.match(display.detail, /Charger 1 current readings have source timestamps older than 1.5 hours\./);
+  assert.match(display.detail, /Charger 1 current readings: oldest source reading is 1 h 30 min old\. Attention threshold 30 min/);
   assert.doesNotMatch(display.detail, /[Pp]roperty|different times|asynchronous/);
   informational.currentReadings.charger.qualityIssues = ['stale', 'asynchronous_snapshot'];
   assert.equal(describeProvider('easee', informational, options).attention, false,
@@ -525,19 +525,20 @@ test('informational charger timestamps do not hide other Easee problems', () => 
   }
 });
 
-test('source ages use completed half-hour buckets and keep charger and property ages separate', () => {
-  for (const [minutes, age] of [[30, '0.5 hours'], [59.99, '0.5 hours'], [60, '1 hour'],
-    [89.99, '1 hour'], [90, '1.5 hours'], [119.99, '1.5 hours'], [120, '2 hours'], [150, '2.5 hours']]) {
+test('source ages show elapsed time and the separate attention threshold for each device', () => {
+  for (const [minutes, age] of [[30, '30 min'], [59.99, '1 h'], [60, '1 h'],
+    [89.99, '1 h 30 min'], [90, '1 h 30 min'], [119.99, '2 h'], [120, '2 h'], [150, '2 h 30 min']]) {
     const result = describeProvider('easee', { status: 'degraded', lastSuccessAt: now,
       qualityIssues: ['charger_stale', 'property_stale'],
       staleSourceTimes: { charger_stale: now - 48 * 3_600_000, property_stale: now - minutes * 60_000 } }, options);
-    assert.ok(result.detail.includes(`Property current readings have source timestamps older than ${age}.`), result.detail);
-    assert.match(result.detail, /Charger 1 current readings have source timestamps older than 48 hours\./);
+    assert.ok(result.detail.includes(`Property current readings: oldest source reading is ${age} old.`), result.detail);
+    assert.match(result.detail, /Charger 1 current readings: oldest source reading is 2 d old\./);
+    assert.match(result.detail, /Attention threshold 30 min/);
     assert.equal(result.attention, true);
   }
   const health = { status: 'degraded', qualityIssues: ['stale'], staleSourceTimes: { stale: now - 135 * 60_000 } };
-  assert.match(describeProvider('temperatures', health, options).detail, /older than 2 hours\./);
-  assert.match(describeProvider('temperatures', health, { ...options, now: now + 30 * 60_000 }).detail, /older than 2.5 hours\./);
+  assert.match(describeProvider('temperatures', health, options).detail, /2 h 15 min old.*Attention threshold 2 h/);
+  assert.match(describeProvider('temperatures', health, { ...options, now: now + 30 * 60_000 }).detail, /2 h 45 min old.*Attention threshold 2 h/);
 });
 
 test('missing or invalid age metadata keeps legacy warnings without displaying provider text', () => {

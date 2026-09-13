@@ -1,7 +1,7 @@
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
-import { learningDisplay, h66Control, h66HomeSummary, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
+import { learningDisplay, h66Control, h66HomeSummary, h66ReadingStatus, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
@@ -314,7 +314,7 @@ function renderH66(s) {
     const detail = document.createElement('div'); detail.className = 'equipment-value'; detail.dataset.h66Summary = row.key;
     const title = document.createElement('span'); title.textContent = ({ mode: 'Operating mode', dhw: 'Hot water target', room: 'ROOM setting' })[key];
     const value = document.createElement('strong'); value.textContent = row.available ? row.value : 'Unavailable';
-    value.title = row.available ? row.detail : row.value;
+    value.title = row.detail;
     if (!row.available) value.className = 'muted';
     detail.append(title, value); $('home-h66-summary').append(detail);
   }
@@ -326,7 +326,7 @@ function renderH66(s) {
   const tariff = summary.find(row => row.key === 'tariff');
   $('home-tariff-status').textContent = tariff.value; $('home-tariff-status').title = tariff.detail;
   $('home-tariff-status').dataset.h66Summary = 'tariff';
-  $('h66-status').textContent = h66.connected ? 'H66 connected' : 'Not connected';
+  $('h66-status').textContent = h66.connected ? 'H66 connected' : h66.brokerConnected ? 'Waiting for live H66 readings' : 'Not connected';
   if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
   $('h66-context').textContent = h66.restorationPending ? 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.' : h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
@@ -334,7 +334,7 @@ function renderH66(s) {
   const table = document.createElement('table'); table.className = 'h66-table';
   const caption = document.createElement('caption'); caption.textContent = 'Latest values reported through H66'; table.append(caption);
   const head = document.createElement('thead'), header = document.createElement('tr');
-  for (const text of ['Reading', 'Value', 'Received']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
+  for (const text of ['Reading', 'Value', 'Received', 'Availability']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
   head.append(header); table.append(head);
   const body = document.createElement('tbody');
   const readings = h66.readings ?? {};
@@ -345,10 +345,12 @@ function renderH66(s) {
     const value = document.createElement('td'); value.textContent = h66ReadingValue(register, reading);
     if (Number.isFinite(reading?.requested)) value.textContent += ` · requested ${h66ReadingValue(register, { ...reading, value: reading.requested })}`;
     if (Number.isFinite(reading?.baseline)) value.textContent += ` · original ${h66ReadingValue(register, { ...reading, value: reading.baseline })}`;
-    if (reading?.stale || reading?.available === false || reading?.usableForControl === false) { value.className = 'stale'; value.textContent += ' · unavailable for control'; }
+    const availability = h66ReadingStatus(h66, reading, { now: s.now }), reason = document.createElement('td');
+    reason.textContent = availability.detail;
+    if (!availability.usable) { value.className = 'stale'; value.textContent += ' · unavailable for control'; }
     const at = document.createElement('td'), timestamp = reading?.receivedAt ?? reading?.at;
     at.textContent = timestamp && Number.isFinite(new Date(timestamp).getTime()) ? time(timestamp) : '—';
-    row.append(title, value, at); body.append(row);
+    row.append(title, value, at, reason); body.append(row);
   }
   table.append(body); $('h66-readings').replaceChildren(table);
   updateH66Selector();

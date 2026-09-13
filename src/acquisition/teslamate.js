@@ -395,9 +395,13 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
     else if (lastGapReason === null && !pendingEnergy.length && state.session && state.session.end == null) reason = 'recording';
     else waiting('awaiting-recording');
     const messageTimes = Object.values(cache).map(field => field.at).filter(validTime);
+    const freshnessChecks = reason === 'teslamate-stale'
+      ? [{ key: 'vehicle-health', at: healthyAt }, { key: 'charging-evidence', at: evidenceAt }]
+        .filter(check => !recent(check.at, now)).map(check => ({ ...check, maxAgeMs: config.maxAgeMs })) : [];
     // Keep configuration, MQTT topics, raw fields and device identifiers private.
     // These descriptors are calculated on demand and never enter the checkpoint.
     return { status, reason, connected, charging, home, healthy,
+      maxAgeMs: config.maxAgeMs, freshnessChecks,
       lastMessageAt: messageTimes.length ? Math.max(...messageTimes) : null,
       suppressed: state.suppression?.reason ?? null, recording: reason === 'recording', sessionOpen: Boolean(state.session) };
   }

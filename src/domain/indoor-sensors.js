@@ -28,14 +28,24 @@ export function indoorAverage(readings, config = {}) {
   const known = signals.every(signal => Number.isFinite(readings[signal]?.value)
     && readings[signal].value > 2 && readings[signal].value < 40);
   const usable = known && signals.every(signal => !readings[signal].stale);
+  const memberStatus = signal => Object.fromEntries(['observedAt', 'ageMs', 'attentionAfterMs', 'periodicReports',
+    'reportMaxAgeMs', 'reportIntervalMs', 'reportGraceMs', 'lastReportAt', 'reportExpiresAt', 'lastAttemptAt',
+    'lastAttemptReasons', 'settlingUntil', 'measurementChangedAt', 'availabilityReasons']
+    .filter(key => readings[signal]?.[key] !== undefined).map(key => [key, readings[signal][key]]));
   const attentionSensors = signals.filter(signal => readings[signal]?.needsAttention).map(signal => ({
-    signal, observedAt: readings[signal].observedAt, reasons: readings[signal].attentionReasons ?? [],
+    signal, ...memberStatus(signal), reasons: readings[signal].attentionReasons ?? [],
   }));
+  const missingMembers = signals.filter(signal => !Number.isFinite(readings[signal]?.value)
+    || readings[signal].value <= 2 || readings[signal].value >= 40 || readings[signal].stale)
+    .map(signal => ({ signal, ...memberStatus(signal), reasons: readings[signal]?.availabilityReasons?.length
+      ? readings[signal].availabilityReasons : [Number.isFinite(readings[signal]?.value)
+        && (readings[signal].value <= 2 || readings[signal].value >= 40) ? 'out-of-range' : 'missing-reading'] }));
   const reportMissing = signals.some(signal => readings[signal]?.periodicReports && readings[signal].stale);
   return { value: known && !reportMissing ? signals.reduce((sum, signal) => sum + readings[signal].value * weights[signal], 0) : null,
     observedAt: known ? Math.min(...signals.map(signal => readings[signal].observedAt)) : null,
     stale: !usable, source: signals.length === 1 ? readings[signals[0]]?.source ?? 'indoor-average' : 'indoor-average',
     quality: usable ? [...new Set(signals.flatMap(signal => readings[signal].quality ?? []))] : ['missing'], weights,
+    availabilityReasons: usable ? [] : ['missing-member'], ...(missingMembers.length ? { missingMembers } : {}),
     ...(signals.some(signal => readings[signal]?.periodicReports) ? { periodicReports: true } : {}),
     ...(attentionSensors.length ? { needsAttention: true, held: signals.some(signal => readings[signal]?.held), attentionSensors } : {}) };
 }

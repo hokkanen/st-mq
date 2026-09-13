@@ -40,6 +40,18 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; } };
 }
 
+test('H66 transport settings can tighten but cannot extend the shared five-minute source lifetime', t => {
+  for (const [configured, effective] of [[600_000, 300_000], [60_000, 60_000]]) {
+    const r = rig({ settings: { maxAgeMs: configured } });
+    t.after(() => r.controller.close());
+    assert.equal(r.controller.status().maxAgeMs, effective);
+    r.setNow(initialTime + effective);
+    assert.equal(r.controller.status().readings['0203'].available, true);
+    r.setNow(initialTime + effective + 1);
+    assert.equal(r.controller.status().readings['0203'].available, false);
+  }
+});
+
 test('preheat and reduction restore exact original native settings, never write ROOM10', async t => {
   const r = rig(); t.after(() => r.controller.close());
   const before = r.controller.status();
@@ -95,7 +107,10 @@ test('cached, missing or disconnected readings cannot authorize native writes', 
   for (const [index, value] of Object.entries(baselines)) r.feed(index, value);
   r.controller.setConnected(false); r.controller.setConnected(true);
   assert.equal(r.controller.status().controlsReady, false);
+  assert.deepEqual(r.controller.status().readings['0203'].unavailableReasons, ['awaiting-live-report']);
   r.feed('0007', 5);
+  assert.equal(r.controller.status().brokerConnected, true);
+  assert.deepEqual(r.controller.status().readings['0007'].unavailableReasons, []);
   await assert.rejects(r.controller.setPhase({ phase: 'preheat' }), { code: 'H66_BASELINE_UNAVAILABLE' });
   assert.equal(r.sent.length, 0);
 });

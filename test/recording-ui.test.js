@@ -1,6 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recordingRows, inventoryItemSummary, inventoryDateSpan, recordingOverviewRefresh } from '../chart/recording.js';
+import { recordingRows, recordingStatus, inventoryItemSummary, inventoryDateSpan, recordingOverviewRefresh } from '../chart/recording.js';
+
+test('recording status distinguishes periodic report freshness from saved-value age and saving cadence',()=>{
+  const now=3*86400_000,reportAt=now-17*60_000-1;
+  const row={status:'fresh',hour:{averageIntervalMs:300000},freshness:{status:'stale',reasons:['missing-report'],
+    sourceObservedAt:reportAt,savedValueAt:0,maxAgeMs:17*60_000,ageBasis:'periodic-report',reportIntervalMs:15*60_000,reportGraceMs:2*60_000}};
+  const display=recordingStatus(row,{now});
+  assert.equal(display.label,'Out of date');
+  assert.match(display.detail,/Latest source report is 17 min 1 s old. Limit 17 min \(15 min reporting interval \+ 2 min grace\)/);
+  assert.match(display.detail,/expected report is missing/);
+  assert.match(display.detail,/unchanged saved value is 3 d old; report age determines current availability/);
+  assert.doesNotMatch(display.detail,/Limit 5 min/);
+});
+
+test('recording status explains rejection, held temperatures and historical energy without leaking raw flags',()=>{
+  const now=3*3600_000;
+  const rejected=recordingStatus({status:'stale',freshness:{status:'stale',reasons:['out-of-order-source-time','invented-private-flag'],
+    sourceObservedAt:now-60000,maxAgeMs:null,ageBasis:'source-observation'}},{now});
+  assert.equal(rejected.label,'Reading rejected');
+  assert.match(rejected.detail,/older than a newer report already received/);
+  assert.doesNotMatch(rejected.detail,/invented-private-flag/);
+  const held=recordingStatus({freshness:{status:'held-attention',sourceObservedAt:0,maxAgeMs:null,
+    attentionAfterMs:2*3600_000,ageBasis:'source-observation'}},{now});
+  assert.match(held.detail,/3 h old. No age cutoff applies. Attention starts after 2 h/);
+  const energy=recordingStatus({freshness:{status:'recorded-interval',sourceObservedAt:0,maxAgeMs:null,ageBasis:'completed-interval'}},{now});
+  assert.equal(energy.label,'Recorded interval');
+  assert.match(energy.detail,/completed energy interval does not expire/);
+});
 
 function fixture(request) {
   let now=Date.parse('2026-09-08T10:00:00Z'),visible=true;

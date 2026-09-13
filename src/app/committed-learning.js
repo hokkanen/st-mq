@@ -1,3 +1,4 @@
+import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { createHash } from 'node:crypto';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveEpisode } from '../control/adaptive-learning.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
@@ -19,7 +20,7 @@ const EQUIPMENT_KEYS = ['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', '
   'recoveryTimeoutHours', 'dhwrPulseMinutes'];
 const MODEL_KEYS = [...EQUIPMENT_KEYS, 'targetC', 'thermalPriors', 'indoorSensorWeights'];
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
-const readingAge = (row, fallback) => row.source === 'husdata-h66' ? 5 * 60_000 : fallback;
+const readingAge = (row, fallback) => row.source === 'husdata-h66' ? H66_MAX_AGE_MS : fallback;
 
 export function learningConfiguration(config = {}) {
   const resolved = { ...CONTROL_DEFAULTS, ...config };
@@ -208,7 +209,7 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
     throw new TypeError('A bounded completed learning window is required');
   const from = at - windowMs, lineage = {}, streams = {};
   const boundariesBySensor = sensorBoundaries(store, input, at);
-  const get = (signal, age = 30 * 60_000) => {
+  const get = (signal, age = OUTDOOR_MAX_AGE_MS) => {
     const priority = signal === 'outdoor_temperature' && ['mqtt', 'providers'].includes(input)
       ? ['husdata-h66', 'fmi', 'openmeteo'] : null;
     const value = windowValues(trajectory(store, signal, from, at, input, age), from, at, age, priority);
@@ -233,10 +234,10 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const outdoor = get('outdoor_temperature');
   const sensorEpochAt = Math.max(measurementEpochAt ?? 0, ...Object.entries(boundariesBySensor)
     .filter(([signal]) => affectsThermalLearning(signal, config)).map(([, changedAt]) => changedAt));
-  const compressor = get('compressor_active', 5 * 60_000), route = get('dhw_routing', 5 * 60_000);
-  const auxiliary = get('auxiliary_output', 5 * 60_000), integral = get('heating_integral', 5 * 60_000);
-  const supply = get('supply_temperature', 5 * 60_000), setpoint = get('heating_setpoint', 5 * 60_000);
-  const alarm = get('alarm_active', 5 * 60_000), mode = get('operating_mode', 5 * 60_000);
+  const compressor = get('compressor_active', H66_MAX_AGE_MS), route = get('dhw_routing', H66_MAX_AGE_MS);
+  const auxiliary = get('auxiliary_output', H66_MAX_AGE_MS), integral = get('heating_integral', H66_MAX_AGE_MS);
+  const supply = get('supply_temperature', H66_MAX_AGE_MS), setpoint = get('heating_setpoint', H66_MAX_AGE_MS);
+  const alarm = get('alarm_active', H66_MAX_AGE_MS), mode = get('operating_mode', H66_MAX_AGE_MS);
   const radiation = weatherAt(store, from, at), contexts = controlContexts(store, input, from, at);
   const boundaries = [...new Set([from, at, ...Object.values(streams).flatMap(series => series.segments.flatMap(row => [row.start, row.end])),
     ...radiation.segments.flatMap(row => [row.start, row.end]), ...contexts.map(row => row.at)])]

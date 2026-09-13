@@ -82,6 +82,11 @@ test('connection status distinguishes retained startup from live charging and ex
   assert.equal(f.capture.status().status, 'degraded');
   assert.equal(f.capture.status().reason, 'teslamate-stale');
   assert.equal(f.capture.status().recording, false);
+  assert.equal(f.capture.status().maxAgeMs, 30_000);
+  assert.deepEqual(f.capture.status().freshnessChecks, [
+    { key: 'vehicle-health', at: initial, maxAgeMs: 30_000 },
+    { key: 'charging-evidence', at: initial, maxAgeMs: 30_000 },
+  ]);
   assert.deepEqual(f.store.getState('teslamate:acquisition:1'), checkpoint, 'Reading status never saves new acquisition state');
   f.capture.setConnected(false);
   assert.equal(f.capture.status().reason, 'mqtt-disconnected');
@@ -108,9 +113,26 @@ test('connection status exposes only safe descriptors and explains Charger 1 ass
   const status = f.capture.status();
   assert.equal(status.reason, 'assigned-to-easee');
   assert.equal(status.recording, false);
-  assert.deepEqual(Object.keys(status).sort(), ['charging', 'connected', 'healthy', 'home', 'lastMessageAt', 'reason', 'recording', 'sessionOpen', 'status', 'suppressed']);
+  assert.deepEqual(Object.keys(status).sort(), ['charging', 'connected', 'freshnessChecks', 'healthy', 'home', 'lastMessageAt', 'maxAgeMs', 'reason', 'recording', 'sessionOpen', 'status', 'suppressed']);
   assert(!JSON.stringify(status).includes('invented-private-namespace'));
   assert(!JSON.stringify(status).includes('Invented home geofence'));
+});
+
+test('stale Tesla diagnostics name the required expired evidence even when unrelated messages arrive', t => {
+  const f = setup(t, { max_age_seconds: 30 }); begin(f);
+  f.at(30_000);
+  assert.equal(f.capture.status().reason, 'recording', 'The exact freshness limit is inclusive');
+  f.at(30_001); f.send('healthy', true);
+  assert.equal(f.capture.status().lastMessageAt, f.now);
+  assert.deepEqual(f.capture.status().freshnessChecks, [
+    { key: 'charging-evidence', at: initial, maxAgeMs: 30_000 },
+  ], 'A fresh health message cannot renew charging evidence');
+  f.send('charger_power', 11);
+  assert.deepEqual(f.capture.status().freshnessChecks, []);
+  f.at(60_002); f.send('charger_power', 11);
+  assert.deepEqual(f.capture.status().freshnessChecks, [
+    { key: 'vehicle-health', at: initial + 30_001, maxAgeMs: 30_000 },
+  ], 'A fresh charging message cannot renew vehicle health');
 });
 
 test('fresh comparable property impossibility suspends immediately and house load cannot revive stale Tesla power', t => {
