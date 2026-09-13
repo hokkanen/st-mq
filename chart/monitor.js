@@ -1,3 +1,4 @@
+import { renderGarage, createGarageControls } from './garage-status.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
@@ -85,6 +86,11 @@ const equipmentPanel = createEquipmentPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
+const garageControls = createGarageControls({ document, request: api,
+  beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
+  onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
+  afterRequest: () => refresh(),
+  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy });
 function renderContract(s) {
   const current = activeRates(s);
   const period = current ?? s.configuredPrices;
@@ -133,6 +139,7 @@ function updateTemporaryButtons(updateEquipment = true) {
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
   if (updateEquipment) equipmentPanel.refreshControls();
+  garageControls.refreshControls();
 }
 function renderTemporary(s) {
   const saved = temporaryValues(s);
@@ -433,6 +440,7 @@ function renderH66(s) {
 }
 function render(s) {
   lastStatus = s;
+  garageControls.update(s);
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
   const replica = renderReplicaStatus(document, s, { formatTime: time });
@@ -465,7 +473,7 @@ function render(s) {
   $('price').textContent = current ? current.allInCentsPerKWh.toFixed(2) : spot ? spot.spotCtPerKwh.toFixed(2) : '—';
   $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
   $('price-unit').textContent = s.input === 'simulated' ? 'c/kWh · synthetic simulation data' : current ? 'c/kWh · import, variable charges' : spot ? 'c/kWh · excludes VAT and other charges' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
-  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s);
+  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderGarage(document, s);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   $('control-mode').textContent = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'

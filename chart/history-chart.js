@@ -37,7 +37,7 @@ const activityTracks = [
 function loadPreferences() {
   try {
     const saved = JSON.parse(localStorage.getItem(visibilityStorage) ?? '{}');
-    return Object.fromEntries(Object.entries(saved ?? {}).filter(([key, value]) => /^[a-zA-Z0-9_]{1,40}$/.test(key) && typeof value === 'boolean'));
+    return Object.fromEntries(Object.entries(saved ?? {}).filter(([key, value]) => /^[a-zA-Z0-9_]{1,80}$/.test(key) && typeof value === 'boolean'));
   } catch { return {}; }
 }
 
@@ -351,7 +351,11 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (plot.left === 'phases') notes.push('New currents are equivalent interval averages derived from phase energy at 230 V and unity power factor. Older current-only history retains the original snapshots.');
     if (plot.left === 'phase_energy') notes.push('Each point is estimated energy over its recorded interval. Recording intervals may have different durations.');
     if (plot.left === 'heat_pump_power') notes.push('Heat-pump electricity is reconstructed from saved equipment states and dated nominal power assumptions. It is an estimate; missing, stale or unverified source periods appear as gaps.');
-    if (plot.left.startsWith('model_coefficient_')) {
+    if (plot.left.startsWith('garage_coefficient_')) {
+      notes.push('Garage coefficients replay the saved seed and ordered, versioned garage journal using the current explicit sensor-correction revision. Fitted, retained and prior values remain distinct; unsupported prefixes and invalid dependencies remain gaps.');
+    } else if (plot.left.startsWith('garage_model_')) {
+      notes.push('Garage inputs retain the original normalized learning evidence. Rear and front remain separate; the difference needs both fresh inputs. Missing front history and unqualified electricity remain gaps.');
+    } else if (plot.left.startsWith('model_coefficient_')) {
       notes.push('Coefficients are reconstructed from the saved learning journal and applicable corrected firewood history without additional stored history. Stepped lines retain each value until the reconstructed model changes. Tooltips distinguish initial estimates, fitted values and retained values awaiting evidence. Unavailable replay history remains blank.');
     } else if (plot.left === 'model_fireplace_release') {
       notes.push('Fireplace release is calculated from corrected firewood additions using the delayed masonry response. Its kg/h unit is fuel equivalent, not a burn-rate measurement or delivered kW. Heat from additions before these dates can continue into the selection; periods before logging began remain unknown.');

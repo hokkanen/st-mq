@@ -24,6 +24,7 @@ import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorR
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
+import { GarageRuntime } from '../garage/runtime.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
@@ -35,11 +36,10 @@ function garageOwner(config, signal) {
   const device = config.connections?.equipment?.devices?.find(device => device.ownedSignals?.includes(signal));
   if (device) return !device.enabled ? { disabled: true } : device.protocol === 'shelly'
     ? { source: 'shelly-mqtt', device: device.id }
-    : device.kind === 'temperature' && device.temperatureSignal === 'garage_temperature'
-      ? { source: 'mqtt-temperature', device: 'garage_temperature' } : { source: 'mqtt-equipment', device: device.id };
+    : device.kind === 'temperature' && device.temperatureSignal === signal
+      ? { source: 'mqtt-temperature', device: signal } : { source: 'mqtt-equipment', device: device.id };
   if (config.connections?.shelly?.devices?.some(device => device.role === 'garage')) return { source: 'shelly-mqtt', device: 'garage' };
-  if (signal === 'garage_temperature' && (config.connections?.mqtt?.temperatureTopics?.garage_temperature
-    || config.connections?.mqtt?.garage_temperature_topic)) return { source: 'mqtt-temperature', device: signal };
+  if (config.connections?.mqtt?.temperatureTopics?.[signal]) return { source: 'mqtt-temperature', device: signal };
   return null;
 }
 function acceptsGarageObservation(config, observation) {
@@ -112,7 +112,7 @@ export class Engine {
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
   sensorChangesStatus() {
     const connections = this.config.connections ?? {};
-    const configured = [...INDOOR_SIGNALS, 'garage_temperature']
+    const configured = [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_2']
       .filter(signal => connections.mqtt?.temperatureTopics?.[signal]);
     return sensorChangesView(this.store, this.config.input, { now: this.clock(), config: this.control,
       observedSignals: [...Object.keys(this.latest), ...configured] });
@@ -218,7 +218,7 @@ export class Engine {
   temperatureObservations(observations, now, checkpoint = this.checkpoint) {
     const boundaries = sensorBoundaries(this.store, this.config.input, now);
     const names = { upstairs: 'indoor_temperature', downstairs: 'downstairs_temperature', bedroom: 'bedroom_temperature',
-      garage: 'garage_temperature', outdoor: 'outdoor_temperature' };
+      garage: 'garage_temperature', garageFront: 'garage_temperature_2', outdoor: 'outdoor_temperature' };
     for (const [key, signal] of Object.entries(names)) {
       const latest = this.latest[signal];
       const reading = latest ? { value: latest.value, observedAt: latest.sourceTime, quality: latest.quality, source: latest.source }
@@ -335,7 +335,7 @@ export class Engine {
     }
   }
   async closeFireplace() { await this.fireplaceRebuild?.close(); }
-  constructor({ store, config, clock = Date.now, commandTransport = null }) {
+  constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     this.store = store;
     this.config = config;
     this.clock = clock;
@@ -386,7 +386,7 @@ export class Engine {
     }
     this.outdoorCandidates = Object.create(null);
     if (config.input === 'offline') {
-      for (const signal of [...INDOOR_SIGNALS, 'garage_temperature', 'outdoor_temperature']) {
+      for (const signal of [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature']) {
         const observation = store.latestObservation(signal);
         if (observation && !(signal === 'indoor_temperature' && observation.source?.startsWith('husdata'))
           && acceptsGarageObservation(config, observation)) remember(this.latest, observation, clock());
@@ -414,6 +414,7 @@ export class Engine {
       this.applied = { phase: 'normal', at: null, verified: false };
       store.setState(`applied:${config.input}`, this.applied);
     }
+    this.garage = new GarageRuntime({ engine: this, store, config, clock, canControl });
   }
   ingest(observation) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata'))
@@ -435,9 +436,10 @@ export class Engine {
       && (result.rejectedSourceTime || result.reason === 'out-of-order-receipt');
     this.rememberObservation(rejectedTime ? { ...observation,
       quality: [...new Set([...(observation.quality ?? []), 'out-of-order-source-time'])] } : observation, now);
+    if (['garage_temperature', 'garage_temperature_2'].includes(observation.signal)) this.garage?.queueSafety();
     return result;
   }
-  ingestEnergy(interval) { return this.recorder.recordEnergy(interval); }
+  ingestEnergy(interval) { return interval.signal === 'garage_energy' ? this.garage.ingestEnergy(interval) : this.recorder.recordEnergy(interval); }
   rememberObservation(observation, now) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')) return;
     if (!acceptsGarageObservation(this.config, observation)) return;
@@ -802,6 +804,8 @@ export class Engine {
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
     this.temperatureObservations(observations, now);
+    try { this.garage.tick({ now, prices: outlook.prices, forecast: outlook.forecast }); }
+    catch { this.garage.fail('garage-runtime-unavailable'); }
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
     let checkpoint = this.readAdaptive(now);
@@ -1084,7 +1088,7 @@ export class Engine {
       providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},
       equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),equipmentControls:this.equipmentControlStatus(),dhwr:this.dhwrStatus(),
       contract:this.contract(),configuredPrices:this.config.priceSettings??null,
-      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),
+      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),garage:this.garage.status(now),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
         controlHold,outcomes:this.cycles.outcomes(),
@@ -1109,6 +1113,7 @@ export class Engine {
     result.chargerIdentification = this.chargerIdentification?.status() ?? { enabled: false, active: false, verdict: null };
     result.fireplace = this.fireplaceStatus();
     result.sensorChanges = this.sensorChangesStatus();
+    result.garage = this.garage.status(now);
     if (this.h66Status) result.h66 = this.h66Status();
     result.providers = this.providerStatus();
     this.temperatureObservations(result.observations, now);

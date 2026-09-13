@@ -44,7 +44,8 @@
       "bedroom_temperature_topic": "",
       "temperature_report_interval_minutes": 70,
       "temperature_report_grace_seconds": 300,
-      "garage_temperature_topic": ""
+      "garage_temperature_topic": "",
+      "garage_temperature_2_topic": ""
     },
     "entsoe": {
       "token": ""
@@ -218,7 +219,7 @@
         },
         {
           "id": "garage",
-          "label": "Garage temperatures",
+          "label": "Garage protection temperatures",
           "area": "garage",
           "kind": "temperature",
           "connection": "shelly:stmq/garage/temperatures",
@@ -228,7 +229,7 @@
           "readings": [
             {
               "key": "temperature_2",
-              "label": "Garage temperature 2",
+              "label": "Garage front",
               "signal": "garage_temperature_2",
               "unit": "degC",
               "component": "temperature:101",
@@ -298,6 +299,33 @@
         "switch_id": 0,
         "nominal_voltage": 230
       }
+    },
+    "garage": {
+      "enabled": false,
+      "aggressiveness": 50,
+      "baselineC": 10,
+      "frontRequired": false,
+      "maxSensorAgeMs": 120000,
+      "minOnMs": 1800000,
+      "minOffMs": 600000,
+      "maxHorizonHours": 48,
+      "stepMinutes": 15,
+      "protection": {
+        "approved": false,
+        "version": "garage-exposure-v1",
+        "floorC": 4,
+        "hardMinimumC": 2,
+        "budgetDegreeMinutes": 120,
+        "recoveryAboveC": 6,
+        "recoveryDegreeMinutesPerMinute": 0.25,
+        "recoveryDwellMinutes": 30
+      },
+      "adapter": {
+        "stateTopic": "",
+        "telemetryTopic": "",
+        "maxAgeMs": 120000,
+        "electricalSource": "none"
+      }
     }
   },
   "schema": {
@@ -316,7 +344,8 @@
       "bedroom_temperature_topic": "str?",
       "temperature_report_interval_minutes": "float(0,1440)",
       "temperature_report_grace_seconds": "float(0,900)",
-      "garage_temperature_topic": "str?"
+      "garage_temperature_topic": "str?",
+      "garage_temperature_2_topic": "str?"
     },
     "entsoe": {
       "token": "password?",
@@ -510,6 +539,33 @@
           }
         }
       ]
+    },
+    "garage": {
+      "enabled": "bool",
+      "aggressiveness": "float(0,100)",
+      "baselineC": "float(8,16)",
+      "frontRequired": "bool",
+      "maxSensorAgeMs": "int(30000,14400000)",
+      "minOnMs": "int(0,21600000)",
+      "minOffMs": "int(0,10800000)",
+      "maxHorizonHours": "float(2,48)",
+      "stepMinutes": "float(5,30)",
+      "protection": {
+        "approved": "bool",
+        "version": "list(garage-exposure-v1)",
+        "floorC": "float(0,12)",
+        "hardMinimumC": "float(-2,10)",
+        "budgetDegreeMinutes": "float(1,10000)",
+        "recoveryAboveC": "float(1,16)",
+        "recoveryDegreeMinutesPerMinute": "float(0.001,5)",
+        "recoveryDwellMinutes": "float(1,240)"
+      },
+      "adapter": {
+        "stateTopic": "str?",
+        "telemetryTopic": "str?",
+        "maxAgeMs": "int(1000,600000)",
+        "electricalSource": "list(none|native-counter|native-power)"
+      }
     }
   },
   "host_network": true,

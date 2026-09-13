@@ -1,0 +1,43 @@
+{
+  "schema": "stmq-garage-fixture/v1",
+  "deviceId": "invented-garage-fixture",
+  "bootId": "fixture-boot-1",
+  "sessionId": "fixture-session-1",
+  "sequence": 1,
+  "observedAt": 1800000000000,
+  "mode": "armed",
+  "health": {
+    "device": { "value": true, "measuredAt": 1800000000000 },
+    "driver": { "value": true, "measuredAt": 1800000000000 },
+    "pump": { "value": true, "measuredAt": 1800000000000 }
+  },
+  "native": { "power": { "value": "on", "measuredAt": 1800000000000 } },
+  "baseline": {
+    "verified": true,
+    "measuredAt": 1800000000000,
+    "profile": "existing-low-heat",
+    "targetC": 10,
+    "fan": "auto",
+    "vanes": "fixed"
+  },
+  "capabilities": {
+    "boundedPause": true,
+    "localExpiry": true,
+    "offlineStartupRestore": true,
+    "restorePersistence": true,
+    "nativeConfirmation": true,
+    "challenge": true,
+    "preserveNativeBaseline": true
+  },
+  "leaseLimits": {
+    "maximumMs": 600000,
+    "renewAfterMs": 300000,
+    "minimumOnMs": 0,
+    "restorationDelayMs": 120000
+  },
+  "authority": { "ownerSession": "fixture-host", "controlAllowed": true },
+  "challenge": { "value": "fixture-challenge-1", "expiresAt": 1800000030000 },
+  "lease": null,
+  "restorationPending": false,
+  "recoveryLockedUntil": 0
+}

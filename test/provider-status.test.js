@@ -21,7 +21,7 @@ test('dashboard groups measured temperature channels under their actual sources 
   assert.equal(grouped.source, 'MQTT, FMI');
   assert.deepEqual(grouped.series.map(row => row.source), ['MQTT', 'MQTT', 'FMI']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'outdoor_temperature']);
-  assert.match(grouped.series[1].detail, /Optional garage sensor, recorded for history/);
+  assert.match(grouped.series[1].detail, /Rear garage protection sensor.*front protection is separate/);
   assert.match(grouped.display.detail, /Temperature downloads · MQTT: Last successful download 10:00/);
   assert.match(grouped.display.detail, /Outdoor downloads · FMI: Observed at a nearby weather station. Last successful download 10:00/);
 });
@@ -278,7 +278,7 @@ test('indoor provider rows show the three physical sensors separately from their
     outdoor: temperature('fmi', 4),
   }, providers: { temperatures: { source: 'mqtt-temperature', status: 'ok', lastSuccessAt: now } } };
   const [grouped] = dashboardProviders(status, options);
-  assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom', 'Garage temperature', 'Outdoor temperature']);
+  assert.deepEqual(grouped.series.map(row => row.label), ['Upstairs', 'Downstairs', 'Bedroom', 'Garage rear temperature', 'Outdoor temperature']);
   assert.deepEqual(grouped.series.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
   assert.equal(grouped.display.title, 'Main temperatures · MQTT, FMI');
   assert.ok(grouped.series.slice(0, 3).every(row => row.source === 'MQTT'));

@@ -11,6 +11,7 @@ import { sensorBoundaries } from './sensor-inputs.js';
 import { lastIndoorReading, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAttempt,
   temperatureBoundaryStatus } from './temperature-status.js';
+import { garageModelSummary } from '../garage/model.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -115,7 +116,7 @@ export async function startReplica({ config, clock = Date.now,
     const learningConfig = checkpoint?.learningConfiguration ?? {};
     const boundaries = snapshot ? sensorBoundaries(snapshot.store, snapshot.input, snapshot.publication.sourceAt) : {};
     const observations = Object.fromEntries([['upstairs', 'indoor_temperature'], ['downstairs', 'downstairs_temperature'],
-      ['bedroom', 'bedroom_temperature'], ['outdoor', 'outdoor_temperature'], ['garage', 'garage_temperature']]
+      ['bedroom', 'bedroom_temperature'], ['outdoor', 'outdoor_temperature'], ['garage', 'garage_temperature'], ['garageFront', 'garage_temperature_2']]
       .map(([name, signal]) => {
         const reading = observed(snapshot, signal, now), changedAt = boundaries[signal];
         return [name, temperatureBoundaryStatus(reading, changedAt, now)];
@@ -130,6 +131,14 @@ export async function startReplica({ config, clock = Date.now,
         verifiedAt: publication?.verifiedAt ?? null, digest: publication?.digest ?? null,
         bytes: publication?.bytes ?? null, staleAfterMs, ...(lastError ? { error: lastError } : {}) },
       observations,
+      garage: { status: 'monitoring', reason: 'Read-only replica; recorded primary evidence',
+        settings: snapshot?.store.getState(`garage:configuration:${snapshot.input}`) ?? {},
+        observations: { rear: observations.garage, front: observations.garageFront, outdoor: observations.outdoor },
+        exposure: snapshot?.store.getState(`garage:exposure:${snapshot.input}`) ?? null,
+        learning: garageModelSummary(snapshot?.store.getState(`garage:checkpoint:${snapshot.input}`)?.model),
+        adapter: { liveControlSupported: false, automaticControl: false, phase: 'monitoring',
+          restorePending: snapshot?.store.getState(`garage:adapter:${snapshot.input}`)?.restorePending ?? false,
+          blockedReasons: ['Read-only replica; live adapter health is unavailable'] } },
       sensorChanges: snapshot ? sensorChangesView(snapshot.store, snapshot.input,
         { now: snapshot.publication.sourceAt, config: learningConfig, readOnly: true,
           observedSignals: ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].filter((signal, i) => observations[['upstairs', 'downstairs', 'bedroom'][i]]) })

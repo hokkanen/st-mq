@@ -13,7 +13,7 @@ test('every retained H66 parameter and garage temperature is selectable independ
   assert.equal(new Set(HISTORY_AXES.map(a=>a.key)).size,HISTORY_AXES.length);
   const rows=recordingRows({parameters:[{signal:'garage_temperature',day:{averageIntervalMs:180000},threshold:0.04,status:'fresh'}]});
   const garage=rows.find(r=>r.signal==='garage_temperature');
-  assert.equal(garage.role,'History only');assert.equal(garage.day.averageIntervalMs,180000);
+  assert.equal(garage.role,'Garage protection input');assert.equal(garage.day.averageIntervalMs,180000);
   assert(rows.find(r=>r.signal==='brine_pump_speed'));
   assert.equal(rows.find(r=>r.signal==='auxiliary_power').group,'Electricity');
   assert(!rows.some(r=>r.signal.startsWith('model_')),'Calculated learning views do not create recorder channels');
@@ -30,7 +30,7 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   assert.equal(select.value, 'model_coefficient_heat_loss');
   assert.deepEqual(select.children.map(group => group.label.split(' · ')[0]), ['Electricity', 'Home temperatures', 'Heating', 'Hot water',
     'Ground loop', 'Control', 'Weather', 'Learning', 'Model coefficients', 'Model inputs', 'Equipment states',
-    'Settings', 'Runtime counters', 'Meter checks']);
+    'Settings', 'Runtime counters', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);
   const choices = new Set(select.children.flatMap(group => group.children.map(option => option.value)));
   for (const key of RIGHT_AXIS_SIGNALS) assert(!choices.has(key), `${key} already appears on the right axis`);
   const coefficients = select.children.find(group => group.label === 'Model coefficients · Calculated');
@@ -38,6 +38,8 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   assert.equal(coefficients.children.length, 5);
   assert.deepEqual(Object.values(MODEL_COEFFICIENT_INFO).map(info => info.parameter),
     ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh', 'fireplaceCPerKg']);
+  assert(choices.has('garage_model_front'));
+  assert(choices.has('garage_coefficient_rear_lossPerHour'));
   assert(choices.has('model_outdoor_temperature'), 'Saved outdoor learning inputs remain inspectable');
   const rooms = select.children.find(group => group.label === 'Home temperatures · Recorded');
   assert.deepEqual(rooms.children.map(option => [option.value, option.textContent]), [

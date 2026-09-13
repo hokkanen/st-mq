@@ -196,3 +196,21 @@ Retrospective firewood savings are a separate, read-only calculation under the
 current corrected model and normal heating policy. A model update can revise them.
 They do not claim to reconstruct a past controller's forecast or control choice,
 and must remain labelled as estimated rather than measured savings.
+
+## Separate Garage learning
+
+`committed-garage-v1-coupled` establishes Garage's own saved seed and journal
+stream (`garage:<input>`). It applies this same reconstruction contract without
+changing Home's learning algorithm or CSV interpretation. Ordered normalized
+samples, configuration and sensor-correction events drive both live updates and
+worker reconstruction. Memory publication follows successful durable checkpoint
+publication; a failed write retains the previous checkpoint. A Garage failure
+revokes its pause permission while Home control continues independently.
+
+Garage's frozen episode reference and each protection location's exposure are
+separate from replaceable model checkpoints. A corrected reconstruction never
+rewrites observed behavior, resurrects an old pause or clears physical recovery
+debt. Imported rear-only history remains a separate, explicitly incomplete
+reconstruction; missing front/native/OFF evidence is not fabricated. See
+[Garage learning](garage.md) for its supported evidence and provisional adapter
+boundary.

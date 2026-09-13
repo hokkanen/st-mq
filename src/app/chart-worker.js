@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
+import { getGarageModelBenefit } from './garage-reporting.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 
 // The chart worker owns a separate read-only SQLite connection. A large history
@@ -52,8 +53,9 @@ parentPort.on('message', ({ id, args, operation }) => {
     // Cycle records can be corrected without a new telemetry or journal row.
     // Recheck their compact selected-period aggregate, retaining history cache
     // hits for unrelated recorder/checkpoint writes and active observation tapes.
-    if (entry && !entry.result.meta.detail && heatingFingerprint(entry.result.heatingBenefit) !== heatingFingerprint(
-      getHeatingBenefit({ ...args, store, range: entry.result.range }))) {
+    if (entry && !entry.result.meta.detail && (heatingFingerprint(entry.result.heatingBenefit) !== heatingFingerprint(
+      getHeatingBenefit({ ...args, store, range: entry.result.range })) || entry.garageFingerprint !== heatingFingerprint(
+      getGarageModelBenefit({ ...args, store, range: entry.result.range })))) {
       cache.delete(key); cacheBytes -= entry.bytes; entry = null;
     }
     if (entry) {
@@ -68,7 +70,7 @@ parentPort.on('message', ({ id, args, operation }) => {
       while (cache.size && (cache.size >= 16 || cacheBytes + bytes > 32 * 1024 * 1024)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);
       }
-      if (bytes <= 32 * 1024 * 1024) { entry = { result, bytes }; cache.set(key, entry); cacheBytes += bytes; }
+      if (bytes <= 32 * 1024 * 1024) { entry = { result, bytes, garageFingerprint: heatingFingerprint(getGarageModelBenefit({ ...args, store, range: result.range })) }; cache.set(key, entry); cacheBytes += bytes; }
     }
     parentPort.postMessage({ id, result });
   } catch (error) { parentPort.postMessage({ id, error: { name: error.name, message: error.message } }); }

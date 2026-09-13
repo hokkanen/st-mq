@@ -1,17 +1,25 @@
+import { heatingScopeDisplay } from './heating-scope.js';
 import { timingDisplay, timingExplanations } from './timing-model.js';
 import { firewoodDisplay, firewoodExplanations } from './firewood-benefit.js';
-import { heatingDisplay, heatingExplanations } from './heating-benefit.js';
+import { heatingExplanations } from './heating-benefit.js';
 
 /** Keep native folds mounted while the chart refreshes their figures and notes. */
 export function createTimingBenefit(root) {
   if (!root) return { render() {}, close() {} };
   const document = root.ownerDocument;
   let lastFingerprint, closed = false, notes, devices, overviewObserver, overviewHeight;
-  let latestPayload, modeStatus, heatingMode = 'model';
+  let latestPayload, modeStatus, heatingMode = 'model', heatingScope = 'home';
   const preferenceKey = 'stmq.heatingSavingMode';
   try { if (document.defaultView.localStorage?.getItem(preferenceKey) === 'timing') heatingMode = 'timing'; } catch {}
   const cards = new Map();
-  const modeButtons = [];
+  const modeButtons = [], scopeButtons = [];
+  function chooseScope(event) {
+    if (closed) return;
+    heatingScope = event.currentTarget.dataset.scope;
+    render(latestPayload);
+    const display = cards.get('heatPump').display;
+    modeStatus.textContent = `${heatingScope}: ${display.amount ?? 'Unavailable'}${display.qualification ? `, ${display.qualification}` : ''}.`;
+  }
 
   function chooseMode(event) {
     if (closed) return;
@@ -79,7 +87,19 @@ export function createTimingBenefit(root) {
         modeStatus.setAttribute('role', 'status');
         modeStatus.setAttribute('aria-live', 'polite'); modeStatus.setAttribute('aria-atomic', 'true');
       }
-      overview.append(heading, comparison, label, figures);
+      overview.append(heading);
+      if (display.key === 'heatPump') {
+        const scopes = element('div', 'heating-scope-switch');
+        scopes.setAttribute('role', 'group'); scopes.setAttribute('aria-label', 'Heating savings scope');
+        for (const [scope, text] of [['home', 'Home'], ['garage', 'Garage'], ['total', 'Total']]) {
+          const button = element('button', 'timing-comparison-option', text);
+          button.type = 'button'; button.dataset.scope = scope;
+          button.setAttribute('aria-controls', 'heating-saving-result');
+          button.addEventListener('click', chooseScope); scopeButtons.push(button); scopes.append(button);
+        }
+        overview.append(scopes);
+      }
+      overview.append(comparison, label, figures);
       if (display.key === 'heatPump') overview.append(modeStatus);
       const details = element('details', 'timing-device-detail'); details.dataset.device = display.key;
       details.append(element('summary', '', `${display.name} details`));
@@ -101,6 +121,7 @@ export function createTimingBenefit(root) {
     overview.append(result);
     if (!display.available && !display.noChargingDetected) paragraph(overview, display.unavailableReason, 'timing-unavailable-reason');
     paragraph(overview, display.smallDifferenceExplanation, 'timing-small-difference');
+    paragraph(overview, display.qualification, 'timing-dates');
 
     const meta = element('div', 'timing-meta');
     if (display.basis) {
@@ -153,6 +174,7 @@ export function createTimingBenefit(root) {
       paragraph(rates, display.ratePeriod, 'timing-dates');
       content.append(rates);
     }
+    for (const text of display.breakdown ?? []) paragraph(content, text, 'timing-dates');
     return content;
   }
   function firewoodOverview(display) {
@@ -210,6 +232,7 @@ export function createTimingBenefit(root) {
     const basis = element('span', 'timing-basis', 'Completed-cycle estimate'); basis.dataset.basis = 'modelled';
     meta.append(basis); overview.append(meta);
     paragraph(overview, display.cycleSummary, 'heating-cycle-summary');
+    paragraph(overview, display.qualification, 'timing-dates');
     paragraph(overview, 'Space heating · includes recovery', 'timing-dates');
     paragraph(overview, display.calculationPeriod, 'timing-dates');
     return overview;
@@ -218,7 +241,7 @@ export function createTimingBenefit(root) {
     const content = document.createDocumentFragment();
     const comparison = element('section', 'timing-energy');
     comparison.append(element('h4', '', 'How to read this estimate'));
-    for (const text of heatingExplanations) paragraph(comparison, text);
+    for (const text of display.explanations ?? heatingExplanations) paragraph(comparison, text);
     paragraph(comparison, display.uncertainty, 'heating-range'); content.append(comparison);
     const cycles = element('section', 'timing-time');
     cycles.append(element('h4', '', 'Cycles included'));
@@ -226,20 +249,22 @@ export function createTimingBenefit(root) {
     paragraph(cycles, display.excludedSummary);
     paragraph(cycles, display.periodExplanation);
     paragraph(cycles, display.coveredPeriod, 'timing-dates'); content.append(cycles);
+    for (const text of display.breakdown ?? []) paragraph(content, text, 'timing-dates');
     return content;
   }
   function render(payload) {
     if (closed) return;
     latestPayload = payload;
     const timingDisplays = ['heatPump', 'charger'].map(key => timingDisplay(key, payload?.timingBenefit?.[key], payload));
-    const displays = [heatingMode === 'model' ? heatingDisplay(payload?.heatingBenefit, payload) : timingDisplays[0], timingDisplays[1],
+    const displays = [heatingScopeDisplay(payload, heatingScope, heatingMode), timingDisplays[1],
       firewoodDisplay(payload?.firewoodBenefit, payload)];
     const chartAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used) && !timingDisplays.some(display => display.assumedRates);
-    const fingerprint = JSON.stringify({ displays, chartAssumedRates, heatingMode });
+    const fingerprint = JSON.stringify({ displays, chartAssumedRates, heatingMode, heatingScope });
     if (fingerprint === lastFingerprint) return;
     lastFingerprint = fingerprint;
     if (!notes) initialize(displays);
     modeStatus.textContent = '';
+    for (const button of scopeButtons) button.setAttribute('aria-pressed', String(button.dataset.scope === heatingScope));
     for (const button of modeButtons) button.setAttribute('aria-pressed', String(button.dataset.mode === heatingMode));
     for (const display of displays) {
       const card = cards.get(display.key);
@@ -273,6 +298,7 @@ export function createTimingBenefit(root) {
     close() {
       closed = true; overviewObserver?.disconnect();
       for (const button of modeButtons) button.removeEventListener('click', chooseMode);
+      for (const button of scopeButtons) button.removeEventListener('click', chooseScope);
     },
   };
 }

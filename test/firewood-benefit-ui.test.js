@@ -150,7 +150,8 @@ test('heating choice changes its amount and details while preserving focus, fold
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children;
   const overview = heating.children[0].children[0];
-  const [modelButton, timingButton] = overview.children[1].children;
+  const comparison = overview.children.find(node => node.attributes['aria-label'] === 'Heating savings comparison');
+  const [modelButton, timingButton] = comparison.children;
   const fold = heating.children[1]; fold.open = true;
   assert.equal(modelButton.attributes['aria-pressed'], 'true');
   assert.match(heating.textContent, /Model-estimated saving.*€3.50/);
@@ -168,7 +169,7 @@ test('heating choice changes its amount and details while preserving focus, fold
   assert.match(charger.textContent, /Timing cost saving.*€2.00/);
   assert.match(fireplace.textContent, /Model-estimated saving.*€1.25/);
   panel.render({ ...data, heatingBenefit: { status: 'unavailable', reason: 'no-completed-cycles' } });
-  assert.equal(overview.children[1].children[0], modelButton);
+  assert.equal(comparison.children[0], modelButton);
   assert.equal(document.activeElement, modelButton); assert.equal(heating.children[1], fold);
   assert.match(heating.textContent, /Estimate unavailable.*No completed heating cycles/);
   assert.doesNotMatch(heating.textContent, /€3.50|€1.00/);
@@ -189,10 +190,34 @@ test('heating defaults to the model estimate with missing, blocked or invalid br
     panel.render(payload);
     const heating = root.children[1].children[0];
     assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
-    heating.children[0].children[0].children[1].children[1].click();
+    const comparison = heating.children[0].children[0].children.find(node => node.attributes['aria-label'] === 'Heating savings comparison');
+    comparison.children[1].click();
     assert.match(heating.textContent, /Timing cost saving/);
-    heating.children[0].children[0].children[1].children[0].click();
+    comparison.children[0].click();
     assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
     panel.close();
   }
+});
+
+test('Home/Garage/Total changes only heating scope and keeps both comparison controls and folds stable', () => {
+  const { root, document } = dom(), panel = createTimingBenefit(root);
+  const data = { ...payload, heatingSavings: {
+    home: { model: { status: 'estimated', valueEuro: 3 }, timing: { value: 1 } },
+    garage: { model: { status: 'estimated', valueEuro: -1, provisional: true }, timing: { value: -0.5, provisional: true } },
+    total: { model: { status: 'estimated', valueEuro: 2, provisional: true }, timing: { value: 0.5, provisional: true } },
+  }, firewoodBenefit: estimate, timingBenefit: { charger: { value: 2 } } };
+  panel.render(data);
+  const [heating, charger, fireplace] = root.children[1].children, overview = heating.children[0].children[0];
+  const scopes = overview.children.find(node => node.attributes['aria-label'] === 'Heating savings scope');
+  const comparisons = overview.children.find(node => node.attributes['aria-label'] === 'Heating savings comparison');
+  const [home, garage, total] = scopes.children;
+  assert.equal(home.attributes['aria-pressed'], 'true'); assert.match(heating.textContent, /€3.00/);
+  const fold = heating.children[1]; fold.open = true;
+  garage.focus(); garage.click(); assert.equal(document.activeElement, garage); assert.equal(fold.open, true);
+  assert.match(heating.textContent, /-€1.00.*Provisional/);
+  comparisons.children[1].click(); assert.match(heating.textContent, /Timing cost saving.*-€0.50/);
+  total.click(); assert.match(heating.textContent, /Timing cost saving.*€0.50/);
+  home.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  assert.match(charger.textContent, /€2.00/); assert.match(fireplace.textContent, /€1.25/);
+  panel.close();
 });

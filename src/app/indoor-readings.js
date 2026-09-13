@@ -18,7 +18,7 @@ export function indoorReadingUsable(observation, at) {
     || (observation.quality ?? []).some(flag => !ALLOWED.has(flag))) return false;
   if (observation.source?.startsWith('husdata') && observation.raw?.usableForControl !== true
     && !(observation.quality?.includes('stale') && observation.raw?.verification)) return false;
-  return observation.signal === 'garage_temperature'
+  return ['garage_temperature', 'garage_temperature_2'].includes(observation.signal)
     ? observation.value >= -60 && observation.value <= 70 : observation.value > 2 && observation.value < 40;
 }
 

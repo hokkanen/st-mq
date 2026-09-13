@@ -90,7 +90,7 @@ test('All home temperatures includes three rooms and both garage probes once, wh
   const datasets = historyDatasets(series, 'temperatures');
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.key), signals);
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.label),
-    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Garage probe 2']);
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage rear', 'Garage front']);
   assert.equal(new Set(datasets.map(row => row.key)).size, datasets.length, 'The shared garage reading is not duplicated on the right axis');
   for (const key of signals) {
     assert.equal(datasets.filter(row => row.key === key).length, 1);

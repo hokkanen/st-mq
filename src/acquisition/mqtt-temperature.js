@@ -16,7 +16,7 @@ export function temperatureRouteSignature({ brokerIdentity, topic, statePath = n
 // {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.
 export function decodeMqttTemperature({ signal, payload, receivedAt, retained = false,
   reportIntervalMs = null, reportGraceMs = 0 }) {
-  if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)) return null;
+  if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'].includes(signal)) return null;
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
   if (text.length > 512) return null;
   let input;
@@ -43,4 +43,3 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
   return { source: 'mqtt-temperature', device: signal, signal, value, unit: 'degC', sourceTime, receivedAt, quality,
     raw };
 }
-

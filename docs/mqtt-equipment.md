@@ -72,8 +72,9 @@ requires `switch_control: true` or, for the home's reduction relay,
 `enabled: false` keeps an entry inactive. Add future equipment once its actual
 device capabilities and intended measurements are known.
 
-The garage addon uses external sensor 100. Sensor 101 is an optional second probe:
-its absence does not make the existing probe unavailable. Set its physical label
+The garage addon uses external sensor 100 as the existing rear probe. Sensor 101
+is the front probe: its absence does not erase the rear reading, but both fresh
+protection readings are required for [garage pauses](garage.md). Set its physical label
 once installed, and change the component mapping if the device assigns a different
 ID. The relay's internal electronics temperature is not the garage temperature.
 There is one garage temperature entry. Its connection selects either the native
@@ -88,8 +89,8 @@ mappings cannot replace those built-in signals. For standard MQTT, a mapping who
 signal matches a built-in power/current reading replaces its field path while
 preserving the unit. An optional reading that has never arrived does not invalidate
 unrelated measurements. Home indoor signals
-retain their existing reporting and learning contract; garage equipment is history
-and monitoring data and is not automatically added to the home temperature average.
+retain their existing reporting and learning contract. Garage readings feed their
+own learning/protection model and never enter the Home temperature average.
 
 ## Configure a Shelly
 
@@ -260,8 +261,10 @@ and counter resets retain partial coverage. No outage energy is invented.
 
 The chart includes all configured home/garage probes through **All home
 temperatures**, door states and Caravan hourly energy. Tariff status already comes
-from heating control; duplicate relay-state datasets are not recorded. Future
-garage heat-pump datasets are absent until that equipment is specified. Retired
+from heating control; duplicate relay-state datasets are not recorded. The
+[garage adapter](garage-adapter.md) keeps optional native temperatures live-only,
+records qualified dedicated electrical intervals, and retains used learning inputs
+in its own versioned journal. Retired
 development datasets and their recorder caches are removed at startup; immutable
 learning records and imported history are preserved.
 

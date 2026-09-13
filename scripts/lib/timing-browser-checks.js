@@ -201,7 +201,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     'Native summary keeps keyboard focus while toggling');
   assert.equal(await evaluate("document.querySelectorAll('.timing-popover, #timing-benefit .timing-help, #timing-benefit button:not(.timing-comparison-option), #timing-benefit [role=dialog]').length"), 0,
     'Results use only the inline comparison selector and native details controls');
-  assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-comparison-option').length"), 2,
+  assert.equal(await evaluate("document.querySelectorAll('#timing-benefit .timing-comparison-option[data-mode]').length"), 2,
     'Only Heating has a two-option comparison selector');
   for (const [device, name] of [['heatPump', 'Heating'], ['charger', 'Charging'], ['firewood', 'Fireplace']]) {
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(detail(device))}).tagName`), 'DETAILS');
@@ -213,7 +213,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     const details = document.querySelector('.timing-device-detail[data-device="' + device + '"]');
     return [device, { details, summary: details.querySelector(':scope > summary') }];
   })); true`);
-  await evaluate(`window.timingFoldFixture.comparisons = Object.fromEntries([...document.querySelectorAll('.timing-comparison-option')]
+  await evaluate(`window.timingFoldFixture.comparisons = Object.fromEntries([...document.querySelectorAll('.timing-comparison-option[data-mode]')]
     .map(button => [button.dataset.mode, button])); true`);
   await checkComparison('model');
   await switchComparison('timing');

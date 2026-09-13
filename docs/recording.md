@@ -589,7 +589,8 @@ are always recorded. A separate active-state measurement is not stored.
 The local Upstairs, Bedroom and Downstairs sensors are recorded separately from
 H66 acquisition. H66 indoor register `0008` is ignored and cannot supply a fallback.
 The house model uses the configured indoor average described below.
-Garage temperature is additional to those 29 and is history only.
+Garage rear and front temperatures are additional to those 29 and feed the
+separate [garage learner and protection controller](garage.md).
 Collecting another temperature does not add a free house-model coefficient.
 
 The house model fits a small regularized thermal response. Ordinary operation can
@@ -697,7 +698,7 @@ each intended source and its model membership separately.
 
 Standalone options also accept `mqtt.temperature_topics` mapping the signal names
 `indoor_temperature`, `downstairs_temperature`, `bedroom_temperature` and
-`garage_temperature` to topics. The payload can be a JSON
+`garage_temperature` (rear) and `garage_temperature_2` (front) to topics. The payload can be a JSON
 number in Celsius, or an object such as
 `{"value":12.5,"unit":"C","timestamp":"2026-01-01T12:00:00Z"}`. Units `C`, `degC`,
 `°C` and `F` are accepted; a supplied timestamp must include its time zone or be

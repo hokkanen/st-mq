@@ -128,6 +128,8 @@ export function equipmentConfiguration(input = {}) {
     const metered = kind === 'metered_switch';
     if (hasTemperature && (!record || readings.some(value => value.signal === temperatureSignal && !value.record)))
       throw new Error('Main temperature readings must preserve recorded history');
+    if (readings.some(value => ['garage_temperature', 'garage_temperature_2'].includes(value.signal) && !value.record))
+      throw new Error('Garage protection readings must preserve recorded history');
     if (id === 'dhwr' && readings.some(value => value.signal === 'dhwr_power' && !['W', 'kW'].includes(value.unit)))
       throw new Error('DHWR power feedback must declare W or kW units');
     const counters = readings.filter(mapping => mapping.key === 'energy_counter');

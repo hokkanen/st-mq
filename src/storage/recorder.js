@@ -155,7 +155,7 @@ export class Recorder {
         && (s.status === 'stale' || lastQuality.some(flag => ['missing-report', 'report-policy-changed'].includes(flag)));
       const genuine = finiteTime(sourceTime) && finiteTime(receivedAt) && sourceTime <= receivedAt && receivedAt <= at
         && Number.isFinite(value) && ['degC', '°C'].includes(unit)
-        && (reading.signal === 'garage_temperature' ? value >= -60 && value <= 70 : value > 2 && value < 40)
+        && (['garage_temperature', 'garage_temperature_2'].includes(reading.signal) ? value >= -60 && value <= 70 : value > 2 && value < 40)
         && quality.every(flag => ['good', 'simulated', 'historical', 'converted_fahrenheit', 'stale'].includes(flag))
         && !previousRaw.retained && !previousRaw.acquisitionOnly && !previousRaw.auditOnly;
       if (recoverConnection) {

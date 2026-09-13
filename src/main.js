@@ -47,7 +47,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   const migrated = await prepareStorage(config);
   const store = new Store(config.dbPath);
   if (migrated) store.event('database-migrated', migrated, clock());
-  let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, closed = false, reloadPending = null;
+  let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, garageSafetyTimer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
   let authorityStopping = null, controlRevoked = false;
   const acquisitions = [];
@@ -88,6 +88,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   async function stopRuntime({ restore = true } = {}) {
     restore = restore && canControl();
     clearTimeout(timer);
+    clearInterval(garageSafetyTimer);
+    await engine?.garage?.close({ restore });
     if (engine) engine.onTemporaryChange = null;
     // Restore timed device tests while their original acquisition route still
     // exists. A failed shutdown keeps the durable obligation for the next start.
@@ -131,12 +133,13 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect,
         canControl });
     }
-    engine = new Engine({ store, config, clock, commandTransport });
+    engine = new Engine({ store, config, clock, commandTransport, canControl });
     // Load durable native-setting obligations before the first active dispatch.
     // MQTT connection and device publications remain asynchronous.
     const hasMqttObservations = config.h66?.deviceId || config.deviceId
       || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0
       || config.connections.teslamate?.enabled === true
+      || Boolean(config.garage?.adapter?.stateTopic || config.garage?.adapter?.telemetryTopic)
       || config.connections.shelly?.devices?.length > 0
       || config.connections.equipment?.devices?.length > 0;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
@@ -158,9 +161,17 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       canControl: () => canControl() && ['mqtt', 'providers'].includes(config.input) });
     engine.equipmentTests.tick();
   }
+  function startGarageSafety() {
+    clearInterval(garageSafetyTimer);
+    garageSafetyTimer = setInterval(() => {
+      if (!closed && runtimeUsable && canControl()) engine.garage.safetyTick();
+    }, 5000);
+    garageSafetyTimer.unref?.();
+  }
   function startBackground() {
     requireRunning();
     engine.tick();
+    startGarageSafety();
     // Start UI and conservative control before bounded historical reconstruction.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     engine.onTemporaryChange = schedule;
@@ -232,6 +243,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       // Restore owned equipment settings through the old connections before any
       // broker or device changes can discard that restoration path.
       try {
+        await engine.garage.release('settings-reload');
+        if (engine.garage.adapter?.status(clock()).restorePending) throw new Error('pending');
         await engine.equipmentTests?.restore();
         const result = await engine.executor.restore({ now: clock(), reason: 'settings-reload' });
         if (result.restorationPending) throw new Error('pending');
@@ -368,7 +381,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
     await createRuntime();
-    if (canControl()) engine.tick();
+    if (canControl()) { engine.tick(); startGarageSafety(); }
     if (canControl()) await startProviderRuntime();
     // Background work follows the initial control tick and provider startup.
     learning = canControl() && config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;

@@ -2,11 +2,13 @@ export const TEMPERATURE_SENSORS = Object.freeze({
   indoor_temperature: 'Upstairs',
   downstairs_temperature: 'Downstairs',
   bedroom_temperature: 'Bedroom',
-  garage_temperature: 'Garage',
+  garage_temperature: 'Garage rear',
+  garage_temperature_2: 'Garage front',
   outdoor_temperature: 'Outdoor',
 });
 export const INDOOR_SIGNALS = Object.freeze(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']);
-export const HELD_TEMPERATURE_SIGNALS = Object.freeze([...INDOOR_SIGNALS, 'garage_temperature']);
+export const GARAGE_TEMPERATURE_SIGNALS = Object.freeze(['garage_temperature', 'garage_temperature_2']);
+export const HELD_TEMPERATURE_SIGNALS = Object.freeze([...INDOOR_SIGNALS, ...GARAGE_TEMPERATURE_SIGNALS]);
 // Sensors without a periodic-report contract remain usable beyond this age.
 export const INDOOR_ATTENTION_MS = 2 * 60 * 60_000;
 export const SENSOR_SETTLING_MS = 30 * 60_000;

@@ -280,6 +280,12 @@
               <div id="model-coefficients-content"></div>
             </details>
           </details>
+          <details id="garage-learning-details" class="dashboard-disclosure garage-secondary">
+            <summary><span>Garage learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
+            <details><summary>Learning outcomes · Calculated</summary><dl id="garage-learning-outcomes" class="equipment-readings"></dl><p id="garage-learning-limitations" class="muted"></p></details>
+            <details><summary>Model inputs</summary><dl id="garage-learning-inputs" class="equipment-readings"></dl></details>
+            <details><summary>Model coefficients</summary><dl id="garage-learning-coefficients" class="equipment-readings"></dl></details>
+          </details>
         </article>
       <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
           <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
@@ -408,6 +414,22 @@
             </section>
             <section id="garage-equipment-details" class="equipment-area" aria-labelledby="garage-title">
               <div class="equipment-area-heading"><h3 id="garage-title">Garage</h3><span id="garage-equipment-status" class="equipment-device-status">No devices configured</span></div>
+              <details id="garage-controller-details" class="equipment-fold garage-secondary">
+                <summary><span>Mitsubishi heating</span><small id="garage-controller-state">Monitoring</small></summary>
+                <p id="garage-controller-reason" class="muted"></p>
+                <dl id="garage-controller-readings" class="equipment-readings"></dl>
+                <div class="equipment-inline-controls">
+                  <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End garage pause</button>
+                  <p id="garage-release-help" class="muted">Ends a pause managed by ST-MQ and awaits restoration of normal heating.</p>
+                  <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </div>
+                <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
+                <details class="equipment-fold"><summary>Garage settings</summary>
+                  <dl id="garage-settings-values" class="equipment-readings"></dl>
+                  <p class="muted">Change the garage protection policy, savings aggressiveness and normal Mitsubishi setting in Configuration, then Apply configuration. Connections and commissioning are separate from these everyday preferences.</p>
+                  <p class="muted">Local recovery runs in the Pill software. A dead adapter or failed serial connection cannot transmit ON; unresolved recovery stays visible. Automatic pauses need an implemented compatible contract and installed commissioning.</p>
+                </details>
+              </details>
               <div id="garage-equipment-readings" class="equipment-device-list"></div>
               <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
               <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>

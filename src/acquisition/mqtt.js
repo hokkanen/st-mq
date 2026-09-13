@@ -8,6 +8,7 @@ import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { createTeslaMateCapture } from './teslamate.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
+import { createGarageAdapter } from '../garage/adapter.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
 
@@ -32,17 +33,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     ? null : config.connections.equipment;
   const equipmentOwnedSignals = equipmentSettings?.ownedSignals ?? (config.connections.shelly?.devices?.some(device => device.role === 'garage') ? ['garage_temperature'] : []);
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
-    .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
+    .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic))
     .filter(([signal]) => !equipmentOwnedSignals.includes(signal));
   const roomRoutes = new Map(temperatureTopics.filter(([signal]) => INDOOR_SIGNALS.includes(signal)).map(([signal, topic]) => [signal,
     { reportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
       reportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
       routeSignature: temperatureRouteSignature({ brokerIdentity: { address, username }, topic }) }]));
-  for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal) || signal === 'garage_temperature')
+  for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal) || ['garage_temperature', 'garage_temperature_2'].includes(signal))
     engine.configureTemperatureReports?.(signal, {
-      reportIntervalMs: signal === 'garage_temperature' ? 30_000 : config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
-      reportGraceMs: signal === 'garage_temperature' ? 90_000 : config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
+      reportIntervalMs: signal.startsWith('garage_') ? 30_000 : config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
+      reportGraceMs: signal.startsWith('garage_') ? 90_000 : config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
     });
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
@@ -59,7 +60,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     ] }] : []),
     ...(temperatureTopics.length ? [{ id: 'temperatures', label: 'Temperature feeds', source: 'MQTT', topics: temperatureTopics.map(([signal, topic]) => ({
       role: { indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs', bedroom_temperature: 'Bedroom',
-        garage_temperature: 'Garage', outdoor_temperature: 'Outdoor' }[signal], signal, topic, direction: 'subscribe',
+        garage_temperature: 'Garage rear', garage_temperature_2: 'Garage front', outdoor_temperature: 'Outdoor' }[signal], signal, topic, direction: 'subscribe',
     })) }] : []),
     ...(teslamate ? [{ id: 'teslamate', label: 'TeslaMate', source: 'MQTT', topics: [
       { role: 'Vehicle subscription', topic: teslamate.topic, direction: 'subscribe' },
@@ -152,6 +153,20 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     settings: config.connections.shelly, publish, canControl, brokerIdentity: { address, username }, topicGroups,
     readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000 }) : null);
   if (shelly) engine.shelly = shelly;
+  // The only installed garage contract is a provisional read-only consumer.
+  // Deliberately do not pass publish or any simulation transport here.
+  const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
+    settings: config.garage?.adapter, baselineC: config.garage?.baselineC ?? 10, clock: () => engine.clock(), canControl,
+    persisted: store.getState?.(`garage:adapter:${config.input}`),
+    onObservation: observation => engine.ingest(observation),
+    onEnergy: observation => engine.ingestEnergy?.(observation),
+    onState: snapshot => engine.garage?.adapterChanged?.(snapshot),
+  }) : null;
+  if (garage) {
+    engine.garage?.setAdapter?.(garage);
+    if (garage.topics.length) topicGroups.push({ id: 'garage-adapter', label: 'Garage adapter · provisional monitoring', source: 'MQTT',
+      topics: garage.topics.map(topic => ({ role: 'Provisional telemetry subscription', topic, direction: 'subscribe' })) });
+  }
   const requestSnapshot = async () => {
     if (!decoder) return;
     // GETALL republishes the gateway's known values. It cannot prove a new sensor measurement.
@@ -164,6 +179,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const generation = ++connectionGeneration;
     const currentSubscription = () => connected && !stopped && !stopping && generation === connectionGeneration;
     connected = true; disconnectedRecorded = false; h66?.setConnected(true);
+    garage?.setConnected(true);
     store.event('mqtt-connected', { source, writesEnabled: Boolean(h66 && settings.writeEnabled === true) }, engine.clock());
     if (h66) client.subscribe(`${deviceId}/HP/#`, { qos: 0 }, error => {
       if (!currentSubscription()) return;
@@ -209,6 +225,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (error) { teslamate.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
       else teslamate.setConnected(true);
     });
+    for (const topic of garage?.topics ?? []) client.subscribe(topic, { qos: 1 }, (error, granted) => {
+      if (!currentSubscription()) return;
+      if (subscriptionRejected(topic, error, granted)) { garage.subscriptionFailed(); report('mqtt-garage-subscribe-error'); }
+    });
   };
   client.on('connect', connectedHandler);
   client.on('error', () => report('mqtt-error'));
@@ -217,6 +237,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     connected = false; connectionGeneration++; equipmentSubscriptionBuffer = null; h66?.setConnected(false);
     teslamate?.setConnected(false);
     shelly?.setConnected(false);
+    garage?.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
     for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT disconnected'));
     if (!disconnectedRecorded) {
@@ -230,6 +251,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('message', (topic, payload, packet = {}) => {
     if (!connected || stopped) return;
     try {
+      if (garage?.receive(topic, payload, packet, engine.clock())) return;
       if (equipmentSubscriptionBuffer) {
         const matched = shelly.topics.filter(subscription => subscription.endsWith('/#')
           ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic);
@@ -249,8 +271,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         if (packet.dup) return;
         const periodic = INDOOR_SIGNALS.includes(temperature[0]);
         const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
-          reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : temperature[0] === 'garage_temperature' ? 30_000 : null,
-          reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : temperature[0] === 'garage_temperature' ? 90_000 : 0 });
+          reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : temperature[0].startsWith('garage_') ? 30_000 : null,
+          reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : temperature[0].startsWith('garage_') ? 90_000 : 0 });
         if (observation) engine.ingest(roomRoutes.has(temperature[0]) ? { ...observation,
           raw: { ...observation.raw, temperatureRouteSignature: roomRoutes.get(temperature[0]).routeSignature } } : observation);
         else markUnavailable(temperatureSignals.filter(row => row.signal === temperature[0]), ['invalid-temperature-message']);
@@ -293,7 +315,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   }, 5000) : null;
   teslaMaintenance?.unref?.();
   if (client.connected) connectedHandler();
-  return { h66, shelly, equipment: equipment ?? shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
+  return { h66, shelly, garage, equipment: equipment ?? shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
@@ -303,6 +325,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
       clearInterval(shellyMaintenance);
+      await garage?.close({ restore: restore && canControl(), now: engine.clock() });
+      if (garage) engine.garage?.setAdapter?.(null);
       shelly?.close();
       if (engine.shelly === shelly) engine.shelly = null;
       teslamate?.close();

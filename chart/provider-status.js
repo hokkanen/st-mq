@@ -123,7 +123,7 @@ export function providerSeries(job, health = {}) {
       : 'Configured temperature adapter';
     return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
-        ? 'Optional configured sensor, recorded for history.' : signal === 'outdoor_temperature'
+        ? 'Rear garage protection sensor, recorded separately for garage learning.' : signal === 'outdoor_temperature'
           ? 'Optional configured sensor, recorded for history. Live outdoor control selects H66, FMI or Open-Meteo.'
           : 'Individual indoor sensor, recorded separately and included in the home model average when configured and usable.', source));
   }
@@ -148,7 +148,7 @@ function temperatureDisplay(status, entries, options) {
     const label = allowed.includes(source) ? temperatureSourceLabel(source) : null;
     const readingStatus = temperatureReadingStatus(reading, { ...options, outdoor: key === 'outdoor' });
     const detail = indoorKeys.includes(key) ? 'Individual indoor temperature, recorded separately and included in the home model average when configured and usable.'
-      : key === 'garage' ? 'Optional garage sensor, recorded for history.'
+      : key === 'garage' ? 'Rear garage protection sensor. Its history supports garage learning; front protection is separate.'
         : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
     const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
     const row = withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
@@ -172,7 +172,7 @@ function temperatureDisplay(status, entries, options) {
     || entries.some(([key, health]) => describeProvider(key, health, options).attention)));
   const backup = outdoorHealth?.status === 'fallback' && observations.outdoor?.source !== 'husdata-h66';
   const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
-  const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage readings are optional history.'];
+  const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage rear and front readings support independent garage protection and learning.'];
   const averageStatus = temperatureReadingStatus(observations.indoor, options);
   if (averageStatus.attention || !averageStatus.usable && observations.indoor?.missingMembers?.length) details.push(`Average indoor: ${averageStatus.detail}`);
   for (const [key, health] of entries) {

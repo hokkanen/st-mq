@@ -270,7 +270,7 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT, FMI');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
-    ['Upstairs · °C', 'Downstairs · °C', 'Bedroom · °C', 'Garage temperature · °C', 'Outdoor temperature · °C']);
+    ['Upstairs · °C', 'Downstairs · °C', 'Bedroom · °C', 'Garage rear temperature · °C', 'Outdoor temperature · °C']);
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
   assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'The closed provider overview has the same weather-last order');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,

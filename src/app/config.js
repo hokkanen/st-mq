@@ -5,6 +5,8 @@ import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
 import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
 import { pairingEnabled, pairingConfiguration } from '../pairing/config.js';
+import { garageSettings } from '../garage/settings.js';
+import { garageAdapterSettings } from '../garage/contract.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
@@ -224,6 +226,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       ...(mqtt.downstairs_temperature_topic ? { downstairs_temperature: mqtt.downstairs_temperature_topic } : {}),
       ...(mqtt.bedroom_temperature_topic ? { bedroom_temperature: mqtt.bedroom_temperature_topic } : {}),
       ...(mqtt.garage_temperature_topic ? { garage_temperature: mqtt.garage_temperature_topic } : {}),
+      ...(mqtt.garage_temperature_2_topic ? { garage_temperature_2: mqtt.garage_temperature_2_topic } : {}),
     };
     // Explicit legacy temperature overrides remain usable during migration.
     // Their topics are already tied to the MQTT temperature decoder; new
@@ -247,7 +250,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       && ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].includes(device.temperatureSignal))
       mqtt.temperatureTopics[device.temperatureSignal] = device.topic;
     for (const [signal, topic] of Object.entries(mqtt.temperatureTopics)) {
-      if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
+      if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
     }
     if (new Set(Object.values(mqtt.temperatureTopics)).size !== Object.keys(mqtt.temperatureTopics).length)
@@ -284,6 +287,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     legacyDbPath: resolve(dataDir, databaseName),
     host, port, token, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
+    garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => key !== 'adapter'))),
+      adapter: garageAdapterSettings(options.garage?.adapter) },
     replication: replicationConfiguration(options.replication, env, { role, dataDir, databaseDir }),
     deviceId: replica ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
     control: { ...controlConfiguration(options.controller),

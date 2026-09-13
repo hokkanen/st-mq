@@ -374,8 +374,10 @@ Elering uses the market country (FI, EE, LV or LT), or a matching explicit ENTSO
 bidding zone. Indoor and garage temperatures arrive on configured local MQTT topics
 in both `providers` and `mqtt` input modes. Smoke channel 1 is Upstairs, channel 2
 is Bedroom and channel 3 is Downstairs. These three MQTT sensors are the indoor
-inputs; there is no H66 indoor sensor or fallback. The garage
-is recorded independently of heating optimization. Provider input in shadow mode observes
+inputs; there is no H66 indoor sensor or fallback. Garage rear/front protection
+and learned scheduling are independent of Home; see [Garage heating](docs/garage.md).
+The Pill integration remains provisional and read-only until its actual contract
+and commissioning are available. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
 | Data | Primary → backup | Normal collection interval |

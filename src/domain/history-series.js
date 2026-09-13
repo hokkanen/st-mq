@@ -48,9 +48,9 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['downstairs_temperature', { label: 'Downstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['bedroom_temperature', { label: 'Bedroom', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['caravan_energy', { label: 'Caravan hourly energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Completed hourly totals from the meter counter; partial hours retain measured coverage, excluded from learning' }],
-  ['garage_temperature_2', { label: 'Garage temperature 2', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded', detail: 'Second configured garage probe; physical placement is named in Equipment' }],
+  ['garage_temperature_2', { label: 'Garage front temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded', detail: 'Front pipe-location sensor; separate exposure and garage learning input' }],
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
-  ['garage_temperature', { label: 'Garage temperature', unit: '°C', group: 'Home temperatures', role: 'History only', kind: 'Recorded' }],
+  ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
   ['ev2_energy', { label: 'Charger 2 total energy per interval', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'TeslaMate charging power integrated over the recorded interval; phase distribution unknown' }],
@@ -82,6 +82,33 @@ export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));
 
+// Garage uses its own journal, fitted model and protection locations.
+export const GARAGE_INPUT_INFO = Object.freeze(Object.fromEntries([
+  ['rear', 'Rear protection input', '°C', 'rearC', 'rear'],
+  ['front', 'Front protection input', '°C', 'frontC', 'front'],
+  ['difference', 'Front–rear difference input', '°C', 'differenceC'],
+  ['outdoor', 'Outdoor input', '°C', 'outdoorC', 'outdoor'],
+  ['power', 'Qualified electrical input', 'kW', 'powerKw'],
+  ['available', 'Native heating available', 'state', 'available'],
+  ['ev1', 'Charger 1 input', 'kW', 'ev1Kw'], ['ev2', 'Charger 2 input', 'kW', 'ev2Kw'],
+].map(([name, label, unit, field, location]) => [`garage_model_${name}`, { label: `Garage · ${label}`,
+  unit, field, location, color: location === 'outdoor' ? 'outdoor' : name.startsWith('ev') ? 'ev' : 'garage',
+  kind: 'Calculated', group: 'Garage model inputs', detail: 'Original normalized garage learning input; missing or unqualified evidence remains unknown.' }])));
+export const GARAGE_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
+  ['rear', 'lossPerHour', 'Heat loss', '1/h'], ['rear', 'memoryExchangePerHour', 'Stored-heat exchange', '1/h'],
+  ['rear', 'powerHeatCPerKwh', 'Electrical heat response', '°C/kWh'], ['rear', 'activityHeatCPerHour', 'Activity heat response', '°C/h'],
+  ['rear', 'ev1CPerKwh', 'Charger 1 heat response', '°C/kWh'], ['rear', 'ev2CPerKwh', 'Charger 2 heat response', '°C/kWh'],
+  ['rear', 'ev1ActiveCPerHour', 'Charger 1 activity response', '°C/h'], ['rear', 'ev2ActiveCPerHour', 'Charger 2 activity response', '°C/h'],
+  ['front', 'differenceRelaxationPerHour', 'Front–rear relaxation', '1/h'], ['front', 'localLossPerHour', 'Local heat loss', '1/h'],
+  ['front', 'powerDistributionCPerKwh', 'Electrical heat distribution', '°C/kWh'], ['front', 'activityDistributionCPerHour', 'Activity heat distribution', '°C/h'],
+  ['front', 'ev1DifferenceCPerKwh', 'Charger 1 distribution', '°C/kWh'], ['front', 'ev2DifferenceCPerKwh', 'Charger 2 distribution', '°C/kWh'],
+  ['front', 'ev1ActiveDifferenceCPerHour', 'Charger 1 activity distribution', '°C/h'], ['front', 'ev2ActiveDifferenceCPerHour', 'Charger 2 activity distribution', '°C/h'],
+  ['native', 'idleAndMaintenanceKw', 'Maintenance electricity', 'kW'], ['native', 'coldWeatherKwPerC', 'Cold-weather electricity', 'kW/°C'],
+  ['native', 'demandKwPerC', 'Demand electricity', 'kW/°C'], ['native', 'restartKw', 'Restart electricity', 'kW'],
+].map(([location, parameter, label, unit]) => [`garage_coefficient_${location}_${parameter}`, {
+  label: `Garage ${location} · ${label}`, location, parameter, unit, digits: 4, color: 'garage',
+  kind: 'Calculated', group: 'Garage model coefficients', detail: 'Versioned garage model replay; fitted, retained and prior evidence remain distinct.' }])));
+
 export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);
 
 const basic = [
@@ -109,9 +136,10 @@ export const HISTORY_AXES = Object.freeze([
   ...Object.entries(SIGNAL_INFO).filter(([signal]) => !ENERGY_SIGNALS.includes(signal)).map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
+  ...Object.entries({ ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(SESSION_CHECK_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_INPUT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);

@@ -13,7 +13,7 @@ const stateValue = value => typeof value === 'boolean' ? Number(value) : [0, 1].
   : typeof value === 'string' ? ['on', 'open', 'true', '1'].includes(value.toLowerCase()) ? 1
     : ['off', 'closed', 'close', 'false', '0'].includes(value.toLowerCase()) ? 0 : null : null;
 const sourceTime = value => Number.isSafeInteger(value) ? value : typeof value === 'string' && /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? Date.parse(value) : null;
-const canonicalTemperature = device => device.kind === 'temperature' && [...INDOOR_SIGNALS, 'garage_temperature', 'outdoor_temperature'].includes(device.temperatureSignal);
+const canonicalTemperature = device => device.kind === 'temperature' && [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'].includes(device.temperatureSignal);
 const fail = message => new Error(`Equipment ${message}`);
 
 /** One broker, explicit per-device protocol selection, independent capabilities.
@@ -34,7 +34,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
-    const garage = device.temperatureSignal === 'garage_temperature';
+    const garage = ['garage_temperature', 'garage_temperature_2'].includes(device.temperatureSignal);
     if (garage || INDOOR_SIGNALS.includes(device.temperatureSignal)) engine.configureTemperatureReports?.(device.temperatureSignal,
       { reportIntervalMs: garage ? settings.pollIntervalMs : temperatureReportIntervalMs,
         reportGraceMs: garage ? Math.max(0, device.maxAgeMs - settings.pollIntervalMs) : temperatureReportGraceMs });

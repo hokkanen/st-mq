@@ -177,6 +177,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(200, status());
           });
         }
+        if (req.method === 'POST' && url.pathname === '/api/garage/release')
+          return await mutate(async (current, input) => {
+            if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+              return json(400, { error: 'End a garage pause with an empty JSON object.' });
+            await current.garage.release('owner-cancelled');
+            return json(200, status());
+          });
         if (req.method === 'POST' && url.pathname === '/api/equipment/recheck')
           return await mutate(async (current, input) => { await current.recheckEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/switch')

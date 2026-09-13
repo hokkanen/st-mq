@@ -1,7 +1,7 @@
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXES, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -110,8 +110,8 @@ const seriesInfo = {
   indoor_temperature: ['Upstairs', '°C', 'upstairs'],
   downstairs_temperature: ['Downstairs', '°C', 'downstairs'],
   bedroom_temperature: ['Bedroom', '°C', 'bedroom'],
-  garage_temperature: ['Garage', '°C', 'garage'],
-  garage_temperature_2: ['Garage probe 2', '°C', 'garage'],
+  garage_temperature: ['Garage rear', '°C', 'garage'],
+  garage_temperature_2: ['Garage front', '°C', 'garage'],
   outdoor_temperature: ['Outdoor', '°C · H66 sensor, FMI station or Open-Meteo model estimate; dashed line is forecast', 'outdoor'],
   outdoor_forecast: ['Outdoor forecast', '°C · forecast', 'outdoor', 'forecast'],
   all_in_price: ['All-in price', 'c/kWh', 'price'],
@@ -126,7 +126,7 @@ Object.assign(seriesInfo, {
   controller_phase: ['Requested phase', 'state · 0 normal, 1 preheat, 2 reduction, 3 recovery', 'learning'],
   dhwr_request: ['Recirculation request', 'state · requested, not confirmed flow', 'learning'],
 });
-for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO }))
+for (const [signal, info] of Object.entries({ ...MODEL_INPUT_INFO, ...MODEL_COEFFICIENT_INFO, ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }))
   seriesInfo[signal] = [info.label, `${info.unit} · ${info.detail}`, info.color, signal === 'firewood_load' ? 'event' : 'line'];
 
 export function firewoodPointDetail(key, point = {}) {
@@ -152,6 +152,7 @@ export function historyStateLabel(key, value) {
   if (['controller_phase', 'model_controller_phase'].includes(key))
     return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;
   if (key === 'dhw_routing') return value === 0 ? 'Space heating' : value === 1 ? 'Hot water' : `Unknown route (${value})`;
+  if (key === 'garage_model_available') return value === 1 ? 'Available to native control' : value === 0 ? 'Reported off' : 'Unknown';
   if (['compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
   return null;
@@ -160,7 +161,7 @@ export function historyStateLabel(key, value) {
 export function historyValueLabel(key, value, unit) {
   const state = historyStateLabel(key, value);
   if (state) return state;
-  const digits = MODEL_COEFFICIENT_INFO[key]?.digits;
+  const digits = (MODEL_COEFFICIENT_INFO[key] ?? GARAGE_COEFFICIENT_INFO[key])?.digits;
   return `${new Intl.NumberFormat('en-GB', { minimumFractionDigits: digits ?? 0, maximumFractionDigits: digits ?? 2 }).format(value)} ${unit.split(' · ')[0]}`;
 }
 
