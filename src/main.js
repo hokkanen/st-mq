@@ -119,7 +119,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // MQTT connection and device publications remain asynchronous.
     const hasMqttObservations = config.h66?.deviceId || config.deviceId
       || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0
-      || config.connections.teslamate?.enabled === true;
+      || config.connections.teslamate?.enabled === true
+      || config.connections.shelly?.devices?.length > 0;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
       requireRunning();
@@ -130,6 +131,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         requireRunning();
       }
       acquisitions.push(acquisition);
+      if (acquisition.shelly?.hasHeating) commandTransport.setHeatingRelay(acquisition.shelly.publishHeating);
       if (acquisition.h66) engine.setH66(acquisition);
     }
   }

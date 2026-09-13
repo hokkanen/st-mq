@@ -72,7 +72,7 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     stats.records++;
     const usable = sample.valid !== false && goodQuality(sample.quality);
     const common = { modelInput: true, journalId: row.id, algorithmVersion: row.algorithm_version,
-      inputSource: sources[row.input], intervalStart: start, intervalEnd: end };
+      inputSource: sources[row.input], learningUsable: usable, intervalStart: start, intervalEnd: end };
     if (selected.includes('model_indoor_temperature')) {
       // These algorithms record indoor availability independently of the other
       // learning inputs. A missing outdoor segment must not erase a known
@@ -94,7 +94,7 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
       if (!finite(a) || !finite(b) || a < start || b > end || b <= a) continue;
       const valid = usable && goodQuality(segment.quality);
       if (!valid) stats.rejectedIntervals++;
-      const metadata = { ...common, intervalStart: a, intervalEnd: b };
+      const metadata = { ...common, learningUsable: valid, intervalStart: a, intervalEnd: b };
       for (const key of selected) {
         if (key === 'model_indoor_temperature') continue;
         let value = key === 'model_controller_phase' ? PHASES.indexOf(segment.phase) : segment[fields[key]];

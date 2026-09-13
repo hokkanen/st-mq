@@ -112,6 +112,11 @@ test('a viewport between scalar readings clips their original line and clearly i
   assert.deepEqual(linear.series.heating_integral.map(point => point.y), [-80, -60]);
   assert(linear.series.indoor_temperature.every(point => point.displayBoundary && point.interpolated
     && point.observedAt === start && point.nextObservedAt === start + 8 * MINUTE));
+  for (const left of ['temperatures', 'indoor_temperature']) {
+    const temperatures = getChartData({ store, ...args, left, viewFrom, viewTo });
+    assert.deepEqual(temperatures.series.indoor_temperature, linear.series.indoor_temperature,
+      'A room temperature must retain the same interpolated display boundaries on either axis');
+  }
   const stepped = getChartData({ store, ...args, left: 'operating_mode', viewFrom, viewTo });
   assert.deepEqual(stepped.series.operating_mode.map(point => point.y), [1, 1]);
   assert(stepped.series.operating_mode.every(point => point.displayBoundary && !point.interpolated));

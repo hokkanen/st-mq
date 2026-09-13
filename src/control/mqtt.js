@@ -16,6 +16,7 @@ const MESSAGES = {
   MQTT_CLOSED: 'MQTT command transport is closed. Check device state if a test was in progress.',
   MQTT_BUSY: 'An MQTT test is already in progress. Wait for its result before trying again.',
   MQTT_AUTHORITY_LOST: 'This instance no longer owns device control.',
+  MQTT_DHWR_TOPIC_INVALID: 'DHWR requires an exact MQTT switch command topic.',
 };
 function failure(code) {
   return Object.assign(new Error(MESSAGES[code]), { code });
@@ -47,13 +48,46 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('MQTT timeout must be positive');
   let active = null;
   let closed = false;
+  let heatingRelay = null;
+  const dhwrTopic = connection?.dhwr_topic || 'from_stmq/dhwr/set';
+  if (typeof dhwrTopic !== 'string' || !dhwrTopic.trim() || dhwrTopic.length > 500 || /[+#\u0000]/.test(dhwrTopic))
+    throw failure('MQTT_DHWR_TOPIC_INVALID');
 
-  return {
+  const transport = {
+    setHeatingRelay(handler) { heatingRelay = handler; },
     async publish(commands) {
       const batch = Array.isArray(commands) ? [...commands] : [];
-      if (!batch.length || batch.some(command => !HEATING_COMMANDS.includes(command))) {
+      // Timed circulation belongs to Executor: publishing a button intent here
+      // would bypass the durable OFF obligation.
+      if (!batch.length || batch.some(command => !['heatoff', 'heaton15'].includes(command))) {
         throw failure('MQTT_COMMAND_INVALID');
       }
+      if (heatingRelay) {
+        if (closed) throw failure('MQTT_CLOSED');
+        if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
+        if (active) throw failure('MQTT_BUSY');
+        const completion = Promise.resolve().then(() => {
+          if (closed) throw failure('MQTT_CLOSED');
+          if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
+          return heatingRelay(batch);
+        });
+        active = { completion, cancel() {} };
+        try { return await completion; } finally { active = null; }
+      }
+      return send(batch.map(payload => ({ topic: TOPIC, payload })));
+    },
+    async publishDhwr(on) {
+      if (typeof on !== 'boolean') throw failure('MQTT_COMMAND_INVALID');
+      return send([{ topic: dhwrTopic, payload: on ? 'ON' : 'OFF' }]);
+    },
+    async close() {
+      closed = true;
+      const pending = active;
+      pending?.cancel();
+      await pending?.completion.catch(() => {});
+    },
+  };
+  async function send(batch) {
       if (closed) throw failure('MQTT_CLOSED');
       if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
       if (active) throw failure('MQTT_BUSY');
@@ -104,10 +138,10 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
         if (finished) return;
         if (!canControl()) { finish(failure('MQTT_AUTHORITY_LOST')); return; }
         if (index === batch.length) { finish(); return; }
-        const command = batch[index++];
+        const { topic, payload } = batch[index++];
         try {
           publishAttempted = true;
-          client.publish(TOPIC, command, { qos: 1, retain: false }, error => {
+          client.publish(topic, payload, { qos: 1, retain: false }, error => {
             if (finished) return;
             if (error) finish(failure('MQTT_UNAVAILABLE'));
             else publishNext(); // QoS 1 callback runs only after broker PUBACK.
@@ -135,13 +169,6 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
         if (client.connected) connected();
       } catch (error) { disconnected(error); }
       return completion;
-    },
-
-    async close() {
-      closed = true;
-      const pending = active;
-      pending?.cancel();
-      await pending?.completion.catch(() => {});
-    },
-  };
+  }
+  return transport;
 }

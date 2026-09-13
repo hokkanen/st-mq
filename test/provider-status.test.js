@@ -171,7 +171,8 @@ test('electricity groups both connections and exposes Charger 2 totals without i
   assert.match(grouped.display.detail, /Charger 2 · Teslamate: Available.*Recording Charger 2.*Last MQTT message 10:00/);
   const tesla = providerSeries('teslamate');
   assert.deepEqual(tesla.flatMap(row => row.signals), ['charger2_power', 'ev2_energy', 'tesla_session_energy_check']);
-  assert.deepEqual(grouped.series.filter(row => row.label.startsWith('Charger 2')), tesla);
+  assert.deepEqual(grouped.series.filter(row => row.label.startsWith('Charger 2')),
+    tesla.map(row => ({ ...row, state: 'Available', tone: 'available' })));
   assert.match(tesla[0].detail, /interval-average.*recorded total energy.*Phase distribution is unknown/);
   assert.match(tesla[1].detail, /at home.*gap.*Charger 1.*double counting/);
   assert.match(tesla[2].detail, /battery.*electrical input.*charging losses.*does not correct recorded energy or train/);
@@ -576,4 +577,28 @@ test('periodic temperature status distinguishes current coverage from an old unc
     attentionReasons: ['missing-report'] }, options);
   assert.equal(missing.usable, false);
   assert.match(missing.detail, /Expected temperature report missing/);
+});
+
+test('provider names and entry bullets retain individual availability in a mixed group', () => {
+  const [group] = dashboardProviders({ providers: {
+    easee: { status: 'error', error: 'HTTP-503', currentReadings: {
+      property: { qualityIssues: [], error: null }, charger: { qualityIssues: ['provider_error'], error: 'HTTP-503' },
+    } }, teslamate: { status: 'ok', reason: 'recording' },
+  } }, options);
+  assert.deepEqual(group.sourceStates.map(({ label, tone }) => ({ label, tone })), [
+    { label: 'Easee', tone: 'attention' }, { label: 'Teslamate', tone: 'available' },
+  ]);
+  for (const row of group.series) assert.equal(row.tone, row.signals[0].startsWith('ev1_') ? 'attention' : 'available');
+});
+
+test('each physical temperature uses its reading availability rather than the grouped source status', () => {
+  const [group] = dashboardProviders({ input: 'mqtt', observations: {
+    indoor: { value: 21, observedAt: now }, upstairs: { value: 21, observedAt: now, source: 'mqtt-temperature' },
+    bedroom: { value: 20, observedAt: now, source: 'mqtt-temperature', needsAttention: true },
+    outdoor: { value: 10, observedAt: now, source: 'fmi' }, garage: { configured: false },
+  } }, options);
+  assert.deepEqual(group.sourceStates.map(row => row.tone), ['attention', 'available']);
+  assert.equal(group.series.find(row => row.signals[0] === 'indoor_temperature').tone, 'available');
+  assert.equal(group.series.find(row => row.signals[0] === 'bedroom_temperature').tone, 'attention');
+  assert.equal(group.series.find(row => row.signals[0] === 'garage_temperature').tone, 'pending');
 });

@@ -137,6 +137,23 @@ within the same measurement basis and recovery leave explicit gaps;
 there is no unbounded last-value hold. Pump/phase zero transitions bypass the
 numerical change threshold.
 
+An isolated transient Easee download failure retries after the configured poll
+interval (15 seconds by default). Repeated failures double that delay up to
+30 minutes. Previously the generic provider retry started at five minutes,
+turning a single failed request into a five-minute hole in both charger and
+Equalizer acquisition. Authentication errors retain their 30-minute cooldown;
+rate limits and other HTTP client errors retain the normal provider backoff,
+and an explicit `Retry-After` is always respected, including across restart.
+The strictest failed device determines a shared account cooldown. The failed
+device's actual missing interval remains missing; a successfully read sibling
+continues while consecutive polls remain within the integration gap limit.
+
+The newest chart tail can separately lag by the recording interval (five minutes
+by default) while the recorder accumulates its pending energy batch. The normal
+commit fills that tail with adjacent completed intervals. It does not create
+interior gaps. Chart reads never force extra database writes, display pending
+checkpoint sums as finalized observations, or extrapolate through an outage.
+
 Charts derive interval-average kW as `kWh × 3,600,000 / durationMs`. This conversion
 does not use 230 V. Equivalent chart currents divide estimated phase kW by `0.23`;
 they assume 230 V and unity power factor and are not the original current readings.
@@ -439,6 +456,52 @@ Schema 8 removes the obsolete chart-cache tables. Freed SQLite pages are
 available for reuse; the database file is not automatically vacuumed. Actual
 annual size and year-query latency must be measured on the deployment; no
 Raspberry Pi 5 timing guarantee follows from desktop tests.
+
+## Chart curves and popup meanings
+
+Measured air and liquid temperatures, saved indoor/outdoor temperature inputs,
+the learned normal temperature and the outdoor forecast use Chart.js' monotone
+cubic Hermite interpolation on both axes. This uses linear time and storage in
+the number of displayed points, keeps local extrema and avoids overshooting the
+neighboring temperatures. Constant or two-point runs naturally stay flat or
+straight. Missing readings break the curve. True settings and commands, including
+supply targets and room boosts, retain their actual steps even when their unit is
+°C. Prices, energy, power and model coefficients retain their existing semantics.
+
+Interval-based temperature curves use original interval-start values as knots,
+with the final held edge retained; artificial duplicate hold edges do not force a
+staircase. Their original intervals remain available in the popup. Curves are
+display interpolation, not additional measurements. The journal, recordings,
+CSV imports, energy calculations and learning inputs are unchanged. Clipped
+display boundaries and held tails are identified as such; a curve cannot provide
+more measurement detail than its source samples.
+
+Every series uses the same popup structure: its timestamp or actual recorded
+interval appears in the title in Finnish time, with year and UTC offset; the
+body gives **name: value and unit**, followed by applicable source, estimate,
+quality or model details. Matching intervals share one title. When shared hover
+includes different intervals or endpoint readings, the title groups and names
+those periods so values can still be compared without repeating dates after
+each value. An original sensor observation time or model-update time is a
+different event and keeps its explicit provenance label. Text wraps to the
+available chart width. Desktop popups work in both views; touch devices show
+them only in fullscreen, in portrait and landscape, and clear them on exit.
+
+**Eligible for learning** means that a *saved learning input* passed the original
+recorded quality checks. It does not claim that a fit used it or changed the model.
+**Excluded from learning** means those checks rejected that input. A saved indoor
+average can therefore remain visible while its learning window was rejected for
+another missing input. Missing/rejected interval inputs still appear as gaps.
+Inputs without recorded eligibility say **learning eligibility unavailable**.
+
+These labels apply to saved inputs, not to every plotted sensor, forecast,
+coefficient or model assessment. An unlabelled point does **not** imply inclusion
+in training: the saved input journal determines eligibility for each learning
+window. Calculated fireplace release retains its separate calculated-input
+description. Meter checks and Caravan plug readings explicitly say **not used
+for learning**; inclusion/exclusion in *session averages* concerns only the
+meter comparison and is independent of learning. No learning gates or algorithm
+versions change for this presentation update.
 
 ## Fullscreen chart exploration
 

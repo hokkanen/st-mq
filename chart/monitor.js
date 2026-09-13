@@ -9,6 +9,7 @@ import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
+import { renderShellyEquipment } from './shelly-equipment.js';
 
 const $ = id => document.getElementById(id);
 const ingress = usesHomeAssistantLogin();
@@ -159,6 +160,8 @@ function renderProviderSeries(root, rows) {
   const list = document.createElement('ul'); list.className = 'provider-series';
   for (const row of rows) {
     const item = document.createElement('li'), title = document.createElement('strong'), detail = document.createElement('span');
+    item.dataset.state = row.tone ?? 'pending';
+    if (row.state) item.setAttribute('aria-label', `${row.label}: ${row.state}`);
     title.textContent = `${row.label}${row.unit ? ` · ${row.unit}` : ''}`;
     detail.textContent = `${row.detail}${row.source ? ` Source: ${row.source}.` : ''}`;
     item.append(title, document.createElement('br'), detail); list.append(item);
@@ -189,7 +192,7 @@ function renderProviders(s) {
   const entries = dashboardProviders(s, { now: s.now, formatTime: time });
   $('provider-overview').replaceChildren();
   let attentionCount = 0, backupCount = 0;
-  for (const { display, backup, overviewTitle, source: sourceLabel } of entries) {
+  for (const { display, backup, overviewTitle, source: sourceLabel, sourceStates } of entries) {
     if (display.attention) attentionCount++;
     if (backup) backupCount++;
     const item = document.createElement('div'); item.className = 'source-overview';
@@ -197,7 +200,13 @@ function renderProviders(s) {
       : display.state === 'Available' ? 'available' : 'pending';
     const title = document.createElement('span'); title.textContent = overviewTitle;
     const state = document.createElement('strong'); state.textContent = display.state;
-    const source = document.createElement('small'); source.textContent = sourceLabel;
+    const source = document.createElement('small');
+    for (const [index, entry] of (sourceStates ?? [{ label: sourceLabel, tone: item.dataset.state, state: display.state }]).entries()) {
+      if (index) source.append(document.createTextNode(', '));
+      const name = document.createElement('span'); name.className = 'provider-name'; name.dataset.state = entry.tone;
+      name.textContent = entry.label; name.title = `${entry.label}: ${entry.state}`;
+      name.setAttribute('aria-label', name.title); source.append(name);
+    }
     item.append(title, state, source); $('provider-overview').append(item);
   }
   $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
@@ -387,7 +396,7 @@ function render(s) {
   $('price').textContent = current ? current.allInCentsPerKWh.toFixed(2) : spot ? spot.spotCtPerKwh.toFixed(2) : '—';
   $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
   $('price-unit').textContent = s.input === 'simulated' ? 'c/kWh · synthetic simulation data' : current ? 'c/kWh · import, variable charges' : spot ? 'c/kWh · excludes VAT and other charges' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
-  renderContract(s); renderProviders(s); renderH66(s);
+  renderContract(s); renderProviders(s); renderH66(s); renderShellyEquipment($('shelly-equipment'), s.shelly);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   $('control-mode').textContent = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'

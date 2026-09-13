@@ -1,6 +1,5 @@
 import { HEATING_COMMANDS } from '../control/mqtt.js';
 
-const PULSE_MS = 600_000;
 const REFRESH_MS = 600_000;
 const copy = value => structuredClone(value);
 const time = value => typeof value === 'number' ? value : Date.parse(value);
@@ -9,15 +8,18 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 // The tariff relay and H66 are separate transports. Broker acknowledgements
 // prove delivery to MQTT, not physical relay or compressor operation.
 export class Executor {
-  constructor({ input, store, plant, commandTransport = null, h66 = null, clock = Date.now, deliveryBoundMs = 10_000 }) {
+  constructor({ input, store, plant, commandTransport = null, h66 = null, config = {}, clock = Date.now, deliveryBoundMs = 10_000 }) {
     if (!Number.isFinite(deliveryBoundMs) || deliveryBoundMs <= 0) throw new Error('A positive command delivery bound is required');
     Object.assign(this, { input, store, plant, commandTransport, h66, clock, deliveryBoundMs });
+    const minutes = config.dhwrPulseMinutes ?? 10;
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 60) throw new Error('DHWR duration must be 1–60 minutes');
+    this.pulseMs = minutes * 60_000;
     this.key = `executor:${input}`;
     let saved;
     try { saved = store.getState(this.key); } catch { saved = null; }
     this.state = saved?.version === 1 ? copy(saved) : { version: 1, phase: 'normal',
       pulseUntil: 0, expiresAt: null, legacyOutstanding: false, requested: null, acknowledgedAt: null, lastResult: null };
-    this.restartRestore = Boolean(this.state.legacyOutstanding);
+    this.restartRestore = Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding);
     this.pending = null; this.timer = null; this.closed = false;
   }
   persist() { this.store.setState(this.key, copy(this.state)); }
@@ -53,14 +55,18 @@ export class Executor {
     try { return await promise; }
     catch (error) {
       this.state.lastResult = { status: 'failed', code: error.code ?? 'EXECUTOR_UNCONFIRMED', at: this.clock(), actual: null };
-      this.restartRestore = Boolean(this.state.legacyOutstanding);
+      this.restartRestore = Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding);
       this.persist(); throw error;
     } finally { this.pending = null; this.armExpiry(); }
   }
   armExpiry() {
     clearTimeout(this.timer);
-    const end = time(this.state.expiresAt);
-    if (!this.closed && this.state.legacyOutstanding && Number.isFinite(end)) {
+    const ends = [this.state.legacyOutstanding ? time(this.state.expiresAt) : NaN,
+      this.state.dhwrOutstanding ? this.state.pulseUntil : NaN,
+      this.restartRestore && (this.state.dhwrOutstanding || this.state.legacyOutstanding)
+        ? this.clock() + 10_000 : NaN].filter(Number.isFinite);
+    const end = Math.min(...ends);
+    if (!this.closed && Number.isFinite(end)) {
       this.timer = setTimeout(() => this.restore({ reason: 'expiry' }).catch(() => {}), Math.max(1000, end - this.clock()));
       this.timer.unref?.();
     }
@@ -68,25 +74,49 @@ export class Executor {
   async publish(commands, now) {
     this.validateCommands(commands);
     if (commands.includes('heatoff') && now < this.state.pulseUntil)
-      throw failure('DHWR_ACTIVE', 'Reduction is waiting for the ten-minute DHWR pulse to end.');
-    // A lost PUBACK can still mean delivery: persist the possible pulse before publishing.
-    if (commands.includes('heaton60')) this.state.pulseUntil = now + PULSE_MS + this.deliveryBoundMs;
+      throw failure('DHWR_ACTIVE', 'Reduction is waiting for the configured DHWR run to end.');
+    const pulse = commands.includes('heaton60');
+    if ((pulse || commands.includes('heatoff')) && this.state.dhwrOutstanding && now >= this.state.pulseUntil)
+      await this.stopDhwr(now);
+    if (pulse && typeof this.commandTransport.publishDhwr !== 'function')
+      throw failure('DHWR_UNAVAILABLE', 'MQTT switch control is required for DHWR.');
+    // A lost PUBACK may still mean ON delivery. Persist the OFF obligation first.
+    if (pulse) {
+      this.state.dhwrOutstanding = true;
+      this.state.pulseUntil = now + this.pulseMs + this.deliveryBoundMs;
+    }
     this.state.requested = { commands: [...commands], at: now }; this.persist();
     let result;
-    try { result = await this.commandTransport.publish(commands); }
-    finally {
-      // Connection and PUBACK latency can move the pulse start later than the
-      // decision time. An uncertain delivery gets the same conservative bound.
-      if (commands.includes('heaton60')) {
-        this.state.pulseUntil = this.clock() + PULSE_MS;
-        this.persist();
+    try {
+      if (pulse) {
+        try { result = await this.commandTransport.publishDhwr(true); }
+        finally { this.state.pulseUntil = this.clock() + this.pulseMs; this.persist(); }
+        if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR switch delivery is unconfirmed.');
       }
+      const heating = commands.filter(command => command !== 'heaton60');
+      if (heating.length) result = await this.commandTransport.publish(heating);
     }
+    finally { this.persist(); }
     if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'Heating-command delivery is unconfirmed.');
     this.state.acknowledgedAt = this.clock(); this.persist();
     return result;
   }
+  async stopDhwr(now = this.clock()) {
+    if (!this.state.dhwrOutstanding) return false;
+    if (typeof this.commandTransport?.publishDhwr !== 'function')
+      throw failure('DHWR_UNAVAILABLE', 'DHWR OFF is pending until MQTT switch control is available.');
+    const result = await this.commandTransport.publishDhwr(false);
+    if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
+    this.state.dhwrOutstanding = false; this.state.pulseUntil = 0;
+    this.state.dhwrStoppedAt = this.clock(); this.persist();
+    this.store.observation?.({ source: 'controller', device: this.input, signal: 'dhwr_request', value: 0,
+      unit: 'state', sourceTime: this.state.dhwrStoppedAt, receivedAt: this.state.dhwrStoppedAt,
+      quality: ['requested'], raw: { verified: false, basis: 'MQTT OFF acknowledged by broker; physical pump state is not observed' } });
+    return true;
+  }
   async manual(commands, now) {
+    // Circulation has its own obligation; it does not restore a tariff reduction.
+    if (commands.every(command => command === 'heaton60')) return this.publish(commands, now);
     const reduction = commands.at(-1) === 'heatoff';
     this.state.manualRequested = { phase: reduction ? 'reduction' : 'normal', at: now, confirmed: false };
     // A manual reduction has a bounded restoration obligation too; failed delivery
@@ -119,6 +149,7 @@ export class Executor {
       const restored = await this.restoreInternal({ now, reason: 'restart-or-interrupted-transition' });
       if (restored.restorationPending) return restored;
     }
+    if (this.state.dhwrOutstanding && now >= this.state.pulseUntil) await this.stopDhwr(now);
     if (phase === 'recovery' && decision.recoveryCompressorOnly === true
       && this.h66?.status(now).controlsReady && this.h66.status(now).writesEnabled === true) {
       const native = await this.h66.setPhase({ phase, compressorOnly: true, now, expiresAt });
@@ -142,10 +173,10 @@ export class Executor {
         if (restored.restorationPending) return restored;
       }
       const needsPulse = now >= this.state.pulseUntil;
-      if (needsPulse && now + PULSE_MS > expiresAt)
-        return this.normal(now, 'normal', { reason: 'Less than ten minutes remain in the preheat window.' });
+      if (needsPulse && now + this.pulseMs > expiresAt)
+        return this.normal(now, 'normal', { reason: 'Less than the configured DHWR duration remains in the preheat window.' });
       this.state.legacyOutstanding = true;
-      this.state.expiresAt = Math.min(expiresAt, needsPulse ? now + PULSE_MS : this.state.pulseUntil);
+      this.state.expiresAt = Math.min(expiresAt, needsPulse ? now + this.pulseMs : this.state.pulseUntil);
       this.persist();
       let sent = false;
       if (needsPulse) {
@@ -172,7 +203,7 @@ export class Executor {
       restoredBeforeReduction = restored;
     }
     if (now < this.state.pulseUntil) return this.result('normal', restoredBeforeReduction?.sent ?? false, { status: 'waiting',
-      requestedPhase: 'reduction', reason: 'Waiting for the ten-minute DHWR pulse to end.', resumeAt: this.state.pulseUntil });
+      requestedPhase: 'reduction', reason: 'Waiting for the configured DHWR run to end.', resumeAt: this.state.pulseUntil });
     const nativeStatus = this.h66?.status(now);
     let native = null;
     if (nativeStatus?.controlsReady && nativeStatus.writesEnabled === true)
@@ -197,19 +228,21 @@ export class Executor {
     return this.result(phase, refresh, { native, ...detail });
   }
   async restoreInternal({ now = this.clock(), reason = 'restore-normal', phase = 'normal', detail = {} } = {}) {
-    let native = null, nativeError = null;
+    let native = null, nativeError = null, dhwrError = null, sent = false;
+    try { if (this.state.dhwrOutstanding) sent = await this.stopDhwr(now); }
+    catch (error) { dhwrError = error.code ?? 'DHWR_OFF_FAILED'; }
     try { if (this.h66) native = await this.h66.restore({ now, reason, phase }); }
     catch (error) { nativeError = error.code ?? 'H66_RESTORATION_FAILED'; }
     // Restore the tariff relay even if native-setting restoration is temporarily offline.
-    let sent = false;
     if (this.state.legacyOutstanding || this.state.phase === 'reduction' || this.state.phase === 'preheat') {
       await this.publish(['heaton15'], now); sent = true; this.state.legacyOutstanding = false;
     }
-    const restorationPending = Boolean(nativeError || native?.restorationPending);
+    const restorationPending = Boolean(dhwrError || this.state.dhwrOutstanding || nativeError || native?.restorationPending);
     this.restartRestore = restorationPending;
     this.state.phase = restorationPending ? 'restoration-pending' : phase; this.state.expiresAt = null;
     return this.result(this.state.phase, sent || native?.changed?.length > 0, {
-      status: restorationPending ? 'pending' : 'mqtt', restorationPending, native, nativeError, ...detail });
+      status: restorationPending ? 'pending' : 'mqtt', restorationPending, native, nativeError,
+      ...(dhwrError ? { dhwrError } : {}), ...detail });
   }
   restore(options = {}) { return this.exclusive(() => this.restoreInternal(options)); }
   async close({ restore = true } = {}) {
@@ -227,7 +260,7 @@ export class Executor {
   sendCommands(commands, { now, physical = false }) {
     this.validateCommands(commands);
     if (physical) return this.exclusive(() => this.manual(commands, now));
-    const actual = this.plant.apply(commands, now);
+    const actual = this.plant.apply(commands, now, this.pulseMs);
     this.store.event('simulated-command-readback', { commands, actual }, now);
     return { status: 'simulated', sent: true, actual };
   }

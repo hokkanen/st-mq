@@ -38,6 +38,7 @@
       "address": "mqtt://core-mosquitto",
       "user": "",
       "pw": "",
+      "dhwr_topic": "from_stmq/dhwr/set",
       "indoor_temperature_topic": "",
       "downstairs_temperature_topic": "",
       "bedroom_temperature_topic": "",
@@ -92,6 +93,7 @@
       "auxiliary_rated_kw": 9,
       "circulation_kw": 0.08,
       "dhwr_kw": 0.025,
+      "dhwr_duration_minutes": 10,
       "max_reduction_hours": 4,
       "max_away_reduction_hours": 12,
       "max_unobserved_reduction_hours": 0.5,
@@ -149,6 +151,34 @@
       "vip_prefix": 24,
       "vip_helper": "/usr/local/bin/st-mq-vip",
       "vip_socket": ""
+    },
+    "shelly": {
+      "poll_seconds": 30,
+      "max_age_seconds": 120,
+      "garage": {
+        "enabled": false,
+        "generation": 2,
+        "topic_prefix": "",
+        "switch_id": 0,
+        "temperature_id": 100,
+        "controls_heat": false,
+        "reduction_on": true
+      },
+      "heat_savings": {
+        "enabled": false,
+        "generation": 3,
+        "topic_prefix": "",
+        "switch_id": 0,
+        "controls_heat": true,
+        "reduction_on": true
+      },
+      "caravan": {
+        "enabled": false,
+        "generation": 2,
+        "topic_prefix": "",
+        "switch_id": 0,
+        "nominal_voltage": 230
+      }
     }
   },
   "schema": {
@@ -161,6 +191,7 @@
       "address": "str",
       "user": "str",
       "pw": "password",
+      "dhwr_topic": "str",
       "indoor_temperature_topic": "str?",
       "downstairs_temperature_topic": "str?",
       "bedroom_temperature_topic": "str?",
@@ -222,6 +253,7 @@
       "auxiliary_rated_kw": "float(0.1,20)",
       "circulation_kw": "float(0,1)",
       "dhwr_kw": "float(0,1)",
+      "dhwr_duration_minutes": "float(1,60)",
       "max_reduction_hours": "float(0.25,12)",
       "max_away_reduction_hours": "float(0.25,24)",
       "max_unobserved_reduction_hours": "float(0.25,2)",
@@ -279,6 +311,34 @@
       "vip_prefix": "int(1,30)",
       "vip_helper": "str",
       "vip_socket": "str?"
+    },
+    "shelly": {
+      "poll_seconds": "int(5,300)",
+      "max_age_seconds": "int(30,900)",
+      "garage": {
+        "enabled": "bool",
+        "generation": "int(1,4)",
+        "topic_prefix": "str?",
+        "switch_id": "int(0,3)",
+        "temperature_id": "int(0,255)",
+        "controls_heat": "bool",
+        "reduction_on": "bool"
+      },
+      "heat_savings": {
+        "enabled": "bool",
+        "generation": "int(1,4)",
+        "topic_prefix": "str?",
+        "switch_id": "int(0,3)",
+        "controls_heat": "bool",
+        "reduction_on": "bool"
+      },
+      "caravan": {
+        "enabled": "bool",
+        "generation": "int(1,4)",
+        "topic_prefix": "str?",
+        "switch_id": "int(0,3)",
+        "nominal_voltage": "int(100,260)"
+      }
     }
   },
   "host_network": true,

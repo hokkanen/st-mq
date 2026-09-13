@@ -72,11 +72,15 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const pendingResponse = post('heaton60');
   const pending = await pendingPacket;
   assert.equal(clients.length, 2, 'Each explicit test has its own connection');
-  assert.equal(pending.command, 'heaton60');
-  let stateAtClose;
+  assert.equal(pending.topic, 'from_stmq/dhwr/set');
+  assert.equal(pending.command, 'ON');
+  assert.deepEqual(pending.publishOptions, { qos: 1, retain: false });
+  assert.equal(app.store.getState('executor:providers').dhwrOutstanding, true, 'Unacknowledged ON already has a durable OFF obligation');
+  let stateAtClose, executorAtClose;
   const closeStore = app.store.close.bind(app.store);
   app.store.close = () => {
     stateAtClose = app.store.getState('heating-test:providers');
+    executorAtClose = app.store.getState('executor:providers');
     closeStore();
   };
   const [failure] = await Promise.all([pendingResponse, app.close()]);
@@ -88,6 +92,8 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   assert.equal(stateAtClose.status, 'failed');
   assert.equal(stateAtClose.sent, false);
   assert.equal(stateAtClose.actual, null);
+  assert.equal(executorAtClose.dhwrOutstanding, true, 'A closed transport must retain the OFF obligation for restart');
+  assert.equal(executorAtClose.legacyOutstanding, true, 'The earlier heat reduction still requires restoration too');
   assert.equal(app.engine.heatingTestBusy, false);
 
   pending.acknowledge();
@@ -97,6 +103,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const reopened = new Store(config.dbPath);
   try {
     assert.deepEqual(reopened.getState('heating-test:providers'), stateAtClose);
+    assert.deepEqual(reopened.getState('executor:providers'), executorAtClose);
     const events = reopened.events().filter(event => event.type.startsWith('heating-test'));
     assert.deepEqual(events.map(event => event.type), [
       'heating-test-requested', 'heating-test-sent', 'heating-test-requested', 'heating-test-failed',

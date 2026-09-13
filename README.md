@@ -41,6 +41,11 @@ property import, plus one total-energy increment for TeslaMate portable charging
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
 committed windows and a versioned replay journal. See
 [adaptive recording and migration](docs/recording.md), including local MQTT temperature sensors.
+For native garage temperature/relay, heating Mini and Caravan plug connections,
+see [direct Shelly MQTT setup](docs/shelly-mqtt.md). Home Assistant can stay connected
+in parallel. Caravan equipment readings include daily energy, with completed
+hourly meter totals available in chart history.
+
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
 comfort learning after adjustments to floor circulation thermostats. Record rare
@@ -170,7 +175,7 @@ and saves that choice. The chart is directly below the current readings.
   missing spot prices stay unavailable.
 - **Shading:** crosshatched **Heat Off** represents requested reduction; yellow
   **Compressor · house** and blue **Compressor · hot water** require concurrent
-  compressor/routing readbacks. Brown **DHWR** marks requested ten-minute pulses
+  compressor/routing readbacks. Brown **DHWR** marks requested circulation runs with their recorded duration
   and starts hidden. A separate **Pump mode** strip shows categorical H66 readback.
   Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
   individual auxiliary episodes.
@@ -568,7 +573,9 @@ register `8105`. The configured defaults are A2 −990 and auxiliary hysteresis
 10 °C; these configured thresholds do not establish observed native readings. The DHW stop
 register `0208` is not a physical compressor temperature cap.
 
-DHWR retains ten-minute legacy pulses and its modeled coupling to house heat.
+DHWR uses explicit MQTT ON/OFF switch commands. ST-MQ owns the run timer, configured
+with `controller.dhwr_duration_minutes` (default 10; 1–60 minutes), and saves pending
+OFF commands for restart recovery. See [DHWR setup](docs/dhwr-mqtt.md).
 The native periodic hygiene cycle remains unchanged, with an explicitly accepted
 possibility of delayed auxiliary availability during temporary control. No claim
 of a verified hygiene outcome or commissioned hardware follows from the tests.

@@ -221,6 +221,7 @@
                   <div id="h66-series"></div>
                 </details>
               </section>
+              <div id="shelly-equipment"></div>
               <section class="equipment-group" aria-labelledby="equipment-tests-title">
                 <h3 id="equipment-tests-title">Manual tests</h3>
                 <details id="h66-test-details" class="heating-test-details equipment-fold">
@@ -243,11 +244,11 @@
                 </details>
                 <details id="heating-test-details" class="heating-test-details equipment-fold">
                   <summary>Test heating commands</summary>
-                  <p id="heating-test-help" class="muted">Each button immediately sends one real MQTT command to the configured control devices. Normal heating follows the heat pump’s own controls.</p>
+                  <p id="heating-test-help" class="muted">Each button controls the configured devices through MQTT. DHWR starts timed circulation; ST-MQ sends OFF when the configured duration ends. Normal heating follows the heat pump’s own controls.</p>
                   <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-label="Send a test heating command" aria-describedby="heating-test-help heating-test-status">
                     <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" disabled><span>heatoff</span><small>Tariff reduction</small></button>
                     <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" disabled><span>heaton15</span><small>Normal heating</small></button>
-                    <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>heaton60</span><small>Recirculation pulse</small></button>
+                    <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled><span>Start DHWR</span><small>Timed circulation</small></button>
                   </div>
                   <p id="heating-test-status" class="muted">Checking MQTT test availability…</p>
                   <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>

@@ -1,3 +1,4 @@
+import { shellyConfiguration } from '../acquisition/shelly-config.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
@@ -135,7 +136,7 @@ export function controlConfiguration(input = {}) {
   const map = { aux_integral_a2: 'auxIntegralA2', aux_hysteresis_c: 'auxHysteresisC',
     compressor_integral_a1: 'compressorIntegralA1', compressor_hysteresis_c: 'compressorHysteresisC',
     a2_basis: 'a2Basis', heat_pump_compressor_kw: 'heatPumpCompressorKw', auxiliary_rated_kw: 'auxRatedKw',
-    circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', max_reduction_hours: 'maxReductionHours',
+    circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', dhwr_duration_minutes: 'dhwrPulseMinutes', max_reduction_hours: 'maxReductionHours',
     max_away_reduction_hours: 'maxAwayReductionHours', max_unobserved_reduction_hours: 'maxUnobservedReductionHours',
     max_preheat_hours: 'maxPreheatHours', max_room_boost_c: 'maxRoomBoostC', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
@@ -161,7 +162,8 @@ export function controlConfiguration(input = {}) {
     || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
     || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168
     || result.recoveryCompressorOnlyHours < 0.25 || result.recoveryCompressorOnlyHours > 12
-    || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1)
+    || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1
+    || result.dhwrPulseMinutes < 1 || result.dhwrPulseMinutes > 60)
     throw new Error('Controller settings exceed supported bounds');
   return result;
 }
@@ -207,6 +209,9 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
     const mqtt = { ...(options.mqtt ?? {}) };
+    mqtt.dhwr_topic = mqtt.dhwr_topic || 'from_stmq/dhwr/set';
+    if (typeof mqtt.dhwr_topic !== 'string' || !mqtt.dhwr_topic.trim() || mqtt.dhwr_topic.length > 500
+      || /[+#\u0000]/.test(mqtt.dhwr_topic)) throw new Error('DHWR MQTT topic must be an exact switch command topic');
     mqtt.temperatureTopics = {
       ...(mqtt.temperature_topics ?? {}),
       ...(mqtt.temperatureTopics ?? {}),
@@ -226,7 +231,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 120, 0, 900,
       'temperature_report_grace_seconds') * 1000);
     const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
-    connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
+    connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate), shelly: shellyConfiguration(options.shelly) };
+    if (connections.shelly.devices.length && !mqtt.address) throw new Error('Shelly requires the existing MQTT broker connection');
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');

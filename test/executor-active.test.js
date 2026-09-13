@@ -4,11 +4,11 @@ import { Executor } from '../src/app/executor.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 
-function rig(t, { native = true, saved = new Map(), publishLegacy } = {}) {
+function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, config = {} } = {}) {
   let now = Date.parse('2026-09-07T12:00Z');
-  const log = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
+  const log = [], observations = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
-    setState: (key, value) => saved.set(key, structuredClone(value)), event() {} };
+    setState: (key, value) => saved.set(key, structuredClone(value)), event() {}, observation: row => observations.push(row) };
   const decoder = createH66Decoder({ deviceId: 'synthetic' });
   const receive = (index, value) => h66.ingest(decoder.decode({ topic: `synthetic/HP/${index}`, payload: String(value), receivedAt: now }));
   const h66 = native ? createH66Controller({ deviceId: 'synthetic', store, clock: () => now,
@@ -21,12 +21,19 @@ function rig(t, { native = true, saved = new Map(), publishLegacy } = {}) {
   if (h66) { h66.setConnected(true); for (const [index, value] of Object.entries(values)) receive(index, value); }
   const transport = { publish: async commands => {
     log.push({ commands: [...commands], now });
-    if (commands.includes('heaton60')) assert.equal(saved.get('executor:mqtt').pulseUntil, now + 610_000);
+    assert(!commands.includes('heaton60'), 'DHWR button intents must never enter the heating transport');
     return publishLegacy ? publishLegacy(commands) : { status: 'mqtt', sent: true, actual: null };
-  } };
-  const executor = new Executor({ input: 'mqtt', store, h66, commandTransport: transport, clock: () => now });
+  }, publishDhwr: async on => {
+    log.push({ dhwr: on, now });
+    if (on) {
+      assert.equal(saved.get('executor:mqtt').dhwrOutstanding, true, 'Save the OFF obligation before ON can reach the broker');
+      assert.equal(saved.get('executor:mqtt').pulseUntil, now + (config.dhwrPulseMinutes ?? 10) * 60_000 + 10_000);
+    }
+    return publishDhwr ? publishDhwr(on) : { status: 'mqtt', sent: true, actual: null };
+  }, async close() {} };
+  const executor = new Executor({ input: 'mqtt', store, h66, config, commandTransport: transport, clock: () => now });
   t.after(async () => { clearTimeout(executor.timer); executor.closed = true; await h66?.close(); });
-  return { executor, h66, log, values, saved, store, transport, get now() { return now; },
+  return { executor, h66, log, observations, values, saved, store, transport, get now() { return now; },
     advance(ms) { now += ms; if (h66) for (const [index, value] of Object.entries(values)) receive(index, value); },
     run(phase, duration = 1_800_000, extra = {}) { return executor.execute({ phase, action: phase === 'reduction' ? 'reduction' : 'normal',
       commands: phase === 'reduction' ? ['heatoff'] : ['heaton15'], roomBoostC: 2, expiresAt: now + duration, ...extra }, { mode: 'active', now }); } };
@@ -80,22 +87,22 @@ test('a coupled45-minute trial retains useful preheat exposure with acknowledgem
     r.advance(600000);
   }
   assert.ok(pulses>=3);
-  assert.ok(r.log.filter(row=>row.commands?.includes('heaton60')).length>=3);
+  assert.ok(r.log.filter(row=>row.dhwr===true).length>=3);
 });
 
-test('coupled preheat publishes pulse before ROOM and restores ROOM before waiting for reduction', async t => {
+test('coupled preheat switches ON before ROOM and acknowledges OFF before reduction', async t => {
   const r = rig(t);
   const preheat = await r.run('preheat');
   assert.equal(preheat.phase, 'preheat'); assert.equal(r.values['0203'], 21);
-  assert.deepEqual(r.log.slice(0, 2).map(entry => entry.commands ?? entry.native), [['heaton60', 'heaton15'], '0203']);
+  assert.deepEqual(r.log.slice(0, 3).map(entry => entry.commands ?? entry.native ?? entry.dhwr), [true, ['heaton15'], '0203']);
   assert.equal(r.h66.status().expiresAt, r.now + 600_000);
   assert.equal((await r.run('preheat')).sent, false);
   r.advance(60_000);
-  const waiting = await r.run('reduction');
-  assert.equal(waiting.status, 'waiting'); assert.equal(r.values['0203'], 19);
-  assert.equal(r.log.some(entry => entry.commands?.includes('heatoff')), false);
-  r.advance(540_000);
-  assert.equal((await r.run('reduction')).phase, 'reduction');
+  const reduction = await r.run('reduction');
+  assert.equal(reduction.phase, 'reduction'); assert.equal(r.values['0203'], 19);
+  const off = r.log.findIndex(entry => entry.dhwr === false);
+  const reduce = r.log.findIndex(entry => entry.commands?.includes('heatoff'));
+  assert(off > 0 && reduce > off, 'Acknowledged OFF removes the old external ten-minute waiting period');
   assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
   assert.deepEqual(r.log.at(-1).commands, ['heatoff']);
   await r.run('recovery');
@@ -105,9 +112,9 @@ test('coupled preheat publishes pulse before ROOM and restores ROOM before waiti
 test('a pulse renews only at ten minutes and must fit the preheat window', async t => {
   const r = rig(t);
   await r.run('preheat', 300_000);
-  assert.equal(r.log.some(entry => entry.commands?.includes('heaton60')), false);
+  assert.equal(r.log.some(entry => entry.dhwr === true), false);
   await r.run('preheat'); r.advance(600_000); await r.run('preheat');
-  assert.equal(r.log.filter(entry => entry.commands?.includes('heaton60')).length, 2);
+  assert.equal(r.log.filter(entry => entry.dhwr === true).length, 2);
   assert.equal(r.values['0203'], 21, 'baseline boost never accumulates');
 });
 
@@ -128,32 +135,35 @@ test('restart restores a previous reduction before processing a new command', as
   assert.equal(restarted.status().restorationPending, false);
 });
 
-test('a lost pulse acknowledgement still blocks reduction after restart', async t => {
+test('a lost ON acknowledgement requires an acknowledged OFF before reduction after restart', async t => {
   let fail = true;
-  const r = rig(t, { native: false, publishLegacy: async commands => {
-    if (fail && commands.includes('heaton60')) throw Object.assign(new Error('synthetic failure'), { code: 'MQTT_TIMEOUT' });
+  const r = rig(t, { native: false, publishDhwr: async on => {
+    if (fail && on) throw Object.assign(new Error('synthetic failure'), { code: 'MQTT_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
   await assert.rejects(r.executor.execute({ commands: ['heaton60'] }, { mode: 'shadow', manualTest: true, now: r.now }), { code: 'MQTT_TIMEOUT' });
+  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, true);
   fail = false;
   const restarted = new Executor({ input: 'mqtt', store: r.store, commandTransport: r.transport, clock: () => r.now });
   t.after(() => { clearTimeout(restarted.timer); restarted.closed = true; });
   const result = await restarted.execute({ phase: 'reduction', commands: ['heatoff'] }, { mode: 'active', now: r.now });
-  assert.equal(result.status, 'waiting'); assert.equal(r.log.some(entry => entry.commands.includes('heatoff')), false);
+  assert.equal(result.phase, 'reduction');
+  assert.deepEqual(r.log.map(entry => entry.commands ?? entry.dhwr), [true, false, ['heatoff']]);
+  assert.equal(restarted.status().dhwrOutstanding, false);
 });
 
 test('normal service DHWR is honored even when the normal phase is unchanged', async t => {
   const r = rig(t, { native: false });
   await r.run('normal'); await r.run('normal', 1_800_000, { commands: ['heaton60', 'heaton15'] });
-  assert.deepEqual(r.log.map(entry => entry.commands), [['heaton15'], ['heaton60', 'heaton15']]);
+  assert.deepEqual(r.log.map(entry => entry.commands ?? entry.dhwr), [['heaton15'], true, ['heaton15']]);
   await r.run('normal', 1_800_000, { commands: ['heaton60', 'heaton15'] });
-  assert.equal(r.log.length, 2);
+  assert.equal(r.log.length, 3);
 });
 
 test('PUBACK latency extends the conservative pulse end before reduction is allowed', async t => {
   let advance;
-  const r = rig(t, { native: false, publishLegacy: async commands => {
-    if (commands.includes('heaton60')) advance(3000);
+  const r = rig(t, { native: false, publishDhwr: async on => {
+    if (on) advance(3000);
     return { status: 'mqtt', sent: true, actual: null };
   } });
   advance = ms => r.advance(ms);
@@ -170,9 +180,12 @@ test('monitoring and shadow are synchronous and tests cannot overlap an active w
   let acknowledge;
   const r = rig(t, { native: false, publishLegacy: () => new Promise(resolve => { acknowledge = resolve; }) });
   for (const mode of ['monitoring', 'shadow']) {
-    const result = r.executor.execute({ commands: ['heatoff'] }, { mode, now: r.now });
-    assert.equal(result.sent, false); assert.equal(typeof result.then, 'undefined');
+    for (const command of ['heatoff', 'heaton60']) {
+      const result = r.executor.execute({ commands: [command] }, { mode, now: r.now });
+      assert.equal(result.sent, false); assert.equal(typeof result.then, 'undefined');
+    }
   }
+  assert.equal(r.log.length, 0);
   const pending = r.run('reduction');
   await assert.rejects(r.executor.execute({ commands: ['heaton15'] }, { mode: 'shadow', manualTest: true, now: r.now }), { code: 'EXECUTOR_BUSY' });
   acknowledge({ status: 'mqtt', sent: true, actual: null }); await pending;
@@ -183,4 +196,124 @@ test('shutdown restores owned native settings and the tariff relay', async t => 
   assert.deepEqual(r.values, { '0203': 19, '0212': 47, '0208': 62, '2201': 1 });
   assert.deepEqual(r.log.at(-1).commands, ['heaton15']);
   assert.equal(r.executor.status().legacyOutstanding, false);
+});
+
+test('the configured DHWR duration controls manual runs and required preheat exposure', async t => {
+  const r = rig(t, { config: { dhwrPulseMinutes: 3 } });
+  const start = r.now;
+  await r.executor.execute({ commands: ['heaton60'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  assert.equal(r.executor.status().pulseUntil, start + 3 * 60_000);
+  await r.executor.restore();
+  assert.deepEqual(r.log.filter(row => typeof row.dhwr === 'boolean').map(row => row.dhwr), [true, false]);
+  assert.equal(r.observations.at(-1).value, 0);
+  const before = r.log.length;
+  await r.run('preheat', 2 * 60_000);
+  assert(!r.log.slice(before).some(row => row.dhwr === true));
+  await r.run('preheat', 3 * 60_000);
+  assert.equal(r.executor.status().pulseUntil, r.now + 3 * 60_000);
+  assert.equal(r.h66.status().expiresAt, r.now + 3 * 60_000);
+});
+
+test('a later heating relay acknowledgement does not extend the DHWR ON deadline', async t => {
+  let r;
+  r = rig(t, { native: false, publishLegacy: async () => {
+    r.advance(10_000);
+    return { status: 'mqtt', sent: true, actual: null };
+  } });
+  const start = r.now;
+  await r.run('normal', 1_800_000, { commands: ['heaton60', 'heaton15'] });
+  assert.equal(r.now, start + 10_000);
+  assert.equal(r.executor.status().pulseUntil, start + 600_000);
+});
+
+test('manual DHWR expiry sends OFF and retries an unconfirmed OFF without a new ON', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stops = 0;
+  const r = rig(t, { native: false, config: { dhwrPulseMinutes: 1 }, publishDhwr: async on => {
+    if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    return { status: 'mqtt', sent: true, actual: null };
+  } });
+  await r.executor.execute({ commands: ['heaton60'] }, { mode: 'monitoring', manualTest: true, now: r.now });
+  r.advance(60_000); t.mock.timers.tick(60_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stops, 1);
+  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, true);
+  assert.equal(r.executor.status().restorationPending, true);
+  r.advance(1000); t.mock.timers.tick(1000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(r.log.map(row => row.dhwr), [true, false, false]);
+  assert.equal(r.executor.status().dhwrOutstanding, false);
+  assert.equal(r.executor.status().restorationPending, false);
+  assert.equal(r.observations.filter(row => row.signal === 'dhwr_request' && row.value === 0).length, 1,
+    'Only a broker-acknowledged OFF creates a completed stop observation');
+});
+
+test('failed DHWR OFF cannot prevent independent native and tariff restoration', async t => {
+  let failStop = true;
+  const r = rig(t, { publishDhwr: async on => {
+    if (!on && failStop) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    return { status: 'mqtt', sent: true, actual: null };
+  } });
+  await r.run('preheat');
+  r.advance(600_000);
+  const before = r.log.length;
+  const pending = await r.executor.restore();
+  assert.equal(pending.restorationPending, true);
+  assert.equal(pending.dhwrError, 'MQTT_TIMEOUT');
+  assert.deepEqual(r.log.slice(before).map(row => row.commands ?? row.native ?? row.dhwr), [false, '0203', ['heaton15']]);
+  assert.equal(r.values['0203'], 19);
+  assert.equal(r.saved.get('executor:mqtt').legacyOutstanding, false);
+  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, true);
+  failStop = false;
+  assert.equal((await r.executor.restore()).restorationPending, false);
+  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, false);
+});
+
+test('shutdown stops an uncertain ON and demotion preserves its obligation without a write', async t => {
+  const shutdown = rig(t, { native: false, publishDhwr: async on => {
+    if (on) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    return { status: 'mqtt', sent: true, actual: null };
+  } });
+  await assert.rejects(shutdown.executor.execute({ commands: ['heaton60'] }, { mode: 'shadow', manualTest: true, now: shutdown.now }), { code: 'MQTT_TIMEOUT' });
+  await shutdown.executor.close();
+  assert.deepEqual(shutdown.log.map(row => row.dhwr), [true, false]);
+  assert.equal(shutdown.saved.get('executor:mqtt').dhwrOutstanding, false);
+
+  const demoted = rig(t, { native: false });
+  await demoted.executor.execute({ commands: ['heaton60'] }, { mode: 'shadow', manualTest: true, now: demoted.now });
+  await demoted.executor.close({ restore: false });
+  assert.deepEqual(demoted.log.map(row => row.dhwr), [true]);
+  assert.equal(demoted.saved.get('executor:mqtt').dhwrOutstanding, true);
+  const successor = new Executor({ input: 'mqtt', store: demoted.store, commandTransport: demoted.transport, clock: () => demoted.now });
+  t.after(() => { clearTimeout(successor.timer); successor.closed = true; });
+  assert.equal(successor.status().restorationPending, true);
+  await successor.restore({ reason: 'authority-transfer' });
+  assert.deepEqual(demoted.log.map(row => row.dhwr), [true, false]);
+});
+
+test('a manual DHWR request cannot erase an outstanding tariff reduction', async t => {
+  const r = rig(t, { native: false });
+  await r.executor.execute({ commands: ['heatoff'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.executor.execute({ commands: ['heaton60'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  assert(r.saved.get('executor:mqtt').legacyOutstanding || r.log.some(row => row.commands?.includes('heaton15')),
+    'Starting a separate circulation switch cannot forget restoring the heat reduction relay');
+  await r.executor.close();
+  assert(r.log.some(row => row.commands?.includes('heaton15')));
+  assert.equal(r.saved.get('executor:mqtt').legacyOutstanding, false);
+  assert.equal(r.saved.get('executor:mqtt').dhwrOutstanding, false);
+});
+
+test('failed early DHWR stop retries without waiting for the original run deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let stops = 0;
+  const r = rig(t, { native: false, publishDhwr: async on => {
+    if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    return { status: 'mqtt', sent: true, actual: null };
+  } });
+  await r.executor.execute({ commands: ['heaton60'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  assert.equal((await r.executor.restore()).restorationPending, true);
+  r.advance(10_000); t.mock.timers.tick(10_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stops, 2);
+  assert.equal(r.executor.status().dhwrOutstanding, false);
 });

@@ -1,4 +1,6 @@
 import { stackPowerSeries } from './power-stack.js';
+import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
+import { temperatureIntervalKnots } from './temperature-curves.js';
 import { HISTORY_AXES, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -85,6 +87,10 @@ const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
+  caravan_power: ['Caravan power', 'kW · Shelly plug measurement', 'garage'],
+  caravan_current: ['Caravan current', 'A · measured on Gen2+; estimated from power on Gen1 plugs', 'garage'],
+  caravan_active: ['Caravan plug', 'state · Shelly plug output', 'garage'],
+  caravan_energy: ['Caravan energy', 'kWh · hourly accumulated meter energy', 'garage'],
   ev2_energy: ['Charger 2 total energy', 'kWh · estimated from TeslaMate charging power over the recorded interval', 'ev2'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
   tesla_session_energy_check: ['Charger 2', 'kWh · finalized session energy added to the battery', 'ev2', 'session'],
@@ -148,7 +154,8 @@ export function historyStateLabel(key, value) {
     return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;
   if (key === 'dhw_routing') return value === 0 ? 'Space heating' : value === 1 ? 'Hot water' : `Unknown route (${value})`;
   if (['compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
-  if (key === 'dhwr_request') return value === 1 ? 'Pulse requested' : value === 0 ? 'Request expired' : `Unknown (${value})`;
+  if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
+  if (key === 'caravan_active') return value === 1 ? 'On' : value === 0 ? 'Off' : `Unknown (${value})`;
   return null;
 }
 
@@ -238,7 +245,9 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
     const isLeft = leftGroups[left].includes(key);
     const isPrice = key.endsWith('_price');
-    const data = stackedData.get(key) ?? series[key] ?? [];
+    const temperature = isInterpolatedTemperature(key);
+    const original = stackedData.get(key) ?? series[key] ?? [];
+    const data = ['outdoor_forecast', 'model_outdoor_temperature'].includes(key) ? temperatureIntervalKnots(original) : original;
     const stackBase = stackBases.get(key);
     return {
       key, visibilityKey, unit, kind, label,
@@ -259,7 +268,11 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
         && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
       pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session'].includes(kind) ? 6 : 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
-      stepped: isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && key !== 'model_indoor_temperature' && !PHASE_ENERGY_SIGNALS.includes(key),
+      stepped: temperature ? false : isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && !PHASE_ENERGY_SIGNALS.includes(key),
+      // Chart.js' monotone cubic Hermite interpolation is O(n), preserves local
+      // extrema and never overshoots adjacent values. Zero tension is ignored
+      // in monotone mode; no synthetic samples enter storage or the learner.
+      cubicInterpolationMode: temperature ? 'monotone' : 'default',
       tension: 0, spanGaps: false, hidden: !visible(visibilityKey, preferences),
     };
   });

@@ -42,6 +42,9 @@ test('model charts retain committed segment timing, routed heat and original con
   assert.deepEqual(result.series.model_indoor_temperature.map(row => [row.x - start, row.y]), [[15 * MINUTE, 21.4]]);
   assert(result.series.model_controller_phase.some(row => row.y === 2));
   assert(duty.every(row => row.y === null || row.modelInput && row.inputSource === 'Recorded provider inputs'));
+  for (const [key, points] of Object.entries(result.series))
+    if (!['firewood_load', 'model_fireplace_release'].includes(key))
+      assert(points.every(row => row.y === null || row.learningUsable === true), `${key} exposes the same saved quality decision`);
   assert(!JSON.stringify(result).includes('invented-'));
 });
 

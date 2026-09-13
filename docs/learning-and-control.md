@@ -231,8 +231,12 @@ time basis for communication freshness. Retained, invalid and stale values do no
 become fresh merely because the application restarted. A documented register
 profile is distinct from verification of the installed pump and firmware.
 
-The legacy DHWR command pair is `heaton60`, then `heaton15`, with a ten-minute
-pulse. The planner includes a nominal pulse-electricity allowance, but the thermal
+DHWR uses MQTT switch ON and OFF; ST-MQ owns the configurable run duration
+(`controller.dhwr_duration_minutes`, default 10). The internal `heaton60` intent
+starts that timer and is never published as a push-button command. `heaton15`
+separately restores normal heating. Pending OFF is saved before ON is sent and
+reconciled on restart, shutdown and restoration. See [device setup](dhwr-mqtt.md).
+The planner includes a nominal pulse-electricity allowance, but the thermal
 model does not invent extra delivered heat for the request. The coupled action
 cannot identify independent ROOM and DHWR effects. Tank service remains outside
 the space-heating benefit assessment.
@@ -259,7 +263,7 @@ rather than extending indefinitely.
 Yellow background means the compressor was reported running toward the house;
 blue means it was running toward DHW. Missing/stale routing leaves a gap. Tariff reduction
 is crosshatched and describes a reduction request, not proof of a stopped
-compressor. **DHWR** shows ten-minute requests in its own strip below the chart,
+compressor. **DHWR** shows requests with their recorded durations in its own strip below the chart,
 alongside **Pump mode** and **Fireplace**. These strips start visible. **Fireplace**
 uses the same recorded additions and burn duration as the model, currently two hours;
 overlapping periods merge, and corrections update the strip. This duration marks

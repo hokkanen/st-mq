@@ -1,3 +1,4 @@
+import { createShellyCapture } from './shelly.js';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
@@ -56,9 +57,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       mqttScaleByRegister: settings.mqttScaleByRegister });
   }
   const { address, user: username, pw: password } = config.connections.mqtt;
+  const directGarage = config.connections.shelly?.devices?.some(device => device.role === 'garage');
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
     .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
-      && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic));
+      && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic))
+    .map(([signal, topic]) => [directGarage && signal === 'garage_temperature' ? 'garage_temperature_ha' : signal, topic]);
   for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal))
     engine.configureTemperatureReports?.(signal, {
       reportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
@@ -72,8 +75,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
-  })).filter(row => !temperatureTopics.some(([signal]) => signal === row.signal)) : [];
-  const temperatureSignals = temperatureTopics.map(([signal]) => ({ source: 'mqtt-temperature', device: signal, signal, unit: 'degC' }));
+  })).filter(row => !(directGarage && row.signal === 'garage_temperature') && !temperatureTopics.some(([signal]) => signal === row.signal)) : [];
+  const temperatureSignals = temperatureTopics.map(([signal]) => ({
+    source: signal === 'garage_temperature_ha' ? 'mqtt-temperature-ha' : 'mqtt-temperature',
+    device: signal === 'garage_temperature_ha' ? 'garage-ha' : signal, signal, unit: 'degC' }));
   const markUnavailable = (signals, quality) => {
     const at = engine.clock(), observations = [];
     const record = () => {
@@ -118,6 +123,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     pendingPublications.add(finish);
     try { client.publish(topic, payload, options, finish); } catch { finish(new Error('MQTT publication failed')); }
   });
+  const shelly = config.connections.shelly?.devices?.length ? createShellyCapture({ engine, store,
+    settings: config.connections.shelly, publish, canControl, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000 }) : null;
+  if (shelly) engine.shelly = shelly;
   const requestSnapshot = async () => {
     if (!decoder) return;
     // GETALL republishes the gateway's known values. It cannot prove a new sensor measurement.
@@ -139,6 +147,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         report('mqtt-temperature-subscribe-error');
       }
     });
+    if (shelly) {
+      let subscriptions = shelly.topics.length, subscriptionFailed = false;
+      for (const topic of shelly.topics) client.subscribe(topic, { qos: 1 }, error => {
+        if (error) { subscriptionFailed = true; shelly.subscriptionFailed(topic); report('mqtt-shelly-subscribe-error'); }
+        if (--subscriptions === 0 && !subscriptionFailed) shelly.setConnected(true);
+      });
+    }
     if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, error => {
       if (error) { teslamate.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
       else teslamate.setConnected(true);
@@ -150,6 +165,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (stopped) return;
     connected = false; h66?.setConnected(false);
     teslamate?.setConnected(false);
+    shelly?.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
     if (!disconnectedRecorded) {
       markUnavailable([...h66Signals, ...temperatureSignals], ['mqtt-disconnected']);
@@ -162,16 +178,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('message', (topic, payload, packet = {}) => {
     if (!connected || stopped) return;
     try {
+      if (shelly?.receive(topic, payload, packet, engine.clock())) return;
       if (teslamate?.receive(topic, payload, packet, engine.clock())) return;
       const temperature = temperatureTopics.find(([, configured]) => configured === topic);
       if (temperature) {
         // MQTT retransmissions cannot serve as new evidence from the sensor.
         if (packet.dup) return;
         const periodic = INDOOR_SIGNALS.includes(temperature[0]);
-        const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
+        const observation = decodeMqttTemperature({ signal: temperature[0] === 'garage_temperature_ha' ? 'garage_temperature' : temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
           reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : null,
           reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : 0 });
-        if (observation) engine.ingest(observation);
+        if (observation) engine.ingest(temperature[0] === 'garage_temperature_ha'
+          ? { ...observation, signal: 'garage_temperature_ha', device: 'garage-ha', source: 'mqtt-temperature-ha' } : observation);
         else markUnavailable(temperatureSignals.filter(row => row.signal === temperature[0]), ['invalid-temperature-message']);
         return;
       }
@@ -184,7 +202,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // An explicitly configured room sensor owns its logical temperature.
       // Keep the gateway register available to H66 diagnostics, but do not mix
       // its measurements into that room's recording or model input.
-      if (temperatureTopics.some(([signal]) => signal === decoded.signal)) return;
+      if (directGarage && decoded.signal === 'garage_temperature' || temperatureTopics.some(([signal]) => signal === decoded.signal)) return;
       engine.ingest({ source: decoded.source, device: decoded.deviceId,
         signal: decoded.signal === 'integral' ? 'heating_integral' : decoded.signal,
         value: decoded.value, unit: decoded.unit ?? 'unknown', sourceTime: decoded.observedAt,
@@ -203,19 +221,27 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     h66.reconcile({ now: engine.clock() }).catch(() => {});
   }, intervalMs) : null;
   maintenance?.unref?.();
+  const shellyMaintenance = shelly ? setInterval(() => {
+    if (stopped) return;
+    try { shelly.tick(engine.clock()); } catch (error) { report('mqtt-shelly-capture-failed', error); }
+  }, 5000) : null;
+  shellyMaintenance?.unref?.();
   const teslaMaintenance = teslamate ? setInterval(() => {
     if (stopped) return;
     try { teslamate.tick(engine.clock()); } catch (error) { report('mqtt-teslamate-capture-failed', error); }
   }, 5000) : null;
   teslaMaintenance?.unref?.();
   if (client.connected) connectedHandler();
-  return { h66, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
+  return { h66, shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
       if (stopped) return;
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
+      clearInterval(shellyMaintenance);
+      shelly?.close();
+      if (engine.shelly === shelly) engine.shelly = null;
       teslamate?.close();
       if (engine.teslamate === teslamate) engine.teslamate = null;
       if (restore && canControl() && h66 && connected && settings.writeEnabled === true) {
