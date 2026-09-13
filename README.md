@@ -36,6 +36,8 @@ status, and the explicit recovery controls. There is no automatic failover.
 
 An independent recording optimizer targets a configurable **10 GB/year** rolling
 growth rate with a **five-minute maximum interval when fresh measurements exist**.
+Periodic indoor temperatures store changes and compact report coverage instead
+of forced equal-value rows; missing reports leave chart and learning gaps.
 Electricity history stores three estimated phase-energy increments for Easee and
 property import, plus one total-energy increment for TeslaMate portable charging.
 Meter readings and completed-session comparisons are diagnostic only. The house learner uses
@@ -50,6 +52,12 @@ for the outdoor sensor. Recording requires confirmation; **Reason** describes th
 history and does not change the model's response. **Revert and relearn** undoes a
 mistaken entry by rebuilding from recorded history while heating control remains
 available. Reverted entries stay visible in the change history.
+
+The [SmartThings temperature installation guide](docs/smartthings-temperature-rule.md)
+explains why Fibaro smoke sensors need the modified driver for genuine repeated
+reports, how to build/install it, configure forwarding and report deadlines, and
+verify or roll back an installation. The complete small driver package, pinned
+upstream source reference and exact reconstruction patch are kept in st-mq.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults

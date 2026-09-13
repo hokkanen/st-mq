@@ -27,8 +27,9 @@ right-axis series with its existing colour and legend control. Average indoor ke
 its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
 blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
 individual rooms are available through the chart and source details.
-Dedicated indoor MQTT topics expect a genuine sensor report every 15 minutes,
-with two minutes allowed for delivery delay. Set
+By default, st-mq expects a genuine report on each dedicated indoor MQTT topic
+every 15 minutes, with two minutes allowed for delivery delay. This is an
+application policy, not a guarantee about the detector. Set
 `mqtt.temperature_report_interval_minutes` and
 `mqtt.temperature_report_grace_seconds` to match the publisher. Interval `0`
 selects the earlier change-only, last-known-reading policy after the next genuine
@@ -37,6 +38,16 @@ and requires a genuine report under the new policy; reloading settings or
 restarting cannot refresh a cached reading. These
 settings apply to the three indoor MQTT topics; Garage and the H66 indoor sensor
 retain their existing policy, and outdoor freshness limits remain separate.
+
+The custom Fibaro driver offers a 70-minute wake-up default. Once that
+physical interval and genuine MQTT delivery are verified, configure the expected
+report interval to 70 minutes; 120 seconds of grace then gives a 72-minute
+deadline. Leaving the default 17-minute deadline would cause gaps before the
+next expected wake-up. The driver selector does not change st-mq configuration.
+See the [installation reasons and timing instructions](smartthings-temperature-rule.md#matching-the-st-mq-report-deadline).
+
+Installing a sensor driver does not create a forwarding Rule, MQTT subscription
+or model input. Configure each intended source and its membership separately.
 
 An unchanged report confirms coverage without inserting another temperature
 observation. Every actual value change is saved, along with availability changes;
@@ -59,8 +70,8 @@ today's membership or weights.
 
 This requires genuine repeated reports all the way through SmartThings and MQTT.
 A timer that republishes a cached value cannot prove a sensor is alive. The
-[SmartThings rule and driver notes](smartthings-temperature-rule.md) document the
-installed forwarding rules, restoration procedure and remaining hardware checks.
+[SmartThings rule and driver notes](smartthings-temperature-rule.md) explain the
+forwarding rule, source recovery, installation and physical verification steps.
 
 The Average indoor summary and **Main temperatures** source details identify
 affected rooms and their actual observation times. New saved-average chart
@@ -87,7 +98,7 @@ not recorded instead of guessing.
 
 | Input | Availability rule | Warning or learning effect |
 | --- | --- | --- |
-| Periodic indoor MQTT | Report interval plus grace, normally 17 minutes; the exact deadline is still allowed | After the deadline, or on an explicit source failure, control falls back. Learning rejects a whole window containing a report gap. |
+| Periodic indoor MQTT | Report interval plus grace, 17 minutes with application defaults, or 72 minutes with a 70-minute interval and two-minute grace; the exact deadline is still allowed | After the deadline, or on an explicit source failure, control falls back. Learning rejects a whole window containing a report gap. |
 | Indoor without a periodic contract; Garage | Keep the last genuine valid value until replaced or excluded by a sensor change | Age above two hours requests attention. Age alone does not prevent using an indoor member for control or learning. Garage is history only. |
 | H66 outdoor and equipment | Five-minute source validity, shared by live selection, recording, chart reconstruction and learning | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
 | FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
