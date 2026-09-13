@@ -1,0 +1,6 @@
+name: 'ST-MQ Fibaro Temperature Reports'
+packageKey: 'stmq-fibaro-temperature-reports'
+permissions:
+  zwave: {}
+description: "SmartThings driver for Z-Wave smoke alarm devices"
+vendorSupportInformation: "https://support.smartthings.com"

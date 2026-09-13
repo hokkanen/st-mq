@@ -7,11 +7,14 @@ SmartThings reported each as **Enabled**, executing **Local**. The previous Rule
 was removed after these checks. Existing physical sensor → MQTT virtual device
 pairs and the `partyvoice23922.vtempset.setvTemp` command were preserved.
 
-**The Rule replacement is installed. Repeated physical reports and an automatic
-15-minute temperature-confirmation cadence are not yet verified.** The source
-driver and detector configuration require the checks below; changing a reporting
-interval in the app alone does not establish this guarantee. No smoke driver,
-smoke alarm setting or device preference was changed by this Rule replacement.
+**The Rule replacement is installed, and the bedroom smoke detector now uses the
+custom temperature-report driver.** Hub and device readback verified the exact
+uploaded version and bedroom assignment. A manual wake-up produced a genuine
+report equal to the pre-install value, a forced capability event, and a matching
+non-retained MQTT arrival. Physical self-test results and an automatic 15-minute
+cadence remain pending. A reporting-interval preference alone does not establish that cadence.
+The earlier Rule replacement did not change driver assignments or preferences;
+the later driver installation is a separate operation.
 
 ## Why the old Rule lost confirmations
 
@@ -38,21 +41,21 @@ values even with `state_change=true`](https://community.smartthings.com/t/rules-
 
 ## Physical reporting is a separate prerequisite
 
-SmartThings ordinarily filters repeated capability values before delivering them
-to Rules. A physical Edge driver must emit each actual temperature report with
-`state_change = true` for unchanged readings to survive that filter. This metadata
-belongs on the event produced by a received physical temperature report; it must
-not be generated from a timer or cached device state. See the official
+SmartThings can filter repeated capability values before delivering them to
+Rules. Emitting each actual temperature report with `state_change = true` tells
+the platform to forward equal values to subscriptions too. This metadata belongs
+on an event produced by a received physical report, rather than a timer or cached
+device state. The earlier observation of only one report did not prove that the
+stock driver was the sole cause of missing reports. See the official
 [Edge capability-event documentation](https://developer.smartthings.com/docs/edge-device-drivers/capabilities.html#state-change).
 
-The installed-driver listing confirmed that all three physical sources still use
-the stock **Z-Wave Smoke Alarm** driver. The earlier diagnosis proposed a private
-driver named **ST-MQ Fibaro Temperature Reports**, adding this metadata only to
-the temperature-report handler; that proposed driver is not assigned to these
-sensors. Keep its source,
-upstream revision and patch if implementing it, preserve smoke/tamper/battery
-handlers, and verify one detector's normal self-test and alarm notifications
-before changing the other detectors. This task did not install that driver.
+All three physical sources initially used the stock **Z-Wave Smoke Alarm**
+driver. The custom **ST-MQ Fibaro Temperature Reports** package adds the metadata
+only in the Fibaro temperature-report handler. Its complete source is now stored
+in [integrations/smartthings/fibaro-temperature](../integrations/smartthings/fibaro-temperature/README.md).
+The authorized rollout targets the bedroom smoke detector only. Keep the other
+detectors on stock drivers until the bedroom detector's normal self-test, alarm
+notifications, and temperature forwarding have been verified.
 
 For the Fibaro FGSD-002, parameter **20** controls a change-conditional reporting
 interval; parameter **21** controls the required temperature difference. Setting
@@ -71,7 +74,7 @@ receipt time as a report-time proxy, contingent on genuine-event forwarding.
 Do not manually execute a live forwarding Rule or schedule copying the cached
 temperature: that produces a fresh MQTT receipt without a fresh measurement.
 
-## Prepared physical-driver patch (not installed)
+## Reproducible physical-driver package
 
 The [temperature-report patch](smartthings/fibaro-temperature-reports.patch)
 applies to public SmartThingsEdgeDrivers revision
@@ -86,27 +89,200 @@ unchanged. The relevant [dispatch precedence](https://developer.smartthings.com/
 and [sensor constants](https://developer.smartthings.com/docs/edge-device-drivers/zwave/generated/SensorMultilevel/constants.html)
 are documented by SmartThings.
 
-To reproduce the prepared source outside st-mq, replace the absolute patch path
-with this checkout's path:
+The repository now contains the full installable package, the upstream
+Apache-2.0 license, original file digests, the exact patch, and repeatable tests.
+Build from the repository root:
 
 ```bash
-git clone https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers.git stmq-fibaro-edge
-cd stmq-fibaro-edge
-git checkout --detach 19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c
-git apply --check --unidiff-zero /absolute/path/to/st-mq/docs/smartthings/fibaro-temperature-reports.patch
-git apply --unidiff-zero /absolute/path/to/st-mq/docs/smartthings/fibaro-temperature-reports.patch
-git diff --check
-git diff --stat
+python3 integrations/smartthings/fibaro-temperature/tests/verify_source.py
+smartthings edge:drivers:package \
+  --build-only /tmp/stmq-fibaro-temperature-reports.zip \
+  integrations/smartthings/fibaro-temperature/driver
+sha256sum /tmp/stmq-fibaro-temperature-reports.zip
 ```
 
-The patch was checked against that exact upstream source. Lua mock checks passed
-for duplicate and changed values, Celsius/Fahrenheit units, endpoint routing,
-invalid values and the continued presence of the original wake-up and added
-handlers. **It has not been installed or tested on a hub.** Packaging and driver
-assignment remain a separate step requiring the physical verification above,
-including the normal smoke self-test and notifications. Keep the stock driver
-available for rollback. This patch preserves genuine reports; it does not alter
-their frequency or make parameter 20 an unconditional heartbeat.
+SmartThings CLI **2.1.2** built the package successfully. The uploaded ZIP has
+SHA-256 `8ae4eb570e6e61743d5cb105d735f9a742359fb2da39360c3fd3312830eff082`.
+All 31 vendored upstream files and the license passed the reverse-patch/hash
+check; the archive matches the 26 deployed files (the CLI excludes upstream
+tests). The 21 Lua behavior assertions passed for duplicate/changed values,
+Celsius/Fahrenheit, endpoints, invalid input, fingerprint selection, and the
+original added/wake-up behavior. These use API stubs; the full SmartThings Lua
+SDK tests have not run. Actual hub checks are recorded below. The
+[package README](../integrations/smartthings/fibaro-temperature/README.md)
+documents source reconstruction and the limits of those checks. The driver
+preserves genuine reports; it does not alter their frequency or make parameter
+20 an unconditional heartbeat.
+
+## Bedroom driver installation and rollback
+
+On 2026-09-13, the custom package was uploaded, assigned to a private developer
+channel, and installed on the enrolled hub. Hub readback matched the uploaded
+driver identifier and exact version, and device readback confirmed the bedroom
+detector uses that driver. The other detectors' assignments and the bedroom
+preferences were unchanged. The original stock driver remains installed for
+rollback. No st-mq restart, hub restart, or re-pairing was performed.
+Readback also confirmed the Fibaro fingerprint match, local driver execution,
+current smoke `clear`, and enabled MQTT publishing to the bedroom topic used by
+st-mq. A cached smoke state does not verify the detector's physical self-test.
+A manual B-button wake-up was traced from the received Z-Wave temperature
+report through a `state_change=true` capability event to its matching
+non-retained MQTT arrival. The value equaled the pre-install temperature,
+confirming fresh unchanged-value forwarding through the installed Rule and
+virtual publisher. A second manual report is still pending. Physical smoke
+self-test/audible result, alarm notifications, and the automatic reporting
+interval also remain **pending**; this manual check does not establish them.
+
+The installation archive is outside Git:
+
+```text
+~/.config/st-mq/smartthings/bedroom-driver-2026-09-13/
+```
+
+Directories use `0700` and files `0600`. Retain this directory with private
+configuration backups. It contains:
+
+- `target.json`: the bedroom physical and MQTT device mapping, hub, and original
+  stock driver; use this mapping instead of selecting devices by list position.
+- `driver-uploaded.json` and `channel-created.json`: cloud driver/version and
+  private channel identities required for reinstalling the same package.
+- `installed-package.zip` and `package-validation.json`: the exact uploaded
+  artifact and validation record.
+- `before-preferences.json`, `after-preferences.json`, `after-installed.json`,
+  and `installation-status.json`: settings and installation/readback evidence.
+- `runtime-verification.json`, `driver-logcat.log`, and
+  `mqtt-observations.jsonl`: private report-correlation evidence and raw captures.
+
+Reinstallation uses the existing cloud driver and channel; it does not require
+uploading another package. Keep the stock driver installed on the hub. To roll
+back, switch the bedroom device to `target.json`'s `oldDriverId`, verify the
+assignment, and compare preferences. Leave the temperature forwarding Rule
+installed; restoring the old driver does not require restoring duplicate-value
+filtering in the Rule.
+
+Use the following snippet from the repository root to reinstall the archived
+version. Change `reinstall` to `rollback` on its first line to restore the stock
+driver. It reads identifiers from the archive and directs every CLI response
+and error to a new private directory. It verifies the hub version before
+switching and then checks device assignment and preferences. These operations
+can be asynchronous; a pending readback is not confirmation of success.
+
+```bash
+STMQ_DRIVER_ACTION=reinstall python3 - <<'PY_DRIVER'
+import json
+import os
+from pathlib import Path
+import subprocess
+import time
+
+os.umask(0o077)
+private = Path.home() / '.config/st-mq/smartthings/bedroom-driver-2026-09-13'
+action = os.environ['STMQ_DRIVER_ACTION']
+assert action in ('reinstall', 'rollback')
+run_dir = private / ('maintenance-' + str(time.time_ns()))
+run_dir.mkdir(mode=0o700)
+
+def read(path):
+    return json.loads(path.read_text())
+
+def cli(step, args, as_json=False):
+    result = run_dir / (step + '.json' if as_json else step + '.log')
+    errors = run_dir / (step + '.errors.log')
+    with result.open('w') as output, errors.open('w') as error:
+        completed = subprocess.run(
+            ['smartthings', *args, *(['--json'] if as_json else [])],
+            stdout=output, stderr=error, check=False,
+        )
+    if completed.returncode:
+        raise SystemExit('Step failed: ' + step + '; inspect ' + str(errors))
+    return read(result) if as_json else None
+
+target = read(private / 'target.json')
+uploaded = read(private / 'driver-uploaded.json')
+channel_id = read(private / 'channel-created.json')['channelId']
+device_id, hub_id = target['deviceId'], target['hubId']
+driver_id = uploaded['driverId'] if action == 'reinstall' else target['oldDriverId']
+preferences = cli('before-preferences', ['devices:preferences', device_id], True)
+if action == 'reinstall':
+    cli('assign', ['edge:channels:assign', driver_id, uploaded['version'], '--channel', channel_id])
+    cli('install', ['edge:drivers:install', driver_id, '--hub', hub_id, '--channel', channel_id])
+for attempt in range(12):
+    installed = cli('installed-' + str(attempt), ['edge:drivers:installed', '--hub', hub_id], True)
+    matches = [item for item in installed if item['driverId'] == driver_id]
+    if matches and (action == 'rollback' or matches[0]['version'] == uploaded['version']):
+        break
+    time.sleep(5)
+else:
+    raise SystemExit('Required driver/version not verified on hub; no switch attempted')
+cli('switch', ['edge:drivers:switch', device_id, '--hub', hub_id, '--driver', driver_id])
+for attempt in range(12):
+    after = cli('after-device-' + str(attempt), ['devices', device_id], True)
+    if after['zwave']['driverId'] == driver_id:
+        break
+    time.sleep(5)
+else:
+    raise SystemExit('Device assignment pending; inspect private responses')
+after_preferences = cli('after-preferences', ['devices:preferences', device_id], True)
+if after_preferences != preferences:
+    raise SystemExit('Driver assigned; preferences differ. Inspect private before/after records')
+print('Driver assignment verified; preferences unchanged. Private record:', run_dir)
+PY_DRIVER
+```
+
+For a **fresh installation**, validate and build the source first, then follow
+these steps using the existing SmartThings CLI login. Keep all requests,
+responses, errors, and the selected device/hub/driver/channel identifiers in a
+new private archive (`0700`, files `0600`). Capture commands with the `cli` helper
+above or equivalent private stdout/stderr redirection; the identifiers below
+are placeholders. Preserve the original bedroom archive.
+
+1. Privately inspect `smartthings devices --json`, select the intended bedroom
+   detector, and save its physical/MQTT mapping, hub, current stock driver, and
+   preferences as `target.json` and `before-preferences.json`. Preserve the stock
+   driver on the hub for rollback.
+2. Upload with `smartthings edge:drivers:package --upload <built-zip> --json`.
+   Save the response as `driver-uploaded.json` and retain the exact ZIP as
+   `installed-package.zip` with its SHA-256 in `package-validation.json`.
+3. Create a channel with `smartthings edge:channels:create --input <private-channel-request.json> --json`
+   and save `channel-created.json`. The request uses the following public fields;
+   `termsOfServiceUrl` is required:
+
+   ```json
+   {
+     "name": "ST-MQ private drivers",
+     "description": "Private household drivers maintained with st-mq",
+     "type": "DRIVER",
+     "termsOfServiceUrl": "https://www.apache.org/licenses/LICENSE-2.0"
+   }
+   ```
+
+4. Assign the exact uploaded revision using
+   `smartthings edge:channels:assign <driver-id> <driver-version> --channel <channel-id>`,
+   then enroll the hub using `smartthings edge:channels:enroll <hub-id> --channel <channel-id>`.
+5. Install using `smartthings edge:drivers:install <driver-id> --hub <hub-id> --channel <channel-id>`.
+   Read `smartthings edge:drivers:installed --hub <hub-id> --json` and confirm
+   both the driver identifier and exact version before assigning the detector.
+6. Switch only the selected detector with
+   `smartthings edge:drivers:switch <device-id> --hub <hub-id> --driver <driver-id>`.
+   Read the device back and verify its `zwave.driverId`, compare its preferences,
+   and confirm other detector assignments are unchanged. Retain the readbacks.
+
+Reinstallation assumes the saved channel and its hub enrollment still exist.
+If enrollment was removed, re-enroll with the step 4 command using the archived
+identifiers. If an operation fails, inspect its private error file and resume
+from saved identities rather than duplicating uploads or channels. Renew CLI
+authentication normally if needed. The
+[SmartThings CLI reference](https://github.com/SmartThingsCommunity/smartthings-cli)
+documents these driver and channel operations.
+
+After assignment, physically wake the bedroom detector if needed for pending
+configuration or an immediate genuine temperature request. The
+[FGSD-002 manual](https://manuals.fibaro.com/content/manuals/en/FGSD-002/FGSD-002-EN-A-v1.1.pdf)
+specifies a single B-button click for manual wake-up. Follow its separate
+self-test procedure and confirm the audible result and expected SmartThings
+smoke notifications. Preserve the stock
+driver until those checks succeed, and complete the cadence verification below
+before relying on uninterrupted temperature coverage.
 
 ## Private backup and restoration
 
