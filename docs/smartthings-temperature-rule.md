@@ -9,10 +9,12 @@ pairs and the `partyvoice23922.vtempset.setvTemp` command were preserved.
 
 **The Rule replacement is installed, and the bedroom smoke detector now uses the
 custom temperature-report driver.** Hub and device readback verified the exact
-uploaded version and bedroom assignment. A manual wake-up produced a genuine
-report equal to the pre-install value, a forced capability event, and a matching
-non-retained MQTT arrival. Physical self-test results and an automatic 15-minute
-cadence remain pending. A reporting-interval preference alone does not establish that cadence.
+uploaded version and bedroom assignment. Two manual wake-ups produced equal
+genuine temperature reports, two forced capability events, and two matching
+non-retained MQTT arrivals. The owner confirmed a normal audible self-test,
+but no SmartThings notification appeared and no alarm/test report was captured.
+Remote alarm delivery and an automatic 15-minute cadence remain unverified.
+A reporting-interval preference alone does not establish that cadence.
 The earlier Rule replacement did not change driver assignments or preferences;
 the later driver installation is a separate operation.
 
@@ -125,13 +127,18 @@ rollback. No st-mq restart, hub restart, or re-pairing was performed.
 Readback also confirmed the Fibaro fingerprint match, local driver execution,
 current smoke `clear`, and enabled MQTT publishing to the bedroom topic used by
 st-mq. A cached smoke state does not verify the detector's physical self-test.
-A manual B-button wake-up was traced from the received Z-Wave temperature
-report through a `state_change=true` capability event to its matching
-non-retained MQTT arrival. The value equaled the pre-install temperature,
-confirming fresh unchanged-value forwarding through the installed Rule and
-virtual publisher. A second manual report is still pending. Physical smoke
-self-test/audible result, alarm notifications, and the automatic reporting
-interval also remain **pending**; this manual check does not establish them.
+Two manual B-button wake-ups produced consecutive equal Z-Wave temperature
+reports. Each was traced through its own `state_change=true` capability event
+to one matching non-retained MQTT arrival, within ten seconds of the physical
+report. The first value also equaled the pre-install temperature. This verifies
+fresh unchanged-value forwarding through the installed driver, Rule, and
+virtual publisher. The owner then confirmed that the normal smoke self-test
+sounded correctly, but no SmartThings notification appeared. The private hub
+capture contained no corresponding smoke/alarm test report or alarm capability
+event, so **remote alarm delivery remains unverified**. The temperature override
+does not change smoke handlers, and this observation does not establish its
+cause. Verify that path before extending the rollout. The automatic reporting
+interval also remains **unverified**; manual wake-ups do not establish it.
 
 The installation archive is outside Git:
 
