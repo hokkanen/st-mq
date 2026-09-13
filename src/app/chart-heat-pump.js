@@ -1,7 +1,8 @@
+import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 
 export const HEAT_PUMP_CONFIG_EVENT = 'heat-pump-power-config';
-const AGE = 5 * 60_000, HOUR = 3_600_000;
+const AGE = H66_MAX_AGE_MS, HOUR = 3_600_000;
 const SIGNALS = ['compressor_active', 'auxiliary_output'];
 const CONFIG_KEYS = ['heatPumpCompressorKw', 'circulationKw', 'auxRatedKw'];
 const parse = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };

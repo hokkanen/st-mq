@@ -1,3 +1,4 @@
+import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import moment from 'moment-timezone';
 import { validateContract } from '../domain/prices.js';
 import { assembleOutlook } from './contract.js';
@@ -557,7 +558,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const envelopes = Object.fromEntries(names.map(name => [name, projecting
     ? new RelatedStepSampler(range.from, range.to, _relatedTimes) : new Envelope(range.from, range.to, points)]));
   if (_priceProjection) for (const envelope of Object.values(envelopes)) envelope.mask = _priceProjection.marketIntervals;
-  const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) ? Infinity : name === 'auxiliary_power' ? 5 * 60_000 : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation'].includes(name), detail,
+  const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) ? Infinity : name === 'auxiliary_power' ? H66_MAX_AGE_MS : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation'].includes(name), detail,
     name.endsWith('_price') || leftNames.includes(name) && left !== 'integral' && name !== 'model_indoor_temperature' && !ENERGY_SIGNALS.includes(name))]));
   // Following samples close clipped scalar segments, including a viewport
   // narrower than their source cadence. Context never crosses selected dates.
@@ -646,10 +647,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (previousTelemetryAt === null || until <= previousTelemetryAt) return;
     const compressor = telemetry.get('compressor_active'), route = telemetry.get('dhw_routing'), mode = telemetry.get('operating_mode');
     if (compressor?.value === 1 && [0, 1].includes(route?.value)) {
-      const end = Math.min(until, compressor.at + 5 * 60_000, route.at + 5 * 60_000);
+      const end = Math.min(until, compressor.at + H66_MAX_AGE_MS, route.at + H66_MAX_AGE_MS);
       shading[route.value === 1 ? 'compressorDhw' : 'compressorSpace'].add(previousTelemetryAt, end);
     }
-    if (modeEnvelopes[mode?.value]) modeEnvelopes[mode.value].add(previousTelemetryAt, Math.min(until, mode.at + 5 * 60_000));
+    if (modeEnvelopes[mode?.value]) modeEnvelopes[mode.value].add(previousTelemetryAt, Math.min(until, mode.at + H66_MAX_AGE_MS));
     const phase = telemetry.get('controller_phase');
     if (phase?.value === 2) shading.heatOff.add(previousTelemetryAt, Math.min(until, phase.until));
   };

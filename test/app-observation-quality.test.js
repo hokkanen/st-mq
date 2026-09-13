@@ -59,20 +59,22 @@ test('offline startup restores all three indoor readings for the configured aver
 
 test('garage status projects the existing reading and source without exposing device data or creating history', t => {
   const { engine, store, setTime } = setup(t, { input: 'mqtt' });
-  assert.deepEqual(engine.tick().observations.garage, { value: null, stale: true });
+  assert.deepEqual(engine.tick().observations.garage, { value: null, stale: true,
+    ageMs: null, sourceTimeBasis: 'measurement', attentionAfterMs: 2 * 60 * MINUTE, availabilityReasons: ['missing-reading'] });
   const observation = reading({ signal: 'garage_temperature', value: 16, source: 'mqtt-temperature' });
   engine.ingest(observation);
   const recorded = store.observations().length;
-  const expected = { value: 16, observedAt: beginning, quality: [], source: 'mqtt-temperature', stale: false };
+  const expected = { value: 16, observedAt: beginning, quality: [], source: 'mqtt-temperature', stale: false,
+    ageMs: 0, sourceTimeBasis: 'measurement', attentionAfterMs: 2 * 60 * MINUTE, availabilityReasons: [] };
   assert.deepEqual(engine.status().observations.garage, expected);
   assert.deepEqual(engine.tick().observations.garage, expected);
   assert.equal(store.observations().length, recorded);
   setTime(beginning + 31 * MINUTE);
-  assert.deepEqual(engine.status().observations.garage, expected);
+  assert.deepEqual(engine.status().observations.garage, { ...expected, ageMs: 31 * MINUTE });
   setTime(beginning + 2 * 60 * MINUTE);
-  assert.deepEqual(engine.status().observations.garage, expected);
+  assert.deepEqual(engine.status().observations.garage, { ...expected, ageMs: 2 * 60 * MINUTE });
   setTime(beginning + 2 * 60 * MINUTE + 1);
-  assert.deepEqual(engine.status().observations.garage, { ...expected, needsAttention: true,
+  assert.deepEqual(engine.status().observations.garage, { ...expected, ageMs: 2 * 60 * MINUTE + 1, needsAttention: true,
     attentionReasons: ['old-reading'], held: true });
 });
 

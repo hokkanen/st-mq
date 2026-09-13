@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66HomeSummary } from '../chart/learning-status.js';
+import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary } from '../chart/learning-status.js';
 
 test('learning explanations distinguish missing evidence, genuine zero and unfavorable completed cycles', () => {
   const display = learningDisplay({ metrics: { profit: { value: -1.5, count: 2 }, auxProfit: { value: 0, count: 0 },
@@ -143,10 +143,57 @@ test('home H66 summary combines current DHW bounds without treating tariff reque
   assert.equal(rows.aux.value, '0 %');
   assert.equal(rows.alarm.value, 'No active alarm');
   status.h66.readings['0208'].stale = true;
-  assert.equal(h66HomeSummary(status).find(row => row.key === 'dhw').value, 'Unavailable · stale readback');
+  assert.match(h66HomeSummary(status).find(row => row.key === 'dhw').value, /Unavailable · Stop setting: the readback timestamp is missing or invalid/);
   status.h66.connected = false;
   assert.equal(h66HomeSummary(status).find(row => row.key === 'mode').available, false);
-  assert.equal(h66HomeSummary(status).find(row => row.key === 'mode').value, 'Unavailable · H66 disconnected');
+  assert.match(h66HomeSummary(status).find(row => row.key === 'mode').value, /Unavailable · H66 disconnected/);
+});
+
+test('H66 age details use the exact limit and distinguish quiet telemetry from MQTT disconnection', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z'), limit = 5 * 60_000;
+  const h66 = { connected: true, brokerConnected: true, maxAgeMs: limit };
+  const reading = { value: 21, observedAt: now - limit, receivedAt: now - limit, available: true, usableForControl: true,
+    timeBasis: 'mqtt-received' };
+  assert.equal(h66ReadingStatus(h66, reading, { now }).usable, true);
+  assert.match(h66ReadingStatus(h66, reading, { now }).detail, /Age 5 min; limit 5 min/);
+  const expired = h66ReadingStatus({ ...h66, connected: false, lastPublicationAt: reading.receivedAt },
+    { ...reading, stale: true, available: false }, { now: now + 1 });
+  assert.equal(expired.usable, false);
+  assert.match(expired.detail, /readback is 5 min 1 s old; limit 5 min/);
+  assert.match(expired.detail, /MQTT receipt time/);
+  assert.doesNotMatch(expired.detail, /disconnected/);
+  const disconnected = h66ReadingStatus({ ...h66, connected: false, brokerConnected: false }, reading, { now });
+  assert.match(disconnected.detail, /H66 disconnected/);
+});
+
+test('H66 invalid, retained, future and reconnect readbacks expose safe, distinct reasons', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z');
+  const h66 = { connected: true, brokerConnected: true };
+  const reading = { value: 21, observedAt: now, receivedAt: now, available: false, usableForControl: false, stale: true };
+  assert.match(h66ReadingStatus(h66, { ...reading, retained: true }, { now }).detail, /retained; a live report is required/);
+  assert.match(h66ReadingStatus(h66, { ...reading, value: null, issues: ['invalid-value'] }, { now }).detail,
+    /outside the accepted register range/);
+  assert.match(h66ReadingStatus(h66, { ...reading, value: null, issues: ['invalid-payload'] }, { now }).detail,
+    /does not contain a valid numeric value/);
+  assert.match(h66ReadingStatus(h66, { ...reading, unavailableReasons: ['awaiting-live-report'] }, { now }).detail,
+    /waiting for a live report since reconnection/);
+  const future = h66ReadingStatus(h66, { ...reading, observedAt: now + 1000, sourceAt: now + 1000, timeBasis: 'source-measured' }, { now });
+  assert.match(future.detail, /measurement time is 1 s in the future/);
+  assert.match(future.detail, /Age uses the source measurement time/);
+  const unknown = h66ReadingStatus(h66, { ...reading, issues: ['invented-private-value'] }, { now });
+  assert.match(unknown.detail, /without reporting a specific reason/);
+  assert.doesNotMatch(unknown.detail, /invented-private-value/);
+});
+
+test('DHW range reports the failing bound and its actual reason', () => {
+  const now = Date.parse('2026-01-01T12:00:00Z');
+  const valid = { value: 50, observedAt: now, receivedAt: now, available: true, usableForControl: true };
+  const status = { now, h66: { connected: true, brokerConnected: true,
+    readings: { '0212': { ...valid, value: 40, available: false, unavailableReasons: ['awaiting-live-report'] }, '0208': valid } } };
+  const row = h66HomeSummary(status).find(row => row.key === 'dhw');
+  assert.equal(row.available, false);
+  assert.match(row.value, /Start setting: waiting for a live report since reconnection/);
+  assert.doesNotMatch(row.value, /Stop setting/);
 });
 
 test('missing, stale and invalid H66 summary readings remain unknown', () => {

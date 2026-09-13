@@ -6,9 +6,11 @@ import { createChartService } from './chart-service.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
 import { sensorChangesView } from './sensor-changes.js';
-import { indoorAverage, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { indoorAverage, HELD_TEMPERATURE_SIGNALS } from '../domain/indoor-sensors.js';
 import { sensorBoundaries } from './sensor-inputs.js';
-import { lastIndoorReading, indoorReadingAttention } from './indoor-readings.js';
+import { lastIndoorReading, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
+import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAttempt,
+  temperatureBoundaryStatus } from './temperature-status.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -25,30 +27,27 @@ function recordedInput(store) {
 
 function observed(snapshot, signal, now) {
   const store = snapshot?.store;
+  const knownAt = Math.min(now, snapshot?.publication.sourceAt ?? now);
   if (store && HELD_TEMPERATURE_SIGNALS.includes(signal)) {
     // A copied database can contain observations newer than its published
     // boundary. Select only evidence available at that boundary, then age the
     // displayed reading without advancing its measurement timestamp.
-    const row = lastIndoorReading(store, { signal, at: Math.min(now, snapshot.publication.sourceAt), input: snapshot.input });
+    const row = lastIndoorReading(store, { signal, at: knownAt, input: snapshot.input });
     if (row) {
       const current = indoorReadingAttention(row, now);
       const attentionReasons = [...new Set([...row.attentionReasons, ...current.attentionReasons])];
       const needsAttention = attentionReasons.length > 0;
+      const report = indoorReportStatus(row, now, { attentionReasons });
       return { value: row.value, observedAt: row.sourceTime, receivedAt: row.receivedAt, source: row.source,
         quality: row.quality.filter(flag => flag !== 'stale'), ageMs: now - row.sourceTime, recorded: true, stale: false,
-        ...(needsAttention ? { needsAttention, attentionReasons, held: true } : {}) };
+        ...(needsAttention ? { needsAttention, attentionReasons, held: true } : {}), ...report,
+        ...indoorStatusMetadata(row, now, { store, knownAt, stale: report.stale ?? false }) };
     }
-    return null;
+    const latest = recordedTemperatureAttempt(store, signal, knownAt, snapshot.input);
+    return latest ? { value: null, observedAt: latest.sourceTime, source: latest.source, quality: latest.quality,
+      recorded: true, stale: true, ...indoorStatusMetadata(latest, now, { stale: true }) } : null;
   }
-  const row = store?.latestObservation(signal);
-  if (!row) return null;
-  const observedAt = row.sourceTime ?? null;
-  const quality = row.quality ?? [];
-  const acceptable = quality.every(flag => ['good', 'simulated', 'historical', 'converted_fahrenheit'].includes(flag)
-    || flag === 'estimated' && row.source === 'openmeteo' && signal === 'outdoor_temperature');
-  return { value: row.value, observedAt, receivedAt: row.receivedAt, source: row.source,
-    quality, ageMs: Number.isFinite(observedAt) ? Math.max(0, now - observedAt) : null, recorded: true,
-    stale: !Number.isFinite(observedAt) || observedAt > now || now - observedAt > 30 * 60_000 || !acceptable };
+  return recordedOutdoorObservation(store, now, { knownAt, input: snapshot?.input });
 }
 
 /** A viewer never constructs an Engine. Each request leases one immutable,
@@ -119,16 +118,11 @@ export async function startReplica({ config, clock = Date.now,
       ['bedroom', 'bedroom_temperature'], ['outdoor', 'outdoor_temperature'], ['garage', 'garage_temperature']]
       .map(([name, signal]) => {
         const reading = observed(snapshot, signal, now), changedAt = boundaries[signal];
-        if (reading && Number.isFinite(changedAt)
-          && (now < changedAt + SENSOR_SETTLING_MS || reading.observedAt === null || reading.observedAt < changedAt))
-          Object.assign(reading, { stale: true, settling: now < changedAt + SENSOR_SETTLING_MS });
-        return [name, reading];
+        return [name, temperatureBoundaryStatus(reading, changedAt, now)];
       }));
     observations.indoor = indoorAverage({ indoor_temperature: observations.upstairs,
       downstairs_temperature: observations.downstairs, bedroom_temperature: observations.bedroom }, learningConfig);
-    if (Number.isFinite(checkpoint?.measurementEpochAt) && (now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS
-      || observations.indoor.observedAt < checkpoint.measurementEpochAt))
-      Object.assign(observations.indoor, { value: null, stale: true, settling: now < checkpoint.measurementEpochAt + SENSOR_SETTLING_MS });
+    observations.indoor = temperatureBoundaryStatus(observations.indoor, checkpoint?.measurementEpochAt, now, { clearValue: true });
     return { role: 'replica', instance: { role: 'replica', readOnly: true }, readOnly: true,
       mode: 'monitoring', liveWrites: false, now, input: snapshot?.input ?? 'offline',
       replication: { state, generation: publication?.generation ?? null,

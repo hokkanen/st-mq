@@ -1,5 +1,7 @@
 import { operationModes } from './history-model.js';
 import { MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
+import { H66_MAX_AGE_MS } from '../src/domain/reading-freshness.js';
+import { durationText, qualityReasonText } from './reading-status.js';
 
 const finite = Number.isFinite;
 const number = (value, digits = 2) => finite(value) ? value.toFixed(digits) : '—';
@@ -161,22 +163,71 @@ export const h66Registers = {
   '0233': { label: 'Tariff reduction setting', unit: '°C' },
 };
 
+/** Readback validity comes from the controller. Its MQTT connection and the
+ * recency of its publications are separate facts, with the same age boundary. */
+export function h66ReadingStatus(h66 = {}, reading, { now = Date.now() } = {}) {
+  const maxAgeMs = finite(h66.maxAgeMs) && h66.maxAgeMs > 0 ? Math.min(h66.maxAgeMs, H66_MAX_AGE_MS) : H66_MAX_AGE_MS;
+  const value = reading?.observedAt ?? reading?.receivedAt ?? reading?.at;
+  const at = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : null;
+  const age = finite(at) && finite(now) ? now - at : null;
+  const usable = h66.connected === true && finite(reading?.value) && reading.available === true
+    && !reading.stale && reading.usableForControl !== false && (age === null || age >= 0 && age <= maxAgeMs);
+  const receiptTime = reading?.timeBasis === 'mqtt-received' || reading?.sourceAt == null && reading?.sensorMeasuredAt == null;
+  const timeBasis = receiptTime ? 'Age uses MQTT receipt time; the sensor measurement time is unknown.'
+    : 'Age uses the source measurement time.';
+  if (usable) return { usable: true, reason: null, detail: `Current H66 device readback.${age === null ? ''
+    : ` Age ${durationText(age)}; limit ${durationText(maxAgeMs)}.`} ${timeBasis}` };
+  const reasons = [];
+  if (h66.enabled === false) reasons.push('H66 is disabled');
+  if (h66.brokerConnected === false || h66.brokerConnected == null && h66.connected !== true) reasons.push('H66 disconnected');
+  const issues = [...(Array.isArray(reading?.issues) ? reading.issues : []),
+    ...(Array.isArray(reading?.unavailableReasons) ? reading.unavailableReasons : [])];
+  if (reading?.retained === true && !issues.includes('retained')) issues.push('retained');
+  if (reading?.duplicate === true && !issues.includes('duplicate')) issues.push('duplicate');
+  for (const issue of issues) {
+    const text = issue === 'invalid-value' ? 'the value is outside the accepted register range' : qualityReasonText(issue);
+    if (text) reasons.push(text);
+  }
+  if (!reading) reasons.push('no readback has been received');
+  else {
+    if (!finite(reading.value) && !issues.some(issue => ['invalid-payload', 'invalid-value'].includes(issue)))
+      reasons.push('no valid numeric value was received');
+    if (age === null) reasons.push('the readback timestamp is missing or invalid');
+    else if (age < 0) reasons.push(`the ${receiptTime ? 'receipt' : 'measurement'} time is ${durationText(-age)} in the future`);
+    else if (age > maxAgeMs) reasons.push(`the readback is ${durationText(age)} old; limit ${durationText(maxAgeMs)}`);
+  }
+  if (!reasons.length && h66.brokerConnected === true && h66.connected !== true) {
+    const publicationAge = finite(h66.lastPublicationAt) ? now - h66.lastPublicationAt : null;
+    reasons.push(publicationAge !== null && publicationAge > maxAgeMs
+      ? `the last live H66 publication is ${durationText(publicationAge)} old; limit ${durationText(maxAgeMs)}`
+      : 'waiting for a live H66 publication');
+  }
+  if (!reasons.length) reasons.push('H66 rejected this readback without reporting a specific reason');
+  const reason = [...new Set(reasons)].join('; ');
+  return { usable: false, reason, detail: `Unavailable: ${reason}. ${timeBasis}` };
+}
+
 /** Compact readbacks must never turn a stale value or sent request into a
  * current device confirmation. The tariff relay has no H66 status register. */
 export function h66HomeSummary(status = {}) {
   const h66 = status.h66 ?? {}, readings = h66.readings ?? {};
-  const unavailable = reading => h66.connected !== true ? 'Unavailable · H66 disconnected'
-    : reading?.stale ? 'Unavailable · stale readback' : 'Unavailable · no current readback';
-  const current = register => h66.connected === true && finite(readings[register]?.value)
-    && readings[register].available === true && !readings[register].stale && readings[register].usableForControl !== false;
-  const readingRow = (key, title, register) => ({ key, title, available: current(register),
-    value: current(register) ? h66ReadingValue(register, readings[register]) : unavailable(readings[register]),
-    detail: 'Current H66 device readback.' });
+  const describe = reading => h66ReadingStatus(h66, reading, { now: status.now ?? Date.now() });
+  const unavailable = reading => `Unavailable · ${describe(reading).reason}`;
+  const current = register => describe(readings[register]).usable;
+  const readingRow = (key, title, register) => {
+    const display = describe(readings[register]);
+    return { key, title, available: display.usable,
+      value: display.usable ? h66ReadingValue(register, readings[register]) : unavailable(readings[register]), detail: display.detail };
+  };
   const start = readings['0212'], stop = readings['0208'], rangeAvailable = current('0212') && current('0208');
+  const rangeReasons = ['0212', '0208'].filter(register => !current(register)).map(register =>
+    `${register === '0212' ? 'Start' : 'Stop'} setting: ${describe(readings[register]).reason}`);
   const rows = [readingRow('mode', 'Heat pump mode', '2201'), readingRow('room', 'Heat pump ROOM setting', '0203'),
     { key: 'dhw', title: 'DHW target range', available: rangeAvailable,
       value: rangeAvailable ? `${number(start.value, Number.isInteger(start.value) ? 0 : 1)}–${number(stop.value, Number.isInteger(stop.value) ? 0 : 1)} °C`
-        : unavailable(start?.stale ? start : stop), detail: 'Current H66 start–stop temperature settings for domestic hot water.' }];
+        : `Unavailable · ${rangeReasons.join('; ')}`, detail: rangeAvailable
+          ? `Current H66 start–stop temperature settings for domestic hot water. ${describe(start).detail} ${describe(stop).detail}`
+          : rangeReasons.join('. ') }];
   const actual = status.observations?.actual;
   const knownMode = ['normal', 'reduction'].includes(actual?.mode);
   const confirmed = knownMode && actual.verified === true && actual.stale !== true;

@@ -73,6 +73,50 @@ A sensor that has never supplied a usable reading still makes its
 configured average unavailable; sensor-change boundaries also require a genuine
 reading from the new measurement period.
 
+### Availability messages and clocks
+
+The temperature summary and **Connections & settings → Main temperatures** use
+the same availability explanation. An expired reading shows its elapsed age and
+the applicable limit. A missed periodic report shows the last genuine report time
+when known, interval plus grace, deadline and overdue duration. This is separate
+from the timestamp of an unchanged saved temperature. An unavailable indoor
+average names the rooms preventing its use. Invalid publications, missing times,
+retained packets, disconnections and sensor-change boundaries have specific
+reasons; an older record without diagnostic evidence says that the reason was
+not recorded instead of guessing.
+
+| Input | Availability rule | Warning or learning effect |
+| --- | --- | --- |
+| Periodic indoor MQTT | Report interval plus grace, normally 17 minutes; the exact deadline is still allowed | After the deadline, or on an explicit source failure, control falls back. Learning rejects a whole window containing a report gap. |
+| Indoor without a periodic contract; Garage | Keep the last genuine valid value until replaced or excluded by a sensor change | Age above two hours requests attention. Age alone does not prevent using an indoor member for control or learning. Garage is history only. |
+| H66 outdoor and equipment | Five-minute source validity, shared by live selection, recording, chart reconstruction and learning | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
+| FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
+
+H66 ordinarily supplies no sensor measurement timestamp. Messages explicitly
+label when their age uses MQTT receipt time. A broker connection, successful HTTP
+download or unrelated MQTT message never renews a measurement's age. H66 readback
+details distinguish an actual broker disconnection from quiet telemetry and from
+waiting for a new live publication after reconnecting.
+
+Provider download diagnostics are a separate operational view: current-source
+warnings start at 30 minutes, and temperature-source warnings at two hours.
+Those thresholds are labelled as attention thresholds, not control or learning
+permission. Idle Charger 1 age alone remains informational. Tesla diagnostics
+identify the expired vehicle-health or charging-evidence clock and configured
+limit. Recording details distinguish current source/report validity from the
+last acquisition outcome and from completed historical energy intervals.
+
+Replicas apply the same temperature source limits and report policy to evidence
+available at the published snapshot boundary. When a compact coverage span proves
+availability at that boundary but not the precise most recent report timestamp,
+the display preserves that uncertainty. Synchronization age is reported
+separately from sensor age. Historical model tooltips evaluate age at the saved
+window, not the current time.
+
+These diagnostic changes preserve the v8 committed learning inputs, algorithm,
+seed and replay interpretation. They do not reinterpret archived model versions
+or change the meaning of imported CSV temperatures.
+
 The committed journal saves each contributing endpoint and weight, observation
 lineage, the resolved average and its configuration. This remains one thermal
 model, with separate learned comfort references for participating rooms. During

@@ -435,7 +435,7 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
           const description = describeProvider('easee', health, { now, formatTime: at => String(at) });
           assert.equal(description.attention, false);
           assert.equal(description.state, 'Available');
-          assert.match(description.detail, /Charger 1 current readings have source timestamps older than/);
+          assert.match(description.detail, /Charger 1 current readings: oldest source reading is/);
           assert.ok(description.detail.startsWith(`Last successful download ${now}.`));
           assert.equal(description.detail.match(/successful download/g).length, 1);
           assert.doesNotMatch(description.detail, /different times/);
@@ -487,7 +487,7 @@ test('old Easee voltages do not need attention or contaminate current source age
       assert.equal(health.nextAttemptAt, now + 5 * MINUTE);
       const display = describeProvider('easee', health, { now, formatTime: String });
       assert.equal(display.attention, stale);
-      if (stale) assert.match(display.detail, /Property current readings have source timestamps older than 0.5 hours\./);
+      if (stale) assert.match(display.detail, /Property current readings: oldest source reading is 30 min old\. Attention threshold 30 min/);
       else assert.doesNotMatch(display.detail, /old|voltage/);
     }
   } finally { await providers.close(); }

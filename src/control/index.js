@@ -1,3 +1,4 @@
+import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { validateModel, hasValidatedEnergy, goodQuality } from './learning.js';
 export { emptyCheckpoint, restoreCheckpoint, updateLearning, inferComfortReference, fitModel, validateModel, hasValidatedEnergy, CHECKPOINT_VERSION, MAX_SAMPLES } from './learning.js';
 
@@ -154,7 +155,7 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   const away = settings.occupancy?.mode === 'away' && !(finite(returnAt) && returnAt <= timestamp);
   const occupancy = away ? settings.occupancy : { mode: 'occupied' };
   const observationAge = finite(settings.maxObservationAgeMs) && settings.maxObservationAgeMs > 0
-    ? Math.min(settings.maxObservationAgeMs, HOUR) : 30 * 60_000;
+    ? Math.min(settings.maxObservationAgeMs, HOUR) : OUTDOOR_MAX_AGE_MS;
   const indoor = observations.indoor, outdoor = observations.outdoor;
   const reasons = [];
   let action = 'normal', plan = null;

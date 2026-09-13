@@ -1,3 +1,4 @@
+import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../domain/reading-freshness.js';
 import { join } from 'node:path';
 import { createHttp } from './http.js';
 import { fileTokenStore } from './token-store.js';
@@ -34,8 +35,8 @@ const savedStaleSourceTimes = times => Object.fromEntries(Object.entries(times ?
 function observationQuality(name, rows, now) {
   const staleSourceTimes = {};
   const issues = rows.flatMap(row => {
-    const maximumAge = /_current_l[123]$/.test(row.signal) ? 30 * MINUTE
-      : /_temperature$/.test(row.signal) ? 120 * MINUTE : null;
+    const maximumAge = /_current_l[123]$/.test(row.signal) ? PROVIDER_CURRENT_ATTENTION_MS
+      : /_temperature$/.test(row.signal) ? PROVIDER_TEMPERATURE_ATTENTION_MS : null;
     const stale = maximumAge === null ? row.quality.includes('stale')
       : validSourceTime(row.sourceTime) && now - row.sourceTime >= maximumAge;
     const flags = row.quality.filter(flag => !STALE_ISSUES.has(flag));

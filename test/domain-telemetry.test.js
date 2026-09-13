@@ -16,6 +16,13 @@ const verifiedRegisters = {
 };
 const make = options => createH66Decoder({ deviceId: 'fixture-device', verifiedRegisters, ...options });
 
+test('H66 decoder cannot extend recorded source validity through a longer transport age', () => {
+  const decoder = make({ maxAgeMs: 600_000 });
+  const reading = decoder.decode({ ...base, sourceAt: ms - 300_001 });
+  assert.equal(reading.freshness, 'stale');
+  assert.equal(reading.usableForControl, false);
+});
+
 test('read-only topics are scoped exactly and never interpret settings, commands or other devices', () => {
   const decoder = make();
   assert.equal(decoder.subscriptionTopic, 'fixture-device/HP/+');

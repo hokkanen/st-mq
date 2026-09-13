@@ -44,6 +44,64 @@ test('fresh unchanged samples compact coverage and maximum interval preserves a 
 
 const periodicReport={source:'mqtt-temperature',raw:{reportIntervalMs:15*MINUTE,reportGraceMs:2*MINUTE}};
 
+test('recording diagnostics expire report coverage without changing saved acquisition status or history',t=>{
+  const {store,put,recorder}=fixture(t);
+  put(20,1000,periodicReport);
+  put(20,1000+15*MINUTE,periodicReport);
+  put(20,1000+30*MINUTE,periodicReport);
+  const savedState=store.db.prepare('SELECT key,value FROM state ORDER BY key').all();
+  const savedCoverage=store.db.prepare('SELECT * FROM recorder_coverage').all();
+  const deadline=1000+47*MINUTE;
+  const fresh=recorder.status(deadline).parameters[0];
+  assert.equal(fresh.freshness.status,'fresh');
+  assert.equal(fresh.freshness.sourceObservedAt,1000+30*MINUTE);
+  assert.equal(fresh.freshness.savedValueAt,1000);
+  assert.equal(fresh.freshness.maxAgeMs,17*MINUTE);
+  assert.equal(fresh.freshness.reportIntervalMs,15*MINUTE);
+  assert.equal(fresh.freshness.reportGraceMs,2*MINUTE);
+  assert.equal(fresh.freshness.ageBasis,'periodic-report');
+  assert.equal(fresh.hour.averageIntervalMs,null,'One saved value still has no average saving interval');
+  const stale=recorder.status(deadline+1).parameters[0];
+  assert.equal(stale.status,'fresh','The recorded acquisition remains classified as fresh');
+  assert.equal(stale.freshness.status,'stale');
+  assert.deepEqual(stale.freshness.reasons,['missing-report']);
+  assert.equal(store.observations().length,1);
+  assert.deepEqual(store.db.prepare('SELECT key,value FROM state ORDER BY key').all(),savedState);
+  assert.deepEqual(store.db.prepare('SELECT * FROM recorder_coverage').all(),savedCoverage);
+  assert(!Object.hasOwn(stale.freshness,'device'));
+});
+
+test('recording diagnostics distinguish H66 expiry, held temperatures, and completed energy intervals',t=>{
+  const {put,recorder}=fixture(t,{maxIntervalMs:1000});
+  put(20,1000,{source:'husdata-h66',signal:'outdoor_temperature'});
+  assert.equal(recorder.status(1000+5*MINUTE).parameters[0].freshness.status,'fresh');
+  const stale=recorder.status(1001+5*MINUTE).parameters[0].freshness;
+  assert.equal(stale.status,'stale');assert.equal(stale.maxAgeMs,5*MINUTE);
+  assert.deepEqual(stale.reasons,['source-expired']);
+  put(20,1000);
+  const indoor=recorder.status(1001+2*HOUR).parameters.find(row=>row.signal==='indoor_temperature').freshness;
+  assert.equal(indoor.status,'held-attention');assert.equal(indoor.maxAgeMs,null);
+  assert.equal(indoor.attentionAfterMs,2*HOUR);
+  recorder.recordEnergy({source:'teslamate',device:'invented-car',prefix:'ev2',start:1000,end:2000,energies:[0.01],powers:[36]});
+  const energy=recorder.status(72*HOUR).parameters.find(row=>row.signal==='ev2_energy').freshness;
+  assert.equal(energy.status,'recorded-interval');assert.equal(energy.maxAgeMs,null);
+});
+
+test('recording diagnostic failure reasons are safe and distinguish time rollback from measurement age',t=>{
+  const {put,recorder}=fixture(t);
+  put(20,2000);
+  put(21,3000,{sourceTime:1000});
+  assert.deepEqual(recorder.status().parameters[0].freshness.reasons,['out-of-order-source-time']);
+  put(21,4000,{sourceTime:5000});
+  assert(recorder.status(6000).parameters[0].freshness.reasons.includes('source-time-after-receipt'));
+  recorder.recordFailure({source:'synthetic',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:7000,
+    quality:['mqtt-disconnected','invented-private-failure']});
+  const unavailable=recorder.status(7000).parameters[0].freshness;
+  assert.equal(unavailable.status,'failed');
+  assert.deepEqual(unavailable.reasons,['mqtt-disconnected']);
+  assert(!JSON.stringify(unavailable).includes('invented-private-failure'));
+});
+
 test('periodic temperatures save only exact changes while days of reports occupy one coverage span',t=>{
   const {store,put,recorder,setNow}=fixture(t,{maxIntervalMs:1000});
   const first=1000;

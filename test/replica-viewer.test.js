@@ -11,6 +11,7 @@ import { createChartService } from '../src/app/chart-service.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
+import { Recorder } from '../src/storage/recorder.js';
 
 const at = Date.parse('2026-01-15T12:00:00+02:00');
 const chartPath = '/api/chart?start=2026-01-15&end=2026-01-15&left=power';
@@ -222,10 +223,63 @@ test('replica cannot invent a first room contribution from post-publication or r
   const { request } = await viewer(t, directory, async () => publication, { clock: () => at + 3_600_000 });
   const observations = (await request('/api/status')).body.observations;
   assert.equal(observations.bedroom, null);
-  assert.equal(observations.garage, null);
+  assert.equal(observations.garage.value, null);
+  assert.equal(observations.garage.stale, true);
+  assert.deepEqual(observations.garage.availabilityReasons, ['retained']);
   assert.equal(observations.indoor.value, null);
   assert.equal(observations.indoor.stale, true);
   assert.equal(digest(publication.dbPath), publication.digest);
+});
+
+test('replica expires periodic room coverage at the report deadline while preserving the saved value time', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'periodic-room');
+  const store = new Store(publication.dbPath), recorder = new Recorder(store);
+  for (const minute of [-45, -30, -15]) recorder.record({ source: 'mqtt-temperature', device: 'synthetic-periodic-bedroom',
+    signal: 'bedroom_temperature', value: 20, unit: 'degC', sourceTime: at + minute * 60_000,
+    receivedAt: at + minute * 60_000, quality: [], raw: { reportIntervalMs: 15 * 60_000, reportGraceMs: 2 * 60_000 } });
+  store.setState('adaptive:mqtt', { learningConfiguration: { indoorSensorWeights: { bedroom_temperature: 1 } } });
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  let now = at + 2 * 60_000;
+  const { app } = await viewer(t, directory, async () => publication, { clock: () => now });
+  let observations = app.status().observations;
+  assert.equal(observations.bedroom.observedAt, at - 45 * 60_000);
+  assert.equal(observations.bedroom.lastReportAt, at - 15 * 60_000);
+  assert.equal(observations.bedroom.reportExpiresAt, now);
+  assert.equal(observations.bedroom.periodicReports, true);
+  assert.equal(observations.indoor.value, 20);
+  assert.equal(observations.indoor.stale, false);
+  now++;
+  observations = app.status().observations;
+  assert.equal(observations.bedroom.value, 20);
+  assert.equal(observations.bedroom.stale, true);
+  assert.deepEqual(observations.bedroom.availabilityReasons, ['missing-report']);
+  assert.equal(observations.indoor.value, null);
+  assert.equal(observations.indoor.missingMembers[0].reportMaxAgeMs, 17 * 60_000);
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
+test('replica preserves a newly enabled reporting policy that still awaits its first report', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'pending-report-policy');
+  const store = new Store(publication.dbPath), recorder = new Recorder(store);
+  const identity = { source: 'mqtt-temperature', device: 'synthetic-periodic-bedroom', signal: 'bedroom_temperature', unit: 'degC' };
+  recorder.record({ ...identity, value: 20, sourceTime: at - 5 * 60_000, receivedAt: at - 5 * 60_000,
+    quality: [], raw: { reportIntervalMs: 0, reportGraceMs: 0 } });
+  recorder.record({ ...identity, value: null, sourceTime: null, receivedAt: at - 60_000,
+    quality: ['missing', 'report-policy-changed'], raw: { timeBasis: 'availability-transition',
+      reportIntervalMs: 15 * 60_000, reportGraceMs: 2 * 60_000 } });
+  store.setState('adaptive:mqtt', { learningConfiguration: { indoorSensorWeights: { bedroom_temperature: 1 } } });
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  const { app } = await viewer(t, directory, async () => publication);
+  const observations = app.status().observations;
+  assert.equal(observations.bedroom.stale, true);
+  assert.equal(observations.bedroom.periodicReports, true);
+  assert.equal(observations.bedroom.lastReportAt, null);
+  assert.deepEqual(observations.bedroom.availabilityReasons, ['report-policy-changed']);
+  assert.equal(observations.indoor.value, null);
 });
 
 test('verified snapshots remain unchanged and viewer replaces charts and history after outage catch-up', async t => {

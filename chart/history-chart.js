@@ -74,7 +74,8 @@ export function historyTooltipLabel(item) {
   const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
     ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
   const indoor = item.raw?.savedIndoorAverage;
-  const heldSensors = indoor ? temperatureAttentionDetails(item.raw.attentionSensors, at => dateTime.format(at)) : '';
+  const heldSensors = indoor ? temperatureAttentionDetails(item.raw.attentionSensors, at => dateTime.format(at),
+    { now: item.raw.intervalEnd ?? item.raw.x }) : '';
   const savedInput = indoor ? ` · saved indoor average${item.raw.learningUsable === false ? ' · excluded from learning' : ''}`
     : item.raw?.modelInput ? ' · saved learning input' : '';
   const held = indoor && (item.raw.held || item.raw.needsAttention)

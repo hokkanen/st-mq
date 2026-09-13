@@ -1,4 +1,5 @@
 import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
+import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 
 const HOUR = 3_600_000;
 const SETTINGS = ['0203', '0212', '0208', '2201'];
@@ -27,10 +28,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   store, clock = Date.now, config = {} } = {}) {
   if (typeof deviceId !== 'string' || !deviceId || /[\/# +\u0000]/.test(deviceId)) throw new TypeError('Exact MQTT device identifier required');
   if (typeof publish !== 'function' || !store?.getState || !store?.setState) throw new TypeError('H66 requires transport and persistent state storage');
-  const maxAgeMs = config.maxAgeMs ?? 300_000;
+  const configuredAge = config.maxAgeMs ?? H66_MAX_AGE_MS;
+  const maxAgeMs = Math.min(configuredAge, H66_MAX_AGE_MS);
   const timeoutMs = config.readbackTimeoutMs ?? 10_000;
   const maxOverrideMs = config.maxOverrideMs ?? 24 * HOUR;
-  if ([maxAgeMs, timeoutMs, maxOverrideMs].some(value => !Number.isFinite(value) || value <= 0)) throw new RangeError('H66 time limits must be positive');
+  if ([configuredAge, timeoutMs, maxOverrideMs].some(value => !Number.isFinite(value) || value <= 0)) throw new RangeError('H66 time limits must be positive');
   const key = `h66:control:${deviceId}`;
   let saved;
   try { saved = store.getState(key); } catch { saved = null; }
@@ -296,6 +298,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       controlsReady: live && SETTINGS.every(index => current(index, now)) && !restoreRequired,
       readings: Object.fromEntries([...readings].map(([index, reading]) => [index, { ...copy(reading),
         stale: !current(index, now), available: live && Boolean(current(index, now)),
+        unavailableReasons: reading.connectionGeneration !== connectionGeneration ? ['awaiting-live-report'] : [],
         requested: state.requested[index] ?? null, baseline: state.baseline[index] ?? null }])),
       controls: Object.fromEntries(SETTINGS.map(index => [index, { register: index, signal: H66_REGISTERS[index].signal,
         available: live && config.writeEnabled === true && Boolean(current(index, now)) && !restoreRequired && !active,

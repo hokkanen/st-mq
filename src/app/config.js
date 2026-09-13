@@ -1,3 +1,4 @@
+import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
 import { configurationPaths, createConfigurationSource, readConfigurationOptions } from './configuration-source.js';
@@ -254,7 +255,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     recording: recordingConfiguration(options.recording),
     acquisition: acquisitionConfiguration(options.acquisition),
     h66: { enabled: !replica && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !replica,
-      maxAgeMs: 300000, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
+      maxAgeMs: H66_MAX_AGE_MS, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
     h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
