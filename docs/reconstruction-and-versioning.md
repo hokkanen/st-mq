@@ -133,6 +133,15 @@ Explicit acquisition failures and sensor-change exclusions still require genuine
 recovery evidence. This forward-only configuration event does not reinterpret
 archived journal entries or change the ordered learning update and replay rules.
 
+A confirmed MQTT subscription can likewise end a transport-only outage for a
+room whose genuine report is still inside its original deadline. A saved route
+hash must match the confirmed broker, topic and decoder mapping. The recovery
+event retains the original source/receipt clocks and starts zero-report coverage
+at reconnection; preceding outage windows and committed samples stay excluded.
+Invalid payloads, device-offline evidence and sensor-change exclusions cannot be
+cleared this way. Unsigned older reports need one genuine publication to establish
+route lineage; no restart or retained publication certifies that missing evidence.
+
 `committed-house-v9-reversible-sensors` adds append-only sensor-change reversals.
 A reversal references the original change; both records remain in the journal.
 Its selected correction revision retracts that measurement boundary throughout

@@ -1,4 +1,16 @@
+import { createHash } from 'node:crypto';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+
+
+// The digest binds a persisted room report to its exact decoder and broker route.
+// Credentials and concrete broker/topic details never enter observation metadata.
+export function temperatureRouteSignature({ brokerIdentity, topic, statePath = null, timestampPath = null, mappings = [] }) {
+  return createHash('sha256').update(JSON.stringify({ decoder: 'mqtt-temperature-v1',
+    broker: { address: brokerIdentity?.address ?? null, username: brokerIdentity?.username ?? null },
+    topic, statePath, timestampPath,
+    mappings: mappings.map(mapping => ({ topic: mapping.topic ?? null, path: mapping.path ?? null,
+      unit: mapping.unit ?? null, scale: mapping.scale ?? 1, offset: mapping.offset ?? 0 })) })).digest('hex');
+}
 
 // Alternative indoor/garage sensors publish a number in Celsius, or
 // {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.

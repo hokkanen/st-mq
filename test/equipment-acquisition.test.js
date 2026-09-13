@@ -112,7 +112,9 @@ test('home equipment preserves the original temperature identity, report policy,
   const f = fixture(t, [home]); f.capture.setConnected(true);
   const payload = JSON.stringify({ value: 68, unit: 'F', timestamp: initial });
   f.capture.receive('invented/upstairs', payload);
-  assert.deepEqual(f.observations.at(-1), decodeMqttTemperature({ signal: 'indoor_temperature', payload, receivedAt: initial,
+  const observation = f.observations.at(-1), { temperatureRouteSignature, ...raw } = observation.raw;
+  assert.match(temperatureRouteSignature, /^[a-f0-9]{64}$/);
+  assert.deepEqual({ ...observation, raw }, decodeMqttTemperature({ signal: 'indoor_temperature', payload, receivedAt: initial,
     reportIntervalMs: DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, reportGraceMs: DEFAULT_TEMPERATURE_REPORT_GRACE_MS }));
   assert.deepEqual(f.reportPolicies, [['indoor_temperature', { reportIntervalMs: DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, reportGraceMs: DEFAULT_TEMPERATURE_REPORT_GRACE_MS }]]);
   const deadline = initial + DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS + DEFAULT_TEMPERATURE_REPORT_GRACE_MS;
