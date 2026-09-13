@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
@@ -14,9 +14,16 @@ import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 
 const initial = Date.parse('2026-09-06T09:00:00Z'), MINUTE = 60_000;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+function fixtureConfig(directory) {
+  // Injected provider scenarios use their own room observation, without the
+  // public equipment catalogue selecting additional model-input sensors.
+  const path = join(directory, 'provider-fixture.json');
+  writeFileSync(path, JSON.stringify({ equipment: { devices: [] } }));
+  return loadConfig({ STMQ_CONFIG: path, XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
+}
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'stmq-providers-'));
-  const config = { ...loadConfig({ XDG_CONFIG_HOME: dir, STMQ_DATA_DIR: dir, STMQ_PORT: '0' }, dir), input: 'providers',
+  const config = { ...fixtureConfig(dir), input: 'providers',
     acquisition: { easeeIntervalMs: 5 * MINUTE, weatherIntervalMs: 60 * MINUTE, outdoorIntervalMs: 10 * MINUTE },
     connections: { easee: { charger_id: 'fixture-ev' },
       entsoe: { token: 'fixture-not-a-real-token' }, geoloc: { latitude: 60, longitude: 25 } } };
@@ -195,7 +202,7 @@ test('unconfigured providers make no requests', async t => {
 test('provider startup serves UI while a device request is pending and closes cleanly', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-provider-start-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
+  const config = { ...fixtureConfig(directory), input: 'providers',
     connections: {} };
   let pending = false, cancelled = false;
   const app = await start({ config, clock: () => initial, providerOptions: {

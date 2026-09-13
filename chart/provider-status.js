@@ -5,13 +5,18 @@ import { durationText } from './reading-status.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT temperature sensor', easee: 'Easee', teslamate: 'Teslamate' });
+  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT', 'shelly-mqtt': 'MQTT-shelly', 'mqtt-equipment': 'MQTT', easee: 'Easee', teslamate: 'Teslamate' });
 const jobs = Object.freeze({ temperatures: 'Temperature adapter',
   easee: 'Property & Charger 1 · Easee', teslamate: 'Charger 2 · Teslamate',
   market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
 const states = Object.freeze({ ok: 'Available', healthy: 'Available', available: 'Available', success: 'Available',
   fallback: 'Using backup', running: 'Updating', fetching: 'Updating', error: 'Needs attention', degraded: 'Needs attention',
   disabled: 'Not enabled', unconfigured: 'Not configured', 'not-configured': 'Not configured', waiting: 'Waiting', pending: 'Waiting' });
+
+export const providerTone = display => display.attention ? 'attention'
+  : display.state === 'Using backup' ? 'backup' : display.state === 'Available' ? 'available' : 'pending';
+const sourceStatus = (label, display) => ({ label, state: display.state, tone: providerTone(display) });
+const withStatus = (row, display) => ({ ...row, state: display.state, tone: providerTone(display) });
 
 const qualityLabels = Object.freeze({
   stale: 'Some readings have old source timestamps.',
@@ -113,7 +118,7 @@ export function providerSeries(job, health = {}) {
       'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.', source)];
   }
   if (['temperatures', 'mqtt-temperature'].includes(job)) {
-    const source = job === 'mqtt-temperature' ? 'MQTT temperature sensor'
+    const source = job === 'mqtt-temperature' ? 'MQTT'
       : 'Configured temperature adapter';
     return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
@@ -125,11 +130,10 @@ export function providerSeries(job, health = {}) {
 }
 
 const temperatureJobs = ['temperatures', 'mqtt-temperature', 'outdoor'];
-const indoorSources = ['husdata-h66', 'mqtt-temperature'];
+const indoorSources = ['husdata-h66', 'mqtt-temperature', 'shelly-mqtt'];
 const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
-// Main temperatures names the sensor platform; acquisition diagnostics retain
-// the local MQTT transport name. No SmartThings cloud connection is involved.
-const temperatureSourceLabel = source => source === 'mqtt-temperature' ? 'Smartthings' : providerName(source);
+// Source labels describe the configured transport.
+const temperatureSourceLabel = providerName;
 
 function temperatureDisplay(status, entries, options) {
   const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];
@@ -146,7 +150,11 @@ function temperatureDisplay(status, entries, options) {
       : key === 'garage' ? 'Optional garage sensor, recorded for history.'
         : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
     const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
-    return seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label);
+    return withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
+      state: readingStatus.attention ? 'Needs attention' : readingStatus.usable
+        ? key === 'outdoor' && outdoorHealth?.status === 'fallback' && source !== 'husdata-h66' ? 'Using backup' : 'Available'
+        : reading?.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
+    });
   });
   const sources = [...new Set(rows.map(row => row.source).filter(Boolean))].join(', ');
   const required = [observations.indoor, observations.outdoor];
@@ -169,7 +177,17 @@ function temperatureDisplay(status, entries, options) {
     const source = providerName(health.source ?? health.acquisition?.selected);
     details.push(`${scope}${source ? ` · ${source}` : ''}: ${describeProvider(key, health, options).detail}`);
   }
-  return { key: 'main-temperatures', overviewTitle: 'Main temperatures', source: sources || 'Awaiting readings', backup,
+  const sourceStates = [...new Set(rows.map(row => row.source).filter(Boolean))].map(label => {
+    const members = rows.filter(row => row.source === label);
+    const failedDownload = entries.some(([key, health]) => (health.error || health.status === 'error')
+      && (key !== 'outdoor' || observations.outdoor?.source !== 'husdata-h66')
+      && temperatureSourceLabel(health.source ?? health.acquisition?.selected) === label);
+    if (failedDownload) return { label, state: 'Needs attention', tone: 'attention' };
+    const worst = members.find(row => row.tone === 'attention') ?? members.find(row => row.tone === 'backup')
+      ?? members.find(row => row.tone === 'pending') ?? members[0];
+    return { label, state: worst.state, tone: worst.tone };
+  });
+  return { key: 'main-temperatures', overviewTitle: 'Main temperatures', source: sources || 'Awaiting readings', sourceStates, backup,
     display: { title: `Main temperatures${sources ? ` · ${sources}` : ''}`, state, attention, detail: details.join(' ') }, series: rows };
 }
 
@@ -189,9 +207,18 @@ function electricityDisplay(entries, options) {
     : available ? 'Partly available' : active.some(display => display.state === 'Updating') ? 'Updating'
       : active.length ? 'Waiting for readings' : displays.every(display => display.state === 'Not enabled') ? 'Not enabled' : 'Not configured';
   return { key: 'electricity', overviewTitle: 'Electricity consumption', source: 'Easee, Teslamate', backup: false,
+    sourceStates: electricityJobs.map((key, index) => sourceStatus(providerName(key), displays[index])),
     display: { title: 'Electricity consumption · Easee, Teslamate', state, attention,
       detail: displays.map(display => `${display.title}: ${display.state}. ${display.detail}`).join(' ') },
-    series: electricityJobs.flatMap(key => providerSeries(key)) };
+    series: electricityJobs.flatMap((key, index) => providerSeries(key).map(row => {
+      const health = entries.find(([job]) => job === key)?.[1];
+      const scope = row.signals[0].startsWith('property_') ? 'property' : 'charger';
+      const current = key === 'easee' && health?.currentReadings?.[scope];
+      const display = current ? describeProvider(key, { ...health, currentReadings: { [scope]: current },
+        error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
+        qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
+      return withStatus(row, display);
+    })) };
 }
 
 /** Present electricity and current temperature sources together while keeping each provider's
@@ -204,9 +231,11 @@ export function dashboardProviders(status, options) {
   const electricity = entries.filter(([key]) => electricityJobs.includes(key));
   const describe = ([key, health]) => {
     const display = describeProvider(key, health, options);
-    return { key, display, series: providerSeries(key, health), backup: health.status === 'fallback',
+    const source = providerName(health.source ?? health.acquisition?.selected) ?? display.title;
+    return { key, display, series: providerSeries(key, health).map(row => withStatus(row, display)), backup: health.status === 'fallback',
+      sourceStates: [sourceStatus(source, display)],
       overviewTitle: ({ market: 'Electricity prices', weather: 'Weather forecast' })[key] ?? 'Data source',
-      source: providerName(health.source ?? health.acquisition?.selected) ?? display.title };
+      source };
   };
   return [
     ...entries.filter(([key]) => !temperatureJobs.includes(key) && key !== 'weather').flatMap(entry =>

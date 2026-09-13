@@ -177,6 +177,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(200, status());
           });
         }
+        if (req.method === 'POST' && url.pathname === '/api/equipment/recheck')
+          return await mutate(async (current, input) => { await current.recheckEquipment(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/test')
+          return await mutate(async (current, input) => { await current.testEquipment(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/test/restore')
+          return await mutate(async (current, input) => { await current.restoreEquipmentTest(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/dhwr/stop')
+          return await mutate(async (current, input) => { await current.stopDhwr(input); return json(200, status()); });
         if (req.method === 'GET' && url.pathname === '/api/recording-overview') {
           const cancellation = new AbortController();
           const cancel = () => cancellation.abort();

@@ -104,7 +104,7 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
   assert.match(scope.instructions.join(' '), /freshly saved options/);
   assert.match(scope.instructions.join(' '), /Omitted fields keep saved values, arrays replace saved arrays/);
   assert.match(scope.instructions.join(' '), /failed import keeps the file/);
-  assert.match(scope.access.join(' '), /Home Assistant login/);
+  assert.match(scope.access.join(' '), /host login/);
   assert.match(scope.access.join(' '), /Direct access is disabled/);
   assert.deepEqual(scope.location.rows, [
     { label: 'Folder', value: '/addon_configs/example_st-mq' }, { label: 'File name', value: 'secrets.json' },

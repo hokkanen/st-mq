@@ -25,11 +25,11 @@ export class SimulatedPlant {
       actual: { mode: s.action, dhwr: now < s.pulseUntil, verified: true, source: 'simulation', compressorDuty:s.compressorDuty??0, auxKw:s.auxKw??0, auxRoute:'space',
         powerKw:(s.compressorDuty??0)*3+(s.auxKw??0)+(now<s.pulseUntil?0.025:0) } };
   }
-  apply(commands, now) {
+  apply(commands, now, dhwrDurationMs = 600_000) {
     for (const command of commands) {
       if (!['heatoff', 'heaton15', 'heaton60'].includes(command)) throw new Error('Unknown simulated command');
       this.state.action = command === 'heatoff' ? 'reduction' : 'normal';
-      if (command === 'heaton60') this.state.pulseUntil = now + 600_000;
+      if (command === 'heaton60') this.state.pulseUntil = now + dhwrDurationMs;
     }
     return { mode: this.state.action, observedAt: now, source: 'simulation', verified: true };
   }

@@ -1,7 +1,8 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability, historyValueLabel, coefficientStatusLabel, firewoodPointDetail, sessionPointDetail } from './history-model.js';
-import { outdoorSourceLabel, providerName, temperatureAttentionDetails } from './provider-status.js';
+import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability } from './history-model.js';
+import { historyTooltipCallbacks, historyTooltipsEnabled } from './history-tooltips.js';
+export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createTimingBenefit } from './timing-benefit.js';
 import { populateHistoryAxes } from './recording.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
@@ -29,7 +30,7 @@ const shades = [
 ];
 const activityTracks = [
   { key: 'operatingMode', id: 'operating-modes', label: 'Pump mode', detail: 'Configured operating mode from H66 readback; independent of compressor activity', color: 'outdoor' },
-  { key: 'dhwr', label: 'DHWR', detail: 'Requested 10-minute hot-water recirculation pulses' },
+  { key: 'dhwr', label: 'DHWR', detail: 'Requested hot-water circulation; duration controlled by ST-MQ. MQTT acknowledgement is not physical pump feedback.' },
   { key: 'fireplace', label: 'Fireplace', detail: 'Model burn window after manually recorded firewood additions; stored heat continues afterward' },
 ];
 
@@ -60,27 +61,6 @@ export function historyValueScales(left, datasets, palette = defaultPalette) {
     }
   }
   return scales;
-}
-
-export function historyTooltipLabel(item) {
-  const source = item.raw?.modelInput ? null : item.dataset.key === 'outdoor_temperature' ? outdoorSourceLabel(item.raw?.source) : providerName(item.raw?.source);
-  const interval = !item.raw?.modelInput && Number.isFinite(item.raw?.intervalStart) && Number.isFinite(item.raw?.intervalEnd) ? ` · ${dateTime.format(item.raw.intervalStart)} – ${dateTime.format(item.raw.intervalEnd)}` : '';
-  const reconstructed = item.dataset.key === 'heat_pump_power' ? ' · reconstructed estimate' : '';
-  const boundary = item.raw?.displayBoundary ? ` · ${item.raw.interpolated ? 'interpolated line boundary' : 'held line boundary'} between recorded samples` : '';
-  const value = historyValueLabel(item.dataset.key, item.raw?.componentValue ?? item.parsed.y, item.dataset.unit);
-  const coefficient = item.raw?.modelCoefficient ? ` · ${coefficientStatusLabel(item.raw.coefficientStatus)}${item.raw.inputSource ? ` · ${item.raw.inputSource}` : ''}${Number.isFinite(item.raw.modelUpdatedAt) ? ` · model updated ${dateTime.format(item.raw.modelUpdatedAt)}` : ''}` : '';
-  const firewood = firewoodPointDetail(item.dataset.key, item.raw);
-  const session = sessionPointDetail(item.raw);
-  const sessionRange = session && Number.isFinite(item.raw?.sessionStart) && Number.isFinite(item.raw?.sessionEnd)
-    ? ` · ${dateTime.format(item.raw.sessionStart)} – ${dateTime.format(item.raw.sessionEnd)}` : '';
-  const indoor = item.raw?.savedIndoorAverage;
-  const heldSensors = indoor ? temperatureAttentionDetails(item.raw.attentionSensors, at => dateTime.format(at),
-    { now: item.raw.intervalEnd ?? item.raw.x }) : '';
-  const savedInput = indoor ? ` · saved indoor average${item.raw.learningUsable === false ? ' · excluded from learning' : ''}`
-    : item.raw?.modelInput ? ' · saved learning input' : '';
-  const held = indoor && (item.raw.held || item.raw.needsAttention)
-    ? ` · ${item.raw.needsAttention ? 'needs attention · ' : ''}using last known readings${heldSensors ? `: ${heldSensors}` : ''}` : '';
-  return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : savedInput}${held}${item.raw?.equivalentCurrent ? ' · equivalent at 230 V' : ''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly ? ' · meter check only' : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
 }
 
 /** Report deadlines need prompt renewal even in a cached year view. Ordinary
@@ -246,7 +226,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       const intervals = (isMode ? payload?.operatingModes : payload?.shading?.[descriptor.key]) ?? [];
       const title = document.createElement('p');
       title.textContent = isMode ? 'Pump mode · readback (blank intervals: unknown)'
-        : descriptor.key === 'dhwr' ? 'DHWR · requested recirculation · 10 minutes after each addition'
+        : descriptor.key === 'dhwr' ? 'DHWR · requested circulation · recorded duration'
           : `Fireplace · model burn window${Number.isFinite(payload.meta?.fireplaceInputs?.burnHours) ? ` · ${payload.meta.fireplaceInputs.burnHours} h after each addition` : ''}`;
       root.title = descriptor.detail;
       const track = document.createElement('div'); track.className = 'mode-track';
@@ -324,7 +304,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       ...historyValueScales(plot.left, datasets, palette),
     };
     // Touch devices keep datapoint popups in fullscreen in either orientation.
-    const tooltipsEnabled = navigation.fullscreen || !mobilePointer.matches;
+    const tooltipsEnabled = historyTooltipsEnabled({ fullscreen: navigation.fullscreen, coarsePointer: mobilePointer.matches });
     if (graph) {
       graph.data.datasets = datasets; graph.options.scales = scales;
       graph.options.plugins.tooltip.enabled = tooltipsEnabled;
@@ -345,10 +325,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
               enabled: tooltipsEnabled,
               backgroundColor: getTheme() === 'light' ? '#f4faf6' : '#142b20', titleColor: palette.text, bodyColor: palette.text,
               borderColor: palette.border, borderWidth: 1,
-              callbacks: {
-                title: items => items.length ? `${dateTime.format(items[0].parsed.x)} · Finland` : '',
-                label: historyTooltipLabel,
-              },
+              titleFont: { size: 12 }, bodyFont: { size: 12 },
+              callbacks: historyTooltipCallbacks,
             },
           },
         },
@@ -363,7 +341,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const loading = selection.startDate !== plot.startDate || selection.endDate !== plot.endDate || selection.left !== plot.left;
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.left = plot.left; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
-    const notes = ['Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
+    const notes = ['Learning eligibility is shown only for saved learning inputs: eligible means the original quality checks passed, not proof that a model update used the point. Unlabelled sensor readings, forecasts and model results do not imply inclusion. Meter checks and caravan readings do not train the model.', 'Temperature measurements and forecasts use monotone cubic curves between available values; gaps remain gaps. Setpoints and requested control settings retain their recorded steps.', 'Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
       ? 'Lines carry the last recorded readings forward to the snapshot time; these extensions are not new measurements.'
       : 'Lines carry the last recorded readings forward to now; these extensions are not new measurements.');

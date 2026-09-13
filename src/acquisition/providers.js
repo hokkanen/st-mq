@@ -98,9 +98,9 @@ function currentReadings(rows, configured, previous, now) {
   return result;
 }
 const boundedDelay = value => Number.isFinite(value) ? Math.min(24 * 60 * MINUTE, Math.max(0, value)) : 0;
-function backoff(failures, error, requested = 0) {
+function backoff(failures, error, requested = 0, initialDelay = 5 * MINUTE) {
   return Math.max(boundedDelay(requested), /HTTP-(401|403)/.test(error ?? '') ? 30 * MINUTE
-    : Math.min(30 * MINUTE, 5 * MINUTE * 2 ** (Math.max(1, failures) - 1)));
+    : Math.min(30 * MINUTE, initialDelay * 2 ** (Math.max(1, failures) - 1)));
 }
 function configuredLocation(connections) {
   const { latitude, longitude } = connections.geoloc ?? {};
@@ -381,7 +381,14 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (!failure) state.lastSuccessAt = clock();
     // Only failed downloads back off. Successfully received older device state
     // stays on the normal cadence, including when an unused charger is stale.
-    let delay = failure ? backoff(state.failures, failure, retryAfterMs) : job.period;
+    // A brief electrical download failure must not impose the five-minute
+    // weather retry floor: the energy accumulator cannot bridge that outage.
+    // Retry transient failures at the configured acquisition cadence, then
+    // back off. Keep rate-limit/client-error cooldowns and every Retry-After.
+    const electricalErrors = [failure, ...Object.values(readings ?? {}).map(row => row.error)].filter(Boolean);
+    const retryBase = name === 'easee' && !electricalErrors.some(error => /^HTTP-[1-4]/.test(error))
+      ? job.period : 5 * MINUTE;
+    let delay = failure ? Math.max(...electricalErrors.map(error => backoff(state.failures, error, retryAfterMs, retryBase))) : job.period;
     if (!failure && name === 'market' && missingTomorrow) delay = Math.min(delay, cadence.marketRetryIntervalMs ?? 15 * MINUTE);
     const sourceDelays = (state.acquisition?.attempts ?? []).filter(attempt => attempt.status !== 'not-configured')
       .map(attempt => state.sourceBackoff[attempt.source]?.nextAttemptAt - clock());

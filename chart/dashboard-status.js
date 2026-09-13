@@ -44,7 +44,7 @@ function configurationLocation(configuration) {
       { label: 'File name', value: path.slice(separator + 1) }, { label: 'Full path', value: path });
   }
   if (addon && isFilePath(configuration.importPath)) rows.push({ label: 'Inside add-on', value: configuration.importPath });
-  return { title: addon ? 'Home Assistant · upload location' : ubuntu ? 'Ubuntu · permanent configuration file' : 'Configuration file location',
+  return { title: addon ? 'Host dashboard · upload location' : ubuntu ? 'Ubuntu · permanent configuration file' : 'Configuration file location',
     rows, message: isFilePath(path) ? '' : 'Restart ST-MQ to load configuration paths, then refresh this page' };
 }
 
@@ -81,11 +81,11 @@ export function settingsReloadScope(status = {}) {
   const location = configurationLocation(configuration);
   const instructions = [], access = [];
   if (configuration?.environment === 'home-assistant') {
-    instructions.push('Change and save options in Home Assistant. Apply configuration reads those freshly saved options.');
+    instructions.push('Change and save options in the host dashboard. Apply configuration reads those freshly saved options.');
     if (isFilePath(configuration.externalImportPath)) instructions.push(`To import settings, upload the file to ${configuration.externalImportPath} using SSH.`);
     instructions.push('Use a plain JSON options object without an outer options wrapper. Omitted fields keep saved values, arrays replace saved arrays, and explicit empty values clear fields.');
-    instructions.push('Choose Apply configuration. A successful import saves its values in Home Assistant and removes the uploaded file; a failed import keeps the file for correction.');
-    if (reload.access?.ingress?.enabled === true) access.push('Home Assistant access is enabled and uses your Home Assistant login.');
+    instructions.push('Choose Apply configuration. A successful import saves its values in the host dashboard and removes the uploaded file; a failed import keeps the file for correction.');
+    if (reload.access?.ingress?.enabled === true) access.push('Host dashboard access is enabled and uses your host login.');
     if (reload.access?.direct?.enabled === false) access.push('Direct access is disabled. Set controller.web_token to at least 24 characters and apply to enable it.');
     else if (reload.access?.direct?.enabled === true) access.push('Direct access is enabled and requires your access token. Clear controller.web_token and apply to disable it.');
   } else if (configuration?.environment === 'ubuntu') {

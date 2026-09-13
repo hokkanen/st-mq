@@ -1,3 +1,5 @@
+import { shellyConfiguration } from '../acquisition/shelly-config.js';
+import { equipmentConfiguration } from '../acquisition/equipment-config.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
 import { configuredPriceSettings } from './contract.js';
@@ -135,7 +137,7 @@ export function controlConfiguration(input = {}) {
   const map = { aux_integral_a2: 'auxIntegralA2', aux_hysteresis_c: 'auxHysteresisC',
     compressor_integral_a1: 'compressorIntegralA1', compressor_hysteresis_c: 'compressorHysteresisC',
     a2_basis: 'a2Basis', heat_pump_compressor_kw: 'heatPumpCompressorKw', auxiliary_rated_kw: 'auxRatedKw',
-    circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', max_reduction_hours: 'maxReductionHours',
+    circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', dhwr_duration_minutes: 'dhwrPulseMinutes', max_reduction_hours: 'maxReductionHours',
     max_away_reduction_hours: 'maxAwayReductionHours', max_unobserved_reduction_hours: 'maxUnobservedReductionHours',
     max_preheat_hours: 'maxPreheatHours', max_room_boost_c: 'maxRoomBoostC', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
@@ -161,7 +163,8 @@ export function controlConfiguration(input = {}) {
     || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
     || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168
     || result.recoveryCompressorOnlyHours < 0.25 || result.recoveryCompressorOnlyHours > 12
-    || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1)
+    || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1
+    || result.dhwrPulseMinutes < 1 || result.dhwrPulseMinutes > 60)
     throw new Error('Controller settings exceed supported bounds');
   return result;
 }
@@ -172,6 +175,10 @@ export function controlConfiguration(input = {}) {
 export function indoorSensorWeightsConfiguration(input, connections = {}) {
   const signals = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'];
   const configured = new Set(['indoor_temperature']);
+  for (const device of connections.equipment?.devices ?? []) {
+    const signal = device.temperatureSignal ?? device.signal ?? `${device.id}_temperature`;
+    if (device.enabled !== false && device.kind === 'temperature' && signals.includes(signal)) configured.add(signal);
+  }
   for (const signal of ['downstairs_temperature', 'bedroom_temperature']) {
     if ([connections.mqtt?.temperatureTopics?.[signal],
       connections.mqtt?.temperature_topics?.[signal], connections.mqtt?.[`${signal}_topic`]]
@@ -207,6 +214,9 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
     const mqtt = { ...(options.mqtt ?? {}) };
+    mqtt.dhwr_topic = mqtt.dhwr_topic || 'from_stmq/dhwr/set';
+    if (typeof mqtt.dhwr_topic !== 'string' || !mqtt.dhwr_topic.trim() || mqtt.dhwr_topic.length > 500
+      || /[+#\u0000]/.test(mqtt.dhwr_topic)) throw new Error('DHWR MQTT topic must be an exact switch command topic');
     mqtt.temperatureTopics = {
       ...(mqtt.temperature_topics ?? {}),
       ...(mqtt.temperatureTopics ?? {}),
@@ -215,6 +225,23 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       ...(mqtt.bedroom_temperature_topic ? { bedroom_temperature: mqtt.bedroom_temperature_topic } : {}),
       ...(mqtt.garage_temperature_topic ? { garage_temperature: mqtt.garage_temperature_topic } : {}),
     };
+    // Explicit legacy temperature overrides remain usable during migration.
+    // Their topics are already tied to the MQTT temperature decoder; new
+    // configuration uses one connection line on the equipment entry.
+    for (const [signal, topic] of Object.entries(mqtt.temperatureTopics))
+      if (typeof topic === 'string' && topic.startsWith('mqtt:')) mqtt.temperatureTopics[signal] = topic.slice(5);
+    if (new Set(Object.values(mqtt.temperatureTopics)).size !== Object.keys(mqtt.temperatureTopics).length)
+      throw new Error('Each temperature sensor must use a different MQTT topic');
+    const equipmentInput = structuredClone(options.equipment ?? {});
+    for (const device of equipmentInput.devices ?? []) {
+      if (device.kind !== 'temperature' || !device.connection?.startsWith('mqtt:')) continue;
+      const signal = device.signal ?? `${device.id}_temperature`;
+      if (mqtt.temperatureTopics[signal]) device.connection = `mqtt:${mqtt.temperatureTopics[signal]}`;
+    }
+    const equipment = equipmentConfiguration(equipmentInput);
+    for (const device of equipment.devices) if (device.enabled && device.protocol === 'mqtt' && device.kind === 'temperature'
+      && ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].includes(device.temperatureSignal))
+      mqtt.temperatureTopics[device.temperatureSignal] = device.topic;
     for (const [signal, topic] of Object.entries(mqtt.temperatureTopics)) {
       if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature'].includes(signal) || typeof topic !== 'string'
         || !topic.trim() || topic.length > 500 || /[+#\u0000]/.test(topic)) throw new Error('Temperature MQTT topics must be exact indoor/garage topic names');
@@ -226,7 +253,12 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 120, 0, 900,
       'temperature_report_grace_seconds') * 1000);
     const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
-    connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate) };
+    connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
+      shelly: shellyConfiguration(options.shelly), equipment };
+    if (connections.shelly.devices.length && equipment.devices.some(device => device.enabled))
+      throw new Error('Move legacy Shelly settings to equipment.devices and remove the old shelly entries before enabling both configurations.');
+    if (connections.shelly.devices.length && !mqtt.address) throw new Error('Shelly requires the existing MQTT broker connection');
+    if (equipment.devices.some(device => device.enabled) && !mqtt.address) throw new Error('Equipment requires the existing MQTT broker connection');
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');

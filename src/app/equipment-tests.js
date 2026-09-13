@@ -1,0 +1,202 @@
+const KEY = 'equipment-tests:v1';
+const MINUTE = 60_000, RETRY_MS = 5000;
+const MODES = new Set(['starting', 'active', 'restoration-pending']);
+const timestamp = value => Number.isSafeInteger(value) && value >= 0;
+const signatureValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
+const messages = {
+  EQUIPMENT_TEST_CLOSED: 'Equipment testing is closed.',
+  EQUIPMENT_TEST_BUSY: 'An equipment test or restoration is already in progress.',
+  EQUIPMENT_TEST_ACTIVE: 'Restore the current equipment test before starting another.',
+  EQUIPMENT_TEST_INPUT: 'Choose a switch, ON or OFF, and a whole duration from 1 to 15 minutes.',
+  EQUIPMENT_TEST_UNAVAILABLE: 'This equipment is unavailable for a switch test.',
+  EQUIPMENT_TEST_TARIFF: 'Heating reduction relays must use the heating controls.',
+  EQUIPMENT_TEST_STATE: 'A fresh confirmed switch state is required before testing.',
+  EQUIPMENT_TEST_AUTHORITY: 'This instance does not own equipment control.',
+  EQUIPMENT_TEST_ROUTE: 'The original equipment connection is unavailable or has changed. Restoration is pending.',
+  EQUIPMENT_TEST_UNCONFIRMED: 'The switch command is unconfirmed. Restoring its previous state is still required.',
+  EQUIPMENT_TEST_RESTORE: 'The previous switch state could not be confirmed. Restoration is pending.',
+  EQUIPMENT_TEST_STORAGE: 'Equipment test state could not be saved. Restoration may still be required.',
+};
+const failure = code => Object.assign(new Error(messages[code]), { code });
+const publicActive = active => active ? Object.fromEntries(['deviceId', 'on', 'previousOn', 'until', 'status'].map(key => [key, active[key]])) : null;
+const SUPERSEDED_REASON = 'The switch was changed independently after a test that left its state unchanged.';
+function publicResult(result) {
+  if (!result || !idValid(result.deviceId) || !['starting', 'active', 'restoration-pending', 'restored', 'superseded'].includes(result.status)) return null;
+  const visible = { deviceId: result.deviceId, status: result.status };
+  for (const key of ['on', 'previousOn', 'confirmed', 'sent']) if (typeof result[key] === 'boolean') visible[key] = result[key];
+  for (const key of ['at', 'until']) if (timestamp(result[key])) visible[key] = result[key];
+  if (Object.hasOwn(messages, result.code)) { visible.code = result.code; visible.reason = messages[result.code]; }
+  else if (result.status === 'superseded') visible.reason = SUPERSEDED_REASON;
+  else if (['manual', 'expiry', 'startup', 'shutdown', 'settings-reload'].includes(result.reason)) visible.reason = result.reason;
+  return visible;
+}
+
+function freshState(device, now) {
+  if (!device?.available) return null;
+  const readings = Object.values(device.readings ?? {}).filter(row => row?.unit === 'state');
+  if (readings.length !== 1) return null;
+  const row = readings[0];
+  return [0, 1].includes(row.value) && row.stale === false && timestamp(row.observedAt) && row.observedAt <= now
+    ? Boolean(row.value) : null;
+}
+
+/** Explicit, bounded manual switch tests. The saved route is checked again for
+ * restoration; neither a broker acknowledgement nor a renamed device transfers
+ * this obligation to another output. Construction never sends a command. */
+export function createEquipmentTests({ store, clock = Date.now, getEquipment, canControl = () => false, report } = {}) {
+  let state = store.getState(KEY) ?? { version: 1, active: null, lastResult: null };
+  const saved = state.active;
+  if (state.version !== 1 || saved && (!idValid(saved.deviceId) || !signatureValid(saved.signature)
+    || typeof saved.on !== 'boolean' || typeof saved.previousOn !== 'boolean'
+    || !timestamp(saved.until) || !timestamp(saved.requestedAt)
+    || saved.confirmedAt !== undefined && !timestamp(saved.confirmedAt) || !MODES.has(saved.status)))
+    throw new Error('Saved equipment test state could not be validated.');
+  state = structuredClone(state);
+  let startupRestore = Boolean(saved), pending = null, timer = null, closed = false, closing = false, retryAt = 0;
+  const authority = () => { try { return canControl() === true; } catch { return false; } };
+  const adapter = () => { try { return getEquipment?.() ?? null; } catch { return null; } };
+  const devices = equipment => { try { const list = equipment?.status?.()?.devices; return Array.isArray(list) ? list : []; } catch { return []; } };
+  const route = (equipment, id) => { try { return equipment?.signature?.(id) ?? null; } catch { return null; } };
+  const notify = result => { try { report?.({ type: 'equipment-test', ...result }); } catch { /* Reporting cannot interrupt restoration. */ } };
+  const persist = next => { store.setState(KEY, structuredClone(next)); state = next; };
+  const record = (active, status, extras = {}) => ({ deviceId: active.deviceId, on: active.on,
+    previousOn: active.previousOn, at: clock(), status, ...extras });
+  function markPending(code) {
+    if (!state.active) return;
+    const active = { ...state.active, status: 'restoration-pending' };
+    const lastResult = record(active, 'restoration-pending', { code, reason: messages[code], confirmed: false });
+    const next = { ...state, active, lastResult };
+    try { persist(next); } catch { state = next; /* The pre-command obligation remains on disk. */ }
+    retryAt = clock() + RETRY_MS;
+    notify(lastResult);
+  }
+  function arm() {
+    clearTimeout(timer); timer = null;
+    if (closed || !state.active) return;
+    const due = startupRestore || state.active.status === 'restoration-pending' ? Math.max(clock(), retryAt) : state.active.until;
+    timer = setTimeout(() => { void api.tick(); }, Math.max(1000, due - clock()));
+    timer.unref?.();
+  }
+  async function exclusive(operation) {
+    if (closed) throw failure('EQUIPMENT_TEST_CLOSED');
+    if (pending) throw failure('EQUIPMENT_TEST_BUSY');
+    const completion = Promise.resolve().then(operation);
+    pending = completion;
+    try { return await completion; }
+    finally { pending = null; arm(); }
+  }
+  function checkRoute(active, equipment) {
+    if (!authority()) throw failure('EQUIPMENT_TEST_AUTHORITY');
+    if (!equipment || typeof equipment.setSwitch !== 'function' || route(equipment, active.deviceId) !== active.signature)
+      throw failure('EQUIPMENT_TEST_ROUTE');
+  }
+  async function restoreInternal(reason) {
+    const active = state.active;
+    if (!active) return { status: 'idle', restorationPending: false };
+    const equipment = adapter();
+    try {
+      checkRoute(active, equipment);
+      const device = devices(equipment).find(row => row.id === active.deviceId);
+      const observedAfterConfirmation = active.status === 'active' && timestamp(active.confirmedAt)
+        && Object.values(device?.readings ?? {}).some(row => row?.unit === 'state' && row.observedAt > active.confirmedAt);
+      const current = observedAfterConfirmation ? freshState(device, clock()) : null;
+      // A fresh observation of the original state already fulfils restoration.
+      // A test that never changed state does not own a later external change.
+      // An observation received during an uncertain command cannot prove that
+      // the device did not apply that command afterward. Restore explicitly.
+      const superseded = active.on === active.previousOn && current !== null && current !== active.on;
+      let sent = false;
+      if (current !== active.previousOn && !superseded) {
+        const result = await equipment.setSwitch(active.deviceId, active.previousOn);
+        if (result?.confirmed !== true) throw failure('EQUIPMENT_TEST_RESTORE');
+        sent = true;
+      }
+      checkRoute(active, adapter());
+      const lastResult = record(active, superseded ? 'superseded' : 'restored', { confirmed: true, sent,
+        reason: superseded ? SUPERSEDED_REASON : reason });
+      persist({ ...state, active: null, lastResult });
+      startupRestore = false; retryAt = 0; notify(lastResult);
+      return { ...lastResult, restorationPending: false };
+    } catch (error) {
+      const code = ['EQUIPMENT_TEST_AUTHORITY', 'EQUIPMENT_TEST_ROUTE'].includes(error?.code) ? error.code : 'EQUIPMENT_TEST_RESTORE';
+      markPending(code); throw failure(code);
+    }
+  }
+  const api = {
+    start(input) {
+      if (closing) return Promise.reject(failure('EQUIPMENT_TEST_CLOSED'));
+      return exclusive(async () => {
+        if (!input || typeof input !== 'object' || Array.isArray(input)
+          || Object.keys(input).some(key => !['deviceId', 'on', 'durationMinutes'].includes(key))
+          || !idValid(input.deviceId) || typeof input.on !== 'boolean'
+          || !Number.isInteger(input.durationMinutes) || input.durationMinutes < 1 || input.durationMinutes > 15)
+          throw failure('EQUIPMENT_TEST_INPUT');
+        if (state.active) throw failure('EQUIPMENT_TEST_ACTIVE');
+        if (!authority()) throw failure('EQUIPMENT_TEST_AUTHORITY');
+        const equipment = adapter(), device = devices(equipment).find(row => row.id === input.deviceId), now = clock();
+        if (device?.controls?.tariff) throw failure('EQUIPMENT_TEST_TARIFF');
+        if (!device?.controls?.switch || !device.available || typeof equipment?.setSwitch !== 'function')
+          throw failure('EQUIPMENT_TEST_UNAVAILABLE');
+        const previousOn = freshState(device, now), signature = route(equipment, input.deviceId);
+        if (previousOn === null) throw failure('EQUIPMENT_TEST_STATE');
+        if (!signatureValid(signature)) throw failure('EQUIPMENT_TEST_ROUTE');
+        const active = { deviceId: input.deviceId, on: input.on, previousOn, signature,
+          requestedAt: now, until: now + input.durationMinutes * MINUTE, status: 'starting' };
+        // If this write fails, nothing is dispatched. A later lost response can
+        // never erase knowledge of which physical output needs restoration.
+        try { persist({ ...state, active, lastResult: record(active, 'starting', { confirmed: false }) }); }
+        catch { throw failure('EQUIPMENT_TEST_STORAGE'); }
+        try {
+          checkRoute(active, adapter());
+          const result = await equipment.setSwitch(active.deviceId, active.on);
+          if (result?.confirmed !== true) throw failure('EQUIPMENT_TEST_UNCONFIRMED');
+          checkRoute(active, adapter());
+          const confirmedAt = clock();
+          const running = { ...active, confirmedAt, until: confirmedAt + input.durationMinutes * MINUTE, status: 'active' };
+          const lastResult = record(running, 'active', { confirmed: true, until: running.until });
+          persist({ ...state, active: running, lastResult });
+          startupRestore = false; retryAt = 0; notify(lastResult);
+          return lastResult;
+        } catch (error) {
+          const code = ['EQUIPMENT_TEST_AUTHORITY', 'EQUIPMENT_TEST_ROUTE'].includes(error?.code) ? error.code : 'EQUIPMENT_TEST_UNCONFIRMED';
+          markPending(code); throw failure(code);
+        }
+      });
+    },
+    restore(options = {}) {
+      const reason = ['expiry', 'startup', 'shutdown', 'settings-reload'].includes(options.reason) ? options.reason : 'manual';
+      return exclusive(() => restoreInternal(reason));
+    },
+    async tick() {
+      if (closed || pending || !state.active) return api.status();
+      if (startupRestore || state.active.status === 'restoration-pending' || clock() >= state.active.until) {
+        if (clock() < retryAt) { arm(); return api.status(); }
+        if (!authority()) { retryAt = clock() + RETRY_MS; arm(); return api.status(); }
+        try { await api.restore({ reason: startupRestore ? 'startup' : 'expiry' }); } catch { /* Saved pending state reports the failure. */ }
+      }
+      return api.status();
+    },
+    async close({ restore = true } = {}) {
+      if (closed) return;
+      if (closing) throw failure('EQUIPMENT_TEST_BUSY');
+      closing = true;
+      try {
+        await pending?.catch(() => {});
+        if (restore && state.active) await api.restore({ reason: 'shutdown' });
+        closed = true; clearTimeout(timer); timer = null;
+      } finally { closing = false; if (!closed) arm(); }
+    },
+    status() {
+      const equipment = adapter(), allowed = authority();
+      const eligible = typeof equipment?.setSwitch === 'function' && devices(equipment).some(device => device.controls?.switch
+        && !device.controls?.tariff && signatureValid(route(equipment, device.id)) && freshState(device, clock()) !== null);
+      const reason = closed ? messages.EQUIPMENT_TEST_CLOSED : !allowed ? messages.EQUIPMENT_TEST_AUTHORITY
+        : state.active?.status === 'restoration-pending' ? publicResult(state.lastResult)?.reason ?? messages.EQUIPMENT_TEST_RESTORE
+        : state.active ? messages.EQUIPMENT_TEST_ACTIVE : !eligible ? messages.EQUIPMENT_TEST_UNAVAILABLE : null;
+      return { available: !closed && allowed && eligible && !state.active, busy: Boolean(pending || closing),
+        active: publicActive(state.active), lastResult: publicResult(state.lastResult), reason };
+    },
+  };
+  return api;
+}

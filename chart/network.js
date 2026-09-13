@@ -11,6 +11,6 @@ export function usesHomeAssistantLogin(pathname = location.pathname) {
 
 export function authenticationMessage(ingress) {
   return ingress
-    ? 'Your Home Assistant session needs attention. Reopen ST-MQ from Home Assistant.'
+    ? 'Your host session needs attention. Reopen ST-MQ from the host dashboard.'
     : 'Enter your access token to view this installation.';
 }

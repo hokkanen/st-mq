@@ -26,7 +26,7 @@ test('authority lost between acknowledgements cancels the remaining batch', asyn
   let allowed = true;
   const transport = createHeatingTransport({ connection: { address: 'mqtt://invented.invalid' },
     connect: () => client, canControl: () => allowed });
-  const completion = transport.publish(['heaton60', 'heaton15']);
+  const completion = transport.publish(['heaton15', 'heatoff']);
   client.emit('connect');
   assert.equal(messages.length, 1);
   allowed = false; messages[0].callback();

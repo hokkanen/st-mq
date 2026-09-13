@@ -29,6 +29,16 @@ test('recording status explains rejection, held temperatures and historical ener
   assert.match(energy.detail,/completed energy interval does not expire/);
 });
 
+test('event-only door recordings distinguish last report age from current connection health',()=>{
+  const display=recordingStatus({freshness:{status:'last-reported',sourceObservedAt:0,maxAgeMs:null,ageBasis:'event-only'}},{now:7*86400_000});
+  assert.equal(display.label,'Last reported state');
+  assert.match(display.detail,/without a periodic heartbeat/);
+  assert.match(display.detail,/last report is 7 d old/);
+  assert.match(display.detail,/Report age alone does not indicate a fault/);
+  assert.match(display.detail,/Current connection availability is shown under Equipment/);
+  assert.doesNotMatch(display.detail,/Attention starts|Limit/);
+});
+
 function fixture(request) {
   let now=Date.parse('2026-09-08T10:00:00Z'),visible=true;
   const classes=new Set(),attributes=new Map(),renders=[];

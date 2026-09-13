@@ -19,6 +19,12 @@ function fixture(t, input) {
   writeFileSync(path, JSON.stringify({
     geoloc: { country_code: '' }, teslamate: { enabled: false, charger_identification: false },
     controller: { input, h66_device: 'invented-h66' },
+    equipment: { devices: [
+      { id: 'upstairs', kind: 'temperature', signal: 'indoor_temperature', connection: 'mqtt:invented/smoke/1' },
+      { id: 'bedroom', kind: 'temperature', signal: 'bedroom_temperature', connection: 'mqtt:invented/smoke/2' },
+      { id: 'downstairs', kind: 'temperature', signal: 'downstairs_temperature', connection: 'mqtt:invented/smoke/3' },
+      { id: 'garage', kind: 'temperature', signal: 'garage_temperature', connection: 'mqtt:invented/garage' },
+    ] },
     mqtt: { address: 'mqtt://invented.invalid',
       indoor_temperature_topic: 'invented/smoke/1', bedroom_temperature_topic: 'invented/smoke/2',
       downstairs_temperature_topic: 'invented/smoke/3', garage_temperature_topic: 'invented/garage' },
@@ -77,7 +83,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
     assert.equal(status.providers.temperatures.status, 'not-configured');
     const grouped = dashboardProviders(status, { now: f.clock(), formatTime: at => new Date(at).toISOString() })
       .find(row => row.key === 'main-temperatures');
-    assert.equal(grouped.display.title, 'Main temperatures · Smartthings, H66');
+    assert.equal(grouped.display.title, 'Main temperatures · MQTT, H66');
     assert.equal(grouped.display.state, 'Available');
     const chart = getChartData({ store: f.store, now: f.clock(), startDate: '2026-09-09', endDate: '2026-09-09', input });
     for (const [signal, value] of [['indoor_temperature', 22], ['bedroom_temperature', 21],

@@ -1,0 +1,247 @@
+import { createHash } from 'node:crypto';
+import { createShellyCapture } from './shelly.js';
+import { createCaravanEnergy } from './shelly-energy.js';
+import { equipmentSignature } from './equipment-config.js';
+import { decodeMqttTemperature } from './mqtt-temperature.js';
+import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
+import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
+
+const scalar = value => typeof value === 'number' && Number.isFinite(value);
+const property = (object, path) => path?.split('.').reduce((value, key) => value && typeof value === 'object' && Object.hasOwn(value, key) ? value[key] : undefined, object);
+const parse = payload => { try { return JSON.parse(payload); } catch { return payload; } };
+const stateValue = value => typeof value === 'boolean' ? Number(value) : [0, 1].includes(value) ? value
+  : typeof value === 'string' ? ['on', 'open', 'true', '1'].includes(value.toLowerCase()) ? 1
+    : ['off', 'closed', 'close', 'false', '0'].includes(value.toLowerCase()) ? 0 : null : null;
+const sourceTime = value => Number.isSafeInteger(value) ? value : typeof value === 'string' && /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? Date.parse(value) : null;
+const canonicalTemperature = device => device.kind === 'temperature' && [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_ha', 'outdoor_temperature'].includes(device.temperatureSignal);
+const fail = message => new Error(`Equipment ${message}`);
+
+/** One broker, explicit per-device protocol selection, independent capabilities.
+ * Event-only contacts preserve last-reported values without inventing heartbeats. */
+export function createEquipmentCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000,
+  temperatureReportIntervalMs = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
+  temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null }) {
+  const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
+  const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
+    settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity }) : null;
+  let connected = false, closed = false, heatingBusy = false, sequence = 0;
+  const devices = enabled.filter(row => row.protocol === 'mqtt').map(config => ({ ...config, readings: {}, mappings: config.readings,
+    online: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false }));
+  const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
+  const temperatures = devices.filter(canonicalTemperature);
+  for (const device of temperatures) if (INDOOR_SIGNALS.includes(device.temperatureSignal)) engine.configureTemperatureReports?.(device.temperatureSignal,
+    { reportIntervalMs: temperatureReportIntervalMs, reportGraceMs: temperatureReportGraceMs });
+  const energy = new Map(devices.filter(row => row.metered).map(device => [device.id, createCaravanEnergy({ store,
+    device: device.connection, maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
+    signal: `${device.id}_energy`, recordDevice: device.id, stateKey: `mqtt:equipment-energy:v1:${device.id}` })]));
+  const definitions = device => [
+    { signal: device.stateSignal ?? device.temperatureSignal, unit: device.kind === 'temperature' ? 'degC' : 'state',
+      label: device.kind === 'temperature' ? 'Temperature' : device.kind === 'door' ? 'Door' : 'Switch', required: true },
+    ...(device.metered ? [{ signal: `${device.id}_power`, unit: 'kW', label: 'Power', path: 'power', required: true },
+      { signal: `${device.id}_current`, unit: 'A', label: 'Current', path: 'current', required: true }] : []),
+  ].map(row => device.mappings.find(mapping => mapping.signal === row.signal) ?? row).concat(device.mappings.filter(mapping =>
+    ![device.stateSignal, device.temperatureSignal, ...(device.metered ? [`${device.id}_power`, `${device.id}_current`] : [])].includes(mapping.signal)));
+  const identity = device => device.temperatureSignal === 'garage_temperature_ha' ? { source: 'mqtt-temperature-ha', device: 'garage-ha' } : canonicalTemperature(device) ? { source: 'mqtt-temperature', device: device.temperatureSignal } : { source: 'mqtt-equipment', device: device.id };
+  const age = device => INDOOR_SIGNALS.includes(device.temperatureSignal) && canonicalTemperature(device)
+    ? temperatureReportIntervalMs + temperatureReportGraceMs : device.maxAgeMs;
+  function record(device, definition, value, at, receivedAt, quality = [], raw = {}) {
+    const previous = device.readings[definition.signal];
+    if (scalar(at) && scalar(previous?.observedAt) && at < previous.observedAt) return false;
+    const observation = { ...identity(device), signal: definition.signal, value, unit: definition.unit, sourceTime: at, receivedAt, quality,
+      raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
+        ...(device.kind === 'door' && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw } };
+    engine.ingest(observation);
+    device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality, ...raw };
+    if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
+      signature: signature(device.id), reading: device.readings[definition.signal] });
+    return true;
+  }
+  function unavailable(device, reason) {
+    device.liveSinceConnect = false; device.invalid = true;
+    for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
+    for (const check of [...device.checks]) check.finish('unavailable');
+    for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
+      const previous = device.readings[definition.signal];
+      record(device, definition, null, null, engine.clock(), [reason]);
+      if (device.kind === 'door' && previous?.value != null) device.readings[definition.signal] = {
+        ...previous, unavailable: true, quality: [...new Set([...(previous.quality ?? []), reason, 'last-reported'])] };
+    }
+  }
+  const fresh = (device, reading, now) => Boolean(reading && scalar(reading.value) && scalar(reading.observedAt)
+    && reading.observedAt <= now && !reading.retained && !reading.unavailable
+    && (!age(device) || now - reading.observedAt <= age(device))
+    && !reading.quality?.some(flag => /invalid|missing|retained|stale|future|disconnected|offline|unavailable/.test(flag)));
+  const healthy = (device, now) => connected && device.liveSinceConnect && device.online !== false && !device.invalid
+    && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
+    && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
+  function signature(id) {
+    const config = enabled.find(row => row.id === id);
+    if (!config) return null;
+    const target = config.protocol === 'shelly' ? native.signature(id) : equipmentSignature(config);
+    return target ? createHash('sha256').update(`${brokerDigest}:${target}`).digest('hex') : null;
+  }
+  for (const device of devices.filter(row => row.kind === 'door')) {
+    const saved = store.getState?.(`equipment:door:v1:${device.id}`);
+    if (saved?.signature === signature(device.id) && saved.reading) device.readings[device.stateSignal] = {
+      ...saved.reading, unavailable: true, quality: [...new Set([...(saved.reading.quality ?? []), 'last-reported', 'awaiting-report'])] };
+  }
+  function receiveDevice(device, topic, body, packet, receivedAt) {
+    const mapping = device.mqtt;
+    if (topic === mapping.availabilityTopic) {
+      if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline'); }
+      else if (body === mapping.onlinePayload && !packet.retain) device.online = true;
+      return;
+    }
+    if (topic === mapping.heartbeatTopic) { if (!packet.retain) device.heartbeatAt = receivedAt; return; }
+    const input = parse(body), explicitTimestamp = mapping.timestampPath ? property(input, mapping.timestampPath) : input && typeof input === 'object' ? input.timestamp : undefined;
+    const at = explicitTimestamp === undefined ? packet.retain ? null : receivedAt : sourceTime(explicitTimestamp);
+    const invalidTime = explicitTimestamp !== undefined && (!scalar(at) || at < 0 || at > receivedAt);
+    const applicable = definitions(device).filter(definition => topic === (definition.topic ?? device.topic));
+    if (!applicable.length) return;
+    if (packet.retain && !canonicalTemperature(device)) {
+      // A retained contact value can be useful context, never fresh state.
+      if (device.kind === 'door' && !device.readings[device.stateSignal]) {
+        const selected = mapping.statePath ? property(input, mapping.statePath) : input && typeof input === 'object' ? input.value : input;
+        const value = stateValue(selected);
+        if (value !== null) device.readings[device.stateSignal] = { value, unit: 'state', label: 'Door', observedAt: invalidTime ? null : at,
+          receivedAt, retained: true, quality: ['retained', 'last-reported'] };
+      }
+      return;
+    }
+    if (invalidTime && !canonicalTemperature(device)) { unavailable(device, 'invalid-source-time'); return; }
+    let updated = false, invalid = false;
+    if (canonicalTemperature(device) && topic === device.topic) {
+      const selected = mapping.statePath || mapping.timestampPath ? { value: mapping.statePath ? property(input, mapping.statePath) : input?.value,
+        ...(explicitTimestamp === undefined ? {} : { timestamp: explicitTimestamp }), ...(input?.unit ? { unit: input.unit } : {}) } : input;
+      const periodic = INDOOR_SIGNALS.includes(device.temperatureSignal);
+      const observation = decodeMqttTemperature({ signal: device.temperatureSignal === 'garage_temperature_ha' ? 'garage_temperature' : device.temperatureSignal, payload: mapping.statePath || mapping.timestampPath ? JSON.stringify(selected) : body, receivedAt, retained: packet.retain,
+        reportIntervalMs: periodic ? temperatureReportIntervalMs : null, reportGraceMs: periodic ? temperatureReportGraceMs : 0 });
+      if (!observation) { unavailable(device, 'invalid-temperature-message'); return; }
+      const definition = definitions(device)[0];
+      updated = record(device, definition, observation.value, observation.sourceTime, receivedAt, observation.quality, observation.raw);
+      invalid = observation.value === null || observation.quality.some(flag => /invalid|missing|future|stale/.test(flag));
+    } else for (const definition of applicable) {
+      const selectedPath = definition.path ?? (definition.signal === device.stateSignal || definition.signal === device.temperatureSignal ? mapping.statePath : null);
+      let value = selectedPath ? property(input, selectedPath) : input && typeof input === 'object' ? input.value : input;
+      value = definition.unit === 'state' ? stateValue(value) : scalar(value) ? value : null;
+      if (value !== null) value = value * (definition.scale ?? 1) + (definition.offset ?? 0);
+      if (['degC', '°C'].includes(definition.unit) && (!scalar(value) || value < -60 || value > 150)) value = null;
+      if (value === null && !definition.required && !device.readings[definition.signal]) continue;
+      updated = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : []) || updated;
+      invalid ||= definition.required && value === null;
+    }
+    if (!updated) return;
+    device.lastAt = receivedAt; device.liveSinceConnect = !packet.retain; device.invalid = invalid;
+    const counter = device.mappings.find(mapping => mapping.key === 'energy_counter');
+    if (device.metered && counter) {
+      const reading = device.readings[counter.signal];
+      if (topic === (counter.topic ?? device.topic) && fresh(device, reading, receivedAt) && reading.value >= 0)
+        energy.get(device.id)?.receive(reading.value / (counter.unit === 'Wh' ? 1000 : 1), reading.observedAt);
+    } else if (device.metered && topic === device.topic && scalar(input?.energy) && input.energy >= 0) energy.get(device.id)?.receive(input.energy, at);
+    const main = device.readings[device.stateSignal];
+    if (fresh(device, main, receivedAt)) for (const waiter of [...device.waiters])
+      if (receivedAt >= waiter.at && main.observedAt >= waiter.at && main.value === Number(waiter.on)) {
+        waiter.observed = true; if (waiter.published) waiter.finish();
+      }
+    for (const check of [...device.checks]) if (receivedAt >= check.at) check.finish(healthy(device, receivedAt) ? 'available' : 'needs-attention');
+  }
+  async function switchDevice(device, on) {
+    if (!device || typeof on !== 'boolean') throw fail('invalid switch selection');
+    if (!connected || closed || !canControl()) throw fail('control authority unavailable');
+    if (device.waiters.size) throw fail('switch operation already in progress');
+    await new Promise((resolve, reject) => {
+      let completed = false;
+      const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, finish: reason => {
+        if (completed) return;
+        if (!reason && (!canControl() || !connected || closed)) reason = fail('control authority unavailable');
+        completed = true; clearTimeout(timer); device.waiters.delete(waiter); reason ? reject(reason) : resolve();
+      } };
+      const timer = setTimeout(() => waiter.finish(fail('state confirmation timed out; delivery unconfirmed')), readbackTimeoutMs);
+      device.waiters.add(waiter);
+      Promise.resolve().then(() => {
+        if (!canControl() || !connected || closed) throw fail('control authority unavailable');
+        return publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload, { qos: 1, retain: false });
+      }).then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, () => waiter.finish(fail('switch publication failed; delivery unconfirmed')));
+    });
+    return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
+  }
+  const api = {
+    topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(device => [device.topic, ...device.mappings.map(row => row.topic),
+      device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))])],
+    ownsGarage: settings.ownsGarage === true, hasHeating: enabled.some(device => device.controlsHeat), signature,
+    setConnected(value) {
+      connected = value; native?.setConnected(value);
+      for (const device of devices) { if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.liveSinceConnect = false; } }
+    },
+    subscriptionFailed(topic) {
+      native?.subscriptionFailed(topic);
+      for (const device of devices) if ([device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic, ...device.mappings.map(row => row.topic)].includes(topic)) unavailable(device, 'mqtt-subscription-failed');
+    },
+    receive(topic, payload, packet = {}, receivedAt = engine.clock()) {
+      if (native?.receive(topic, payload, packet, receivedAt)) return true;
+      const selected = devices.filter(device => [device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic, ...device.mappings.map(row => row.topic)].includes(topic));
+      if (!selected.length) return false;
+      if (!connected || closed || packet.dup) return true;
+      const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
+      if (body.length > 65536) return true;
+      for (const device of selected) receiveDevice(device, topic, body, packet, receivedAt);
+      return true;
+    },
+    tick(now = engine.clock()) {
+      if (closed) return;
+      native?.tick(now); for (const accumulator of energy.values()) accumulator.tick(now);
+      for (const device of devices) if (device.liveSinceConnect && (device.mqtt.heartbeatMs && scalar(device.heartbeatAt) && now - device.heartbeatAt > device.mqtt.heartbeatMs
+        || age(device) > 0 && now - device.lastAt > age(device))) unavailable(device, 'missing-report');
+    },
+    async recheck({ deviceId } = {}) {
+      if (deviceId && !enabled.some(row => row.id === deviceId)) throw fail('unknown device');
+      const tasks = [];
+      if (native && (!deviceId || enabled.some(row => row.id === deviceId && row.protocol === 'shelly'))) tasks.push(native.recheck({ deviceId }));
+      for (const device of devices.filter(row => !deviceId || row.id === deviceId)) tasks.push(new Promise(resolve => {
+        let completed = false;
+        const check = { at: engine.clock(), finish: status => {
+          if (completed) return; completed = true; clearTimeout(timer); device.checks.delete(check);
+          device.check = { checking: false, checkedAt: engine.clock(), status }; resolve();
+        } };
+        const timer = setTimeout(() => check.finish('awaiting-report'), readbackTimeoutMs);
+        device.checks.add(check); device.check = { checking: true, startedAt: check.at, status: 'checking' };
+        if (!connected || closed) { check.finish('unavailable'); return; }
+        if (device.mqtt.requestTopic) Promise.resolve().then(() => publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 0, retain: false })).catch(() => check.finish('unavailable'));
+        else check.finish(healthy(device, engine.clock()) ? 'last-reported' : 'awaiting-report');
+      }));
+      await Promise.all(tasks); return api.status();
+    },
+    async setSwitch(deviceId, on) {
+      const config = enabled.find(row => row.id === deviceId);
+      if (!config?.controlsSwitch) throw fail('switch control is not configured');
+      return config.protocol === 'shelly' ? native.setSwitch(deviceId, on) : switchDevice(devices.find(row => row.id === deviceId), on);
+    },
+    async publishHeating(commands) {
+      if (!Array.isArray(commands) || !commands.length || commands.some(command => !['heatoff', 'heaton15'].includes(command))) throw fail('invalid heating command');
+      if (heatingBusy) throw fail('heating operation already in progress');
+      if (!connected || closed || !canControl()) throw fail('control authority unavailable');
+      heatingBusy = true;
+      try {
+        if (native?.hasHeating) await native.publishHeating(commands);
+        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'heatoff' ? device.reductionOn : !device.reductionOn);
+        return { confirmed: true, status: 'confirmed', sent: true, commands: [...commands], acknowledged: commands.length, acknowledgement: 'equipment-state-readback' };
+      } finally { heatingBusy = false; }
+    },
+    status(now = engine.clock()) {
+      const nativeStatus = native?.status(now), rows = [...(nativeStatus?.devices ?? []), ...devices.map(device => ({ id: device.id, role: device.id,
+        label: device.label, area: device.area, kind: device.kind, source: 'MQTT', connection: device.connection, available: healthy(device, now),
+        observedAt: device.lastAt, controls: { switch: device.controlsSwitch, tariff: device.controlsHeat }, check: device.check,
+        readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
+          { ...reading, stale: !connected || !device.liveSinceConnect || device.online === false || !fresh(device, reading, now)
+            || Boolean(device.mqtt.heartbeatMs && (!scalar(device.heartbeatAt) || now - device.heartbeatAt > device.mqtt.heartbeatMs)) }])),
+        ...(energy.has(device.id) ? { energy: energy.get(device.id).status(now) } : {}) }))];
+      return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),
+        lastCheckedAt: Math.max(0, ...rows.map(row => row.check?.checkedAt ?? 0)) || null,
+        devices: configured.map(config => rows.find(row => row.id === config.id) ?? { id: config.id, role: config.id, label: config.label,
+          area: config.area, kind: config.kind, source: config.source, connection: config.connection, enabled: false, available: false,
+          readings: {}, controls: { switch: false, tariff: false }, check: { checking: false, status: 'disabled' } }) };
+    },
+    close() { if (closed) return; api.setConnected(false); native?.close(); closed = true; },
+  };
+  return api;
+}

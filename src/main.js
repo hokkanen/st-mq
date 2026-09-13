@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
 import { loadConfig, configurationReader, configurationSource } from './app/config.js';
 import { Engine } from './app/engine.js';
+import { createEquipmentTests } from './app/equipment-tests.js';
 import { createWebAccess } from './app/web-access.js';
 import { startHistoryLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
@@ -87,19 +88,33 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     restore = restore && canControl();
     clearTimeout(timer);
     if (engine) engine.onTemporaryChange = null;
+    // Restore timed device tests while their original acquisition route still
+    // exists. A failed shutdown keeps the durable obligation for the next start.
+    if (restore) {
+      try { await engine?.equipmentTests?.close({ restore: true }); }
+      catch {
+        try { store.event('equipment-test-restoration-pending', { reason: 'application-shutdown' }, clock()); }
+        catch { /* A failed diagnostic must not keep device transports alive. */ }
+        finally { await engine?.equipmentTests?.close({ restore: false }); }
+      }
+    }
     // Revoke transports before awaiting any pending device readback on demotion.
     // Ordinary shutdown still performs the existing restoration protocol.
     let revokedAcquisitions;
     if (!restore) {
       const transportStopped = commandTransport?.close();
       revokedAcquisitions = Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close({ restore: false })));
+      await engine?.equipmentTests?.close({ restore: false });
       await transportStopped;
     }
     if (engine?.heatingTestBusy) await commandTransport?.close();
     await engine?.dispatchPending?.catch(() => {});
     await engine?.closeFireplace();
     try { await engine?.executor?.close?.({ restore }); }
-    catch { store.event('restoration-pending', { reason: 'application-shutdown' }, clock()); }
+    catch {
+      try { store.event('restoration-pending', { reason: 'application-shutdown' }, clock()); }
+      catch { /* Continue releasing transports when the event store is unavailable. */ }
+    }
     await commandTransport?.close();
     await (revokedAcquisitions ?? Promise.all(acquisitions.splice(0).map(acquisition => acquisition.close({ restore }))));
     await learning?.close(); learning = null;
@@ -119,7 +134,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // MQTT connection and device publications remain asynchronous.
     const hasMqttObservations = config.h66?.deviceId || config.deviceId
       || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0
-      || config.connections.teslamate?.enabled === true;
+      || config.connections.teslamate?.enabled === true
+      || config.connections.shelly?.devices?.length > 0
+      || config.connections.equipment?.devices?.length > 0;
     if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
       requireRunning();
@@ -130,8 +147,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         requireRunning();
       }
       acquisitions.push(acquisition);
+      engine.equipment = acquisition.equipment ?? null;
+      if (acquisition.equipment?.hasHeating) commandTransport.setHeatingRelay(acquisition.equipment.publishHeating);
+      else if (acquisition.shelly?.hasHeating) commandTransport.setHeatingRelay(acquisition.shelly.publishHeating);
       if (acquisition.h66) engine.setH66(acquisition);
     }
+    engine.equipmentTests = createEquipmentTests({ store, clock, getEquipment: () => engine.equipment,
+      canControl: () => canControl() && ['mqtt', 'providers'].includes(config.input) });
+    engine.equipmentTests.tick();
   }
   function startBackground() {
     requireRunning();
@@ -199,6 +222,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         throw new Error('Input, role, replication, network access or storage settings changed. Restart to apply these changes; no settings were updated.');
       const native = engine.h66Status?.();
       if (engine.heatingTestBusy || engine.dispatchPending || engine.executor.pending
+        || engine.equipmentTests?.status().busy
         || native?.phase === 'test' || Object.values(native?.controls ?? {}).some(control => control.reason === 'A setting transition is in progress.'))
         throw new Error('Wait for the current heating operation or native setting test to finish before updating settings.');
       clearTimeout(timer);
@@ -206,6 +230,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       // Restore owned equipment settings through the old connections before any
       // broker or device changes can discard that restoration path.
       try {
+        await engine.equipmentTests?.restore();
         const result = await engine.executor.restore({ now: clock(), reason: 'settings-reload' });
         if (result.restorationPending) throw new Error('pending');
       } catch {

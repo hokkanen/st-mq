@@ -27,7 +27,7 @@ test('ingress login errors direct users back to Home Assistant without requestin
   assert.equal(usesHomeAssistantLogin('/api/hassio_ingress/example-session/'), true);
   assert.equal(usesHomeAssistantLogin('/api/hassio_ingress/example-session/index.html'), true);
   for (const path of ['/', '/index.html', '/api/status', '/api/hassio_ingress/']) assert.equal(usesHomeAssistantLogin(path), false);
-  assert.match(authenticationMessage(true), /Reopen ST-MQ from Home Assistant/);
+  assert.match(authenticationMessage(true), /Reopen ST-MQ from the host dashboard/);
   assert.doesNotMatch(authenticationMessage(true), /access token/);
   assert.match(authenticationMessage(false), /access token/);
 });

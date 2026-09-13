@@ -42,7 +42,11 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   const rooms = select.children.find(group => group.label === 'Home temperatures · Recorded');
   assert.deepEqual(rooms.children.map(option => [option.value, option.textContent]), [
     ['temperatures', 'All home temperatures'],
+    ['garage_temperature_ha', 'Garage temperature · MQTT'],
+    ['garage_temperature_2', 'Garage temperature 2'],
+    ['garage_heat_pump_temperature', 'Garage heat-pump temperature'],
   ]);
+  for (const signal of ['caravan_energy', 'caravan_power', 'caravan_current', 'caravan_active']) assert(choices.has(signal));
   assert(!choices.has('garage_temperature'), 'Garage is shared on the right axis');
   for (const room of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']) assert(!choices.has(room));
   for (const key of ['firewood_load', 'model_fireplace_release', 'firewood_savings', 'firewood_electricity_avoided']) assert(choices.has(key));

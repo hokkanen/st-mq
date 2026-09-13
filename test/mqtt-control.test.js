@@ -47,7 +47,7 @@ test('real MQTT publishes legacy commands in order only after PUBACK, without re
   const next = () => new Promise(resolve => published.once('publish', resolve));
   let firstPacket = next();
   let settled = false;
-  const result = transport.publish(['heaton60', 'heaton15']).then(value => { settled = true; return value; });
+  const result = transport.publish(['heaton15', 'heatoff']).then(value => { settled = true; return value; });
   const first = await firstPacket;
   await delay(25);
   assert.equal(settled, false, 'Writing a packet is not reported as broker acknowledgement');
@@ -68,7 +68,7 @@ test('real MQTT publishes legacy commands in order only after PUBACK, without re
   assert.ok(packets.filter(packet => packet.cmd === 'connect').every(packet => packet.clean));
   assert.deepEqual(packets.filter(packet => packet.cmd === 'publish').map(packet => ({
     topic: packet.topic, command: packet.payload.toString(), qos: packet.qos, retain: packet.retain,
-  })), ['heaton60', 'heaton15', 'heatoff'].map(command => ({ topic: 'from_stmq/heat/action', command, qos: 1, retain: false })));
+  })), ['heaton15', 'heatoff', 'heatoff'].map(command => ({ topic: 'from_stmq/heat/action', command, qos: 1, retain: false })));
 });
 
 test('commands are all validated before dialing and copied before awaiting connection', async () => {
@@ -77,7 +77,7 @@ test('commands are all validated before dialing and copied before awaiting conne
   const client = fakeClient();
   let calls = 0;
   const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid' }, connect: () => { calls++; return client; } });
-  for (const commands of [null, [], Array(1), 'heatoff', ['heatoff', 'unknown'], ['HEATOFF'], ['heatoff '], [7]]) {
+  for (const commands of [null, [], Array(1), 'heatoff', ['heatoff', 'unknown'], ['HEATOFF'], ['heatoff '], ['heaton60'], [7]]) {
     await assert.rejects(transport.publish(commands), { code: 'MQTT_COMMAND_INVALID' });
   }
   assert.equal(calls, 0);
@@ -96,7 +96,7 @@ test('pending acknowledgement blocks concurrent commands and shutdown cancels th
   let options;
   const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid', user: 'example', pw: 'example-password' },
     connect: (address, opts) => { options = opts; return client; } });
-  const result = transport.publish(['heaton60', 'heaton15']);
+  const result = transport.publish(['heaton15', 'heatoff']);
   const rejected = assert.rejects(result, { code: 'MQTT_CLOSED' });
   client.emit('connect');
   assert.equal(options.reconnectPeriod, 0);
@@ -120,7 +120,7 @@ test('connection and PUBACK timeouts close clients and cannot publish delayed co
   for (const connected of [false, true]) {
     const client = fakeClient();
     const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid' }, connect: () => client, timeoutMs: 15 });
-    const result = transport.publish(['heaton60', 'heaton15']);
+    const result = transport.publish(['heaton15', 'heatoff']);
     if (connected) client.emit('connect');
     await assert.rejects(result, error => {
       assert.equal(error.code, connected ? 'MQTT_TIMEOUT' : 'MQTT_CONNECTION_TIMEOUT');
@@ -144,7 +144,7 @@ test('factory, broker, publish, and disconnect errors are safe and stop the rest
       return client;
     } });
     if (fail === 'publish') client.publish = () => { throw rawError; };
-    const result = transport.publish(['heaton60', 'heaton15']);
+    const result = transport.publish(['heaton15', 'heatoff']);
     if (fail !== 'factory') {
       if (fail === 'broker') client.emit('error', rawError);
       else {
@@ -176,7 +176,7 @@ test('connection failures identify the cause without exposing broker details or 
   ]) {
     const client = fakeClient();
     const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid' }, connect: () => client });
-    const result = transport.publish(['heaton60', 'heaton15']);
+    const result = transport.publish(['heaton15', 'heatoff']);
     client.emit('error', Object.assign(new Error('private broker credentials must not escape'), { code: rawCode }));
     await assert.rejects(result, error => {
       assert.equal(error.code, expected);
@@ -196,7 +196,7 @@ test('real broker login rejection is reported before publishing', { timeout: 500
   const connection = await broker(t, packet => packets.push(packet), 5);
   const transport = createHeatingTransport({ connection, timeoutMs: 2000 });
   t.after(() => transport.close());
-  await assert.rejects(transport.publish(['heaton60']), error => {
+  await assert.rejects(transport.publish(['heaton15']), error => {
     assert.equal(error.code, 'MQTT_AUTH_FAILED');
     assert.match(error.message, /rejected the login or access permissions/);
     assert.match(error.message, /No command was sent/);
@@ -209,7 +209,7 @@ test('real broker login rejection is reported before publishing', { timeout: 500
 test('network errors after a publish keep delivery uncertainty and stop the remaining batch', async () => {
   const client = fakeClient();
   const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid' }, connect: () => client });
-  const result = transport.publish(['heaton60', 'heaton15']);
+  const result = transport.publish(['heaton15', 'heatoff']);
   client.emit('connect');
   client.emit('error', Object.assign(new Error('private broker address'), { code: 'EHOSTUNREACH' }));
   await assert.rejects(result, error => {
@@ -220,5 +220,36 @@ test('network errors after a publish keep delivery uncertainty and stop the rema
   });
   client.published[0].callback();
   assert.equal(client.published.length, 1);
+  await transport.close();
+});
+
+test('DHWR uses nonretained ON and OFF switch messages and refuses untimed button intents', async () => {
+  const clients = [];
+  const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid', dhwr_topic: 'example/dhwr/set' },
+    connect: () => { const client = fakeClient(); clients.push(client); return client; } });
+  for (const on of [true, false]) {
+    const result = transport.publishDhwr(on), client = clients.at(-1);
+    client.emit('connect');
+    assert.equal(client.published[0].topic, 'example/dhwr/set');
+    assert.equal(client.published[0].payload, on ? 'ON' : 'OFF');
+    assert.deepEqual(client.published[0].options, { qos: 1, retain: false });
+    client.published[0].callback();
+    assert.equal((await result).sent, true);
+  }
+  await assert.rejects(transport.publish(['heaton60']), { code: 'MQTT_COMMAND_INVALID' });
+  await assert.rejects(transport.publishDhwr('ON'), { code: 'MQTT_COMMAND_INVALID' });
+  assert.equal(clients.length, 2);
+  await transport.close();
+});
+
+test('direct heating routing preserves DHWR transport and prevents queued dispatch after authority loss', async () => {
+  let owns = true, calls = 0;
+  const transport = createHeatingTransport({ connection: { address: 'mqtt://example.invalid' }, canControl: () => owns,
+    connect() { throw new Error('Legacy heating broker route must not be used'); } });
+  transport.setHeatingRelay(async commands => { calls++; assert.deepEqual(commands, ['heatoff']); return { sent: true }; });
+  assert.equal((await transport.publish(['heatoff'])).sent, true);
+  const pending = transport.publish(['heatoff']); owns = false;
+  await assert.rejects(pending, { code: 'MQTT_AUTHORITY_LOST' });
+  assert.equal(calls, 1);
   await transport.close();
 });
