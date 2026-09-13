@@ -5,18 +5,394 @@
 -packageKey: 'zwave-smoke-alarm'
 +name: 'ST-MQ Fibaro Temperature Reports'
 +packageKey: 'stmq-fibaro-temperature-reports'
+--- a/drivers/SmartThings/zwave-smoke-alarm/profiles/smoke-battery-temperature-tamperalert-temperaturealarm.yml
++++ b/drivers/SmartThings/zwave-smoke-alarm/profiles/smoke-battery-temperature-tamperalert-temperaturealarm.yml
+@@ -27,18 +27,132 @@
+-  - preferenceId: certifiedpreferences.smokeSensorSensitivity
+-    explicit: true
+-  - preferenceId: certifiedpreferences.zwaveNotificationStatus
+-    explicit: true
+-  - preferenceId: certifiedpreferences.indicatorNotification
+-    explicit: true
+-  - preferenceId: certifiedpreferences.soundNotificationStatus
+-    explicit: true
+-  - preferenceId: certifiedpreferences.tempReportInterval
+-    explicit: true
+-  - preferenceId: certifiedpreferences.tempReportHysteresis
+-    explicit: true
+-  - preferenceId: certifiedpreferences.temperatureThreshold
+-    explicit: true
+-  - preferenceId: certifiedpreferences.overheatInterval
+-    explicit: true
+-  - preferenceId: certifiedpreferences.outOfRange
+-    explicit: true
++- name: smokeSensorSensitivity
++  required: true
++  title: Smoke sensor sensitivity
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': High
++      '1': Medium
++      '2': Low
++    default: '1'
++- name: zwaveNotificationStatus
++  required: true
++  title: zwave notification status
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': None
++      '1': Casing opened
++      '2': Exceeding temperature threshold
++      '4': Lack of Z-Wave range
++      '7': All
++    default: '0'
++- name: indicatorNotification
++  required: true
++  title: Indicator notification status
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': None
++      '1': Casing opened
++      '2': Exceeding temperature threshold
++      '4': Lack of Z-Wave range
++      '7': All
++    default: '0'
++- name: soundNotificationStatus
++  required: true
++  title: sound notification status
++  description: Sound notifications status
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': None
++      '1': Casing opened
++      '2': Exceeding temperature threshold
++      '4': Lack of Z-Wave range
++      '7': All
++    default: '0'
++- name: tempReportInterval
++  required: true
++  title: temperature report interval
++  description: Temperature report interval
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': Reports inactive
++      '30': 5 minutes
++      '90': 15 minutes
++      '180': 30 minutes
++      '360': 1 hour
++      '2160': 6 hours
++      '4320': 12 hours
++      '6480': 18 hours
++      '8640': 24 hours
++    default: '90'
++- name: tempReportHysteresis
++  required: true
++  title: temperature report hysteresis
++  description: Temperature report hysteresis
++  preferenceType: number
++  definition:
++    minimum: 1
++    maximum: 100
++    default: 1
++- name: temperatureThreshold
++  required: true
++  title: Temperature report - threshold
++  description: This parameter determines the change in measured temperature that will result in new temperature report being sent to the main controller.
++  preferenceType: enumeration
++  definition:
++    options:
++      '3': 0.5°F/0.3°C
++      '6': 1°F/0.6°C
++      '10': 2°F/1 °C
++      '17': 3°F/1.7°C
++      '22': 4°F/2.2°C
++      '28': 5°F/2.8°C
++    default: '10'
++- name: overheatInterval
++  required: true
++  title: Overheat signaling interval
++  description: Excess temperature signaling interval
++  preferenceType: enumeration
++  definition:
++    options:
++      '30': 5 minutes
++      '90': 15 minutes
++      '180': 30 minutes
++      '360': 1 hour
++      '2160': 6 hours
++      '4320': 12 hours
++      '6480': 18 hours
++      '8640': 24 hours
++    default: '180'
++- name: outOfRange
++  required: true
++  title: out of range indication interval
++  description: Lack of Z-Wave range indication interval
++  preferenceType: enumeration
++  definition:
++    options:
++      '30': 5 minutes
++      '90': 15 minutes
++      '180': 30 minutes
++      '360': 1 hour
++      '2160': 6 hours
++      '4320': 12 hours
++      '6480': 18 hours
++      '8640': 24 hours
++    default: '360'
++- name: wakeUpIntervalSeconds
++  title: Wake-up interval
++  description: Request a fresh temperature at each wake-up. Applies when the alarm next wakes; no button press is required.
++  required: true
++  preferenceType: enumeration
++  definition:
++    options:
++      '4200': 70 minutes
++      '7200': 2 hours
++      '10800': 3 hours
++      '21600': 6 hours
++      '43200': 12 hours
++    default: '4200'
+--- a/drivers/SmartThings/zwave-smoke-alarm/profiles/smoke-battery-temperature-tamperalert.yml
++++ b/drivers/SmartThings/zwave-smoke-alarm/profiles/smoke-battery-temperature-tamperalert.yml
+@@ -18,18 +18,132 @@
+-  - preferenceId: certifiedpreferences.smokeSensorSensitivity
+-    explicit: true
+-  - preferenceId: certifiedpreferences.zwaveNotificationStatus
+-    explicit: true
+-  - preferenceId: certifiedpreferences.indicatorNotification
+-    explicit: true
+-  - preferenceId: certifiedpreferences.soundNotificationStatus
+-    explicit: true
+-  - preferenceId: certifiedpreferences.tempReportInterval
+-    explicit: true
+-  - preferenceId: certifiedpreferences.tempReportHysteresis
+-    explicit: true
+-  - preferenceId: certifiedpreferences.temperatureThreshold
+-    explicit: true
+-  - preferenceId: certifiedpreferences.overheatInterval
+-    explicit: true
+-  - preferenceId: certifiedpreferences.outOfRange
+-    explicit: true
+\ No newline at end of file
++- name: smokeSensorSensitivity
++  required: true
++  title: Smoke sensor sensitivity
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': High
++      '1': Medium
++      '2': Low
++    default: '1'
++- name: zwaveNotificationStatus
++  required: true
++  title: zwave notification status
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': None
++      '1': Casing opened
++      '2': Exceeding temperature threshold
++      '4': Lack of Z-Wave range
++      '7': All
++    default: '0'
++- name: indicatorNotification
++  required: true
++  title: Indicator notification status
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': None
++      '1': Casing opened
++      '2': Exceeding temperature threshold
++      '4': Lack of Z-Wave range
++      '7': All
++    default: '0'
++- name: soundNotificationStatus
++  required: true
++  title: sound notification status
++  description: Sound notifications status
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': None
++      '1': Casing opened
++      '2': Exceeding temperature threshold
++      '4': Lack of Z-Wave range
++      '7': All
++    default: '0'
++- name: tempReportInterval
++  required: true
++  title: temperature report interval
++  description: Temperature report interval
++  preferenceType: enumeration
++  definition:
++    options:
++      '0': Reports inactive
++      '30': 5 minutes
++      '90': 15 minutes
++      '180': 30 minutes
++      '360': 1 hour
++      '2160': 6 hours
++      '4320': 12 hours
++      '6480': 18 hours
++      '8640': 24 hours
++    default: '90'
++- name: tempReportHysteresis
++  required: true
++  title: temperature report hysteresis
++  description: Temperature report hysteresis
++  preferenceType: number
++  definition:
++    minimum: 1
++    maximum: 100
++    default: 1
++- name: temperatureThreshold
++  required: true
++  title: Temperature report - threshold
++  description: This parameter determines the change in measured temperature that will result in new temperature report being sent to the main controller.
++  preferenceType: enumeration
++  definition:
++    options:
++      '3': 0.5°F/0.3°C
++      '6': 1°F/0.6°C
++      '10': 2°F/1 °C
++      '17': 3°F/1.7°C
++      '22': 4°F/2.2°C
++      '28': 5°F/2.8°C
++    default: '10'
++- name: overheatInterval
++  required: true
++  title: Overheat signaling interval
++  description: Excess temperature signaling interval
++  preferenceType: enumeration
++  definition:
++    options:
++      '30': 5 minutes
++      '90': 15 minutes
++      '180': 30 minutes
++      '360': 1 hour
++      '2160': 6 hours
++      '4320': 12 hours
++      '6480': 18 hours
++      '8640': 24 hours
++    default: '180'
++- name: outOfRange
++  required: true
++  title: out of range indication interval
++  description: Lack of Z-Wave range indication interval
++  preferenceType: enumeration
++  definition:
++    options:
++      '30': 5 minutes
++      '90': 15 minutes
++      '180': 30 minutes
++      '360': 1 hour
++      '2160': 6 hours
++      '4320': 12 hours
++      '6480': 18 hours
++      '8640': 24 hours
++    default: '360'
++- name: wakeUpIntervalSeconds
++  title: Wake-up interval
++  description: Request a fresh temperature at each wake-up. Applies when the alarm next wakes; no button press is required.
++  required: true
++  preferenceType: enumeration
++  definition:
++    options:
++      '4200': 70 minutes
++      '7200': 2 hours
++      '10800': 3 hours
++      '21600': 6 hours
++      '43200': 12 hours
++    default: '4200'
 --- a/drivers/SmartThings/zwave-smoke-alarm/src/fibaro-smoke-sensor/init.lua
 +++ b/drivers/SmartThings/zwave-smoke-alarm/src/fibaro-smoke-sensor/init.lua
 @@ -13,0 +14 @@
 +local WakeUpV2 = (require "st.zwave.CommandClass.WakeUp")({version=2})
-@@ -42,0 +44,6 @@
+@@ -15 +16,56 @@
+-local FIBARO_SMOKE_SENSOR_WAKEUP_INTERVAL = 21600 --seconds
++local DEFAULT_WAKEUP_INTERVAL = 4200 -- 70 minutes, in seconds
++local WAKEUP_CHOICES = {[4200] = true, [7200] = true, [10800] = true, [21600] = true, [43200] = true}
++local log = require "log"
++
++local function selected_wakeup_interval(device)
++  local selection = device.preferences.wakeUpIntervalSeconds
++  if selection == nil then return DEFAULT_WAKEUP_INTERVAL end
++  local seconds = tonumber(selection)
++  if not WAKEUP_CHOICES[seconds] then
++    log.warn("Ignoring invalid wake-up interval preference")
++    return nil
++  end
++  return seconds
++end
++
++-- Called only while a detector is awake (added or WakeUp.Notification).
++-- A saved choice remains authoritative across driver/hub restarts. Successful
++-- Set transmission is not confirmation: only an IntervalReport is readback.
++local function configure_wakeup(self, device)
++  local seconds = selected_wakeup_interval(device)
++  local hub_node = self.environment_info.hub_zwave_id
++  local limits = device:get_field("stmq_wakeup_limits")
++  if seconds and limits and (seconds < limits.minimum or seconds > limits.maximum) then
++    log.warn("Selected wake-up interval is outside this detector's reported limits")
++    seconds = nil
++  end
++  local observed = device:get_field("stmq_wakeup_observed")
++  if seconds and (not observed or observed.seconds ~= seconds or observed.node_id ~= hub_node) then
++    device:send(WakeUp:IntervalSet({node_id = hub_node, seconds = seconds}))
++  end
++  -- Read back on every wake: retry a missing/mismatched Set next time, while
++  -- avoiding repeated writes once the interval and controller are confirmed.
++  device:send(WakeUp:IntervalGetV1({}))
++  device:set_field("__wakeup_interval_get_sent", true)
++end
++
++local function wakeup_interval_report_handler(self, device, cmd)
++  local seconds, node_id = cmd.args.seconds, cmd.args.node_id
++  if type(seconds) ~= "number" or seconds < 0 or seconds > 0xFFFFFF or seconds ~= math.floor(seconds) or
++    type(node_id) ~= "number" or node_id < 1 or node_id > 232 or node_id ~= math.floor(node_id) then return end
++  device:set_field("stmq_wakeup_observed", {seconds = seconds, node_id = node_id}, {persist = true})
++  if seconds == selected_wakeup_interval(device) and node_id == self.environment_info.hub_zwave_id then
++    log.info("Selected wake-up interval confirmed by detector")
++  else
++    log.warn("Wake-up interval differs from selection; will retry on next wake")
++  end
++end
++
++local function wakeup_capabilities_report_handler(self, device, cmd)
++  local minimum = cmd.args.minimum_wake_up_interval_seconds
++  local maximum = cmd.args.maximum_wake_up_interval_seconds
++  if type(minimum) == "number" and type(maximum) == "number" and
++    minimum >= 0 and minimum <= maximum and maximum < math.huge then
++    device:set_field("stmq_wakeup_limits", {minimum = minimum, maximum = maximum}, {persist = true})
++  end
++end
+@@ -25 +81 @@
+-  device:send(WakeUp:IntervalSet({node_id = self.environment_info.hub_zwave_id, seconds = FIBARO_SMOKE_SENSOR_WAKEUP_INTERVAL}))
++  configure_wakeup(self, device)
+@@ -34,6 +90 @@
+-  --Note sending WakeUpIntervalGet the first time a device wakes up will happen by default in Lua libs 0.49.x and higher
+-  --This is done to help the hub correctly set the checkInterval for migrated devices.
+-  if not device:get_field("__wakeup_interval_get_sent") then
+-    device:send(WakeUp:IntervalGetV1({}))
+-    device:set_field("__wakeup_interval_get_sent", true)
+-  end
++  configure_wakeup(self, device)
+@@ -42,0 +94,6 @@
 +  -- Read the detector's actual supported limits once per driver runtime.
-+  -- The decoded response is available in private logcat; no interval is changed.
++  -- The decoded response is available in private logcat and limits later writes.
 +  if not device:get_field("__stmq_wakeup_capabilities_queried") then
 +    device:send(WakeUpV2:IntervalCapabilitiesGet({}))
 +    device:set_field("__stmq_wakeup_capabilities_queried", true)
 +  end
-@@ -44,0 +52,17 @@
+@@ -44,0 +102,17 @@
 +-- Forward every genuine Fibaro temperature report, including equal values.
 +local function temperature_report_handler(self, device, cmd)
 +  if cmd.args.sensor_type ~= SensorMultilevel.sensor_type.TEMPERATURE then return end
@@ -34,7 +410,79 @@
 +    capabilities.temperatureMeasurement.temperature(
 +      { value = value, unit = unit }, { state_change = true }))
 +end
-@@ -46,0 +71,3 @@
+@@ -46,0 +121,3 @@
 +    [cc.SENSOR_MULTILEVEL] = {
 +      [SensorMultilevel.REPORT] = temperature_report_handler
 +    },
+@@ -48 +125,5 @@
+-      [WakeUp.NOTIFICATION] = wakeup_notification_handler
++      [WakeUp.NOTIFICATION] = wakeup_notification_handler,
++      -- The SDK has no Lua defaults for these reports; the hub also receives
++      -- IntervalReport directly for its own device-health interval handling.
++      [WakeUp.INTERVAL_REPORT] = wakeup_interval_report_handler,
++      [WakeUpV2.INTERVAL_CAPABILITIES_REPORT] = wakeup_capabilities_report_handler
+--- a/drivers/SmartThings/zwave-smoke-alarm/src/init.lua
++++ b/drivers/SmartThings/zwave-smoke-alarm/src/init.lua
+@@ -14,0 +15,21 @@
++local log = require "log"
++local LOCAL_PREFERENCES_REVISION = 1
++local LOCAL_PREFERENCES_ATTEMPTED = "stmq_local_preferences_attempted_revision"
++
++local function preference_counts(device, parameters)
++  local mapped_count, local_count, legacy_count = 0, 0, 0
++  for id in pairs(parameters or {}) do
++    mapped_count = mapped_count + 1
++    local local_id = id:match("^certifiedpreferences%.(.+)$")
++    if local_id and device.preferences[local_id] ~= nil then local_count = local_count + 1 end
++    if local_id and device.preferences[id] ~= nil then legacy_count = legacy_count + 1 end
++  end
++  return mapped_count, local_count, legacy_count
++end
++
++local function log_preference_state(device, parameters, phase)
++  local mapped_count, local_count, legacy_count = preference_counts(device, parameters)
++  log.info(string.format("Preference application %s: mapped=%d local=%d legacy=%d attempted=%s",
++    phase, mapped_count, local_count, legacy_count,
++    tostring(device:get_field(LOCAL_PREFERENCES_ATTEMPTED) ~= nil)))
++end
+@@ -20 +41 @@
+-local function update_preferences(self, device, args)
++local function update_preferences(self, device, args, is_awake)
+@@ -22,4 +43,22 @@
+-  for id, value in pairs(device.preferences) do
+-    if not (args and args.old_st_store and args.old_st_store.preferences) or (args.old_st_store.preferences[id] ~= value and preferences and preferences[id]) then
+-      local new_parameter_value = preferencesMap.to_numeric_value(device.preferences[id])
+-      device:send(Configuration:Set({parameter_number = preferences[id].parameter_number, size = preferences[id].size, configuration_value = new_parameter_value}))
++  local old_preferences = args and args.old_st_store and args.old_st_store.preferences
++  -- The SDK snapshots current preferences at init. A newly installed profile's
++  -- defaults can therefore be visible without appearing as changes at wake-up.
++  -- Attempt the complete new local selection once, only from the awake callback.
++  local _, local_count = preference_counts(device, preferences)
++  local pending_local_selection = device:get_field(LOCAL_PREFERENCES_ATTEMPTED) ~= LOCAL_PREFERENCES_REVISION
++  if is_awake and pending_local_selection and not device:get_field("__stmq_preference_pending_logged") then
++    log_preference_state(device, preferences, "first pending wake")
++    device:set_field("__stmq_preference_pending_logged", true)
++  end
++  local apply_local_selection = is_awake and local_count == 9 and pending_local_selection
++  -- Iterate mapped parameters so the separate wake-up preference is never sent
++  -- as a Configuration parameter. Embedded values supersede the legacy IDs.
++  for id, parameter in pairs(preferences or {}) do
++    local local_id = id:match("^certifiedpreferences%.(.+)$") or id
++    local value = device.preferences[local_id]
++    if value == nil then value = device.preferences[id] end
++    local old_value = old_preferences and old_preferences[local_id]
++    if old_value == nil and old_preferences then old_value = old_preferences[id] end
++    if value ~= nil and (apply_local_selection or not old_preferences or old_value ~= value) then
++      local new_parameter_value = preferencesMap.to_numeric_value(value)
++      device:send(Configuration:Set({parameter_number = parameter.parameter_number, size = parameter.size, configuration_value = new_parameter_value}))
+@@ -26,0 +66,4 @@
++  end
++  if apply_local_selection then
++    -- Records a write attempt while awake, not detector acknowledgement.
++    device:set_field(LOCAL_PREFERENCES_ATTEMPTED, LOCAL_PREFERENCES_REVISION, {persist = true})
+@@ -35 +78,4 @@
+-  device:set_update_preferences_fn(update_preferences)
++  device:set_update_preferences_fn(function(driver, awake_device, args)
++    update_preferences(driver, awake_device, args, true)
++  end)
++  log_preference_state(device, preferencesMap.get_device_parameters(device), "initialized")

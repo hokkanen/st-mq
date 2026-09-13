@@ -24,21 +24,135 @@ components:
   categories:
   - name: SmokeDetector
 preferences:
-  - preferenceId: certifiedpreferences.smokeSensorSensitivity
-    explicit: true
-  - preferenceId: certifiedpreferences.zwaveNotificationStatus
-    explicit: true
-  - preferenceId: certifiedpreferences.indicatorNotification
-    explicit: true
-  - preferenceId: certifiedpreferences.soundNotificationStatus
-    explicit: true
-  - preferenceId: certifiedpreferences.tempReportInterval
-    explicit: true
-  - preferenceId: certifiedpreferences.tempReportHysteresis
-    explicit: true
-  - preferenceId: certifiedpreferences.temperatureThreshold
-    explicit: true
-  - preferenceId: certifiedpreferences.overheatInterval
-    explicit: true
-  - preferenceId: certifiedpreferences.outOfRange
-    explicit: true
+- name: smokeSensorSensitivity
+  required: true
+  title: Smoke sensor sensitivity
+  preferenceType: enumeration
+  definition:
+    options:
+      '0': High
+      '1': Medium
+      '2': Low
+    default: '1'
+- name: zwaveNotificationStatus
+  required: true
+  title: zwave notification status
+  preferenceType: enumeration
+  definition:
+    options:
+      '0': None
+      '1': Casing opened
+      '2': Exceeding temperature threshold
+      '4': Lack of Z-Wave range
+      '7': All
+    default: '0'
+- name: indicatorNotification
+  required: true
+  title: Indicator notification status
+  preferenceType: enumeration
+  definition:
+    options:
+      '0': None
+      '1': Casing opened
+      '2': Exceeding temperature threshold
+      '4': Lack of Z-Wave range
+      '7': All
+    default: '0'
+- name: soundNotificationStatus
+  required: true
+  title: sound notification status
+  description: Sound notifications status
+  preferenceType: enumeration
+  definition:
+    options:
+      '0': None
+      '1': Casing opened
+      '2': Exceeding temperature threshold
+      '4': Lack of Z-Wave range
+      '7': All
+    default: '0'
+- name: tempReportInterval
+  required: true
+  title: temperature report interval
+  description: Temperature report interval
+  preferenceType: enumeration
+  definition:
+    options:
+      '0': Reports inactive
+      '30': 5 minutes
+      '90': 15 minutes
+      '180': 30 minutes
+      '360': 1 hour
+      '2160': 6 hours
+      '4320': 12 hours
+      '6480': 18 hours
+      '8640': 24 hours
+    default: '90'
+- name: tempReportHysteresis
+  required: true
+  title: temperature report hysteresis
+  description: Temperature report hysteresis
+  preferenceType: number
+  definition:
+    minimum: 1
+    maximum: 100
+    default: 1
+- name: temperatureThreshold
+  required: true
+  title: Temperature report - threshold
+  description: This parameter determines the change in measured temperature that will result in new temperature report being sent to the main controller.
+  preferenceType: enumeration
+  definition:
+    options:
+      '3': 0.5°F/0.3°C
+      '6': 1°F/0.6°C
+      '10': 2°F/1 °C
+      '17': 3°F/1.7°C
+      '22': 4°F/2.2°C
+      '28': 5°F/2.8°C
+    default: '10'
+- name: overheatInterval
+  required: true
+  title: Overheat signaling interval
+  description: Excess temperature signaling interval
+  preferenceType: enumeration
+  definition:
+    options:
+      '30': 5 minutes
+      '90': 15 minutes
+      '180': 30 minutes
+      '360': 1 hour
+      '2160': 6 hours
+      '4320': 12 hours
+      '6480': 18 hours
+      '8640': 24 hours
+    default: '180'
+- name: outOfRange
+  required: true
+  title: out of range indication interval
+  description: Lack of Z-Wave range indication interval
+  preferenceType: enumeration
+  definition:
+    options:
+      '30': 5 minutes
+      '90': 15 minutes
+      '180': 30 minutes
+      '360': 1 hour
+      '2160': 6 hours
+      '4320': 12 hours
+      '6480': 18 hours
+      '8640': 24 hours
+    default: '360'
+- name: wakeUpIntervalSeconds
+  title: Wake-up interval
+  description: Request a fresh temperature at each wake-up. Applies when the alarm next wakes; no button press is required.
+  required: true
+  preferenceType: enumeration
+  definition:
+    options:
+      '4200': 70 minutes
+      '7200': 2 hours
+      '10800': 3 hours
+      '21600': 6 hours
+      '43200': 12 hours
+    default: '4200'

@@ -13,7 +13,62 @@ local SensorMultilevel = (require "st.zwave.CommandClass.SensorMultilevel")({ ve
 local WakeUp = (require "st.zwave.CommandClass.WakeUp")({version=1})
 local WakeUpV2 = (require "st.zwave.CommandClass.WakeUp")({version=2})
 
-local FIBARO_SMOKE_SENSOR_WAKEUP_INTERVAL = 21600 --seconds
+local DEFAULT_WAKEUP_INTERVAL = 4200 -- 70 minutes, in seconds
+local WAKEUP_CHOICES = {[4200] = true, [7200] = true, [10800] = true, [21600] = true, [43200] = true}
+local log = require "log"
+
+local function selected_wakeup_interval(device)
+  local selection = device.preferences.wakeUpIntervalSeconds
+  if selection == nil then return DEFAULT_WAKEUP_INTERVAL end
+  local seconds = tonumber(selection)
+  if not WAKEUP_CHOICES[seconds] then
+    log.warn("Ignoring invalid wake-up interval preference")
+    return nil
+  end
+  return seconds
+end
+
+-- Called only while a detector is awake (added or WakeUp.Notification).
+-- A saved choice remains authoritative across driver/hub restarts. Successful
+-- Set transmission is not confirmation: only an IntervalReport is readback.
+local function configure_wakeup(self, device)
+  local seconds = selected_wakeup_interval(device)
+  local hub_node = self.environment_info.hub_zwave_id
+  local limits = device:get_field("stmq_wakeup_limits")
+  if seconds and limits and (seconds < limits.minimum or seconds > limits.maximum) then
+    log.warn("Selected wake-up interval is outside this detector's reported limits")
+    seconds = nil
+  end
+  local observed = device:get_field("stmq_wakeup_observed")
+  if seconds and (not observed or observed.seconds ~= seconds or observed.node_id ~= hub_node) then
+    device:send(WakeUp:IntervalSet({node_id = hub_node, seconds = seconds}))
+  end
+  -- Read back on every wake: retry a missing/mismatched Set next time, while
+  -- avoiding repeated writes once the interval and controller are confirmed.
+  device:send(WakeUp:IntervalGetV1({}))
+  device:set_field("__wakeup_interval_get_sent", true)
+end
+
+local function wakeup_interval_report_handler(self, device, cmd)
+  local seconds, node_id = cmd.args.seconds, cmd.args.node_id
+  if type(seconds) ~= "number" or seconds < 0 or seconds > 0xFFFFFF or seconds ~= math.floor(seconds) or
+    type(node_id) ~= "number" or node_id < 1 or node_id > 232 or node_id ~= math.floor(node_id) then return end
+  device:set_field("stmq_wakeup_observed", {seconds = seconds, node_id = node_id}, {persist = true})
+  if seconds == selected_wakeup_interval(device) and node_id == self.environment_info.hub_zwave_id then
+    log.info("Selected wake-up interval confirmed by detector")
+  else
+    log.warn("Wake-up interval differs from selection; will retry on next wake")
+  end
+end
+
+local function wakeup_capabilities_report_handler(self, device, cmd)
+  local minimum = cmd.args.minimum_wake_up_interval_seconds
+  local maximum = cmd.args.maximum_wake_up_interval_seconds
+  if type(minimum) == "number" and type(maximum) == "number" and
+    minimum >= 0 and minimum <= maximum and maximum < math.huge then
+    device:set_field("stmq_wakeup_limits", {minimum = minimum, maximum = maximum}, {persist = true})
+  end
+end
 
 
 --- Determine whether the passed device is fibaro smoke sensro
@@ -23,7 +78,7 @@ local FIBARO_SMOKE_SENSOR_WAKEUP_INTERVAL = 21600 --seconds
 --- @return boolean true if the device is fibaro smoke sensor
 
 local function device_added(self, device)
-  device:send(WakeUp:IntervalSet({node_id = self.environment_info.hub_zwave_id, seconds = FIBARO_SMOKE_SENSOR_WAKEUP_INTERVAL}))
+  configure_wakeup(self, device)
   device:emit_event(capabilities.smokeDetector.smoke.clear())
   device:emit_event(capabilities.tamperAlert.tamper.clear())
   device:emit_event(capabilities.temperatureAlarm.temperatureAlarm.cleared())
@@ -32,17 +87,12 @@ local function device_added(self, device)
 end
 
 local function wakeup_notification_handler(self, device, cmd)
-  --Note sending WakeUpIntervalGet the first time a device wakes up will happen by default in Lua libs 0.49.x and higher
-  --This is done to help the hub correctly set the checkInterval for migrated devices.
-  if not device:get_field("__wakeup_interval_get_sent") then
-    device:send(WakeUp:IntervalGetV1({}))
-    device:set_field("__wakeup_interval_get_sent", true)
-  end
+  configure_wakeup(self, device)
   device:emit_event(capabilities.smokeDetector.smoke.clear())
   device:send(Battery:Get({}))
   device:send(SensorMultilevel:Get({sensor_type = SensorMultilevel.sensor_type.TEMPERATURE}))
   -- Read the detector's actual supported limits once per driver runtime.
-  -- The decoded response is available in private logcat; no interval is changed.
+  -- The decoded response is available in private logcat and limits later writes.
   if not device:get_field("__stmq_wakeup_capabilities_queried") then
     device:send(WakeUpV2:IntervalCapabilitiesGet({}))
     device:set_field("__stmq_wakeup_capabilities_queried", true)
@@ -72,7 +122,11 @@ local fibaro_smoke_sensor = {
       [SensorMultilevel.REPORT] = temperature_report_handler
     },
     [cc.WAKE_UP] = {
-      [WakeUp.NOTIFICATION] = wakeup_notification_handler
+      [WakeUp.NOTIFICATION] = wakeup_notification_handler,
+      -- The SDK has no Lua defaults for these reports; the hub also receives
+      -- IntervalReport directly for its own device-health interval handling.
+      [WakeUp.INTERVAL_REPORT] = wakeup_interval_report_handler,
+      [WakeUpV2.INTERVAL_CAPABILITIES_REPORT] = wakeup_capabilities_report_handler
     }
   },
   lifecycle_handlers = {

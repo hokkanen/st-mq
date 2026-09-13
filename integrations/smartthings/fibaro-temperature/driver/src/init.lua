@@ -12,18 +12,61 @@ local defaults = require "st.zwave.defaults"
 --- @type st.zwave.CommandClass.Configuration
 local Configuration = (require "st.zwave.CommandClass.Configuration")({ version=4 })
 local preferencesMap = require "preferences"
+local log = require "log"
+local LOCAL_PREFERENCES_REVISION = 1
+local LOCAL_PREFERENCES_ATTEMPTED = "stmq_local_preferences_attempted_revision"
+
+local function preference_counts(device, parameters)
+  local mapped_count, local_count, legacy_count = 0, 0, 0
+  for id in pairs(parameters or {}) do
+    mapped_count = mapped_count + 1
+    local local_id = id:match("^certifiedpreferences%.(.+)$")
+    if local_id and device.preferences[local_id] ~= nil then local_count = local_count + 1 end
+    if local_id and device.preferences[id] ~= nil then legacy_count = legacy_count + 1 end
+  end
+  return mapped_count, local_count, legacy_count
+end
+
+local function log_preference_state(device, parameters, phase)
+  local mapped_count, local_count, legacy_count = preference_counts(device, parameters)
+  log.info(string.format("Preference application %s: mapped=%d local=%d legacy=%d attempted=%s",
+    phase, mapped_count, local_count, legacy_count,
+    tostring(device:get_field(LOCAL_PREFERENCES_ATTEMPTED) ~= nil)))
+end
 
 --- Update preference
 ---
 --- @param device st.zwave.Device
 --- @param args
-local function update_preferences(self, device, args)
+local function update_preferences(self, device, args, is_awake)
   local preferences = preferencesMap.get_device_parameters(device)
-  for id, value in pairs(device.preferences) do
-    if not (args and args.old_st_store and args.old_st_store.preferences) or (args.old_st_store.preferences[id] ~= value and preferences and preferences[id]) then
-      local new_parameter_value = preferencesMap.to_numeric_value(device.preferences[id])
-      device:send(Configuration:Set({parameter_number = preferences[id].parameter_number, size = preferences[id].size, configuration_value = new_parameter_value}))
+  local old_preferences = args and args.old_st_store and args.old_st_store.preferences
+  -- The SDK snapshots current preferences at init. A newly installed profile's
+  -- defaults can therefore be visible without appearing as changes at wake-up.
+  -- Attempt the complete new local selection once, only from the awake callback.
+  local _, local_count = preference_counts(device, preferences)
+  local pending_local_selection = device:get_field(LOCAL_PREFERENCES_ATTEMPTED) ~= LOCAL_PREFERENCES_REVISION
+  if is_awake and pending_local_selection and not device:get_field("__stmq_preference_pending_logged") then
+    log_preference_state(device, preferences, "first pending wake")
+    device:set_field("__stmq_preference_pending_logged", true)
+  end
+  local apply_local_selection = is_awake and local_count == 9 and pending_local_selection
+  -- Iterate mapped parameters so the separate wake-up preference is never sent
+  -- as a Configuration parameter. Embedded values supersede the legacy IDs.
+  for id, parameter in pairs(preferences or {}) do
+    local local_id = id:match("^certifiedpreferences%.(.+)$") or id
+    local value = device.preferences[local_id]
+    if value == nil then value = device.preferences[id] end
+    local old_value = old_preferences and old_preferences[local_id]
+    if old_value == nil and old_preferences then old_value = old_preferences[id] end
+    if value ~= nil and (apply_local_selection or not old_preferences or old_value ~= value) then
+      local new_parameter_value = preferencesMap.to_numeric_value(value)
+      device:send(Configuration:Set({parameter_number = parameter.parameter_number, size = parameter.size, configuration_value = new_parameter_value}))
     end
+  end
+  if apply_local_selection then
+    -- Records a write attempt while awake, not detector acknowledgement.
+    device:set_field(LOCAL_PREFERENCES_ATTEMPTED, LOCAL_PREFERENCES_REVISION, {persist = true})
   end
 end
 
@@ -32,7 +75,10 @@ end
 --- @param self st.zwave.Driver
 --- @param device st.zwave.Device
 local device_init = function(self, device)
-  device:set_update_preferences_fn(update_preferences)
+  device:set_update_preferences_fn(function(driver, awake_device, args)
+    update_preferences(driver, awake_device, args, true)
+  end)
+  log_preference_state(device, preferencesMap.get_device_parameters(device), "initialized")
 end
 
 --- Add device
