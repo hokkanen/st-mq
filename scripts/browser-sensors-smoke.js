@@ -12,7 +12,8 @@ import { appendLearningRecord } from '../src/app/committed-learning.js';
 const directory = mkdtempSync(join(tmpdir(), 'stmq-sensors-ui-'));
 const now = Date.parse('2026-09-10T12:00:00Z');
 let app, socket, id = 0;
-const pending = new Map(), errors = [];
+let nextDialogAccept;
+const pending = new Map(), errors = [], dialogs = [];
 try {
   const configPath = join(directory, 'fixture.json');
   writeFileSync(configPath, '{}', { mode: 0o600 });
@@ -59,6 +60,13 @@ try {
       pending.delete(message.id); clearTimeout(task.timer);
       message.error ? task.reject(new Error(JSON.stringify(message.error))) : task.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text);
+    else if (message.method === 'Page.javascriptDialogOpening') {
+      dialogs.push(message.params);
+      const accept = nextDialogAccept;
+      nextDialogAccept = undefined;
+      if (accept === undefined) errors.push('Unexpected confirmation dialog');
+      void send('Page.handleJavaScriptDialog', { accept: accept === true }).catch(error => errors.push(error.message));
+    }
   };
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const requestId = ++id, timer = setTimeout(() => reject(new Error(`Timeout: ${method}`)), 20_000);
@@ -72,6 +80,14 @@ try {
   const until = async expression => {
     for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
+  };
+  const confirmClick = async (selector, accept, message) => {
+    const before = dialogs.length;
+    nextDialogAccept = accept;
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    assert.equal(dialogs.length, before + 1, 'The action opens its native confirmation dialog');
+    assert.equal(dialogs.at(-1).type, 'confirm');
+    assert.match(dialogs.at(-1).message, message);
   };
   await send('Runtime.enable'); await send('Page.enable');
   // Expose the existing status poll to exercise its full render path without a 15-second wait.
@@ -93,6 +109,9 @@ try {
     'Home & heating has no sensor maintenance controls');
   assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('[data-model-input]')?.dataset.modelInput"),
     'model_indoor_temperature', 'Sensor changes belong to the Average indoor model input');
+  assert.equal(await evaluate("document.querySelectorAll('#outdoor-sensor-change-details').length"), 1);
+  assert.equal(await evaluate("document.getElementById('outdoor-sensor-change-details').closest('[data-model-input]')?.dataset.modelInput"),
+    'model_outdoor_temperature', 'Outdoor sensor changes have their own model input fold');
   assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('article')?.id"), 'house-model');
   assert.equal(await evaluate("document.querySelector('#sensor-change-details > summary span').textContent"), 'Sensor changes');
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('${sensorParents}, #sensor-change-details'), fold => fold.open).some(Boolean)`),
@@ -180,12 +199,20 @@ try {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   assert.equal(await evaluate("document.getElementById('sensor-change-details').open"), true, 'Sensor maintenance opens with the keyboard');
   await until("!document.getElementById('sensor-change-submit').disabled");
+  assert.equal(await evaluate("document.getElementById('sensor-change-empty').checkVisibility()"), true);
+  assert.equal(await evaluate("document.querySelector('#sensor-change-entries button') === null"), true,
+    'A revert button appears only after a sensor change has been recorded');
   assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-signal').options, option => option.textContent)"),
-    ['Upstairs', 'Downstairs', 'Bedroom', 'Outdoor']);
+    ['Upstairs', 'Downstairs', 'Bedroom']);
+  assert.deepEqual(await evaluate("Array.from(document.getElementById('outdoor-sensor-change-signal').options, option => option.textContent)"),
+    ['Outdoor']);
+  await evaluate("document.querySelector('[data-model-input=model_outdoor_temperature]').open = true; document.getElementById('outdoor-sensor-change-details').open = true");
+  assert.equal(await evaluate("document.getElementById('outdoor-sensor-change-submit').checkVisibility()"), true);
+  await evaluate("document.querySelector('[data-model-input=model_outdoor_temperature]').open = false");
   assert.equal(await evaluate("document.querySelector('label[for=sensor-change-reason]').firstChild.textContent"), 'Reason');
   assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-reason').options, option => option.textContent)"),
     ['Replacement', 'New location', 'Calibration', 'Other']);
-  assert.equal(await evaluate("document.getElementById('sensor-change-submit').textContent"), 'Record change now');
+  assert.equal(await evaluate("document.getElementById('sensor-change-submit').textContent"), 'Record change now…');
   await evaluate("document.getElementById('sensor-change-signal').value='downstairs_temperature'; document.getElementById('sensor-change-reason').value='moved'; document.getElementById('sensor-change-signal').focus();");
   await evaluate("document.getElementById('sensor-change-refresh').click()");
   await until("!document.getElementById('sensor-change-refresh').disabled");
@@ -207,8 +234,15 @@ try {
       }
       return originalFetch(url, options);
     };
-    document.getElementById('sensor-change-submit').click();
   })()`);
+  const historicalReadings = () => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'outdoor_temperature']
+    .map(signal => app.store.observations({ signal, from: now - 8 * 3600_000, to: now - 1, limit: 5000 }));
+  const originalReadings = historicalReadings();
+  await confirmClick('#sensor-change-submit', false, /clears the learned normal indoor temperature/);
+  assert.equal((await fetch(`${base}/api/sensor-changes`).then(response => response.json())).events.length, 0,
+    'Cancelling the confirmation does not record a sensor change');
+  assert.equal(await evaluate('globalThis.sensorSmokeSavedRequest === undefined'), true);
+  await confirmClick('#sensor-change-submit', true, /Recorded readings are kept/);
   await until("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === '—'");
   assert.match(await evaluate("document.getElementById('sensor-change-message').textContent"), /Downstairs change recorded/);
   assert.match(await evaluate("document.getElementById('sensor-change-entries').textContent"), /Downstairs · New location/);
@@ -219,6 +253,12 @@ try {
   const saved = await fetch(`${base}/api/sensor-changes`).then(response => response.json());
   assert.equal(saved.events.length, 1); assert.equal(saved.events[0].signal, 'downstairs_temperature');
   assert.equal(saved.events[0].reason, 'moved'); assert.equal(saved.events[0].at, now);
+  assert.equal(saved.events[0].canRevert, true);
+  assert.equal(await evaluate("document.querySelector('#sensor-change-entries button').textContent"), 'Revert and relearn');
+  assert.equal(await evaluate("document.querySelector('#sensor-change-entries button').checkVisibility()"), true);
+  assert.equal(await evaluate("document.querySelector('#sensor-change-entries button').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('outdoor-sensor-change-entries').children.length"), 0,
+    'Indoor changes stay out of outdoor history');
   mkdirSync('var', { recursive: true });
   for (const width of [1440, 1024, 430, 390, 375]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: width < 600 });
@@ -250,14 +290,43 @@ try {
   const retried = await fetch(`${base}/api/sensor-changes`).then(response => response.json());
   assert.equal(retried.events.length, 1, 'Retry after reload does not duplicate the saved sensor change');
   assert.equal(await evaluate("sessionStorage.getItem('stmq-sensor-change-pending')"), null);
+  await confirmClick('#sensor-change-entries button', false, /model will relearn from recorded history/);
+  assert.equal((await fetch(`${base}/api/sensor-changes`).then(response => response.json())).events[0].revertedAt, null,
+    'Cancelling a reversal preserves the active sensor change');
+  await confirmClick('#sensor-change-entries button', true, /Other sensor changes still apply/);
+  await until("document.querySelector('#sensor-change-entries .sensor-change-entry-status').textContent.startsWith('Reverted ')");
+  const reversed = await fetch(`${base}/api/sensor-changes`).then(response => response.json());
+  assert.equal(reversed.events.length, 1, 'Reversal retains the original history entry');
+  assert.equal(reversed.events[0].id, saved.events[0].id);
+  assert.equal(reversed.events[0].revertedAt, now);
+  assert.equal(reversed.events[0].canRevert, false);
+  assert.equal(await evaluate("document.querySelector('#sensor-change-entries button') === null"), true);
+  assert.match(await evaluate("document.getElementById('sensor-change-rebuild').textContent"), /Relearning/);
+  // Drive the fixture's next control tick once the real background worker is
+  // ready, without waiting for its normal one-minute scheduling interval.
+  const rebuildDeadline = Date.now() + 20_000;
+  while (!app.engine.sensorChangesStatus().rebuild.current && Date.now() < rebuildDeadline) {
+    assert.notEqual(app.engine.sensorChangesStatus().rebuild.status, 'failed', 'The background rebuild must succeed');
+    if (app.engine.fireplaceManager().status().status === 'ready') app.engine.tick();
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(app.engine.sensorChangesStatus().rebuild.current, true, 'The rebuilt model becomes active');
+  await evaluate('globalThis.refreshSensorSmokeStatus()');
+  await until("document.getElementById('sensor-change-rebuild').textContent.includes('Relearning complete') && document.getElementById('indoor').textContent === '21.0 °C'");
+  const restored = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
+  assert.equal(restored.downstairs.value, 20.2, 'Relearning preserves the recorded sensor value');
+  assert.notEqual(restored.downstairs.settling, true, 'A reversed reset no longer excludes the sensor');
+  assert.deepEqual(historicalReadings(), originalReadings, 'Recording and reverting leave historical raw temperatures intact');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['room cards removed', 'raw room readings retained', 'weighted indoor average',
     'one Average indoor chart legend', 'garage stays on right axis', 'garage and other air group removed from drawer', 'all home temperatures on left axis',
     'Smartthings source with local MQTT', 'distinct room colours in both themes', 'average and outdoor preserve colours',
-    'sensor maintenance under Average indoor', 'unchanged closed Home and Data card heights', 'keyboard disclosure access',
+    'separate indoor and outdoor sensor maintenance folds', 'unchanged closed Home and Data card heights', 'keyboard disclosure access',
     'configured sensor choices and reason labels', 'selection, focus and open state survive status refresh', 'real sensor-change API submission',
     'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout',
-    'reload reveals pending retry through all ancestor disclosures', 'retry remains idempotent'] }));
+    'reload reveals pending retry through all ancestor disclosures', 'retry remains idempotent',
+    'native confirmations accept and cancel both actions', 'visible Revert and relearn action',
+    'reverted entry retained', 'background relearning completes', 'temperature observations preserved'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
