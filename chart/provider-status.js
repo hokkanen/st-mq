@@ -132,7 +132,7 @@ const temperatureAvailable = (reading, now, outdoor = false) => Number.isFinite(
   && (!outdoor || now - reading.observedAt <= 30 * 60_000);
 
 const attentionLabels = Object.freeze({ 'old-reading': 'over 2 hours old', disconnected: 'sensor disconnected',
-  'invalid-reading': 'latest publication was invalid' });
+  'invalid-reading': 'latest publication was invalid', 'missing-report': 'expected temperature report missing' });
 const knownAttentionReasons = reasons => Array.isArray(reasons)
   ? [...new Set(reasons.filter(reason => Object.hasOwn(attentionLabels, reason)))] : [];
 
@@ -149,10 +149,12 @@ export function temperatureAttentionDetails(sensors, formatTime) {
 export function temperatureReadingStatus(reading, { now, formatTime, outdoor = false }) {
   const usable = temperatureAvailable(reading, now, outdoor);
   const reasons = knownAttentionReasons(reading?.attentionReasons);
-  if (usable && !outdoor && now - reading.observedAt > INDOOR_ATTENTION_MS && !reasons.includes('old-reading')) reasons.push('old-reading');
+  if (usable && !outdoor && !reading.periodicReports && now - reading.observedAt > INDOOR_ATTENTION_MS && !reasons.includes('old-reading')) reasons.push('old-reading');
   const attention = reading?.needsAttention === true || reasons.length > 0;
   if (reading?.settling) return { usable, attention: true, detail: 'Settling after sensor change' };
   if (reading?.configured === false) return { usable: false, attention: false, detail: 'Not configured' };
+  if (!usable && reasons.includes('missing-report')) return { usable, attention: true,
+    detail: `Expected temperature report missing. Last recorded value ${formatTime(reading.observedAt)}.` };
   if (!usable) return { usable, attention, detail: Number.isFinite(reading?.observedAt) && reading.observedAt <= now
     ? `Latest reading ${formatTime(reading.observedAt)} is out of date or unusable.` : 'No current reading received.' };
   if (attention || reading.held) {
@@ -161,7 +163,9 @@ export function temperatureReadingStatus(reading, { now, formatTime, outdoor = f
       ? `Using last known readings: ${sensors}.`
       : `Using last known reading from ${formatTime(reading.observedAt)}${reasons.length ? ` (${reasons.map(reason => attentionLabels[reason]).join(', ')})` : ''}.`}` };
   }
-  return { usable, attention, detail: `${reading.source === 'openmeteo' ? 'Valid at' : 'Observed'} ${formatTime(reading.observedAt)}` };
+  return { usable, attention, detail: reading.periodicReports && Number.isFinite(reading.reportExpiresAt)
+    ? `Temperature reports current; next deadline ${formatTime(reading.reportExpiresAt)}.`
+    : `${reading.source === 'openmeteo' ? 'Valid at' : 'Observed'} ${formatTime(reading.observedAt)}` };
 }
 
 function temperatureDisplay(status, entries, options) {

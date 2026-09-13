@@ -27,29 +27,48 @@ right-axis series with its existing colour and legend control. Average indoor ke
 its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
 blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
 individual rooms are available through the chart and source details.
-The Average indoor chart follows saved indoor endpoints of completed 15-minute
-learning windows. With `committed-house-v7-held-indoor`, a known indoor average
-remains visible even when another input, such as outdoor temperature, prevents
-that window from training the model. Missing indoor endpoints and missing windows
-remain gaps. Earlier algorithms retain their original chart interpretation. The
-chart does not recalculate old averages from today's membership or weights;
-imported model history retains its saved original Upstairs input.
-Selecting different positive weights is a configuration choice; sensor outages
-never redistribute weights. Each contributing sensor keeps its last genuine
-usable reading when publications stop or the connection fails, with no age cutoff.
-A two-hour-old indoor reading is normal. Older readings, disconnected sensors
-and fallback after an invalid publication show **Needs attention** without
-removing that room from the average or blocking control. No room temperature is
-inferred from another sensor. Current Garage readings follow the same policy,
-while outdoor temperature retains its separate freshness limits. Raw sensor
-history still preserves the recorded availability gaps.
+Dedicated indoor MQTT topics expect a genuine sensor report every 15 minutes,
+with two minutes allowed for delivery delay. Set
+`mqtt.temperature_report_interval_minutes` and
+`mqtt.temperature_report_grace_seconds` to match the publisher. Interval `0`
+selects the earlier change-only, last-known-reading policy after the next genuine
+report. Enabling or changing a periodic deadline records one availability boundary
+and requires a genuine report under the new policy; reloading settings or
+restarting cannot refresh a cached reading. These
+settings apply to the three indoor MQTT topics; Garage and the H66 indoor sensor
+retain their existing policy, and outdoor freshness limits remain separate.
+
+An unchanged report confirms coverage without inserting another temperature
+observation. Every actual value change is saved, along with availability changes;
+the recorder's normal five-minute maximum spacing does not force repeated values.
+Compact coverage spans preserve the report evidence. Consequently a long flat
+line means the reports continued with the same value. After the report deadline,
+or an explicit disconnection or invalid update, the room line has a gap. A later
+report starts a new covered segment even when its value is unchanged. The original
+value timestamp remains distinct from the later coverage evidence.
+
+The Average indoor chart follows saved inputs of completed 15-minute learning
+windows, preserving gaps when a participating room lacks report coverage. The
+`committed-house-v8-report-coverage` learner rejects an interval containing a
+report outage even if a sensor recovers before its endpoint. Fixed weights never
+redistribute to the remaining rooms. Missing coverage makes the average
+unavailable for optimisation; ordinary heating remains available. Other missing
+learning inputs do not hide an otherwise known indoor average. Earlier algorithms
+retain their original interpretation, and history is not recalculated from
+today's membership or weights.
+
+This requires genuine repeated reports all the way through SmartThings and MQTT.
+A timer that republishes a cached value cannot prove a sensor is alive. The
+[SmartThings rule and driver notes](smartthings-temperature-rule.md) document the
+installed forwarding rules, restoration procedure and remaining hardware checks.
 
 The Average indoor summary and **Main temperatures** source details identify
 affected rooms and their actual observation times. New saved-average chart
 tooltips preserve the same warnings and identify windows excluded from learning.
 Holding a reading does not change its source timestamp or create new evidence of
-measurement. The v7 learner uses this same last-known-reading assumption for
-thermal and comfort learning, preserving held flags separately from validity.
+measurement. Periodic report coverage is recorded separately for learning and
+replay. The archived v7 learner used known readings indefinitely; v8 does so only
+for sources without an enabled periodic report contract.
 A sensor that has never supplied a usable reading still makes its
 configured average unavailable; sensor-change boundaries also require a genuine
 reading from the new measurement period.

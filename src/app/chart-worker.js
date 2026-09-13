@@ -35,6 +35,8 @@ parentPort.on('message', ({ id, args, operation }) => {
       (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
       (SELECT MAX(id) FROM recorder_coverage) coverage,
+      (SELECT group_concat(json_extract(value,'$.lastSourceTime')||':'||json_extract(value,'$.coverageId'))
+        FROM state WHERE key LIKE 'recorder:signal:%' AND json_extract(value,'$.reportPolicy.reportIntervalMs')>0) temperatureReports,
       (SELECT MAX(id) FROM learning_journal) learningJournal,
       (SELECT MAX(id) FROM fireplace_events) fireplaceRevision,
       (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,

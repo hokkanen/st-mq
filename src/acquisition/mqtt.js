@@ -3,10 +3,14 @@ import mqtt from 'mqtt';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
 import { createH66Controller } from '../control/h66.js';
 import { createTeslaMateCapture } from './teslamate.js';
+import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
+import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
+  temperatureReportMaxAge } from '../domain/temperature-reports.js';
 
 // Alternative indoor/garage sensors publish a number in Celsius, or
 // {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.
-export function decodeMqttTemperature({ signal, payload, receivedAt, retained = false }) {
+export function decodeMqttTemperature({ signal, payload, receivedAt, retained = false,
+  reportIntervalMs = null, reportGraceMs = 0 }) {
   if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)) return null;
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
   if (text.length > 512) return null;
@@ -24,13 +28,15 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
   if (sourceTime === null && !retained && object.timestamp == null) sourceTime = receivedAt;
   if (sourceTime === null) quality.push('source_time_unknown');
   if (sourceTime > receivedAt) quality.push('future_source_time');
-  // Room and garage sensors may publish only when their measured value changes.
-  // Preserve that measurement's age without rejecting it for elapsed time alone.
+  const raw = { timeBasis: object.timestamp == null ? 'mqtt-received' : 'source-measured', retained,
+    ...(reportIntervalMs !== null ? { reportIntervalMs, reportGraceMs } : {}) };
+  const reportAge = temperatureReportMaxAge({ raw });
+  if (reportAge !== null && Number.isFinite(sourceTime) && receivedAt - sourceTime > reportAge) quality.push('stale');
   if (signal === 'outdoor_temperature' && Number.isFinite(sourceTime) && receivedAt - sourceTime > 300_000) quality.push('stale');
   if (retained) quality.push('retained');
   if (value === null) quality.push('missing');
   return { source: 'mqtt-temperature', device: signal, signal, value, unit: 'degC', sourceTime, receivedAt, quality,
-    raw: { timeBasis: object.timestamp == null ? 'mqtt-received' : 'source-measured', retained } };
+    raw };
 }
 
 // Observations and the four permitted native-setting writes share this connection.
@@ -53,6 +59,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const temperatureTopics = Object.entries(config.connections.mqtt.temperatureTopics ?? {})
     .filter(([signal, topic]) => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].includes(signal)
       && typeof topic === 'string' && topic.length > 0 && !/[+#\u0000]/.test(topic));
+  for (const [signal] of temperatureTopics) if (INDOOR_SIGNALS.includes(signal))
+    engine.configureTemperatureReports?.(signal, {
+      reportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
+      reportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
+    });
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
   if (teslamate) engine.teslamate = teslamate;
@@ -154,8 +165,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (teslamate?.receive(topic, payload, packet, engine.clock())) return;
       const temperature = temperatureTopics.find(([, configured]) => configured === topic);
       if (temperature) {
-        const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain });
+        // MQTT retransmissions cannot serve as new evidence from the sensor.
+        if (packet.dup) return;
+        const periodic = INDOOR_SIGNALS.includes(temperature[0]);
+        const observation = decodeMqttTemperature({ signal: temperature[0], payload, receivedAt: engine.clock(), retained: packet.retain,
+          reportIntervalMs: periodic ? config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS : null,
+          reportGraceMs: periodic ? config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS : 0 });
         if (observation) engine.ingest(observation);
+        else markUnavailable(temperatureSignals.filter(row => row.signal === temperature[0]), ['invalid-temperature-message']);
         return;
       }
       if (!decoder) return;

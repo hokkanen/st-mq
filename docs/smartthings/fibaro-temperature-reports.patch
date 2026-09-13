@@ -1,0 +1,31 @@
+--- a/drivers/SmartThings/zwave-smoke-alarm/config.yml
++++ b/drivers/SmartThings/zwave-smoke-alarm/config.yml
+@@ -1,2 +1,2 @@
+-name: 'Z-Wave Smoke Alarm'
+-packageKey: 'zwave-smoke-alarm'
++name: 'ST-MQ Fibaro Temperature Reports'
++packageKey: 'stmq-fibaro-temperature-reports'
+--- a/drivers/SmartThings/zwave-smoke-alarm/src/fibaro-smoke-sensor/init.lua
++++ b/drivers/SmartThings/zwave-smoke-alarm/src/fibaro-smoke-sensor/init.lua
+@@ -44,0 +45,17 @@
++-- Forward every genuine Fibaro temperature report, including equal values.
++local function temperature_report_handler(self, device, cmd)
++  if cmd.args.sensor_type ~= SensorMultilevel.sensor_type.TEMPERATURE then return end
++  local value = cmd.args.sensor_value
++  if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then return end
++  local unit
++  if cmd.args.scale == SensorMultilevel.scale.temperature.CELSIUS then
++    unit = "C"
++  elseif cmd.args.scale == SensorMultilevel.scale.temperature.FAHRENHEIT then
++    unit = "F"
++  else
++    return
++  end
++  device:emit_event_for_endpoint(cmd.src_channel,
++    capabilities.temperatureMeasurement.temperature(
++      { value = value, unit = unit }, { state_change = true }))
++end
+@@ -46,0 +64,3 @@
++    [cc.SENSOR_MULTILEVEL] = {
++      [SensorMultilevel.REPORT] = temperature_report_handler
++    },

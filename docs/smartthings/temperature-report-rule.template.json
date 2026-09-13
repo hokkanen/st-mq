@@ -1,0 +1,46 @@
+{
+  "name": "ST-MQ genuine temperature reports REPLACE_SENSOR_NUMBER",
+  "actions": [
+    {
+      "if": {
+        "greaterThanOrEquals": {
+          "left": {
+            "device": {
+              "devices": ["REPLACE_PHYSICAL_SENSOR_ID"],
+              "component": "main",
+              "capability": "temperatureMeasurement",
+              "attribute": "temperature",
+              "trigger": "Always"
+            }
+          },
+          "right": { "decimal": -273.15 },
+          "changesOnly": false
+        },
+        "then": [
+          {
+            "command": {
+              "devices": ["REPLACE_MQTT_TEMPERATURE_DEVICE_ID"],
+              "commands": [
+                {
+                  "component": "main",
+                  "capability": "partyvoice23922.vtempset",
+                  "command": "setvTemp",
+                  "arguments": [
+                    {
+                      "device": {
+                        "devices": ["REPLACE_PHYSICAL_SENSOR_ID"],
+                        "component": "main",
+                        "capability": "temperatureMeasurement",
+                        "attribute": "temperature"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

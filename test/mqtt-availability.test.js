@@ -157,7 +157,8 @@ test('configured Upstairs MQTT sensor owns room history and model input alongsid
   assert(store.observations({ signal: 'indoor_temperature' }).every(row => row.source === 'mqtt-temperature'));
   now += 31 * 60_000;
   client.emit('message', 'invented-h66/HP/0008', Buffer.from('26'));
-  assert.equal(engine.status().observations.indoor.stale, false, 'The configured room remains usable between slow publications');
+  assert.equal(engine.status().observations.indoor.stale, true, 'H66 publications cannot hide a missed dedicated room report');
+  assert.equal(engine.status().observations.indoor.value, null);
   assert.equal(engine.status().observations.upstairs.observedAt, initial, 'Gateway updates cannot refresh the room timestamp');
   client.emit('offline');
   assert(store.observations({ signal: 'indoor_temperature' }).every(row => row.source === 'mqtt-temperature'),

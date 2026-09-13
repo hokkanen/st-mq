@@ -4,10 +4,10 @@ import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { CONTROL_DEFAULTS } from './config.js';
 import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { indoorWeights, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
-import { lastIndoorReading } from './indoor-readings.js';
+import { lastIndoorReading, indoorReportCoverage } from './indoor-readings.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v7-held-indoor';
+export const LEARNING_ALGORITHM = 'committed-house-v8-report-coverage';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -224,12 +224,16 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const indoorSensors = Object.fromEntries(Object.entries(weights).map(([signal, weight]) => {
     const changedAt = boundariesBySensor[signal];
     const settling = Number.isFinite(changedAt) && from < changedAt + SENSOR_SETTLING_MS;
-    const reading = lastIndoorReading(store, { signal, at, input,
-      notBefore: Math.max(changedAt ?? -Infinity, measurementEpochAt ?? -Infinity) });
-    lineage[signal] = { observations: reading ? [reading.id] : [], coverage: [] };
-    return [signal, { value: !settling && reading ? reading.value : null, weight,
+    const notBefore = Math.max(changedAt ?? -Infinity, measurementEpochAt ?? -Infinity);
+    const reading = lastIndoorReading(store, { signal, at, input, notBefore });
+    const coverage = reading ? indoorReportCoverage(store, { reading, from, at, notBefore }) : null;
+    lineage[signal] = { observations: [...new Set([...(reading ? [reading.id] : []), ...(coverage?.observations ?? [])])],
+      coverage: coverage?.coverage ?? [] };
+    return [signal, { value: !settling && reading && !reading.stale && (coverage === null || coverage.complete) ? reading.value : null, weight,
       observedAt: reading?.sourceTime ?? null, held: reading?.held ?? false,
-      needsAttention: reading?.needsAttention ?? false, attentionReasons: reading?.attentionReasons ?? [] }];
+      needsAttention: reading?.needsAttention ?? false, attentionReasons: reading?.attentionReasons ?? [],
+      ...(coverage ? { reportCoverageComplete: coverage.complete,
+        reportCoveredThrough: coverage.coveredThrough } : {}) }];
   }));
   const indoor = { value: Object.values(indoorSensors).every(row => Number.isFinite(row.value))
     ? Object.values(indoorSensors).reduce((sum, row) => sum + row.value * row.weight, 0) : null };

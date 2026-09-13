@@ -20,7 +20,8 @@ import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
 import { addSensorChange, sensorChangesView } from './sensor-changes.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
-import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention } from './indoor-readings.js';
+import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
+import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 
 const OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
@@ -120,6 +121,23 @@ export class Engine {
     catch { throw Object.assign(new Error('Sensor change save could not be confirmed. Retry the same request.'), { statusCode: 503 }); }
     return this.sensorChangesStatus();
   }
+  configureTemperatureReports(signal, policy) {
+    this.temperatureReportPolicies[signal] = policy;
+    const prior = this.lastKnownTemperatures[signal];
+    if (!prior || prior.source !== 'mqtt-temperature' || prior.device !== signal
+      || temperatureReportMaxAge({ raw: policy }) === null
+      || prior.raw?.reportIntervalMs === policy.reportIntervalMs
+        && (prior.raw?.reportGraceMs ?? 0) === policy.reportGraceMs) return;
+    const at = this.clock(), source = 'mqtt-temperature', device = signal;
+    const state = this.recorder.signalState({ source, device, signal }, at);
+    if (state.status && state.status !== 'fresh' && state.reportPolicy?.reportIntervalMs === policy.reportIntervalMs
+      && state.reportPolicy.reportGraceMs === policy.reportGraceMs) return;
+    // A reporting-policy change is an availability boundary, not a new room
+    // measurement. Preserve the old source value and wait for a genuine report
+    // under the new contract. This compact boundary survives another restart.
+    this.ingest({ source, device, signal, value: null, unit: 'degC', sourceTime: null, receivedAt: at,
+      quality: ['missing', 'report-policy-changed'], raw: { ...policy, timeBasis: 'availability-transition' } });
+  }
   temperatureObservations(observations, now, checkpoint = this.checkpoint) {
     const boundaries = sensorBoundaries(this.store, this.config.input, now);
     const names = { upstairs: 'indoor_temperature', downstairs: 'downstairs_temperature', bedroom: 'bedroom_temperature',
@@ -140,11 +158,19 @@ export class Engine {
         }
         observations[key] = { value: lastKnown.value, observedAt: lastKnown.sourceTime,
           quality: (lastKnown.quality ?? []).filter(flag => flag !== 'stale'), source: lastKnown.source, stale: false,
-          ...(attention.needsAttention ? attention : {}) };
+          ...(attention.needsAttention ? attention : {}), ...indoorReportStatus(lastKnown, now, attention) };
       } else {
         observations[key] = decorate(reading, signal, now);
         if (HELD_TEMPERATURE_SIGNALS.includes(signal) && !this.plant) observations[key].stale = true;
+        if (temperatureReportMaxAge(latest) !== null) observations[key].periodicReports = true;
       }
+      const policy = this.temperatureReportPolicies[signal];
+      if (lastKnown?.source === 'mqtt-temperature' && lastKnown.device === signal
+        && temperatureReportMaxAge({ raw: policy }) !== null
+        && (lastKnown.raw?.reportIntervalMs !== policy.reportIntervalMs
+          || (lastKnown.raw?.reportGraceMs ?? 0) !== policy.reportGraceMs))
+        observations[key] = { ...observations[key], stale: true, periodicReports: true, needsAttention: true, held: true,
+          attentionReasons: [...new Set([...(observations[key].attentionReasons ?? []), 'missing-report'])] };
       const changedAt = boundaries[signal];
       if (Number.isFinite(changedAt) && (now < changedAt + SENSOR_SETTLING_MS || observations[key].observedAt < changedAt))
         observations[key] = { ...observations[key], stale: true, settling: now < changedAt + SENSOR_SETTLING_MS };
@@ -277,6 +303,7 @@ export class Engine {
     this.latest = Object.create(null);
     this.lastKnownTemperatures = Object.create(null);
     this.temperatureAttempts = Object.create(null);
+    this.temperatureReportPolicies = Object.create(null);
     for (const signal of HELD_TEMPERATURE_SIGNALS) {
       const reading = lastIndoorReading(store, { signal, at: clock(), input: config.input });
       if (reading) this.lastKnownTemperatures[signal] = reading;
@@ -313,26 +340,40 @@ export class Engine {
   }
   ingest(observation) {
     if (observation.raw?.auditOnly) return { saved: false, reason: 'audit-only' };
-    const result = observation.raw?.acquisitionOnly ? { saved: false, reason: 'acquisition-only' } : this.recorder.record(observation);
+    const now = this.clock();
+    let force = false;
+    if (temperatureReportMaxAge(observation) !== null && indoorReadingUsable(observation, now)) {
+      const boundary = Math.max(sensorBoundaries(this.store, this.config.input, now)[observation.signal] ?? -Infinity,
+        this.checkpoint?.measurementEpochAt ?? -Infinity);
+      // A new measurement period needs its own original observation even if
+      // the replacement sensor reports exactly the old sensor's temperature.
+      force = Number.isFinite(boundary) && observation.sourceTime >= boundary
+        && !lastIndoorReading(this.store, { signal: observation.signal, at: now, input: this.config.input, notBefore: boundary });
+    }
+    const result = observation.raw?.acquisitionOnly ? { saved: false, reason: 'acquisition-only' } : this.recorder.record(observation, { force });
     const rejectedTime = HELD_TEMPERATURE_SIGNALS.includes(observation.signal)
       && (result.rejectedSourceTime || result.reason === 'out-of-order-receipt');
     this.rememberObservation(rejectedTime ? { ...observation,
-      quality: [...new Set([...(observation.quality ?? []), 'out-of-order-source-time'])] } : observation, this.clock());
+      quality: [...new Set([...(observation.quality ?? []), 'out-of-order-source-time'])] } : observation, now);
     return result;
   }
   ingestEnergy(interval) { return this.recorder.recordEnergy(interval); }
   rememberObservation(observation, now) {
     if (HELD_TEMPERATURE_SIGNALS.includes(observation?.signal)) {
       const prior = this.lastKnownTemperatures[observation.signal];
+      const previousAttempt = this.temperatureAttempts[observation.signal];
+      const pendingReportRecovery = temperatureReportMaxAge(prior) !== null && previousAttempt
+        && !indoorReadingUsable(previousAttempt, now)
+        && (observation.sourceTime < previousAttempt.receivedAt || observation.sourceTime <= prior.sourceTime);
       if (indoorReadingUsable(observation, now) && (!prior || observation.sourceTime > prior.sourceTime
-        || observation.sourceTime === prior.sourceTime && observation.receivedAt >= prior.receivedAt))
+        || observation.sourceTime === prior.sourceTime && observation.receivedAt >= prior.receivedAt) && !pendingReportRecovery)
         this.lastKnownTemperatures[observation.signal] = observation;
       const selected = this.lastKnownTemperatures[observation.signal];
       const attempt = this.temperatureAttempts[observation.signal];
       if (selected && selected.source === observation.source && selected.device === observation.device
         && Number.isFinite(observation.receivedAt) && observation.receivedAt <= now
         && observation.receivedAt >= Math.max(selected.receivedAt, attempt?.receivedAt ?? 0)
-        && !observation.raw?.retained && !observation.quality?.includes('retained'))
+        && !observation.raw?.retained && !observation.quality?.includes('retained') && !pendingReportRecovery)
         this.temperatureAttempts[observation.signal] = observation;
     }
     if (['mqtt', 'providers'].includes(this.config.input) && observation?.signal === 'outdoor_temperature') {

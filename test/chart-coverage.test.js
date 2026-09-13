@@ -4,6 +4,8 @@ import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { getChartData,chartRange } from '../src/app/chart-data.js';
 import { chartCoverageRows } from '../src/app/chart-coverage.js';
+import { createChartLoader, historySeriesAt } from '../chart/history-model.js';
+import { recordingChangedForSelection } from '../chart/history-chart.js';
 
 const MINUTE=60_000,HOUR=60*MINUTE;
 function fixture(t) {
@@ -51,4 +53,90 @@ test('outages beginning before the range seed missing coverage and fresh recover
   const rows=[...chartCoverageRows(store,{from:start+HOUR,to:start+4*HOUR,input:'mqtt',signals:['garage_temperature']})];
   assert.equal(rows[0].source_time,start+HOUR);assert.equal(rows[0].value,null);
   assert.equal(rows.at(-1).source_time,start+3*HOUR);assert.equal(rows.at(-1).value,11);
+});
+
+const periodic={source:'mqtt-temperature',raw:{reportIntervalMs:15*MINUTE,reportGraceMs:2*MINUTE}};
+
+test('days of unchanged periodic temperatures remain flat in historical, long and narrow views',t=>{
+  const {store,date,start,put}=fixture(t),first=start-24*HOUR,last=start+48*HOUR;
+  for(let at=first;at<=last;at+=15*MINUTE) put('indoor_temperature',20,at,periodic);
+  assert.equal(store.observations().length,1);
+  for(const options of [{startDate:date,endDate:date},
+    {startDate:'2026-01-01',endDate:'2026-01-16'},
+    {startDate:date,endDate:date,viewFrom:start+5*HOUR,viewTo:start+5*HOUR+MINUTE}]) {
+    const result=getChartData({store,input:'mqtt',now:last+HOUR,left:'indoor_temperature',...options});
+    const rows=result.series.indoor_temperature;
+    assert.ok(rows.length>=2);assert.ok(rows.every(row=>row.y===20));
+    assert.ok(rows.every(row=>row.periodicCoverage&&row.displayBoundary&&row.observedAt===first));
+    assert.ok(rows.some(row=>row.x===Math.max(first,result.range.from)));
+    assert.ok(rows.some(row=>row.x===result.range.to));
+  }
+});
+
+test('missing periodic messages break the chart at the report deadline and identical recovery stays separate',t=>{
+  const {store,date,start,put}=fixture(t);
+  put('indoor_temperature',20,start,periodic);
+  put('indoor_temperature',20,start+15*MINUTE,periodic);
+  put('indoor_temperature',20,start+60*MINUTE,periodic);
+  const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+90*MINUTE,left:'indoor_temperature'});
+  const rows=result.series.indoor_temperature;
+  assert.equal(store.observations().length,1);
+  assert.ok(rows.some(row=>row.x===start+32*MINUTE&&row.y===null));
+  assert.ok(rows.some(row=>row.x===start+60*MINUTE&&row.y===20));
+  assert.ok(rows.some(row=>row.x===start+77*MINUTE&&row.y===null));
+  assert.ok(rows.every(row=>row.y===null||row.x<start+32*MINUTE||row.x>=start+60*MINUTE));
+  const gap=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+90*MINUTE,
+    left:'indoor_temperature',viewFrom:start+40*MINUTE,viewTo:start+45*MINUTE});
+  assert.ok(gap.series.indoor_temperature.every(row=>row.y===null));
+});
+
+test('explicit disconnect ends periodic coverage immediately; cached browser tails expire without a new API response',t=>{
+  const {store,recorder,date,start,put}=fixture(t);
+  put('indoor_temperature',20,start,periodic);
+  const payload=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+MINUTE,left:'indoor_temperature'});
+  const before=historySeriesAt(payload,start+10*MINUTE).indoor_temperature;
+  assert.equal(before.at(-1).y,20);assert.equal(before.at(-1).observedAt,start);
+  const expired=historySeriesAt(payload,start+18*MINUTE).indoor_temperature;
+  assert.equal(expired.at(-1).x,start+17*MINUTE);assert.equal(expired.at(-1).y,null);
+  recorder.recordFailure({source:'mqtt-temperature',device:'synthetic-heatpump',signal:'indoor_temperature',unit:'°C',at:start+2*MINUTE});
+  put('indoor_temperature',20,start+10*MINUTE,periodic);
+  const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+15*MINUTE,left:'indoor_temperature'});
+  assert.ok(result.series.indoor_temperature.some(row=>row.x===start+2*MINUTE&&row.y===null));
+  assert.ok(result.series.indoor_temperature.some(row=>row.x===start+10*MINUTE&&row.y===20));
+  assert.ok(result.series.indoor_temperature.every(row=>row.y===null||row.x<start+2*MINUTE||row.x>=start+10*MINUTE));
+});
+
+test('a changed periodic reading steps from the confirmed prior value without a fifteen-minute interpolation ramp',t=>{
+  const {store,date,start,put}=fixture(t);
+  put('indoor_temperature',20,start,periodic);
+  put('indoor_temperature',20,start+15*MINUTE,periodic);
+  put('indoor_temperature',21,start+30*MINUTE,periodic);
+  const chart=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+35*MINUTE,
+    left:'indoor_temperature',viewFrom:start+20*MINUTE,viewTo:start+25*MINUTE});
+  assert.equal(store.observations().length,2);
+  assert.ok(chart.series.indoor_temperature.length>=2);
+  assert.ok(chart.series.indoor_temperature.every(point=>point.y===20));
+});
+
+test('live long-view caches renew report deadlines promptly while ordinary measurements retain their longer TTL',async t=>{
+  const {store,recorder,date,start,put}=fixture(t),selection={startDate:'2026-01-01',endDate:date,left:'indoor_temperature'};
+  let now=start+14*MINUTE,calls=0;
+  put('indoor_temperature',20,start,periodic);
+  const loader=createChartLoader({now:()=>now,api:async()=>{calls++;return getChartData({store,input:'mqtt',now,...selection});}});
+  t.after(()=>loader.close());
+  let previous=recorder.status(now);
+  await loader.load(selection);
+  now+=30_000;put('heating_integral',-100,now);
+  let current=recorder.status(now);
+  await loader.load(selection,{force:recordingChangedForSelection(selection,date,previous,current)});
+  assert.equal(calls,1,'fast nonperiodic measurements do not force an expensive long view');
+  previous=current;now=start+15*MINUTE;put('indoor_temperature',20,now,periodic);current=recorder.status(now);
+  const refreshed=await loader.load(selection,{force:recordingChangedForSelection(selection,date,previous,current)});
+  assert.equal(calls,2,'an unchanged genuine report refreshes before the five-minute TTL');
+  assert.equal(refreshed.meta.lastReadings.indoor_temperature.reportExpiresAt,start+32*MINUTE);
+  now=start+18*MINUTE;
+  const display=historySeriesAt(await loader.load(selection),now).indoor_temperature;
+  assert.equal(calls,2);assert.equal(display.at(-1).y,20,'the old seventeen-minute deadline does not create a false gap');
+  assert.equal(recordingChangedForSelection({...selection,endDate:'2026-01-03'},date,previous,current),false);
+  assert.equal(recordingChangedForSelection({...selection,startDate:'2026-01-20',endDate:'2026-01-30'},date,previous,current),false);
 });

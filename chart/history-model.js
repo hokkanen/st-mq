@@ -189,10 +189,13 @@ export function historySeriesAt(payload, now = payload.now) {
     const end = points.at(-1);
     if (end && (end.x > now || !Number.isFinite(end.y) || end.x > last.x)) continue;
     const start = Math.max(range.from, last.x);
-    const carried = x => ({ ...last, x, y: last.y, carriedForward: true, observedAt: last.x });
+    const until = last.periodicCoverage ? Math.min(now, last.reportExpiresAt-1) : now;
+    const carried = x => ({ ...last, x, y: last.y, carriedForward: true, observedAt: last.observedAt??last.x });
     const tail = [];
-    if (!end && start <= now) tail.push(carried(start));
-    if (now > (end?.x ?? start)) tail.push(carried(now));
+    if (!end && start <= until) tail.push(carried(start));
+    if (until > (end?.x ?? start)) tail.push(carried(until));
+    if (last.periodicCoverage && now>=last.reportExpiresAt)
+      tail.push({...last,x:Math.max(range.from,last.reportExpiresAt),y:null,displayBoundary:true});
     if (tail.length) projected[key] = [...points, ...tail];
   }
   return projected;

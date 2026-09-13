@@ -387,6 +387,8 @@ Permanent options:
 Acquisition schedules and recording settings are independent. GB means decimal
 gigabytes. The five-minute recording value is a maximum interval **when fresh
 source data exists**, not a promise to invent readings from an unavailable source.
+Periodic indoor MQTT temperatures are exempt: equal reports extend coverage,
+while every value change is saved exactly.
 The ten-GB value is a soft rolling annual growth target, not a quota that expires
 in December. It never causes historical deletion or an end-of-year squeeze.
 
@@ -394,8 +396,9 @@ The recorder learns each continuous signal's scale from its observed variation
 and uses a shared normalized error tolerance. That tolerance changes gradually
 in response to measured SQLite growth, using smoothed daily and weekly estimates.
 Signals are compared with their last saved value. There are no hand-assigned
-accuracy targets or model-importance weights; garage temperature has the same
-normalized reconstruction objective as indoor temperature.
+accuracy targets or model-importance weights for those approximated signals.
+Periodic indoor temperatures use exact change recording so coverage always
+refers to the actual reported value.
 
 Exact states, settings, alarms, runtime counters and availability transitions have
 semantic recording rules. They are not blurred into fractional states to meet a
@@ -612,6 +615,8 @@ is an invented example; replace it with the actual local topic or leave it empty
     "indoor_temperature_topic": "stmq/smoke/1/temperature",
     "bedroom_temperature_topic": "stmq/smoke/2/temperature",
     "downstairs_temperature_topic": "stmq/smoke/3/temperature",
+    "temperature_report_interval_minutes": 15,
+    "temperature_report_grace_seconds": 120,
     "garage_temperature_topic": "example/sensors/garage"
   }
 }
@@ -625,16 +630,16 @@ number in Celsius, or an object such as
 `°C` and `F` are accepted; a supplied timestamp must include its time zone or be
 epoch milliseconds. Without a timestamp, a non-retained publication uses labelled
 MQTT receipt time. Retained data never gains a new measurement time on reconnect.
-Retained indoor and garage data with a valid source timestamp can supply a last
-known reading even when old. Without a source timestamp, retained data cannot
-establish a new reading; an already recorded usable reading can still be held.
+Retained data can be displayed with its original timestamp, but does not confirm
+a new sensor report or establish usable periodic coverage. Without a source
+timestamp, retained data cannot establish a new reading.
 Give each sensor a distinct exact local topic; the per-room fields do not accept the wildcard
 `stmq/smoke/+/temperature`.
 Broker disconnection records explicit unavailable transitions for configured
 temperature sensors and included H66 signals. Reconnection alone does not confirm
-a fresh sensor measurement. Indoor and garage use their last genuine usable
-readings across an outage, preserving observation times and recording the outage
-separately. Outdoor temperature and H66 control signals retain their own freshness
+a fresh sensor measurement. Periodic indoor coverage ends immediately on a known
+outage. Garage and nonperiodic indoor sources retain their last-known-reading
+policy. Outdoor temperature and H66 control signals retain their own freshness
 and availability requirements. Subscription failures are recorded separately from
 unchanged sensor values.
 
@@ -655,15 +660,28 @@ saved with learning configuration using logical signal names, without private
 device identifiers or MQTT topics. Adding or changing contributing sensors changes the
 measurement setup; it must establish the corresponding learning boundary.
 
-Indoor and garage readings have no age cutoff for last-known-value use. Up to
-and including two hours is normal; older readings or disconnected sensors request
-attention in the current temperature summary and source details. These warnings
-do not remove a configured room from the average or block control. No correlation
-or estimate from other rooms is constructed. A never-seen sensor still prevents
-its configured average, and sensor changes require a new genuine measurement.
-Outdoor readings keep their separate, shorter freshness limits. The v7 algorithm
-uses the same last-known readings for thermal and comfort learning, recording
-held-room flags and original timestamps separately from learning validity.
+Indoor MQTT topics default to a genuine report every 15 minutes with 120 seconds
+of grace. The interval and grace settings above are independent of recorder
+spacing. An unchanged report extends a compact coverage span; only value changes
+and quality/availability transitions require temperature observation rows. A
+missed deadline ends the chart line, and recovery starts a new segment even at
+the same value. No fixed five- or fifteen-minute duplicate temperature writes
+are needed. Repeated source timestamps, MQTT retransmissions and retained data
+cannot renew coverage. Timer-based cached republishes must not feed these topics.
+
+Set `temperature_report_interval_minutes` to `0` for indoor publishers that only
+report changes. After the next genuine report, this selects their old indefinite
+last-known-value behavior. Enabling or changing a periodic deadline records one
+availability boundary and waits for a genuine report under the new policy;
+earlier missing intervals stay missing. Garage and H66 indoor readings use the
+last-known-value policy by default. Periodic
+indoor outages instead make the configured average unavailable and suspend
+thermal and comfort learning across the affected interval. No room is removed
+from the weights or estimated from another room. Normal heating stays available.
+Sensor changes still require a genuine reading from the new measurement period.
+See [SmartThings forwarding](smartthings-temperature-rule.md) for the rule and
+physical-driver requirements: configuring an interval alone does not establish
+that unchanged genuine reports reach MQTT.
 
 The right axis has one **Average indoor** series: the same configured average
 used by the model, retaining its green colour alongside blue Outdoor readings.
@@ -674,9 +692,10 @@ align. Room colours are distinct: terracotta Upstairs, amber Downstairs and viol
 Bedroom. Garage remains a shared right-axis series with its existing colour and legend control.
 Average indoor reads the resolved value already included in each existing
 15-minute learning journal record; it creates no additional temperature recorder
-channel or chart-history table. New v7 indoor endpoints remain visible when other
-learning inputs reject a window; missing indoor values and missing windows remain
-gaps. Earlier algorithms retain their recorded chart interpretation. Changing
+channel or chart-history table. V8 additionally requires indoor report coverage
+through the window; other missing learning inputs do not hide a covered indoor
+average. Missing indoor coverage and missing windows remain gaps. Earlier
+algorithms retain their recorded chart interpretation. Changing
 configured weights does not recalculate historical inputs. The journal
 retains the original endpoints, weights and configuration needed for model replay.
 Historical CSV `temp_in` remains an Upstairs reading and is never presented as a
@@ -732,9 +751,11 @@ transformations and averaging windows is a separate interface concern. The
 database inventory does not claim that recording a parameter makes it a fitted
 model input.
 
-Views longer than seven days refresh at five-minute intervals. Ordinary raw polls
-and recorder checkpoints do not force a history download. Short views react to
-new committed data. The chart query runs in a separate worker with bounded memory
+Views longer than seven days normally refresh at five-minute intervals. Periodic
+temperature reports and availability changes refresh any view containing today
+promptly, including unchanged reports, so a cached deadline cannot create a false
+gap. Ordinary raw polls and recorder checkpoints do not force a long history
+download. Short views react to new committed data. The chart query runs in a separate worker with bounded memory
 and a cancellable queue, so a large query does not block the control event loop.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
 **Recording details**. **Heating**, **Charging** and **Firewood** summary boxes

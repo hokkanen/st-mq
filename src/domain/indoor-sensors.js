@@ -7,7 +7,7 @@ export const TEMPERATURE_SENSORS = Object.freeze({
 });
 export const INDOOR_SIGNALS = Object.freeze(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']);
 export const HELD_TEMPERATURE_SIGNALS = Object.freeze([...INDOOR_SIGNALS, 'garage_temperature']);
-// Slow room sensors remain usable beyond this age; it only requests attention.
+// Sensors without a periodic-report contract remain usable beyond this age.
 export const INDOOR_ATTENTION_MS = 2 * 60 * 60_000;
 export const SENSOR_SETTLING_MS = 30 * 60_000;
 
@@ -31,9 +31,11 @@ export function indoorAverage(readings, config = {}) {
   const attentionSensors = signals.filter(signal => readings[signal]?.needsAttention).map(signal => ({
     signal, observedAt: readings[signal].observedAt, reasons: readings[signal].attentionReasons ?? [],
   }));
-  return { value: known ? signals.reduce((sum, signal) => sum + readings[signal].value * weights[signal], 0) : null,
+  const reportMissing = signals.some(signal => readings[signal]?.periodicReports && readings[signal].stale);
+  return { value: known && !reportMissing ? signals.reduce((sum, signal) => sum + readings[signal].value * weights[signal], 0) : null,
     observedAt: known ? Math.min(...signals.map(signal => readings[signal].observedAt)) : null,
     stale: !usable, source: signals.length === 1 ? readings[signals[0]]?.source ?? 'indoor-average' : 'indoor-average',
     quality: usable ? [...new Set(signals.flatMap(signal => readings[signal].quality ?? []))] : ['missing'], weights,
+    ...(signals.some(signal => readings[signal]?.periodicReports) ? { periodicReports: true } : {}),
     ...(attentionSensors.length ? { needsAttention: true, held: signals.some(signal => readings[signal]?.held), attentionSensors } : {}) };
 }

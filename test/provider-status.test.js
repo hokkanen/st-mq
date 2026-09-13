@@ -562,3 +562,17 @@ test('quality messages are deduplicated and unknown provider text is never displ
   health.qualityIssues = secret;
   assert.doesNotMatch(describeProvider('temperatures', health, options).detail, /private-secret/);
 });
+test('periodic temperature status distinguishes current coverage from an old unchanged value', () => {
+  const now = Date.parse('2026-09-13T12:00:00Z');
+  const options = { now, formatTime: at => new Date(at).toISOString().slice(11, 16) };
+  const reading = { source: 'mqtt-temperature', value: 21, observedAt: now - 24 * 3_600_000,
+    periodicReports: true, reportExpiresAt: now + 2 * 60_000, stale: false };
+  const current = temperatureReadingStatus(reading, options);
+  assert.equal(current.usable, true);
+  assert.equal(current.attention, false);
+  assert.match(current.detail, /reports current/);
+  const missing = temperatureReadingStatus({ ...reading, stale: true, needsAttention: true,
+    attentionReasons: ['missing-report'] }, options);
+  assert.equal(missing.usable, false);
+  assert.match(missing.detail, /Expected temperature report missing/);
+});

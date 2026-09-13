@@ -331,6 +331,24 @@ test('generic MQTT temperatures preserve source age and retained availability', 
   assert.equal(decodeMqttTemperature({ signal: 'garage_temperature', payload: '{}', receivedAt: initial }).value, null);
 });
 
+test('periodic MQTT reports carry their deadline policy without refreshing source or retained timestamps', () => {
+  const decode = options => decodeMqttTemperature({ signal: 'indoor_temperature', receivedAt: initial,
+    reportIntervalMs: 900_000, reportGraceMs: 120_000, ...options });
+  const fresh = decode({ payload: '20' });
+  assert.equal(fresh.raw.reportIntervalMs, 900_000);
+  assert.equal(fresh.raw.reportGraceMs, 120_000);
+  assert.equal(fresh.sourceTime, initial);
+  const oldTime = initial - 1_020_001;
+  const old = decode({ payload: JSON.stringify({ value: 20, timestamp: oldTime }) });
+  assert.equal(old.sourceTime, oldTime);
+  assert(old.quality.includes('stale'));
+  const retained = decode({ payload: '20', retained: true });
+  assert.equal(retained.sourceTime, null);
+  assert(retained.quality.includes('retained'));
+  const changeOnly = decode({ payload: '20', reportIntervalMs: 0 });
+  assert.equal(changeOnly.raw.reportIntervalMs, 0);
+});
+
 test('room and garage MQTT measurements keep their original timestamps regardless of age', () => {
   for (const signal of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature']) {
     for (const age of [2 * 3_600_000, 7 * 24 * 3_600_000]) {

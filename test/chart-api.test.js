@@ -38,6 +38,21 @@ test('chart API requires authentication and rejects malformed date/axis/point se
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
 });
+
+test('worker cache renews an unchanged periodic report within the same fifteen-second cache bucket',async t=>{
+  const {engine,base,headers,now}=await fixture(t),age=17*60_000;
+  const report=at=>engine.recorder.record({source:'mqtt-temperature',device:'invented-periodic-room',signal:'indoor_temperature',
+    value:20,unit:'degC',sourceTime:at,receivedAt:at,quality:[],raw:{reportIntervalMs:15*60_000,reportGraceMs:2*60_000}});
+  report(now-15*60_000);
+  const read=()=>fetch(`${base}/api/chart?start=2026-08-01&end=2026-09-07&left=indoor_temperature`,{headers}).then(response=>response.json());
+  const first=await read(),cached=await read();
+  assert.equal(cached.meta.cacheHit,true);
+  assert.equal(first.meta.lastReadings.indoor_temperature.reportExpiresAt,now+2*60_000);
+  assert.equal(report(now).saved,false);
+  const renewed=await read();
+  assert.notEqual(renewed.meta.cacheHit,true);
+  assert.equal(renewed.meta.lastReadings.indoor_temperature.reportExpiresAt,now+age);
+});
 test('meter diagnostics preserve latest property check and show real charger session summaries without private identifiers',async t=>{
   const {base,headers,store,now}=await fixture(t);
   assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);

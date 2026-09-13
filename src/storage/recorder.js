@@ -1,4 +1,5 @@
 import { HELD_TEMPERATURE_SIGNALS } from '../domain/indoor-sensors.js';
+import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 const VERSION = 'adaptive-recorder-v1';
@@ -13,13 +14,13 @@ const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
-  'verification','timeBasis','publicationMayUseGatewayCache','basis'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
+  'verification','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]]));
 // Source validity is independent of the recording budget/maximum spacing.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
 // Their source clock still controls ordering, recording and measurement lineage.
-const sourceAge = o => HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? 5 * MINUTE
-  : /temperature$/.test(o.signal) ? 30 * MINUTE : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE;
+const sourceAge = o => temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? 5 * MINUTE
+  : /temperature$/.test(o.signal) ? 30 * MINUTE : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE);
 
 /** Acquisition may be fast; only this persisted, causal approximation trains.
  * All continuous signals share one normalized error tolerance. Signal scale is
@@ -76,6 +77,12 @@ export class Recorder {
     if (o.value === null || !Number.isFinite(o.sourceTime) || q.some(x => /missing|invalid|retained|unavailable/.test(x))) return 'unavailable';
     if (q.some(x => /stale|out-of-order/.test(x)) || o.sourceTime > o.receivedAt
       || o.receivedAt - o.sourceTime > sourceAge(o)
+      || temperatureReportMaxAge(o) !== null && state.status && state.status !== 'fresh'
+        && o.sourceTime <= state.lastSourceTime
+      || temperatureReportMaxAge(o) !== null && state.reportUnavailableSince != null
+        && o.sourceTime < state.reportUnavailableSince
+      || temperatureReportMaxAge(o) !== null && o.sourceTime === state.lastSourceTime
+        && o.value !== state.previousValue
       || state.lastSourceTime != null && o.sourceTime < state.lastSourceTime) return 'stale';
     return 'fresh';
   }
@@ -106,11 +113,14 @@ export class Recorder {
         polls*Number(state.status==='stale'),polls*Number(state.status==='failed'),polls*Number(state.status==='unavailable'));
   }
 
-  coverage(state, o, status) {
+  coverage(state, o, status, freshUpdate = true) {
     // Coverage describes successful source updates and availability separately
     // from the value approximation. An unchanged OLD timestamp never advances
     // measurement freshness, even though its HTTP request succeeded.
     const at = o.receivedAt, observed = Number.isFinite(o.sourceTime) ? o.sourceTime : null;
+    // Polling a cached MQTT reading is not another detector report. Keep the
+    // compact span's endpoint on the actual report's source and receipt clocks.
+    if (temperatureReportMaxAge(o) !== null && status === 'fresh' && !freshUpdate) return;
     // If recording is configured less often than source freshness, two fresh
     // polls can still surround an unobserved gap. Preserve separate spans even
     // when both polls map to the same saved value. Receipt must also precede
@@ -137,19 +147,35 @@ export class Recorder {
     if (!finiteTime(o.receivedAt)) throw new TypeError('Invalid recorder receipt timestamp');
     if (o.raw?.acquisitionOnly || o.raw?.auditOnly || o.source === 'husdata-h66' && DISABLED_H66.has(o.signal))
       return { saved: false, reason: 'not-in-recorded-dataset', observation: null };
+    if ((o.raw?.retained === true || o.quality.includes('retained')) && o.raw?.reportIntervalMs !== 0
+      && (temperatureReportMaxAge(o) !== null || this.store.getState(stateKey(keyOf(o)))?.reportPolicy))
+      // Broker replay is neither a detector report nor an availability change.
+      // A recorded disconnect remains in force until a genuine newer report.
+      return { saved:false,reason:'retained-periodic-report',observation:null };
     return this.store.transaction(() => {
       const s = this.signalState(o,o.receivedAt), g = this.global(o.receivedAt);
+      if (o.raw?.reportIntervalMs === 0) {
+        delete s.reportPolicy;
+        delete s.reportUnavailableSince;
+      }
+      if (o.raw?.reportIntervalMs === undefined && s.reportPolicy
+        && (o.value === null || o.quality.some(flag=>/failed|disconnected|missing|invalid|unavailable/.test(flag))))
+        o.raw = { ...o.raw, ...s.reportPolicy };
+      const periodic = temperatureReportMaxAge(o) !== null;
+      if (periodic) s.reportPolicy = { reportIntervalMs:o.raw.reportIntervalMs,reportGraceMs:o.raw.reportGraceMs ?? 0 };
       if (s.lastPollAt !== null && o.receivedAt < s.lastPollAt) return { saved: false, reason: 'out-of-order-receipt', observation: null };
       // Indoor age alone is usable. Keep source rollback distinguishable from
       // age so restoring the last known reading cannot revive a delayed value.
       if (HELD_TEMPERATURE_SIGNALS.includes(o.signal) && Number.isFinite(o.sourceTime)
-        && s.lastSourceTime != null && o.sourceTime < s.lastSourceTime)
+        && (s.lastSourceTime != null && o.sourceTime < s.lastSourceTime
+          || periodic && (o.sourceTime===s.lastSourceTime && o.value!==s.previousValue
+            || s.reportUnavailableSince!=null && (o.sourceTime<s.reportUnavailableSince || o.sourceTime<=s.lastSourceTime))))
         o.quality = flags([...o.quality, 'out-of-order-source-time']);
       const status = this.classify(o,s), fresh = status === 'fresh';
       const freshUpdate = fresh && (s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
       if (freshUpdate) this.scale(s,o.value,o.sourceTime);
-      const exact = kind === 'state' || ['state','code'].includes(o.unit) || EXACT.test(o.signal);
+      const exact = periodic || kind === 'state' || ['state','code'].includes(o.unit) || EXACT.test(o.signal);
       const changed = s.last === null || o.value !== s.last.value;
       const transition = s.last && (status !== s.status || !same(o.quality,s.last.quality)
         || o.unit!==s.unit || !same(semanticQuality(o.raw),s.last.semanticQuality??{}));
@@ -157,7 +183,7 @@ export class Recorder {
       const threshold = Math.max(s.scale * g.tolerance,numericalFloor(o.value,s.last?.value));
       let reason = !s.last ? 'initial' : transition ? 'quality-or-availability' : force ? 'forced'
         : freshUpdate && (crossingZero || exact && changed) ? 'state-change'
-        : freshUpdate && o.sourceTime - s.last.sourceTime >= this.config.maxIntervalMs ? 'maximum-interval'
+        : !periodic && freshUpdate && o.sourceTime - s.last.sourceTime >= this.config.maxIntervalMs ? 'maximum-interval'
         : freshUpdate && changed && Math.abs(o.value - s.last.value) > threshold ? 'learned-change' : null;
       // Repeated unavailable/stale polls compact into coverage, never fake data.
       if (!fresh && s.last && !transition && !force) reason = null;
@@ -173,7 +199,8 @@ export class Recorder {
           quality:o.quality,usableForControl:o.raw?.usableForControl,semanticQuality:semanticQuality(o.raw) };
         s.unit=o.unit;
       }
-      this.coverage(s,o,status);
+      this.coverage(s,o,status,freshUpdate);
+      if (periodic) s.reportUnavailableSince = fresh ? null : s.reportUnavailableSince ?? o.receivedAt;
       const elapsed = s.lastPollAt === null ? 0 : Math.min(o.receivedAt - s.lastPollAt,this.config.maxIntervalMs);
       // Error is the held saved value at every acquisition, time weighted so
       // bursts of readings do not count as extra independent accuracy evidence.
@@ -306,6 +333,16 @@ export class Recorder {
     const o = {id:row.id,source:row.source,device:row.device,signal:row.signal,value:row.value,unit:row.unit,
       sourceTime:row.source_time,receivedAt:row.received_at,quality:JSON.parse(row.quality),raw:row.raw ? JSON.parse(row.raw) : null};
     if (o.raw?.acquisitionOnly || o.raw?.auditOnly) return null;
+    const reportAge = temperatureReportMaxAge(o);
+    if (reportAge !== null) {
+      const span = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=?
+        AND start_at<=? ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
+      const available = span?.status==='fresh' && at<=span.source_time+reportAge;
+      return {...o,value:available?o.value:null,quality:available?o.quality:flags([...o.quality,span?.status==='fresh'?'missing-report':span?.status??'unavailable']),
+        reportObservedAt:span?.end_at<=at?span.source_time:null,
+        reportReceivedAt:span?.end_at<=at?span.end_at:null,
+        reportExpiresAt:available?Math.min(span.source_time+reportAge,span.end_at>at?at:Infinity):null};
+    }
     const coverage = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE signal=? AND start_at<=? AND end_at<=?
       ORDER BY end_at DESC,id DESC LIMIT 1`).get(signal,at,at);
     if (coverage && coverage.end_at >= o.receivedAt) {
@@ -324,8 +361,14 @@ export class Recorder {
     const revision = this.store.db.prepare(`SELECT (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
     const rows = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all();
-    const parameters = rows.map(row => {
-      const s = JSON.parse(row.value), stats = {};
+    const states = rows.map(row=>JSON.parse(row.value));
+    // Constant temperatures extend existing coverage rows. Give their report
+    // deadlines a separate revision so long plots can refresh without following
+    // every fast power acquisition. Device identifiers stay out of the revision.
+    const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy)
+      .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status]).sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
+    const parameters = states.map(s => {
+      const stats = {};
       const history = this.store.db.prepare('SELECT * FROM recorder_metrics WHERE key=? AND bucket>=? ORDER BY bucket')
         .all(s.key,now-7*DAY-HOUR);
       for (const [label,span] of [['hour',HOUR],['day',DAY],['week',7*DAY]]) {
@@ -336,13 +379,13 @@ export class Recorder {
           normalizedRmsError:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
           estimatedBytes:buckets.reduce((n,b)=>n+b.bytes,0)};
       }
-      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = s.signal==='ev2_energy', exact = ['state','code'].includes(s.unit) || EXACT.test(s.signal);
+      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = s.signal==='ev2_energy', exact = Boolean(s.reportPolicy) || ['state','code'].includes(s.unit) || EXACT.test(s.signal);
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
         threshold:exact ? null : s.scale*g.tolerance,thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
-    return {version:VERSION,...this.config,historyRevision:JSON.stringify(revision),normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
+    return {version:VERSION,...this.config,historyRevision:JSON.stringify(revision),temperatureReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
       bytesPerDay:g.bytesPerDay,bytesPerDay7d:g.bytesPerDay7d,projectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,
       measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',parameters};
   }
@@ -360,6 +403,6 @@ function compactRaw(raw) {
   const allowed = ['usableForControl','timeBasis','sensorMeasuredAt','installationVerified','verification','register',
     'verified','retained','cached','publicationMayUseGatewayCache','verificationEvidence',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
-    'modelVersion','controllerPhase','estimated','forecast'];
+    'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs'];
   return Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
 }

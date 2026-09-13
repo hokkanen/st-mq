@@ -82,6 +82,17 @@ export function historyTooltipLabel(item) {
   return `${item.dataset.label}: ${value}${source ? ` · ${source}` : ''}${interval}${reconstructed}${boundary}${coefficient}${firewood ? ` · ${firewood}` : savedInput}${held}${item.raw?.equivalentCurrent ? ' · equivalent at 230 V' : ''}${session ? ` · ${session}${sessionRange}` : item.raw?.auditOnly ? ' · meter check only' : ''}${item.raw?.carriedForward ? ` · last recorded ${dateTime.format(item.raw.observedAt)}` : ''}`;
 }
 
+/** Report deadlines need prompt renewal even in a cached year view. Ordinary
+ * high-frequency measurements retain the longer overview refresh interval. */
+export function recordingChangedForSelection(selection,today,previous,current) {
+  if (!previous) return false;
+  if (selection.startDate<=today && selection.endDate>=today && previous.temperatureReportRevision!==undefined
+    && previous.temperatureReportRevision!==current.temperatureReportRevision) return true;
+  const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
+  return !longRange && selection.endDate>=today && previous.historyRevision!==undefined
+    && previous.historyRevision!==current.historyRevision;
+}
+
 /** The chart owns only its controls and fetches; the monitor owns authentication. */
 export function createHistoryChart({ api, getTheme = () => document.documentElement.dataset.theme }) {
   const $ = id => document.getElementById(id);
@@ -93,7 +104,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const preferences = loadPreferences();
   const listeners = [];
   let graph, payload, overview, detail, plottedSelection, fingerprint, status, initialized = false, closed = false;
-  let palette = { ...defaultPalette }, lastContract, lastLiveRevision, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
+  let palette = { ...defaultPalette }, lastContract, lastRecording, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
   let activePreset = 'today', rangeEnabled = false;
   let detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
@@ -423,9 +434,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     lastInput = status.input;
     // Ordinary recorder progress expires through the detail TTL. Aborting on
     // every poll would repeatedly kill slow queries for historical viewports.
-    const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
-    if (!longRange && lastLiveRevision !== undefined && liveRevision !== lastLiveRevision && selection.endDate >= today) force = true;
-    lastContract = contract; lastLiveRevision = liveRevision;
+    const recording={historyRevision:liveRevision,temperatureReportRevision:status.recording?.temperatureReportRevision};
+    if (recordingChangedForSelection(selection,today,lastRecording,recording)) {
+      force = true;
+      if (lastRecording?.temperatureReportRevision!==recording.temperatureReportRevision) invalidateDetail();
+    }
+    lastContract = contract; lastRecording = recording;
     const generation = ++selectionGeneration;
     if (!payload || payload.range.startDate !== selection.startDate || payload.range.endDate !== selection.endDate || canvas.dataset.left !== selection.left) {
       invalidateDetail();

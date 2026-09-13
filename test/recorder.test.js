@@ -42,6 +42,110 @@ test('fresh unchanged samples compact coverage and maximum interval preserves a 
   assert.equal(historical.sourceTime,1000,'later coverage updates cannot leak into an earlier model window');
 });
 
+const periodicReport={source:'mqtt-temperature',raw:{reportIntervalMs:15*MINUTE,reportGraceMs:2*MINUTE}};
+
+test('periodic temperatures save only exact changes while days of reports occupy one coverage span',t=>{
+  const {store,put,recorder,setNow}=fixture(t,{maxIntervalMs:1000});
+  const first=1000;
+  put(20,first,periodicReport);
+  for(let i=1;i<=3*24*4;i++) assert.equal(put(20,first+i*15*MINUTE,periodicReport).saved,false);
+  assert.equal(store.observations().length,1);
+  const spans=store.db.prepare('SELECT * FROM recorder_coverage').all();
+  assert.equal(spans.length,1);assert.equal(spans[0].samples,289);
+  assert.equal(spans[0].source_time,first+72*HOUR);
+  const latest=recorder.latestCommitted('indoor_temperature');
+  assert.equal(latest.sourceTime,first,'unchanged reports never rewrite the value observation clock');
+  assert.equal(latest.reportObservedAt,first+72*HOUR);
+  setNow(first+72*HOUR+18*MINUTE);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,null,'deadline expires without another poll');
+  assert.equal(put(20.0000001,first+72*HOUR+19*MINUTE,periodicReport).saved,true,'every real temperature change survives the adaptive budget');
+  assert.equal(store.observations().length,2);
+});
+
+test('periodic duplicate polls cannot confirm coverage or recover an explicit outage',t=>{
+  const {store,recorder,put}=fixture(t);
+  put(20,1000,periodicReport);
+  put(20,1000+MINUTE,{...periodicReport,sourceTime:1000});
+  let spans=store.db.prepare('SELECT * FROM recorder_coverage').all();
+  assert.equal(spans[0].end_at,1000);assert.equal(spans[0].samples,1);
+  recorder.recordFailure({source:'mqtt-temperature',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:1000+2*MINUTE});
+  put(20,1000+3*MINUTE,{...periodicReport,sourceTime:1000});
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,null);
+  put(20,1000+4*MINUTE,{...periodicReport,sourceTime:1000+MINUTE});
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,null,'buffered report predating the outage does not recover it');
+  put(20,1000+5*MINUTE,periodicReport);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
+  spans=store.db.prepare("SELECT * FROM recorder_coverage WHERE status='fresh'").all();
+  assert.equal(spans.length,2);assert.equal(spans[1].start_at,1000+5*MINUTE);
+});
+
+test('restart and absent polls preserve separate periodic spans around a missed deadline',t=>{
+  const {store,put}=fixture(t);
+  put(20,1000,periodicReport);
+  const recorder=new Recorder(store);
+  const result=recorder.record({...periodicReport,device:'fixture-house',signal:'indoor_temperature',value:20,unit:'degC',
+    sourceTime:1000+40*MINUTE,receivedAt:1000+40*MINUTE,quality:[]});
+  assert.equal(result.saved,false);
+  const spans=store.db.prepare('SELECT * FROM recorder_coverage').all();
+  assert.equal(spans.length,2);assert.equal(spans[0].observation_id,spans[1].observation_id);
+  assert.equal(recorder.committedAt('indoor_temperature',1000+25*MINUTE).value,null);
+  assert.equal(recorder.committedAt('indoor_temperature',1000+41*MINUTE).value,20);
+});
+
+test('disabling periodic reporting clears inherited policy and retains the explicit boundary',t=>{
+  const {store,recorder,put,setNow}=fixture(t);
+  put(20,1000,periodicReport);
+  assert.equal(put(20,1000+MINUTE,{source:'mqtt-temperature',raw:{reportIntervalMs:0}}).reason,'quality-or-availability');
+  setNow(1000+HOUR);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
+  recorder.recordFailure({source:'mqtt-temperature',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:1000+HOUR});
+  assert.equal(store.observations().at(-1).raw.reportIntervalMs,undefined);
+  put(20,1000+HOUR+MINUTE,{source:'mqtt-temperature'});
+  setNow(1000+3*HOUR);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
+});
+
+test('periodic retained packets neither establish coverage, end genuine coverage nor recover a disconnect',t=>{
+  const {store,recorder,put}=fixture(t);
+  const retained={...periodicReport,quality:['retained'],raw:{...periodicReport.raw,retained:true}};
+  assert.equal(put(19,500,retained).reason,'retained-periodic-report');
+  assert.equal(store.observations().length,0);
+  put(20,1000,periodicReport);
+  const original=store.db.prepare('SELECT * FROM recorder_coverage').all();
+  for(const [value,sourceTime] of [[20,1000],[20,1000+MINUTE],[21,1000+2*MINUTE]])
+    assert.equal(put(value,1000+3*MINUTE,{...retained,sourceTime}).saved,false);
+  assert.equal(store.observations().length,1);
+  assert.deepEqual(store.db.prepare('SELECT * FROM recorder_coverage').all(),original);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
+  recorder.recordFailure({source:'mqtt-temperature',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:1000+4*MINUTE});
+  const outage=store.db.prepare('SELECT * FROM recorder_coverage').all();
+  put(22,1000+5*MINUTE,retained);
+  assert.deepEqual(store.db.prepare('SELECT * FROM recorder_coverage').all(),outage);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,null);
+  put(20,1000+6*MINUTE,periodicReport);
+  assert.equal(recorder.latestCommitted('indoor_temperature').value,20);
+});
+
+test('temperature report revision follows genuine confirmations and outages independently of fast recording',t=>{
+  const {recorder,put}=fixture(t);
+  put(20,1000,periodicReport);
+  const original=recorder.status();
+  assert.equal(original.parameters.find(row=>row.signal==='indoor_temperature').threshold,null);
+  put(20,1000+MINUTE,{...periodicReport,sourceTime:1000});
+  assert.equal(recorder.status().temperatureReportRevision,original.temperatureReportRevision);
+  put(-100,1000+2*MINUTE,{signal:'heating_integral',unit:'degMin'});
+  const power=recorder.status();
+  assert.notEqual(power.historyRevision,original.historyRevision);
+  assert.equal(power.temperatureReportRevision,original.temperatureReportRevision);
+  put(20,1000+15*MINUTE,periodicReport);
+  const confirmed=recorder.status();
+  assert.equal(confirmed.historyRevision,power.historyRevision,'same-value confirmation changes no row IDs');
+  assert.notEqual(confirmed.temperatureReportRevision,power.temperatureReportRevision);
+  assert.doesNotMatch(confirmed.temperatureReportRevision,/fixture-house/,'revision excludes device identifiers');
+  recorder.recordFailure({source:'mqtt-temperature',device:'fixture-house',signal:'indoor_temperature',unit:'degC',at:1000+16*MINUTE});
+  assert.notEqual(recorder.status().temperatureReportRevision,confirmed.temperatureReportRevision);
+});
+
 test('old outdoor source timestamps do not become fresh measurements; failures and recovery always persist',t=>{
   const {store,recorder,put,setNow}=fixture(t);
   const extra={source:'husdata-h66',signal:'outdoor_temperature'};

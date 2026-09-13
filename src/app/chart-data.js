@@ -109,7 +109,9 @@ class HistoryLine {
   }
   add(x, y, metadata) {
     const previous = this.previous;
-    if (previous && x - previous.x > this.gap && x > this.envelope.from) {
+    const covered = metadata?.periodicCoverage && previous?.periodicCoverage
+      && metadata.coverageId === previous.coverageId;
+    if (previous && !covered && x - previous.x > this.gap && x > this.envelope.from) {
       if (this.boundedHold) {
         const expires = previous.x + this.gap;
         if (this.clipEdges) {
@@ -122,7 +124,7 @@ class HistoryLine {
       this.envelope.add(Math.max(this.envelope.from, previous.x + (this.boundedHold ? this.gap : 0) + 1), null);
       this.envelope.add(x - 1, null);
     }
-    if (this.clipEdges && previous && x - previous.x <= this.gap) {
+    if (this.clipEdges && previous && (covered || x - previous.x <= this.gap)) {
       // A viewport between recorded samples still shows the same connecting
       // segment. These clipped display points never masquerade as observations.
       for (const boundary of [this.envelope.from, this.envelope.to]) {
@@ -130,9 +132,9 @@ class HistoryLine {
         const value = Number.isFinite(previous.y) && Number.isFinite(y)
           ? this.stepped ? previous.y : previous.y + (y - previous.y) * (boundary - previous.x) / (x - previous.x) : null;
         this.envelope.add(boundary, value, { ...previous, displayBoundary: true,
-          observedAt: previous.x, nextObservedAt: x, interpolated: !this.stepped });
+          observedAt: previous.observedAt??previous.x, nextObservedAt: metadata?.observedAt??x, interpolated: !this.stepped });
       }
-    } else if (!this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && x - previous.x <= this.gap)
+    } else if (!this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && (covered || x - previous.x <= this.gap))
       this.envelope.add(this.envelope.from, previous.y, previous);
     this.envelope.add(x, y, metadata); this.previous = { ...metadata, x, y };
   }
@@ -587,6 +589,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     ...(left === 'integral' ? [] : PHASES), ...leftNames.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
+    json_extract(o.raw,'$.reportIntervalMs') AS report_interval_ms,
     o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${LEARNING.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
@@ -718,6 +721,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
           try { raw = JSON.parse(row.raw); } catch { /* Older archived forecasts may lack metadata. */ }
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
+        if (row.periodicCoverage) metadata = { periodicCoverage:true,displayBoundary:true,
+          observedAt:row.observedAt,reportExpiresAt:row.reportExpiresAt,coverageId:row.coverageId };
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
         if (signal === 'charger_power' && !drawingOnly) timing.add('charger', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
         if (LEARNING.includes(signal)) {
@@ -785,8 +790,11 @@ export function getChartData({ store, input = 'offline', contract = null, market
     yield* earlier.sort((a, b) => a.source_time - b.source_time || a.id - b.id);
     yield* historyRows;
   }
-  const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested});
+  const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested,now});
   for (const row of left === 'power' ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
+    // Periodic reports have their own explicit availability projection, including
+    // unchanged spans beginning before the normal three-hour context query.
+    if (!row.coverage && row.import_id == null && row.report_interval_ms>0) continue;
     if (row.imported) {
       if (time !== null && time !== row.source_time) flushTime();
       time = row.source_time;

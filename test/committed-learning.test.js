@@ -362,16 +362,16 @@ test('new algorithm starts its own journal while older entries remain explicitly
   assert.equal(replayLearningJournal(store, 'mqtt').algorithmVersion, LEARNING_ALGORITHM);
 });
 
-test('held indoor learning establishes a v7 seed without reinterpreting the v6 archive', t => {
+test('periodic report learning establishes a v8 seed without reinterpreting the v7 archive', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   store.appendLearningJournal('mqtt', { kind: 'context', at: start - HOUR,
-    algorithmVersion: 'committed-house-v6-sensors', key: 'invented-v6-archive',
+    algorithmVersion: 'committed-house-v7-held-indoor', key: 'invented-v7-archive',
     payload: { value: { timestamp: start - HOUR }, configuration: {}, seed: null } });
-  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v6-sensors'").get();
+  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v7-held-indoor'").get();
   const model = initialAdaptiveModel(); model.parameters.fireplaceCPerKg = 0.23;
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start }, { config, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v7-held-indoor');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v8-report-coverage');
   assert.equal(entry.payload.seed.model.parameters.fireplaceCPerKg, 0.23);
   const checkpoint = replayLearningJournal(store, 'mqtt');
   assert.equal(checkpoint.model.parameters.fireplaceCPerKg, 0.23);

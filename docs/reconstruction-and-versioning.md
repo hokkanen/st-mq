@@ -96,6 +96,32 @@ The v6 journal remains an archive requiring its matching code (Git revision
 explicit initial seed and starts the new learning epoch. Historical CSV indoor
 values retain their original Upstairs interpretation and import provenance.
 
+`committed-house-v8-report-coverage` adds a recorded reporting contract for
+periodic indoor MQTT sensors: a 15-minute interval plus two minutes of grace by
+default. A genuine newer report confirms coverage even if its temperature is
+unchanged. Compact recorder spans preserve that evidence without inserting
+scheduled temperature rows. Each span extends only when the next report arrives
+before the previous source report expires; missed deadlines and explicit source
+failures start a gap that later recovery cannot erase. Retained packets and
+repeated source timestamps cannot extend coverage. The original saved temperature
+and its observation time remain separate from report availability.
+Enabling or changing a periodic reporting policy records one explicit availability
+boundary and waits for a genuine report under the new contract. Restarting while
+that report is pending does not duplicate the boundary. Disabling the policy
+cannot erase a periodic gap earlier in the same learning window.
+
+Live control uses the normal safe fallback when any configured periodic member
+is unavailable. Learning also rejects a completed window that crosses a report
+gap, even if the sensor has recovered by the endpoint. The committed sample saves
+the complete-window coverage result and observation/coverage lineage; live
+updates and rebuilding consume that same immutable sample. Sensors without this
+periodic contract, including the existing H66 and garage sources, retain their
+previous behavior. CSV interpretation and provenance are unchanged.
+
+The v7 journal remains an archive requiring its matching code (Git revision
+`b779b44`), and is never replayed as v8. The first v8 entry records the explicit
+initial seed and starts its own learning epoch.
+
 Existing experimental SQLite contents do not require a compatibility migration.
 Changes to numerical interpretation,
 training selection, corrections, seeds or fitting rules require an explicit learning

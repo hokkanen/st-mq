@@ -18,7 +18,7 @@ function indoorEndpointMetadata(sample, usable) {
     const sensor = sample.indoorSensors?.[signal];
     if (!sensor || !Number.isFinite(sensor.observedAt) || !sensor.held && !sensor.needsAttention) return [];
     const reasons = Array.isArray(sensor.attentionReasons)
-      ? [...new Set(sensor.attentionReasons.filter(reason => ['old-reading', 'disconnected', 'invalid-reading'].includes(reason)))] : [];
+      ? [...new Set(sensor.attentionReasons.filter(reason => ['old-reading', 'disconnected', 'invalid-reading', 'missing-report'].includes(reason)))] : [];
     return [{ signal, observedAt: sensor.observedAt, reasons }];
   });
   return { savedIndoorAverage: true, learningUsable: usable,
@@ -72,10 +72,10 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     const common = { modelInput: true, journalId: row.id, algorithmVersion: row.algorithm_version,
       inputSource: sources[row.input], intervalStart: start, intervalEnd: end };
     if (selected.includes('model_indoor_temperature')) {
-      // v7 records indoor endpoint availability independently of the other
+      // These algorithms record indoor availability independently of the other
       // learning inputs. A missing outdoor segment must not erase a known
       // indoor average. Older algorithms retain their original chart gates.
-      const currentIndoor = row.algorithm_version === 'committed-house-v7-held-indoor';
+      const currentIndoor = ['committed-house-v7-held-indoor','committed-house-v8-report-coverage'].includes(row.algorithm_version);
       project('model_indoor_temperature', start, end, (currentIndoor || usable) && finite(sample.indoorC) ? sample.indoorC : null,
         currentIndoor ? { ...common, ...indoorEndpointMetadata(sample, usable) } : common, true);
     }

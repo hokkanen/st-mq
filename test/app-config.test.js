@@ -81,6 +81,22 @@ test('indoor learning weights have stable configured membership, optional explic
     assert.throws(() => indoorSensorWeightsConfiguration(invalid, connections), /Indoor sensor weights/);
   assert.throws(() => indoorSensorWeightsConfiguration({ downstairs_temperature: 1 }), /configured/);
 });
+
+test('indoor report deadlines default to fifteen minutes plus grace and can match change-only publishers', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-report-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const read = mqtt => {
+    writeFileSync(path, JSON.stringify({ mqtt: { address: 'mqtt://invented.invalid', ...mqtt } }), { mode: 0o600 });
+    return loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: path }, directory).connections.mqtt;
+  };
+  assert.equal(read({}).temperatureReportIntervalMs, 900_000);
+  assert.equal(read({}).temperatureReportGraceMs, 120_000);
+  assert.equal(read({ temperature_report_interval_minutes: 0 }).temperatureReportIntervalMs, 0);
+  assert.equal(read({ temperature_report_interval_minutes: 20, temperature_report_grace_seconds: 30 }).temperatureReportGraceMs, 30_000);
+  for (const settings of [{ temperature_report_interval_minutes: -1 }, { temperature_report_interval_minutes: '15' },
+    { temperature_report_grace_seconds: -1 }, { temperature_report_grace_seconds: 901 }]) assert.throws(() => read(settings));
+});
 test('add-on default indoor weights include the required nested object and retain automatic sensor membership', () => {
   const addon = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
   // Supervisor AppOptions._check_missing_options requires dictionary fields

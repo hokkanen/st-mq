@@ -142,6 +142,22 @@ test('v7 saved indoor averages survive unrelated rejected learning inputs and pr
   assert.deepEqual(historySeriesAt(chart).model_indoor_temperature, points, 'Held room values do not extend saved average endpoints beyond the journal');
 });
 
+test('v8 shows a covered indoor average through unrelated failures and keeps missing reports as gaps',t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const covered={indoorC:20.5,valid:false,quality:['missing'],indoorSensors:{
+    indoor_temperature:{value:20.5,weight:1,observedAt:start,reportCoverageComplete:true,held:false,needsAttention:false},
+  }};
+  const missing={...covered,indoorC:null,indoorSensors:{indoor_temperature:{value:null,weight:1,observedAt:start,
+    reportCoverageComplete:false,held:true,needsAttention:true,attentionReasons:['missing-report','private-fixture']}}};
+  put(store,start+15*MINUTE,sample(0,15,[segment(0,15,{outdoorC:null})],covered),'mqtt','committed-house-v8-report-coverage');
+  put(store,start+30*MINUTE,sample(15,30,[segment(15,30)],missing),'mqtt','committed-house-v8-report-coverage');
+  const result=project(store,'mqtt'),points=result.series.model_indoor_temperature;
+  assert.deepEqual(points.map(point=>point.y),[20.5,null]);
+  assert.equal(points[0].savedIndoorAverage,true);assert.equal(points[0].learningUsable,false);
+  assert.deepEqual(points[1].attentionSensors,[{signal:'indoor_temperature',observedAt:start,reasons:['missing-report']}]);
+  assert.ok(result.series.model_outdoor_temperature.every(point=>point.y===null));
+});
+
 test('DHWR left axis ends each request at its expiry and merges overlapping pulses', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const minute of [0, 5, 60]) store.observation({ source: 'controller', device: 'providers',
