@@ -1073,7 +1073,6 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-overview, .garage-native-overview, .pump-native-overview { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
 .garage-budget-values { display: flex; flex-wrap: wrap; gap: 0 6px; }
 .garage-budget-values > span { white-space: nowrap; }
-.garage-budget-values > .muted { font-size: inherit; }
 .garage-budget-values > [data-state="attention"] { color: var(--stale); }
 .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 17px; font-weight: 500; line-height: 1.5; }
 .pump-native-overview { margin: 12px 0 8px; }
