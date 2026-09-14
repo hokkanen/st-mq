@@ -2,11 +2,12 @@ import { garageSettings } from './settings.js';
 import { garagePlanningMargins } from './planning-evidence.js';
 import { createGarageRegression, fitGarageRegression } from './model-fit.js';
 import { createGarageValidation, advanceGarageValidation, interruptGarageValidation, summarizeGarageValidation } from './model-validation.js';
+import { garageDoorIntervalUnknown } from './door-state.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
 const MEMORY_TIME_HOURS = 18;
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const clone = value => structuredClone(value);
-export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v2-sparse';
+export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v3-event-doors';
 const REAR = [
   ['lossPerHour', .022, .001, .15, '1/h'], ['memoryExchangePerHour', .11, .01, .6, '1/h'],
   ['powerHeatCPerKwh', .55, .02, 4, '°C/kWh'], ['activityHeatCPerHour', .5, .02, 4, '°C/h'],
@@ -132,7 +133,8 @@ export function predictGarageStep(model, state, input = {}, durationHours, { con
 function learnReference(model, current, previous, hours, config, allowFit) {
   const reference = model.normalReference;
   const disturbance = current.managedPause === true || current.recovering === true || current.available !== true || current.baselineVerified !== true
-    || current.doorFront === true || current.doorRear === true || evInputs(current).some(ev => ev.kw > .1 || ev.active > 0);
+    || current.doorFront === true || current.doorRear === true || garageDoorIntervalUnknown(current, previous)
+    || evInputs(current).some(ev => ev.kw > .1 || ev.active > 0);
   if (current.managedPause || current.recovering || current.available === false) reference.lastPauseAt = current.at;
   if (disturbance) { reference.availableSince = null; reference.settledC = current.rearC; return; }
   if (reference.availableSince === null) reference.availableSince = current.at;
@@ -200,15 +202,16 @@ export function updateGarageModel(previous, observation, settings = {}) {
       && Math.abs(frontAt - rearAt) <= 5 * 60_000 && Math.abs((prior.frontAt ?? prior.at) - (prior.rearAt ?? prior.at)) <= 5 * 60_000;
     const power = prior.available === false ? 0 : actualPower ? prior.powerKw : 0;
     const active = prior.available === false || actualPower ? 0 : actualActivity ?? 0;
-    const frontDisturbance = current.doorFront === true || prior.doorFront === true
+    const doorUncertain = garageDoorIntervalUnknown(current, prior);
+    const frontDisturbance = doorUncertain || current.doorFront === true || prior.doorFront === true
       || frontKnown && Math.abs((current.frontC - current.rearC) - state.differenceC) > 1;
-    const rearDisturbance = current.doorRear === true || prior.doorRear === true || Math.abs(current.rearC - prior.rearC) > 2;
+    const rearDisturbance = doorUncertain || current.doorRear === true || prior.doorRear === true || Math.abs(current.rearC - prior.rearC) > 2;
     const vehicles = evInputs(prior), evActive = vehicles.some(ev => ev.kw > .1 || ev.active > 0);
     const episode = advanceGarageValidation(model, { state, prior, current, hours, frontKnown,
       disturbed: frontDisturbance || rearDisturbance || evActive, metered: actualPower, predict: predictGarageStep });
     // A physical episode takes precedence over the ordinary daily partition.
     const heldOut = episode.role ? episode.role === 'validation' : ((prior.at - model.seedAt) / HOUR % 24 + 24) % 24 >= 18;
-    if (heldOut) {
+    if (heldOut && !doorUncertain) {
       if (inputKnown) recordError(model.heldOut.rear, current.rearC - conditional.rearC, hours);
       recordError(model.heldOut.advanceRear, current.rearC - (episode.forecast ?? advance).rearC, hours);
       if (prior.available === false) recordError(model.heldOut.offRear, current.rearC - (episode.forecast ?? advance).rearC, hours);

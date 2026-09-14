@@ -47,6 +47,27 @@ test('door transitions remain discrete and explicit acquisition failures interru
   assert(rows.filter(point => point.x >= start + 10 * HOUR).every(point => point.y === null));
 });
 
+test('cached door recovery preserves its source clock and the historical outage', t => {
+  const { put, query, recorder } = fixture(t);
+  const observedAt = start - 48 * HOUR, failedAt = start + HOUR, recoveredAt = start + 2 * HOUR;
+  put(0, observedAt);
+  recorder.recordFailure({ source: 'mqtt-equipment', device: 'garage_door1', signal: 'garage_door1_open', unit: 'state',
+    at: failedAt, quality: ['bridge-offline'] });
+  recorder.record({ source: 'mqtt-equipment', device: 'garage_door1', signal: 'garage_door1_open', value: 0,
+    unit: 'state', sourceTime: observedAt, receivedAt: recoveredAt, quality: [],
+    raw: { eventOnly: true, availabilityConfirmed: true, confirmedAt: recoveredAt, timeBasis: 'mqtt-live-status' } });
+  for (const extra of [{}, { viewFrom: start, viewTo: start + 3 * HOUR },
+    { viewFrom: start + 8 * HOUR, viewTo: start + 10 * HOUR }]) {
+    const rows = query(extra).series.garage_door1_open;
+    assert(rows.filter(point => point.x >= recoveredAt).every(point => point.y === 0 && point.observedAt === observedAt));
+    if (!extra.viewFrom || extra.viewFrom < failedAt) {
+      assert(rows.some(point => point.x === failedAt && point.y === null));
+      assert(!rows.some(point => point.x >= failedAt && point.x < recoveredAt && point.y !== null));
+      assert(rows.some(point => point.x === recoveredAt && point.y === 0 && point.observedAt === observedAt));
+    }
+  }
+});
+
 test('Caravan hourly energy plots native and explicitly mapped MQTT meter intervals with coverage', t => {
   for (const source of ['shelly-mqtt', 'mqtt-equipment']) {
     const store = new Store(':memory:'); t.after(() => store.close());

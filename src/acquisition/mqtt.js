@@ -118,15 +118,46 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const publish = (topic, payload, options) => new Promise((resolve, reject) => {
     if (!connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
-    let finished = false;
+    const { noReplay = false, ...publicationOptions } = options ?? {};
+    // MQTT.js can defer ID allocation while replaying its outgoing store. Do
+    // not enqueue a new movement during that phase. These queue guards match
+    // the pinned client's publish implementation; ordinary telemetry is unchanged.
+    if (noReplay && (client.connected === false || client._storeProcessing || client._storeProcessingQueue?.length)) {
+      reject(new Error('MQTT door command route is reconnecting')); return;
+    }
+    let finished = false, failed = false, outgoingId = null, outgoingRemoved = false;
+    const removeOutgoing = () => {
+      if (!failed || !noReplay || outgoingRemoved || !Number.isInteger(outgoingId)) return;
+      outgoingRemoved = true; client.removeOutgoingMessage?.(outgoingId);
+    };
+    const capturePacket = packet => {
+      if (packet.cmd !== 'publish' || packet.topic !== topic || String(packet.payload) !== String(payload)) return;
+      outgoingId = packet.messageId;
+      client.off?.('packetsend', capturePacket);
+    };
     const finish = error => {
       if (finished) return;
-      finished = true; clearTimeout(timer); pendingPublications.delete(finish);
+      finished = true; failed = Boolean(error); clearTimeout(timer); pendingPublications.delete(finish);
+      client.off?.('packetsend', capturePacket);
+      // MQTT.js normally retransmits unacknowledged QoS 1 packets after its
+      // connection recovers. A manual door movement must require a new request.
+      removeOutgoing();
       if (error) reject(new Error('MQTT publication failed')); else resolve();
     };
     const timer = setTimeout(() => finish(new Error('MQTT timeout')), settings.readbackTimeoutMs ?? 10_000);
     pendingPublications.add(finish);
-    try { client.publish(topic, payload, options, finish); } catch { finish(new Error('MQTT publication failed')); }
+    if (noReplay) client.on?.('packetsend', capturePacket);
+    const previousId = noReplay ? client.getLastMessageId?.() : null;
+    try { client.publish(topic, payload, publicationOptions, finish); } catch { finish(new Error('MQTT publication failed')); }
+    if (noReplay) {
+      const allocatedId = client.getLastMessageId?.();
+      if (Number.isInteger(allocatedId) && allocatedId !== previousId) {
+        outgoingId = allocatedId; client.off?.('packetsend', capturePacket);
+      }
+      // Disconnect can occur inside publish before any packet reaches the wire.
+      // The allocated ID still lets us remove that unsent outgoing-store entry.
+      removeOutgoing();
+    }
   });
   const refreshSubscriptions = topics => Promise.all([...new Set(topics)].map(topic => new Promise((resolve, reject) => {
     if (!connected || stopping || stopped) { reject(new Error('MQTT unavailable')); return; }

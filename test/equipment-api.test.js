@@ -22,6 +22,7 @@ const TEST = { deviceId: 'caravan', on: true, durationMinutes: 1 };
 const ROUTES = [
   ['/api/equipment/recheck', {}], ['/api/equipment/test', TEST], ['/api/equipment/test/restore', {}],
   ['/api/equipment/switch', { deviceId: 'caravan', on: true }], ['/api/equipment/h66', { register: '0203', value: 21 }],
+  ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
 ];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -281,6 +282,31 @@ test('generic equipment recheck publishes only its explicitly configured read re
   assert.deepEqual(f.mqtt.events.filter(row => row.type === 'publish').map(row => [row.topic, row.payload]), [['invented-aux/get', 'status']]);
   assert.equal(checked.body.equipment.devices[0].available, true);
   assert.equal(f.app.store.getState(KEY), null);
+});
+
+test('explicit shadow-mode door HTTP controls publish configured commands without optimistic position or unsupported Stop', async t => {
+  const f = await runtimeFixture(t, [{ id: 'garage_door1', label: 'Synthetic garage door', area: 'garage', kind: 'door',
+    connection: 'mqtt:invented-door/state', cover_control: true,
+    mqtt: { command_topic: 'invented-door/cover', open_payload: 'open', close_payload: 'closed',
+      state_path: 'value', timestamp_path: 'timestamp', cover_state_path: 'cover_state', availability_topic: 'invented-door/online' } }]);
+  const client = f.mqtt.clients[0];
+  client.emit('message', 'invented-door/state', Buffer.from(JSON.stringify({ value: 'closed', cover_state: 'closed',
+    timestamp: new Date(INITIAL).toISOString() })), { retain: false });
+  client.emit('message', 'invented-door/online', Buffer.from('online'), { retain: false });
+  f.mqtt.events.length = 0;
+  for (const input of [null, [], {}, { deviceId: 'unknown', action: 'open' }, { deviceId: 'garage_door1', action: 'toggle' },
+    { deviceId: 'garage_door1', action: 'stop' }, { deviceId: 'garage_door1', action: 'open', topic: 'invented/arbitrary' }])
+    assert.equal((await f.post('/api/equipment/cover', input)).status, 400);
+  assert.equal(f.mqtt.events.filter(row => row.type === 'publish').length, 0);
+  const opened = await f.post('/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' });
+  assert.equal(opened.status, 200); assert.equal(opened.body.mode, 'shadow');
+  const device = opened.body.equipment.devices[0];
+  assert.deepEqual(device.controls.cover, { open: true, close: true, stop: false });
+  assert.equal(device.cover.state, 'closed'); assert.equal(device.cover.operation.status, 'published');
+  assert.deepEqual(f.mqtt.events.filter(row => row.type === 'publish').map(row => ({ topic: row.topic, payload: row.payload, options: row.publication })),
+    [{ topic: 'invented-door/cover', payload: 'open', options: { qos: 1, retain: false } }]);
+  client.emit('message', 'invented-door/online', Buffer.from('offline'), { retain: false });
+  assert.equal((await f.post('/api/equipment/cover', { deviceId: 'garage_door1', action: 'close' })).status, 400);
 });
 
 test('configuration reload confirms restoration through the old route before closing it and subscribing to the new route', async t => {

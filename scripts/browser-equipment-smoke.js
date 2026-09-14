@@ -1,13 +1,15 @@
 // Synthetic localhost app and intercepted controls; no household configuration.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { checkEquipmentBrowser } from './lib/equipment-browser-checks.js';
 const directory=mkdtempSync(join(tmpdir(),'stmq-equipment-browser-'));
-let app, socket, id=0;
+let app, socket, browser, id=0;
 const pending=new Map(),errors=[];
 try {
   writeFileSync(join(directory,'options.json'),'{}');
@@ -17,7 +19,20 @@ try {
     market:{source:'entsoe',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')},
     weather:{source:'fmi',status:'ok',lastSuccessAt:Date.parse('2026-09-07T12:00:00Z')}
   });
-  const endpoint=process.argv[2]??'http://127.0.0.1:39135';
+  let endpoint=process.argv[2];
+  if(!endpoint) {
+    const profile=join(directory,'chrome');mkdirSync(profile);
+    browser=spawn(process.env.STMQ_CHROME_BIN??'/opt/google/chrome/chrome',['--headless','--no-sandbox','--disable-gpu',
+      '--no-first-run','--disable-background-networking','--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',
+      `--user-data-dir=${profile}`,'about:blank'],{stdio:'ignore'});
+    let launchError;browser.on('error',error=>{launchError=error;});
+    for(let attempt=0;attempt<200&&!endpoint;attempt++) {
+      if(launchError)throw launchError;
+      try {const port=Number(readFileSync(join(profile,'DevToolsActivePort'),'utf8').split('\n')[0]);if(port)endpoint=`http://127.0.0.1:${port}`;}catch{}
+      if(!endpoint)await new Promise(resolve=>setTimeout(resolve,30));
+    }
+    assert(endpoint,'Isolated Chromium DevTools listener started');
+  }
   const target=await fetch(`${endpoint}/json/new?about:blank`,{method:'PUT'}).then(r=>r.json());
   socket=new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;});
@@ -38,7 +53,9 @@ try {
   mkdirSync('var',{recursive:true});
   await checkEquipmentBrowser({evaluate,command,context:'cdp',until});
   assert.deepEqual(errors,[]);
-  console.log('Equipment browser checks passed: live controls, dynamic devices, MQTT diagnostics, DHWR feedback, popup baseline, five responsive viewports.');
+  console.log('Equipment browser checks passed: mocked switch and door controls, dynamic devices, MQTT diagnostics, DHWR feedback, popup baseline, five responsive viewports.');
 } finally {
-  socket?.close();for(const p of pending.values())clearTimeout(p.timer);await app?.close();rmSync(directory,{recursive:true,force:true});
+  socket?.close();for(const p of pending.values())clearTimeout(p.timer);await app?.close();
+  if(browser&&browser.exitCode===null) {browser.kill();await new Promise(resolve=>browser.once('exit',resolve));}
+  await rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});
 }

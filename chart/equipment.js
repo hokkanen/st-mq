@@ -123,12 +123,15 @@ export function equipmentReadingRows(device) {
     const state = isState(signal, reading), projected = reading.displayStatus;
     const fresh = projected ? projected.usable : reading.stale === false || (reading.stale === undefined && device.available);
     const last = valueText(signal, reading, device), known = !['Unknown', 'Unavailable'].includes(last);
+    const motion = device.kind === 'door' && state && fresh && known && ['opening', 'closing'].includes(reading.coverState)
+      ? reading.coverState : null;
     const observed = Number.isFinite(reading.observedAt) ? clock.format(reading.observedAt) : 'time unavailable';
     return { signal, label: device.kind === 'heat_pump' && /_active$/.test(signal) ? 'Power enabled'
       : `${reading.label ?? pretty(signal)}${reading.estimated ? ' (estimate)' : ''}`,
-      value: fresh ? last : state ? 'Unknown' : 'Unavailable', stale: !fresh,
+      value: motion ? motion[0].toUpperCase() + motion.slice(1) : fresh ? last : state ? 'Unknown' : 'Unavailable', stale: !fresh,
       ...(projected?.attention && fresh ? { qualifier: 'Needs attention' } : {}),
-      detail: projected?.detail ?? (known ? `${fresh ? 'Last reported' : `Last reported ${last}`} · ${observed}` : 'No usable reading received'),
+      detail: projected?.detail ?? (motion ? `Reported ${motion} · ${observed}`
+        : known ? `${fresh ? 'Last reported' : `Last reported ${last}`} · ${observed}` : 'No usable reading received'),
     };
   });
   if (device.energy) {
@@ -155,7 +158,7 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
   const emit = () => onChange(snapshot());
   async function send(path, body, success) {
     if (!status || isReadOnlyReplica(status) || busy) return false;
-    actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control' : 'test';
+    actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control' : path.endsWith('/cover') ? 'cover' : 'test';
     actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
     busy = true; error = false; message = path.endsWith('/recheck') ? 'Checking configured connections…' : 'Applying request…';
     beforeRequest(); emit();
@@ -187,6 +190,11 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
       if (!equipmentControlAllowed(status, device, busy) || typeof on !== 'boolean') return Promise.resolve(false);
       return send('/api/equipment/switch', { deviceId, on }, 'Request completed. The reported state is shown above.');
     },
+    cover(deviceId, action) {
+      const device = status?.equipment?.devices?.find(device => device.id === deviceId);
+      if (!equipmentCoverAllowed(status, device, action, busy)) return Promise.resolve(false);
+      return send('/api/equipment/cover', { deviceId, action }, 'Door request sent. Check the reported state.');
+    },
     test(deviceId, on, durationMinutes) {
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);
       if (!equipmentTestAllowed(status, device, busy) || typeof on !== 'boolean'
@@ -204,6 +212,20 @@ export function equipmentControlAllowed(status, device, busy = false) {
   return equipmentTestAllowed({ ...status, equipmentTests: { ...status?.equipmentTests,
     available: status?.equipmentControls?.available === true,
     busy: status?.equipmentControls?.busy || status?.equipmentTests?.busy } }, device, busy);
+}
+
+export function equipmentCoverAllowed(status, device, action, busy = false) {
+  return Boolean(status && !isReadOnlyReplica(status) && !busy && device?.enabled !== false && device?.kind === 'door'
+    && ['open', 'close', 'stop'].includes(action) && device.controls?.cover?.[action] === true && device.cover?.available === true);
+}
+
+export function equipmentCoverResult(device) {
+  const operation = device.cover?.operation;
+  if (!operation || !['open', 'close', 'stop'].includes(operation.action)) return '';
+  const result = { publishing: 'sending…', published: 'sent; position unconfirmed', observed: 'state reported',
+    failed: 'could not send; check the door', unconfirmed: 'no new position report' }[operation.status] ?? 'position unconfirmed';
+  const detail = operation.action === 'stop' && operation.status === 'published' ? 'sent; stopping unconfirmed' : result;
+  return `${pretty(operation.action).replace(/^./, letter => letter.toUpperCase())} requested · ${detail}`;
 }
 
 export function equipmentCheckText(device) {
@@ -408,8 +430,24 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         const help = make('p', '', 'muted'), result = make('p', '', 'equipment-control-result');
         result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
         buttons.append(on, off); controls.append(buttons, help, result);
-        heading.append(title, source); section.append(heading, list, empty, controls);
-        node = { section, title, source, list, empty, controls, buttons, on, off, help, result, rows: new Map() }; readingNodes.set(device.id, node);
+        const coverControls = make('div', '', 'equipment-inline-controls equipment-cover-controls');
+        const coverButtons = make('div', '', 'equipment-cover-buttons'), coverActions = {};
+        coverButtons.setAttribute('role', 'group');
+        for (const [action, text, path] of [['open', 'Open', 'm5 14 7-7 7 7'], ['close', 'Close', 'm5 10 7 7 7-7'], ['stop', 'Stop', 'M6 6h12v12H6z']]) {
+          const control = button('', () => { if (!blocked()) void actions.cover(device.id, action); });
+          control.dataset.coverAction = action;
+          const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('aria-hidden', 'true'); icon.setAttribute('focusable', 'false');
+          const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path'); shape.setAttribute('d', path); icon.append(shape);
+          control.append(icon, make('span', text)); coverButtons.append(control); coverActions[action] = control;
+        }
+        const coverHelp = make('p', '', 'muted'), coverResult = make('p', '', 'equipment-control-result');
+        coverHelp.id = `equipment-cover-${device.id}-help`;
+        coverResult.setAttribute('role', 'status'); coverResult.setAttribute('aria-live', 'polite');
+        coverControls.append(coverButtons, coverHelp, coverResult);
+        heading.append(title, source); section.append(heading, list, empty, controls, coverControls);
+        node = { section, title, source, list, empty, controls, buttons, on, off, help, result,
+          coverControls, coverButtons, coverActions, coverHelp, coverResult, rows: new Map() }; readingNodes.set(device.id, node);
       }
       if (root.children[index] !== node.section) root.insertBefore(node.section, root.children[index] ?? null);
       node.title.textContent = device.label ?? labels[device.kind] ?? 'Device';
@@ -457,6 +495,23 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.result.textContent = scoped && (busy || error) ? message : result;
       node.result.hidden = !node.result.textContent;
       node.result.classList.toggle('form-error', Boolean(scoped && error || last?.deviceId === device.id && last.confirmed !== true && ['failed', 'unconfirmed'].includes(last.status)));
+      const hasCoverControls = device.kind === 'door' && ['open', 'close', 'stop'].some(action => device.controls?.cover?.[action] === true);
+      node.coverControls.hidden = !hasCoverControls;
+      node.coverButtons.setAttribute('aria-label', `${device.label ?? 'Door'} operation`);
+      for (const [action, control] of Object.entries(node.coverActions)) {
+        control.hidden = device.controls?.cover?.[action] !== true;
+        control.disabled = !equipmentCoverAllowed(status, device, action, busy || blocked());
+        control.setAttribute('aria-label', `${action[0].toUpperCase() + action.slice(1)} ${device.label ?? 'door'}`);
+        control.setAttribute('aria-describedby', node.coverHelp.id);
+      }
+      const coverScoped = actionKind === 'cover' && actionDeviceId === device.id;
+      node.coverHelp.textContent = isReadOnlyReplica(status) ? 'Controls are available on the primary computer.'
+        : busy || blocked() ? 'Another request is in progress.'
+          : !device.cover?.available ? 'Door control is unavailable. Check the connection.'
+            : 'Open means the door is not fully closed.';
+      node.coverResult.textContent = coverScoped && (busy || error) ? message : equipmentCoverResult(device);
+      node.coverResult.hidden = !node.coverResult.textContent;
+      node.coverResult.classList.toggle('form-error', Boolean(coverScoped && error || ['failed', 'unconfirmed'].includes(device.cover?.operation?.status)));
     }
     for (const child of [...root.children]) if (!devices.some(device => device.id === child.dataset.deviceId)) child.remove();
   }

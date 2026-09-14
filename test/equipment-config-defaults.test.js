@@ -26,6 +26,13 @@ test('public equipment defaults work with broker-only private settings and prese
   assert.equal(devices.filter(row => ['upstairs', 'downstairs', 'bedroom'].includes(row.id)).every(row => row.maxAgeMs === 4_500_000), true);
   assert.equal(config.connections.mqtt.temperatureReportIntervalMs + config.connections.mqtt.temperatureReportGraceMs, 4_500_000);
   assert.equal(devices.filter(row => row.kind === 'door').every(row => row.protocol === 'mqtt' && row.maxAgeMs === 0), true);
+  for (const [index, door] of devices.filter(row => row.kind === 'door').entries()) {
+    assert.equal(door.controlsCover, true);
+    assert.equal(door.mqtt.commandTopic, `stmq/garage/door${index + 1}/command/cover`);
+    assert.equal(door.mqtt.openPayload, 'open'); assert.equal(door.mqtt.closePayload, 'closed');
+    assert.equal(door.mqtt.stopPayload, null, 'Installed HA covers advertise no Stop capability');
+    assert.equal(door.mqtt.coverStatePath, 'cover_state');
+  }
   const dhwr = devices.find(row => row.id === 'dhwr');
   assert.equal(dhwr.enabled, true);
   assert.equal(dhwr.kind, 'power');

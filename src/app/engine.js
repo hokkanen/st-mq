@@ -26,6 +26,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
 import { GarageRuntime } from '../garage/runtime.js';
+import { isGarageDoorSignal, confirmedGarageDoor, garageDoorContinuity } from '../garage/door-state.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const pauseIdentity = override => override?.id ?? (Number.isFinite(override?.createdAt) ? String(override.createdAt) : null);
@@ -34,12 +35,13 @@ const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
 
 function garageOwner(config, signal) {
-  if (!['garage_temperature', 'garage_temperature_2'].includes(signal)) return null;
+  if (!['garage_temperature', 'garage_temperature_2'].includes(signal) && !isGarageDoorSignal(signal)) return null;
   const device = config.connections?.equipment?.devices?.find(device => device.ownedSignals?.includes(signal));
   if (device) return !device.enabled ? { disabled: true } : device.protocol === 'shelly'
     ? { source: 'shelly-mqtt', device: device.id }
     : device.kind === 'temperature' && device.temperatureSignal === signal
       ? { source: 'mqtt-temperature', device: signal } : { source: 'mqtt-equipment', device: device.id };
+  if (isGarageDoorSignal(signal)) return null;
   if (config.connections?.shelly?.devices?.some(device => device.role === 'garage')) return { source: 'shelly-mqtt', device: 'garage' };
   if (config.connections?.mqtt?.temperatureTopics?.[signal]) return { source: 'mqtt-temperature', device: signal };
   return null;
@@ -73,19 +75,21 @@ function remember(latest, observation, now) {
   const incomingValid = trustworthy(observation, now), priorValid = trustworthy(prior, now);
   const sameSource = prior?.source === observation.source && prior?.device === observation.device;
   const retained = observation.raw?.retained === true || observation.quality?.includes('retained');
+  const confirmedEvent = confirmedGarageDoor(observation, now);
   if (availabilityTransition(observation)) {
     // Explicit subscription/disconnection evidence ends this source's live
     // availability immediately. A delayed or different-device failure cannot
     // invalidate the currently selected reading.
     if (!retained && Number.isFinite(observation.receivedAt) && observation.receivedAt <= now
       && (!prior || sameSource && observation.receivedAt >= Math.max(prior.receivedAt ?? 0,
-        priorValid ? prior.sourceTime : 0))) latest[observation.signal] = observation;
+        priorValid ? prior.sourceTime : 0, confirmedGarageDoor(prior, now) ? prior.raw.confirmedAt : 0))) latest[observation.signal] = observation;
     return;
   }
-  // Reconnect alone and delayed pre-disconnection values cannot restore a
-  // source. Recovery requires a live measurement at or after the transition.
+  // Periodic measurements require a new source report. A confirmed event contact
+  // can recover from an explicit live snapshot while preserving its source time.
   if (sameSource && availabilityTransition(prior) && (retained
-    || observation.sourceTime < prior.receivedAt || (observation.receivedAt ?? 0) < prior.receivedAt)) return;
+    || !confirmedEvent && observation.sourceTime < prior.receivedAt
+    || (observation.receivedAt ?? 0) < prior.receivedAt)) return;
   // Old measurements remain useful history during outages, with their original age.
   // A bad/future measurement must never prevent a later trustworthy sample from recovering service.
   if (!prior || (incomingValid && (!priorValid || observation.sourceTime >= prior.sourceTime))
@@ -379,6 +383,7 @@ export class Engine {
     this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport, config: this.control, clock });
     this.startupRestorationPending = this.executor.status().restorationPending;
     this.latest = Object.create(null);
+    this.garageDoorStates = Object.create(null);
     this.lastKnownTemperatures = Object.create(null);
     this.temperatureAttempts = Object.create(null);
     this.temperatureReportPolicies = Object.create(null);
@@ -438,7 +443,7 @@ export class Engine {
       && (result.rejectedSourceTime || result.reason === 'out-of-order-receipt');
     this.rememberObservation(rejectedTime ? { ...observation,
       quality: [...new Set([...(observation.quality ?? []), 'out-of-order-source-time'])] } : observation, now);
-    if (['garage_temperature', 'garage_temperature_2'].includes(observation.signal)) this.garage?.queueSafety();
+    if (['garage_temperature', 'garage_temperature_2'].includes(observation.signal) || isGarageDoorSignal(observation.signal)) this.garage?.queueSafety();
     return result;
   }
   ingestEnergy(interval) { return interval.signal === 'garage_energy' ? this.garage.ingestEnergy(interval) : this.recorder.recordEnergy(interval); }
@@ -467,7 +472,13 @@ export class Engine {
       const prior = this.outdoorCandidates[observation.source];
       this.outdoorCandidates[observation.source] = rememberOutdoorReading(prior, observation, now);
       this.selectOutdoor(now);
-    } else remember(this.latest, observation, now);
+    } else {
+      remember(this.latest, observation, now);
+      if (isGarageDoorSignal(observation?.signal) && this.latest[observation.signal] === observation) {
+        this.garageDoorStates ??= Object.create(null);
+        this.garageDoorStates[observation.signal] = garageDoorContinuity(this.garageDoorStates[observation.signal], observation, now);
+      }
+    }
   }
   outdoorUsable(observation, now, h66) {
     const maxAgeMs = h66?.maxAgeMs ?? this.config.h66?.maxAgeMs ?? H66_MAX_AGE_MS;
@@ -552,6 +563,11 @@ export class Engine {
   async switchEquipment(input) {
     if (!this.equipmentTests) throw new Error('MQTT equipment controls are unavailable.');
     await this.equipmentTests.setSwitch(input);
+    return this.status();
+  }
+  async coverEquipment(input) {
+    if (!this.equipment?.setCover) throw new Error('MQTT door controls are unavailable.');
+    await this.equipment.setCover(input);
     return this.status();
   }
   async recheckEquipment(input = {}) {

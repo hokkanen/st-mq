@@ -4,6 +4,7 @@ import moment from 'moment-timezone';
 import { temporaryUpdate } from '../app/temporary.js';
 import { garageSettings } from './settings.js';
 import { GARAGE_ALGORITHM_VERSION, createGarageModel, garageModelSummary } from './model.js';
+import { confirmedGarageDoor } from './door-state.js';
 import { createGarageExposure, upgradeGarageExposure, updateGarageExposure, assessGarageProtection } from './protection.js';
 import { planGarage } from './planner.js';
 import { startGarageAssessment, updateGarageAssessment, completeGarageAssessment, garageRecoveryDebt } from './episodes.js';
@@ -396,10 +397,20 @@ export class GarageRuntime {
     row.doors = {};
     for (const [signal, id] of [['garage_door1_open', 'door1'], ['garage_door2_open', 'door2']]) {
       const door = latest[signal];
-      row.doors[id] = { open: usable(door, now, 5 * MINUTE) ? Boolean(door.value) : null, observedAt: door?.sourceTime ?? null };
+      const continuity = this.engine.garageDoorStates?.[signal];
+      const configured = this.config.connections?.equipment?.devices?.find(device => device.ownedSignals?.includes(signal));
+      const required = configured ? configured.enabled !== false : Boolean(door);
+      const confirmed = confirmedGarageDoor(door, now);
+      row.doors[id] = { open: confirmed ? Boolean(door.value) : null, observedAt: door?.sourceTime ?? null,
+        required, confirmedAt: confirmed ? door.raw.confirmedAt : null,
+        availableSince: confirmed ? continuity?.availableSince ?? door.raw.confirmedAt : null,
+        closedSince: confirmed && door.value === 0 ? continuity?.closedSince ?? door.raw.confirmedAt : null };
     }
-    const doors = Object.values(row.doors);
+    const doors = Object.values(row.doors).filter(door => door.required);
+    row.doorEvidenceRequired = doors.length > 0;
     row.doorFront = doors.some(door => door.open === true) ? true : doors.every(door => door.open === false) ? false : null;
+    row.doorClosedSince = doors.length && doors.every(door => finite(door.closedSince))
+      ? Math.max(...doors.map(door => door.closedSince)) : null;
     return row;
   }
   captureSample(now, observation) {
@@ -426,6 +437,7 @@ export class GarageRuntime {
         && ['starting', 'paused'].includes(native.episode.status);
       const valid = this.canControl() && this.engine.settings.mode === 'active' && this.input !== 'offline'
         && this.settings.enabled && (manualPermission || !manual && !pause && this.settings.aggressiveness > 0)
+        && (manual?.mode === 'off' || !observation.doorEvidenceRequired || observation.doorFront === false)
         && this.protection.safeToPause && this.lastPlannerAt !== null && now >= this.lastPlannerAt && now - this.lastPlannerAt <= 90_000
         && !this.closed && (manual?.mode === 'off' || this.learningStatus === 'current');
       if (manual?.mode === 'off' && !valid) {

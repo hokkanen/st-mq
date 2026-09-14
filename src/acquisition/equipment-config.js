@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 
 const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'power'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
-  'switch_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
+  'switch_control', 'cover_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
 const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic', 'bridge_availability_topic',
-  'online_payload', 'offline_payload', 'heartbeat_topic', 'heartbeat_seconds', 'request_topic', 'request_payload'];
+  'online_payload', 'offline_payload', 'heartbeat_topic', 'heartbeat_seconds', 'request_topic', 'request_payload',
+  'open_payload', 'close_payload', 'stop_payload', 'cover_state_path'];
 const READING_KEYS = ['key', 'label', 'signal', 'unit', 'path', 'topic', 'component', 'required', 'record', 'scale', 'offset'];
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => typeof value === 'string' && value.length > 0;
@@ -61,8 +62,9 @@ export function equipmentSignature(device) {
   if (!device) return null;
   return createHash('sha256').update(JSON.stringify({ protocol: device.protocol, connection: device.connection,
     generation: device.generation, switchId: device.switchId, controlsSwitch: device.controlsSwitch,
-    controlsHeat: device.controlsHeat, reductionOn: device.reductionOn, stateSignal: device.stateSignal,
-    mqtt: device.protocol === 'mqtt' ? device.mqtt : null,
+    controlsHeat: device.controlsHeat, ...(device.controlsCover ? { controlsCover: true } : {}), reductionOn: device.reductionOn, stateSignal: device.stateSignal,
+    mqtt: device.protocol === 'mqtt' ? Object.fromEntries(Object.entries(device.mqtt).filter(([key, value]) =>
+      !['openPayload', 'closePayload', 'stopPayload', 'coverStatePath'].includes(key) || value !== null)) : null,
     stateMapping: (device.readings ?? []).filter(row => row.signal === device.stateSignal).map(({ label, record, ...row }) => row) })).digest('hex');
 }
 
@@ -86,6 +88,8 @@ export function equipmentConfiguration(input = {}) {
     const generation = number(row.generation, 2, 1, 4, true), switchId = number(row.switch_id, 0, 0, 255, true);
     const temperatureId = number(row.temperature_id, generation === 1 ? 0 : 100, 0, 255, true);
     const controlsSwitch = bool(row.switch_control, false), controlsHeat = bool(row.tariff_control, false);
+    const controlsCover = bool(row.cover_control, false);
+    if (controlsCover && (kind !== 'door' || protocol !== 'mqtt')) throw new Error('Cover control requires MQTT door equipment');
     if ((controlsSwitch || controlsHeat) && !['switch', 'metered_switch'].includes(kind)) throw new Error('Only configured switch equipment can accept control');
     // DHWR commands belong to the executor's durable timed ON/OFF path. Its
     // equipment entry supplies independent device feedback, never another writer.
@@ -103,17 +107,22 @@ export function equipmentConfiguration(input = {}) {
     const mapping = row.mqtt ?? {};
     const mqtt = { statePath: path(mapping.state_path), timestampPath: path(mapping.timestamp_path),
       commandTopic: exactEquipmentTopic(mapping.command_topic, true), onPayload: mapping.on_payload ?? null, offPayload: mapping.off_payload ?? null,
+      openPayload: mapping.open_payload ?? null, closePayload: mapping.close_payload ?? null, stopPayload: mapping.stop_payload ?? null,
+      coverStatePath: path(mapping.cover_state_path),
       availabilityTopic: exactEquipmentTopic(mapping.availability_topic, true), onlinePayload: mapping.online_payload ?? 'online', offlinePayload: mapping.offline_payload ?? 'offline',
       bridgeAvailabilityTopic: exactEquipmentTopic(mapping.bridge_availability_topic, true),
       heartbeatTopic: exactEquipmentTopic(mapping.heartbeat_topic, true), heartbeatMs: Math.round(number(mapping.heartbeat_seconds, 0, 0, 86400) * 1000),
       requestTopic: exactEquipmentTopic(mapping.request_topic, true), requestPayload: mapping.request_payload ?? null };
-    for (const value of [mqtt.onPayload, mqtt.offPayload, mqtt.requestPayload, mqtt.onlinePayload, mqtt.offlinePayload])
+    for (const value of [mqtt.onPayload, mqtt.offPayload, mqtt.openPayload, mqtt.closePayload, mqtt.stopPayload, mqtt.requestPayload, mqtt.onlinePayload, mqtt.offlinePayload])
       if (value !== null && (typeof value !== 'string' || value.length > 4096 || value.includes('\u0000'))) throw new Error('Equipment MQTT payload mappings must be bounded strings');
     if (mqtt.heartbeatTopic && !mqtt.heartbeatMs) throw new Error('An equipment heartbeat requires a positive heartbeat interval');
     if (mqtt.requestTopic && mqtt.requestPayload === null) throw new Error('A read-only request requires an explicit payload');
     if (mqtt.requestTopic && mqtt.requestTopic === mqtt.commandTopic) throw new Error('Read-only requests must use a separate topic from switch commands');
     if (protocol === 'mqtt' && (controlsSwitch || controlsHeat) && (!mqtt.commandTopic || !nonempty(mqtt.onPayload) || !nonempty(mqtt.offPayload) || mqtt.onPayload === mqtt.offPayload))
       throw new Error('Controllable MQTT equipment needs explicit command topic and distinct ON/OFF payloads');
+    const coverPayloads = [mqtt.openPayload, mqtt.closePayload, ...(mqtt.stopPayload === null ? [] : [mqtt.stopPayload])];
+    if (controlsCover && (!mqtt.commandTopic || coverPayloads.some(value => !nonempty(value)) || new Set(coverPayloads).size !== coverPayloads.length))
+      throw new Error('Controllable MQTT doors need an explicit command topic and distinct open/close and optional stop payloads');
     if (!Array.isArray(row.readings ?? []) || row.readings?.length > 32) throw new Error('Equipment readings must be an array of at most 32 mappings');
     const readings = (row.readings ?? []).map(value => reading(value, id));
     if (readings.some(value => !value.record && (protocol !== 'mqtt' || value.key === 'energy_counter')))
@@ -139,6 +148,8 @@ export function equipmentConfiguration(input = {}) {
     if (protocol === 'mqtt') {
       const readTopics = [address, ...readings.map(value => value.topic).filter(Boolean)];
       if (mqtt.commandTopic && readTopics.includes(mqtt.commandTopic)) throw new Error('Switch commands require a separate topic from state confirmation');
+      if (controlsCover && [mqtt.availabilityTopic, mqtt.heartbeatTopic].includes(mqtt.commandTopic))
+        throw new Error('Door commands must use a separate topic from availability and heartbeat');
       if ([mqtt.availabilityTopic, mqtt.bridgeAvailabilityTopic, mqtt.heartbeatTopic].some(topic => topic && readTopics.includes(topic))) throw new Error('Availability and heartbeat must use separate topics from equipment readings');
       if (mqtt.bridgeAvailabilityTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.commandTopic, mqtt.requestTopic].includes(mqtt.bridgeAvailabilityTopic))
         throw new Error('Bridge availability must use a separate topic from device availability, heartbeat and commands');
@@ -156,7 +167,7 @@ export function equipmentConfiguration(input = {}) {
     const ownedSignals = [...new Set([...defaultSignals, ...readings.map(value => value.signal)])];
     return { id, role: id, label, area, kind, enabled, connection, protocol, source: protocol === 'shelly' ? 'Shelly' : 'MQTT',
       prefix: protocol === 'shelly' ? address : null, topic: protocol === 'mqtt' ? address : null,
-      generation, switchId, temperatureId, controlsSwitch, controlsHeat, reductionOn, maxAgeMs: age, record,
+      generation, switchId, temperatureId, controlsSwitch, controlsHeat, controlsCover, reductionOn, maxAgeMs: age, record,
       stateSignal, powerSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
   });
   if (new Set(devices.map(row => row.id)).size !== devices.length) throw new Error('Equipment IDs must be unique');
@@ -168,6 +179,11 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Native equipment prefixes must be distinct and non-overlapping');
     const topics = row => row.protocol === 'mqtt' ? [row.topic, ...row.readings.map(value => value.topic).filter(Boolean)] : [];
     if (topics(device).some(topic => topics(other).includes(topic))) throw new Error('Enabled MQTT equipment cannot share a state topic');
+    if ([device, other].some((row, i) => row.controlsCover && row.mqtt.commandTopic
+      && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.commandTopic,
+        [device, other][1 - i].mqtt.requestTopic, [device, other][1 - i].mqtt.availabilityTopic,
+        [device, other][1 - i].mqtt.bridgeAvailabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic].includes(row.mqtt.commandTopic)))
+      throw new Error('Door command topics must be dedicated to one configured device');
     if ([device, other].some((native, i) => native.protocol === 'shelly' && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.availabilityTopic, [device, other][1 - i].mqtt.bridgeAvailabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic].filter(Boolean).some(topic => topic === native.prefix || topic.startsWith(`${native.prefix}/`))))
       throw new Error('MQTT equipment topics cannot overlap a native equipment prefix');
   }

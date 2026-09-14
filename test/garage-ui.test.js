@@ -7,7 +7,7 @@ import { heatingScopeDisplay } from '../chart/heating-scope.js';
 import { heatingDisplay } from '../chart/heating-benefit.js';
 import { timingDisplay } from '../chart/timing-model.js';
 import { buildHeatingSavings } from '../src/app/garage-reporting.js';
-import { createGarageModel, garageModelSummary } from '../src/garage/model.js';
+import { createGarageModel, garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
 
 const range = { from: Date.parse('2026-09-08T00:00:00+03:00'), to: Date.parse('2026-09-09T00:00:00+03:00') }, now = range.to;
 
@@ -149,7 +149,7 @@ test('Garage real model summary separates adjustable estimates, fitted responses
   assert.match(Object.fromEntries(fitted.outcomeRows)['Temperature prediction'], /Awaiting complete episode validation/);
   assert(!JSON.stringify(fitted).includes('lossPerHour'));
   assert(!JSON.stringify(fitted).includes('fitted-effective-response'));
-  assert(!JSON.stringify(fitted).includes('committed-garage-v2-sparse'));
+  assert(!JSON.stringify(fitted).includes(GARAGE_ALGORITHM_VERSION));
   assert.deepEqual(summary, before);
 });
 

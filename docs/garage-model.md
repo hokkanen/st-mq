@@ -1,6 +1,6 @@
 # Garage learning, protection and planning
 
-Garage uses `committed-garage-v2-sparse`, separate from Home's learning algorithm,
+Garage uses `committed-garage-v3-event-doors`, separate from Home's learning algorithm,
 checkpoint, sensors and heat-input accounting. Its current adapter boundary is an
 explicit provisional client fixture. Software simulations do not establish the
 installed adapter's protocol, native electricity accuracy, local restoration, pipe
@@ -71,7 +71,15 @@ front parameter fitting while still fully affecting the front state, prediction
 and protection. They do not overwrite rear memory. Sustained unexpected rear
 cooling gradually corrects the memory observer when the expected rebound fails.
 Optional door disturbances can suppress ordinary fitting without inventing
-unobserved door events. Solar is deliberately excluded in this version until a
+unobserved door events. Configured MQTT contacts keep their confirmed state until
+a source event or explicit availability failure; they have no fixed five-minute
+age limit. Startup and recovery require a live status/availability confirmation,
+which preserves the contact's original source timestamp. Samples carry compact
+uninterrupted-closed evidence, so an opening or outage between temperature reports
+cannot vanish when the final state is closed again. Such intervals cannot fit
+thermal coefficients, baseline warmth or clean validation evidence. Unknown or
+open configured contacts block economic pauses while temperature protection keeps
+its independent rules. Solar is deliberately excluded in this version until a
 versioned model comparison shows held-out improvement.
 
 Both EV identities and their power/activity units remain separate. Shared rear

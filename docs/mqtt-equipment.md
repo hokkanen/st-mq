@@ -67,8 +67,9 @@ the complete public list; arrays are not merged by device ID.
 Use a stable device `id` and signal names so changing a display label does not
 create a new history series. Device kinds are `temperature`, `door`, `switch`,
 `metered_switch` and MQTT-only `power`. The kind describes the readings; write access
-requires `switch_control: true` or, for the home's reduction relay,
-`tariff_control: true`. A discovered output is never automatically made writable.
+requires `switch_control: true`, `cover_control: true` for a door, or
+`tariff_control: true` for the home's reduction relay. A discovered output is
+never automatically made writable.
 `enabled: false` keeps an entry inactive. Add future equipment once its actual
 device capabilities and intended measurements are known.
 
@@ -198,14 +199,27 @@ verifying genuine periodic reports. Plain power is a measurement, never implicit
 ON/OFF confirmation.
 
 Door feeds can report only changes. For those, the default maximum age is zero:
-the UI preserves the last reported state and time, while indicating that current
-availability has not been established. A retained value is historical context,
+confirmed state remains usable without an age expiry. Disconnection, unavailable
+sources and failed queries make the current state unknown, while preserving the
+last reported value and time as context. A retained value is historical context,
 not proof that the door is currently closed. Invalid payloads show unknown state.
 For JSON snapshots from a bridge, configure `mqtt.timestamp_path` to preserve the
 source state's timestamp. A missing or invalid configured timestamp invalidates
 the reading instead of substituting the bridge's publication time. A live response
 can restore an event-only last-known state without establishing a new physical
 measurement. Bridge availability and sensor availability remain separate evidence.
+The garage model uses the same event-driven validity and records closed-door
+continuity, so brief openings or outages cannot disappear between samples.
+
+Controllable MQTT doors require `cover_control: true`, a separate
+`mqtt.command_topic`, distinct `mqtt.open_payload` / `mqtt.close_payload`, and
+optionally `mqtt.stop_payload` for an actual supported Stop action. The default
+HA doors use `open` / `closed` on `stmq/garage/doorN/command/cover`, with
+`mqtt.cover_state_path: "cover_state"` for movement and terminal-state reports.
+Their cards expose Open and Close; Stop appears only when explicitly configured.
+Commands are non-retained QoS 1 requests and are not replayed after failure.
+The UI distinguishes sending, sent and subsequently reported state; it never
+changes the contact value optimistically. See [HA setup and SmartThings fields](homeassistant-mqtt.md).
 
 Use different exact topics for different publishers and for status versus commands.
 MQTT does not assign source priority to publishers sharing a topic. Each configured

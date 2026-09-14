@@ -31,9 +31,10 @@ function experiment({ cadenceMinutes = 5, days = 8, offHours = .5, activityOnly 
   return { model, entries };
 }
 
-test('sparse algorithm has an explicit epoch and refuses previous learning semantics', () => {
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v2-sparse');
+test('event-driven doors have an explicit epoch and refuse previous learning semantics', () => {
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v3-event-doors');
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v1-coupled' }, row(1)), /Unsupported/);
+  assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v2-sparse' }, row(1)), /Unsupported/);
 });
 
 test('an adapter source epoch interrupts intervals without erasing building memory or completed evidence', () => {

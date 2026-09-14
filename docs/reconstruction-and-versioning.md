@@ -237,3 +237,29 @@ least the previous debt and a full uncertain budget until measured warm recovery
 An explicit v1 configuration value is accepted and normalized without editing
 private configuration or overriding custom numeric limits/approval. These are
 recorded forward transitions, not reinterpretations of the old learning journal.
+
+`committed-garage-v3-event-doors` replaces the fixed five-minute contact age
+cutoff with confirmed event state. An unchanged door remains known while its
+configured source and MQTT connection remain available. Explicit source failure,
+invalid state, subscription loss, bridge outage or restart makes it unknown.
+Recovery requires a live source snapshot and the configured availability evidence;
+retained context and bridge birth alone cannot restore it. A recovery may confirm
+the original contact timestamp without pretending that it is a new measurement.
+
+Each resolved sample saves the door source timestamp separately from live
+confirmation and the start of uninterrupted closed evidence. An opening, outage
+or restart ends that closed interval. Even if the door recovers before the next
+temperature sample, the interrupted interval cannot teach thermal coefficients,
+baseline warmth or clean validation evidence. Configured unknown or open doors
+block economic pauses; measured temperature protection and explicit manual
+controls retain their own rules. Frozen episode accounting preserves observed
+costs and restoration debt while withholding savings qualification after a door
+disturbance or gap. Historical inputs without configured contact
+evidence retain their explicitly incomplete interpretation. These are compact
+resolved sample inputs, not periodic door snapshots or a new telemetry archive.
+
+The v2 journal and frozen episodes remain archival at Git revision `69a5ae4` and
+are never replayed with v3 semantics. The first v3 entry saves its explicit initial
+seed and begins a new learning epoch; exposure and outstanding physical recovery
+obligations remain intact. Home learning, CSV formats and imported source clocks
+are unchanged.

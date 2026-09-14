@@ -23,7 +23,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
         controls:{switch:true},readings:{caravan_active:reading('Switch',1,'state'),caravan_power:reading('Power',0.35,'kW')},energy:{dailyKwh:1.234,observedAt:at,partial:true},
         topics:[{role:'Native requests',topic:'invented-caravan/rpc',direction:'publish'}]},
       ...[1,2].map(index=>({id:'door'+index,label:'Door '+index,area:'garage',kind:'door',source:'MQTT',available:true,
-        controls:{switch:false},readings:{['garage_door'+index+'_open']:reading('Door state',index===1?0:1,'state',at-7*86400000)},
+        controls:{switch:false,cover:{open:true,close:true,stop:false}},cover:{available:true,state:index===1?'closed':'open',operation:null},
+        readings:{['garage_door'+index+'_open']:reading('Door state',index===1?0:1,'state',at-7*86400000)},
         check:{status:'listening',checkedAt:at},recheck:{method:'subscription',requestSupported:false,description:'This device publishes changes; no status-request topic is configured.'},
         topics:[{role:'Door state',topic:'invented/garage/long-device-prefix/door'+index+'/contact/state',direction:'subscribe'}]})),
     ];
@@ -41,6 +42,11 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
           fixture.lastResult={...body,at,status:'unconfirmed',sent:true,confirmed:false};
           return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
         }
+        if(path.endsWith('/cover')) {
+          if(fixture.holdCover) await new Promise(resolve=>{fixture.releaseCover=resolve;});
+          fixture.devices.find(device=>device.id===body.deviceId).cover.operation={action:body.action,status:'published',requestedAt:at,acknowledgedAt:at};
+          return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
+        }
         if(path.endsWith('/heating-test')) {fixture.dhwr.active=true;return new Response(JSON.stringify({command:body.command,sent:true,at,status:'sent'}),{status:200});}
         if(path.endsWith('/stop')) {fixture.dhwr.active=false;if(fixture.dhwr.feedback.state){fixture.dhwr.actualOn=false;fixture.dhwr.feedback.state.value=0;}}
         return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
@@ -50,9 +56,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   })()`);
   try {
     await refresh();
-    await evaluate("document.getElementById('equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
-    assert.equal(await evaluate("document.getElementById('equipment-panel').parentElement.className"), 'controller-panels');
-    assert.equal(await evaluate("document.querySelectorAll('#equipment-details input[type=number]').length"), 1, 'Only the H66 setting is numeric; manual controls have no duration inputs');
+    await evaluate("document.getElementById('home-heat-pump-details').open=true;document.getElementById('garage-equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
+    assert.equal(await evaluate("document.getElementById('home-equipment-section').closest('.home-control-body') !== null"), true);
+    assert.equal(await evaluate("document.querySelectorAll('#home-equipment-section input[type=number]').length"), 1, 'Only the H66 setting is numeric; manual controls have no duration inputs');
     assert.equal(await evaluate("document.querySelector('#garage-equipment-readings [data-device-id=door1] .status-detail-label').textContent"), 'Closed');
     assert.equal(await evaluate("document.getElementById('garage-equipment-readings').textContent.includes('By the back wall')"), true);
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 0, 'Monitoring sends no commands');
@@ -111,7 +117,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await until('window.equipmentUiFixture.calls.length === 3'); await settle();
     assert.equal(await evaluate("document.getElementById('dhwr-message').classList.contains('form-error')"), false);
     await evaluate("document.getElementById('test-heaton60').click();true");
-    await until("window.equipmentUiFixture.calls.length === 4 && document.getElementById('test-heaton60').disabled");
+    await until("window.equipmentUiFixture.calls.length === 4 && !document.getElementById('test-heaton60').disabled");
     await evaluate("window.equipmentUiFixture.dhwr.actualOn=true;window.equipmentUiFixture.dhwr.feedback.state.value=1;true"); await refresh();
     // Removing/reordering/adding devices retains unrelated row identity and open diagnostics.
     await evaluate(`window.equipmentUiFixture.savedRow=document.querySelector('${caravan}');window.equipmentUiFixture.savedDevices=[...window.equipmentUiFixture.devices];window.equipmentUiFixture.devices=window.equipmentUiFixture.devices.filter(d=>d.id!=='door1').reverse();true`);
@@ -127,23 +133,52 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id=dhwr]').length"), 0);
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='stmq/home/dhwr/status/power')"), true);
     await evaluate("document.getElementById('test-heaton60').click();true");
-    await until("window.equipmentUiFixture.calls.length === 5 && document.getElementById('test-heaton60').disabled"); await settle();
+    await until("window.equipmentUiFixture.calls.length === 5 && !document.getElementById('test-heaton60').disabled"); await settle();
     assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /Switch feedback is not configured/);
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '38 W');
     await evaluate("document.getElementById('dhwr-stop').click();true");
     await until("window.equipmentUiFixture.calls.length === 6 && document.getElementById('dhwr-stop').disabled"); await settle();
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Stop sent. Switch feedback is not configured.');
+    // Cover operations remain separate from the contact state and from other device results.
+    const door1 = '#garage-equipment-readings [data-device-id=door1]', door2 = '#garage-equipment-readings [data-device-id=door2]';
+    const coverCalls = await evaluate('window.equipmentUiFixture.calls.length');
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${door1} [data-cover-action]')].filter(node=>!node.hidden).map(node=>node.textContent)`), ['Open', 'Close']);
+    assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), false, 'An open contact does not establish fully open position');
+    assert.equal(await evaluate(`document.querySelector('${door1} [data-cover-action=open]').getAttribute('aria-label')`), 'Open Door 1');
+    await evaluate(`window.equipmentUiFixture.holdCover=true;document.querySelector('${door1} [data-cover-action=open]').click();document.querySelector('${door1} [data-cover-action=open]').click();true`);
+    await until(`window.equipmentUiFixture.calls.length === ${coverCalls + 1} && Boolean(window.equipmentUiFixture.releaseCover)`);
+    assert.equal(await evaluate(`document.querySelector('${door1} [data-cover-action=close]').disabled`), true, 'Buttons block duplicate requests during delivery');
+    assert.deepEqual(await evaluate(`window.equipmentUiFixture.calls[${coverCalls}]`), {path:'/api/equipment/cover',body:{deviceId:'door1',action:'open'}});
+    await evaluate('window.equipmentUiFixture.holdCover=false;window.equipmentUiFixture.releaseCover();true');
+    await until(`!document.querySelector('${door1} [data-cover-action=close]').disabled`); await settle();
+    assert.equal(await evaluate(`document.querySelector('${door1} .status-detail-label').textContent`), 'Closed', 'Delivery does not invent movement or endpoint');
+    assert.match(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').textContent`), /Open requested.*position unconfirmed/);
+    assert.equal(await evaluate(`document.querySelector('${door2} .equipment-cover-controls .equipment-control-result').hidden`), true);
+    await evaluate(`window.equipmentUiFixture.failNext=true;document.querySelector('${door2} [data-cover-action=close]').click();true`);
+    await until(`document.querySelector('${door2} .equipment-cover-controls .equipment-control-result').classList.contains('form-error')`);
+    assert.equal(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').classList.contains('form-error')`), false);
+    await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door1').controls.cover.stop=true;true"); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${door1} [data-cover-action=stop]').disabled`), false, 'Stop stays available during unconfirmed movement');
+    await evaluate(`document.querySelector('${door1} [data-cover-action=stop]').click();true`);
+    await until(`window.equipmentUiFixture.calls.length === ${coverCalls + 3}`); await settle();
+    assert.match(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').textContent`), /Stop requested.*stopping unconfirmed/);
+    await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=false;true"); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), true);
+    await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=true;true"); await refresh();
     // Popup triggers keep the reading's line-height and baseline without an icon or button margin.
     const trigger = '#garage-equipment-readings [data-device-id=door1] .status-detail-trigger';
     for (const [width,height] of [[1440,1100],[900,900],[320,640],[390,844],[844,390]]) {
       await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
-      await evaluate("document.getElementById('equipment-details').scrollIntoView({block:'start'});true");
+      await evaluate("document.getElementById('garage-equipment-details').scrollIntoView({block:'start'});true");
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `No page overflow at ${width}px`);
-      assert.equal(await evaluate(`(() => {const nodes=[...document.querySelectorAll('#garage-equipment-readings > section')];return nodes.every((n,i)=>i===0||n.getBoundingClientRect().top>=nodes[i-1].getBoundingClientRect().bottom-1)})()`), true, 'Device rows never overlap');
+      assert.equal(await evaluate(`(() => {const boxes=[...document.querySelectorAll('#garage-equipment-readings > section')].map(node=>node.getBoundingClientRect());return boxes.every((box,index)=>boxes.slice(index+1).every(other=>box.right<=other.left+1||other.right<=box.left+1||box.bottom<=other.top+1||other.bottom<=box.top+1))})()`), true, 'Device cards never overlap');
       assert.equal(await evaluate(`(() => {const n=document.querySelector('${trigger}'),s=getComputedStyle(n);return s.marginTop==='0px'&&s.minHeight==='0px'&&getComputedStyle(n,'::after').content==='none'})()`), true, 'No inherited button spacing or circled i');
       const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
       writeFileSync(`var/equipment-controls-${width}.png`,Buffer.from(shot.data,'base64'));
       await evaluate(`document.querySelector('${trigger}').scrollIntoView({block:'center'});true`); await settle();
+      assert.equal(await evaluate(`(() => {const card=document.querySelector('${door1}').getBoundingClientRect();return [...document.querySelectorAll('${door1} [data-cover-action]')].filter(node=>!node.hidden).every(node=>{const box=node.getBoundingClientRect();return box.left>=card.left&&box.right<=card.right&&box.height>=36;});})()`), true, `Door buttons remain usable inside the card at ${width}px`);
+      const doorShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
+      writeFileSync(`var/door-controls-${width}.png`,Buffer.from(doorShot.data,'base64'));
       await evaluate(`document.querySelector('${trigger}').click();true`); await settle();
       assert.equal(await evaluate("(() => {const p=document.getElementById('status-detail-popover'),b=p.getBoundingClientRect();return p.checkVisibility()&&b.left>=7&&b.right<=innerWidth-7&&b.top>=7&&b.bottom<=innerHeight-7})()"), true);
       await refresh();

@@ -125,8 +125,13 @@ exposure to recover; incomplete evidence can finish only without a savings claim
 Garage learning uses a separate `garage:<input>` stream in the existing immutable
 learning journal. The first entry saves its seed; every entry saves normalized
 used inputs, settings checksum and algorithm version
-`committed-garage-v2-sparse`. Fresh source reports provide evidence; UI polling
-does not. The same ordered entry function drives live learning, rebuilding and
+`committed-garage-v3-event-doors`. Fresh temperature source reports provide
+evidence; UI polling does not. Confirmed door state is event-driven and has no
+fixed age expiry. Source/bridge outages and invalid state make it unknown until
+a live snapshot and availability evidence restore it. The original source time
+remains distinct from confirmation; a recovered closed state cannot erase an
+opening or outage between learning samples. Configured open or unknown doors
+block economic pauses and clean learning evidence. The same ordered entry function drives live learning, rebuilding and
 coefficient charts. Cache digests detect accidental corruption. File-backed
 reconstruction runs in a worker, catches up the current journal and checks the
 selected correction revision and epoch before atomic publication.

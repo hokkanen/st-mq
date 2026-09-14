@@ -30,7 +30,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       ? temperatureRouteSignature({ brokerIdentity, topic: config.topic, statePath: config.mqtt.statePath, timestampPath: config.mqtt.timestampPath,
         mappings: config.readings.filter(mapping => mapping.signal === config.temperatureSignal) }) : null,
     online: null, bridgeOnline: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
-    subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null }));
+    subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null,
+    coverOperation: null }));
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
@@ -63,7 +64,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     ...(device.mqtt.bridgeAvailabilityTopic ? [{ role: 'Bridge availability', topic: device.mqtt.bridgeAvailabilityTopic, direction: 'subscribe' }] : []),
     ...(device.mqtt.heartbeatTopic ? [{ role: 'Heartbeat', topic: device.mqtt.heartbeatTopic, direction: 'subscribe' }] : []),
     ...(device.mqtt.requestTopic ? [{ role: 'Status request', topic: device.mqtt.requestTopic, direction: 'publish' }] : []),
-    ...(device.mqtt.commandTopic ? [{ role: 'Switch command', topic: device.mqtt.commandTopic, direction: 'publish' }] : []),
+    ...(device.mqtt.commandTopic ? [{ role: device.kind === 'door' ? 'Door command' : 'Switch command', topic: device.mqtt.commandTopic, direction: 'publish' }] : []),
   ];
   function record(device, definition, value, at, receivedAt, quality = [], raw = {}) {
     const previous = device.readings[definition.signal];
@@ -72,7 +73,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
         ...(['door', 'power'].includes(device.kind) && device.maxAgeMs === 0 ? { eventOnly: true } : {}), ...raw,
         ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } };
-    if (device.record !== false && definition.record !== false) {
+    // A contact and its availability may arrive in either order. Keep the
+    // candidate here, then publish it to the model only when both are live.
+    if (device.record !== false && definition.record !== false && !(device.kind === 'door' && value !== null)) {
       if (device.id === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(definition.signal))
         engine.rememberObservation?.(observation, receivedAt);
       else {
@@ -88,6 +91,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   }
   function unavailable(device, reason, receivedAt = engine.clock()) {
     device.liveSinceConnect = false; device.invalid = true;
+    if (device.coverOperation && ['publishing', 'published'].includes(device.coverOperation.status)) {
+      device.coverOperation.status = 'unconfirmed';
+      device.coverOperation.error = 'Door feedback became unavailable. Check its live state.';
+    }
     for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
     for (const check of [...device.checks]) check.finish('unavailable');
     for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
@@ -106,6 +113,28 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     && !['failed', 'disconnected'].includes(device.subscriptionStatus)
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
     && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
+  function confirmDoor(device, now) {
+    if (device.kind !== 'door' || !healthy(device, now)) return;
+    for (const definition of definitions(device)) {
+      const reading = device.readings[definition.signal];
+      if (!fresh(device, reading, now) || reading.availabilityConfirmed) continue;
+      reading.availabilityConfirmed = true; reading.confirmedAt = now;
+      if (device.record !== false && definition.record !== false) engine.ingest({ ...identity(device),
+        signal: definition.signal, value: reading.value, unit: reading.unit, sourceTime: reading.observedAt,
+        receivedAt: now, quality: reading.quality,
+        raw: { timeBasis: 'mqtt-live-status', ...(device.maxAgeMs === 0 ? { eventOnly: true } : {}),
+          availabilityConfirmed: true, confirmedAt: now } });
+      if (definition.signal === device.stateSignal) store.setState?.(`equipment:door:v1:${device.id}`, {
+        signature: signature(device.id), reading });
+    }
+    const operation = device.coverOperation, main = device.readings[device.stateSignal];
+    if (operation && operation.action !== 'stop' && !['failed', 'observed'].includes(operation.status)
+      && main.receivedAt >= operation.requestedAt && main.observedAt >= operation.requestedAt
+      && main.coverState === (operation.action === 'open' ? 'open' : 'closed')) {
+      operation.observedAt = main.observedAt;
+      if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
+    }
+  }
   function signature(id) {
     const config = enabled.find(row => row.id === id);
     if (!config) return null;
@@ -184,7 +213,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (definition.signal === 'dhwr_power' && value !== null && (value < 0 || value * (definition.unit === 'kW' ? 1000 : 1) > 100000)) value = null;
       if (['degC', '°C'].includes(definition.unit) && (!scalar(value) || value < -60 || value > 150)) value = null;
       if (value === null && !definition.required && !device.readings[definition.signal]) continue;
-      const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : []);
+      const coverState = device.kind === 'door' && definition.signal === device.stateSignal
+        ? property(input, mapping.coverStatePath) : null;
+      const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : [],
+        device.kind === 'door' ? { coverState: ['open', 'closed', 'opening', 'closing'].includes(coverState) ? coverState : null } : {});
       if (accepted) reported.add(definition.signal);
       updated = accepted || updated;
       invalid ||= definition.required && value === null;
@@ -206,6 +238,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     completeChecks(device, receivedAt);
   }
   function completeChecks(device, now) {
+    confirmDoor(device, now);
     for (const check of [...device.checks]) if (check.ready && definitions(device).filter(row => row.required).every(row => check.reported.has(row.signal))) {
       if (healthy(device, now)) check.finish('available');
       else if (device.invalid) check.finish('needs-attention');
@@ -295,7 +328,43 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (closed) return;
       native?.tick(now); for (const accumulator of energy.values()) accumulator.tick(now);
       for (const device of devices) if (device.liveSinceConnect && (device.mqtt.heartbeatMs && scalar(device.heartbeatAt) && now - device.heartbeatAt > device.mqtt.heartbeatMs
-        || age(device) > 0 && now - device.lastAt >= age(device))) unavailable(device, 'missing-report');
+        || age(device) > 0 && (now - device.lastAt >= age(device) || device.kind === 'door' && definitions(device).some(definition => {
+          const reading = device.readings[definition.signal];
+          return definition.required && scalar(reading?.observedAt) && now - reading.observedAt >= age(device);
+        })))) unavailable(device, 'missing-report');
+      for (const device of devices) if (device.coverOperation?.status === 'published' && device.coverOperation.action !== 'stop'
+        && now - device.coverOperation.requestedAt >= 60_000) {
+        device.coverOperation.status = 'unconfirmed';
+        device.coverOperation.error = 'The requested door state has not been observed. Check its live state.';
+      }
+    },
+    async setCover(input) {
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || Object.keys(input).some(key => !['deviceId', 'action'].includes(key))
+        || typeof input.deviceId !== 'string' || !['open', 'close', 'stop'].includes(input.action))
+        throw fail('choose a configured door and open, close or supported stop');
+      const device = devices.find(row => row.id === input.deviceId);
+      const payload = device?.mqtt[`${input.action}Payload`];
+      if (!device?.controlsCover || !payload) throw fail('door action is not configured');
+      if (closed || !canControl() || !healthy(device, engine.clock())) throw fail('door control is unavailable');
+      const operation = { action: input.action, status: 'publishing', requestedAt: engine.clock() };
+      device.coverOperation = operation;
+      // Publish immediately in request order. Do not hold a movement-wide lock:
+      // an explicitly supported Stop must remain usable while opening/closing.
+      // Each callback belongs to this request, so older replies cannot replace
+      // the visible result of a later command. Nothing is replayed on restart.
+      try {
+        await publish(device.mqtt.commandTopic, payload, { qos: 1, retain: false, noReplay: true });
+        operation.acknowledgedAt = engine.clock();
+        if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
+        if (closed || !canControl() || !connected) {
+          operation.status = 'unconfirmed'; operation.error = 'Control connection changed. Check the door live state.';
+        }
+      } catch {
+        operation.status = 'unconfirmed'; operation.error = 'Door command delivery is unconfirmed. Check its live state before trying again.';
+        throw fail('door command delivery is unconfirmed; check its live state');
+      }
+      return { ...operation, deviceId: device.id, acknowledgement: 'mqtt-broker', confirmed: operation.status === 'observed' };
     },
     async recheck({ deviceId } = {}) {
       if (deviceId && !enabled.some(row => row.id === deviceId)) throw fail('unknown device');
@@ -306,6 +375,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         const method = recheckMethod(device);
         const check = { at: engine.clock(), reported: new Set(), retainedReceived: false, ready: false, finish: status => {
           if (completed) return; completed = true; clearTimeout(timer); device.checks.delete(check);
+          if (device.kind === 'door' && method === 'request' && ['timeout', 'unavailable'].includes(status) && device.liveSinceConnect) {
+            // Event-only state has no age expiry, but an explicitly unanswered
+            // query is evidence that this route can no longer confirm it.
+            try { unavailable(device, status === 'timeout' ? 'status-request-timeout' : 'status-request-failed'); }
+            catch { /* The device was invalidated before recording the transition. */ }
+          }
           device.check = { checking: false, startedAt: check.at, checkedAt: engine.clock(), status, method,
             subscriptionStatus: device.subscriptionStatus, retainedReceived: check.retainedReceived }; resolve();
         } };
@@ -369,7 +444,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     status(now = engine.clock()) {
       const nativeStatus = native?.status(now), rows = [...(nativeStatus?.devices ?? []), ...devices.map(device => ({ id: device.id, role: device.id,
         label: device.label, area: device.area, kind: device.kind, source: 'MQTT', connection: device.connection, available: healthy(device, now),
-        observedAt: device.lastAt, controls: { switch: device.controlsSwitch, tariff: device.controlsHeat }, check: device.check,
+        observedAt: device.lastAt, controls: { switch: device.controlsSwitch, tariff: device.controlsHeat,
+          ...(device.kind === 'door' ? { cover: { open: device.controlsCover, close: device.controlsCover,
+            stop: Boolean(device.controlsCover && device.mqtt.stopPayload) } } : {}) }, check: device.check,
+        ...(device.kind === 'door' ? { cover: { available: !closed && canControl() && healthy(device, now),
+          state: device.readings[device.stateSignal]?.coverState ?? null,
+          operation: device.coverOperation ? { ...device.coverOperation } : null } } : {}),
         topics: topicDetails(device), recheck: { method: recheckMethod(device), requestSupported: Boolean(device.mqtt.requestTopic),
           description: device.mqtt.requestTopic ? 'Refresh subscriptions and send the configured status request.'
             : 'Refresh subscriptions. This publisher has no configured status request; live values arrive on its next report.' },

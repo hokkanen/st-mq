@@ -1,4 +1,5 @@
 import { predictGarageStep, GARAGE_ALGORITHM_VERSION } from './model.js';
+import { garageDoorIntervalUnknown } from './door-state.js';
 
 const HOUR = 3_600_000, finite = Number.isFinite;
 /** Compact frozen counterfactual accounting, separate from dispatch's pure timing
@@ -15,6 +16,10 @@ export function updateGarageAssessment(previous, model, observation, { recordedK
   const next = structuredClone(previous), duration = observation.at - next.at;
   if (duration <= 0) return next;
   const actual = next.previous;
+  // A door disturbance or reporting gap cannot establish comparable service.
+  // Keep measured costs and the restoration obligation while withholding the
+  // savings claim; a recovered endpoint cannot undo the earlier uncertainty.
+  if (garageDoorIntervalUnknown(observation, actual, actual.at)) next.qualified = false;
   const segments = priceSegments ?? [{ start: next.at, end: observation.at, priceCtPerKwh }];
   let cursor = next.at;
   const coveredPrices = segments.length > 0 && segments.every(segment => {

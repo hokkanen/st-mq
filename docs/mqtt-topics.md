@@ -14,6 +14,8 @@ vocabulary; custom MQTT devices are still configured with `mqtt:` connections.
 | Downstairs temperature | `stmq/smoke/3/temperature` | `stmq/home/smoke3/status/temperature` | Numeric Celsius |
 | Garage door 1 | `from_hass/garage_door1/sensor` | `stmq/garage/door1/status/contact` | JSON contact snapshot |
 | Garage door 2 | `from_hass/garage_door2/sensor` | `stmq/garage/door2/status/contact` | JSON contact snapshot |
+| Garage door 1 operation | `to_hass/garage_door1/action` | `stmq/garage/door1/command/cover` | `open` / `closed`; `stop` only if supported |
+| Garage door 2 operation | `to_hass/garage_door2/action` | `stmq/garage/door2/command/cover` | `open` / `closed`; `stop` only if supported |
 | Optional HA garage air temperature | Existing HA publisher retained | `stmq/garage/air/status/temperature` | JSON Celsius snapshot |
 
 The installation uses power-only DHWR feedback. No physical or virtual switch-state
@@ -34,11 +36,14 @@ and availability topics. Both public door configurations select this
 protocol. The optional HA air-temperature publisher is available separately;
 ST-MQ's default garage temperature source remains native Shelly MQTT.
 
-The three new HA automations are additive. All five legacy topic routes remain
-enabled for the separate production consumers. The four legacy door automations
-are unchanged; the legacy temperature automation now publishes on source changes
-instead of every minute, preserving its topic and payload. Home Assistant
-publishing changes do not restart or migrate ST-MQ.
+The three HA status publishers and two cover-command handlers use the new topics.
+Legacy routes remain until their readers and writers migrate. The four legacy
+door status publishers and four separate legacy operation handlers are different
+automations; migrating status alone does not make the operation handlers redundant.
+The legacy temperature publisher uses source changes instead of a minute timer.
+Home Assistant publishing changes do not restart or migrate ST-MQ. Exact
+[SmartThings door settings](homeassistant-mqtt.md#smartthings-door-settings) include
+both directions and the JSON format change.
 
 Coordinate publisher changes with an ST-MQ restart to load the updated acquisition
 code and settings. Finish any active timed
@@ -53,8 +58,8 @@ Each HA door publisher accepts `status_update` on
 contact topic. The corresponding `mqtt.request_topic` and `mqtt.request_payload`
 are configured in the public defaults. ST-MQ requests status after successful
 startup/reconnect subscriptions and during Recheck, using QoS 1 with retention
-disabled. There are no door movement commands and no application-level receipt
-requirement.
+disabled. These query topics do not operate a door. Movement uses the separate
+`/command/cover` routes described above.
 
 A snapshot preserves the HA source entity's `last_reported` time in `timestamp`,
 with its value in `value`. Public defaults select those JSON paths. The separate
@@ -72,7 +77,10 @@ An initially absent bridge status does not prevent a live child reply. Retained
 bridge online provides context but cannot restore a contact by itself. Neither
 availability signal establishes a new physical contact observation.
 
-Doors retain their event-only maximum age of zero for equipment display. The
-garage model still requires door source timestamps younger than five minutes.
-Recovery of an older last-known state for display does not override that limit or
-the model's requirement for newer source evidence after an availability failure.
+Doors use event-driven availability throughout equipment display, the garage
+model and history. Their last confirmed state does not expire after five minutes.
+Outages make the current state unknown; a live source-online report and snapshot
+can recover it without replacing the original source clock or erasing the gap.
+The model records door continuity so brief openings or outages between temperature
+reports still exclude affected learning and validation. The new garage algorithm
+starts an explicit epoch; archived learning is not reinterpreted.

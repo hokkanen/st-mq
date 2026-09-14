@@ -25,15 +25,17 @@ export function garagePlanningEvidence(model, summary, { now, observation, stepM
   const recent = finite(latestEnd) && now >= latestEnd && now - latestEnd < 6 * HOUR;
   const disturbance = observation?.doorFront === true || observation?.doorRear === true
     || [1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true);
+  const doorBlocked = observation?.doorEvidenceRequired === true && observation.doorFront !== false;
   const trialEligible = model.normalReference?.initialized === true
     && model.rear.samples >= 24 && model.front.samples >= 12
     && observation?.baselineVerified === true && (active || observation?.available === true)
-    && !disturbance && recovered && (!recent || active);
-  const maxPauseHours = Math.max(economicHours, trialEligible ? trialHours : 0);
+    && !doorBlocked && !disturbance && recovered && (!recent || active);
+  const maxPauseHours = doorBlocked ? 0 : Math.max(economicHours, trialEligible ? trialHours : 0);
   return { thermalReady: summary.thermalReady === true, electricalReady: summary.electricalReady === true,
     economicHours, trialEligible, trialHours, maxPauseHours, trialCoolingLimitC: Math.min(3, 1 + .25 * economicHours),
     completedEpisodes: validation.completedEpisodes ?? episodes.length,
-    reason: maxPauseHours > 0 ? economicHours >= maxPauseHours ? 'validated-episode-duration' : 'bounded-learning-trial'
+    reason: doorBlocked ? observation.doorFront === true ? 'garage-door-open' : 'garage-door-unavailable'
+      : maxPauseHours > 0 ? economicHours >= maxPauseHours ? 'validated-episode-duration' : 'bounded-learning-trial'
       : !recovered ? 'learning-episode-recovering' : recent ? 'learning-trial-recovery-interval'
         : 'insufficient-validated-thermal-evidence' };
 }

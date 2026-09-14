@@ -263,9 +263,14 @@
             "request_topic": "stmq/garage/door1/command",
             "request_payload": "status_update",
             "availability_topic": "stmq/garage/door1/availability",
-            "bridge_availability_topic": "homeassistant/status"
+            "bridge_availability_topic": "homeassistant/status",
+            "command_topic": "stmq/garage/door1/command/cover",
+            "open_payload": "open",
+            "close_payload": "closed",
+            "cover_state_path": "cover_state"
           },
-          "readings": []
+          "readings": [],
+          "cover_control": true
         },
         {
           "id": "garage_door2",
@@ -280,9 +285,14 @@
             "request_topic": "stmq/garage/door2/command",
             "request_payload": "status_update",
             "availability_topic": "stmq/garage/door2/availability",
-            "bridge_availability_topic": "homeassistant/status"
+            "bridge_availability_topic": "homeassistant/status",
+            "command_topic": "stmq/garage/door2/command/cover",
+            "open_payload": "open",
+            "close_payload": "closed",
+            "cover_state_path": "cover_state"
           },
-          "readings": []
+          "readings": [],
+          "cover_control": true
         }
       ]
     },
@@ -550,8 +560,13 @@
             "heartbeat_topic": "str?",
             "request_topic": "str?",
             "request_payload": "str?",
-            "heartbeat_seconds": "int(0,86400)?"
-          }
+            "heartbeat_seconds": "int(0,86400)?",
+            "open_payload": "str?",
+            "close_payload": "str?",
+            "stop_payload": "str?",
+            "cover_state_path": "str?"
+          },
+          "cover_control": "bool?"
         }
       ]
     },

@@ -18,7 +18,7 @@ export const snapshotTemplate = `
     {% set value = 'open' %}
   {% elif valid and s.state in ['closed', 'off'] %}
     {% set value = 'closed' %}
-  {% elif valid and s.state in ['open', 'on'] %}
+  {% elif valid and s.state in ['open', 'on', 'opening', 'closing'] %}
     {% set value = 'open' %}
   {% else %}
     {% set value = none %}
@@ -28,7 +28,8 @@ export const snapshotTemplate = `
 {{ {'value': value if valid else none,
     'unit': 'C' if feed_kind == 'temperature' else 'state',
     'timestamp': s.last_reported.isoformat() if s is not none else none,
-    'published_at': now().isoformat(), 'available': valid} }}
+    'published_at': now().isoformat(), 'available': valid,
+    'cover_state': s.state if feed_kind == 'contact' and valid and s.state in ['open', 'closed', 'opening', 'closing'] else none} }}
 `.trim();
 
 export function garageMqttAutomation({ id, label, sourceEntity, prefix, kind }) {
@@ -61,5 +62,33 @@ export function garageMqttAutomation({ id, label, sourceEntity, prefix, kind }) 
       ] },
     ],
     mode: 'queued', max: 10,
+  };
+}
+
+// These are explicit target operations, never toggle pulses. HA's current
+// source capabilities decide which actions can run, including optional Stop.
+export function garageCoverAutomation({ id, label, sourceEntity, prefix }) {
+  garageMqttAutomation({ id, label, sourceEntity, prefix, kind: 'contact' });
+  if (!sourceEntity.startsWith('cover.')) throw new Error('Door operation requires an HA cover entity');
+  const choices = [
+    { payload: 'open', action: 'open_cover', feature: 1 },
+    { payload: 'closed', action: 'close_cover', feature: 2 },
+    { payload: 'stop', action: 'stop_cover', feature: 8 },
+  ];
+  return {
+    id, alias: label,
+    description: 'Accepts explicit MQTT door commands supported by the HA cover. Commands must not be retained. Source state reports remain independent of requests.',
+    triggers: [{ trigger: 'mqtt', topic: `${prefix}/command/cover`, qos: 1 }],
+    conditions: [{ condition: 'template', value_template: "{{ trigger is defined and trigger.platform == 'mqtt' and trigger.payload in ['open', 'closed', 'stop'] and states(source_entity) not in ['unknown', 'unavailable'] and not state_attr(source_entity, 'restored') }}" }],
+    variables: { source_entity: sourceEntity },
+    actions: [{ choose: choices.map(({ payload, action, feature }) => ({
+      conditions: [{ condition: 'template', value_template: `{{ trigger.payload == '${payload}' and (state_attr(source_entity, 'supported_features') | int(0) | bitwise_and(${feature})) != 0 }}` }],
+      sequence: [{ action: `cover.${action}`, target: { entity_id: '{{ source_entity }}' }, continue_on_error: true }],
+    })) },
+    // Correct an optimistic client display even if an unsupported command was
+    // ignored or the cover service failed. This reply is not an operation ACK.
+    { action: 'mqtt.publish', data: { topic: `${prefix}/command`, payload: 'status_update', qos: 1, retain: false } }],
+    // Do not queue a Stop behind a long-running open/close service call.
+    mode: 'parallel', max: 10,
   };
 }
