@@ -12,6 +12,29 @@ const temperature = reading => finite(reading?.value) ? `${number(reading.value,
 const state = value => value === true ? 'Yes' : value === false ? 'No' : 'Unknown';
 const clock = value => finite(value) ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(value) : 'Unknown';
 
+export function garageColdBudget(garage = {}, location) {
+  const name = location === 'rear' ? 'Rear' : 'Front';
+  const policy = garage.settings?.protection, protection = garage.protection;
+  const local = protection?.locations?.[location], total = policy?.budgetDegreeMinutes;
+  const title = `${name} cold budget remaining`;
+  const unavailable = detail => ({ label: `${name} —`, title, detail, percent: null, available: false, attention: false });
+  if (policy?.approved !== true || protection?.approved !== true)
+    return unavailable('No approved garage cold-exposure assessment is available.');
+  if (!local || !finite(total) || total <= 0 || !finite(local.degreeMinutes) || local.degreeMinutes < 0)
+    return unavailable('A valid cold-exposure total and allowance are not available for this location.');
+  if (local.fresh !== true)
+    return unavailable('A fresh, qualified temperature report is required to show this location’s cold budget.');
+  if (local.uncertain)
+    return unavailable('Missing temperature history makes this location’s exposure uncertain. Known sustained warmth must repay that exposure before the percentage is available again.');
+  const used = local.degreeMinutes, exhausted = used >= total, remaining = Math.max(0, total - used);
+  // Reserve 0% for exhaustion and 100% for an untouched allowance.
+  const percent = exhausted ? 0 : used === 0 ? 100 : Math.min(99, Math.max(1, Math.ceil(remaining / total * 100)));
+  const reason = local.reason != null ? ` Current protection limit: ${text(local.reason)}.` : '';
+  return { label: `${name} ${percent}%`, title, percent, available: true,
+    attention: exhausted || local.reason != null,
+    detail: `${remaining} / ${total} °C·min remaining.${used > total ? ` Accumulated exposure: ${used} °C·min.` : ''}${reason} 0% means the cold-exposure budget is exhausted. Heating may resume earlier because of a hard temperature limit, sensor uncertainty or the time needed to restore heating. This is not a freezing probability or countdown.` };
+}
+
 /** Public monitoring projection only. Never serialize raw adapter state, topics,
  * device identifiers, command payloads or private configuration into the DOM. */
 export function garageDisplay(garage = {}, now = Date.now()) {
@@ -94,6 +117,12 @@ export function renderGarage(document, status) {
     : temperatureDevice ? equipmentReadingRows(temperatureDevice).find(row => row.signal === 'garage_temperature') : null;
   detail('garage-main-temperature', main?.value ?? 'Unavailable', 'Main garage temperature',
     main?.detail ?? 'Waiting for a usable rear garage temperature.', main?.stale ?? true);
+  for (const location of ['rear', 'front']) {
+    const id = `garage-budget-${location}`, budget = garageColdBudget(garage, location);
+    detail(id, budget.label, budget.title, budget.detail);
+    const node = document.getElementById(id);
+    if (node) node.dataset.state = budget.attention ? 'attention' : 'muted';
+  }
   const doors = devices.filter(device => device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
     || Object.keys(device.readings ?? {}).some(signal => /^garage_door/.test(signal)))).flatMap(device => {
     const rows = equipmentReadingRows(device).filter(row => /_open$/.test(row.signal));

@@ -1011,8 +1011,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-summary .equipment-notes { margin-top: 16px; }
 .zone-summary .equipment-notes p:last-child { margin-bottom: 0; }
 .zone-expand { display: grid; place-items: center; position: absolute; right: 0; bottom: 0; width: 22px; height: 1.65em; font-size: 11px; color: var(--muted); }
-.garage-zone .zone-expand { height: 1.5em; font-size: 17px; }
-.zone-summary .equipment-notes p:last-child, .garage-overview .equipment-value:last-child { padding-right: 30px; }
+.zone-summary .equipment-notes p:last-child { padding-right: 30px; }
 .zone-expand::before { content: '+'; font-size: 20px; font-weight: 400; line-height: 1; }
 .heating-zone[open] > summary .zone-expand::before { content: '−'; }
 .zone-content { margin-top: 0; padding: 0 0 18px; border: 0; }
@@ -1072,6 +1071,10 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-connections a { color: var(--muted); text-decoration: none; }
 .zone-connections a:hover { color: var(--accent); text-decoration: underline; }
 .garage-overview, .garage-native-overview, .pump-native-overview { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
+.garage-budget-values { display: flex; flex-wrap: wrap; gap: 0 6px; }
+.garage-budget-values > span { white-space: nowrap; }
+.garage-budget-values > .muted { font-size: inherit; }
+.garage-budget-values > [data-state="attention"] { color: var(--stale); }
 .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 17px; font-weight: 500; line-height: 1.5; }
 .pump-native-overview { margin: 12px 0 8px; }
 .pump-native-overview .equipment-value > strong { font-size: 14px; }
@@ -1083,6 +1086,5 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   .heating-zone > .zone-summary { padding: 12px 0 0; }
   .zone-content { padding: 0 0 16px; }
   .garage-overview, .garage-native-overview, .pump-native-overview { gap: 10px; }
-  .garage-zone .zone-expand { font-size: 15px; }
   .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
 }
