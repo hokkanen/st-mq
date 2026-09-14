@@ -904,9 +904,9 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-switch-buttons > button:disabled { cursor: default; }
 .equipment-control-result { overflow-wrap: anywhere; }
 .equipment-cover-buttons { display: flex; flex-wrap: wrap; gap: 6px; max-width: 300px; }
-.equipment-cover-buttons > button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: 1; min-width: 0; min-height: 36px; margin: 0; padding: 6px 10px; font-size: 12px; }
+.equipment-cover-buttons > button { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 1; min-width: 0; min-height: 36px; margin: 0; padding: 6px 24px; font-size: 12px; }
 .equipment-cover-buttons > button[hidden] { display: none; }
-.equipment-cover-buttons svg { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.equipment-cover-buttons svg { position: absolute; left: 7px; width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .equipment-cover-controls > p { font-size: 10px; line-height: 1.5; }
 .equipment-control-state { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; margin: 14px 0 0; font-size: 12px; }
 .equipment-control-state > span { color: var(--muted); }
