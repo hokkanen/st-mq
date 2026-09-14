@@ -1,6 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary } from '../chart/learning-status.js';
+import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
+
+test('heat-pump equipment shows observed run duration and sensor temperatures instead of setpoints', () => {
+  const now = Date.parse('2026-09-14T12:00:00Z');
+  const reading = value => ({ value, available: true, observedAt: now });
+  const status = { now, h66: { connected: true,
+    compressorState: { value: 1, since: now - 75 * 60_000, transitionObserved: true },
+    readings: { '1A01': reading(1), '0009': reading(48), '0007': reading(-3),
+      '0203': reading(21), '0212': reading(44), '0208': reading(60) } } };
+  assert.deepEqual(h66EquipmentSummary(status).map(row => row.value), ['Running for 1 h 15 min', '48 °C', '-3 °C']);
+  status.h66.compressorState.transitionObserved = false;
+  assert.equal(h66EquipmentSummary(status)[0].value, 'Running for at least 1 h 15 min');
+  status.h66.compressorState = null;
+  assert.equal(h66EquipmentSummary(status)[0].value, 'Running');
+  status.h66.readings['1A01'] = reading(0);
+  status.h66.compressorState = { value: 0, since: now - 30_000, transitionObserved: true };
+  assert.equal(h66EquipmentSummary(status)[0].value, 'Idle for <1 min');
+  status.h66.readings['0009'].stale = true;
+  assert.equal(h66EquipmentSummary(status)[1].available, false);
+  status.h66.connected = false;
+  assert(h66EquipmentSummary(status).every(row => row.available === false));
+});
 
 test('learning explanations distinguish missing evidence, genuine zero and unfavorable completed cycles', () => {
   const display = learningDisplay({ metrics: { profit: { value: -1.5, count: 2 }, auxProfit: { value: 0, count: 0 },

@@ -50,6 +50,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   let connected = false, closed = false, active = false, expiryTimer = null, reconcileQueued = false;
   let revision = 0, connectionGeneration = 0;
   let lastPublicationAt = null;
+  let compressorState = null;
   const readings = new Map(), pending = new Map();
   const persist = () => store.setState(key, copy(state));
   const event = (type, detail = {}) => store.event?.(type, detail, clock());
@@ -61,6 +62,23 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   };
   const available = (now = clock()) => connected && !closed && config.enabled !== false
     && Number.isFinite(lastPublicationAt) && now >= lastPublicationAt && now - lastPublicationAt <= maxAgeMs;
+  function trackCompressor(reading) {
+    const now = clock(), observedAt = reading.observedAt ?? reading.receivedAt, receivedAt = reading.receivedAt;
+    if (!connected || reading.usableForControl !== true || ![0, 1].includes(reading.value)
+      || !Number.isFinite(observedAt) || !Number.isFinite(receivedAt) || observedAt > receivedAt
+      || receivedAt > now || now - observedAt > maxAgeMs
+      || compressorState && (observedAt < compressorState.observedAt || receivedAt < compressorState.receivedAt)) {
+      compressorState = null; return;
+    }
+    const previous = compressorState;
+    const continuous = previous && now >= previous.receivedAt && now - previous.observedAt <= maxAgeMs
+      && now - previous.receivedAt <= maxAgeMs;
+    if (!continuous || previous.value !== reading.value) compressorState = {
+      value: reading.value, since: observedAt,
+      transitionObserved: Boolean(continuous && observedAt > previous.observedAt), observedAt, receivedAt,
+    };
+    else compressorState = { ...previous, observedAt, receivedAt };
+  }
   function noteResult(result) { state.lastResult = { ...result, at: clock() }; persist(); }
   function armExpiry() {
     clearTimeout(expiryTimer);
@@ -357,6 +375,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   }
   function ingest(reading) {
     if (closed || !reading || reading.deviceId !== deviceId || !H66_REGISTERS[reading.register] || reading.duplicate) return;
+    if (reading.register === '1A01') trackCompressor(reading);
     reading = { ...reading, revision: ++revision, connectionGeneration };
     const prior = readings.get(reading.register);
     if (reading.usableForControl || !prior?.usableForControl) readings.set(reading.register, copy(reading));
@@ -388,12 +407,15 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     connected = next;
     if (!connected) {
       lastPublicationAt = null;
+      compressorState = null;
       if (manualPhase(state.phase)) restoreRequired = true;
       for (const waiter of [...pending.values()]) waiter.finish(failure('H66_DISCONNECTED', 'H66 disconnected before setting readback.'));
     } else queueReconciliation();
   }
   function status(now = clock()) {
     const live = available(now);
+    if (compressorState && (!live || !current('1A01', now) || now < compressorState.receivedAt
+      || now - compressorState.observedAt > maxAgeMs || now - compressorState.receivedAt > maxAgeMs)) compressorState = null;
     return { enabled: config.enabled !== false, available: live, connected: live, brokerConnected: connected,
       writesEnabled: config.writeEnabled === true, phase: state.phase,
       externalChangeRevision:state.externalChangeRevision??0,externalChangeAt:state.externalChangeAt??null,
@@ -402,6 +424,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       expiresAt: state.expiresAt, pauseId: state.pauseId ?? null, restorationPending: restoreRequired || state.phase === 'restoration-pending',
       obligations: copy(state.obligations), lastResult: copy(state.lastResult), lastTest: copy(state.lastTest ?? null), lastManual: copy(state.lastManual ?? null),
       manualPreheat: copy(state.manualPreheat ?? null),
+      compressorState: compressorState ? { value: compressorState.value, since: compressorState.since,
+        transitionObserved: compressorState.transitionObserved } : null,
       controlsReady: live && SETTINGS.every(index => current(index, now)) && !restoreRequired,
       readings: Object.fromEntries([...readings].map(([index, reading]) => [index, { ...copy(reading),
         stale: !current(index, now), available: live && Boolean(current(index, now)),

@@ -2,7 +2,7 @@ import { renderGarage, createGarageControls } from './garage-status.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
-import { learningDisplay, h66Control, h66HomeSummary, h66ReadingStatus, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
+import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
@@ -202,7 +202,7 @@ function renderHeatingTests(s) {
   $('heating-test-help').textContent = 'Use the controls below to temporarily adjust heating and heat-pump parameters. '
     + 'If price control is not paused, your changes revert on the next controller update, normally within 1 minute. '
     + 'During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.';
-  $('heating-preheat-help').hidden = capability?.preheatAvailable === true;
+  $('heating-preheat-help').hidden = true;
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
     : capability?.preheatReason || 'Max preheating needs a connected heat pump, a fresh writable ROOM setting and circulation control.';
   $('test-preheat').title = capability?.preheatAvailable === true
@@ -428,10 +428,12 @@ function renderH66(s) {
     value.classList.toggle('muted', !row.available);
     setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
       title: title.textContent, detail: row.detail });
-    const equipmentValue = $(`home-pump-${key}`);
+  }
+  for (const row of h66EquipmentSummary(s)) {
+    const equipmentValue = $(`home-pump-${row.key}`);
     equipmentValue.classList.toggle('muted', !row.available);
-    setStatusDetail(equipmentValue, { key: `home-pump-${key}`, label: row.available ? row.value : 'Unavailable',
-      title: title.textContent, detail: row.detail });
+    setStatusDetail(equipmentValue, { key: `home-pump-${row.key}`, label: row.available ? row.value : 'Unavailable',
+      title: row.title, detail: row.detail });
   }
   let notice = root.querySelector('.equipment-alarm');
   const alarm = summary.find(row => row.key === 'alarm');

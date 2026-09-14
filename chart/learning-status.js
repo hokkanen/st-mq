@@ -242,6 +242,39 @@ export function h66HomeSummary(status = {}) {
   return rows;
 }
 
+/** Equipment overview uses measured temperatures and compressor activity,
+ * independently of the settings shown in the closed Home heating summary. */
+export function h66EquipmentSummary(status = {}) {
+  const h66 = status.h66 ?? {}, readings = h66.readings ?? {}, now = status.now ?? Date.now();
+  const rows = [
+    ['state', 'Compressor state', '1A01'],
+    ['dhw', 'Hot water temperature', '0009'],
+    ['outdoor', 'Heat-pump outdoor sensor', '0007'],
+  ].map(([key, title, register]) => {
+    const reading = readings[register], availability = h66ReadingStatus(h66, reading, { now });
+    return { key, title, available: availability.usable,
+      value: availability.usable ? h66ReadingValue(register, reading) : 'Unavailable', detail: availability.detail };
+  });
+  const activity = rows[0], value = readings['1A01']?.value, tracked = h66.compressorState;
+  if (activity.available && [0, 1].includes(value)) {
+    activity.value = value === 1 ? 'Running' : 'Idle';
+    if (tracked?.value === value && finite(tracked.since) && tracked.since <= now) {
+      const minutes = Math.floor((now - tracked.since) / 60_000);
+      const elapsed = durationText(minutes * 60_000);
+      if (minutes > 0) activity.value += ` for ${tracked.transitionObserved ? '' : 'at least '}${elapsed}`;
+      else if (tracked.transitionObserved) activity.value += ' for <1 min';
+      activity.detail += tracked.transitionObserved
+        ? ' Duration starts when H66 reported the change in compressor state.'
+        : ' This state was already active when observation began. The duration is the minimum continuously observed time; its actual start is unknown.';
+    } else activity.detail += ' The current state is known, but its duration is not yet available.';
+    activity.detail += ' Running means the compressor is on; Idle means it is off. Auxiliary heating may operate separately.';
+  } else if (activity.available) {
+    activity.available = false;
+    activity.detail = 'The heat pump has not reported a recognized compressor state.';
+  }
+  return rows;
+}
+
 export function h66ReadingValue(register, reading) {
   if (!finite(reading?.value)) return 'Unavailable';
   if (register === '2201') return operationModes[reading.value] ?? `Unknown mode (${reading.value})`;
