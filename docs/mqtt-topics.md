@@ -12,8 +12,9 @@ vocabulary; custom MQTT devices are still configured with `mqtt:` connections.
 | Upstairs temperature | `stmq/smoke/1/temperature` | `stmq/home/smoke1/status/temperature` | Numeric Celsius |
 | Bedroom temperature | `stmq/smoke/2/temperature` | `stmq/home/smoke2/status/temperature` | Numeric Celsius |
 | Downstairs temperature | `stmq/smoke/3/temperature` | `stmq/home/smoke3/status/temperature` | Numeric Celsius |
-| Garage door 1 | `from_hass/garage_door1/sensor` | `stmq/garage/door1/status/contact` | `open` / `closed`, or a configured JSON snapshot |
-| Garage door 2 | `from_hass/garage_door2/sensor` | `stmq/garage/door2/status/contact` | `open` / `closed`, or a configured JSON snapshot |
+| Garage door 1 | `from_hass/garage_door1/sensor` | `stmq/garage/door1/status/contact` | JSON contact snapshot |
+| Garage door 2 | `from_hass/garage_door2/sensor` | `stmq/garage/door2/status/contact` | JSON contact snapshot |
+| Optional HA garage air temperature | Existing HA publisher retained | `stmq/garage/air/status/temperature` | JSON Celsius snapshot |
 
 The installation uses power-only DHWR feedback. No physical or virtual switch-state
 publisher is required or enabled. Power is last-reported consumption, not an
@@ -28,40 +29,50 @@ current payloads; select QoS 1 and leave retention disabled. These are manual
 SmartThings changes, separate from ST-MQ configuration. Smoke readings retain
 their 70-minute report interval and five-minute delivery grace.
 
-Update the corresponding Home Assistant door publishers to the new contact topics.
-Before adding query or availability mappings, inspect the actual source entities
-and their reporting behavior. Public defaults currently change the contact topic
-names only; they do not claim that an HA query endpoint has been installed.
+The [Home Assistant publishers](homeassistant-mqtt.md) add door snapshots, queries
+and availability topics. Both public door configurations select this
+protocol. The optional HA air-temperature publisher is available separately;
+ST-MQ's default garage temperature source remains native Shelly MQTT.
 
-Coordinate publisher changes with ST-MQ settings reload. Finish any active timed
+The three new HA automations are additive. All five legacy topic routes remain
+enabled for the separate production consumers. The four legacy door automations
+are unchanged; the legacy temperature automation now publishes on source changes
+instead of every minute, preserving its topic and payload. Home Assistant
+publishing changes do not restart or migrate ST-MQ.
+
+Coordinate publisher changes with an ST-MQ restart to load the updated acquisition
+code and settings. Finish any active timed
 circulation run through the old command route before changing that route, so its
-pending OFF reaches the original subscriber. This repository change does not reload
-or restart an installed service, configure Home Assistant, or migrate the separate
-production installation. A private equipment list replaces the public list and
-must be updated separately if present.
+pending OFF reaches the original subscriber. A private equipment list replaces the
+public list and must be updated separately if present.
 
 ## Door recovery protocol
 
-Once implemented by the HA publisher, each door can accept `status_update` on
-`stmq/garage/door1/command` or `stmq/garage/door2/command` and reply on its normal
-contact topic. Configure the corresponding `mqtt.request_topic` and
-`mqtt.request_payload`. ST-MQ requests status after successful startup/reconnect
-subscriptions and during Recheck, using QoS 1 with retention disabled. There are
-no door movement commands and no application-level receipt requirement.
+Each HA door publisher accepts `status_update` on
+`stmq/garage/door1/command` or `stmq/garage/door2/command` and replies on its normal
+contact topic. The corresponding `mqtt.request_topic` and `mqtt.request_payload`
+are configured in the public defaults. ST-MQ requests status after successful
+startup/reconnect subscriptions and during Recheck, using QoS 1 with retention
+disabled. There are no door movement commands and no application-level receipt
+requirement.
 
-A bridge snapshot should preserve the source state time, for example
-`{"value":"closed","timestamp":"2026-09-14T10:00:00Z"}`. Configure
-`mqtt.state_path: "value"` and `mqtt.timestamp_path: "timestamp"` for that format.
-Replies containing cached state must keep the original timestamp. MQTT receipt,
-bridge uptime, and sensor observation time have different meanings. Retained
-messages cannot complete a live Recheck.
+A snapshot preserves the HA source entity's `last_reported` time in `timestamp`,
+with its value in `value`. Public defaults select those JSON paths. The separate
+`published_at` field records when HA publishes the snapshot. Queries read HA's
+cache; they do not refresh the physical sensor. Retained messages cannot complete
+a live Recheck. Publications occur on source changes, startup, HA MQTT birth and
+status requests; there is no timer or heartbeat publisher.
 
-Forward unknown/unavailable source states explicitly. A proposed per-door
-availability topic is `stmq/garage/door1/availability` (and likewise `door2`), with
-`online` / `offline` payloads. Configure it only when the publisher implements it.
-HA's own availability proves bridge connectivity, not physical contact health.
+Each door publishes retained `online` / `offline` to its `/availability` topic.
+ST-MQ requires a live child online report and a live contact snapshot. Unknown or
+unavailable source states publish offline with a null value. The additional
+`mqtt.bridge_availability_topic: "homeassistant/status"` tracks HA connectivity:
+bridge offline immediately invalidates both doors; live online requests recovery.
+An initially absent bridge status does not prevent a live child reply. Retained
+bridge online provides context but cannot restore a contact by itself. Neither
+availability signal establishes a new physical contact observation.
 
-The garage model currently requires door source timestamps younger than five
-minutes. Recovery of an older event-only state for display does not override that
-model limit. Inspect the HA source reporting contract before changing this policy;
-periodic publication of cached state with a new timestamp is not a valid fix.
+Doors retain their event-only maximum age of zero for equipment display. The
+garage model still requires door source timestamps younger than five minutes.
+Recovery of an older last-known state for display does not override that limit or
+the model's requirement for newer source evidence after an availability failure.

@@ -162,6 +162,12 @@ A generic switch requires a separate command topic and distinct `mqtt.on_payload
 and `mqtt.off_payload`. The handler waits for a new matching state publication;
 a broker acknowledgement is not confirmation of the output. Use
 `mqtt.availability_topic` or a configured heartbeat if the publisher provides one.
+When availability is configured, a live online message is required alongside live
+readings; retained online alone cannot restore the device. Bridges can additionally
+use `mqtt.bridge_availability_topic` with `online` / `offline` payloads to invalidate
+their child devices on a bridge outage and request recovery after a live online
+message. See [Home Assistant publishers](homeassistant-mqtt.md) for a change-driven
+example without a timer or heartbeat.
 An optional read-only request requires its own explicitly configured topic and
 payload. ST-MQ never guesses that publishing to a sensor topic will request status.
 For a publisher that actually implements a read request, configure its documented

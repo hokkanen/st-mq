@@ -44,6 +44,11 @@ test('equipment configuration requires explicit protocols and unambiguous subscr
     assert.throws(() => equipmentConfiguration({ devices: [{ ...door, connection }] }));
   assert.throws(() => equipmentConfiguration({ devices: [{ ...genericSwitch, mqtt: {} }] }));
   assert.throws(() => equipmentConfiguration({ devices: [{ ...genericSwitch, mqtt: { ...genericSwitch.mqtt, command_topic: 'invented/state' } }] }));
+  assert.throws(() => equipmentConfiguration({ devices: [{ ...door, mqtt: { bridge_availability_topic: 'invented/door' } }] }), /separate topics/);
+  assert.throws(() => equipmentConfiguration({ devices: [{ ...door, mqtt: {
+    bridge_availability_topic: 'invented/online', availability_topic: 'invented/online' } }] }), /Bridge availability/);
+  assert.throws(() => equipmentConfiguration({ devices: [garage, { ...door,
+    mqtt: { bridge_availability_topic: 'invented/garage/online' } }] }), /native equipment prefix/);
   assert.throws(() => equipmentConfiguration({ devices: [garage, { ...door, connection: 'mqtt:invented/garage/status/switch:0' }] }));
   assert.throws(() => equipmentConfiguration({ devices: [home, { ...home, id: 'another', connection: 'mqtt:elsewhere' }] }));
   assert.throws(() => equipmentConfiguration({ devices: [{ ...garage, readings: [{ key: 'temperature_2', unit: 'degC' }] }] }));
@@ -99,13 +104,147 @@ test('explicit door heartbeat and offline status invalidate readings without rep
   const f = fixture(t, [{ ...door, mqtt: { heartbeat_topic: 'invented/heartbeat', heartbeat_seconds: 30,
     availability_topic: 'invented/online' } }]); f.capture.setConnected(true);
   f.capture.receive('invented/door', 'closed'); assert.equal(f.capture.status().devices[0].available, false);
-  f.capture.receive('invented/heartbeat', 'tick'); assert.equal(f.capture.status().devices[0].available, true);
+  f.capture.receive('invented/heartbeat', 'tick'); assert.equal(f.capture.status().devices[0].available, false);
+  f.capture.receive('invented/online', 'online'); assert.equal(f.capture.status().devices[0].available, true);
   f.now(initial + 31_000); f.capture.tick();
   let device = f.capture.status().devices[0]; assert.equal(device.available, false);
   assert.equal(device.readings.garage_door1_open.value, 0); assert.equal(device.readings.garage_door1_open.observedAt, initial);
   f.capture.receive('invented/heartbeat', 'tick'); assert.equal(f.capture.status().devices[0].available, false);
   f.capture.receive('invented/door', 'open'); assert.equal(f.capture.status().devices[0].available, true);
   f.capture.receive('invented/online', 'offline', { retain: true }); assert.equal(f.capture.status().devices[0].available, false);
+});
+
+test('door status requests require live availability, contact and heartbeat in any order', async t => {
+  const orders = [
+    ['contact', 'heartbeat', 'online'], ['contact', 'online', 'heartbeat'],
+    ['heartbeat', 'contact', 'online'], ['heartbeat', 'online', 'contact'],
+    ['online', 'contact', 'heartbeat'], ['online', 'heartbeat', 'contact'],
+  ];
+  for (const order of orders) await t.test(order.join(', '), async t => {
+    const f = fixture(t, [{ ...door, mqtt: { request_topic: 'invented/get', request_payload: 'status_update',
+      state_path: 'value', timestamp_path: 'timestamp', availability_topic: 'invented/online',
+      heartbeat_topic: 'invented/heartbeat', heartbeat_seconds: 30 } }], { readbackTimeoutMs: 2000 });
+    f.now(initial + 600_000); f.capture.setConnected(true);
+    const pending = f.capture.recheck(); await new Promise(resolve => setImmediate(resolve));
+    f.capture.receive('invented/online', 'online', { retain: true });
+    const reports = {
+      contact: ['invented/door', JSON.stringify({ value: 'closed', timestamp: initial })],
+      heartbeat: ['invented/heartbeat', 'tick'], online: ['invented/online', 'online'],
+    };
+    for (const [index, report] of order.entries()) {
+      f.capture.receive(...reports[report]);
+      const device = f.capture.status().devices[0], complete = index === order.length - 1;
+      assert.equal(device.available, complete);
+      assert.equal(device.check.checking, !complete);
+      if (device.readings.garage_door1_open) assert.equal(device.readings.garage_door1_open.stale, !complete);
+    }
+    const device = (await pending).devices[0];
+    assert.equal(device.check.status, 'available');
+    assert.equal(device.readings.garage_door1_open.observedAt, initial, 'Bridge reports preserve contact source time');
+  });
+});
+
+test('configured availability requires a new live online report after reconnect', t => {
+  const f = fixture(t, [{ ...door, mqtt: { availability_topic: 'invented/online' } }]);
+  f.capture.setConnected(true);
+  f.capture.receive('invented/online', 'online'); f.capture.receive('invented/door', 'closed');
+  assert.equal(f.capture.status().devices[0].available, true);
+  f.capture.setConnected(false); f.capture.setConnected(true);
+  f.capture.receive('invented/door', 'closed');
+  f.capture.receive('invented/online', 'online', { retain: true });
+  let device = f.capture.status().devices[0];
+  assert.equal(device.available, false); assert.equal(device.readings.garage_door1_open.stale, true);
+  f.capture.receive('invented/online', 'online');
+  device = f.capture.status().devices[0];
+  assert.equal(device.available, true); assert.equal(device.readings.garage_door1_open.stale, false);
+});
+
+test('shared bridge offline invalidates every door while startup can recover without a retained bridge status', t => {
+  const rows = [1, 2].map(number => ({ ...door, id: `garage_door${number}`, connection: `mqtt:invented/door${number}`,
+    mqtt: { availability_topic: `invented/door${number}/online`, bridge_availability_topic: 'invented/bridge/status',
+      state_path: 'value', timestamp_path: 'timestamp' } }));
+  const f = fixture(t, rows); f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
+  assert.equal(f.capture.topics.filter(topic => topic === 'invented/bridge/status').length, 1);
+  const live = number => {
+    f.capture.receive(`invented/door${number}/online`, 'online');
+    f.capture.receive(`invented/door${number}`, JSON.stringify({ value: 'closed', timestamp: initial }));
+  };
+  live(1); live(2);
+  assert(f.capture.status().devices.every(device => device.available), 'Live child reports suffice when bridge status is initially unknown');
+  f.now(initial + 1000); f.capture.receive('invented/bridge/status', 'offline', { retain: true });
+  for (const device of f.capture.status().devices) {
+    assert.equal(device.available, false);
+    const reading = device.readings[`${device.id}_open`];
+    assert.equal(reading.value, 0); assert.equal(reading.observedAt, initial); assert.equal(reading.stale, true);
+  }
+  assert(f.observations.slice(-2).every(row => row.value === null && row.quality.includes('bridge-offline')));
+  f.capture.receive('invented/bridge/status', 'online', { retain: true });
+  assert(f.capture.status().devices.every(device => !device.available), 'Retained bridge context cannot restore either contact');
+  f.capture.receive('invented/bridge/status', 'offline');
+  live(1); live(2);
+  assert(f.capture.status().devices.every(device => !device.available && device.readings[`${device.id}_open`].stale),
+    'Known bridge offline still gates live child reports');
+  f.capture.setConnected(false); f.capture.setConnected(true);
+  live(1); live(2);
+  assert(f.capture.status().devices.every(device => device.available), 'Own reconnect clears obsolete bridge status but needs live child reports');
+});
+
+test('live bridge recovery queries once and waits for child availability and source replies', async t => {
+  const f = fixture(t, [{ ...door, mqtt: { request_topic: 'invented/get', request_payload: 'status_update',
+    state_path: 'value', timestamp_path: 'timestamp', availability_topic: 'invented/online',
+    bridge_availability_topic: 'invented/bridge/status' } }], { readbackTimeoutMs: 2000 });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  const snapshot = JSON.stringify({ value: 'closed', timestamp: initial });
+  f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics); await flush();
+  f.capture.receive('invented/online', 'online'); f.capture.receive('invented/door', snapshot);
+  assert.equal(f.capture.status().devices[0].check.status, 'available');
+  assert.equal(f.publications.length, 1);
+  f.now(initial + 1000); f.capture.receive('invented/bridge/status', 'offline');
+  f.capture.receive('invented/bridge/status', 'online', { retain: true }); await flush();
+  assert.equal(f.publications.length, 1, 'Retained bridge online does not send a query');
+  f.capture.receive('invented/bridge/status', 'online');
+  f.capture.receive('invented/bridge/status', 'online'); await flush();
+  assert.equal(f.publications.length, 2, 'Repeated bridge births do not duplicate an in-progress request');
+  assert.deepEqual(f.publications.at(-1), { topic: 'invented/get', payload: 'status_update', options: { qos: 1, retain: false } });
+  f.capture.receive('invented/online', 'online', { retain: true });
+  f.capture.receive('invented/door', snapshot, { retain: true });
+  assert.equal(f.capture.status().devices[0].check.checking, true);
+  f.capture.receive('invented/door', snapshot);
+  assert.equal(f.capture.status().devices[0].available, false, 'Bridge recovery also needs fresh child availability');
+  f.capture.receive('invented/online', 'online');
+  const device = f.capture.status().devices[0];
+  assert.equal(device.available, true); assert.equal(device.check.status, 'available');
+  assert.equal(device.readings.garage_door1_open.observedAt, initial);
+});
+
+test('retained offline during subscription refresh cannot prevent a later bridge recovery query', async t => {
+  for (const offlineTopic of ['invented/bridge/status', 'invented/online']) await t.test(offlineTopic, async t => {
+    let replayOffline = true, refreshes = 0;
+    const f = fixture(t, [{ ...door, mqtt: { request_topic: 'invented/get', request_payload: 'status_update',
+      state_path: 'value', timestamp_path: 'timestamp', availability_topic: 'invented/online',
+      bridge_availability_topic: 'invented/bridge/status' } }], {
+      readbackTimeoutMs: 2000,
+      refreshSubscriptions: async () => {
+        refreshes++;
+        if (replayOffline) f.capture.receive(offlineTopic, 'offline', { retain: true });
+      },
+    });
+    const flush = () => new Promise(resolve => setImmediate(resolve));
+    f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics); await flush();
+    let device = f.capture.status().devices[0];
+    assert.equal(device.check.status, 'unavailable');
+    assert.equal(device.mqttStatus.subscriptionStatus, 'subscribed', 'Offline source does not undo a successful subscription');
+    assert.equal(f.publications.length, 0);
+    replayOffline = false; f.now(initial + 1000);
+    f.capture.receive('invented/bridge/status', 'online'); await flush();
+    assert.equal(refreshes, 2);
+    assert.deepEqual(f.publications, [{ topic: 'invented/get', payload: 'status_update', options: { qos: 1, retain: false } }]);
+    f.capture.receive('invented/online', 'online');
+    f.capture.receive('invented/door', JSON.stringify({ value: 'closed', timestamp: initial }));
+    device = f.capture.status().devices[0];
+    assert.equal(device.check.status, 'available'); assert.equal(device.available, true);
+    assert.equal(device.readings.garage_door1_open.observedAt, initial);
+  });
 });
 
 test('home equipment preserves the original temperature identity, report policy, decoder, and retained lineage', t => {
@@ -156,10 +295,12 @@ test('generic switch requires explicit publication plus fresh state, rejects ret
 test('signatures include broker, physical topic and command mappings while excluding presentation', t => {
   const a = fixture(t, [genericSwitch]), b = fixture(t, [{ ...genericSwitch, label: 'New name', area: 'garage' }]),
     c = fixture(t, [{ ...genericSwitch, mqtt: { ...genericSwitch.mqtt, on_payload: '1' } }]),
-    d = fixture(t, [genericSwitch], { brokerIdentity: { address: 'mqtt://other.invalid', username: 'invented' } });
+    d = fixture(t, [genericSwitch], { brokerIdentity: { address: 'mqtt://other.invalid', username: 'invented' } }),
+    e = fixture(t, [{ ...genericSwitch, mqtt: { ...genericSwitch.mqtt, bridge_availability_topic: 'invented/bridge/status' } }]);
   assert.equal(a.capture.signature('relay'), b.capture.signature('relay'));
   assert.notEqual(a.capture.signature('relay'), c.capture.signature('relay'));
   assert.notEqual(a.capture.signature('relay'), d.capture.signature('relay'));
+  assert.notEqual(a.capture.signature('relay'), e.capture.signature('relay'));
 });
 
 test('unsupported hypothetical heat-pump equipment kind is rejected', () => {
@@ -345,6 +486,7 @@ test('passive MQTT recheck refreshes exact subscriptions and identifies retained
   assert.equal(device.mqttStatus.lastRetainedAt, initial);
   assert.equal(device.readings.garage_door1_open.stale, true);
   f.capture.receive('invented/door', 'open');
+  f.capture.receive('invented/online', 'online');
   f.now(initial + 60_000);
   device = (await f.capture.recheck()).devices[0];
   assert.equal(device.check.status, 'last-reported');

@@ -257,7 +257,14 @@
           "kind": "door",
           "connection": "mqtt:stmq/garage/door1/status/contact",
           "enabled": true,
-          "mqtt": {},
+          "mqtt": {
+            "state_path": "value",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/garage/door1/command",
+            "request_payload": "status_update",
+            "availability_topic": "stmq/garage/door1/availability",
+            "bridge_availability_topic": "homeassistant/status"
+          },
           "readings": []
         },
         {
@@ -267,7 +274,14 @@
           "kind": "door",
           "connection": "mqtt:stmq/garage/door2/status/contact",
           "enabled": true,
-          "mqtt": {},
+          "mqtt": {
+            "state_path": "value",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/garage/door2/command",
+            "request_payload": "status_update",
+            "availability_topic": "stmq/garage/door2/availability",
+            "bridge_availability_topic": "homeassistant/status"
+          },
           "readings": []
         }
       ]
@@ -530,6 +544,7 @@
             "state_path": "str?",
             "timestamp_path": "str?",
             "availability_topic": "str?",
+            "bridge_availability_topic": "str?",
             "online_payload": "str?",
             "offline_payload": "str?",
             "heartbeat_topic": "str?",

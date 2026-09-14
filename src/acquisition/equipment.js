@@ -29,8 +29,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     roomRouteSignature: config.kind === 'temperature' && INDOOR_SIGNALS.includes(config.temperatureSignal)
       ? temperatureRouteSignature({ brokerIdentity, topic: config.topic, statePath: config.mqtt.statePath, timestampPath: config.mqtt.timestampPath,
         mappings: config.readings.filter(mapping => mapping.signal === config.temperatureSignal) }) : null,
-    online: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
-    subscriptionStatus: 'unconfirmed', lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null }));
+    online: null, bridgeOnline: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
+    subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null }));
   const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
@@ -54,12 +54,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   const age = device => INDOOR_SIGNALS.includes(device.temperatureSignal) && canonicalTemperature(device)
     ? temperatureReportIntervalMs + temperatureReportGraceMs : device.maxAgeMs;
   const readTopics = device => [...new Set([device.topic, ...device.mappings.map(row => row.topic),
-    device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))];
+    device.mqtt.availabilityTopic, device.mqtt.bridgeAvailabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))];
   const recheckMethod = device => device.mqtt.requestTopic ? 'request' : 'subscription';
   const topicDetails = device => [
     { role: device.kind === 'power' ? 'Power' : 'State', topic: device.topic, direction: 'subscribe' },
     ...device.mappings.filter(row => row.topic).map(row => ({ role: row.label, signal: row.signal, topic: row.topic, direction: 'subscribe' })),
     ...(device.mqtt.availabilityTopic ? [{ role: 'Availability', topic: device.mqtt.availabilityTopic, direction: 'subscribe' }] : []),
+    ...(device.mqtt.bridgeAvailabilityTopic ? [{ role: 'Bridge availability', topic: device.mqtt.bridgeAvailabilityTopic, direction: 'subscribe' }] : []),
     ...(device.mqtt.heartbeatTopic ? [{ role: 'Heartbeat', topic: device.mqtt.heartbeatTopic, direction: 'subscribe' }] : []),
     ...(device.mqtt.requestTopic ? [{ role: 'Status request', topic: device.mqtt.requestTopic, direction: 'publish' }] : []),
     ...(device.mqtt.commandTopic ? [{ role: 'Switch command', topic: device.mqtt.commandTopic, direction: 'publish' }] : []),
@@ -100,7 +101,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     && reading.observedAt <= now && !reading.retained && !reading.unavailable
     && (!age(device) || now - reading.observedAt < age(device))
     && !reading.quality?.some(flag => /invalid|missing|retained|stale|future|disconnected|offline|unavailable/.test(flag)));
-  const healthy = (device, now) => connected && device.liveSinceConnect && device.online !== false && !device.invalid
+  const availabilityConfirmed = device => device.bridgeOnline !== false && (!device.mqtt.availabilityTopic || device.online === true);
+  const healthy = (device, now) => connected && device.liveSinceConnect && availabilityConfirmed(device) && !device.invalid
     && !['failed', 'disconnected'].includes(device.subscriptionStatus)
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
     && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
@@ -120,6 +122,19 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     device.lastReceivedAt = receivedAt;
     if (packet.retain) device.lastRetainedAt = receivedAt; else device.lastLiveAt = receivedAt;
     for (const check of device.checks) if (packet.retain) check.retainedReceived = true;
+    if (topic === mapping.bridgeAvailabilityTopic) {
+      if (body === 'offline') { device.bridgeOnline = false; device.online = null; unavailable(device, 'bridge-offline', receivedAt); }
+      else if (body === 'online') {
+        const needsReadback = device.bridgeOnline === false || !device.liveSinceConnect;
+        device.bridgeOnline = true;
+        // Bridge birth restores connectivity context, never the child reading.
+        // Ask the explicit endpoint once subscriptions are ready to recover it.
+        if (!packet.retain && needsReadback && device.subscriptionStatus === 'subscribed' && mapping.requestTopic && !device.checks.size)
+          void api.recheck({ deviceId: device.id }).catch(() => {});
+        completeChecks(device, receivedAt);
+      }
+      return;
+    }
     if (topic === mapping.availabilityTopic) {
       if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline', receivedAt); }
       else if (body === mapping.onlinePayload && !packet.retain) { device.online = true; completeChecks(device, receivedAt); }
@@ -217,14 +232,14 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
   }
   const api = {
-    topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(device => [device.topic, ...device.mappings.map(row => row.topic),
-      device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))])],
+    topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(readTopics)])],
     ownsGarage: settings.ownsGarage === true, hasHeating: enabled.some(device => device.controlsHeat), signature,
     setConnected(value) {
       connected = value; native?.setConnected(value);
       for (const device of devices) {
+        device.subscriptionRefresh = null;
         device.subscriptionStatus = value ? 'unconfirmed' : 'disconnected';
-        if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.liveSinceConnect = false; }
+        if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.bridgeOnline = null; device.liveSinceConnect = false; }
       }
     },
     confirmSubscriptions(topics) {
@@ -236,7 +251,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         device.subscriptionStatus = 'subscribed';
       }
       for (const device of devices.filter(row => row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
-        const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic,
+        if (device.bridgeOnline === false) continue;
+        const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.bridgeAvailabilityTopic, device.mqtt.heartbeatTopic,
           ...device.mappings.filter(mapping => mapping.required).map(mapping => mapping.topic)].filter(Boolean);
         if (!requiredTopics.every(topic => confirmed.has(topic))) continue;
         const recovered = engine.confirmTemperatureConnection?.(device.temperatureSignal, {
@@ -267,7 +283,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     },
     receive(topic, payload, packet = {}, receivedAt = engine.clock()) {
       if (native?.receive(topic, payload, packet, receivedAt)) return true;
-      const selected = devices.filter(device => [device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic, ...device.mappings.map(row => row.topic)].includes(topic));
+      const selected = devices.filter(device => readTopics(device).includes(topic));
       if (!selected.length) return false;
       if (!connected || closed || packet.dup) return true;
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
@@ -304,16 +320,22 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         if (!connected || closed) { check.finish('unavailable'); return; }
         Promise.resolve().then(async () => {
           if (refreshSubscriptions) {
-            device.subscriptionStatus = 'refreshing';
+            device.subscriptionStatus = 'refreshing'; device.subscriptionRefresh = check;
             try { await refreshSubscriptions(readTopics(device)); }
             catch {
-              if (!completed && connected && !closed) {
+              if (device.subscriptionRefresh === check && connected && !closed) {
+                device.subscriptionRefresh = null;
                 device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
               }
               throw fail('subscription refresh failed');
             }
+            // Retained offline can finish the device check before SUBACK. The
+            // subscription still succeeded and must allow later bridge recovery.
+            if (device.subscriptionRefresh === check && connected && !closed) {
+              device.subscriptionRefresh = null;
+              if (device.subscriptionStatus === 'refreshing') device.subscriptionStatus = 'subscribed';
+            }
             if (completed || !connected || closed) return;
-            device.subscriptionStatus = 'subscribed';
           }
           if (completed || !connected || closed) return;
           // Reports replayed by subscription refresh are not replies to a later request.
@@ -354,7 +376,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         mqttStatus: { subscriptionStatus: device.subscriptionStatus, lastReceivedAt: device.lastReceivedAt,
           lastLiveAt: device.lastLiveAt, lastRetainedAt: device.lastRetainedAt },
         readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
-          { ...reading, stale: !connected || !device.liveSinceConnect || device.online === false || !fresh(device, reading, now)
+          { ...reading, stale: !connected || !device.liveSinceConnect || !availabilityConfirmed(device) || !fresh(device, reading, now)
             || Boolean(device.mqtt.heartbeatMs && (!scalar(device.heartbeatAt) || now - device.heartbeatAt > device.mqtt.heartbeatMs)) }])),
         ...(energy.has(device.id) ? { energy: energy.get(device.id).status(now) } : {}) }))];
       return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'power'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
   'switch_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
-const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic',
+const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic', 'bridge_availability_topic',
   'online_payload', 'offline_payload', 'heartbeat_topic', 'heartbeat_seconds', 'request_topic', 'request_payload'];
 const READING_KEYS = ['key', 'label', 'signal', 'unit', 'path', 'topic', 'component', 'required', 'record', 'scale', 'offset'];
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -104,6 +104,7 @@ export function equipmentConfiguration(input = {}) {
     const mqtt = { statePath: path(mapping.state_path), timestampPath: path(mapping.timestamp_path),
       commandTopic: exactEquipmentTopic(mapping.command_topic, true), onPayload: mapping.on_payload ?? null, offPayload: mapping.off_payload ?? null,
       availabilityTopic: exactEquipmentTopic(mapping.availability_topic, true), onlinePayload: mapping.online_payload ?? 'online', offlinePayload: mapping.offline_payload ?? 'offline',
+      bridgeAvailabilityTopic: exactEquipmentTopic(mapping.bridge_availability_topic, true),
       heartbeatTopic: exactEquipmentTopic(mapping.heartbeat_topic, true), heartbeatMs: Math.round(number(mapping.heartbeat_seconds, 0, 0, 86400) * 1000),
       requestTopic: exactEquipmentTopic(mapping.request_topic, true), requestPayload: mapping.request_payload ?? null };
     for (const value of [mqtt.onPayload, mqtt.offPayload, mqtt.requestPayload, mqtt.onlinePayload, mqtt.offlinePayload])
@@ -138,7 +139,9 @@ export function equipmentConfiguration(input = {}) {
     if (protocol === 'mqtt') {
       const readTopics = [address, ...readings.map(value => value.topic).filter(Boolean)];
       if (mqtt.commandTopic && readTopics.includes(mqtt.commandTopic)) throw new Error('Switch commands require a separate topic from state confirmation');
-      if ([mqtt.availabilityTopic, mqtt.heartbeatTopic].some(topic => topic && readTopics.includes(topic))) throw new Error('Availability and heartbeat must use separate topics from equipment readings');
+      if ([mqtt.availabilityTopic, mqtt.bridgeAvailabilityTopic, mqtt.heartbeatTopic].some(topic => topic && readTopics.includes(topic))) throw new Error('Availability and heartbeat must use separate topics from equipment readings');
+      if (mqtt.bridgeAvailabilityTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.commandTopic, mqtt.requestTopic].includes(mqtt.bridgeAvailabilityTopic))
+        throw new Error('Bridge availability must use a separate topic from device availability, heartbeat and commands');
     }
     const defaultSignals = [...(powerSignal ? [powerSignal] : []), ...(stateSignal ? [stateSignal] : []), ...(hasTemperature ? [temperatureSignal] : []),
       ...(metered ? [`${id}_power`, `${id}_current`, `${id}_energy`] : [])];
@@ -165,7 +168,7 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Native equipment prefixes must be distinct and non-overlapping');
     const topics = row => row.protocol === 'mqtt' ? [row.topic, ...row.readings.map(value => value.topic).filter(Boolean)] : [];
     if (topics(device).some(topic => topics(other).includes(topic))) throw new Error('Enabled MQTT equipment cannot share a state topic');
-    if ([device, other].some((native, i) => native.protocol === 'shelly' && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.availabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic].filter(Boolean).some(topic => topic === native.prefix || topic.startsWith(`${native.prefix}/`))))
+    if ([device, other].some((native, i) => native.protocol === 'shelly' && [...topics([device, other][1 - i]), [device, other][1 - i].mqtt.availabilityTopic, [device, other][1 - i].mqtt.bridgeAvailabilityTopic, [device, other][1 - i].mqtt.heartbeatTopic].filter(Boolean).some(topic => topic === native.prefix || topic.startsWith(`${native.prefix}/`))))
       throw new Error('MQTT equipment topics cannot overlap a native equipment prefix');
   }
   return { configured: devices.length > 0, devices, pollIntervalMs, maxAgeMs,
