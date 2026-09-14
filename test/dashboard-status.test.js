@@ -1,6 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { learningOverview, settingsReloadScope } from '../chart/dashboard-status.js';
+import { learningOverview, garageLearningOverview, settingsReloadScope } from '../chart/dashboard-status.js';
+
+test('garage overview preserves its own evidence counts and reconstruction state', () => {
+  for (const input of [undefined, null, {}, { trainedIntervals: -1, heldOut: { advanceRear: { n: '12' } } }]) {
+    const overview = garageLearningOverview(input);
+    assert.equal(overview.status, 'unavailable');
+    assert.equal(overview.trainedIntervals, null);
+    assert.equal(overview.predictionChecks, null);
+  }
+  const learning = { status: 'learning', trainedIntervals: 0, heldOut: { advanceRear: { n: 0 }, front: { n: 8 } } };
+  const initial = garageLearningOverview(learning);
+  assert.equal(initial.status, 'initial');
+  assert.equal(initial.trainedIntervals, 0); assert.equal(initial.predictionChecks, 0);
+  learning.trainedIntervals = 24; learning.heldOut.advanceRear.n = 6;
+  assert.equal(garageLearningOverview(learning).status, 'learning');
+  assert.equal(garageLearningOverview(learning).predictionChecks, 6);
+  learning.status = 'validated-provisional';
+  assert.match(garageLearningOverview(learning).summary, /Savings remain provisional/);
+  learning.reconstruction = 'rebuilding';
+  assert.equal(garageLearningOverview(learning).status, 'rebuilding');
+  learning.reconstruction = 'failed';
+  assert.equal(garageLearningOverview(learning).status, 'attention');
+});
 
 test('model overview preserves unknown evidence and distinguishes recorded zero counts', () => {
   for (const learning of [undefined, null, {}, { adaptive: { health: {} } }]) {

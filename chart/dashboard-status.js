@@ -32,6 +32,31 @@ export function learningOverview(learning = {}) {
   return { status, title, summary, usableSamples, acceptedFits };
 }
 
+/** Garage reports trained intervals and held-out predictions, not Home's
+ * accepted-fit counter. Keep those different kinds of evidence explicit. */
+export function garageLearningOverview(learning = {}) {
+  const trainedIntervals = count(learning?.trainedIntervals);
+  const predictionChecks = count(learning?.heldOut?.advanceRear?.n);
+  let status = 'unavailable', title = 'Awaiting model status', summary = 'Learning status is not available yet.';
+  if (learning?.reconstruction === 'failed') {
+    status = 'attention'; title = 'Rebuild needs attention';
+    summary = 'The model could not finish updating from recorded observations.';
+  } else if (learning?.reconstruction === 'rebuilding') {
+    status = 'rebuilding'; title = 'Rebuilding model';
+    summary = 'Updating the garage model from recorded observations.';
+  } else if (learning?.status === 'validated-provisional') {
+    status = 'provisional'; title = 'Provisional model';
+    summary = 'Temperature predictions have passed their checks. Savings remain provisional.';
+  } else if (learning?.status === 'learning') {
+    status = trainedIntervals === 0 ? 'initial' : 'learning';
+    title = trainedIntervals === 0 ? 'Initial estimates' : 'Learning from observations';
+    summary = trainedIntervals === 0
+      ? 'The garage model is collecting evidence before refining its starting estimates.'
+      : 'Temperature and heating observations refine the garage model.';
+  }
+  return { status, title, summary, trainedIntervals, predictionChecks };
+}
+
 const isFilePath = path => typeof path === 'string' && path.startsWith('/') && path.length > 1 && !path.endsWith('/');
 function configurationLocation(configuration) {
   const addon = configuration?.environment === 'home-assistant';

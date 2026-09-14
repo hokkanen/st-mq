@@ -91,7 +91,7 @@ try {
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
   assert.equal(await evaluate("document.querySelectorAll('.controller-column > article, .controller-panels > article').length"), 4);
   assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home & heating');
-  assert.equal(await evaluate("document.getElementById('model-title').textContent"), 'House model');
+  assert.equal(await evaluate("document.getElementById('model-title').textContent"), 'Learning models');
   assert.equal(await evaluate("document.getElementById('providers-title').textContent"), 'Data & settings');
   assert.equal(await evaluate("document.getElementById('equipment-title').textContent"), 'Equipment & controls');
   assert.equal(await evaluate("document.getElementById('h66-test-duration')"), null, 'Manual settings have no expiration input');

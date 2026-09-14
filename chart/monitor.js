@@ -4,7 +4,7 @@ import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, t
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
-import { learningOverview, settingsReloadScope } from './dashboard-status.js';
+import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
@@ -335,13 +335,19 @@ function renderProviders(s) {
 function renderLearning(s) {
   const display = learningDisplay(s.learning);
   const overview = learningOverview(s.learning);
-  $('learning-title').textContent = overview.title;
-  $('learning-overview').textContent = overview.summary;
-  $('learning-progress').replaceChildren();
-  for (const [value, label] of [[overview.usableSamples, 'usable observations'], [overview.acceptedFits, 'accepted updates']]) {
-    if (value === null) continue;
-    const item = document.createElement('p'), count = document.createElement('strong'); count.textContent = decimal(value);
-    item.append(count, document.createTextNode(label)); $('learning-progress').append(item);
+  const garageOverview = garageLearningOverview(s.garage?.learning);
+  for (const [prefix, model, metrics] of [
+    ['learning', overview, [[overview.usableSamples, 'usable observations'], [overview.acceptedFits, 'accepted updates']]],
+    ['garage-learning', garageOverview, [[garageOverview.trainedIntervals, 'trained intervals'], [garageOverview.predictionChecks, 'rear prediction checks']]],
+  ]) {
+    $(`${prefix}-title`).textContent = model.title;
+    $(`${prefix}-overview`).textContent = model.summary;
+    const progress = $(`${prefix}-progress`); progress.replaceChildren();
+    for (const [value, label] of metrics) {
+      const item = document.createElement('p'), count = document.createElement('strong'), caption = document.createElement('span');
+      count.textContent = decimal(value); caption.textContent = label;
+      item.append(count, document.createTextNode(' '), caption); progress.append(item);
+    }
   }
   $('learning-detail').textContent = display.message;
   $('learning-process').textContent = display.process;

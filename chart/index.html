@@ -351,13 +351,24 @@
         </article>
       </div>
       <div class="controller-column">
-      <article id="house-model" class="panel house-model" aria-labelledby="model-title">
-          <div class="dashboard-heading"><h2 id="model-title">House model</h2><span class="card-kicker">LEARNING</span></div>
-          <p id="learning-title" class="model-headline">Collecting observations</p>
-          <p id="learning-overview" class="muted"></p>
-          <div id="learning-progress" class="learning-progress"></div>
-          <details id="learning-panel-details" class="dashboard-disclosure learning-groups">
-            <summary><span>Explore learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
+      <article id="house-model" class="panel house-model learning-models" aria-labelledby="model-title">
+          <div class="dashboard-heading"><h2 id="model-title">Learning models</h2></div>
+          <div class="learning-model-overviews">
+            <section class="learning-model-overview" aria-labelledby="home-learning-label">
+              <h3 id="home-learning-label" class="learning-model-label">Home</h3>
+              <p id="learning-title" class="model-headline">Collecting observations</p>
+              <p id="learning-overview" class="muted"></p>
+              <div id="learning-progress" class="learning-progress"></div>
+            </section>
+            <section class="learning-model-overview" aria-labelledby="garage-learning-label">
+              <h3 id="garage-learning-label" class="learning-model-label">Garage</h3>
+              <p id="garage-learning-title" class="model-headline">Collecting observations</p>
+              <p id="garage-learning-overview" class="muted"></p>
+              <div id="garage-learning-progress" class="learning-progress"></div>
+            </section>
+          </div>
+          <details id="learning-panel-details" class="dashboard-disclosure learning-groups learning-model-details">
+            <summary><span>Home learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
             <details id="learning-details">
               <summary>Learning outcomes · Calculated</summary>
               <p id="learning-detail" class="muted"></p>
@@ -424,7 +435,7 @@
               <div id="model-coefficients-content"></div>
             </details>
           </details>
-          <details id="garage-learning-details" class="dashboard-disclosure garage-secondary">
+          <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
             <summary><span>Garage learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
             <details><summary>Learning outcomes · Calculated</summary><dl id="garage-learning-outcomes" class="equipment-readings"></dl><p id="garage-learning-limitations" class="muted"></p></details>
             <details><summary>Model inputs</summary><dl id="garage-learning-inputs" class="equipment-readings"></dl></details>
