@@ -275,9 +275,9 @@ function renderProviders(s) {
   const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
   $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
   $('weather-status').textContent = `${weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable'}${weatherSource ? ` · ${weatherSource}` : ''}`;
-  $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
-    : s.input === 'offline' ? 'Offline history mode does not poll household providers.'
-      : 'Readings, electricity prices and forecasts feed the models. Open a category to check its datasets, sources and availability.';
+  $('provider-context').textContent = 'See where the controller gets its readings, prices and forecasts, and check their availability. Connection details, electricity rates and configuration are below.'
+    + (s.input === 'simulated' ? ' Simulation uses example data; household providers are not polled.'
+      : s.input === 'offline' ? ' Offline history mode does not poll household providers.' : '');
   const entries = dashboardProviders(s, { now: s.now, formatTime: time });
   const overview = $('provider-overview'), retained = new Set(entries.map(({ key }) => key));
   for (const item of [...overview.children]) if (!retained.has(item.dataset.sourceKey)) item.remove();
@@ -341,7 +341,8 @@ function renderProviders(s) {
       : backups ? `${backups} using backup` : available === datasets.length ? 'Available' : `${available} of ${datasets.length} available`;
     row.dataset.state = attention ? 'attention' : backups ? 'backup' : available === datasets.length && datasets.length ? 'available' : 'pending';
     state.dataset.state = row.dataset.state;
-    row.querySelector('.provider-category-meta').textContent = `${datasets.length} ${datasets.length === 1 ? 'dataset' : 'datasets'}${source ? ` · ${source}` : ''}`;
+    const meta = row.querySelector('.provider-category-meta');
+    meta.textContent = source ?? ''; meta.hidden = !source;
     const context = row.querySelector('.provider-category-context');
     context.textContent = name === 'market' ? $('price-status').textContent : name === 'weather' ? $('weather-status').textContent : '';
     context.hidden = !context.textContent;

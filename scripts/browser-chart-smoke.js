@@ -809,7 +809,7 @@ try {
   };
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Available', attention: false });
-  assert.equal(await evaluate("document.getElementById('data-sources-details').tagName"), 'SECTION');
+  assert.equal(await evaluate("document.getElementById('data-sources-details').tagName"), 'DIV');
   await evaluate(`document.getElementById('connections-details').open = true;
     document.querySelector('[data-provider=electricity] summary').focus(); true`);
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'electricity-keyboard',

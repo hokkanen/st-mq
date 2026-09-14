@@ -447,14 +447,13 @@
           <div id="provider-overview" class="provider-overview"></div>
           <details id="connections-details" class="dashboard-disclosure">
             <summary><span>Sources &amp; configuration</span><small>Connections, topics &amp; rates</small></summary>
-            <section id="data-sources-details" class="data-sources-section" aria-labelledby="data-sources-title">
-              <h3 id="data-sources-title">Data sources</h3>
+            <div id="data-sources-details">
               <p id="provider-context" class="muted"></p>
               <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
               <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
-            </section>
+            </div>
             <details id="mqtt-devices-details" class="controller-fold">
-              <summary>MQTT connections &amp; topics</summary>
+              <summary>MQTT</summary>
               <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
               <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
               <div id="equipment-connections"></div>

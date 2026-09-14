@@ -922,7 +922,6 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-connection[data-state="attention"] .equipment-connection-description > h4 { color: var(--stale); }
 /* Expanded source and connection details keep the dashboard overview unchanged. */
 #data-sources-details { padding: 12px 0 6px; }
-#data-sources-title { margin: 0 0 8px; font-size: 13px; font-weight: 550; }
 #data-sources-details > .muted { margin: 0 0 12px; font-size: 11px; line-height: 1.6; }
 #data-sources-details .provider-details { margin: 0; }
 #data-sources-details .provider-fold { margin: 0; border-top: 1px solid var(--border); }

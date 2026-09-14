@@ -286,13 +286,13 @@ try {
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
-      const heading = document.getElementById('data-sources-title').getBoundingClientRect();
+      const intro = document.getElementById('provider-context').getBoundingClientRect();
       return [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary =>
-        summary.checkVisibility() && Math.abs(summary.getBoundingClientRect().left - heading.left) < 1);
-    })()`), true, 'Dataset categories align with their visible Data sources heading');
+        summary.checkVisibility() && Math.abs(summary.getBoundingClientRect().left - intro.left) < 1);
+    })()`), true, 'Categories align with their introduction');
     assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#connections-details > .controller-fold, #data-sources-details')].map(fold => ({
-        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary, :scope > h3') }));
+        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary, :scope > #provider-context') }));
       return rows.length === 4 && rows.every((row, index) => row.summary.checkVisibility()
         && Math.abs(row.summary.getBoundingClientRect().left - rows[0].summary.getBoundingClientRect().left) < 1
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
