@@ -287,9 +287,11 @@ try {
     await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
       const intro = document.getElementById('provider-context').getBoundingClientRect();
-      return [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary =>
-        summary.checkVisibility() && Math.abs(summary.getBoundingClientRect().left - intro.left) < 1);
-    })()`), true, 'Categories align with their introduction');
+      const summaries = [...document.querySelectorAll('#providers .provider-fold > summary')];
+      return summaries.length > 0 && summaries.every(summary => summary.checkVisibility()
+        && summary.getBoundingClientRect().left - intro.left >= 16
+        && Math.abs(summary.getBoundingClientRect().left - summaries[0].getBoundingClientRect().left) < 1);
+    })()`), true, 'Categories share an aligned inset from their introduction');
     assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#connections-details > .controller-fold, #data-sources-details')].map(fold => ({
         box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary, :scope > #provider-context') }));
