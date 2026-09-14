@@ -204,7 +204,7 @@ export const h66Registers = {
   '0001': { label: 'Return temperature', unit: '°C' }, '0009': { label: 'Hot water temperature', unit: '°C' },
   '0107': { label: 'Supply temperature target', unit: '°C' },
   '1A20': { label: 'Pump alarm', unit: '' },
-  '8105': { label: 'Heating integral', unit: '°min' }, '0203': { label: 'ROOM setting', unit: '°C', min: 10, max: 30 },
+  '8105': { label: 'Heating integral', unit: '°min' }, '0203': { label: 'Room setting', unit: '°C', min: 10, max: 30 },
   '0212': { label: 'DHW start temperature', unit: '°C', min: 30, max: 60 },
   '0208': { label: 'DHW stop temperature', unit: '°C', min: 30, max: 65 },
   '2201': { label: 'Operating mode', unit: '' }, '1A01': { label: 'Compressor', unit: '' },
@@ -271,7 +271,7 @@ export function h66HomeSummary(status = {}) {
   const start = readings['0212'], stop = readings['0208'], rangeAvailable = current('0212') && current('0208');
   const rangeReasons = ['0212', '0208'].filter(register => !current(register)).map(register =>
     `${register === '0212' ? 'Start' : 'Stop'} setting: ${describe(readings[register]).reason}`);
-  const rows = [readingRow('mode', 'Heat pump mode', '2201'), readingRow('room', 'Heat pump ROOM setting', '0203'),
+  const rows = [readingRow('mode', 'Heat pump mode', '2201'), readingRow('room', 'Heat pump room setting', '0203'),
     { key: 'dhw', title: 'DHW target range', available: rangeAvailable,
       value: rangeAvailable ? `${number(start.value, Number.isInteger(start.value) ? 0 : 1)}–${number(stop.value, Number.isInteger(stop.value) ? 0 : 1)} °C`
         : `Unavailable · ${rangeReasons.join('; ')}`, detail: rangeAvailable

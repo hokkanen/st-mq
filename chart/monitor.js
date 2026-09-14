@@ -451,9 +451,9 @@ function renderH66(s) {
     label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
     title: 'Tariff control', detail: `${tariff.value}. ${tariff.detail}` });
   $('home-tariff-status').dataset.h66Summary = 'tariff';
-  const connectionDetail = h66.reason ?? (h66.connected
+  const connectionDetail = (h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
-    : 'Waiting for a live H66 connection and fresh values from the heat pump.');
+    : 'Waiting for a live H66 connection and fresh values from the heat pump.')).trim().replace(/^./, value => value.toUpperCase());
   setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
     title: 'Heat-pump connection', detail: connectionDetail });
   setStatusDetail($('home-pump-connection'), { key: 'home-pump-connection',
@@ -543,7 +543,8 @@ function render(s) {
   const heldMode = ({ normal: 'Normal heating', preheat: 'Max preheating', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
   const decisionReasons = manualHold
     ? `Price control is paused. ${heldMode}${manualHold.parameters ? ' and manual parameter settings are' : ' is'} held until ${time(manualHold.until)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
-    : (s.decision.reasons ?? []).map(r => reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code)).join('. ');
+    : (s.decision.reasons ?? []).map(r => (reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code))
+      .trim().replace(/^./, value => value.toUpperCase())).join('. ');
   const recoveryDetail = !manualHold && s.decision.phase === 'recovery'
     ? `${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.` : '';
   setStatusDetail($('requested'), { key: 'home-heating-request', label: requested, title: 'Home heating request',
@@ -555,9 +556,13 @@ function render(s) {
   $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
   const priceDetail = s.input === 'simulated' ? 'Synthetic simulation data.' : current ? 'Import price, including variable charges.'
     : spot ? 'Spot price only; excludes VAT and other charges.' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
+  const spotPrice = spot?.spotCtPerKwh ?? current?.spotCtPerKwh;
+  const spotDetail = current ? Number.isFinite(spotPrice)
+    ? `Spot price: ${spotPrice.toFixed(2)} c/kWh, excluding VAT and other charges.`
+    : 'Spot price is unavailable for this interval.' : '';
   setStatusDetail($('price'), { key: 'metric-price', label: price,
     title: s.input === 'simulated' ? 'Example all-in price' : current ? 'All-in price' : spot ? 'Spot price' : 'Electricity price',
-    detail: `${current || spot ? `${price} c/kWh. ` : ''}${priceDetail}` });
+    detail: [`${current || spot ? `${price} c/kWh. ` : ''}${priceDetail}`, spotDetail].filter(Boolean).join('\n\n') });
   $('price-unit').textContent = current || spot ? 'c/kWh' : '';
   renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderGarage(document, s);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));

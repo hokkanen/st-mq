@@ -200,7 +200,8 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const coefficients = garageCoefficientRows(learning);
   const learningRows = garageLearningRows(garage, policy);
   return { status: text(garage.status ?? (settings.enabled ? 'commissioning' : 'monitoring')),
-    reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning'),
+    reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
+      .trim().replace(/^./, value => value.toUpperCase()),
     rows, settingRows, coefficients, ...learningRows, limitations: learning.limitations ?? [] };
 }
 
@@ -220,8 +221,6 @@ export function renderGarage(document, status) {
   const main = finite(rear?.value) ? equipmentReadingRows({ kind: 'temperature', available: rear.stale === false,
     readings: { garage_temperature: { ...rear, unit: 'degC', label: 'Main garage temperature' } } })[0]
     : temperatureDevice ? equipmentReadingRows(temperatureDevice).find(row => row.signal === 'garage_temperature') : null;
-  detail('garage-main-temperature', main?.value ?? 'Unavailable', 'Main garage temperature',
-    main?.detail ?? 'Waiting for a usable rear garage temperature.', main?.stale ?? true);
   detail('garage-temperature', main?.value ?? 'Unavailable', 'Garage temperature',
     main?.detail ?? 'Waiting for a usable garage temperature.', main?.stale ?? true);
   document.getElementById('garage-temperature')?.classList.toggle('metric-unavailable', !main || main.stale);
@@ -229,6 +228,10 @@ export function renderGarage(document, status) {
     : main.qualifier ?? 'Readings current');
   const temperatureNote = document.getElementById('garage-temperature-age');
   if (temperatureNote) temperatureNote.hidden = Boolean(main && !main.stale && !main.qualifier);
+  const caravanDevice = devices.find(device => device.enabled !== false && device.readings?.caravan_power);
+  const caravanPower = caravanDevice ? equipmentReadingRows(caravanDevice).find(row => row.signal === 'caravan_power') : null;
+  detail('garage-caravan-power', caravanPower?.value ?? 'Unavailable', 'Caravan power',
+    caravanPower?.detail ?? 'Waiting for a usable caravan power reading.', caravanPower?.stale ?? true);
   for (const location of ['rear', 'front']) {
     const id = `garage-budget-${location}`, budget = garageColdBudget(garage, location);
     detail(id, budget.label, budget.title, budget.detail);

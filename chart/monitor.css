@@ -97,20 +97,22 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, 1fr);
+  grid-template-areas: "role connection" "title theme";
   align-items: center;
-  justify-content: space-between;
-  gap: 24px;
+  gap: 8px 24px;
   padding: 18px max(24px, calc((100vw - 1380px) / 2));
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 h1 { font-size: 23px; font-weight: 550; letter-spacing: -.6px; margin: 0; }
-.header-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 12px 22px; }
-.header-status { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px 10px; }
+header > h1 { grid-area: title; }
+header > .instance-role { grid-area: role; justify-self: start; }
+header > .theme-toggle { grid-area: theme; justify-self: end; margin: 0; }
 .instance-role, .pairing-role { display: inline-block; color: var(--accent); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px; font-size: 10px; font-weight: 600; letter-spacing: .3px; }
 .instance-role[data-state="protected"], .instance-role[data-state="transition"] { color: var(--stale); border-color: var(--stale); }
-#connection { font-size: 11px; color: var(--muted); }
+#connection { grid-area: connection; justify-self: end; font-size: 11px; color: var(--muted); text-align: right; }
 main { max-width: 1428px; margin: auto; padding: 0 24px 8px; }
 .context { margin: 20px 0; color: var(--muted); font-size: 12px; }
 .eyebrow { font-size: 10px; letter-spacing: 1.5px; font-weight: 650; color: var(--muted); margin: 0 0 12px; }
@@ -190,7 +192,6 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
   .pairing-heading { font-size: 12px; gap: 4px 6px; }
   .pairing-role { font-size: 10px; }
   .pairing-steps > li { padding-left: 28px; }
-  .header-status { gap: 5px; }
   .instance-role { font-size: 9px; }
 }
 .section-top { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
@@ -509,12 +510,9 @@ details details { margin-inline-start: 24px; }
 .overview-home { padding: 0 0 14px; }
 .overview-temperature { font-size: 36px; line-height: 1.2; letter-spacing: -1.1px; }
 .overview-home .overview-temperature { color: var(--accent); }
-.overview-garage { padding: 14px 0; border-top: 1px solid var(--border); }
-.overview-garage .overview-zone-label h3 { color: var(--muted); font-size: 12px; font-weight: 500; }
-.overview-garage .overview-temperature { font-size: 25px; letter-spacing: -.5px; }
+.overview-garage { padding: 12px 0; border-top: 1px solid var(--border); }
 .overview-note { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .overview-request > strong { font-size: 18px; line-height: 1.4; font-weight: 500; }
-.overview-garage .overview-request > strong { font-size: 15px; }
 .overview-conditions { display: grid; grid-template-columns: 1fr 1fr 1.1fr; align-items: start; gap: 0 20px; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .overview-conditions > div { min-width: 0; }
 .overview-conditions > .overview-price { padding-left: 20px; border-left: 1px solid var(--border); }
@@ -532,13 +530,15 @@ details details { margin-inline-start: 24px; }
   .chart-shortcut.secondary-button { width: 34px; height: 34px; min-height: 34px; padding: 7px; }
   .overview-zones > section { grid-template-columns: .75fr 1.1fr 1.15fr; gap: 10px; }
   .overview-temperature { font-size: 29px; }
-  .overview-garage .overview-temperature { font-size: 22px; }
   .overview-request > strong { font-size: 16px; }
-  .overview-garage .overview-request > strong { font-size: 14px; }
   .overview-conditions { gap: 0 12px; }
   .overview-conditions > .overview-price { padding-left: 12px; }
   .home-overview .metric-unavailable { font-size: 14px; }
   .home-overview .metric-unavailable .status-detail-trigger { gap: 4px; }
+}
+@media (max-width: 360px) {
+  .overview-zones > section { grid-template-columns: .65fr 1.25fr 1.1fr; gap: 8px; }
+  .overview-temperature { font-size: 24px; letter-spacing: -.7px; }
 }
 .sensor-change-details { margin-top: 14px; }
 .sensor-change-details > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 12px; }
@@ -588,7 +588,7 @@ details details { margin-inline-start: 24px; }
 .dashboard-disclosure > summary > small { color: var(--muted); font-size: 10px; }
 .dashboard-disclosure[open] > summary { padding-bottom: 12px; }
 .fireplace-details.dashboard-disclosure { margin: 0; border: 0; padding-left: 20px; border-left: 1px solid var(--border); min-width: 0; }
-.fireplace-details.dashboard-disclosure > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; min-height: 50px; padding: 0; align-content: start; }
+.fireplace-details.dashboard-disclosure > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; min-height: 50px; padding: 0; align-content: center; }
 .fireplace-details > summary > span { font-size: 12px; font-weight: 500; line-height: 1.5; }
 .fireplace-details > summary > small { grid-column: 1; line-height: 1.5; }
 .fireplace-details > summary::after { grid-row: 1 / 3; grid-column: 2; align-self: center; }
@@ -688,10 +688,9 @@ details details { margin-inline-start: 24px; }
   .equipment-value > strong { font-size: 15px; }
 }
 @media (max-width: 800px) {
-  header { gap: 14px; padding: 15px 18px; }
+  header { column-gap: 14px; padding: 15px 18px; }
   h1 { font-size: 21px; }
-  .header-actions { gap: 6px 12px; }
-  #connection { max-width: 180px; font-size: 10px; text-align: right; }
+  #connection { font-size: 10px; }
   main { padding: 0 14px 8px; }
   .context { margin: 16px 0; }
   .controller-panels { grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px; }
@@ -705,8 +704,6 @@ details details { margin-inline-start: 24px; }
 @media (max-width: 480px) {
   header { padding: 13px 14px; }
   h1 { font-size: 20px; white-space: nowrap; }
-  .header-actions { gap: 5px; }
-  #connection { flex-basis: 100%; font-size: 9px; }
   .theme-toggle { padding: 6px 10px; min-height: 34px; font-size: 11px; }
   main { padding: 0 10px 8px; }
   .panel { --panel-padding: 17px; }

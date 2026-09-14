@@ -10,14 +10,10 @@
 </head>
 <body>
   <header>
+    <span id="instance-role" class="instance-role" role="status" hidden></span>
+    <div id="connection" role="status">Connecting…</div>
     <h1>Home Energy</h1>
-    <div class="header-actions">
-      <div class="header-status">
-        <span id="instance-role" class="instance-role" role="status" hidden></span>
-        <div id="connection" role="status">Connecting…</div>
-      </div>
-      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to light theme">Light theme</button>
-    </div>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to light theme">Light theme</button>
   </header>
   <main>
     <section id="primary-replication-notice" class="notice replica-notice" aria-labelledby="primary-replication-title" role="status" hidden>
@@ -65,7 +61,7 @@
                 </div>
               </section>
               <section class="overview-garage" aria-label="Garage" data-controller-only>
-                <div class="overview-zone-label"><h3>Garage</h3></div>
+                <div class="overview-zone-label"><h3>Garage</h3><p>Rear sensor</p></div>
                 <div class="overview-reading">
                   <strong id="garage-temperature" class="overview-temperature">—</strong>
                   <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
@@ -225,7 +221,7 @@
               <div class="garage-overview">
                 <div class="equipment-value"><span>Operating mode</span><strong id="garage-heating-summary">Monitoring</strong></div>
                 <div class="equipment-value"><span>Garage doors</span><strong id="garage-door-summary">Unknown</strong></div>
-                <div class="equipment-value"><span>Garage temperature</span><strong id="garage-main-temperature">Unavailable</strong></div>
+                <div class="equipment-value"><span>Caravan power</span><strong id="garage-caravan-power">Unavailable</strong></div>
               </div>
               <div class="equipment-notes garage-budget-notes">
                 <p><span>Cold budget</span><span class="garage-budget-values"><span id="garage-budget-rear">Rear —</span><span aria-hidden="true">·</span><span id="garage-budget-front">Front —</span></span></p>
