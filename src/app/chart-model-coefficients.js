@@ -74,6 +74,11 @@ function replay(store, input, through) {
         for (const parameter of validation?.accepted === true ? validation.fittedParameters ?? [] : []) {
           fitted.add(parameter); learned.add(parameter);
         }
+        // A saved seed can begin after a fireplace-only update. Its unchanged
+        // house response still carries accepted evidence from earlier fits.
+        if (validation?.accepted === true) for (const [parameter, evidence] of Object.entries(validation.parameterEvidence ?? {})) {
+          if (evidence?.status === 'identified' && evidence.fitStatus === 'retained-unchanged') learned.add(parameter);
+        }
       }
       const initial = priorCheckpoint ?? entry.payload.seed;
       const resetAuxiliary = initial?.learningConfiguration?.auxRatedKw !== undefined

@@ -12,6 +12,11 @@ import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { Recorder } from '../src/storage/recorder.js';
+import { appendLearningRecord, applyLearningRecord, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
+import { appendGarageEntry, applyGarageEntry } from '../src/garage/learning.js';
+import { createGarageModel, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
+import { garageSettings } from '../src/garage/settings.js';
 
 const at = Date.parse('2026-01-15T12:00:00+02:00');
 const chartPath = '/api/chart?start=2026-01-15&end=2026-01-15&left=power';
@@ -62,6 +67,108 @@ async function viewer(t, directory, readPublication, extra = {}) {
   };
   return { app, request };
 }
+
+function recordLearningModels(publication, { recordedAt = publication.sourceAt, matching = true } = {}) {
+  const store = new Store(publication.dbPath), seed = restoreAdaptiveCheckpoint(null);
+  seed.model.parameters.lossPerHour = .031;
+  seed.baselineC = 21.4;
+  seed.comfortReference = { targetC: 21.4, confidence: 'observed-heating-baseline', updatedAt: recordedAt };
+  seed.samples = [{ timestamp: recordedAt - 60_000, indoorC: 21, outdoorC: 5, phase: 'normal',
+    regime: 'occupied', quality: [], privateFixture: 'invented-sample-marker-not-for-browser' }];
+  appendLearningRecord(store, 'mqtt', 'context', { timestamp: recordedAt }, { seed });
+  const checkpoint = applyLearningRecord(null, store.learningJournal({ input: 'mqtt' })[0]);
+  checkpoint.privateFixture = 'invented-checkpoint-marker-not-for-browser';
+  if (!matching) checkpoint.algorithmVersion = 'invented-unsupported-home-algorithm';
+  store.setState('adaptive:mqtt', checkpoint);
+  const garageSeed = createGarageModel({ seedAt: recordedAt });
+  garageSeed.rear.values[0] = .026;
+  const entry = appendGarageEntry(store, 'mqtt', 'context', {}, garageSettings(), recordedAt, { seed: garageSeed });
+  const garage = applyGarageEntry(null, entry);
+  if (!matching) garage.algorithmVersion = 'invented-unsupported-garage-algorithm';
+  store.setState('garage:checkpoint:mqtt', garage);
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+}
+
+test('replica exposes both saved models without sample histories, live readiness, commands or writes', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'saved-models');
+  recordLearningModels(publication);
+  let now = at;
+  const { app, request } = await viewer(t, directory, async () => publication, { clock: () => now });
+  const status = (await request('/api/status')).body;
+  assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
+  assert.equal(status.learning.adaptive.baselineC, 21.4);
+  assert.equal(status.learning.adaptive.comfortReference.confidence, 'observed-heating-baseline');
+  assert.equal(status.learning.adaptive.algorithmVersion, LEARNING_ALGORITHM);
+  assert.equal(status.learning.adaptive.health.usableSamples, 1);
+  for (const key of ['metrics', 'readiness', 'outcomes', 'episode']) assert.equal(status.learning[key], null);
+  assert.equal(Object.hasOwn(status.learning.adaptive, 'samples'), false);
+  assert.equal(Object.hasOwn(status.learning.adaptive, 'episodeArchive'), false);
+  assert.doesNotMatch(JSON.stringify(status.learning), /invented-.*marker/);
+  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value, .026);
+  assert.equal(status.garage.learning.algorithm, GARAGE_ALGORITHM_VERSION);
+  for (const learning of [status.learning, status.garage.learning]) {
+    assert.equal(learning.reconstruction, 'snapshot');
+    assert.equal(learning.readOnly, true);
+    assert.equal(learning.snapshotAt, at);
+    assert.equal(learning.recordedAt, at);
+  }
+  assert.equal(status.liveWrites, false);
+  assert.equal(status.garage.adapter.automaticControl, false);
+  assert.equal(app.engine, undefined);
+  assert.equal((await request('/api/override', { method: 'POST' })).status, 405);
+  now += 7 * 86_400_000;
+  assert.deepEqual((await request('/api/status')).body.learning, status.learning, 'Advancing the viewer clock never advances the saved learner');
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) n FROM events').get().n, 1, 'The recorded primary decision is the only event');
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
+test('replica infers the primary input from a Garage journal when decisions and contracts are absent', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'garage-journal-input');
+  recordLearningModels(publication);
+  const store = new Store(publication.dbPath);
+  store.db.exec("DELETE FROM events WHERE type='decision'");
+  assert.equal(store.db.prepare("SELECT COUNT(*) n FROM state WHERE key LIKE 'contract:%'").get().n, 0);
+  assert.equal(store.db.prepare('SELECT input FROM learning_journal ORDER BY id DESC LIMIT 1').get().input, 'garage:mqtt');
+  store.appendLearningJournal('garage:unsupported-scope', { kind: 'context', at,
+    algorithmVersion: 'invented-unsupported-algorithm', payload: { value: {} } });
+  store.close();
+  const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  const { request } = await viewer(t, directory, async () => publication);
+  const status = (await request('/api/status')).body;
+  assert.equal(status.input, 'mqtt', 'Unsupported journal scopes cannot conceal the latest known Garage input');
+  assert.equal(status.lastDecision, null);
+  assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
+  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value, .026);
+  assert.equal(status.liveWrites, false);
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
+test('replica does not substitute priors for missing, unsupported or post-publication model checkpoints', async t => {
+  const directory = fixture(t);
+  let publication = snapshot(directory, 'no-models');
+  const { request } = await viewer(t, directory, async () => publication);
+  const missing = (await request('/api/status')).body;
+  assert.equal(missing.learning.status, 'unavailable');
+  assert.equal(missing.learning.adaptive, null);
+  assert.equal(missing.garage.learning.status, 'unavailable');
+  for (const [generation, options] of [
+    ['unsupported-models', { matching: false }], ['future-models', { recordedAt: at + 60_000 }],
+  ]) {
+    publication = snapshot(directory, generation);
+    recordLearningModels(publication, options);
+    const status = (await request('/api/status')).body;
+    assert.equal(status.learning.status, 'unavailable');
+    assert.equal(status.learning.adaptive, null);
+    assert.equal(status.learning.recordedAt, null);
+    assert.equal(status.garage.learning.status, 'unavailable');
+    assert.equal(status.garage.learning.coefficients, undefined);
+    assert.equal(status.garage.learning.recordedAt, null);
+    assert.equal(digest(publication.dbPath), publication.digest);
+  }
+});
 
 test('read-only Store never migrates, deletes, creates a missing database or permits writes', t => {
   const directory = fixture(t), publication = snapshot(directory, 'readonly');

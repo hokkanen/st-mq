@@ -11,17 +11,46 @@ import { sensorBoundaries } from './sensor-inputs.js';
 import { lastIndoorReading, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAttempt,
   temperatureBoundaryStatus } from './temperature-status.js';
-import { garageModelSummary } from '../garage/model.js';
+import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../garage/model.js';
+import { LEARNING_ALGORITHM } from './committed-learning.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
+
+function publishedCheckpointAt(snapshot, input, cursor, algorithm, now) {
+  if (!snapshot || !Number.isSafeInteger(cursor) || cursor <= 0) return null;
+  const row = snapshot.store.db.prepare('SELECT at,algorithm_version FROM learning_journal WHERE input=? AND id=?').get(input, cursor);
+  return row?.algorithm_version === algorithm && Number.isFinite(row.at)
+    && row.at <= Math.min(now, snapshot.publication.sourceAt) ? row.at : null;
+}
+
+/** Project the saved primary model only. A viewer has no current equipment,
+ * control budget or cycle evaluator with which to establish live readiness. */
+function homeLearningSnapshot(snapshot, checkpoint, now) {
+  const recordedAt = publishedCheckpointAt(snapshot, snapshot?.input, checkpoint?.journalCursor, LEARNING_ALGORITHM, now);
+  const available = checkpoint?.algorithmVersion === LEARNING_ALGORITHM && checkpoint.model?.version === 2
+    && checkpoint.model.parameters && recordedAt !== null;
+  return { status: available ? checkpoint.health?.status ?? 'unavailable' : 'unavailable',
+    reconstruction: 'snapshot', readOnly: true, snapshotAt: snapshot?.publication.sourceAt ?? null,
+    recordedAt: available ? recordedAt : null,
+    adaptive: available ? { model: checkpoint.model, health: checkpoint.health ?? {},
+      baselineC: checkpoint.baselineC ?? null, comfortReference: checkpoint.comfortReference ?? null,
+      algorithmVersion: checkpoint.algorithmVersion, journalCursor: checkpoint.journalCursor,
+      cursor: checkpoint.cursor ?? null } : null,
+    metrics: null, readiness: null, outcomes: null, episode: null,
+    message: available ? 'Recorded primary model. Live control readiness and completed-cycle assessments are unavailable in this snapshot.'
+      : 'No compatible saved Home model is available at this snapshot boundary.' };
+}
 
 function recordedInput(store) {
   const row = store.db.prepare("SELECT payload,at FROM events WHERE type='decision' ORDER BY id DESC LIMIT 1").get();
   const decision = row ? { ...JSON.parse(row.payload), at: row.at } : null;
   if (INPUTS.has(decision?.input)) return { input: decision.input, decision };
-  const journal = store.db.prepare('SELECT input FROM learning_journal ORDER BY id DESC LIMIT 1').get();
-  if (INPUTS.has(journal?.input)) return { input: journal.input, decision };
+  const scopes = [...INPUTS].flatMap(input => [input, `garage:${input}`]);
+  const journal = store.db.prepare(`SELECT input FROM learning_journal WHERE input IN (${scopes.map(() => '?').join(',')})
+    ORDER BY id DESC LIMIT 1`).get(...scopes);
+  const input = journal?.input.replace(/^garage:/, '');
+  if (INPUTS.has(input)) return { input, decision };
   const contract = store.db.prepare("SELECT key FROM state WHERE key IN ('contract:mqtt','contract:providers','contract:simulated') ORDER BY key LIMIT 1").get();
   return { input: contract ? contract.key.slice('contract:'.length) : 'offline', decision };
 }
@@ -113,6 +142,10 @@ export async function startReplica({ config, clock = Date.now,
     const state = lastError ? 'error' : !publication ? 'waiting'
       : Math.max(now - publication.verifiedAt, now - publication.sourceAt) > staleAfterMs ? 'stale' : 'ready';
     const checkpoint = snapshot?.store.getState(`adaptive:${snapshot.input}`);
+    const garageCheckpoint = snapshot?.store.getState(`garage:checkpoint:${snapshot.input}`);
+    const garageRecordedAt = publishedCheckpointAt(snapshot, `garage:${snapshot?.input}`, garageCheckpoint?.cursor, GARAGE_ALGORITHM_VERSION, now);
+    const garageModel = garageCheckpoint?.algorithmVersion === GARAGE_ALGORITHM_VERSION && garageRecordedAt !== null
+      ? garageCheckpoint.model : null;
     const learningConfig = checkpoint?.learningConfiguration ?? {};
     const boundaries = snapshot ? sensorBoundaries(snapshot.store, snapshot.input, snapshot.publication.sourceAt) : {};
     const observations = Object.fromEntries([['upstairs', 'indoor_temperature'], ['downstairs', 'downstairs_temperature'],
@@ -131,11 +164,13 @@ export async function startReplica({ config, clock = Date.now,
         verifiedAt: publication?.verifiedAt ?? null, digest: publication?.digest ?? null,
         bytes: publication?.bytes ?? null, staleAfterMs, ...(lastError ? { error: lastError } : {}) },
       observations,
+      learning: homeLearningSnapshot(snapshot, checkpoint, now),
       garage: { status: 'monitoring', reason: 'Read-only replica; recorded primary evidence',
         settings: snapshot?.store.getState(`garage:configuration:${snapshot.input}`) ?? {},
         observations: { rear: observations.garage, front: observations.garageFront, outdoor: observations.outdoor },
         exposure: snapshot?.store.getState(`garage:exposure:${snapshot.input}`) ?? null,
-        learning: garageModelSummary(snapshot?.store.getState(`garage:checkpoint:${snapshot.input}`)?.model),
+        learning: { ...garageModelSummary(garageModel), reconstruction: 'snapshot', readOnly: true,
+          snapshotAt: publication?.sourceAt ?? null, recordedAt: garageModel ? garageRecordedAt : null },
         adapter: { liveControlSupported: false, automaticControl: false, phase: 'monitoring',
           restorePending: snapshot?.store.getState(`garage:adapter:${snapshot.input}`)?.restorePending ?? false,
           blockedReasons: ['Read-only replica; live adapter health is unavailable'] } },

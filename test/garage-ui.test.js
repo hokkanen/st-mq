@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { garageDisplay, garageReleaseAvailable, createGarageControls } from '../chart/garage-status.js';
+import { garageDisplay, garageReleaseAvailable, createGarageControls, renderGarage } from '../chart/garage-status.js';
 import { heatingScopeDisplay } from '../chart/heating-scope.js';
 import { heatingDisplay } from '../chart/heating-benefit.js';
 import { timingDisplay } from '../chart/timing-model.js';
 import { buildHeatingSavings } from '../src/app/garage-reporting.js';
+import { createGarageModel, garageModelSummary } from '../src/garage/model.js';
 
 const range = { from: Date.parse('2026-09-08T00:00:00+03:00'), to: Date.parse('2026-09-09T00:00:00+03:00') }, now = range.to;
 
@@ -49,11 +50,11 @@ test('Garage monitoring shows independent budgets and actual adapter readbacks, 
       coefficients: { rear: [{ name: 'lossPerHour', value: 0.022, unit: '1/h', basis: 'prior', evidence: 0 }] } } };
   const display = garageDisplay(status, now), rows = Object.fromEntries(display.rows);
   assert.match(rows['Rear exposure remaining'], /80 \/ 120/); assert.match(rows['Front exposure remaining'], /12 \/ 120.*uncertain/);
-  assert.equal(rows['Limiting protection location'], 'front'); assert.match(rows['Front · pipe / door'], /stale/);
+  assert.equal(rows['Limiting protection location'], 'front'); assert.match(rows['Front air · near door'], /stale/);
   assert.equal(rows['Pump indoor temperature'], '0 °C · provisional'); assert.equal(rows['Pump outdoor temperature'], '-7 °C · stale');
   assert.equal(rows['Electrical power'], 'Unavailable'); assert.equal(rows['Device online'], 'Yes'); assert.equal(rows['Driver progressing'], 'No');
   assert.equal(rows['Local lease remaining'], '2 min'); assert.match(rows.Recovery, /Restoration pending/);
-  assert.match(display.coefficients[0][1], /prior · 0 intervals/);
+  assert.match(display.coefficients[0][1], /0\.022 1\/h · Initial estimate — not validated.*0 intervals with input present/);
   assert(!JSON.stringify(display).includes(omittedCredential));
   assert(!JSON.stringify(display).includes('hidden-example')); assert(!JSON.stringify(display).includes('%'));
 });
@@ -107,10 +108,95 @@ test('garage release uses the empty safe request, rejects double clicks and awai
 });
 
 
-test('Garage held-out electrical response keeps kW distinct from temperature prediction errors', () => {
+test('Garage outcomes retain electrical error evidence and omit temperature step diagnostics', () => {
   const rows = Object.fromEntries(garageDisplay({ learning: { heldOut: {
-    native: { n: 3, mae: .1, bias: -.02 }, advanceRear: { n: 4, mae: .2, bias: .05 },
+    native: { hours: 2, n: 3, mae: .1, bias: -.02 },
+    ...Object.fromEntries(['rear', 'front', 'advanceRear', 'advanceFront', 'offRear', 'offFront'].map(key => [key, { hours: 3, n: 4, mae: .2, bias: .05 }])),
   } } }).outcomeRows);
-  assert.match(rows['Electrical response'], /MAE 0.1 kW · bias -0.02 kW/);
-  assert.match(rows['Rear advance prediction'], /MAE 0.2 °C · bias 0.05 °C/);
+  assert.match(rows['Electrical short-step error'], /^2 h checked · 3 predictions · MAE 0.1 kW · bias -0.02 kW/);
+  assert.equal(Object.keys(rows).filter(label => /error|diagnostic/.test(label)).length, 1);
+  assert(!JSON.stringify(rows).includes('0.2 °C'));
+});
+
+test('Garage real model summary separates adjustable estimates, fitted responses and structural assumptions', () => {
+  const model = createGarageModel(), initial = garageDisplay({ learning: garageModelSummary(model) });
+  const initialCoefficients = Object.fromEntries(initial.coefficients);
+  assert.equal(initial.coefficients.length, 22);
+  assert.match(initialCoefficients['Rear air · Heat loss'], /^0\.022 1\/h · Initial estimate — not validated/);
+  assert.match(initialCoefficients['Front–rear difference · Local heat loss'], /^0\.012 1\/h · Initial estimate — not validated/);
+  assert.match(initialCoefficients['Rear air · Stored-heat exchange'], /^0\.11 1\/h · Fixed assumption/);
+  assert.match(initialCoefficients['Pump electricity · Demand electricity'], /Initial estimate — not validated.*requires recovery evidence/);
+  assert.match(initialCoefficients['Pump electricity · Restart electricity'], /Fixed assumption/);
+  assert.match(initialCoefficients['Building warmth · Memory time'], /^18 h · Fixed assumption/);
+  assert.match(initialCoefficients['Normal rear warmth · Weather response'], /^0\.03 °C\/°C · Fixed assumption/);
+  assert.match(initial.coefficientContext, /fit five responses, plus a sixth recovery-demand response/);
+  assert.match(initial.coefficientContext, /electricity and compressor activity are alternative/);
+  assert.match(Object.fromEntries(initial.outcomeRows)['Fitted responses'], /^0 fitted in current model · 0 retained/);
+
+  // Represent a fit that selected electrical heating after an earlier activity
+  // fit. Structural terms remain assumptions even with extensive input coverage.
+  for (const [group, indices] of [['rear', [0, 2]], ['front', [1]], ['native', [0, 1]]])
+    for (const index of indices) { model[group].active[index] = true; model[group].fitted[index] = true; model[group].evidence[index] = 8; }
+  model.rear.fitted[3] = true; model.rear.evidence[3] = 6;
+  model.rear.evidence[1] = 120;
+  const summary = garageModelSummary(model), before = structuredClone(summary);
+  const fitted = garageDisplay({ learning: summary }), rows = Object.fromEntries(fitted.coefficients);
+  assert.match(Object.fromEntries(fitted.outcomeRows)['Fitted responses'], /^5 fitted in current model · 1 retained/);
+  assert.match(rows['Rear air · Electrical heat response'], /Fitted in current model.*8 h with input present/);
+  assert.match(rows['Rear air · Activity heat response'], /Retained from an earlier fit.*6 h with input present/);
+  assert.match(rows['Rear air · Stored-heat exchange'], /Fixed assumption.*120 h with input present/);
+  assert.match(Object.fromEntries(fitted.outcomeRows)['Temperature prediction'], /Awaiting complete episode validation/);
+  assert(!JSON.stringify(fitted).includes('lossPerHour'));
+  assert(!JSON.stringify(fitted).includes('fitted-effective-response'));
+  assert(!JSON.stringify(fitted).includes('committed-garage-v2-sparse'));
+  assert.deepEqual(summary, before);
+});
+
+test('Garage learning distinguishes thermal duration, electrical qualification and a bounded trial', () => {
+  const display = garageDisplay({ learning: { thermalReady: true, electricalReady: false, maxPauseHours: 2,
+    validation: { completedEpisodes: 5, trainingEpisodes: 3, validationEpisodes: 1, recoveryEpisodes: 0,
+      horizonHours: 4, rearRmse: .3, rearBias: -.1, offRearRmse: .2 } },
+    plan: { learningTrial: true, evidence: { trialEligible: true, trialHours: 2.5 } } });
+  const rows = Object.fromEntries(display.outcomeRows);
+  assert.equal(rows['Validated thermal pause duration'], '2 h');
+  assert.match(rows['Temperature prediction'], /Validated on complete cooling and recovery episodes/);
+  assert.match(rows['Electricity prediction'], /Awaiting electrical and recovery evidence/);
+  assert.match(rows['Economic pause support'], /Not yet qualified/);
+  assert.match(rows['Learning trial support'], /^2\.5 h maximum.*protection and recovery still apply/);
+  assert.match(rows['Current opportunity'], /Bounded learning trial/);
+  assert.match(rows['Complete clean episodes'], /5 in retained history.*latest 24 ended episodes/);
+  assert.match(rows['Episode error coverage'], /4 h longest.*including failed recovery/);
+  assert.match(rows['Rear whole-episode error'], /RMSE 0\.3 °C · bias -0\.1 °C/);
+  assert.equal(rows['Front whole-episode error'], 'Not available yet');
+  assert.match(display.outcomeContext, /model frozen before the pause/);
+  assert.match(display.outcomeContext, /do not measure weather-forecast accuracy/);
+  assert.match(display.outcomeContext, /positive bias means the prediction was too cold or too low/);
+  assert.equal(Object.fromEntries(garageDisplay({ learning: { thermalReady: true, electricalReady: true, maxPauseHours: 2 } }).outcomeRows)['Economic pause support'], '2 h');
+});
+
+test('Garage absent learning evidence remains unknown and air measurements remain distinct from modeled states', () => {
+  const display = garageDisplay({ settings: { frontRequired: false, protection: {
+    recoveryAboveC: 4, recoveryDwellMinutes: 20, recoveryDegreeMinutesPerMinute: 1 } },
+    observations: { rear: { value: 5 }, front: { value: 4 } },
+    learning: { normalReference: { rearC: 10 }, nativeActivity: { mean: .4 }, state: { coreC: 6 } } });
+  const outcomes = Object.fromEntries(display.outcomeRows), inputs = Object.fromEntries(display.inputRows);
+  for (const name of ['Temperature prediction', 'Electricity prediction', 'Validated thermal pause duration', 'Economic pause support'])
+    assert.equal(outcomes[name], 'Unavailable');
+  assert.equal(outcomes['Learning trial support'], 'Not assessed in the current plan');
+  assert.match(outcomes['Normal rear warmth'], /Unknown reference provenance.*Unavailable qualified reference observations/);
+  assert.match(outcomes['Normal activity baseline'], /0\.4 on a 0–1 scale.*Unknown activity provenance.*adjusts this baseline/);
+  assert.match(inputs['Front air temperature · °C'], /Both locations need fresh readings for every automatic pause/);
+  assert.match(inputs['Estimated building warmth · °C'], /^6 °C.*not measured pipe temperature or stored kWh/);
+  assert.match(inputs['Local exposure recovery'], /20 min continuously at or above 4 °C.*1 °C·min per warm minute/);
+  assert.equal(Object.fromEntries(display.rows)['Rear air · near pipe'], '5 °C');
+  assert.equal(Object.fromEntries(display.rows)['Front air · near door'], '4 °C');
+});
+
+test('Garage rendering fills each existing learning fold context without requiring equipment cards', () => {
+  const nodes = new Map(['garage-learning-context', 'garage-input-context', 'garage-coefficient-context'].map(id => [id, { textContent: '' }]));
+  renderGarage({ getElementById: id => nodes.get(id) }, { garage: { learning: garageModelSummary(createGarageModel()) }, now });
+  assert.match(nodes.get('garage-learning-context').textContent, /complete cooling and recovery checks/);
+  assert.match(nodes.get('garage-input-context').textContent, /Missing readings remain unknown/);
+  assert.match(nodes.get('garage-coefficient-context').textContent, /fit five responses/);
+  assert.equal(Object.fromEntries(garageDisplay({ learning: { reconstruction: 'snapshot' } }).outcomeRows)['Recorded history reconstruction'], 'Recorded primary snapshot');
 });

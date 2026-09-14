@@ -166,8 +166,8 @@ export function historyValueLabel(key, value, unit) {
 }
 
 export function coefficientStatusLabel(status) {
-  return { fitted: 'Fitted in the accepted model', retained: 'Retained value / awaiting evidence',
-    initial: 'Initial estimate / awaiting evidence' }[status] ?? 'Coefficient status unavailable';
+  return { fitted: 'Fitted in current model', retained: 'Retained from an earlier fit',
+    'fixed-prior': 'Fixed assumption', initial: 'Initial estimate — not validated' }[status] ?? 'Coefficient status unavailable';
 }
 
 export function sessionPointDetail(point = {}) {

@@ -16,6 +16,9 @@ function timeRange(start, end) {
 export function historyLearningLabel(key, point = {}) {
   if (point.sessionCheck || point.auditOnly || key.startsWith('caravan_')) return 'not used for learning';
   if (!point.modelInput || key === 'model_fireplace_release') return '';
+  if (point.garageModelInput) return point.inputQualified === true
+    ? 'qualified recorded input; fitting depends on the interval and episode'
+    : point.inputQualified === false ? 'input unavailable or unqualified' : 'input qualification unavailable';
   return point.learningUsable === true ? 'eligible for learning'
     : point.learningUsable === false ? 'excluded from learning' : 'learning eligibility unavailable';
 }
@@ -55,10 +58,13 @@ export function historyTooltipLabel(item) {
     details.push('model result', coefficientStatusLabel(raw.coefficientStatus));
     if (raw.inputSource) details.push(raw.inputSource);
     if (Number.isFinite(raw.modelUpdatedAt)) details.push(`model updated ${dateTime.format(raw.modelUpdatedAt)}`);
+    if (Number.isFinite(raw.evidenceHours)) details.push(`input evidence at that update: ${new Intl.NumberFormat('en-GB',
+      { maximumFractionDigits: 2 }).format(raw.evidenceHours)} h`);
   }
   const firewood = firewoodPointDetail(key, raw);
   if (firewood) details.push(firewood);
-  else if (raw.modelInput) details.push(raw.savedIndoorAverage ? 'saved indoor average' : 'saved learning input');
+  else if (raw.modelInput) details.push(raw.savedIndoorAverage ? 'saved indoor average'
+    : raw.garageModelInput ? 'saved garage input' : 'saved learning input');
   else if (key.startsWith('learning_')) details.push('model assessment');
   else if (key === 'heat_pump_power') details.push('reconstructed estimate');
   else if (key === 'caravan_energy') {

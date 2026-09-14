@@ -90,7 +90,7 @@ test('House model explains manual fuel, delayed release, effective coefficient u
   const coefficient = modelCoefficientDescriptions(learning)[0];
   assert.equal(coefficient.title, 'Fireplace response'); assert.equal(coefficient.value, '0.150 °C/kg');
   assert.match(coefficient.detail, /not measured fireplace efficiency/);
-  assert.match(coefficient.provenance, /awaiting evidence/);
+  assert.match(coefficient.provenance, /not independently identified/);
   const display = learningDisplay(learning);
   assert(display.inputs.some(row => row.key === 'firewood_load' && row.sources.includes('whole kilograms')));
   assert(display.inputs.some(row => row.key === 'model_fireplace_release' && row.sources.includes('overlap')));

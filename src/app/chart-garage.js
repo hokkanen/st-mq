@@ -3,6 +3,7 @@ import { applyGarageEntry, garageCorrectionContext, garageInput, garageDigest } 
 import { GARAGE_ALGORITHM_VERSION, garageModelSummary } from '../garage/model.js';
 
 const finite = Number.isFinite, caches = new WeakMap(), MAX_EVENTS = 25_000;
+const validC = value => finite(value) && value >= -60 && value <= 65;
 const source = input => input === 'simulated' ? 'Garage simulation' : input === 'offline' ? 'Imported garage history' : 'Recorded garage inputs';
 function decode(row) {
   return { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
@@ -24,18 +25,25 @@ function inputs({ store, range, now, input, envelopes, selected, stats }) {
     stats.inputRecords++;
     for (const key of selected) {
       const info = GARAGE_INPUT_INFO[key], field = info.field;
+      // The normalized runtime contract accepts ambient weather for 30 minutes;
+      // its age is independent of the two fast protection-sensor deadlines.
+      const maxAge = info.location === 'outdoor' ? 30 * 60_000 : settings.maxSensorAgeMs ?? 120_000;
       const fresh = location => finite(value[`${location}At`]) && value[`${location}At`] <= value.at
-        && value.at - value[`${location}At`] < (settings?.maxSensorAgeMs ?? 120_000);
+        && value.at - value[`${location}At`] < (location === 'outdoor' ? 30 * 60_000 : settings.maxSensorAgeMs ?? 120_000)
+        && value[`${location}Usable`] !== false && value[`${location}Retained`] !== true;
       let y = value[field];
-      if (info.location && !fresh(info.location)) y = null;
-      if (field === 'differenceC') y = fresh('front') && fresh('rear') && finite(value.frontC) && finite(value.rearC)
+      if (info.location && (!fresh(info.location) || !validC(y))) y = null;
+      if (field === 'differenceC') y = fresh('front') && fresh('rear') && validC(value.frontC) && validC(value.rearC)
         ? value.frontC - value.rearC : null;
-      if (field === 'available' || field.endsWith('Active')) y = typeof y === 'boolean' ? Number(y) : y;
-      if (field === 'powerKw' && ['raw', 'unknown', 'unqualified'].includes(value.powerQuality)) y = null;
+      if (field === 'available' || field === 'activity' || field.endsWith('Active')) y = typeof y === 'boolean' ? Number(y) : y;
+      if ((field === 'activity' || field.endsWith('Active')) && !(finite(y) && y >= 0 && y <= 1)) y = null;
+      if (field === 'powerKw' && (!['verified', 'provisional', 'simulated'].includes(value.powerQuality)
+        || !(finite(y) && y >= 0 && y <= 8))) y = null;
+      if (/^ev[12]Kw$/.test(field) && !(finite(y) && y >= 0 && y <= 50)) y = null;
       const before = previous.get(key), at = Math.max(range.from, row.at);
-      if (before && row.at - before.at > (settings?.maxSensorAgeMs ?? 120_000)) envelopes[key].add(before.at + 1, null);
-      if (row.at >= range.from) envelopes[key].add(at, finite(y) ? y : null, { modelInput: true,
-        learningUsable: finite(y), algorithmVersion: row.algorithm_version,
+      if (before && row.at - before.at > maxAge) envelopes[key].add(before.at + 1, null);
+      if (row.at >= range.from) envelopes[key].add(at, finite(y) ? y : null, { modelInput: true, garageModelInput: true,
+        inputQualified: finite(y), algorithmVersion: row.algorithm_version,
         inputSource: source(input), observedAt: info.location ? value[`${info.location}At`] : value.at,
         ...(field === 'outdoorC' ? { outdoorSource: ['husdata-h66', 'fmi', 'openmeteo', 'mqtt-temperature', 'shelly-mqtt', 'simulation', 'garage-adapter'].includes(value.outdoorSource) ? value.outdoorSource : 'unknown' } : {}) });
       previous.set(key, { at: row.at });
@@ -63,7 +71,7 @@ function coefficient({ store, range, now, input, envelopes, key, stats }) {
   const add = (at, event) => envelope.add(at, event?.value ?? null, event?.value === null || !event ? undefined : {
     modelCoefficient: true, coefficientStatus: event.status, modelUpdatedAt: event.updatedAt,
     inputSource: source(input), algorithmVersion: GARAGE_ALGORITHM_VERSION,
-    evidenceIntervals: event.evidence, correctionRevision: context.revision });
+    coefficientBasis: event.basis, evidenceHours: event.evidence, correctionRevision: context.revision });
   const project = event => {
     if (event.at < range.from) { previous = event; return; }
     if (!started && event.at > range.from) add(range.from, previous);
@@ -74,9 +82,11 @@ function coefficient({ store, range, now, input, envelopes, key, stats }) {
   const info = GARAGE_COEFFICIENT_INFO[key];
   const emit = value => {
     const previous = state.events.at(-1);
-    const status = value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained' : 'initial';
+    const status = value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained'
+      : value?.basis === 'fixed-prior' && info.fixed ? 'fixed-prior' : 'initial';
     if (previous && previous.value === (value?.value ?? null) && previous.status === status) return;
-    const event = { at: state.at, value: value?.value ?? null, status, updatedAt: state.at, evidence: value?.evidence ?? 0 };
+    const event = { at: state.at, value: value?.value ?? null, status, basis: value?.basis,
+      updatedAt: state.at, evidence: value?.evidence ?? 0 };
     state.events.push(event); project(event);
     if (state.events.length > MAX_EVENTS) { state.events.splice(0, 1000); state.truncated = true; }
   };

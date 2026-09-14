@@ -138,6 +138,28 @@ test('a rejected refit retains learned coefficients while unfitted coefficients 
   assert(values(result, 'model_coefficient_auxiliary_response').every(point => point.coefficientStatus === 'initial'));
 });
 
+test('an accepted fireplace-only seed preserves previously fitted core coefficients as retained', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const seed = restoreAdaptiveCheckpoint(null);
+  seed.model.validation = { accepted: true, fittedParameters: ['fireplaceCPerKg'], parameterEvidence: {
+    lossPerHour: { status: 'identified', fitStatus: 'retained-unchanged' },
+    normalHeatCPerHour: { status: 'identified', fitStatus: 'retained-unchanged' },
+    solarCPerHourPerKwM2: { status: 'identified' },
+    auxiliaryCPerKwh: { status: 'prior', fitStatus: 'retained-unchanged' },
+    fireplaceCPerKg: { status: 'identified', fitStatus: 'fitted' },
+  } };
+  seed.health = { status: 'learning', acceptedFits: 3, rejectedFits: 0 };
+  context(store, start, { seed });
+  const before = databaseSnapshot(store);
+  const result = project(store);
+  assert(values(result).every(point => point.coefficientStatus === 'retained'));
+  assert(values(result, 'model_coefficient_compressor_response').every(point => point.coefficientStatus === 'retained'));
+  assert(values(result, 'model_coefficient_fireplace_response').every(point => point.coefficientStatus === 'fitted'));
+  for (const key of ['model_coefficient_solar_response', 'model_coefficient_auxiliary_response'])
+    assert(values(result, key).every(point => point.coefficientStatus === 'initial'), 'Input evidence alone is not a previous fit');
+  assert.deepEqual(databaseSnapshot(store), before);
+});
+
 test('an auxiliary rating change labels the reset gain initial despite stale model validation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const seed = restoreAdaptiveCheckpoint(null);

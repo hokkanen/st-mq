@@ -29,14 +29,22 @@ export function learningOverview(learning = {}) {
         ? 'Temperature checks have passed. Heating-action forecasts are still being validated.'
         : 'Temperature checks have passed. Heating-action validation is not reported yet.';
   }
+  if (learning?.reconstruction === 'snapshot' && status !== 'unavailable') {
+    status = 'snapshot'; title = 'Recorded primary model';
+    summary = 'Saved model and evidence from the primary snapshot. Live action readiness and cycle assessments are unavailable here.';
+  }
   return { status, title, summary, usableSamples, acceptedFits };
 }
 
-/** Garage reports trained intervals and held-out predictions, not Home's
- * accepted-fit counter. Keep those different kinds of evidence explicit. */
+/** Garage qualifies complete cooling/recovery episodes and their OFF duration.
+ * A large count of short-step checks cannot establish a multi-hour forecast. */
 export function garageLearningOverview(learning = {}) {
   const trainedIntervals = count(learning?.trainedIntervals);
-  const predictionChecks = count(learning?.heldOut?.advanceRear?.n);
+  const completedEpisodes = count(learning?.validation?.completedEpisodes);
+  const thermalReady = learning?.thermalReady === true;
+  const reportedHours = learning?.maxPauseHours;
+  const validatedPauseHours = Number.isFinite(reportedHours) && reportedHours >= 0
+    ? thermalReady ? reportedHours : learning?.thermalReady === false ? 0 : null : null;
   let status = 'unavailable', title = 'Awaiting model status', summary = 'Learning status is not available yet.';
   if (learning?.reconstruction === 'failed') {
     status = 'attention'; title = 'Rebuild needs attention';
@@ -44,17 +52,26 @@ export function garageLearningOverview(learning = {}) {
   } else if (learning?.reconstruction === 'rebuilding') {
     status = 'rebuilding'; title = 'Rebuilding model';
     summary = 'Updating the garage model from recorded observations.';
-  } else if (learning?.status === 'validated-provisional') {
-    status = 'provisional'; title = 'Provisional model';
-    summary = 'Temperature predictions have passed their checks. Savings remain provisional.';
-  } else if (learning?.status === 'learning') {
+  } else if (thermalReady && validatedPauseHours > 0) {
+    status = 'provisional'; title = 'Temperature model validated';
+    const duration = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(validatedPauseHours);
+    summary = `Temperature checks support pauses up to ${duration} h. ` + (learning?.electricalReady === true
+      ? 'Electricity and recovery-energy checks have also passed. Savings remain estimates.'
+      : learning?.electricalReady === false
+        ? 'Electricity and recovery-energy predictions still need validation.'
+        : 'Electricity and recovery-energy validation is not reported yet.');
+  } else if (learning?.status === 'learning' || learning?.status === 'validated-provisional') {
     status = trainedIntervals === 0 ? 'initial' : 'learning';
     title = trainedIntervals === 0 ? 'Initial estimates' : 'Learning from observations';
     summary = trainedIntervals === 0
       ? 'The garage model is collecting evidence before refining its starting estimates.'
-      : 'Temperature and heating observations refine the garage model.';
+      : 'Complete cooling and recovery episodes establish how long a pause can be predicted. Electricity is validated separately.';
   }
-  return { status, title, summary, trainedIntervals, predictionChecks };
+  if (learning?.reconstruction === 'snapshot' && status !== 'unavailable') {
+    status = 'snapshot'; title = 'Recorded primary model';
+    summary = 'Saved temperature and electricity evidence from the primary snapshot. Live pause eligibility is unavailable here.';
+  }
+  return { status, title, summary, completedEpisodes, validatedPauseHours };
 }
 
 const isFilePath = path => typeof path === 'string' && path.startsWith('/') && path.length > 1 && !path.endsWith('/');

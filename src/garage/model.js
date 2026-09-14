@@ -3,6 +3,7 @@ import { garagePlanningMargins } from './planning-evidence.js';
 import { createGarageRegression, fitGarageRegression } from './model-fit.js';
 import { createGarageValidation, advanceGarageValidation, interruptGarageValidation, summarizeGarageValidation } from './model-validation.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
+const MEMORY_TIME_HOURS = 18;
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const clone = value => structuredClone(value);
 export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v2-sparse';
@@ -113,7 +114,7 @@ export function predictGarageStep(model, state, input = {}, durationHours, { con
     const x = features(next, input, heatPower, heatActivity);
     const rearRate = dot(model.rear.values, x.rear), differenceRate = dot(model.front.values, x.front);
     // The 18h state is estimated building memory, not pipe temperature or kWh.
-    const memoryRate = (next.rearC - next.coreC) / 18;
+    const memoryRate = (next.rearC - next.coreC) / MEMORY_TIME_HOURS;
     next.rearC = clamp(next.rearC + rearRate * dt, -60, 65);
     next.coreC = clamp(next.coreC + memoryRate * dt, -60, 65);
     next.differenceC = clamp(next.differenceC + differenceRate * dt, -20, 15);
@@ -275,7 +276,7 @@ export function updateGarageModel(previous, observation, settings = {}) {
       // Imported rear-only history often has no garage actuator record. Observe
       // memory from the real rear path instead of inventing native heating input.
       const meanRear = (prior.rearC + current.rearC) / 2;
-      model.state.coreC = meanRear + (model.state.coreC - meanRear) * Math.exp(-hours / 18);
+      model.state.coreC = meanRear + (model.state.coreC - meanRear) * Math.exp(-hours / MEMORY_TIME_HOURS);
     }
     learnReference(model, current, prior, hours, config, !heldOut);
   } else if (prior) { model.normalReference.availableSince = null; interruptGarageValidation(model, 'gapped-observation'); }
@@ -345,8 +346,9 @@ export function garageModelSummary(model) {
     thermalReady, electricalReady, nativeActivity: { ...model.nativeActivity, basis: model.nativeActivity.hours >= 2 ? 'learned-dimensionless-activity' : 'prior-activity-response' }, maxPauseHours: thermalReady ? validation.supportedOffHours : 0, validation,
     trainedIntervals: model.trainedIntervals, heldOut, coefficients: { rear: coefficients(REAR, model.rear),
       front: coefficients(FRONT, model.front), native: coefficients(NATIVE, model.native) }, state: clone(model.state),
+    structure: { memoryTimeHours: MEMORY_TIME_HOURS },
     normalReference: { rearC: normalGarageTemperature(model, model.normalReference.outdoorC), outdoorC: model.normalReference.outdoorC,
-      initialized: model.normalReference.initialized,
+      initialized: model.normalReference.initialized, outdoorSlope: model.normalReference.outdoorSlope,
       basis: model.normalReference.initialized ? 'continuously-available-achieved-reference' : 'prior-near-pipe-reference',
       samples: model.normalReference.samples, qualifiedHours: model.normalReference.qualifiedHours },
     ev: { chargers: model.evidence.ev.map((e, i) => ({ id: i + 1, ...e, basis: 'shared-prior-limited-evidence' })) },

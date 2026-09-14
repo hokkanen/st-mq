@@ -336,8 +336,8 @@ function renderLearning(s) {
   const overview = learningOverview(s.learning);
   const garageOverview = garageLearningOverview(s.garage?.learning);
   for (const [prefix, model, metrics] of [
-    ['learning', overview, [[overview.usableSamples, 'usable observations'], [overview.acceptedFits, 'accepted updates']]],
-    ['garage-learning', garageOverview, [[garageOverview.trainedIntervals, 'trained intervals'], [garageOverview.predictionChecks, 'rear prediction checks']]],
+    ['learning', overview, [[overview.usableSamples, 'usable temperature intervals'], [overview.acceptedFits, 'accepted model updates']]],
+    ['garage-learning', garageOverview, [[garageOverview.completedEpisodes, 'completed cooling / recovery episodes'], [garageOverview.validatedPauseHours, 'validated pause hours']]],
   ]) {
     $(`${prefix}-title`).textContent = model.title;
     $(`${prefix}-overview`).textContent = model.summary;

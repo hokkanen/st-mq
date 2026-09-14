@@ -315,8 +315,9 @@ test('coefficient history keeps exact replay metadata and visible steps alongsid
   assert.equal(historyValueLabel('model_controller_phase', 2, 'state'), 'Tariff reduction');
   assert.equal(historyValueLabel('indoor_temperature', 21.256, '°C'), '21.26 °C');
   assert.match(coefficientStatusLabel('initial'), /Initial estimate/);
-  assert.match(coefficientStatusLabel('fitted'), /Fitted in the accepted model/);
-  assert.match(coefficientStatusLabel('retained'), /Retained value \/ awaiting evidence/);
+  assert.match(coefficientStatusLabel('fitted'), /Fitted in current model/);
+  assert.match(coefficientStatusLabel('retained'), /Retained from an earlier fit/);
+  assert.match(coefficientStatusLabel('fixed-prior'), /Fixed assumption/);
   assert.match(coefficientStatusLabel(), /unavailable/);
 });
 

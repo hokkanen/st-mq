@@ -4,7 +4,7 @@ import { Store } from '../src/storage/store.js';
 import { chartRange, Envelope, getChartData } from '../src/app/chart-data.js';
 import { addGarageHistory } from '../src/app/chart-garage.js';
 import { appendGarageEntry, applyGarageEntry, garageCorrectionContext } from '../src/garage/learning.js';
-import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
+import { createGarageModel, garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 
@@ -38,6 +38,80 @@ test('original garage inputs keep rear-only prefixes, stale front gaps and outdo
   assert.deepEqual(store.learningJournal({ input: 'garage:providers' }), before);
 });
 
+test('outdoor input uses the runtime weather deadline while protection inputs retain their shorter deadline', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  sample(store, range.from, { outdoorAt: range.from - 10 * MINUTE, rearAt: range.from - 2 * MINUTE });
+  sample(store, range.from + 10 * MINUTE, { outdoorAt: range.from - 10 * MINUTE });
+  sample(store, range.from + 20 * MINUTE, { outdoorAt: range.from - 10 * MINUTE });
+  const result = chart(store, ['garage_model_outdoor', 'garage_model_rear']);
+  assert.deepEqual(result.series.garage_model_outdoor.map(point => [point.x, point.y]), [
+    [range.from, -5], [range.from + 10 * MINUTE, -5], [range.from + 20 * MINUTE, null],
+  ], 'Weather remains usable until its original reading reaches 30 minutes, without false two-minute gaps');
+  assert.equal(result.series.garage_model_outdoor[0].observedAt, range.from - 10 * MINUTE);
+  assert.equal(result.series.garage_model_rear[0].y, null);
+  assert(result.series.garage_model_rear.some(point => point.x === range.from + 1 && point.y === null));
+});
+
+test('normalized unusable or retained protection readings stay unknown in original input charts', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  sample(store, range.from, { rearUsable: false });
+  sample(store, range.from + MINUTE, { frontRetained: true });
+  const result = chart(store, ['garage_model_rear', 'garage_model_front', 'garage_model_difference']);
+  assert.equal(result.series.garage_model_rear[0].y, null);
+  assert.equal(result.series.garage_model_rear[0].inputQualified, false);
+  assert.equal(result.series.garage_model_front.at(-1).y, null);
+  assert(result.series.garage_model_difference.every(point => point.y === null));
+});
+
+test('power input requires the learner quality whitelist and preserves qualified zero', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const cases = [
+    { powerQuality: null, powerKw: 1, expected: null },
+    { powerQuality: 'unknown', powerKw: 1, expected: null },
+    { powerQuality: 'verified', powerKw: 0, expected: 0 },
+    { powerQuality: 'provisional', powerKw: .4, expected: .4 },
+    { powerQuality: 'simulated', powerKw: .7, expected: .7 },
+    { powerQuality: 'verified', powerKw: 9, expected: null },
+  ];
+  cases.forEach(({ expected, ...value }, i) => sample(store, range.from + i * MINUTE, value));
+  const points = chart(store, ['garage_model_power']).series.garage_model_power;
+  assert.deepEqual(points.map(point => point.y), cases.map(row => row.expected));
+  assert.deepEqual(points.map(point => point.inputQualified), cases.map(row => row.expected !== null));
+  assert(points.every(point => point.garageModelInput === true && !Object.hasOwn(point, 'learningUsable')));
+});
+
+test('input qualification preserves the model temperature and charger-power bounds', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  sample(store, range.from, { rearC: -60, frontC: 65, outdoorC: -60, ev1Kw: 0, ev2Kw: 50 });
+  sample(store, range.from + MINUTE, { rearC: -61, frontC: 66, outdoorC: 66, ev1Kw: -1, ev2Kw: 51 });
+  const result = chart(store, ['garage_model_rear', 'garage_model_front', 'garage_model_outdoor',
+    'garage_model_difference', 'garage_model_ev1', 'garage_model_ev2']);
+  for (const points of Object.values(result.series)) {
+    assert(Number.isFinite(points[0].y));
+    assert.equal(points.at(-1).y, null);
+  }
+});
+
+test('compressor and separate charger activity charts preserve actual fractions without inventing watts', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  sample(store, range.from, { activity: true, ev1Active: false, ev2Active: true,
+    powerKw: null, ev1Kw: null, ev2Kw: null });
+  sample(store, range.from + MINUTE, { activity: .4, ev1Active: .25, ev2Active: .75,
+    powerKw: null, ev1Kw: null, ev2Kw: null });
+  sample(store, range.from + 2 * MINUTE, { activity: 1.1, ev1Active: null, ev2Active: -1 });
+  for (const [key, expected] of [
+    ['garage_model_activity', [1, .4, null]], ['garage_model_ev1_active', [0, .25, null]],
+    ['garage_model_ev2_active', [1, .75, null]],
+  ]) {
+    const result = getChartData({ store, input: 'providers', startDate: range.startDate, now, left: key });
+    assert.deepEqual(result.series[key].map(point => point.y), expected);
+    assert.equal(GARAGE_INPUT_INFO[key].unit, 'fraction');
+    assert(result.series[key].every(point => point.algorithmVersion === GARAGE_ALGORITHM_VERSION));
+  }
+  const power = chart(store, ['garage_model_power', 'garage_model_ev1', 'garage_model_ev2']);
+  for (const points of Object.values(power.series)) assert(points.slice(0, 2).every(point => point.y === null));
+});
+
 test('coefficient chart uses same ordered learner and seed, then incrementally extends without writes', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   let checkpoint = null;
@@ -60,6 +134,29 @@ test('coefficient chart uses same ordered learner and seed, then incrementally e
   assert.deepEqual(result.series[coefficient].filter(point => point.x < range.from + 17 * MINUTE),
     first.filter(point => point.x < range.from + 17 * MINUTE));
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 0);
+});
+
+test('coefficient replay preserves fixed and retained provenance and duration evidence in hours', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const seed = createGarageModel({ seedAt: range.from });
+  seed.rear.active[0] = true; seed.rear.fitted[0] = true; seed.rear.evidence[0] = 12.75;
+  seed.rear.fitted[3] = true; seed.rear.evidence[3] = 3.5;
+  appendGarageEntry(store, 'providers', 'context', {}, garageSettings(), range.from, { seed });
+  const fixed = 'garage_coefficient_rear_memoryExchangePerHour', retained = 'garage_coefficient_rear_activityHeatCPerHour';
+  const before = store.learningJournal({ input: 'garage:providers' });
+  const result = chart(store, [coefficient, fixed, retained]);
+  for (const [key, status, basis, hours] of [
+    [coefficient, 'fitted', 'fitted-effective-response', 12.75],
+    [retained, 'retained', 'retained-effective-response', 3.5],
+    [fixed, 'fixed-prior', 'fixed-prior', 0],
+  ]) for (const point of result.series[key]) {
+    assert.equal(point.coefficientStatus, status);
+    assert.equal(point.coefficientBasis, basis);
+    assert.equal(point.evidenceHours, hours);
+    assert.equal(point.algorithmVersion, GARAGE_ALGORITHM_VERSION);
+    assert.equal(Object.hasOwn(point, 'evidenceIntervals'), false);
+  }
+  assert.deepEqual(store.learningJournal({ input: 'garage:providers' }), before);
 });
 
 test('future journal dependencies and unknown algorithm tails cannot fill coefficient history', t => {

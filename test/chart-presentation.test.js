@@ -123,6 +123,27 @@ test('tooltips retain truthful source, interval and derived-input distinctions f
   assert(!fireplace.includes('saved learning input'), 'Calculated manual-event projection is not a saved learning observation');
 });
 
+test('Garage coefficient tooltips distinguish fixed priors and time-weighted evidence from interval counts', () => {
+  const label = (coefficientStatus, evidenceHours) => historyTooltipLabel({
+    dataset: { key: 'garage_coefficient_rear_lossPerHour', label: 'Garage rear · Heat loss', unit: '1/h' },
+    parsed: { x: 1, y: .022 }, raw: { modelCoefficient: true, coefficientStatus, evidenceHours },
+  });
+  assert.match(label('fixed-prior', 0), /Fixed assumption/);
+  assert.match(label('fitted', 12.75), /input evidence at that update: 12.75 h/);
+  assert.doesNotMatch(label('fitted', 12.75), /intervals|samples/);
+  assert.match(label('retained', 3.5), /Retained from an earlier fit/);
+});
+
+test('Garage input tooltips distinguish qualified values from independent fitting or episode evidence', () => {
+  const point = { modelInput: true, garageModelInput: true, inputQualified: true };
+  const item = { dataset: { key: 'garage_model_activity', label: 'Compressor activity input', unit: 'fraction' },
+    parsed: { x: 1, y: .4 }, raw: point };
+  const text = historyTooltipLabel(item);
+  assert.match(text, /0.4 fraction · saved garage input · qualified recorded input; fitting depends on the interval and episode/);
+  assert.doesNotMatch(text, /eligible for learning|kW|40 %/);
+  assert.equal(historyLearningLabel('garage_model_activity', { ...point, inputQualified: false }), 'input unavailable or unqualified');
+});
+
 test('saved indoor average tooltip identifies held rooms, genuine observation times and excluded learning', () => {
   const observedAt = Date.parse('2026-09-08T08:00:00Z');
   const text = historyTooltipLabel({ dataset: { key: 'model_indoor_temperature', label: 'Average indoor', unit: '°C' },

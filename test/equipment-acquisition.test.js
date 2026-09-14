@@ -374,10 +374,12 @@ test('a live MQTT report arriving during subscription refresh is recognized with
 });
 
 test('generic status requests wait for every required live topic and a usable heartbeat', async t => {
+  // This checks topic qualification, not the timeout. Allow a loaded test
+  // runner to yield before the explicit replies; timeout behavior is separate.
   const f = fixture(t, [{ ...genericSwitch,
     mqtt: { ...genericSwitch.mqtt, request_topic: 'invented/get', request_payload: 'status', heartbeat_topic: 'invented/heartbeat', heartbeat_seconds: 30 },
     readings: [{ key: 'power', label: 'Power', unit: 'W', topic: 'invented/power', required: true }],
-  }]);
+  }], { readbackTimeoutMs: 2000 });
   f.capture.setConnected(true);
   f.capture.receive('invented/state', 'OFF'); f.capture.receive('invented/power', '0');
   const pending = f.capture.recheck(); await new Promise(resolve => setImmediate(resolve));

@@ -89,11 +89,17 @@ export const GARAGE_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['difference', 'Front–rear difference input', '°C', 'differenceC'],
   ['outdoor', 'Outdoor input', '°C', 'outdoorC', 'outdoor'],
   ['power', 'Qualified electrical input', 'kW', 'powerKw'],
+  ['activity', 'Compressor activity input', 'fraction', 'activity', undefined,
+    'Recorded compressor activity from 0 to 1; reported off/on is 0/1. This is the alternative thermal input when qualified electrical power is unavailable, not measured watts.'],
   ['available', 'Native heating available', 'state', 'available'],
   ['ev1', 'Charger 1 input', 'kW', 'ev1Kw'], ['ev2', 'Charger 2 input', 'kW', 'ev2Kw'],
-].map(([name, label, unit, field, location]) => [`garage_model_${name}`, { label: `Garage · ${label}`,
+  ['ev1_active', 'Charger 1 activity input', 'fraction', 'ev1Active', undefined,
+    'Recorded charger 1 activity from 0 to 1; reported off/on is 0/1. Used when its qualified electrical input is unavailable; charger 2 remains separate.'],
+  ['ev2_active', 'Charger 2 activity input', 'fraction', 'ev2Active', undefined,
+    'Recorded charger 2 activity from 0 to 1; reported off/on is 0/1. Used when its qualified electrical input is unavailable; charger 1 remains separate.'],
+].map(([name, label, unit, field, location, detail]) => [`garage_model_${name}`, { label: `Garage · ${label}`,
   unit, field, location, color: location === 'outdoor' ? 'outdoor' : name.startsWith('ev') ? 'ev' : 'garage',
-  kind: 'Calculated', group: 'Garage model inputs', detail: 'Original normalized garage learning input; missing or unqualified evidence remains unknown.' }])));
+  kind: 'Calculated', group: 'Garage model inputs', detail: detail ?? 'Original normalized garage learning input; missing or unqualified evidence remains unknown.' }])));
 export const GARAGE_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   ['rear', 'lossPerHour', 'Heat loss', '1/h'], ['rear', 'memoryExchangePerHour', 'Stored-heat exchange', '1/h'],
   ['rear', 'powerHeatCPerKwh', 'Electrical heat response', '°C/kWh'], ['rear', 'activityHeatCPerHour', 'Activity heat response', '°C/h'],
@@ -107,6 +113,8 @@ export const GARAGE_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   ['native', 'demandKwPerC', 'Demand electricity', 'kW/°C'], ['native', 'restartKw', 'Restart electricity', 'kW'],
 ].map(([location, parameter, label, unit]) => [`garage_coefficient_${location}_${parameter}`, {
   label: `Garage ${location} · ${label}`, location, parameter, unit, digits: 4, color: 'garage',
+  fixed: !({ rear: ['lossPerHour', 'powerHeatCPerKwh', 'activityHeatCPerHour'], front: ['localLossPerHour'],
+    native: ['idleAndMaintenanceKw', 'coldWeatherKwPerC', 'demandKwPerC'] }[location].includes(parameter)),
   kind: 'Calculated', group: 'Garage model coefficients', detail: 'Versioned garage model replay; fitted, retained and prior evidence remain distinct.' }])));
 
 export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'garage_temperature', 'outdoor_temperature', 'outdoor_forecast', 'all_in_price', 'spot_price']);

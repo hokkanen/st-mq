@@ -73,6 +73,19 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
+    ['home-control', 'house-model', 'providers-controls'],
+    'The existing dashboard cards are preserved');
+  assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4,
+    'The existing Home outcome entries are preserved');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#learning-panel-details > details > summary')].map(row => row.textContent.trim())"),
+    await evaluate("[...document.querySelectorAll('#garage-learning-details > details > summary')].map(row => row.textContent.trim())"),
+    'Home and Garage use the same outcome, input and coefficient fold headings');
+  assert.match(await evaluate("document.getElementById('learning-progress').textContent"), /usable temperature intervals/);
+  assert.match(await evaluate("document.getElementById('garage-learning-progress').textContent"), /completed cooling \/ recovery episodes.*validated pause hours/);
+  assert.doesNotMatch(await evaluate("document.getElementById('garage-learning-progress').textContent"), /trained intervals|prediction checks/);
+  for (const id of ['garage-learning-context', 'garage-input-context', 'garage-coefficient-context'])
+    assert.ok((await evaluate(`document.getElementById('${id}').textContent`)).trim(), `${id} explains its list`);
   assert.equal(await evaluate("document.getElementById('garage-release').disabled"), true);
   assert.equal(await evaluate("document.getElementById('garage-controller-details').open || document.getElementById('garage-learning-details').open"), false);
   assert.equal(await evaluate("document.querySelector('[data-scope=home]').getAttribute('aria-pressed')"), 'true');
@@ -85,10 +98,13 @@ try {
   await evaluate("document.querySelector('[data-scope=home]').click(); document.querySelector('[data-mode=model]').click()");
   for (const width of [1440, 390, 320]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
-    for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'], ['garage-learning-details', 'learning']]) {
+    for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'],
+      ['learning-panel-details', 'home-learning'], ['garage-learning-details', 'garage-learning'],
+      ['model-inputs-details', 'home-inputs'], ['garage-learning-inputs', 'garage-inputs'],
+      ['model-coefficients-details', 'home-coefficients'], ['garage-learning-coefficients', 'garage-coefficients']]) {
       await evaluate(`(() => { const element=document.getElementById('${id}'); element.open=true;
         for(let parent=element.parentElement;parent;parent=parent.parentElement) if(parent.tagName==='DETAILS') parent.open=true;
-        if('${id}'==='garage-learning-details') element.querySelectorAll('details').forEach(fold=>fold.open=true);
+        if(['learning-panel-details','garage-learning-details'].includes('${id}')) element.querySelectorAll('details').forEach(fold=>fold.open=true);
         element.scrollIntoView({block:'start'}); })()`);
       await pause(100);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${name} fits ${width}px`);
@@ -105,6 +121,8 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
+      'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
+      'Home and Garage learning folds fit desktop and mobile',
       'original input and replay coefficient charts', 'no browser exceptions'] }));
   await send('Page.close');
 } finally {

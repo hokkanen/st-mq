@@ -404,6 +404,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .learning-groups > details, .controller-fold { margin-top: 12px; }
 .learning-groups > details > summary, .controller-fold > summary { padding: 14px 0; }
 .learning-groups h3, .model-coefficient h3 { font-size: 13px; font-weight: 550; }
+#garage-learning-details .equipment-readings { align-items: start; line-height: 1.6; }
+#garage-learning-details .equipment-readings dt { color: var(--text); font-weight: 550; }
+#garage-learning-details .equipment-readings dd { text-align: left; }
 .model-coefficient { border-bottom: 1px solid var(--border); padding: 12px 0; }
 .model-coefficient h3 { margin: 0 0 5px; }
 .model-coefficient p { margin: 5px 0; }
