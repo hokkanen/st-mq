@@ -1,6 +1,6 @@
 # Garage learning, protection and planning
 
-Garage uses `committed-garage-v1-coupled`, separate from Home's learning algorithm,
+Garage uses `committed-garage-v2-sparse`, separate from Home's learning algorithm,
 checkpoint, sensors and heat-input accounting. Its current adapter boundary is an
 explicit provisional client fixture. Software simulations do not establish the
 installed adapter's protocol, native electricity accuracy, local restoration, pipe
@@ -17,19 +17,23 @@ placement and installation; they are not a recommended pipe-safety specification
 
 Each external sensor has its own persisted degree-minute index. For every known
 interval the index gains the integral of `max(0, floorC - localTemperatureC)` over
-minutes. Version `garage-exposure-v1` uses exact integration of the positive part
-of a linear segment between temperatures. With the illustrative defaults, the
-floor is 4°C, the hard minimum is 2°C and the budget is 120°C·minutes per location.
+minutes. Version `garage-exposure-v2` integrates the cold and warm portions of
+linear segments in chronological order. With the defaults, the exposure floor
+is 2°C, the hard restoration threshold is −1°C and the budget is 90°C·minutes per location.
 Reaching either the hard minimum or the independent budget forbids a pause.
 
-Recovery requires continuous local temperature at least 6°C for 30 minutes before
-credit starts, then subtracts 0.25°C·minutes per warm minute, never below zero. A
+Recovery requires continuous local temperature at least 4°C for 20 minutes before
+credit starts, then subtracts 1°C·minute per warm minute, never below zero. A
 brief warm report, the other location warming, changing aggressiveness, restoring
 native ON, model refitting and reconnecting do not reset this state. Missing
 history accumulates a conservative index using at least the floor-to-hard-limit
 rate, marks the history uncertain and earns no recovery. Uncertainty clears only
 after known continuous warm recovery has repaid that location's index. A gap index
 is a conservative accounting bound, not a reconstructed temperature measurement.
+Forecast crossings are located within each step; a brief exhausted budget is not
+hidden by later warming. The [pipe sensitivity audit](garage-protection-defaults.md)
+explains the lower thresholds, bare 21 mm copper sensitivity and why adjacent air
+temperature cannot establish a safe freezing duration.
 
 `maxSensorAgeMs` defaults to two minutes and is an engineering setting which must
 match the installed sensors' genuine reporting contract. Receipt of a retained
@@ -47,18 +51,22 @@ sensor substitutes for either external protection measurement.
 ## Coupled thermal model
 
 The estimated state has rear air temperature, slow rear-derived thermal memory,
-and front-minus-rear difference. The rear derivative fits bounded coefficients
-for outdoor loss, exchange with memory, qualified electrical heat response or a
-separate activity response, and both EV inputs. The front-difference derivative
-fits relaxation, additional local loss and effective differences in pump/EV heat
-distribution. A fixed 18-hour rear-to-memory exchange is a structural prior, not
+and front-minus-rear difference. The rear derivative fits outdoor loss and one
+qualified electrical or activity heat response when the inputs distinguish them.
+The front-difference derivative fits at most one additional local-loss response.
+Rear memory exchange, front relaxation and pump distribution remain fixed priors.
+A fixed 18-hour rear-to-memory timescale is a structural prior, not
 measured wall/floor temperature or stored kWh. Five-minute integration substeps
 keep predictions bounded. No Home hydronic coefficients or heat path is reused.
 
-Projected recursive ridge updates retain fixed-size coefficient/covariance arrays
-and evidence counters. Inputs use degrees C, hours and qualified kW; activity is
+Bounded ridge fits use duration-weighted sufficient statistics, separately for
+normal, OFF and recovery operation. Forgetting follows hours of qualified evidence
+in each regime: 48 OFF hours and 96 normal/recovery hours per half-life. Routine
+ON reports therefore cannot erase a rare OFF experiment. A permanent ridge prior
+and input-conditioning checks prevent steady input from falsely identifying loss
+and heating separately. Inputs use degrees C, hours and qualified kW; activity is
 separate dimensionless evidence, never silently converted to measured watts.
-Coefficients have explicit finite bounds. Local front plunges strongly downweight
+Coefficients have explicit finite bounds. Local front plunges exclude
 front parameter fitting while still fully affecting the front state, prediction
 and protection. They do not overwrite rear memory. Sustained unexpected rear
 cooling gradually corrects the memory observer when the expected rebound fails.
@@ -66,49 +74,88 @@ Optional door disturbances can suppress ordinary fitting without inventing
 unobserved door events. Solar is deliberately excluded in this version until a
 versioned model comparison shows held-out improvement.
 
-Both EV identities and their power/activity units remain separate. Their initial
-power and activity heat coefficients are shared. Per-charger and spatial response
-is released only after each charger has at least 24 independently active intervals
-with the other known inactive and no door disturbance. Coincident charging alone
-cannot identify separate effects. This is effective garage temperature response,
+Both EV identities and their power/activity units remain separate. Shared rear
+responses and zero spatial responses remain explicit priors. Charging intervals
+do not fit their unknown heat into insulation or pump coefficients, and do not
+qualify clean OFF/recovery episodes. Additional EV coefficients require a future
+versioned demonstration of held-out improvement. This is effective temperature response,
 not vehicle charging efficiency or measured heat delivered by a car. Future plans
 never start charging for garage heating and do not alter vehicle priorities.
 
 The normal reference starts uninitialized at the configured baseline, without a
 hard-coded near-pipe offset. It learns achieved rear temperature only with verified
-native baseline, continuous availability for at least eight hours, stable rear
-temperature, and no known EV/door disturbance. Twelve qualifying observations
-initialize the reference. A pause or recovery excludes reference learning for at
-least 48 hours. Once initialized, cold departures exceeding 0.5°C cannot pull the
+native baseline, continuous availability for at least eight hours, a stable
+two-hour smoothed rear trend, and no known EV/door disturbance. Qualification and
+adaptation use elapsed hours rather than report count. Pauses/recovery interrupt
+the settled-operation requirement; a fixed 48-hour exclusion no longer prevents
+reference learning when several weekly opportunities occur. Once initialized,
+cold departures exceeding 0.5°C cannot pull the
 reference down. Baseline changes establish a recorded fresh model epoch; they do
 not command a temperature boost. The current small outdoor slope remains an
 explicit prior while intercept learning tracks comparable achieved observations.
 
 ## Validation and advance electricity
 
-The final six hours of every 24-hour block relative to the saved seed are withheld
-from coefficient and normal-reference fitting. The model records one-step errors
-before consuming outcomes, separately for rear, front, advance rear/front, native
-electricity, and OFF-only rear/front. Observed interval inputs may support
-conditional thermal validation; advance prediction uses preceding information.
-These are temporally held-out one-step diagnostics, not a claim of independent
-multi-day forecast calibration. Sensor observer updates continue during validation.
+Ordinary operation keeps a daily held-out block. Each complete OFF and recovery
+experiment instead belongs entirely to one deterministic training/validation
+partition. The held-out model and forecast state are frozen at the start and then
+run without temperature corrections or actual future heating. Preceding observed
+ambient weather is used, so this tests plant response rather than weather-forecast
+accuracy. Door/EV disturbances and input gaps cannot qualify clean episodes.
 
-Automatic economic planning requires an initialized reference, at least 24 rear
-and 12 front fitted intervals, six fitted OFF intervals, six held-out observations
-at both locations, three held-out OFF observations at both locations, and bounded
-advance/OFF errors. These gates cannot be replaced by a completion percentage.
+Thermal qualification requires two distinct completed training episodes and a
+later successful held-out episode. Supported OFF duration is bounded by repeated
+training and later validation duration. Later failed validation retracts obsolete
+support. Recovery requires sustained native availability and substantial measured
+rebound at both locations; a short pause cannot qualify itself by crossing a daily
+partition or by generating many readings. At most 24 compact episode summaries
+are retained alongside fixed-size fit statistics. Electrical qualification is
+separate and requires metered native and full recovery-energy validation.
+These gates cannot be replaced by a completion percentage.
 Rear-only historical intervals can fit supported rear responses and update thermal
 memory; they never invent front temperatures or front validation evidence. Source
 timestamps, source quality/gaps and configuration remain in committed inputs.
 
 Native availability permits native demand regulation, including idle; it does not
-force electrical output. A separate bounded electrical response fits measured
-power against cold-weather demand, rear-reference deficit and observed restart
-context. Before sufficient electrical evidence, predictions retain the explicit
+force electrical output. A separate bounded electrical response initially fits
+baseline and cold-weather demand using the same thermostat envelope as prediction.
+A deficit-response coefficient is released only after two clean training
+recoveries and independent deficit variation; restart remains an explicit prior.
+Thus the ordinary fitted cap is five coefficients, or six with supported recovery
+response, plus the normal-reference intercept. Before sufficient electrical evidence, predictions retain the explicit
 `prior-modeled-electricity` label. An activity-only thermal fit can be useful while
-recorded-energy timing remains unavailable. Observed OFF standby electricity is
+recorded-energy timing remains unavailable. Its separate normal-activity observer
+learns dimensionless duty from actual activity reports; it does not infer duty
+from unqualified electrical predictions or turn activity into measured kW.
+Observed OFF standby electricity is
 counted when qualified, without calling it delivered heat.
+
+To obtain initial evidence, a worthwhile price opportunity can support a bounded
+30-minute learning trial with initialized reference, both fresh sensors, no known
+disturbance and independent protection margins. Two acceptable completed trials
+can grow the trial duration gradually. Trials remain capped at one hour without
+qualified electricity and initially two hours with it. Repeated qualified longer
+episodes can extend that ceiling by at most 50%, up to eight hours; this prevents
+a permanent two-hour learning ceiling. The permitted cooling depth also grows
+gradually from 1°C toward 3°C while retaining independent protection margins.
+Trials use one OFF period and require
+observed recovery before another experiment. Below two hours of validated support,
+economic candidates also use one OFF period, preventing many short pauses from
+bypassing sparse-duration evidence. Mature multi-peak schedules retain heat debt
+and cap accumulated OFF time until comparable local recovery.
+
+For trials with unqualified electricity, an explicit exploration allowance caps
+the uncertainty deduction at half the positive modeled timing benefit. The full
+uncertainty remains disclosed separately; warmth cost, residual debt and physical
+limits still apply. This permits useful short experiments without presenting them
+as validated economic dispatch. Flat prices and zero aggressiveness still request
+normal availability.
+
+Planning margins derive from whole-episode errors and supported OFF duration,
+continue growing beyond six hours and do not use a long recovery tail to make a
+short OFF experiment appear representative of longer cooling. Electricity
+uncertainty uses full episode energy errors or native kW error multiplied by OFF
+hours, with explicit kWh units. See the [independent simulation audit](garage-simulation-audit.md).
 
 `predictGarageStep` ignores supplied actual power/fan/defrost by default. The
 explicit `conditional: true` option is for elapsed-interval assessment only.

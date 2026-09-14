@@ -4,7 +4,7 @@ import moment from 'moment-timezone';
 import { temporaryUpdate } from '../app/temporary.js';
 import { garageSettings } from './settings.js';
 import { GARAGE_ALGORITHM_VERSION, createGarageModel, garageModelSummary } from './model.js';
-import { createGarageExposure, updateGarageExposure, assessGarageProtection } from './protection.js';
+import { createGarageExposure, upgradeGarageExposure, updateGarageExposure, assessGarageProtection } from './protection.js';
 import { planGarage } from './planner.js';
 import { startGarageAssessment, updateGarageAssessment, completeGarageAssessment, garageRecoveryDebt } from './episodes.js';
 import { appendGarageEntry, applyGarageEntry, garageInput, garageDigest, garageCorrectionContext,
@@ -21,6 +21,23 @@ const observationView = (row, now, maxAge) => ({ value: finite(row?.value) ? row
   observedAt: row?.sourceTime ?? null, source: row?.source ?? null, stale: !usable(row, now, maxAge) });
 const outdoorObservation = row => row?.source === 'openmeteo'
   ? { ...row, quality: (row.quality ?? []).filter(flag => flag !== 'estimated') } : row;
+const archivedEpisode = episode => Boolean(episode && (episode.algorithmVersion !== GARAGE_ALGORITHM_VERSION
+  || episode.frozenModel?.algorithm !== GARAGE_ALGORITHM_VERSION
+  || episode.accounting?.algorithmVersion !== GARAGE_ALGORITHM_VERSION));
+const validExposureTime = (value, now) => value === null || finite(value) && value <= now;
+const validExposureTemperature = value => value === null || finite(value) && value >= -40 && value <= 65;
+function validPersistedExposure(exposure, now, settings) {
+  if (!validExposureTime(exposure?.at, now) || !exposure?.policy
+    || !Object.keys(settings.protection).every(key => Object.hasOwn(exposure.policy, key))) return false;
+  try { garageSettings({ protection: exposure.policy }); } catch { return false; }
+  return ['rear', 'front'].every(location => {
+    const row = exposure.locations?.[location];
+    return row && ['degreeMinutes', 'recoveryMinutes', 'unknownMinutes'].every(key => finite(row[key]) && row[key] >= 0)
+      && typeof row.uncertain === 'boolean' && validExposureTime(row.lastAt, now) && validExposureTemperature(row.lastC)
+      && (row.lastAt === null || finite(exposure.at) && row.lastAt <= exposure.at)
+      && (row.lastC === null || finite(row.lastAt));
+  });
+}
 
 /** Garage owns no broker or native timer. Only planner ticks authorize adapter
  * renewals; the independent short safety loop may revoke permission. */
@@ -35,13 +52,30 @@ export class GarageRuntime {
       if (!(error instanceof SyntaxError)) throw error;
       this.corruptState = true; return null;
     } };
-    this.exposure = readState(this.keys.exposure) ?? createGarageExposure(this.settings);
-    if (!this.exposure.locations?.rear || !this.exposure.locations?.front
-      || !Object.values(this.exposure.locations).every(row => finite(row.degreeMinutes) && row.degreeMinutes >= 0)) {
+    const savedExposure = readState(this.keys.exposure);
+    try {
+      if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
+        throw new Error('Invalid saved Garage exposure');
+      this.exposure = upgradeGarageExposure(savedExposure, this.settings);
+      if (!validPersistedExposure(this.exposure, clock(), this.settings)) throw new Error('Invalid saved Garage exposure');
+    } catch {
+      // A damaged Garage cache must not stop Home construction or manufacture
+      // new pause allowance. Keep any usable debt and measurement anchors;
+      // ordinary fresh warm observations must resolve the uncertain history.
       this.corruptState = true; this.exposure = createGarageExposure(this.settings);
+      if (finite(savedExposure?.at) && savedExposure.at <= clock()) this.exposure.at = savedExposure.at;
+      for (const location of ['rear', 'front']) {
+        const old = savedExposure?.locations?.[location], row = this.exposure.locations[location];
+        if (finite(old?.degreeMinutes) && old.degreeMinutes >= 0) row.degreeMinutes = old.degreeMinutes;
+        if (finite(old?.lastAt) && finite(this.exposure.at) && old.lastAt <= this.exposure.at) {
+          row.lastAt = old.lastAt;
+          if (finite(old.lastC) && validExposureTemperature(old.lastC)) row.lastC = old.lastC;
+        }
+        if (finite(old?.unknownMinutes) && old.unknownMinutes >= 0) row.unknownMinutes = old.unknownMinutes;
+      }
     }
     if (this.corruptState) for (const row of Object.values(this.exposure.locations)) {
-      row.degreeMinutes = this.settings.protection.budgetDegreeMinutes; row.uncertain = true;
+      row.degreeMinutes = Math.max(row.degreeMinutes, this.settings.protection.budgetDegreeMinutes); row.uncertain = true;
     }
     this.episode = readState(this.keys.episode);
     this.temporary = readState(this.keys.temporary);
@@ -52,6 +86,7 @@ export class GarageRuntime {
     // Restart never resumes permission. Frozen accounting and heat debt remain.
     if (this.episode) { this.episode.restarted = true; this.episode.phase = 'recovery'; this.saveEpisode(); }
     this.checkpoint = readState(this.keys.checkpoint);
+    const archivedAlgorithm = this.checkpoint?.algorithmVersion !== GARAGE_ALGORITHM_VERSION ? this.checkpoint?.algorithmVersion : null;
     const last = this.checkpoint?.cursor ? store.learningJournal({ input: garageInput(this.input),
       after: this.checkpoint.cursor - 1, limit: 1, algorithmVersion: GARAGE_ALGORITHM_VERSION })[0] : null;
     if (!validGarageCheckpoint(this.checkpoint, last, this.context)) this.checkpoint = null;
@@ -59,8 +94,10 @@ export class GarageRuntime {
     const head = garageJournalHead(store, this.input);
     if (head && this.checkpoint?.cursor !== head) this.startRebuild();
     const settingsKey = `garage:configuration:${this.input}`, previous = store.getState(settingsKey);
-    if (garageDigest(previous) !== garageDigest(this.settings)) {
-      this.append('context', { configurationChanged: true, baselineChanged: previous != null && previous.baselineC !== this.settings.baselineC },
+    if (garageDigest(previous) !== garageDigest(this.settings) || archivedAlgorithm && !head) {
+      this.append('context', { configurationChanged: garageDigest(previous) !== garageDigest(this.settings),
+        ...(archivedAlgorithm ? { algorithmChanged: true, archivedAlgorithm } : {}),
+        baselineChanged: previous != null && previous.baselineC !== this.settings.baselineC },
         `configuration:${clock()}:${garageDigest(this.settings)}`);
       store.setState(settingsKey, this.settings);
       if (this.episode?.accounting && previous?.baselineC !== this.settings.baselineC) {
@@ -446,9 +483,13 @@ export class GarageRuntime {
     }
     const activePause = this.episode?.phase === 'pause' && adapterStatus?.phase === 'paused'
       ? { ...this.episode, id: this.episode.pauseId, state: 'paused' } : null;
+    const archivedRecovery = archivedEpisode(this.episode);
+    const trialRecovery = this.episode && !activePause && (this.episode.plan?.learningTrial === true
+      || (this.episode.plan?.evidence?.economicHours ?? Infinity) < 2);
     const planningModel = this.episode ? { ...this.episode.frozenModel, state: this.episode.accounting.actualState }
       : this.checkpoint?.model ?? createGarageModel({ seedAt: now, baselineC: this.settings.baselineC });
-    this.plan = planGarage({ now, observation, model: planningModel,
+    this.plan = archivedRecovery || trialRecovery ? { nextAction: 'available', pauseUntil: null,
+      reason: archivedRecovery ? 'archived-model-recovery' : 'learning-trial-recovery' } : planGarage({ now, observation, model: planningModel,
       exposure: this.exposure, settings: { ...this.settings,
         minOnMs: Math.max(this.settings.minOnMs, adapterStatus?.limits?.minimumOnMs ?? 0) }, prices, forecast,
       referenceInitialState: this.episode?.accounting.referenceState,
@@ -467,6 +508,7 @@ export class GarageRuntime {
       this.startEpisode(id, this.plan, observation, now);
     if (valid && recoveryReady && this.episode && !activePause && adapterStatus?.automaticControl) {
       this.episode.pauseId = id; this.episode.phase = 'pause'; this.episode.pauseUntil = this.plan.pauseUntil;
+      this.episode.pauseStartedAt = now;
       this.episode.restarted = false; this.episode.recoveryStartedAt = null; this.saveEpisode();
     }
     if (this.episode?.phase === 'pause') id = this.episode.pauseId ?? this.episode.id;
@@ -498,7 +540,7 @@ export class GarageRuntime {
     });
   }
   startEpisode(id, plan, observation, now) {
-    this.episode = { id: randomUUID(), pauseId: id, status: 'active', phase: 'pause', startedAt: now, endedAt: null,
+    this.episode = { id: randomUUID(), pauseId: id, status: 'active', phase: 'pause', startedAt: now, pauseStartedAt: now, endedAt: null,
       algorithmVersion: GARAGE_ALGORITHM_VERSION, settings: structuredClone(this.settings),
       frozenModel: structuredClone(this.checkpoint.model), initialObservation: structuredClone(observation),
       plan: structuredClone(plan), pauseUntil: plan.pauseUntil, assessment: null,
@@ -516,6 +558,34 @@ export class GarageRuntime {
     if (!this.episode) return;
     const episode = this.episode, native = this.adapter?.status(now);
     if (!episode.accounting) { this.finishEpisode('incomplete', 'unsupported-accounting-version'); return; }
+    if (archivedEpisode(episode)) {
+      // Archived dynamics cannot be executed as the new algorithm. Keep the old
+      // accounting untouched except its qualification and retain the real
+      // restoration obligation until both measured locations recover.
+      episode.accounting.qualified = false; episode.phase = 'recovery'; episode.reason = 'archived-model-recovery';
+      const warm = observation.available === true && !native?.restorePending && this.protection?.requiredFresh
+        && ['rear', 'front'].every(location => finite(observation[`${location}C`])
+          && observation[`${location}C`] >= episode.initialObservation?.[`${location}C`]
+          && !this.exposure.locations[location].uncertain
+          && this.exposure.locations[location].degreeMinutes <= (episode.initialExposure?.locations[location]?.degreeMinutes ?? 0));
+      episode.warmSince = warm ? episode.warmSince ?? now : null;
+      // Old absolute temperatures may be unattainable after a weather change.
+      // Eight hours of verified native heating and locally warm, repaid exposure
+      // can resolve restoration, still without a comparable-service/savings claim.
+      const nativeWarm = observation.available === true && observation.baselineVerified === true
+        && !native?.restorePending && this.protection?.requiredFresh && ['rear', 'front'].every(location =>
+          observation[`${location}C`] >= this.settings.protection.recoveryAboveC
+          && !this.exposure.locations[location].uncertain
+          && this.exposure.locations[location].degreeMinutes <= (episode.initialExposure?.locations[location]?.degreeMinutes ?? 0));
+      const continuous = finite(episode.archivalLastAt) && now - episode.archivalLastAt <= this.settings.maxSensorAgeMs;
+      episode.archivalWarmSince = nativeWarm ? continuous ? episode.archivalWarmSince ?? now : now : null;
+      episode.archivalLastAt = now;
+      if (warm && now - episode.warmSince >= this.settings.minOnMs) this.finishEpisode('incomplete', 'archived-model-warmth-restored');
+      else if (nativeWarm && now - episode.archivalWarmSince >= 8 * HOUR)
+        this.finishEpisode('incomplete', 'archived-model-warm-native-operation');
+      else this.saveEpisode();
+      return;
+    }
     const currentPrice = observation.priceCtPerKwh;
     const previous = episode.accounting.previous;
     const previousEnd = Math.min(now, previous.priceEndAt ?? episode.accounting.at);

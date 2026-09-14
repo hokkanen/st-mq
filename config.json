@@ -312,13 +312,13 @@
       "stepMinutes": 15,
       "protection": {
         "approved": false,
-        "version": "garage-exposure-v1",
-        "floorC": 4,
-        "hardMinimumC": 2,
-        "budgetDegreeMinutes": 120,
-        "recoveryAboveC": 6,
-        "recoveryDegreeMinutesPerMinute": 0.25,
-        "recoveryDwellMinutes": 30
+        "version": "garage-exposure-v2",
+        "floorC": 2,
+        "hardMinimumC": -1,
+        "budgetDegreeMinutes": 90,
+        "recoveryAboveC": 4,
+        "recoveryDegreeMinutesPerMinute": 1,
+        "recoveryDwellMinutes": 20
       },
       "adapter": {
         "stateTopic": "",
@@ -552,7 +552,7 @@
       "stepMinutes": "float(5,30)",
       "protection": {
         "approved": "bool",
-        "version": "list(garage-exposure-v1)",
+        "version": "list(garage-exposure-v1|garage-exposure-v2)",
         "floorC": "float(0,12)",
         "hardMinimumC": "float(-2,10)",
         "budgetDegreeMinutes": "float(1,10000)",

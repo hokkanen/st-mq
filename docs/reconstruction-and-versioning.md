@@ -214,3 +214,26 @@ debt. Imported rear-only history remains a separate, explicitly incomplete
 reconstruction; missing front/native/OFF evidence is not fabricated. See
 [Garage learning](garage.md) for its supported evidence and provisional adapter
 boundary.
+
+`committed-garage-v2-sparse` replaces v1's per-report recursive fit and short-step
+readiness with a smaller duration-weighted fit, retained regime statistics,
+whole OFF/recovery validation and supported-duration planning. The v1 algorithm
+and `garage-exposure-v1` arithmetic remain archival at Git revision `e0b0c11`;
+they are not replayed as v2. The first v2 journal entry saves a new explicit seed.
+Adapter boots interrupt active evidence but do not erase completed experiments;
+explicit sensor corrections still establish measurement boundaries.
+
+An existing frozen v1 accounting episode remains an incomplete archived
+assessment with an active measured restoration obligation. New code never calls
+v2 prediction on its v1 model. Its original observations, frozen state and costs
+remain archived; both measured locations must recover before the obligation ends.
+If changed weather makes the former absolute temperatures unattainable, eight
+continuous hours of verified normal native availability with both locations above
+the configured warm-recovery threshold and local exposure repaid may close it as
+incomplete. That measured restoration rule grants no comparable-service or savings
+claim and never evaluates old dynamics as the new model.
+Operational exposure separately upgrades to `garage-exposure-v2`, retaining at
+least the previous debt and a full uncertain budget until measured warm recovery.
+An explicit v1 configuration value is accepted and normalized without editing
+private configuration or overriding custom numeric limits/approval. These are
+recorded forward transitions, not reinterpretations of the old learning journal.

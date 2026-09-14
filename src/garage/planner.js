@@ -1,6 +1,7 @@
 import { garageSettings, garageWarmthPrice, GARAGE_PREFERENCE_VERSION } from './settings.js';
 import { createGarageExposure, updateGarageExposure, assessGarageProtection } from './protection.js';
 import { forecastGarage, predictGarageStep, knownGarageEvAt, normalGarageTemperature, garageModelSummary } from './model.js';
+import { garagePlanningEvidence, garagePlanningMargins, garagePlanningEnergyUncertainty } from './planning-evidence.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const copy = value => structuredClone(value);
@@ -44,7 +45,11 @@ function paretoBeam(nodes) {
     const ranked = [...nodes].sort((a, b) => rank(b, weight) - rank(a, weight) || a.transitions - b.transitions || a.cooling - b.cooling);
     const cells = new Set();
     for (const node of ranked) {
-      const key = `${node.available}:${Math.round(node.state.rearC * 4)}:${Math.round(node.state.coreC * 10)}:${Math.round(node.state.frontC * 4)}:${Math.min(4, node.transitions)}`;
+      const dwellHours = ((node.path.at(-1)?.end ?? node.changedAt) - node.changedAt) / HOUR;
+      const key = [node.available, Math.round(node.state.rearC * 4), Math.round(node.state.coreC * 10),
+        Math.round(node.state.frontC * 4), Math.min(4, node.transitions), node.trial, node.offPeriods,
+        Math.round(Math.min(6, dwellHours) * 4), Math.round(node.cycleOffHours * 4),
+        Math.round(Math.min(4, node.cycleRecoveryHours) * 4)].join(':');
       if (cells.has(key)) continue;
       cells.add(key); chosen.add(node);
       if (cells.size >= 7) break;
@@ -68,7 +73,8 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   if (config.aggressiveness === 0) return stop('normal-heating-preference');
   if (!protection.safeToPause) return stop(protection.reasons[0] ?? 'protection-unavailable');
   const summary = garageModelSummary(model);
-  if (!summary.ready) return stop('insufficient-validated-thermal-evidence');
+  const evidence = garagePlanningEvidence(model, summary, { now, observation, stepMinutes: config.stepMinutes, activeEpisode });
+  if (evidence.maxPauseHours <= 0) return { ...stop(evidence.reason), evidence };
   if (!finite(model.state.coreC) || !finite(observation?.rearC) || !finite(observation?.frontC)) return stop('thermal-state-unavailable');
   const steps = horizon(now, prices, forecast, config);
   if (steps.length < 4 || steps.at(-1).end - now < 2 * HOUR) return stop('insufficient-price-weather-horizon');
@@ -93,10 +99,15 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   const active = activeEpisode && !['completed', 'released', 'cancelled'].includes(activeEpisode.state);
   const existingEnd = active ? activeEpisode.authorizedEndAt ?? activeEpisode.pauseUntil ?? activeEpisode.endpointAt : null;
   const initialAvailable = active ? false : observation.available !== false;
+  const pauseStartedAt = activeEpisode?.pauseStartedAt ?? activeEpisode?.startedAt ?? observation.availableChangedAt ?? now;
   let beam = [{ state: initial, robustState: copy(initial), exposure: initialExposure,
-    available: initialAvailable, changedAt: observation.availableChangedAt ?? now - config.minOnMs,
-    electricityKwh: 0, costEur: 0, timing: 0, cooling: 0, transitions: 0, debtPenalty: 0,
-    uncertainty: 0, offHours: 0, path: [] }];
+    available: initialAvailable, changedAt: initialAvailable ? observation.availableChangedAt ?? now - config.minOnMs
+      : pauseStartedAt,
+      electricityKwh: 0, costEur: 0, timing: 0, cooling: 0, transitions: 0, debtPenalty: 0,
+      uncertainty: 0, offHours: 0, offPeriods: initialAvailable ? 0 : 1, trial: false,
+      cycleOffHours: initialAvailable ? 0 : Math.max(0, (now - pauseStartedAt) / HOUR), cycleRecoveryHours: 0,
+      cycleRearC: initial.rearC, cycleFrontC: initial.frontC, cycleOutdoorC: observation.outdoorC,
+      rearDropC: 0, frontDropC: 0, path: [] }];
   const engineering = { ...config, maxSensorAgeMs: 4 * HOUR };
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i], ref = reference.points[i], hours = (step.end - step.start) / HOUR, nodes = [];
@@ -105,16 +116,42 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
         const switching = available !== node.available;
         if (switching && available && step.start - node.changedAt < config.minOffMs) continue;
         if (switching && !available && step.start - node.changedAt < config.minOnMs) continue;
+        if (active && switching && !available) continue;
         if (!available && active && finite(existingEnd) && step.end > existingEnd) continue;
+        const pauseHours = !available ? (step.end - (switching ? step.start : node.changedAt)) / HOUR : 0;
+        if (!available && pauseHours > evidence.maxPauseHours + 1e-9) continue;
+        const trial = node.trial || !available && pauseHours > evidence.economicHours + 1e-9;
+        const offPeriods = node.offPeriods + Number(switching && !available);
+        // A learning trial is one experiment with its recovery, rather than many
+        // short pauses whose aggregate exposure bypasses the supported duration.
+        if (trial && offPeriods > 1) continue;
+        if (evidence.economicHours < 2 && offPeriods > 1) continue;
+        let cycleOffHours = node.cycleOffHours + (available ? 0 : hours);
+        if (!available && cycleOffHours > evidence.maxPauseHours + 1e-9) continue;
         const ev = knownGarageEvAt(knownEvPlans, step.start, now);
         const next = predictGarageStep(model, node.state, { outdoorC: step.outdoorC, available,
           restart: available && switching, ...ev }, hours);
-        // Protection never spends forecast vehicle warmth. Both chargers may cancel.
+        // Protection and renewed duration allowance cannot spend forecast EV
+        // warmth: either charger can cancel after this decision.
         const robust = predictGarageStep(model, node.robustState, { outdoorC: step.outdoorC, available,
           restart: available && switching, ev1Kw: 0, ev2Kw: 0 }, hours);
-        const elapsed = Math.min(6, (step.end - now) / HOUR);
-        const rearMargin = Math.max(.15, summary.heldOut.advanceRear.rmse ?? .4) * Math.sqrt(elapsed);
-        const frontMargin = Math.max(.25, summary.heldOut.advanceFront.rmse ?? .65) * Math.sqrt(elapsed);
+        const startingCycle = !available && node.cycleOffHours === 0;
+        const cycleRearC = startingCycle ? node.robustState.rearC : node.cycleRearC;
+        const cycleFrontC = startingCycle ? node.robustState.frontC : node.cycleFrontC;
+        const cycleOutdoorC = startingCycle ? step.outdoorC : node.cycleOutdoorC;
+        const outdoorChange = step.outdoorC - cycleOutdoorC;
+        const rearShift = model.normalReference.outdoorSlope * outdoorChange;
+        const frontShift = rearShift + model.front.values[1] / model.front.values[0] * (outdoorChange - rearShift);
+        const rearDropC = Math.max(startingCycle ? 0 : node.rearDropC, cycleRearC + rearShift - robust.rearC);
+        const frontDropC = Math.max(startingCycle ? 0 : node.frontDropC, cycleFrontC + frontShift - robust.frontC);
+        let cycleRecoveryHours = available && cycleOffHours > 0 ? node.cycleRecoveryHours + hours : 0;
+        if (available && cycleOffHours > 0 && cycleRecoveryHours + 1e-9 >= Math.max(.5, Math.min(cycleOffHours, 4))
+          && robust.rearC >= cycleRearC + rearShift - Math.min(.2, Math.max(.05, .25 * rearDropC))
+          && robust.frontC >= cycleFrontC + frontShift - Math.min(.3, Math.max(.05, .25 * frontDropC))) {
+          cycleOffHours = 0; cycleRecoveryHours = 0;
+        }
+        const margins = garagePlanningMargins(summary, (step.end - now) / HOUR);
+        const rearMargin = margins.rearC, frontMargin = margins.frontC;
         const projected = updateGarageExposure(node.exposure, { at: step.end,
           rearC: robust.rearC - rearMargin, frontC: robust.frontC - frontMargin }, engineering);
         const nearLimit = ['rear', 'front'].some(location => {
@@ -123,6 +160,8 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
             + rate * restorationDelayMs / 60_000 >= config.protection.budgetDegreeMinutes || local.uncertain;
         });
         if (nearLimit && !available) continue;
+        if (trial && !available && (robust.rearC - rearMargin < Math.max(config.protection.floorC + 1, initial.rearC - evidence.trialCoolingLimitC)
+          || robust.frontC - frontMargin < Math.max(config.protection.floorC + 1, initial.frontC - evidence.trialCoolingLimitC))) continue;
         // Returning native availability does not instantly restore local allowance.
         if (!available && switching && ['rear', 'front'].some(location =>
           node.exposure.locations[location].degreeMinutes > config.protection.budgetDegreeMinutes * .8)) continue;
@@ -134,14 +173,24 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
         const continuationDebt = debt(obligationReference.points[i].state, ref.state, model);
         const additionalDebtKwh = Math.max(0, thermalDebt.effectiveKwh - continuationDebt.effectiveKwh);
         const offHours = node.offHours + (available ? 0 : hours);
-        const resolution = Math.max(.03, summary.heldOut.native.rmse ?? .25);
-        const uncertainty = active ? 0 : resolution * Math.sqrt(offHours) * (maxPrice - minPrice) / 100;
+        const energyUncertainty = garagePlanningEnergyUncertainty(model, summary, offHours);
+        const modeledUncertainty = energyUncertainty.kwh * (maxPrice - minPrice) / 100;
+        const timing = electricityKwh * averagePrice - costEur;
+        // A small calibration experiment has an explicit exploration allowance:
+        // an unqualified electricity prior cannot veto every opportunity to
+        // learn. Retain its full error estimate for disclosure, but charge at
+        // most half positive modeled timing in a bounded single trial. Thermal
+        // limits, warmth cost and debt still apply; this is not economic validation.
+        const uncertainty = active ? 0 : trial && !evidence.electricalReady
+          ? Math.min(modeledUncertainty, .5 * Math.max(0, timing)) : modeledUncertainty;
         nodes.push({ state: next.state, robustState: robust.state, exposure: projected, available,
           changedAt: switching ? step.start : node.changedAt, electricityKwh, costEur,
-          timing: electricityKwh * averagePrice - costEur, cooling,
+          timing, cooling,
           transitions: node.transitions + (switching && !(active && node.transitions === 0 && available) ? 1 : 0),
           debtPenalty: additionalDebtKwh * Math.max(.01, terminalPrice - averagePrice) * (i === steps.length - 1 ? 1 : .2),
-          uncertainty, offHours, path: [...node.path, { ...step, available, ...next,
+          uncertainty, modeledUncertainty, uncertaintyBasis: energyUncertainty.basis, offHours, offPeriods, trial,
+          cycleOffHours, cycleRecoveryHours, cycleRearC, cycleFrontC, cycleOutdoorC, rearDropC, frontDropC,
+          path: [...node.path, { ...step, available, ...next,
             rearLowerC: robust.rearC - rearMargin, frontLowerC: robust.frontC - frontMargin }] });
       }
     }
@@ -154,7 +203,7 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   const selected = candidates.sort((a, b) => b.netScore - a.netScore || a.transitions - b.transitions || a.cooling - b.cooling)[0];
   if (!selected || selected.offHours === 0 || selected.netScore <= 1e-8)
     return { ...stop('benefit-below-warmth-or-prediction-resolution'), steps: reference.points,
-      uncertainty: { method: 'held-out-native-error-times-price-spread', electricityBasis: reference.points[0].electricityBasis } };
+      uncertainty: { method: 'episode-or-native-energy-error-times-price-spread', electricityBasis: reference.points[0].electricityBasis } };
   const finalDebt = debt(obligationReference.state, selected.state, model);
   const continuationDebt = debt(obligationReference.state, reference.state, model);
   const additionalDebtKwh = Math.max(0, finalDebt.effectiveKwh - continuationDebt.effectiveKwh);
@@ -169,12 +218,14 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   // the candidate's same energy at the reference's average price, exactly zero
   // on a constant-price horizon, before conservative residual recovery liability.
   const timingBenefitEur = selected.timing - referenceTiming - selected.debtPenalty;
-  return { ...base, state: immediate ? 'paused-plan' : 'preparation',
-    reason: immediate ? active ? 'continue-authorized-economic-episode' : 'credible-price-timing-opportunity' : 'prepare-for-later-price-opportunity',
+  return { ...base, state: immediate ? 'paused-plan' : 'preparation', evidence, learningTrial: selected.trial,
+    reason: selected.trial ? immediate ? active ? 'continue-bounded-learning-trial' : 'bounded-learning-trial' : 'prepare-for-bounded-learning-trial'
+      : immediate ? active ? 'continue-authorized-economic-episode' : 'credible-price-timing-opportunity' : 'prepare-for-later-price-opportunity',
     nextAction: immediate ? active ? 'renew' : 'pause' : 'available', pauseUntil, steps: planned,
     timingBenefitEur, modelBenefitEur: reference.costEur - selected.costEur - additionalDebtKwh * terminalPrice,
     heatDebt: finalDebt, continuationDebt, coolingDegreeHours: selected.cooling, scoreEur: selected.netScore,
-    uncertainty: { amountEur: selected.uncertainty, method: 'held-out-native-error-times-price-spread',
+    uncertainty: { amountEur: selected.modeledUncertainty, decisionDeductionEur: selected.uncertainty,
+      explorationAllowance: selected.trial && !evidence.electricalReady, method: selected.uncertaintyBasis,
       electricityBasis: planned[0].electricityBasis, terminalPriceEurPerKwh: terminalPrice },
     reference: { electricityKwh: reference.electricityKwh, costEur: reference.costEur, state: reference.state },
     obligationReference: { state: obligationReference.state, basis: referenceInitialState ? 'frozen-host-normal-reference' : 'current-normal-reference' },

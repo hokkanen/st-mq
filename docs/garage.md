@@ -125,7 +125,7 @@ exposure to recover; incomplete evidence can finish only without a savings claim
 Garage learning uses a separate `garage:<input>` stream in the existing immutable
 learning journal. The first entry saves its seed; every entry saves normalized
 used inputs, settings checksum and algorithm version
-`committed-garage-v1-coupled`. Fresh source reports provide evidence; UI polling
+`committed-garage-v2-sparse`. Fresh source reports provide evidence; UI polling
 does not. The same ordered entry function drives live learning, rebuilding and
 coefficient charts. Cache digests detect accidental corruption. File-backed
 reconstruction runs in a worker, catches up the current journal and checks the

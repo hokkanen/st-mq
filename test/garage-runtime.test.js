@@ -74,7 +74,7 @@ test('cached temperatures stay last-known and forecast quality cannot hide inval
 });
 
 test('exposure survives restart and missing time consumes each location independently', async t => {
-  const f = setup(t, { settings: { protection: { approved: true } } });
+  const f = setup(t, { settings: { protection: { approved: true, floorC: 4, recoveryAboveC: 6 } } });
   f.temperatures(5, 3); f.runtime.safetyTick();
   f.at(START + MINUTE); f.temperatures(5, 3); f.runtime.safetyTick();
   const old = f.runtime.exposure.locations.front.degreeMinutes;

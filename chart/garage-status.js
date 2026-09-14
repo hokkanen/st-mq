@@ -83,9 +83,15 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     ['Normal Mitsubishi setting', number(settings.baselineC, '°C')],
   ];
   const coefficients = Object.entries(learning.coefficients ?? {}).flatMap(([location, values]) => Array.isArray(values)
-    ? values.map(value => [`${text(location)} · ${text(value.name)}`, `${number(value.value, value.unit)} · ${text(value.basis)} · ${number(value.evidence)} intervals`]) : []);
+    ? values.map(value => [`${text(location)} · ${text(value.name)}`, `${number(value.value, value.unit)} · ${text(value.basis)} · ${number(value.evidence)} ${value.evidenceUnit === 'hours' ? 'hours' : 'intervals'}`]) : []);
   const outcomeRows = [['Learning state', text(learning.status)], ['Reconstruction', text(learning.reconstruction)], ['Algorithm', learning.algorithm ?? 'Unavailable'],
     ['Trained intervals', number(learning.trainedIntervals)],
+    ...(learning.validation ? [
+      ['Complete cooling / recovery episodes', `${number(learning.validation.trainingEpisodes)} training · ${number(learning.validation.validationEpisodes)} validated`],
+      ['Validated pause duration', number(learning.maxPauseHours, 'h')],
+      ['Electricity and recovery prediction', learning.electricalReady ? 'Validated on recorded episodes' : 'Awaiting electricity and recovery evidence'],
+      ['Current opportunity', plan.learningTrial ? 'Bounded learning trial' : text(plan.reason ?? 'Normal heating')],
+    ] : []),
     ...Object.entries(learning.heldOut ?? {}).map(([location, metric]) => [({ rear: 'Rear response', front: 'Front response', native: 'Electrical response', advanceRear: 'Rear advance prediction', advanceFront: 'Front advance prediction', offRear: 'Rear OFF prediction', offFront: 'Front OFF prediction' })[location] ?? text(location), `${number(metric.n)} predictions · MAE ${number(metric.mae, location === 'native' ? 'kW' : '°C')} · bias ${number(metric.bias, location === 'native' ? 'kW' : '°C')}`]),
     ['Normal rear reference', `${number(learning.normalReference?.rearC, '°C')} · ${text(learning.normalReference?.basis)} · ${number(learning.normalReference?.samples)} samples`]];
   const inputRows = [['Rear protection sensor', 'Recorded separately; original rear history retains its identity.'],

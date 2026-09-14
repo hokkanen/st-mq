@@ -7,6 +7,7 @@ import { garageSettings } from '../src/garage/settings.js';
 import { createGarageModel, updateGarageModel } from '../src/garage/model.js';
 import { appendGarageEntry } from '../src/garage/learning.js';
 import { createGarageAdapter, createGarageSimulationTransport } from '../src/garage/adapter.js';
+import { assignGaragePlanningEvidence } from './helpers/garage-model-fixture.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000, BASE = 1_800_000_000_000;
 const TEMPLATE = JSON.parse(readFileSync(new URL('./fixtures/garage-provisional-state.json', import.meta.url)));
@@ -23,7 +24,7 @@ function syntheticSeed(settings) {
   model.rear.values = [.02, .10, .55, .5, .012, .012, .04, .04];
   model.front.values = [.55, .012, .07, .06, 0, 0, 0, 0];
   model.native.values = [.26, .012, .35, .1];
-  return model;
+  return assignGaragePlanningEvidence(model);
 }
 function setup(t) {
   let now = BASE, owner = true, stateSequence = 0;

@@ -1,8 +1,11 @@
 import { garageSettings } from './settings.js';
+import { garagePlanningMargins } from './planning-evidence.js';
+import { createGarageRegression, fitGarageRegression } from './model-fit.js';
+import { createGarageValidation, advanceGarageValidation, interruptGarageValidation, summarizeGarageValidation } from './model-validation.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const clone = value => structuredClone(value);
-export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v1-coupled';
+export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v2-sparse';
 const REAR = [
   ['lossPerHour', .022, .001, .15, '1/h'], ['memoryExchangePerHour', .11, .01, .6, '1/h'],
   ['powerHeatCPerKwh', .55, .02, 4, '°C/kWh'], ['activityHeatCPerHour', .5, .02, 4, '°C/h'],
@@ -17,25 +20,16 @@ const FRONT = [
 ];
 const NATIVE = [ ['idleAndMaintenanceKw', .26, 0, 2, 'kW'], ['coldWeatherKwPerC', .012, 0, .1, 'kW/°C'],
   ['demandKwPerC', .35, .01, 1.5, 'kW/°C'], ['restartKw', .1, 0, 1, 'kW'] ];
-const regression = specs => ({ values: specs.map(x => x[1]), covariance: specs.map((_, i) => specs.map((__, j) => i === j ? .5 : 0)),
-  evidence: specs.map(() => 0), samples: 0 });
-const errorState = () => ({ n: 0, absolute: 0, square: 0, signed: 0 });
-function recordError(metrics, residual) { if (finite(residual)) { metrics.n++; metrics.absolute += Math.abs(residual); metrics.square += residual ** 2; metrics.signed += residual; } }
-function errors(metrics) { return { n: metrics.n, mae: metrics.n ? metrics.absolute / metrics.n : null,
-  rmse: metrics.n ? Math.sqrt(metrics.square / metrics.n) : null, bias: metrics.n ? metrics.signed / metrics.n : null }; }
-const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
-function fit(reg, specs, features, outcome, weight = 1) {
-  // Projected recursive ridge fit. Parameters and covariance remain bounded; no
-  // retained telemetry window is needed. Fixed forgetting is part of version 1.
-  if (!finite(outcome) || weight <= 0) return;
-  const x = features.map(v => v * Math.sqrt(weight)), y = outcome * Math.sqrt(weight), p = reg.covariance;
-  const px = p.map(row => dot(row, x)), denominator = .998 + dot(x, px), residual = clamp(y - dot(reg.values, x), -2, 2);
-  const gain = px.map(v => v / denominator);
-  reg.values = reg.values.map((value, i) => clamp(value + gain[i] * residual, specs[i][2], specs[i][3]));
-  reg.covariance = p.map((row, i) => row.map((value, j) => clamp((value - gain[i] * px[j]) / .998, -100, 100)));
-  for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > .005) reg.evidence[i]++;
-  reg.samples++;
+const regression = createGarageRegression;
+const errorState = () => ({ n: 0, hours: 0, absolute: 0, square: 0, signed: 0 });
+function recordError(metrics, residual, hours = 1) {
+  if (finite(residual)) { metrics.n++; metrics.hours += hours;
+    metrics.absolute += Math.abs(residual) * hours; metrics.square += residual ** 2 * hours; metrics.signed += residual * hours; }
 }
+function errors(metrics) { const weight = metrics.hours || metrics.n;
+  return { n: metrics.n, hours: metrics.hours, mae: weight ? metrics.absolute / weight : null,
+    rmse: weight ? Math.sqrt(metrics.square / weight) : null, bias: weight ? metrics.signed / weight : null }; }
+const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
 function validC(value) { return finite(value) && value >= -60 && value <= 65; }
 function qualifiedPower(input) { return finite(input.powerKw) && input.powerKw >= 0 && input.powerKw <= 8
   && ['verified', 'provisional', 'simulated'].includes(input.powerQuality); }
@@ -53,11 +47,14 @@ export function createGarageModel({ seedAt = 0, baselineC = 10 } = {}) {
   if (!finite(seedAt) || !finite(baselineC)) throw new Error('Garage seed requires numeric UTC time and baseline');
   return { algorithm: GARAGE_ALGORITHM_VERSION, seedAt, at: null, updates: 0, trainedIntervals: 0,
     rear: regression(REAR), front: regression(FRONT), native: regression(NATIVE),
+    nativeActivity: { mean: .5, samples: 0, hours: 0 },
     state: { rearC: null, frontC: null, coreC: null, differenceC: null }, previous: null,
     normalReference: { interceptC: baselineC, outdoorSlope: .03, baselineC, samples: 0,
-      availableSince: null, lastPauseAt: null, initialized: false, outdoorC: 0 },
+      availableSince: null, lastPauseAt: null, initialized: false, outdoorC: 0, qualifiedHours: 0, settledC: null },
+    validation: createGarageValidation(),
     heldOut: Object.fromEntries(['rear', 'front', 'native', 'advanceRear', 'advanceFront', 'offRear', 'offFront'].map(key => [key, errorState()])),
     evidence: { offIntervals: 0, powerIntervals: 0, activityIntervals: 0, rearOnlyIntervals: 0,
+      offHours: 0, powerHours: 0, activityHours: 0,
       ev: [{ powerIntervals: 0, activityIntervals: 0, independentIntervals: 0 }, { powerIntervals: 0, activityIntervals: 0, independentIntervals: 0 }] },
     lastError: null, sourceEpoch: null };
 }
@@ -77,9 +74,15 @@ export function predictGarageNative(model, state, input = {}) {
   // effective reference. It never means a forced compressor duty.
   const powerKw = clamp(predicted * clamp((demand + .65) / .65, 0, 1), 0, 3);
   const nativeError = errors(model.heldOut.native).rmse;
-  return { powerKw, activity: clamp(powerKw / .8, 0, 1),
-    basis: model.native.samples >= 24 ? 'learned-native-electrical-response' : 'prior-modeled-electricity',
-    uncertaintyKw: Math.max(nativeError ?? .3, model.native.samples >= 24 ? .08 : .25) };
+  const duty = model.nativeActivity;
+  // Activity is dimensionless telemetry. Once observed, predict its own native
+  // response rather than deriving it from unmeasured electrical watts.
+  const predictedActivity = duty?.hours >= 2
+    ? (duty.mean + .015 * Math.max(0, -(input.outdoorC ?? 0)) + .45 * Math.max(0, demand)) * clamp((demand + .65) / .65, 0, 1)
+    : powerKw / .8;
+  return { powerKw, activity: clamp(predictedActivity, 0, 1),
+    basis: model.native.active?.[0] ? 'learned-native-electrical-response' : 'prior-modeled-electricity',
+    uncertaintyKw: Math.max(nativeError ?? .3, model.native.active?.[0] ? .08 : .25) };
 }
 function features(state, input, power, active) {
   const ev = evInputs(input);
@@ -102,7 +105,8 @@ export function predictGarageStep(model, state, input = {}, durationHours, { con
     const native = predictGarageNative(model, next, input);
     const actualPower = conditional && qualifiedPower(input), actualActivity = conditional ? activity(input) : null;
     const kw = actualPower ? input.powerKw : native.powerKw;
-    const preferActivity = !actualPower && model.evidence.powerIntervals < 12 && model.evidence.activityIntervals >= 12;
+    const preferActivity = !actualPower && (model.rear.active?.[3] === true && model.rear.active?.[2] !== true
+      || (model.rear.evidence?.[2] ?? model.evidence.powerHours) < 2 && model.evidence.activityHours >= 2);
     const off = input.available === false;
     const heatPower = off ? 0 : actualPower ? kw : actualActivity !== null || preferActivity ? 0 : kw;
     const heatActivity = off ? 0 : actualPower ? 0 : actualActivity ?? (preferActivity ? native.activity : 0);
@@ -124,24 +128,26 @@ export function predictGarageStep(model, state, input = {}, durationHours, { con
     rearUncertaintyC: Math.max(.15, rearError ?? .4) * Math.sqrt(durationHours),
     frontUncertaintyC: Math.max(.25, frontError ?? .65) * Math.sqrt(durationHours) };
 }
-function learnReference(model, current, previous, hours, config) {
+function learnReference(model, current, previous, hours, config, allowFit) {
   const reference = model.normalReference;
   const disturbance = current.managedPause === true || current.recovering === true || current.available !== true || current.baselineVerified !== true
     || current.doorFront === true || current.doorRear === true || evInputs(current).some(ev => ev.kw > .1 || ev.active > 0);
   if (current.managedPause || current.recovering || current.available === false) reference.lastPauseAt = current.at;
-  if (disturbance) { reference.availableSince = null; return; }
+  if (disturbance) { reference.availableSince = null; reference.settledC = current.rearC; return; }
   if (reference.availableSince === null) reference.availableSince = current.at;
   const stableHours = (current.at - reference.availableSince) / HOUR;
-  const delta = Math.abs(current.rearC - previous.rearC) / Math.max(hours, .02);
-  if (stableHours < 8 || delta > .15 || (finite(reference.lastPauseAt) && current.at - reference.lastPauseAt < 48 * HOUR)) return;
+  reference.settledC = finite(reference.settledC)
+    ? current.rearC + (reference.settledC - current.rearC) * Math.exp(-hours / 2) : current.rearC;
+  const trend = Math.abs(current.rearC - reference.settledC) / 2;
+  if (!allowFit || stableHours < 8 || trend > .25) return;
   const prediction = normalGarageTemperature(model, current.outdoorC);
   // First baseline can be learned from achieved native warmth. Once established,
   // cold post-control periods never lower it; changed baselines require a new seed.
   if (reference.initialized && current.rearC < prediction - .5) return;
-  const weight = reference.initialized ? .003 : 1 / (reference.samples + 1);
+  const weight = reference.initialized ? 1 - Math.exp(-hours / 80) : hours / (reference.qualifiedHours + hours);
   reference.interceptC = clamp(reference.interceptC + weight * (current.rearC - prediction), 3, config.baselineC + 3);
-  reference.outdoorC = current.outdoorC; reference.samples++;
-  reference.initialized = reference.samples >= 12;
+  reference.outdoorC = current.outdoorC; reference.samples++; reference.qualifiedHours += hours;
+  reference.initialized = reference.qualifiedHours >= 2;
 }
 
 /** Ordered immutable journal update. Duplicate source times are not new training;
@@ -155,8 +161,12 @@ export function updateGarageModel(previous, observation, settings = {}) {
   const current = clone(observation), last = model.previous;
   model.at = current.at; model.updates++;
   if (current.sourceEpoch != null && model.sourceEpoch !== null && current.sourceEpoch !== model.sourceEpoch) {
-    model.previous = null; model.state = { rearC: null, frontC: null, coreC: null, differenceC: null };
+    // Adapter boot identity is part of this source epoch. A reboot interrupts
+    // interval continuity, not the building's accumulated thermal memory.
+    // Explicit sensor corrections reset the model through journal context.
+    model.previous = null; model.state = { rearC: null, frontC: null, coreC: model.state.coreC, differenceC: null };
     model.normalReference.availableSince = null;
+    interruptGarageValidation(model, 'source-epoch-boundary');
   }
   model.sourceEpoch = current.sourceEpoch ?? model.sourceEpoch;
   const rearAt = current.rearAt ?? current.at, frontAt = current.frontAt ?? current.at;
@@ -164,7 +174,7 @@ export function updateGarageModel(previous, observation, settings = {}) {
     && finite(rearAt) && rearAt <= current.at && current.at - rearAt <= config.maxSensorAgeMs;
   const frontFresh = validC(current.frontC) && current.frontUsable !== false && current.frontRetained !== true
     && finite(frontAt) && frontAt <= current.at && current.at - frontAt <= config.maxSensorAgeMs;
-  if (!rearFresh) { model.previous = null; model.lastError = 'rear-input-unavailable'; return model; }
+  if (!rearFresh) { model.previous = null; model.normalReference.availableSince = null; interruptGarageValidation(model, 'rear-input-unavailable'); model.lastError = 'rear-input-unavailable'; return model; }
   if (!frontFresh) current.frontC = null;
   const prior = model.previous && last;
   const hours = prior ? (rearAt - (prior.rearAt ?? prior.at)) / HOUR : 0;
@@ -185,52 +195,74 @@ export function updateGarageModel(previous, observation, settings = {}) {
     const advance = predictGarageStep(model, state, prior, hours);
     const actualPower = qualifiedPower(prior), actualActivity = activity(prior);
     const inputKnown = prior.available === false || actualPower || actualActivity !== null;
-    const heldOut = ((prior.at - model.seedAt) / HOUR % 24 + 24) % 24 >= 18;
     const frontKnown = validC(prior.frontC) && frontFresh && frontAt > (prior.frontAt ?? prior.at) && current.frontGap !== true
       && Math.abs(frontAt - rearAt) <= 5 * 60_000 && Math.abs((prior.frontAt ?? prior.at) - (prior.rearAt ?? prior.at)) <= 5 * 60_000;
-    if (heldOut) {
-      if (inputKnown) recordError(model.heldOut.rear, current.rearC - conditional.rearC);
-      recordError(model.heldOut.advanceRear, current.rearC - advance.rearC);
-      if (prior.available === false) recordError(model.heldOut.offRear, current.rearC - advance.rearC);
-      if (frontKnown) {
-        if (inputKnown) recordError(model.heldOut.front, current.frontC - conditional.frontC);
-        recordError(model.heldOut.advanceFront, current.frontC - advance.frontC);
-        if (prior.available === false) recordError(model.heldOut.offFront, current.frontC - advance.frontC);
-      }
-      if (qualifiedPower(prior) && prior.available === true)
-        recordError(model.heldOut.native, prior.powerKw - predictGarageNative(model, state, prior).powerKw);
-    }
     const power = prior.available === false ? 0 : actualPower ? prior.powerKw : 0;
     const active = prior.available === false || actualPower ? 0 : actualActivity ?? 0;
-    const x = features(state, source, power, active);
     const frontDisturbance = current.doorFront === true || prior.doorFront === true
       || frontKnown && Math.abs((current.frontC - current.rearC) - state.differenceC) > 1;
     const rearDisturbance = current.doorRear === true || prior.doorRear === true || Math.abs(current.rearC - prior.rearC) > 2;
+    const vehicles = evInputs(prior), evActive = vehicles.some(ev => ev.kw > .1 || ev.active > 0);
+    const episode = advanceGarageValidation(model, { state, prior, current, hours, frontKnown,
+      disturbed: frontDisturbance || rearDisturbance || evActive, metered: actualPower, predict: predictGarageStep });
+    // A physical episode takes precedence over the ordinary daily partition.
+    const heldOut = episode.role ? episode.role === 'validation' : ((prior.at - model.seedAt) / HOUR % 24 + 24) % 24 >= 18;
+    if (heldOut) {
+      if (inputKnown) recordError(model.heldOut.rear, current.rearC - conditional.rearC, hours);
+      recordError(model.heldOut.advanceRear, current.rearC - (episode.forecast ?? advance).rearC, hours);
+      if (prior.available === false) recordError(model.heldOut.offRear, current.rearC - (episode.forecast ?? advance).rearC, hours);
+      if (frontKnown) {
+        if (inputKnown) recordError(model.heldOut.front, current.frontC - conditional.frontC, hours);
+        recordError(model.heldOut.advanceFront, current.frontC - (episode.forecast ?? advance).frontC, hours);
+        if (prior.available === false) recordError(model.heldOut.offFront, current.frontC - (episode.forecast ?? advance).frontC, hours);
+      }
+      if (actualPower && prior.available === true)
+        recordError(model.heldOut.native, prior.powerKw - predictGarageNative(model, state, prior).powerKw, hours);
+    }
     if (!heldOut && inputKnown && !rearDisturbance) {
-      fit(model.rear, REAR, x.rear.map(v => v * hours), current.rearC - prior.rearC);
-      if (frontKnown) fit(model.front, FRONT, x.front.map(v => v * hours),
-        (current.frontC - current.rearC) - state.differenceC, frontDisturbance ? .05 : 1);
       model.trainedIntervals++;
-      if (prior.available === false) model.evidence.offIntervals++;
-      if (actualPower) model.evidence.powerIntervals++; else if (actualActivity !== null) model.evidence.activityIntervals++;
-      const vehicles = evInputs(prior);
+      if (prior.available === false) { model.evidence.offIntervals++; model.evidence.offHours += hours; }
+      if (actualPower) { model.evidence.powerIntervals++; model.evidence.powerHours += hours; }
+      else if (actualActivity !== null) { model.evidence.activityIntervals++; model.evidence.activityHours += hours; }
       vehicles.forEach((ev, i) => {
         if (ev.kind === 'power' && ev.kw > .1) model.evidence.ev[i].powerIntervals++;
         if (ev.kind === 'activity' && ev.active) model.evidence.ev[i].activityIntervals++;
         const other = vehicles[1 - i];
         if ((ev.kw > .1 || ev.active > 0) && other.known && other.kw === 0 && other.active === 0
-          && !frontDisturbance && !rearDisturbance) model.evidence.ev[i].independentIntervals++;
+          && !frontDisturbance) model.evidence.ev[i].independentIntervals++;
       });
-      if (!model.evidence.ev.every(ev => ev.independentIntervals >= 24)) {
-        for (const index of [4, 6]) {
-          const shared = (model.rear.values[index] + model.rear.values[index + 1]) / 2;
-          model.rear.values[index] = shared; model.rear.values[index + 1] = shared;
-          model.front.values[index] = 0; model.front.values[index + 1] = 0;
-        }
+      // Average endpoint temperatures approximate interval-integrated features;
+      // regression uses rates weighted by elapsed hours, independent of poll count.
+      const midpoint = { rearC: (prior.rearC + current.rearC) / 2,
+        coreC: (state.coreC + conditional.coreC) / 2,
+        differenceC: frontKnown ? (state.differenceC + current.frontC - current.rearC) / 2 : state.differenceC };
+      const x = features(midpoint, source, power, active);
+      // EV response remains a shared prior; charging intervals cannot silently
+      // teach their unknown heat contribution as insulation or pump efficiency.
+      if (!evActive) {
+        fitGarageRegression(model.rear, REAR, x.rear, (current.rearC - prior.rearC) / hours, hours, episode.regime, 'rear');
+        if (frontKnown && !frontDisturbance) fitGarageRegression(model.front, FRONT, x.front,
+          ((current.frontC - current.rearC) - state.differenceC) / hours, hours, episode.regime, 'front');
       }
-      // Electrical demand is separately learned, not made an observed future input.
-      if (actualPower && prior.available === true && !frontDisturbance)
-        fit(model.native, NATIVE, nativeFeatures(model, state, prior), prior.powerKw);
+      // Fit the same native thermostat envelope used for forecasting. Baseline
+      // and weather learn near normal operation; fixed recovery priors are tested
+      // separately by full episode energy, never absorbed into the intercept.
+      const demand = normalGarageTemperature(model, prior.outdoorC) - state.rearC;
+      const throttle = clamp((demand + .65) / .65, 0, 1);
+      if (!actualPower && actualActivity !== null && prior.available === true && model.normalReference.initialized
+        && !evActive && !frontDisturbance && episode.regime === 'normal' && Math.abs(demand) <= .65 && throttle >= .2) {
+        const duty = model.nativeActivity;
+        const adjustedActivity = clamp(actualActivity / throttle - .015 * Math.max(0, -prior.outdoorC) - .45 * Math.max(0, demand), 0, 1);
+        const weight = duty.hours < 2 ? hours / (duty.hours + hours) : 1 - Math.exp(-hours / 48);
+        duty.mean += weight * (adjustedActivity - duty.mean); duty.hours += hours; duty.samples++;
+      }
+      if (actualPower && prior.available === true && model.normalReference.initialized && !evActive && !frontDisturbance
+        && throttle >= .2 && (episode.regime === 'recovery' || Math.abs(demand) <= .65)) {
+        const trainingRecoveries = model.validation.episodes.filter(e => e.role === 'training' && e.complete && e.clean).length;
+        fitGarageRegression(model.native, NATIVE, nativeFeatures(model, state, prior).map(v => v * throttle),
+          prior.powerKw, hours, episode.regime === 'recovery' ? 'recovery' : 'normal', 'native',
+          { allowDemand: trainingRecoveries >= 2 });
+      }
     }
     if (!frontKnown) model.evidence.rearOnlyIntervals++;
     if (inputKnown) {
@@ -245,8 +277,8 @@ export function updateGarageModel(previous, observation, settings = {}) {
       const meanRear = (prior.rearC + current.rearC) / 2;
       model.state.coreC = meanRear + (model.state.coreC - meanRear) * Math.exp(-hours / 18);
     }
-    if (!heldOut) learnReference(model, current, prior, hours, config);
-  }
+    learnReference(model, current, prior, hours, config, !heldOut);
+  } else if (prior) { model.normalReference.availableSince = null; interruptGarageValidation(model, 'gapped-observation'); }
   model.state.rearC = current.rearC; model.state.frontC = frontFresh ? current.frontC : null;
   model.state.differenceC = frontFresh ? current.frontC - current.rearC : model.state.differenceC;
   model.previous = { ...current, rearAt, frontAt }; model.lastError = supported ? null : 'initial-or-gapped-observation';
@@ -281,7 +313,7 @@ export function forecastGarage(model, { now, initial = model.state, steps = [], 
   garageSettings(settings);
   if (!finite(now) || steps.length > 600) throw new Error('Garage forecast requires bounded steps and decision time');
   let state = clone(initial), cursor = now, electricityKwh = 0, costEur = 0, uncertaintyKwh = 0;
-  const points = [];
+  const points = [], summary = garageModelSummary(model);
   for (const step of steps) {
     const start = step.start ?? cursor, end = step.end ?? step.at;
     if (!finite(start) || !finite(end) || start !== cursor || end <= start || end - start > 4 * HOUR) throw new Error('Garage forecast steps must be contiguous bounded UTC intervals');
@@ -291,8 +323,8 @@ export function forecastGarage(model, { now, initial = model.state, steps = [], 
     state = next.state; electricityKwh += next.electricityKwh; uncertaintyKwh += next.uncertaintyKwh;
     if (finite(step.priceCtPerKwh)) costEur += next.electricityKwh * step.priceCtPerKwh / 100;
     const horizonHours = (end - now) / HOUR;
-    const rearMargin = next.rearUncertaintyC * Math.sqrt(Math.max(1, horizonHours / ((end - start) / HOUR)));
-    const frontMargin = next.frontUncertaintyC * Math.sqrt(Math.max(1, horizonHours / ((end - start) / HOUR)));
+    const margins = garagePlanningMargins(summary, horizonHours);
+    const rearMargin = margins.rearC, frontMargin = margins.frontC;
     points.push({ start, end, outdoorC: step.outdoorC, available: step.available !== false, priceCtPerKwh: step.priceCtPerKwh, at: end, ...next, rearLowerC: next.rearC - rearMargin, frontLowerC: next.frontC - frontMargin });
     cursor = end;
   }
@@ -303,20 +335,24 @@ export function garageModelSummary(model) {
   if (!model || model.algorithm !== GARAGE_ALGORITHM_VERSION) return { algorithm: model?.algorithm ?? GARAGE_ALGORITHM_VERSION, status: 'unavailable' };
   const heldOut = Object.fromEntries(Object.entries(model.heldOut).map(([key, value]) => [key, errors(value)]));
   const coefficients = (specs, reg) => specs.map((spec, i) => ({ name: spec[0], value: reg.values[i], unit: spec[4],
-    basis: reg.evidence[i] >= 24 ? 'fitted-effective-response' : reg.evidence[i] ? 'retained-with-limited-evidence' : 'prior', evidence: reg.evidence[i] }));
-  const ready = model.normalReference.initialized && model.rear.samples >= 24 && model.front.samples >= 12 && model.evidence.offIntervals >= 6
-    && heldOut.rear.n >= 6 && heldOut.front.n >= 6 && heldOut.offRear.n >= 3 && heldOut.offFront.n >= 3
-    && heldOut.offRear.rmse < .8 && heldOut.offFront.rmse < 1.2 && heldOut.advanceRear.rmse < .8 && heldOut.advanceFront.rmse < 1.2;
-  return { algorithm: model.algorithm, status: ready ? 'validated-provisional' : 'learning', ready,
+    basis: reg.active[i] ? 'fitted-effective-response' : reg.fitted[i] ? 'retained-effective-response' : 'fixed-prior', evidence: reg.evidence[i], evidenceUnit: 'hours' }));
+  const validation = summarizeGarageValidation(model);
+  const thermalReady = model.normalReference.initialized && model.rear.active[0] && model.front.active[1]
+    && validation.supportedOffHours > 0;
+  const electricalReady = model.native.active[0] && model.native.hours >= 6 && heldOut.native.hours >= 2
+    && heldOut.native.rmse < .35 && validation.recoveryEpisodes >= 1;
+  return { algorithm: model.algorithm, status: thermalReady ? 'validated-provisional' : 'learning', ready: thermalReady,
+    thermalReady, electricalReady, nativeActivity: { ...model.nativeActivity, basis: model.nativeActivity.hours >= 2 ? 'learned-dimensionless-activity' : 'prior-activity-response' }, maxPauseHours: thermalReady ? validation.supportedOffHours : 0, validation,
     trainedIntervals: model.trainedIntervals, heldOut, coefficients: { rear: coefficients(REAR, model.rear),
       front: coefficients(FRONT, model.front), native: coefficients(NATIVE, model.native) }, state: clone(model.state),
     normalReference: { rearC: normalGarageTemperature(model, model.normalReference.outdoorC), outdoorC: model.normalReference.outdoorC,
-      basis: model.normalReference.initialized ? 'continuously-available-achieved-reference' : 'prior-near-pipe-reference', samples: model.normalReference.samples },
-    ev: { chargers: model.evidence.ev.map((e, i) => ({ id: i + 1, ...e,
-      basis: model.evidence.ev.every(ev => ev.independentIntervals >= 24) ? 'independently-observed-effective-response'
-        : e.powerIntervals >= 24 || e.activityIntervals >= 24 ? 'shared-effective-response' : 'shared-prior-limited-evidence' })) },
+      initialized: model.normalReference.initialized,
+      basis: model.normalReference.initialized ? 'continuously-available-achieved-reference' : 'prior-near-pipe-reference',
+      samples: model.normalReference.samples, qualifiedHours: model.normalReference.qualifiedHours },
+    ev: { chargers: model.evidence.ev.map((e, i) => ({ id: i + 1, ...e, basis: 'shared-prior-limited-evidence' })) },
     limitations: ['Estimated thermal memory is not measured pipe or building-mass temperature.',
-      'Validation is temporally held-out one-step prediction, not a pipe-safety guarantee.',
-      ...(model.native.samples < 24 ? ['Electricity response remains an explicitly modeled prior.'] : []),
-      'Solar is excluded until a versioned held-out improvement is demonstrated.'] };
+      'Whole-episode validation uses preceding observed ambient weather, with no future actual heating or temperature correction.',
+      'Pause duration is limited by distinct completed training and later validation episodes.',
+      ...(!electricalReady ? ['Electricity or recovery response remains unqualified for economic dispatch.'] : []),
+      'Memory, front distribution, restart and EV effects retain fixed priors; demand response requires independent recovery episodes.'] };
 }

@@ -1,14 +1,14 @@
 /** Owner policy and versioned engineering choices. Defaults are illustrative,
  * unapproved air-sensor limits, not a certification of pipe protection. */
-export const GARAGE_POLICY_VERSION = 'garage-exposure-v1';
+export const GARAGE_POLICY_VERSION = 'garage-exposure-v2';
 export const GARAGE_PREFERENCE_VERSION = 'garage-warmth-cost-v1';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
   enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false,
   maxSensorAgeMs: 120_000, minOnMs: 30 * 60_000, minOffMs: 10 * 60_000,
   maxHorizonHours: 48, stepMinutes: 15,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
-    floorC: 4, hardMinimumC: 2, budgetDegreeMinutes: 120,
-    recoveryAboveC: 6, recoveryDegreeMinutesPerMinute: 0.25, recoveryDwellMinutes: 30 }),
+    floorC: 2, hardMinimumC: -1, budgetDegreeMinutes: 90,
+    recoveryAboveC: 4, recoveryDegreeMinutesPerMinute: 1, recoveryDwellMinutes: 20 }),
 });
 const finite = Number.isFinite;
 function number(input, key, min, max) {
@@ -27,6 +27,9 @@ export function garageSettings(input = {}) {
   number(output, 'maxHorizonHours', 2, 48); number(output, 'stepMinutes', 5, 30);
   const policy = output.protection;
   if (typeof policy.approved !== 'boolean') throw new Error('Garage protection approval must be boolean');
+  // Accept the previous configuration spelling without reinterpreting saved
+  // exposure: upgradeGarageExposure separately carries its uncertain debt.
+  if (policy.version === 'garage-exposure-v1') policy.version = GARAGE_POLICY_VERSION;
   if (policy.version !== GARAGE_POLICY_VERSION) throw new Error('Unsupported garage protection policy version');
   number(policy, 'floorC', 0, 12); number(policy, 'hardMinimumC', -2, 10);
   number(policy, 'budgetDegreeMinutes', 1, 10_000); number(policy, 'recoveryAboveC', 1, 16);

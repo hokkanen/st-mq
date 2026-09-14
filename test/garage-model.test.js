@@ -5,9 +5,11 @@ import { createGarageExposure, updateGarageExposure, assessGarageProtection } fr
 import { createGarageModel, updateGarageModel, replayGarageModel, predictGarageStep, forecastGarage,
   garageModelSummary, normalGarageTemperature, knownGarageEvAt } from '../src/garage/model.js';
 import { planGarage } from '../src/garage/planner.js';
+import { assignGaragePlanningEvidence } from './helpers/garage-model-fixture.js';
 const HOUR = 3_600_000, MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
 const settings = garageSettings({ enabled: true, maxSensorAgeMs: 4 * HOUR,
-  protection: { approved: true } });
+  protection: { approved: true, floorC: 4, hardMinimumC: 2, budgetDegreeMinutes: 120,
+    recoveryAboveC: 6, recoveryDegreeMinutesPerMinute: .25, recoveryDwellMinutes: 30 } });
 const observation = (i, extra = {}) => ({ at: start + i * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
   available: true, baselineVerified: true, powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0, ...extra });
 function trainedModel(hours = 96) {
@@ -22,7 +24,7 @@ function plannerModel() {
   model.rear.values = [.02, .10, .55, .5, .012, .012, .04, .04];
   model.front.values = [.55, .012, .07, .06, 0, 0, 0, 0];
   model.native.values = [.26, .012, .35, .1];
-  return model;
+  return assignGaragePlanningEvidence(model);
 }
 function outlook(values) {
   return { prices: values.map((value, i) => ({ start: start + i * HOUR, end: start + (i + 1) * HOUR, allInCentsPerKWh: value })),
@@ -226,7 +228,7 @@ test('native OFF still records qualified observed standby electricity without tr
   assert.ok(predicted.rearC < 7);
 });
 
-test('rich independent synthetic thermal evidence changes bounded coefficients and validates OFF on later blocks', () => {
+test('controlled thermal excitation fits rear response without qualifying EV-disturbed episodes', () => {
   const truth = createGarageModel({ seedAt: start });
   truth.rear.values[0] = .035; truth.rear.values[2] = .9;
   truth.rear.values[4] = .03; truth.rear.values[5] = .05;
@@ -248,7 +250,8 @@ test('rich independent synthetic thermal evidence changes bounded coefficients a
   assert.ok(model.rear.values[0] > .026 && model.rear.values[0] < .06);
   assert.ok(model.rear.values[2] > .65 && model.rear.values[2] < 1.1);
   assert.ok(summary.heldOut.offRear.n >= 12 && summary.heldOut.offFront.n >= 12);
-  assert.ok(summary.heldOut.offRear.rmse < .15 && summary.heldOut.offFront.rmse < .2);
+  assert.ok(summary.heldOut.rear.rmse < .15 && summary.heldOut.front.rmse < .2);
+  assert.equal(summary.ready, false, 'Door/EV disturbance cannot qualify a clean long OFF episode');
   assert.ok(model.evidence.ev.every(ev => ev.independentIntervals >= 24));
   assert.deepEqual(replayGarageModel(createGarageModel({ seedAt: start }), samples), model);
 });
