@@ -602,7 +602,7 @@ try {
     await checkDateAlignment();
     await evaluate("document.getElementById('date-range-enabled').click(); true");
     await capture(`home-energy-dark-${viewport.width}`);
-    await evaluate("document.querySelector('.control-fireplace').scrollIntoView({block:'start'}); true");
+    await evaluate("document.getElementById('fireplace-details').scrollIntoView({block:'start'}); true");
     await capture(`home-energy-fireplace-${viewport.width}`);
     await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
     await capture(`home-energy-chart-${viewport.width}`);
@@ -740,7 +740,10 @@ try {
   seedTimingBrowserFixture(app.store);
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
-  await until("document.getElementById('outdoor-age')?.textContent.includes('FMI nearby station')");
+  await until("document.querySelector('#outdoor .status-detail-trigger')");
+  await evaluate("document.querySelector('#outdoor .status-detail-trigger').click(); true");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /FMI nearby station/);
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true'");
   await checkEquipment();
   const providerChart = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?start=2026-09-07&end=2026-09-07&left=power`).then(response => response.json());

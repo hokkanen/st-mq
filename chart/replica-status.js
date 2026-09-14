@@ -200,14 +200,17 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention || display.state !== 'ready');
     $(key).classList.toggle('metric-unavailable', !readingStatus.usable);
     $(`${key}-age`).textContent = [source, 'Recorded', readingStatus.usable && readingStatus.attention ? 'Needs attention' : null].filter(Boolean).join(' · ');
+    $(`${key}-age`).hidden = false;
   }
   const decision = status.lastDecision?.payload ?? status.lastDecision ?? (stoppedController ? status.decision : null) ?? {};
-  $('requested').textContent = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');
+  setStatusDetail($('requested'), { key: 'home-heating-request',
+    label: String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' '), detail: '' });
   $('requested-label').textContent = 'RECORDED HEATING REQUEST';
   const decisionAt = timestamp(status.lastDecision?.at ?? decision.at);
   $('actual').textContent = `${decisionAt ? `Recorded ${formatTime(decisionAt)} · ` : ''}Current home state unknown`;
   const bytes = status.replication?.bytes;
-  $('price').textContent = Number.isFinite(bytes) && bytes >= 0 ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(bytes / 1e6) : '—';
+  setStatusDetail($('price'), { key: 'metric-price',
+    label: Number.isFinite(bytes) && bytes >= 0 ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(bytes / 1e6) : '—', detail: '' });
   $('price-label').textContent = stoppedController ? 'LOCAL HISTORY DATABASE' : 'COPIED DATABASE';
   $('price-unit').textContent = 'MB · recorded history and saved models';
   $('updated').textContent = display.snapshotAt === null ? stoppedController ? 'Local history preserved' : 'Waiting for a snapshot'

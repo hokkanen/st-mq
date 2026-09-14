@@ -227,6 +227,8 @@ export function renderGarage(document, status) {
   document.getElementById('garage-temperature')?.classList.toggle('metric-unavailable', !main || main.stale);
   set('garage-temperature-age', !main || main.stale ? 'Waiting for current readings'
     : main.qualifier ?? 'Readings current');
+  const temperatureNote = document.getElementById('garage-temperature-age');
+  if (temperatureNote) temperatureNote.hidden = Boolean(main && !main.stale && !main.qualifier);
   for (const location of ['rear', 'front']) {
     const id = `garage-budget-${location}`, budget = garageColdBudget(garage, location);
     detail(id, budget.label, budget.title, budget.detail);

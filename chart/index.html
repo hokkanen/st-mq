@@ -53,19 +53,23 @@
           <div class="home-overview" aria-label="Latest home conditions">
             <div class="overview-zones">
               <section class="overview-home" aria-label="Home">
-                <p class="overview-label">Home · indoor average</p>
-                <strong id="indoor" class="overview-temperature">—</strong>
-                <small id="indoor-age" class="overview-note">Waiting for readings</small>
+                <div class="overview-zone-label"><h3>Home</h3><p>Indoor average</p></div>
+                <div class="overview-reading">
+                  <strong id="indoor" class="overview-temperature">—</strong>
+                  <small id="indoor-age" class="overview-note">Waiting for readings</small>
+                </div>
                 <div class="overview-request">
                   <p id="requested-label" class="overview-label">Heating request</p>
-                  <strong id="requested">—</strong>
+                  <strong id="requested" role="status">—</strong>
                   <small id="actual" class="overview-note">Actual state unknown</small>
                 </div>
               </section>
               <section class="overview-garage" aria-label="Garage" data-controller-only>
-                <p class="overview-label">Garage</p>
-                <strong id="garage-temperature" class="overview-temperature">—</strong>
-                <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
+                <div class="overview-zone-label"><h3>Garage</h3></div>
+                <div class="overview-reading">
+                  <strong id="garage-temperature" class="overview-temperature">—</strong>
+                  <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
+                </div>
                 <div class="overview-request">
                   <p id="garage-requested-label" class="overview-label">Heating request</p>
                   <strong id="garage-requested">—</strong>
@@ -74,26 +78,16 @@
               </section>
             </div>
             <div class="overview-conditions">
-              <div>
+              <div class="overview-outdoor">
                 <p class="overview-label">Outdoor</p>
                 <strong id="outdoor">—</strong>
                 <small id="outdoor-age" class="overview-note">Waiting for readings</small>
               </div>
-              <div>
+              <div class="overview-price">
                 <p id="price-label" class="overview-label">All-in price</p>
-                <strong id="price">—</strong>
-                <small id="price-unit" class="overview-note">Waiting for prices and contract rates</small>
+                <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
               </div>
-            </div>
-          </div>
-          <div class="home-control-body" data-controller-only>
-          <div class="control-fireplace">
-            <div class="control-summary" role="status">
-              <p id="decision-title" class="control-decision">Waiting for a decision</p>
-              <p id="reasons" class="muted"></p>
-              <p id="control-mode" class="control-mode">Waiting for controller status</p>
-            </div>
-            <details id="fireplace-details" class="dashboard-disclosure fireplace-details">
+            <details id="fireplace-details" class="dashboard-disclosure fireplace-details" data-controller-only>
               <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
               <div id="fireplace-content" class="fireplace-content">
                 <form id="fireplace-form">
@@ -113,7 +107,9 @@
                 <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
               </div>
             </details>
+            </div>
           </div>
+          <div class="home-control-body" data-controller-only>
           <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
           <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="home-heat-pump-title">
             <summary class="zone-summary equipment-overview">

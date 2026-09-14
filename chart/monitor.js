@@ -519,38 +519,48 @@ function render(s) {
     const obs = s.observations[key] ?? {};
     const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
     const title = key === 'indoor' ? 'Indoor average' : 'Outdoor temperature';
+    const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
     setStatusDetail($(key), { key: `metric-${key}`, label: readingStatus.usable ? `${obs.value.toFixed(1)} °C` : 'Unavailable',
-      title, detail: readingStatus.detail });
+      title, detail: [source, readingStatus.detail].filter(Boolean).join('. ') });
     $(key).classList.toggle('stale', !readingStatus.usable || readingStatus.attention);
     $(key).classList.toggle('metric-unavailable', !readingStatus.usable);
-    const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
-    const state = !readingStatus.usable ? '' : readingStatus.attention ? 'Needs attention' : 'Readings current';
-    $(`${key}-age`).textContent = [source, state].filter(Boolean).join(' · ');
+    const note = $(`${key}-age`);
+    note.hidden = readingStatus.usable && !readingStatus.attention;
+    note.textContent = note.hidden ? '' : readingStatus.attention ? 'Needs attention'
+      : obs.configured === false ? 'Not configured' : 'No current reading';
   }
   const manualHold = s.decision.manualHold?.until > s.now ? s.decision.manualHold : null;
-  $('requested').textContent = label(manualHold?.phase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'))
+  const requested = label(manualHold?.phase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction')).replace(/^./, value => value.toUpperCase())
     + (manualHold ? ' · held' : '');
-  $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;
-  const current = s.prices.find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.allInCentsPerKWh));
-  const spot = (s.spot ?? []).find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.spotCtPerKwh));
-  $('price').textContent = current ? current.allInCentsPerKWh.toFixed(2) : spot ? spot.spotCtPerKwh.toFixed(2) : '—';
-  $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
-  $('price-unit').textContent = s.input === 'simulated' ? 'c/kWh · synthetic simulation data' : current ? 'c/kWh · import, variable charges' : spot ? 'c/kWh · excludes VAT and other charges' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
-  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderGarage(document, s);
-  if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
-  $('control-mode').textContent = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
+  const controlMode = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
       : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites
         ? manualHold ? 'Active · holding manual heating settings' : 'Active · applying the heating plan'
         : 'Shadow plan · no automatic commands';
-  $('decision-title').textContent = manualHold
+  const decisionTitle = manualHold
     ? manualHold.parameters ? 'Manual heating settings held' : 'Manual heating selection held'
     : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
   const heldMode = ({ normal: 'Normal heating', preheat: 'Max preheating', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
-  $('reasons').textContent = manualHold
+  const decisionReasons = manualHold
     ? `Price control is paused. ${heldMode}${manualHold.parameters ? ' and manual parameter settings are' : ' is'} held until ${time(manualHold.until)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
     : (s.decision.reasons ?? []).map(r => reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code)).join('. ');
-  if (!manualHold && s.decision.phase === 'recovery') $('reasons').textContent += `${$('reasons').textContent ? '. ' : ''}${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.`;
+  const recoveryDetail = !manualHold && s.decision.phase === 'recovery'
+    ? `${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.` : '';
+  setStatusDetail($('requested'), { key: 'home-heating-request', label: requested, title: 'Home heating request',
+    detail: [controlMode, decisionTitle, decisionReasons, recoveryDetail].filter(Boolean).join('\n\n') });
+  $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;
+  const current = s.prices.find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.allInCentsPerKWh));
+  const spot = (s.spot ?? []).find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.spotCtPerKwh));
+  const price = current ? current.allInCentsPerKWh.toFixed(2) : spot ? spot.spotCtPerKwh.toFixed(2) : '—';
+  $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
+  const priceDetail = s.input === 'simulated' ? 'Synthetic simulation data.' : current ? 'Import price, including variable charges.'
+    : spot ? 'Spot price only; excludes VAT and other charges.' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
+  setStatusDetail($('price'), { key: 'metric-price', label: price,
+    title: s.input === 'simulated' ? 'Example all-in price' : current ? 'All-in price' : spot ? 'Spot price' : 'Electricity price',
+    detail: `${current || spot ? `${price} c/kWh. ` : ''}${priceDetail}` });
+  $('price-unit').textContent = current || spot ? 'c/kWh' : '';
+  renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderGarage(document, s);
+  if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';

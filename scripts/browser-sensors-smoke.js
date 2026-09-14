@@ -131,8 +131,8 @@ try {
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("document.querySelector('.indoor-readings, #upstairs, #downstairs, #bedroom') === null"), true);
-  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.overview-zones > section > .overview-label, .overview-conditions > div > .overview-label'), node => node.textContent)"),
-    ['Home · indoor average', 'Garage', 'Outdoor', 'ALL-IN PRICE']);
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.overview-zone-label > h3, .overview-conditions > div > .overview-label'), node => node.textContent)"),
+    ['Home', 'Garage', 'Outdoor', 'ALL-IN PRICE']);
   const observations = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
   for (const [key, value] of [['upstairs', 21.2], ['downstairs', 20.2], ['bedroom', 21.6]]) {
     assert.equal(observations[key].value, value, `${key} remains available to the controller`);
