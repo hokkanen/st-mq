@@ -122,10 +122,9 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
 .controller-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .controller-column > .panel { margin-bottom: 0; }
 @media (min-width: 801px) {
-  /* Only visible parent disclosures affect alignment; a closed parent can keep
-     its nested details open without changing the closed dashboard layout. */
-  .controller-panels:not(:has(.dashboard-disclosure[open])) { align-items: stretch; }
-  .controller-panels:not(:has(.dashboard-disclosure[open])) #home-control { flex-grow: 1; }
+  /* Only small natural height differences are shared between the cards. */
+  .controller-panels.columns-aligned { align-items: stretch; }
+  .controller-panels.columns-aligned > .controller-column > .panel { flex-grow: 1; }
 }
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
@@ -922,8 +921,8 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 #provider-overview .provider-fold { margin: 0; border: 0; }
 #provider-overview .provider-fold > summary { display: flex; align-items: center; gap: 10px; padding: 0; list-style: none; }
 #provider-overview .provider-fold > summary::-webkit-details-marker { display: none; }
-#provider-overview .provider-fold > summary::after { content: '›'; flex: none; color: var(--muted); font-size: 18px; line-height: 1; }
-#provider-overview .provider-fold[open] > summary::after { transform: rotate(90deg); }
+#provider-overview .provider-fold > summary::after { content: '+'; flex: none; color: var(--muted); font-size: 18px; line-height: 1; }
+#provider-overview .provider-fold[open] > summary::after { content: '−'; }
 #provider-overview .provider-fold > summary:hover .provider-category-title { color: var(--accent); }
 #provider-overview .provider-heading { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-width: 0; }
 #provider-overview .provider-category-title { margin-bottom: 5px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.4; }
@@ -976,7 +975,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 #mqtt-devices-details .equipment-packet-details > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 17px; line-height: 1; }
 #mqtt-devices-details .equipment-packet-details[open] > summary::after { transform: rotate(90deg); }
 #mqtt-devices-details .equipment-packet-status { margin: 0 0 8px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
-#connection-setup-details { margin: 18px 0 0; }
+#connection-setup-details { margin: 18px 0 0 24px; }
 #connection-setup-details > .equipment-fold { margin: 12px 0 12px 12px; }
 #connection-setup-details > .equipment-fold > summary { min-height: 36px; padding: 9px 0; font-size: 11px; }
 #connection-setup-details .muted { font-size: 11px; line-height: 1.6; }

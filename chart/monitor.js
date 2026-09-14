@@ -13,8 +13,10 @@ import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
 import { confirmPausedHeating, homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
+import { createDashboardLayout } from './dashboard-layout.js';
 
 const $ = id => document.getElementById(id);
+createDashboardLayout(document.querySelector('.controller-panels'));
 for (const summary of document.querySelectorAll('.zone-summary')) {
   summary.addEventListener('click', event => {
     if (event.target.closest('button, a, input, select, textarea')) {
