@@ -14,6 +14,14 @@ import { createEquipmentPanel } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
 
 const $ = id => document.getElementById(id);
+for (const summary of document.querySelectorAll('.zone-summary')) {
+  summary.addEventListener('click', event => {
+    if (event.target.closest('button, a, input, select, textarea')) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  });
+}
 const ingress = usesHomeAssistantLogin();
 let token = ingress ? '' : sessionStorage.getItem('stmq-token') ?? '';
 let lastStatus;
@@ -29,7 +37,7 @@ let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
-const heatingCommandLabel = command => ({ heatoff: 'Tariff reduction', heaton15: 'Normal heating', heaton60: 'Circulation' })[command] ?? 'Heating request';
+const heatingCommandLabel = command => ({ heatoff: 'Reduced heating', heaton15: 'Normal heating', preheat: 'Preheating', heaton60: 'Circulation' })[command] ?? 'Heating request';
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
@@ -54,7 +62,7 @@ const reasons = {
   'reconciling-thermal-reserve': 'Allowing time to establish the current heat reserve',
   'learning-normal-comfort-reference': 'Learning the temperature achieved with normal heating',
   'awaiting-tariff-response-evidence': 'Learning how the heat pump responds to tariff control',
-  'timed-normal-override': 'A timed normal-heating override is in effect',
+  'timed-normal-override': 'Price control is paused',
   'missing-or-stale-observations': 'Waiting for fresh temperature observations',
   'room-comfort-limit': 'A room has reached its permitted temperature drop',
   'sensor-measurement-changed': 'Re-establishing temperature learning after a sensor change',
@@ -134,7 +142,8 @@ function updateTemporaryButtons(updateEquipment = true) {
   $('home-now').disabled = busy || !($('away-until').value || saved.awayUntilLocal);
   $('resume-now').disabled = busy || !($('pause-until').value || saved.pauseUntilLocal);
   for (const button of heatingTestButtons) button.disabled = busy || !lastStatus?.heatingTests?.available;
-  $('test-heaton60').disabled ||= Boolean(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending);
+  $('test-preheat').disabled ||= lastStatus?.heatingTests?.preheatAvailable !== true;
+  $('test-heaton60').disabled ||= Boolean(lastStatus?.dhwr?.restorationPending);
   $('dhwr-stop').disabled = busy || !lastStatus?.heatingTests?.available || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending || lastStatus?.dhwr?.actualOn === true);
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
@@ -153,7 +162,7 @@ function renderTemporary(s) {
     saved.pauseUntilLocal ? `Paused until ${time(s.override.expiresAt)}` : 'No pause'].join(' · ');
   $('override-scope').textContent = s.input === 'simulated'
     ? 'These changes apply to the simulation only.'
-    : s.liveWrites ? 'Away and pause update the active heating plan. Pause restores normal heating for the selected time.'
+    : s.liveWrites ? 'Away and pause update the active heating plan. Starting a pause requests Normal heating, then holds any changes you make until the pause ends.'
       : 'Away and pause update the controller’s plan. This operating mode sends no automatic commands.';
   updateTemporaryButtons();
 }
@@ -166,10 +175,40 @@ function showHeatingTestResult(result) {
   message.textContent = failed
     ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
     : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : confirmation}`;
+  if (!failed && result.command !== 'heaton60') {
+    const holdUntil = result.holdUntil ?? (lastStatus?.override?.expiresAt > lastStatus?.now ? lastStatus.override.expiresAt : null);
+    message.textContent += holdUntil
+      ? ` This setting is held until ${time(holdUntil)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
+      : ' If not paused, the previous settings return on the controller’s next update, normally within 1 minute. Automatic price control then resumes if enabled.';
+  }
+  if (!failed && result.command === 'heaton60') message.textContent += ` Circulation runs for ${lastStatus?.dhwr?.durationMinutes ?? 10} minutes from this click, including while price control is paused. Stop ends it immediately.`;
   lastHeatingTestResult = JSON.stringify(result);
 }
 function renderHeatingTests(s) {
   const capability = s.heatingTests;
+  const paused = s.override?.expiresAt > s.now;
+  const actual = s.observations?.actual;
+  const phase = actual?.phase ?? actual?.mode;
+  const current = actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
+  const selected = current ? ({ normal: 'test-heaton15', recovery: 'test-heaton15',
+    preheat: 'test-preheat', reduction: 'test-heatoff' })[phase] : null;
+  for (const [id, name] of [['test-heaton15', 'Normal heating'], ['test-preheat', 'Preheating'], ['test-heatoff', 'Reduced heating']]) {
+    const button = $(id), state = id === selected ? actual.verified === true ? 'Active' : 'Requested' : '';
+    button.setAttribute('aria-pressed', String(id === selected));
+    button.setAttribute('aria-label', `${name}${state ? ` · ${state}${state === 'Requested' ? ', awaiting device confirmation' : ''}` : ''}`);
+    button.dataset.modeState = state.toLowerCase();
+    button.querySelector('.heating-button-state').textContent = state ? `${state === 'Active' ? '✓ ' : ''}${state}` : '';
+  }
+  $('heating-test-help').textContent = 'Use the controls below to temporarily adjust heating and heat-pump parameters. '
+    + 'If price control is not paused, your changes revert on the next controller update, normally within 1 minute. '
+    + 'During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.';
+  $('heating-preheat-help').hidden = capability?.preheatAvailable === true;
+  $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
+    : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable room setting and circulation control.';
+  $('test-preheat').title = $('heating-preheat-help').textContent;
+  $('heating-pause-warning').hidden = !paused;
+  $('heating-pause-warning').textContent = paused
+    ? `Price control is paused until ${time(s.override.expiresAt)}. Changes made now stay until then or Resume now, then the previous settings are restored.` : '';
   setStatusDetail($('heating-test-status'), { key: 'manual-heating-availability', title: 'Heating control',
     label: capability?.available ? 'Control available' : 'Control unavailable', detail: capability?.available
       ? 'Requests are sent over MQTT. The reported state updates when device feedback arrives.'
@@ -349,7 +388,9 @@ function updateH66Selector({ useReadback = false } = {}) {
     label: health.usable ? h66ReadingValue(register, reading) : 'Unavailable', detail: health.detail });
   $('h66-manual-state').classList.toggle('stale', !health.usable);
   $('h66-test-status').textContent = control.available
-    ? `${control.label}. The setting stays in effect until changed again. Automatic heating may adjust it temporarily.`
+    ? lastStatus?.override?.expiresAt > lastStatus?.now
+      ? `${control.label}. Changes are held until ${time(lastStatus.override.expiresAt)} or Resume now, then the previous setting is restored.`
+      : `${control.label}. This is a temporary change. If not paused, the previous setting returns on the controller’s next update, normally within 1 minute.`
     : control.reason;
   updateTemporaryButtons();
 }
@@ -362,11 +403,12 @@ function showH66Test(result) {
     result.readback != null ? `readback ${result.readback}` : '',
     result.previousValue != null ? `previously ${result.previousValue}` : '',
     result.confirmed === true ? 'device confirmed' : result.sent ? 'awaiting device confirmation' : '', result.error ?? result.reason ?? label(result.code ?? '')].filter(Boolean).join(' · ') : '';
+  if (result?.sent && !failure) $('h66-test-message').textContent += lastStatus?.override?.expiresAt > lastStatus?.now
+    ? ` · Held until ${time(result.expiresAt ?? lastStatus.override.expiresAt)} or Resume now, then the previous setting is restored.`
+    : ' · Temporary change. If not paused, the previous setting returns on the controller’s next update, normally within 1 minute. Automatic price control then resumes if enabled.';
 }
 function renderH66(s) {
   const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
-  $('manual-h66-status').dataset.state = h66.connected ? 'available' : 'attention';
-  $('manual-h66-status').textContent = h66.connected ? 'H66 connected' : 'H66 unavailable';
   for (const key of ['mode', 'dhw', 'room']) {
     const row = summary.find(row => row.key === key);
     let detail = root.querySelector(`[data-h66-summary=${key}]`);
@@ -391,12 +433,10 @@ function renderH66(s) {
     label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
     title: 'Tariff control', detail: `${tariff.value}. ${tariff.detail}` });
   $('home-tariff-status').dataset.h66Summary = 'tariff';
-  setStatusDetail($('manual-tariff-state'), { key: 'manual-tariff-state', label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
-    title: 'Reported tariff control', detail: tariff.detail });
   const connectionDetail = h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
     : 'Waiting for a live H66 connection and fresh values from the heat pump.');
-  setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'H66 connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
+  setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
     title: 'Heat-pump connection', detail: connectionDetail });
   if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
   if (h66.restorationPending) setStatusDetail($('h66-context'), { key: 'h66-context',
@@ -466,7 +506,9 @@ function render(s) {
     const state = !readingStatus.usable ? '' : readingStatus.attention ? 'Needs attention' : 'Readings current';
     $(`${key}-age`).textContent = [source, state].filter(Boolean).join(' · ');
   }
-  $('requested').textContent = label(s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'));
+  const manualHold = s.decision.manualHold?.until > s.now ? s.decision.manualHold : null;
+  $('requested').textContent = label(manualHold?.phase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction'))
+    + (manualHold ? ' · held' : '');
   $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;
   const current = s.prices.find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.allInCentsPerKWh));
   const spot = (s.spot ?? []).find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.spotCtPerKwh));
@@ -477,10 +519,17 @@ function render(s) {
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   $('control-mode').textContent = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
-      : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites ? 'Active · applying the heating plan' : 'Shadow plan · no automatic commands';
-  $('decision-title').textContent = ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
-  $('reasons').textContent = (s.decision.reasons ?? []).map(r => reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code)).join('. ');
-  if (s.decision.phase === 'recovery') $('reasons').textContent += `${$('reasons').textContent ? '. ' : ''}${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.`;
+      : s.input === 'simulated' ? 'Simulation · shadow plan' : s.liveWrites
+        ? manualHold ? 'Active · holding manual heating settings' : 'Active · applying the heating plan'
+        : 'Shadow plan · no automatic commands';
+  $('decision-title').textContent = manualHold
+    ? manualHold.parameters ? 'Manual heating settings held' : 'Manual heating selection held'
+    : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
+  const heldMode = ({ normal: 'Normal heating', preheat: 'Preheating', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
+  $('reasons').textContent = manualHold
+    ? `Price control is paused. ${heldMode}${manualHold.parameters ? ' and manual parameter settings are' : ' is'} held until ${time(manualHold.until)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
+    : (s.decision.reasons ?? []).map(r => reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code)).join('. ');
+  if (!manualHold && s.decision.phase === 'recovery') $('reasons').textContent += `${$('reasons').textContent ? '. ' : ''}${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.`;
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
@@ -637,6 +686,9 @@ $('home-now').addEventListener('click', () => applyTemporary({ awayUntilLocal: n
 $('resume-now').addEventListener('click', () => applyTemporary({ pauseUntilLocal: null }));
 async function testHeating(command) {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !lastStatus?.heatingTests?.available) return;
+  if (command === 'preheat' && lastStatus.heatingTests.preheatAvailable !== true) return;
+  if (command !== 'heaton60' && lastStatus.override?.expiresAt > lastStatus.now
+    && !window.confirm(`Price control is paused until ${time(lastStatus.override.expiresAt)}. ${heatingCommandLabel(command)} will stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled. Apply this selection?`)) return;
   heatingTestBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();
@@ -661,7 +713,7 @@ async function testHeating(command) {
 }
 for (const button of heatingTestButtons) button.addEventListener('click', () => testHeating(button.dataset.heatingCommand));
 $('dhwr-stop').addEventListener('click', async () => {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus) || !lastStatus?.heatingTests?.available) return;
   heatingTestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('dhwr-message').classList.remove('form-error');
   $('dhwr-message').textContent = 'Requesting circulation stop…';
@@ -678,6 +730,8 @@ $('h66-test-form').addEventListener('submit', async event => {
   event.preventDefault();
   const register = $('h66-test-register').value;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !h66Control(lastStatus?.h66, register).available) return;
+  if (lastStatus.override?.expiresAt > lastStatus.now
+    && !window.confirm(`Price control is paused until ${time(lastStatus.override.expiresAt)}. This parameter change will stay until the pause ends or you select Resume now, then the previous setting is restored. Automatic price control then resumes if enabled. Apply this parameter?`)) return;
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('h66-test-form').setAttribute('aria-busy', 'true');
   $('h66-test-message').classList.remove('form-error');

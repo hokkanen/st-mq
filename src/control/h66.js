@@ -2,12 +2,16 @@ import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 
 const HOUR = 3_600_000;
+const MAX_PAUSE_MS = 366 * 24 * HOUR;
+const MAX_MANUAL_MS = 60_000;
+const MAX_TIMER_MS = 2_147_483_647;
 const SETTINGS = ['0203', '0212', '0208', '2201'];
 const LIMITS = { '0203': [5, 35], '0212': [30, 55], '0208': [50, 65], '2201': [0, 4] };
 export const H66_WRITABLE_REGISTERS = Object.freeze([...SETTINGS]);
 const timestamp = value => typeof value === 'number' ? value : Date.parse(value);
 const copy = value => structuredClone(value);
 const equal = (a, b) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.005;
+const manualPhase = phase => ['manual-pause', 'manual-temporary'].includes(phase);
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
 function validateValues(values) {
   if (!values || typeof values !== 'object' || Array.isArray(values) || !Object.keys(values).length)
@@ -40,8 +44,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     ? copy(saved) : { version: 1, phase: 'normal', baseline: {}, obligations: {}, requested: {}, expiresAt: null, lastResult: null };
   if (state.lastManual?.status === 'pending') state.lastManual = { ...state.lastManual,
     status: 'unconfirmed', confirmed: false, code: 'H66_MANUAL_INTERRUPTED' };
-  // Do not trust persisted telemetry as fresh, and never resume a preheat after a restart.
-  let restoreRequired = Object.keys(state.obligations).length > 0;
+  // Do not trust persisted telemetry as fresh, and never resume an override after a restart.
+  let restoreRequired = Object.keys(state.obligations).length > 0 || manualPhase(state.phase);
   for (const obligation of Object.values(state.obligations)) obligation.requestedRevision = -1;
   let connected = false, closed = false, active = false, expiryTimer = null, reconcileQueued = false;
   let revision = 0, connectionGeneration = 0;
@@ -61,8 +65,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   function armExpiry() {
     clearTimeout(expiryTimer);
     const remaining = timestamp(state.expiresAt) - clock();
-    if (Object.keys(state.obligations).length && Number.isFinite(remaining)) {
-      expiryTimer = setTimeout(() => { restoreRequired = true; queueReconciliation(); }, Math.max(1, remaining));
+    if ((Object.keys(state.obligations).length || manualPhase(state.phase)) && Number.isFinite(remaining)) {
+      expiryTimer = setTimeout(() => {
+        if (timestamp(state.expiresAt) > clock()) { armExpiry(); return; }
+        restoreRequired = true; queueReconciliation();
+      }, Math.min(MAX_TIMER_MS, Math.max(1, remaining)));
       expiryTimer.unref?.();
     }
   }
@@ -82,8 +89,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     active = true;
     try { return await operation(); }
     catch (error) {
-      if (Object.keys(state.obligations).length) restoreRequired = true;
-      noteResult({ status: 'failed', code: error.code ?? 'H66_WRITE_FAILED', restorationPending: Object.keys(state.obligations).length > 0 });
+      // A write timeout does not cancel the user's selection: its delivery is
+      // uncertain, and the persisted baseline is still restored at its deadline.
+      if (Object.keys(state.obligations).length
+        && !(manualPhase(state.phase) && connected && timestamp(state.expiresAt) > clock())) restoreRequired = true;
+      noteResult({ status: 'failed', code: error.code ?? 'H66_WRITE_FAILED', restorationPending: restoreRequired });
       throw error;
     } finally { active = false; if (reconcileAfter) queueReconciliation(); }
   }
@@ -91,9 +101,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (!available(now)) throw failure('H66_UNAVAILABLE', 'H66 has no recent live publications.');
     if (config.writeEnabled !== true) throw failure('H66_WRITES_DISABLED', 'H66 setting writes are disabled.');
   }
-  function deadline(now, expiresAt) {
+  function deadline(now, expiresAt, manualPause = false) {
     const end = expiresAt == null ? now + 15 * 60_000 : timestamp(expiresAt);
-    if (!Number.isFinite(now) || !Number.isFinite(end) || end <= now || end - now > maxOverrideMs)
+    if (!Number.isFinite(now) || !Number.isFinite(end) || end <= now || end - now > (manualPause ? MAX_PAUSE_MS : maxOverrideMs))
       throw failure('H66_EXPIRY_INVALID', 'An H66 override requires a future bounded expiry.');
     return end;
   }
@@ -133,14 +143,20 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       } catch { finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')); }
     });
   }
-  async function apply(values, { now, reason, expiresAt, restoring = false }) {
+  async function apply(values, { now, reason, expiresAt, restoring = false, manualPause = false, manualSetting = false }) {
     validateValues(values);
     const checkedAt=clock();
     requireConnection(checkedAt);
     if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
     // Preflight all values before the first mutation or publish.
-    captureBaselines(Object.keys(values), checkedAt);
-    if (!restoring) state.expiresAt = deadline(checkedAt, expiresAt);
+    if (manualSetting) {
+      // An unchanged request owns nothing. Capture a fresh baseline only when
+      // the first actual edit is made, including after an external panel edit.
+      for (const index of Object.keys(values)) if (!state.obligations[index]) delete state.baseline[index];
+    }
+    captureBaselines(Object.keys(values).filter(index => !manualSetting || state.obligations[index]
+      || !equal(current(index, checkedAt)?.value, values[index])), checkedAt);
+    if (!restoring) state.expiresAt = deadline(checkedAt, expiresAt, manualPause);
     const changes = [];
     for (const index of SETTINGS.filter(index => Object.hasOwn(values, index))) {
       const value = values[index];
@@ -150,6 +166,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A native-setting readback became stale during the transition.');
       if (equal(reading.value, value)) {
         if (restoring) delete state.obligations[index];
+        if (restoring && index === '0203') state.manualPreheat = null;
         state.requested[index] = value;
         continue;
       }
@@ -163,6 +180,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       const readback = await publishAndReadback(index, value, clock());
       if (restoring) delete state.obligations[index];
       else state.obligations[index] = { ...state.obligations[index], confirmed: true, confirmedAt: readback.receivedAt };
+      if (restoring && index === '0203') state.manualPreheat = null;
       persist();
       changes.push(index);
       if (!restoring && clock() >= state.expiresAt) throw failure('H66_EXPIRED', 'The H66 override expired during activation.');
@@ -175,7 +193,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   async function restoreInternal({ now = clock(), reason = 'restore-normal', phase = 'normal' } = {}) {
     const remaining = Object.keys(state.obligations);
     if (!remaining.length) {
-      restoreRequired = false; state.phase = phase; state.expiresAt = null; state.baseline = {}; state.requested = {};
+      restoreRequired = false; state.phase = phase; state.expiresAt = null; state.pauseId = null;
+      state.manualPreheat = null; state.baseline = {}; state.requested = {};
       persist(); armExpiry(); return { status: 'confirmed', phase, changed: [] };
     }
     requireConnection(now);
@@ -193,10 +212,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       }
       values[index] = obligation.baseline;
     }
+    if (!state.obligations['0203']) state.manualPreheat = null;
     const changed = Object.keys(values).length ? await apply(values, { now, reason, restoring: true }) : [];
     restoreRequired = Object.keys(state.obligations).length > 0;
     state.phase = restoreRequired ? 'restoration-pending' : phase;
-    if (!restoreRequired) { state.baseline = {}; state.requested = {}; state.expiresAt = null; }
+    if (!restoreRequired) { state.baseline = {}; state.requested = {}; state.expiresAt = null; state.pauseId = null; state.manualPreheat = null; }
     const result = { status: restoreRequired ? 'pending' : 'confirmed', phase: state.phase, changed, restorationPending: restoreRequired };
     noteResult(result); armExpiry();
     return result;
@@ -212,42 +232,68 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   }
   async function writeSettings(values, { now = clock(), reason = 'explicit-test', expiresAt } = {}) {
     return exclusive(async () => {
+      if (manualPhase(state.phase)) throw failure('H66_MANUAL_CONFLICT', 'Restore the current manual settings before testing a native override.');
       state.phase = 'test';
       const changed = await apply(values, { now, reason, expiresAt });
       const result = { status: 'confirmed', phase: state.phase, changed, expiresAt: state.expiresAt };
       noteResult(result); return result;
     });
   }
-  function manualConflict() {
+  function manualConflict(pauseId, now = clock()) {
+    if (state.phase === 'manual-pause' && state.pauseId === pauseId
+      && timestamp(state.expiresAt) > now) return restoreRequired;
+    if (state.phase === 'manual-temporary' && pauseId == null
+      && timestamp(state.expiresAt) > now) return restoreRequired;
     return restoreRequired || Object.keys(state.obligations).length > 0 || !['normal', 'recovery'].includes(state.phase);
   }
-  /** A deliberate native setting change establishes the pump's new normal value.
-   * It has no expiry, restart replay or restoration ownership. Automatic cycle
-   * overrides remain bounded and cannot overlap this operation. */
-  async function setSetting({ register, value, now = clock() } = {}) {
+  /** Manual native changes retain their original baseline until the next automatic
+   * update, bounded by one minute. An active price-control pause instead holds
+   * them until its deadline. Repeated edits share the original restoration owner. */
+  async function setSetting(options = {}) {
+    return setManualSetting(options);
+  }
+  async function setManualSetting({ register, value, now = clock(), expiresAt, pauseId } = {}, preheatChange) {
     validateValues({ [register]: value });
-    if (manualConflict()) throw failure('H66_MANUAL_CONFLICT', 'Wait for the current controller override or restoration before changing a native setting.');
+    const paused = pauseId != null;
+    if (paused && (typeof pauseId !== 'string' || !pauseId))
+      throw failure('H66_MANUAL_CONFLICT', 'A paused setting requires its active price-control pause.');
+    const checkedAt = clock();
+    let end = deadline(checkedAt, expiresAt ?? checkedAt + MAX_MANUAL_MS, paused);
+    if (!paused && end - checkedAt > MAX_MANUAL_MS)
+      throw failure('H66_EXPIRY_INVALID', 'An unpaused manual setting must expire within one minute.');
+    if (!paused && state.phase === 'manual-temporary' && timestamp(state.expiresAt) > checkedAt)
+      end = Math.min(end, timestamp(state.expiresAt));
+    if (manualConflict(paused ? pauseId : undefined)) throw failure('H66_MANUAL_CONFLICT', 'Wait for the current controller override or restoration before changing a native setting.');
     return exclusive(async () => {
       requireConnection(clock());
       const previous = current(register, clock());
       if (!previous) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh native-setting reading is required.');
+      if (!manualPhase(state.phase)) { state.baseline = {}; state.requested = {}; }
+      state.phase = paused ? 'manual-pause' : 'manual-temporary';
+      state.pauseId = paused ? pauseId : null; state.expiresAt = end;
+      // The latest explicit ROOM edit supersedes a preheat boost. Other native
+      // edits preserve it, and disabling the boost restores only its base ROOM.
+      if (register === '0203') state.manualPreheat = preheatChange
+        ? { ...preheatChange, pauseId: state.pauseId, expiresAt: end, confirmed: false } : null;
       const requested = { register, value, previousValue: previous.value, at: now,
+        pauseId: state.pauseId, expiresAt: end,
         status: 'pending', confirmed: false, sent: false };
       state.lastManual = requested;
       persist();
+      armExpiry();
       try {
         const changed = !equal(previous.value, value);
-        // Persist the intent before publishing, without turning a permanent
-        // user setting into an automatic restoration obligation.
-        if (changed) {
-          state.lastManual = { ...requested, sent: null }; persist();
-          await publishAndReadback(register, value, clock());
-        }
-        state.phase = 'normal'; state.baseline = {}; state.requested = {}; state.expiresAt = null;
+        state.lastManual = { ...requested, sent: changed ? null : false }; persist();
+        await apply({ [register]: value }, { now, reason: paused ? 'manual-paused-setting' : 'manual-temporary-setting',
+          expiresAt: end, manualPause: paused, manualSetting: true });
+        if (register === '0203' && preheatChange) state.manualPreheat = preheatChange.enabled
+          ? { ...state.manualPreheat, confirmed: true } : null;
         state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
           readback: current(register)?.value ?? value, confirmedAt: clock() };
-        noteResult({ status: 'confirmed', reason: 'manual-setting', register, value, confirmed: true, sent: changed });
-        event('h66-manual-setting-confirmed', { register, value, previousValue: previous.value, sent: changed });
+        noteResult({ status: 'confirmed', reason: paused ? 'manual-paused-setting' : 'manual-temporary-setting',
+          register, value, confirmed: true, sent: changed, pauseId: state.pauseId, expiresAt: end });
+        event('h66-manual-setting-confirmed', { register, value, previousValue: previous.value, sent: changed,
+          pauseId: state.pauseId, expiresAt: end });
         return copy(state.lastManual);
       } catch (error) {
         const code = ['H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_DISCONNECTED', 'H66_CLOSED'].includes(error?.code)
@@ -258,10 +304,23 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       }
     });
   }
+  async function setManualPreheat({ enabled, roomBoostC = 1, now = clock(), expiresAt, pauseId } = {}) {
+    if (typeof enabled !== 'boolean') throw failure('H66_PHASE_INVALID', 'Choose whether manual preheating is enabled.');
+    const overlay = state.manualPreheat;
+    if (!enabled && !overlay) return { status: 'unchanged', phase: state.phase, changed: [] };
+    if (enabled && (!Number.isFinite(roomBoostC) || roomBoostC < 1 || roomBoostC > 5))
+      throw failure('H66_BOOST_INVALID', 'ROOM preheat boost must be 1–5°C.');
+    const reading = current('0203', clock());
+    if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh ROOM setting is required before changing preheat.');
+    const baseValue = overlay?.baseValue ?? reading.value;
+    return setManualSetting({ register: '0203', value: baseValue + (enabled ? roomBoostC : 0),
+      now, expiresAt, pauseId }, { enabled, roomBoostC: enabled ? roomBoostC : overlay.roomBoostC, baseValue, at: now });
+  }
   async function setPhase({ phase, roomBoostC = 1, compressorOnly = false, now = clock(), expiresAt } = {}) {
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw failure('H66_PHASE_INVALID', 'Unknown H66 control phase.');
     if (phase === 'normal' || phase === 'recovery' && !compressorOnly) return restore({ now, reason: phase, phase });
     return exclusive(async () => {
+      if (manualPhase(state.phase)) throw failure('H66_MANUAL_CONFLICT', 'Restore manual native settings before starting an automatic override.');
       requireConnection(now);
       if (restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
       // A cycle starts from current normal settings, never from a reduced ROOM value.
@@ -313,8 +372,12 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       state.baseline[reading.register] = reading.value;
       state.externalChangeRevision=(state.externalChangeRevision??0)+1;
       state.externalChangeAt=clock();
-      state.phase = 'external-change'; restoreRequired = true;
-      noteResult({ status: 'external-change', register: reading.register, restorationPending: true });
+      if (!manualPhase(state.phase)) { state.phase = 'external-change'; restoreRequired = true; }
+      else {
+        delete state.requested[reading.register]; delete state.baseline[reading.register];
+        if (reading.register === '0203') state.manualPreheat = null;
+      }
+      noteResult({ status: 'external-change', register: reading.register, restorationPending: restoreRequired });
       event('h66-external-setting-preserved', { register: reading.register });
     }
     queueReconciliation();
@@ -325,6 +388,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     connected = next;
     if (!connected) {
       lastPublicationAt = null;
+      if (manualPhase(state.phase)) restoreRequired = true;
       for (const waiter of [...pending.values()]) waiter.finish(failure('H66_DISCONNECTED', 'H66 disconnected before setting readback.'));
     } else queueReconciliation();
   }
@@ -335,22 +399,23 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       externalChangeRevision:state.externalChangeRevision??0,externalChangeAt:state.externalChangeAt??null,
       lastPublicationAt, maxAgeMs, timeBasis: 'mqtt-received-unless-source-time-provided',
       sensorMeasurementTimeKnown: false, baseline: copy(state.baseline), requested: copy(state.requested),
-      expiresAt: state.expiresAt, restorationPending: restoreRequired || state.phase === 'restoration-pending',
+      expiresAt: state.expiresAt, pauseId: state.pauseId ?? null, restorationPending: restoreRequired || state.phase === 'restoration-pending',
       obligations: copy(state.obligations), lastResult: copy(state.lastResult), lastTest: copy(state.lastTest ?? null), lastManual: copy(state.lastManual ?? null),
+      manualPreheat: copy(state.manualPreheat ?? null),
       controlsReady: live && SETTINGS.every(index => current(index, now)) && !restoreRequired,
       readings: Object.fromEntries([...readings].map(([index, reading]) => [index, { ...copy(reading),
         stale: !current(index, now), available: live && Boolean(current(index, now)),
         unavailableReasons: reading.connectionGeneration !== connectionGeneration ? ['awaiting-live-report'] : [],
         requested: state.requested[index] ?? null, baseline: state.baseline[index] ?? null }])),
       controls: Object.fromEntries(SETTINGS.map(index => [index, { register: index, signal: H66_REGISTERS[index].signal,
-        available: live && config.writeEnabled === true && Boolean(current(index, now)) && !manualConflict() && !active,
+        available: live && config.writeEnabled === true && Boolean(current(index, now)) && !manualConflict(state.pauseId, now) && !active,
         reason: !live ? 'No recent live H66 publications.' : config.writeEnabled !== true ? 'Native setting writes are disabled.'
           : !current(index, now) ? 'A fresh setting baseline is not available.' : restoreRequired ? 'Restoration is pending.'
-            : manualConflict() ? 'A controller override is active.'
+            : manualConflict(state.pauseId, now) ? 'A controller override is active.'
             : active ? 'A setting transition is in progress.' : null,
         unit: H66_REGISTERS[index].unit, min: LIMITS[index][0], max: LIMITS[index][1] }])),
       documentation: H66_DOCUMENTATION,
-      limitation: 'Setting readback confirms a published register value, not compressor operation. Manual settings remain in effect; automatic cycle overrides require the application and MQTT connection for restoration.' };
+      limitation: 'Setting readback confirms a published register value, not compressor operation. Manual settings revert on the next automatic update, normally within one minute, if price control is not paused. During a pause they remain selected until it ends. Restoration requires the application and MQTT connection.' };
   }
   async function test({ register, value, durationSeconds = 60, now = clock(), expiresAt } = {}) {
     if (!Number.isFinite(durationSeconds) || durationSeconds < 1 || durationSeconds > 900)
@@ -375,5 +440,5 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     persist();
   }
   armExpiry();
-  return { ingest, setConnected, status, setPhase, writeSettings, setSetting, restore, reconcile, test, close };
+  return { ingest, setConnected, status, setPhase, writeSettings, setSetting, setManualPreheat, restore, reconcile, test, close };
 }

@@ -1,5 +1,7 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { outdoorSourceLabel } from './provider-status.js';
+import { equipmentReadingRows } from './equipment.js';
+import { setStatusDetail } from './status-details.js';
 const finite = Number.isFinite;
 const text = value => typeof value === 'string' ? value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll(/[_-]/g, ' ') : 'Unknown';
 const number = (value, unit = '') => finite(value) ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value)}${unit ? ` ${unit}` : ''}` : 'Unavailable';
@@ -75,6 +77,81 @@ export function garageDisplay(garage = {}, now = Date.now()) {
 export function renderGarage(document, status) {
   const display = garageDisplay(status?.garage, status?.now);
   const set = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = value; };
+  const detail = (id, label, title, description, stale = false) => {
+    const node = document.getElementById(id); if (!node) return;
+    node.classList.toggle('stale', stale);
+    setStatusDetail(node, { label, title, detail: description, key: id });
+  };
+  const garage = status?.garage ?? {}, adapter = garage.adapter ?? {}, reported = adapter.native ?? adapter.readbacks ?? {};
+  const now = status?.now ?? Date.now(), maxAge = garage.settings?.maxSensorAgeMs ?? 120_000;
+  const devices = status?.equipment?.devices ?? [];
+  const temperatureDevice = devices.find(device => device.enabled !== false && device.readings?.garage_temperature);
+  const rear = garage.observations?.rear;
+  const main = finite(rear?.value) ? equipmentReadingRows({ kind: 'temperature', available: rear.stale === false,
+    readings: { garage_temperature: { ...rear, unit: 'degC', label: 'Main garage temperature' } } })[0]
+    : temperatureDevice ? equipmentReadingRows(temperatureDevice).find(row => row.signal === 'garage_temperature') : null;
+  detail('garage-main-temperature', main?.value ?? 'Unavailable', 'Main garage temperature',
+    main?.detail ?? 'Waiting for a usable rear garage temperature.', main?.stale ?? true);
+  const doors = devices.filter(device => device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
+    || Object.keys(device.readings ?? {}).some(signal => /^garage_door/.test(signal)))).flatMap(device => {
+    const rows = equipmentReadingRows(device).filter(row => /_open$/.test(row.signal));
+    return rows.length ? rows.map(row => ({ ...row, name: device.label ?? row.label }))
+      : [{ name: device.label ?? 'Door', value: 'Unknown', stale: true, detail: 'No usable reading received' }];
+  });
+  const openDoors = doors.filter(row => row.value === 'Open'), closedDoors = doors.filter(row => row.value === 'Closed');
+  const unknownDoors = doors.filter(row => !['Open', 'Closed'].includes(row.value));
+  const doorName = row => /^garage_door(\d+)_open$/.test(row.signal)
+    ? `Door ${row.signal.match(/^garage_door(\d+)_open$/)[1]}` : row.name.replace(/^Garage\s+/i, '');
+  let doorSummary = 'Unknown';
+  if (doors.length === 1) doorSummary = doors[0].value;
+  else if (doors.length === 2) {
+    if (openDoors.length === 2) doorSummary = 'Both open';
+    else if (closedDoors.length === 2) doorSummary = 'Both closed';
+    else if (openDoors.length === 1) doorSummary = `${doorName(openDoors[0])} open${unknownDoors.length ? ' · other unknown' : ''}`;
+    else if (unknownDoors.length === 2) doorSummary = 'Both unknown';
+    else doorSummary = `${doorName(unknownDoors[0])} unknown`;
+  } else if (doors.length > 2) {
+    doorSummary = [[openDoors.length, 'open'], [closedDoors.length, 'closed'], [unknownDoors.length, 'unknown']]
+      .filter(([count]) => count).map(([count, state]) => `${count} ${state}`).join(' · ');
+  }
+  detail('garage-door-summary', doorSummary,
+    'Garage doors', doors.length ? doors.map(row => `${row.name}: ${row.value}. ${row.detail}`).join('\n')
+      : 'No garage door reports are available.', !doors.length || doors.some(row => row.stale));
+
+  const health = adapter.health ?? {};
+  const pumpConnected = adapter.connected !== false && health.deviceOnline === true
+    && health.driverProgressing === true && health.pumpCommunicating === true;
+  const connection = pumpConnected ? 'Connected' : adapter.connected === false ? 'Not connected'
+    : adapter.connected === true ? 'Awaiting readings' : 'Unknown';
+  detail('garage-connection-status', connection, 'Mitsubishi connection', pumpConnected
+    ? 'Current adapter health confirms the device is online, the driver is progressing, and the heat pump is communicating.'
+    : `The heat pump connection is not confirmed. Adapter connection: ${state(adapter.connected)}. Device online: ${state(health.deviceOnline)}. Driver progressing: ${state(health.driverProgressing)}. Pump communicating: ${state(health.pumpCommunicating)}.`, !pumpConnected);
+
+  const nativeReading = (field, title, format) => {
+    const value = native(reported[field]), at = reported.readbacks?.[field]?.measuredAt
+      ?? (field === 'power' ? reported.powerAt : null);
+    const fresh = finite(at) && at <= now && now - at < maxAge && adapter.connected !== false
+      && adapter.health?.deviceOnline !== false && adapter.health?.pumpCommunicating !== false;
+    const last = value === null || value === undefined ? 'Unknown' : format(value);
+    detail(`garage-native-${field === 'targetC' ? 'target' : field}`, fresh ? last : 'Unknown', title,
+      last === 'Unknown' ? 'No usable native reading received.'
+        : `${fresh ? 'Last reported' : `Last reported ${last}`} · ${finite(at) ? clock(at) : 'freshness unknown'}`, !fresh);
+    return { value, fresh };
+  };
+  const power = nativeReading('power', 'Mitsubishi power', text);
+  nativeReading('mode', 'Mitsubishi mode', text);
+  nativeReading('targetC', 'Mitsubishi target', value => number(value, '°C'));
+  let heating = 'Heating unverified';
+  if (adapter.phase === 'paused') heating = power.fresh && power.value === 'off' ? 'Saving mode' : 'Saving · unverified';
+  else if (adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring') heating = 'Restoring heating';
+  else if (adapter.connected === false || adapter.health?.deviceOnline === false) heating = 'Offline';
+  else if (!adapter.liveControlSupported && !adapter.simulation) heating = 'Monitoring only';
+  else if (power.fresh) heating = power.value === 'off' ? 'Heating off' : power.value === 'on' ? 'Normal mode' : heating;
+  detail('garage-heating-summary', heating, 'Garage heating',
+    `${display.reason}. ${adapter.phase === 'paused' ? 'An automatic savings episode is pausing heating.'
+      : adapter.restorePending ? 'Restoration has been requested; heating confirmation is pending.'
+        : 'Native power and mode reports are available inside the garage section. Power enabled does not confirm compressor activity.'}`);
+  set('garage-pause-overview', 'Keep normal garage heating');
   const list = (id, rows) => {
     const root = document.getElementById(id); if (!root) return;
     const fragment = document.createDocumentFragment();

@@ -250,12 +250,14 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const readOnly = isReadOnlyReplica(status), locked = busy || blocked();
     for (const area of ['home', 'garage']) {
       const members = devices.filter(device => (device.area ?? 'garage') === area && device.enabled !== false);
-      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId), snapshot);
+      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId && (area !== 'garage' || device.kind !== 'door')).sort((a, b) => area === 'garage' ? Number(b.kind === 'temperature') - Number(a.kind === 'temperature') : 0), snapshot);
       if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'No garage devices enabled.', 'muted equipment-empty'));
       const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available).length;
-      overview.textContent = !members.length ? '' : unavailable ? `${unavailable} ${unavailable === 1 ? 'needs' : 'need'} attention`
-        : `${members.length} available`;
-      overview.dataset.state = unavailable ? 'attention' : members.length ? 'available' : 'pending';
+      if (overview) {
+        overview.textContent = !members.length ? '' : unavailable ? `${unavailable} ${unavailable === 1 ? 'needs' : 'need'} attention`
+          : `${members.length} available`;
+        overview.dataset.state = unavailable ? 'attention' : members.length ? 'available' : 'pending';
+      }
       const activeNode = $(`${area}-active-test`), activeDevice = devices.find(device => device.id === active?.deviceId);
       activeNode.hidden = !active || (activeDevice?.area ?? 'garage') !== area;
       if (!activeNode.hidden) activeNode.textContent = `${activeDevice?.label ?? 'Device'} · ${pretty(active.status ?? 'temporary override')}`;
@@ -271,9 +273,6 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       result.textContent = actionKind === 'test' && actionArea === area ? message : '';
       result.hidden = !result.textContent; result.classList.toggle('form-error', error);
     }
-    const enabled = devices.filter(device => device.enabled !== false), attention = enabled.filter(device => !device.available).length;
-    $('equipment-overview-state').textContent = attention ? `Home & garage · ${attention} need${attention === 1 ? 's' : ''} attention` : 'Live state · home & garage';
-    $('equipment-overview-state').classList.toggle('stale', attention > 0);
     for (const device of devices) {
       let node = connectionNodes.get(device.id);
       if (!node) {
@@ -324,7 +323,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     $('dhwr-feedback-status').textContent = dhwr.feedbackLabel;
     $('dhwr-feedback-status').dataset.state = dhwr.available ? 'available' : dhwr.configured ? 'attention' : 'pending';
     $('dhwr-request-state').textContent = dhwr.request;
-    $('dhwr-control-help').textContent = `Runs for ${dhwr.duration} minutes · stopped by ST-MQ.`;
+    $('dhwr-control-help').textContent = `Each click starts a full ${dhwr.duration}-minute run, whether price control is paused or not. Stop ends it immediately.`;
     const commandTopics = status.dhwr?.commandTopic ? [{ role: 'Circulation command', topic: status.dhwr.commandTopic, direction: 'publish' }] : [];
     const groups = [...(status.equipment?.topicGroups ?? []), ...(commandTopics.length ? [{ id: 'circulation', label: 'Circulation commands', topics: commandTopics }] : [])];
     const commandRoot = $('heating-mqtt-topics');
@@ -338,7 +337,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       renderTopics(node.lastElementChild, group.topics);
     }
     for (const node of [...commandRoot.children]) if (!groups.some(group => group.id === node.dataset.topicGroup)) node.remove();
-    $('equipment-recheck-all').disabled = !enabled.length || locked || readOnly;
+    $('equipment-recheck-all').disabled = !devices.some(device => device.enabled !== false) || locked || readOnly;
     const checkMessage = actionKind === 'recheck' ? message : '';
     $('equipment-check-message').textContent = checkMessage || (devices.length || groups.length ? '' : 'No MQTT devices configured.');
     $('equipment-check-message').hidden = !checkMessage && (devices.length > 0 || groups.length > 0);

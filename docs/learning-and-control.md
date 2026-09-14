@@ -181,9 +181,17 @@ intervals, preserve nulls and transitions, and do not rerun today's model on his
 
 ## H66 readbacks and commands
 
-In the dashboard, **Home & heating** summarizes native settings. Its **Equipment
-details** fold contains the **Husdata H66** series and readbacks, **Test heating
-commands** and **Test H66 controls**. A tariff request remains unverified without
+In the dashboard, **Home & heating → Home heating** summarizes native settings.
+Its expanded fold contains **Heating configuration**, **Adjust heat-pump parameters**,
+and H66 series and readbacks. Starting a price-control pause selects Normal heating;
+subsequent manual heating and parameter changes are held
+until the pause ends or the owner selects Resume now. Previous settings are then
+restored and the automatic schedule resumes if enabled. Outside Pause, these
+manual changes revert on the next controller update, normally within one minute,
+with a one-minute restoration deadline. Repeated edits preserve the original
+baseline. Manual Preheating raises the selected ROOM setting by 1 °C, requests
+normal tariff operation and starts a configured circulation run.
+A tariff request remains unverified without
 relay readback; stale H66 readings are not shown as current settings.
 
 The integration uses the documented Thermia/Danfoss C60 register profile. For a
@@ -231,9 +239,11 @@ time basis for communication freshness. Retained, invalid and stale values do no
 become fresh merely because the application restarted. A documented register
 profile is distinct from verification of the installed pump and firmware.
 
-DHWR uses MQTT switch ON and OFF; ST-MQ owns the configurable run duration
-(`controller.dhwr_duration_minutes`, default 10). The internal `heaton60` intent
-starts that timer and is never published as a push-button command. `heaton15`
+DHWR uses MQTT switch ON and OFF and the configurable run duration
+(`controller.dhwr_duration_minutes`, default 10), whether paused or not. Clicking
+Start again starts a full new run; Stop ends it immediately. Restoring manual
+heating or native parameters does not end that independent circulation run.
+The internal `heaton60` intent is never published as a push-button command. `heaton15`
 separately restores normal heating. Pending OFF is saved before ON is sent and
 reconciled on restart, shutdown and restoration. See [device setup](dhwr-mqtt.md).
 The planner includes a nominal pulse-electricity allowance, but the thermal

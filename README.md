@@ -101,27 +101,40 @@ The Home Energy UI has monitoring, shadow and active modes, combined
 history and price/weather outlooks, requested/actual state, stale-data indication, learning
 health, explicit occupancy and timed normal-heating overrides. The default 21 °C
 **demo** target is confined to simulation, not inferred as the real house's target.
-Overrides are persistent; changing one in shadow mode does not operate equipment.
+Away/Pause deadlines persist. Monitoring and shadow do not automatically apply
+the heating schedule; explicit manual changes still carry restoration obligations.
 **Away until** removes the occupied temperature-drop requirement until the chosen
 return time. The planner compares cost with continuous native operation, including
 recovery and auxiliary energy. Occupied requirements resume at the return time
 within the available forecast horizon; forecasts are never invented beyond it.
-The existing evidence/freshness gates still apply. **Pause until** requests normal
-native operation without price reductions. Both controls use Finnish time, survive
-restarts, expire at their deadlines and can be cancelled independently.
+The existing evidence/freshness gates still apply. **Pause until** first changes the
+automatic schedule to normal heating. Heating modes and native parameters
+selected afterwards are held until the pause ends or
+**Resume now** is selected. Their previous settings are then restored and automatic
+scheduling resumes if enabled. Applying a new pause deadline starts again from
+normal heating. Outside Pause, all these manual changes revert on the next
+controller update, normally within one minute, with a one-minute expiry as a
+fallback. Repeated edits retain the original restoration values. Pause deadlines
+survive restarts; manually held equipment settings retain the existing restart
+and connection-loss restoration rules. Both temporary controls use Finnish time
+and can be cancelled independently.
 Live active mode applies the plan; monitoring and shadow show it without automatic
 equipment commands.
 
-Under **Home & heating → Equipment**, the **Test heating commands**
-section starts closed. With
-`providers` or `mqtt` input and an existing `mqtt.address` configuration, its
-`heatoff`, `heaton15` and `heaton60` buttons send the selected real command to
-`from_stmq/heat/action`, using the controller's executor and QoS 1 without retain.
-Each button sends exactly one command; the normal recirculation sequence is
-`heaton60` followed by `heaton15`. A successful test confirms broker acknowledgement,
-not equipment response. Tests are logged, do not change Away/Pause or enable
-automatic control, and are unavailable in simulation/offline mode. Failed or
-timed-out tests are not retried automatically; delivery may be unconfirmed.
+Under **Home & heating → Home heating**, **Heating configuration** contains
+the manual heating buttons; **Adjust heat-pump parameters** contains native settings.
+With live `providers` or `mqtt` input and configured controls, Normal and Reduced
+send tariff requests through the controller's executor. **Preheating** requests
+normal tariff operation and circulation, and raises the selected ROOM setting
+by 1 °C with H66 readback. Repeated clicks do not add further boosts. Leaving
+Preheating removes that boost while retaining other manual parameter choices.
+Circulation uses MQTT switch ON/OFF and its own configured run duration whether
+paused or not. Clicking Start again starts a full new run; Stop ends it immediately.
+Ending Pause or restoring manual heating parameters does not shorten the run.
+A successful MQTT request confirms broker acknowledgement,
+not equipment response. Manual actions are logged, do not change Away/Pause or
+enable automatic control, and are unavailable in simulation/offline mode.
+Failed delivery may be unconfirmed; restoration remains owed until reconciled.
 Enabled buttons mean MQTT is configured; the connection is checked when a test
 is sent. Connection failures distinguish an unreachable broker, refused connection,
 DNS, login or TLS problems and report that no command was sent. If a connection
@@ -244,8 +257,9 @@ estimate assessed at the time and never rewrite old points using a later model.
 Below the chart, **Home & heating** shows the heating decision, price control,
 comfort reference, occupied drop limit and recirculation request, together with
 the heat-pump mode and DHW target range. **Away & pause** contains temporary
-controls; **Equipment** contains H66 series, current readbacks and manual
-test controls. Tariff requests remain explicitly unverified when relay readback
+controls inside **Home heating**, alongside H66 readings, parameters and manual
+heating controls. **Garage heating** opens garage readings and controls.
+Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.
 
 **House model** gives a short learning status and the reported counts of usable

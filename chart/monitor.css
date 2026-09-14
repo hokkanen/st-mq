@@ -869,7 +869,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-control-state { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; margin: 14px 0 0; font-size: 12px; }
 .equipment-control-state > span { color: var(--muted); }
 .equipment-control-state > strong { font-weight: 500; }
-.equipment-heat-pump .heating-test-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.equipment-heat-pump .heating-test-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .equipment-heat-pump .heating-test-buttons button { font-size: 12px; }
 .equipment-heat-pump .equipment-fold { margin-top: 14px; }
 .equipment-heat-pump .h66-test-form .equipment-control-state { grid-column: 1 / -1; }
@@ -937,3 +937,61 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-secondary > summary small { color: var(--muted); font-size: 10px; font-weight: 400; }
 .garage-secondary .equipment-readings { line-height: 1.55; }
 .garage-secondary .equipment-readings dd { text-align: right; }
+
+/* Home and Garage keep their everyday overview when the controls are folded. */
+.heating-zone.dashboard-disclosure { margin: 18px 0 0; border: 0; border-radius: 0; background: transparent; }
+.heating-zone.garage-zone { border-top: 1px solid var(--border); padding-top: 18px; }
+.heating-zone > .zone-summary { display: block; position: relative; margin: 0; padding: 12px 0 0; cursor: pointer; }
+.heating-zone[open] > .zone-summary { padding-bottom: 0; background: transparent; }
+.heating-zone > .zone-summary:hover .equipment-heading h3, .heating-zone > .zone-summary:hover .zone-expand { color: var(--accent); }
+.heating-zone > .zone-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.heating-zone > .zone-summary::after, .heating-zone[open] > .zone-summary::after { content: none; }
+.zone-summary .equipment-heading { margin-bottom: 18px; }
+.zone-summary .equipment-notes { margin-top: 16px; }
+.zone-summary .equipment-notes p:last-child { margin-bottom: 0; }
+.zone-expand { display: grid; place-items: center; position: absolute; right: 0; bottom: 0; width: 22px; height: 1.65em; font-size: 11px; color: var(--muted); }
+.garage-zone .zone-expand { height: 1.5em; font-size: 17px; }
+.zone-summary .equipment-notes p:last-child, .garage-overview .equipment-value:last-child { padding-right: 30px; }
+.zone-expand::before { content: '+'; font-size: 20px; font-weight: 400; line-height: 1; }
+.heating-zone[open] > summary .zone-expand::before { content: '−'; }
+.zone-content { margin-top: 0; padding: 0 0 18px; border: 0; }
+.zone-content > .zone-equipment-status { display: block; padding-top: 14px; font-size: 10px; }
+.zone-content > .zone-equipment-status:empty { display: none; }
+.zone-content > .equipment-device:first-of-type { border-top: 0; }
+.zone-content #home-manual-controls { padding-top: 16px; }
+.zone-content .heating-test-buttons { margin-top: 0; }
+.heating-configuration-heading { margin-bottom: 12px; }
+#heating-test-buttons .heating-button-state { min-height: 12px; line-height: 12px; }
+#heating-test-buttons button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+#heating-test-buttons button[aria-pressed="true"] .heating-button-state { color: var(--accent); }
+#heating-test-buttons button:not(:disabled):hover { background: var(--surface-soft); border-color: var(--accent); }
+.zone-content .equipment-fold { margin-top: 8px; }
+.zone-content .equipment-fold + .equipment-fold { margin-top: 0; }
+.zone-content .equipment-readings { font-size: 12px; }
+.zone-content #dhwr-device { margin-top: 0; }
+.zone-content .home-actions { margin-top: 16px; }
+.zone-content .home-actions > details[open] > summary { padding-bottom: 4px; }
+.zone-content .home-actions > details > summary::after { content: '›'; }
+.zone-content .home-actions > details[open] > summary::after { transform: rotate(90deg); }
+#temporary-details > summary { display: list-item; list-style: disclosure-closed inside; padding: 14px 0 4px; font-size: 14px; }
+#home-heat-pump-details > .zone-content { padding-bottom: 4px; }
+#temporary-details[open] > summary { list-style-type: disclosure-open; }
+#temporary-details > summary::-webkit-details-marker { display: revert; }
+#temporary-details > summary::after { content: none; }
+#temporary-details > summary > small { display: block; margin: 5px 0 0 20px; font-size: 11px; }
+.zone-connections { padding-top: 6px; font-size: 11px; }
+.zone-connections a { color: var(--muted); text-decoration: none; }
+.zone-connections a:hover { color: var(--accent); text-decoration: underline; }
+.garage-overview, .garage-native-overview { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
+.zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 17px; font-weight: 500; line-height: 1.5; }
+.garage-native-overview { margin: 18px 0 12px; }
+.garage-native-overview .equipment-value > strong { font-size: 14px; }
+.garage-heating > .muted { font-size: 11px; margin-bottom: 8px; }
+#garage-pause-details .equipment-inline-controls { border-top: 1px solid var(--border); padding-top: 16px; }
+@media (max-width: 480px) {
+  .heating-zone > .zone-summary { padding: 12px 0 0; }
+  .zone-content { padding: 0 0 16px; }
+  .garage-overview, .garage-native-overview { gap: 10px; }
+  .garage-zone .zone-expand { font-size: 15px; }
+  .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
+}

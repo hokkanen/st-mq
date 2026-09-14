@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { dhwrEligible } from '../control/index.js';
 import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../control/adaptive-learning.js';
 import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope } from '../control/planner.js';
@@ -27,6 +28,7 @@ import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, 
 import { GarageRuntime } from '../garage/runtime.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
+const pauseIdentity = override => override?.id ?? (Number.isFinite(override?.createdAt) ? String(override.createdAt) : null);
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
@@ -522,9 +524,14 @@ export class Engine {
   }
   heatingTests() {
     const available = ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
+    const native = this.h66?.status(this.clock()), room = native?.manualPreheat?.baseValue ?? native?.readings?.['0203']?.value;
+    const preheatAvailable = available && native?.controls?.['0203']?.available === true
+      && Number.isFinite(room) && room + 1 <= 35 && typeof this.executor.commandTransport.publishDhwr === 'function';
     return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',
+    preheatAvailable, preheatReason: preheatAvailable ? null
+      : 'Preheating needs a fresh writable ROOM setting with room for a 1 °C boost, and connected heating and circulation controls.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`) };
   }
   equipmentStatus() {
@@ -588,29 +595,48 @@ export class Engine {
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
       throw new Error('Stop circulation with an empty request.');
     if (!this.heatingTests().available) throw new Error('MQTT circulation control is unavailable.');
-    if (this.heatingTestBusy || this.dispatchPending || this.cycles.active())
+    if (this.heatingTestBusy || this.dispatchPending)
       throw new Error('Wait for the current heating operation to finish before stopping manual circulation.');
     await this.executor.exclusive(() => this.executor.stopDhwr(this.clock(), { force: this.dhwrStatus().actualOn === true }));
     return this.status();
   }
+  recordManualHeating(phase, now, roomBoostC = 0) {
+    this.applied = { phase, at: now, roomBoostC, verified: false };
+    this.store.setState(`applied:${this.config.input}`, this.applied);
+    recordLearningContext(this.store, this.config.input, { phase, roomBoostC,
+      targetC: this.settings.comfort.targetC ?? this.checkpoint?.baselineC ?? null,
+      regime: this.settings.occupancy.mode === 'occupied' ? 'occupied' : 'away', episodeId: null }, now,
+    { config: this.control, seed: this.checkpoint });
+  }
   async testHeating(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
-      || Object.keys(input).length !== 1 || !HEATING_COMMANDS.includes(input.command)) throw new Error('Choose heatoff, heaton15 or heaton60.');
+      || Object.keys(input).length !== 1 || ![...HEATING_COMMANDS, 'preheat'].includes(input.command)) throw new Error('Choose Normal heating, Preheating, Reduced heating or hot-water circulation.');
     const capability = this.heatingTests();
     if (!capability.available) throw new Error(capability.reason);
+    if (input.command === 'preheat' && !capability.preheatAvailable) throw new Error(capability.preheatReason);
     if (this.heatingTestBusy) throw new Error('An MQTT test is already in progress.');
-    if (this.dispatchPending || this.cycles.active()) throw new Error('Wait for the current heating cycle or transition to finish before running a manual test.');
+    if (this.dispatchPending || input.command !== 'heaton60' && this.cycles.active())
+      throw new Error('Wait for the current heating cycle or transition to finish before running a manual test.');
     this.heatingTestBusy = true;
     const command = input.command;
     try {
+      const now = this.clock(), override = this.expireTemporary(now);
+      const pause = override ? { id: pauseIdentity(override), expiresAt: override.expiresAt } : null;
       this.store.event('heating-test-requested', { input: this.config.input, command }, this.clock());
-      // Use the controller's executor without changing its decision, temporary
-      // settings or learned state. A publish acknowledgement is not readback.
-      const execution = await this.executor.execute({ commands: [command] }, { mode: this.settings.mode, now: this.clock(), manualTest: true });
+      // The automatic schedule stays Normal during a pause; the executor owns
+      // any later manual choice until that pause ends. MQTT acknowledgement is
+      // still not a physical readback.
+      const execution = await this.executor.execute(command === 'preheat'
+        ? { phase: 'preheat', commands: ['heaton15', 'heaton60'], roomBoostC: 1 } : { commands: [command] },
+      { mode: this.settings.mode, now, manualTest: true, pause });
       const result = { command, ...execution, at: this.clock() };
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
-      if (command === 'heaton60') this.recordDhwr(this.executor.status().pulseUntil, result.at);
+      if (command === 'heaton60' || command === 'preheat') this.recordDhwr(this.executor.status().pulseUntil, result.at);
+      if (command !== 'heaton60') {
+        this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'heatoff' ? 'reduction' : 'normal',
+          result.at, command === 'preheat' ? 1 : 0);
+      }
       return result;
     } catch (error) {
       const message = heatingErrorMessage(error?.code);
@@ -622,6 +648,8 @@ export class Engine {
   }
   setTemporary(input) {
     const now = this.clock(), changes = temporaryUpdate(input, now);
+    if (Object.hasOwn(changes, 'pauseUntil') && (this.heatingTestBusy || this.dispatchPending || this.executor.status().busy))
+      throw new Error('Wait for the current heating request to finish before changing the pause.');
     let occupancy = this.settings.occupancy;
     this.store.transaction(() => {
       if (Object.hasOwn(changes, 'awayUntil')) {
@@ -630,7 +658,7 @@ export class Engine {
         this.store.event('occupancy-changed', { occupancy }, now);
       }
       if (Object.hasOwn(changes, 'pauseUntil')) {
-        const override = changes.pauseUntil === null ? null : { mode: 'normal', createdAt: now, expiresAt: changes.pauseUntil };
+        const override = changes.pauseUntil === null ? null : { id: randomUUID(), mode: 'normal', createdAt: now, expiresAt: changes.pauseUntil };
         this.store.setState(`override:${this.config.input}`, override);
         this.store.event('override-changed', { override }, now);
       }
@@ -688,7 +716,11 @@ export class Engine {
       throw new Error('Wait for the current heating operation to finish before changing a native setting.');
     this.heatingTestBusy = true;
     try {
-      await this.h66.setSetting({ register: input.register, value: input.value, now: this.clock() });
+      const now = this.clock(), override = this.expireTemporary(now);
+      await this.h66.setSetting({ register: input.register, value: input.value, now,
+        ...(override ? { expiresAt: override.expiresAt, pauseId: pauseIdentity(override) }
+          : { expiresAt: this.executor.status().manualTemporary?.expiresAt ?? now + 60_000 }) });
+      if (this.executor.reconcileManualPreheat(this.clock())) this.recordManualHeating('normal', this.clock());
     } finally { this.heatingTestBusy = false; }
     return this.status();
   }
@@ -808,6 +840,12 @@ export class Engine {
     catch { this.garage.fail('garage-runtime-unavailable'); }
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
+    const manualPause = priorExecutor?.manualPause;
+    const ownsPausedSettings = Boolean(manualPause || h66.pauseId);
+    const ownsTemporarySettings = Boolean(priorExecutor?.manualTemporary || h66.phase === 'manual-temporary');
+    const holdManualSettings = ownsPausedSettings && !ownsTemporarySettings && override && !priorExecutor?.restorationPending && !h66.restorationPending
+      && (!manualPause || manualPause.id === pauseIdentity(override) && manualPause.expiresAt > now)
+      && (!h66.pauseId || h66.phase === 'manual-pause' && h66.pauseId === pauseIdentity(override) && h66.expiresAt > now);
     let checkpoint = this.readAdaptive(now);
     const normalRoom = h66.readings?.['0203'];
     const recordedRoom = this.recorder.committedAt('room_setting', now);
@@ -919,6 +957,9 @@ export class Engine {
     const settings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
     const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
       comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
+    // Pause ends the automatic cycle before accepting independent owner choices.
+    // Keep the interrupted cycle incomplete rather than claiming its planned saving.
+    if (override && this.cycles.active()) this.cycles.cancel(now, 'price-control-paused');
     let cycle = this.cycles.active(), decision;
     const roomComfortLimited = this.settings.occupancy.mode === 'occupied' && Object.keys(indoorWeights(this.control)).some(signal => {
       const reference = checkpoint.sensorComfortReferences?.[signal]?.targetC;
@@ -926,10 +967,10 @@ export class Engine {
       return Number.isFinite(reference) && !reading?.stale && reading.value <= reference - this.settings.comfort.maxDropC;
     });
     const controlHold=!cycle?this.cycles.controlHold(now):null;
-    const forceNormal = controlHold?'recent-cycle-incomplete'
+    const forceNormal = override ? 'temporary-normal-override' : controlHold?'recent-cycle-incomplete'
       : cycle && equipment.fireplaceRelevant && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
       : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
-      ? 'native-settings-changed' : override ? 'temporary-normal-override' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
+      ? 'native-settings-changed' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
       : roomComfortLimited ? 'room-comfort-limit'
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
         : this.settings.occupancy.mode === 'occupied' && targetC !== null && sample.indoorC <= targetC-2 ? 'hard-comfort-limit' : null;
@@ -1008,16 +1049,19 @@ export class Engine {
     decision.dhwr = { requested: pulse || decision.phase === 'preheat', durationMinutes: this.control.dhwrPulseMinutes, lastPulseAt: lastPulseAt ?? null,
       basis: 'ST-MQ controls MQTT ON and OFF; no direct DHWR readback' };
     decision.nextState = { phase: decision.phase };
+    if (holdManualSettings) decision.manualHold = { until: override.expiresAt,
+      phase: manualPause ? priorExecutor.manualRequested?.phase ?? this.applied.phase : this.applied.phase,
+      parameters: Boolean(h66.pauseId) };
     this.store.setState(`pending-plan:${input}`, this.pendingPlan);
     const onExecution = execution => {
       const executorStatus = this.executor.status?.();
       if (execution.sent || execution.status === 'simulated'
-        || execution.status === 'mqtt' && executorStatus?.acknowledgedAt !== null
+        || ['mqtt', 'paused-manual'].includes(execution.status) && executorStatus?.acknowledgedAt != null
           && ['normal','preheat','reduction','recovery'].includes(execution.phase)) {
         const phase = ['normal','preheat','reduction','recovery'].includes(execution.phase) ? execution.phase : decision.phase;
         if (execution.restorationPending) return execution;
         this.applied = { phase, at: execution.sent || execution.status === 'simulated' ? this.clock() : this.applied.at,
-          roomBoostC: phase === 'preheat' ? decision.roomBoostC : 0, verified: Boolean(execution.actual?.verified) };
+          roomBoostC: phase === 'preheat' ? execution.roomBoostC ?? decision.roomBoostC : 0, verified: Boolean(execution.actual?.verified) };
         this.store.setState(`applied:${input}`, this.applied);
         if (this.plant && decision.dhwr.requested) {
           this.store.setState(`dhwr:${input}`, { lastPulseAt: now }); this.recordDhwr(this.plant.state.pulseUntil,now);
@@ -1055,7 +1099,10 @@ export class Engine {
       return execution;
     };
     let execution = this.dispatchPending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
-      ? { status:'manual-test-in-progress', sent:false, actual:null } : this.executor.execute(decision,{mode:this.settings.mode,now});
+      ? { status:'manual-test-in-progress', sent:false, actual:null }
+      : ownsTemporarySettings || ownsPausedSettings && !holdManualSettings
+        ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, mode: this.settings.mode })
+        : holdManualSettings ? this.executor.maintainPause(now) : this.executor.execute(decision,{mode:this.settings.mode,now});
     if (execution?.then) {
       this.dispatchPending = execution.then(onExecution).catch(() => {
         this.store.event('control-execution-failed',{input,phase:decision.phase,reason:'Command or native-setting readback failed; restoration remains pending'},this.clock());
@@ -1115,6 +1162,20 @@ export class Engine {
     result.sensorChanges = this.sensorChangesStatus();
     result.garage = this.garage.status(now);
     if (this.h66Status) result.h66 = this.h66Status();
+    const executor = this.executor.status(), native = result.h66 ?? {}, override = result.override;
+    const manual = executor.manualRequested;
+    if (!this.plant && manual?.confirmed && manual.at >= (result.observations?.actual?.observedAt ?? -Infinity)) {
+      result.observations.actual = { ...result.observations.actual, mode: manual.phase === 'reduction' ? 'reduction' : 'normal',
+        phase: manual.phase, observedAt: manual.at, source: 'mqtt-request', verified: false };
+    }
+    const holding = override && !executor.manualTemporary && native.phase !== 'manual-temporary'
+      && !executor.restorationPending && !native.restorationPending
+      && Boolean(executor.manualPause || native.pauseId)
+      && (!executor.manualPause || executor.manualPause.id === pauseIdentity(override) && executor.manualPause.expiresAt > now)
+      && (!native.pauseId || native.phase === 'manual-pause' && native.pauseId === pauseIdentity(override) && native.expiresAt > now);
+    if (holding) result.decision.manualHold = { until: override.expiresAt, phase: manual?.phase ?? this.applied.phase,
+      parameters: Boolean(native.pauseId) };
+    else delete result.decision.manualHold;
     result.providers = this.providerStatus();
     this.temperatureObservations(result.observations, now);
     if (!this.plant) {

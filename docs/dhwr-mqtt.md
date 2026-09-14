@@ -20,11 +20,15 @@ an exact topic, without MQTT wildcards. ST-MQ sends the literal uppercase string
 use QoS 1 with retain disabled. Configure the receiving integration to set the
 switch idempotently: duplicate ON messages must not create independent timers.
 The old `from_stmq/heat/action` `heaton60` button message is no longer published.
-The equipment card's **Start circulation** action uses the same ST-MQ timer as automation.
+**Start circulation** runs for the configured duration, whether paused or not.
+Clicking it again starts a full new run from that click; **Stop circulation** ends
+it immediately. A controller update, the end of Pause or restoration of manual
+heating parameters does not shorten the run. Manual Preheating also starts a
+configured circulation run alongside its temporary ROOM boost.
 Reload settings to apply a new duration; an existing run is stopped through the
 normal runtime restoration before the new configuration starts.
 
-The deadline starts when ON delivery completes; subsequent heating command or
+The run deadline starts when ON delivery completes; subsequent heating command or
 H66 readback latency does not extend it. ST-MQ saves an OFF obligation before
 attempting ON, because a lost broker acknowledgement can still mean delivery.
 The expiry timer sends OFF without waiting for the next control tick. Shutdown,

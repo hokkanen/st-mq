@@ -1,7 +1,7 @@
 # MQTT equipment
 
-Equipment is inside **Home & heating → Equipment & controls**, grouped into **Home**
-and **Garage** monitoring with manual controls and live feedback. Each device
+Equipment is inside **Home & heating → Home heating** and **Garage heating**,
+with manual controls and live feedback in each fold. Each device
 has one explicit connection string. ST-MQ does not guess protocols, search the LAN,
 or switch to another source when a device stops responding.
 
