@@ -272,7 +272,8 @@ try {
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
     ['Upstairs', 'Downstairs', 'Bedroom', 'Garage rear temperature', 'Garage front temperature', 'Outdoor temperature']);
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
-  assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'The closed provider overview has the same weather-last order');
+  assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Weather forecast', 'The source overview has weather last');
+  assert.equal(await evaluate("!document.getElementById('connections-details').open && [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary=>summary.checkVisibility())"), true, 'Source categories remain accessible with configuration closed');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
     'The temperature catalogue receives the actual garage observation');
   for (const width of [1440, 390]) {
@@ -286,19 +287,17 @@ try {
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
-      const intro = document.getElementById('provider-context').getBoundingClientRect();
       const summaries = [...document.querySelectorAll('#providers .provider-fold > summary')];
-      return summaries.length > 0 && summaries.every(summary => summary.checkVisibility()
-        && summary.getBoundingClientRect().left - intro.left >= 16
+      return summaries.length === 4 && summaries.every(summary => summary.checkVisibility()
         && Math.abs(summary.getBoundingClientRect().left - summaries[0].getBoundingClientRect().left) < 1);
-    })()`), true, 'Categories share an aligned inset from their introduction');
+    })()`), true, 'The four source categories share a left edge');
     assert.equal(await evaluate(`(() => {
-      const rows = [...document.querySelectorAll('#connections-details > .controller-fold, #data-sources-details')].map(fold => ({
-        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary, :scope > #provider-context') }));
-      return rows.length === 4 && rows.every((row, index) => row.summary.checkVisibility()
+      const rows = [...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => ({
+        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary') }));
+      return rows.length === 3 && rows.every((row, index) => row.summary.checkVisibility()
         && Math.abs(row.summary.getBoundingClientRect().left - rows[0].summary.getBoundingClientRect().left) < 1
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
-    })()`), true, 'Sources, MQTT topics, rates and configuration form aligned rows without vertical overlap');
+    })()`), true, 'MQTT topics, rates and configuration form three aligned rows without vertical overlap');
     assert.equal(await evaluate(`(() => {
       const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
         'h66-test-details': 'equipment-details' };

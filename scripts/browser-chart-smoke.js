@@ -777,15 +777,13 @@ try {
   for (const label of ['Property phase energy L1–L3', 'Charger 1 phase energy L1–L3'])
     assert.ok(electricitySeries.includes(label), `${label} remains in the combined catalogue`);
   const electricityOverview = () => evaluate(`JSON.stringify((() => {
-    const row = [...document.querySelectorAll('#provider-overview > .source-overview')]
-      .find(item => item.querySelector('span').textContent === 'Electricity consumption');
-    return row ? { title: row.querySelector('span').textContent, source: row.querySelector('small').textContent,
-      state: row.querySelector('strong').textContent, attention: row.dataset.state === 'attention' } : null;
+    const row = document.querySelector('#provider-overview #providers > .source-overview[data-source-key=electricity]');
+    return row ? { title: row.querySelector('.provider-category-title').textContent, source: row.querySelector('.provider-category-meta').textContent,
+      state: row.querySelector('.provider-category-state').textContent, attention: row.dataset.state === 'attention' } : null;
   })())`);
   const checkProviderColors = async needsAttention => {
     const result = JSON.parse(await evaluate(`JSON.stringify((() => {
-      const row = [...document.querySelectorAll('#provider-overview > .source-overview')]
-        .find(item => item.querySelector(':scope > span').textContent === 'Electricity consumption');
+      const row = document.querySelector('#provider-overview #providers > .source-overview[data-source-key=electricity]');
       const names = [...row.querySelectorAll('.provider-name')].map(node => ({
         name: node.textContent, state: node.dataset.state, color: getComputedStyle(node).color,
         accessible: node.getAttribute('aria-label'),
@@ -809,9 +807,10 @@ try {
   };
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Available', attention: false });
-  assert.equal(await evaluate("document.getElementById('data-sources-details').tagName"), 'DIV');
-  await evaluate(`document.getElementById('connections-details').open = true;
+  assert.equal(await evaluate("document.getElementById('providers').parentElement.id"), 'provider-overview');
+  await evaluate(`document.getElementById('connections-details').open = false;
     document.querySelector('[data-provider=electricity] summary').focus(); true`);
+  assert.equal(await evaluate("document.querySelector('[data-provider=electricity] summary').checkVisibility()"), true, 'Source categories remain accessible with configuration closed');
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'electricity-keyboard',
     actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
@@ -820,7 +819,7 @@ try {
   charger2Status = { ...charger2Status, status: 'error', reason: 'mqtt-disconnected',
     connected: false, recording: false, healthy: false };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
-  await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === '3 need attention'");
+  await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Needs attention'");
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
   await checkProviderColors(true);
@@ -835,7 +834,7 @@ try {
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast is the final provider');
-  assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'Weather forecast is last in the closed overview');
+  assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Weather forecast', 'Weather forecast is last in the source overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
   assert.equal(await evaluate("document.getElementById('equipment-details').open"), false);

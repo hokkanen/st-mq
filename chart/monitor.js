@@ -275,81 +275,61 @@ function renderProviders(s) {
   const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
   $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
   $('weather-status').textContent = `${weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable'}${weatherSource ? ` · ${weatherSource}` : ''}`;
-  $('provider-context').textContent = 'See where the controller gets its readings, prices and forecasts, and check their availability. Connection details, electricity rates and configuration are below.'
-    + (s.input === 'simulated' ? ' Simulation uses example data; household providers are not polled.'
-      : s.input === 'offline' ? ' Offline history mode does not poll household providers.' : '');
   const entries = dashboardProviders(s, { now: s.now, formatTime: time });
-  const overview = $('provider-overview'), retained = new Set(entries.map(({ key }) => key));
-  for (const item of [...overview.children]) if (!retained.has(item.dataset.sourceKey)) item.remove();
+  const list = $('providers'), retained = new Set(entries.map(({ key }) => key));
+  for (const row of [...list.children]) if (!retained.has(row.dataset.provider)) row.remove();
   let attentionCount = 0, backupCount = 0;
-  for (const [index, { key, display, backup, overviewTitle, source: sourceLabel, sourceStates }] of entries.entries()) {
+  for (const [index, entry] of entries.entries()) {
+    const { key, display, backup, overviewTitle, source: sourceLabel, sourceStates } = entry;
     if (display.attention) attentionCount++;
     if (backup) backupCount++;
-    let item = [...overview.children].find(item => item.dataset.sourceKey === key);
-    if (!item) {
-      item = document.createElement('div'); item.className = 'source-overview'; item.dataset.sourceKey = key;
-      item.append(document.createElement('span'), document.createElement('strong'), document.createElement('small'));
+    let row = [...list.children].find(row => row.dataset.provider === key);
+    if (!row) {
+      row = document.createElement('li'); row.className = 'source-overview';
+      row.dataset.provider = key; row.dataset.sourceKey = key;
+      const fold = document.createElement('details'); fold.className = 'provider-fold';
+      const summary = document.createElement('summary');
+      const heading = document.createElement('span'); heading.className = 'provider-heading';
+      const title = document.createElement('strong'); title.className = 'provider-category-title';
+      const state = document.createElement('span'); state.className = 'provider-category-state';
+      const meta = document.createElement('small'); meta.className = 'provider-category-meta';
+      heading.append(title, state, meta); summary.append(heading);
+      const body = document.createElement('div'); body.className = 'provider-body';
+      const detail = document.createElement('p'); detail.className = 'muted provider-health';
+      const context = document.createElement('p'); context.className = 'muted provider-category-context';
+      const readings = document.createElement('div'); readings.className = 'provider-series-content';
+      body.append(detail, context, readings); fold.append(summary, body); row.append(fold);
     }
-    if (overview.children[index] !== item) overview.insertBefore(item, overview.children[index] ?? null);
-    item.dataset.state = display.attention ? 'attention' : backup ? 'backup'
+    if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
+    row.dataset.state = display.attention ? 'attention' : backup ? 'backup'
       : display.state === 'Available' ? 'available' : 'pending';
-    const [title, state, source] = item.children; title.textContent = overviewTitle;
+    row.querySelector('.provider-category-title').textContent = overviewTitle;
+    const state = row.querySelector('.provider-category-state');
+    state.dataset.state = row.dataset.state;
     setStatusDetail(state, { key: `provider-overview-${key}`, label: display.state, title: overviewTitle, detail: display.detail });
+    const source = row.querySelector('.provider-category-meta');
     source.replaceChildren();
-    for (const [index, entry] of (sourceStates ?? [{ label: sourceLabel, tone: item.dataset.state, state: display.state }]).entries()) {
-      if (index) source.append(document.createTextNode(', '));
-      const name = document.createElement('span'); name.className = 'provider-name'; name.dataset.state = entry.tone;
-      name.textContent = entry.label; name.title = `${entry.label}: ${entry.state}`;
+    for (const [sourceIndex, sourceEntry] of (sourceStates ?? [{ label: sourceLabel, tone: row.dataset.state, state: display.state }]).entries()) {
+      if (sourceIndex) source.append(document.createTextNode(', '));
+      const name = document.createElement('span'); name.className = 'provider-name'; name.dataset.state = sourceEntry.tone;
+      name.textContent = sourceEntry.label; name.title = `${sourceEntry.label}: ${sourceEntry.state}`;
       name.setAttribute('aria-label', name.title); source.append(name);
     }
+    const context = row.querySelector('.provider-category-context');
+    context.textContent = key === 'market' ? $('price-status').textContent : key === 'weather' ? $('weather-status').textContent : '';
+    context.hidden = !context.textContent;
+    setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${key}`,
+      label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
+    renderProviderSeries(row.querySelector('.provider-series-content'), entry.datasets ?? entry.series, { datasets: true });
   }
   $('provider-overview-state').textContent = attentionCount ? `${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`
     : backupCount ? `${backupCount} using backup` : entries.length ? `${entries.length} data feeds`
       : s.input === 'simulated' ? 'Simulation' : 'No live sources';
   $('provider-overview-state').classList.toggle('stale', attentionCount > 0 || backupCount > 0);
-  if (!entries.length) {
-    const note = document.createElement('p'); note.className = 'muted';
-    note.textContent = s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
-      : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : 'Waiting for provider status.';
-    $('provider-overview').append(note);
-  }
-  for (const row of [...$('providers').children]) if (!retained.has(row.dataset.provider)) row.remove();
-  for (const [index, entry] of entries.entries()) {
-    const { key: name, display, overviewTitle, source, series } = entry;
-    const datasets = entry.datasets ?? series;
-    let row = [...$('providers').children].find(row => row.dataset.provider === name);
-    if (!row) {
-      row = document.createElement('li'); row.dataset.provider = name;
-      const fold = document.createElement('details'); fold.className = 'provider-fold';
-      const summary = document.createElement('summary');
-      const heading = document.createElement('span'); heading.className = 'provider-heading';
-      const state = document.createElement('span'); state.className = 'provider-category-state';
-      const meta = document.createElement('small'); meta.className = 'provider-category-meta';
-      heading.append(document.createElement('strong'), state, meta); summary.append(heading);
-      const detail = document.createElement('p'); detail.className = 'muted provider-health';
-      const context = document.createElement('p'); context.className = 'muted provider-category-context';
-      const series = document.createElement('div'); series.className = 'provider-series-content';
-      fold.append(summary, detail, context, series); row.append(fold);
-    }
-    if ($('providers').children[index] !== row) $('providers').insertBefore(row, $('providers').children[index] ?? null);
-    row.querySelector('strong').textContent = overviewTitle;
-    const attention = datasets.filter(row => row.tone === 'attention').length;
-    const backups = datasets.filter(row => row.tone === 'backup').length;
-    const available = datasets.filter(row => row.tone === 'available').length;
-    const state = row.querySelector('.provider-category-state');
-    state.textContent = !datasets.length ? display.state : attention ? `${attention} ${attention === 1 ? 'needs' : 'need'} attention`
-      : backups ? `${backups} using backup` : available === datasets.length ? 'Available' : `${available} of ${datasets.length} available`;
-    row.dataset.state = attention ? 'attention' : backups ? 'backup' : available === datasets.length && datasets.length ? 'available' : 'pending';
-    state.dataset.state = row.dataset.state;
-    const meta = row.querySelector('.provider-category-meta');
-    meta.textContent = source ?? ''; meta.hidden = !source;
-    const context = row.querySelector('.provider-category-context');
-    context.textContent = name === 'market' ? $('price-status').textContent : name === 'weather' ? $('weather-status').textContent : '';
-    context.hidden = !context.textContent;
-    setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${name}`,
-      label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
-    renderProviderSeries(row.querySelector('.provider-series-content'), datasets, { datasets: true });
-  }
+  const note = $('provider-context');
+  note.textContent = s.input === 'simulated' ? 'Example prices and weather are in use. Live providers are not polled.'
+    : s.input === 'offline' ? 'Recorded history is available. Live providers are not polled.' : entries.length ? '' : 'Waiting for provider status.';
+  note.hidden = !note.textContent;
 }
 function renderLearning(s) {
   const display = learningDisplay(s.learning);

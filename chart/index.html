@@ -444,14 +444,13 @@
         </article>
       <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
           <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
-          <div id="provider-overview" class="provider-overview"></div>
+          <div id="provider-overview" class="provider-overview">
+            <ul id="providers" class="provider-list"></ul>
+            <p id="provider-context" class="muted" hidden></p>
+            <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
+          </div>
           <details id="connections-details" class="dashboard-disclosure">
-            <summary><span>Sources &amp; configuration</span><small>Connections, topics &amp; rates</small></summary>
-            <div id="data-sources-details">
-              <p id="provider-context" class="muted"></p>
-              <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
-              <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
-            </div>
+            <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
             <details id="mqtt-devices-details" class="controller-fold">
               <summary>MQTT</summary>
               <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
