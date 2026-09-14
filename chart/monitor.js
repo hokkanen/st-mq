@@ -38,7 +38,7 @@ let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
-const heatingCommandLabel = command => ({ heatoff: 'Reduced heating', heaton15: 'Normal heating', preheat: 'Preheating', heaton60: 'Circulation' })[command] ?? 'Heating request';
+const heatingCommandLabel = command => ({ heatoff: 'Reduced heating', heaton15: 'Normal heating', preheat: 'Max preheating', heaton60: 'Circulation' })[command] ?? 'Heating request';
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
@@ -192,7 +192,7 @@ function renderHeatingTests(s) {
   const current = actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
   const selected = current ? ({ normal: 'test-heaton15', recovery: 'test-heaton15',
     preheat: 'test-preheat', reduction: 'test-heatoff' })[phase] : null;
-  for (const [id, name] of [['test-heaton15', 'Normal heating'], ['test-preheat', 'Preheating'], ['test-heatoff', 'Reduced heating']]) {
+  for (const [id, name] of [['test-heaton15', 'Normal heating'], ['test-preheat', 'Max preheating'], ['test-heatoff', 'Reduced heating']]) {
     const button = $(id), state = id === selected ? actual.verified === true ? 'Active' : 'Requested' : '';
     button.setAttribute('aria-pressed', String(id === selected));
     button.setAttribute('aria-label', `${name}${state ? ` · ${state}${state === 'Requested' ? ', awaiting device confirmation' : ''}` : ''}`);
@@ -204,8 +204,10 @@ function renderHeatingTests(s) {
     + 'During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.';
   $('heating-preheat-help').hidden = capability?.preheatAvailable === true;
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
-    : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable room setting and circulation control.';
-  $('test-preheat').title = $('heating-preheat-help').textContent;
+    : capability?.preheatReason || 'Max preheating needs a connected heat pump, a fresh writable ROOM setting and circulation control.';
+  $('test-preheat').title = capability?.preheatAvailable === true
+    ? `Raise ROOM to ${decimal(capability.preheatTargetC)} °C using the maximum allowed boost of ${decimal(capability.preheatRoomBoostC)} °C.`
+    : $('heating-preheat-help').textContent;
   const warning = homeHeatingWarning(s, time);
   $('home-hold-warning').hidden = !warning;
   $('home-hold-warning').textContent = warning;
@@ -426,6 +428,10 @@ function renderH66(s) {
     value.classList.toggle('muted', !row.available);
     setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
       title: title.textContent, detail: row.detail });
+    const equipmentValue = $(`home-pump-${key}`);
+    equipmentValue.classList.toggle('muted', !row.available);
+    setStatusDetail(equipmentValue, { key: `home-pump-${key}`, label: row.available ? row.value : 'Unavailable',
+      title: title.textContent, detail: row.detail });
   }
   let notice = root.querySelector('.equipment-alarm');
   const alarm = summary.find(row => row.key === 'alarm');
@@ -443,6 +449,9 @@ function renderH66(s) {
     : 'Waiting for a live H66 connection and fresh values from the heat pump.');
   setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
     title: 'Heat-pump connection', detail: connectionDetail });
+  setStatusDetail($('home-pump-connection'), { key: 'home-pump-connection',
+    label: h66.connected ? 'H66 connected' : h66.brokerConnected ? 'H66 awaiting readings' : 'H66 not connected',
+    title: 'Ground-source heat-pump connection', detail: connectionDetail });
   if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
   if (h66.restorationPending) setStatusDetail($('h66-context'), { key: 'h66-context',
     label: 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.', detail: '' });
@@ -530,7 +539,7 @@ function render(s) {
   $('decision-title').textContent = manualHold
     ? manualHold.parameters ? 'Manual heating settings held' : 'Manual heating selection held'
     : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
-  const heldMode = ({ normal: 'Normal heating', preheat: 'Preheating', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
+  const heldMode = ({ normal: 'Normal heating', preheat: 'Max preheating', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
   $('reasons').textContent = manualHold
     ? `Price control is paused. ${heldMode}${manualHold.parameters ? ' and manual parameter settings are' : ' is'} held until ${time(manualHold.until)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
     : (s.decision.reasons ?? []).map(r => reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code)).join('. ');

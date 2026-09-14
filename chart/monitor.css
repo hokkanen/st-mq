@@ -978,10 +978,9 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-content .equipment-fold + .equipment-fold { margin-top: 0; }
 .zone-content .equipment-readings { font-size: 12px; }
 .zone-content #dhwr-device { margin-top: 0; }
-.zone-content > .zone-technical-details { margin: 10px 0 0; }
-.zone-content > .zone-technical-details > summary { color: var(--muted); }
-.zone-technical-details > .equipment-fold { margin-inline-start: 12px; }
-.zone-technical-details > .equipment-inline-controls { margin-top: 14px; }
+.zone-content .native-heat-pump > .equipment-fold { margin-inline-start: 0; }
+.zone-content .native-heat-pump > .equipment-fold > summary { color: var(--muted); }
+.native-heat-pump .equipment-fold > .equipment-inline-controls { margin-top: 14px; }
 .zone-content .home-actions { margin-top: 8px; }
 .zone-content .home-actions > details[open] > summary { padding-bottom: 4px; }
 .zone-content .home-actions > details > summary::after { content: '›'; }
@@ -1011,10 +1010,10 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-connections { padding-top: 6px; font-size: 11px; }
 .zone-connections a { color: var(--muted); text-decoration: none; }
 .zone-connections a:hover { color: var(--accent); text-decoration: underline; }
-.garage-overview, .garage-native-overview { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
+.garage-overview, .garage-native-overview, .pump-native-overview { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
 .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 17px; font-weight: 500; line-height: 1.5; }
-.garage-native-overview { margin: 12px 0 8px; }
-.garage-native-overview .equipment-value > strong { font-size: 14px; }
+.pump-native-overview { margin: 12px 0 8px; }
+.pump-native-overview .equipment-value > strong { font-size: 14px; }
 .garage-heating > .muted { font-size: 11px; margin-bottom: 8px; }
 @media (max-width: 640px) {
   .zone-content .equipment-device-list { grid-template-columns: minmax(0, 1fr); }
@@ -1022,7 +1021,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 @media (max-width: 480px) {
   .heating-zone > .zone-summary { padding: 12px 0 0; }
   .zone-content { padding: 0 0 16px; }
-  .garage-overview, .garage-native-overview { gap: 10px; }
+  .garage-overview, .garage-native-overview, .pump-native-overview { gap: 10px; }
   .garage-zone .zone-expand { font-size: 15px; }
   .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
 }

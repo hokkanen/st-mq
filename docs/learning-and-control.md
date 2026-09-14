@@ -182,15 +182,19 @@ intervals, preserve nulls and transitions, and do not rerun today's model on his
 ## H66 readbacks and commands
 
 In the dashboard, **Home & heating → Home heating** summarizes native settings.
-Its expanded fold contains **Heating configuration**, **Adjust heat-pump parameters**,
-and H66 series and readbacks. Starting a price-control pause selects Normal heating;
+Its expanded fold starts with **Heating configuration**. Under equipment and
+temperatures, the **Ground-source heat pump** overview contains
+**Adjust heat-pump parameters** and **All heat-pump readings**.
+Starting a price-control pause selects Normal heating;
 subsequent manual heating and parameter changes are held
 until the pause ends or the owner selects Resume now. Previous settings are then
 restored and the automatic schedule resumes if enabled. Outside Pause, these
 manual changes revert on the next controller update, normally within one minute,
 with a one-minute restoration deadline. Repeated edits preserve the original
-baseline. Manual Preheating raises the selected ROOM setting by 1 °C, requests
-normal tariff operation and starts a configured circulation run.
+baseline. **Max preheating** raises the selected ROOM setting by the configured
+maximum boost, capped at the writable ROOM upper limit, requests normal tariff
+operation and starts a configured circulation run. Repeated clicks use the same
+unboosted ROOM setting, so the boost does not accumulate.
 A tariff request remains unverified without
 relay readback; stale H66 readings are not shown as current settings.
 

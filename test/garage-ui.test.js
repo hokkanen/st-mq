@@ -60,7 +60,7 @@ test('Garage monitoring shows independent budgets and actual adapter readbacks, 
 
 test('Garage equipment and learning are closed disclosures inside the existing interface', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  for (const id of ['garage-equipment-details', 'garage-technical-details', 'garage-learning-details']) {
+  for (const id of ['garage-equipment-details', 'garage-readings-details', 'garage-settings-details', 'garage-learning-details']) {
     const tag = html.match(new RegExp(`<details[^>]+id="${id}"[^>]*>`))[0];
     assert(!/\sopen(?:\s|>|=)/.test(tag));
   }

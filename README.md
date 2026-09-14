@@ -122,18 +122,22 @@ Live active mode applies the plan; monitoring and shadow show it without automat
 equipment commands.
 
 Under **Home & heating → Home heating**, **Heating configuration** contains
-the manual heating buttons; **Adjust heat-pump parameters** contains native settings.
-Home and Garage share the same expanded layout: heating controls, equipment and
-temperatures, technical details, then Away/Pause. Selection marks sit beside the
+the manual heating buttons. Home and Garage share the same expanded layout:
+heating controls, equipment and temperatures, then Away/Pause. Each heat pump has
+an overview followed by its detailed readings; the ground-source heat pump also
+contains **Adjust heat-pump parameters**. **Garage settings** ends Garage's heating
+configuration, and connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
 sensors, native heat-pump temperatures, tariff relays and legacy Shelly devices.
 Held changes during Pause show an amber notice even when the sections are closed;
 changing a paused heating setting opens a confirmation explaining its lifetime.
 With live `providers` or `mqtt` input and configured controls, Normal and Reduced
-send tariff requests through the controller's executor. **Preheating** requests
+send tariff requests through the controller's executor. **Max preheating** requests
 normal tariff operation and circulation, and raises the selected ROOM setting
-by 1 °C with H66 readback. Repeated clicks do not add further boosts. Leaving
-Preheating removes that boost while retaining other manual parameter choices.
+by the configured maximum boost, capped at the writable ROOM upper limit, with
+H66 readback. It needs no separate temperature input. Repeated clicks do not add
+further boosts. Leaving Max preheating removes that boost while retaining other
+manual parameter choices.
 Circulation uses MQTT switch ON/OFF and its own configured run duration whether
 paused or not. Clicking Start again starts a full new run; Stop ends it immediately.
 Ending Pause or restoring manual heating parameters does not shorten the run.

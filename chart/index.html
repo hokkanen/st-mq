@@ -186,13 +186,13 @@
               <span class="zone-expand" aria-hidden="true"></span>
             </summary>
             <div class="zone-content equipment-area">
-              <section id="home-manual-controls" class="zone-section zone-configuration equipment-heat-pump" aria-labelledby="heating-configuration-title">
+              <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
                 <div id="heating-test-details">
                   <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating configuration</h4></div>
                   <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
                   <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
                     <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                    <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                    <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Max preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                     <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   </div>
                   <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
@@ -200,24 +200,43 @@
                   <p id="heating-test-status" class="muted"></p>
                   <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </div>
-                <details id="h66-test-details" class="equipment-fold">
-                  <summary>Adjust heat-pump parameters</summary>
-                  <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
-                    <label>Setting<select id="h66-test-register">
-                      <option value="0203">Room setting</option><option value="0212">Hot water start</option>
-                      <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
-                    </select></label>
-                    <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-                    <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
-                    <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
-                    <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
-                  </form>
-                  <p id="h66-test-status" class="muted">H66 is not connected.</p>
-                  <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </details>
               </section>
               <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
                 <div class="zone-section-heading"><h4 id="home-equipment-title">Equipment &amp; temperatures</h4><span id="home-equipment-status" class="equipment-device-status"></span></div>
+                <section id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
+                  <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><span id="home-pump-connection" class="equipment-device-status">Not connected</span></div>
+                  <div class="pump-native-overview">
+                    <div class="equipment-value"><span>Operating mode</span><strong id="home-pump-mode">Unavailable</strong></div>
+                    <div class="equipment-value"><span>ROOM setting</span><strong id="home-pump-room">Unavailable</strong></div>
+                    <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw">Unavailable</strong></div>
+                  </div>
+                  <details id="h66-test-details" class="equipment-fold">
+                    <summary>Adjust heat-pump parameters</summary>
+                    <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
+                      <label>Setting<select id="h66-test-register">
+                        <option value="0203">Room setting</option><option value="0212">Hot water start</option>
+                        <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
+                      </select></label>
+                      <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                      <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                      <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
+                      <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                    </form>
+                    <p id="h66-test-status" class="muted">H66 is not connected.</p>
+                    <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  </details>
+                  <details id="h66-readings-details" class="equipment-fold">
+                    <summary>All heat-pump readings</summary>
+                    <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
+                    <p id="h66-context" class="muted"></p>
+                    <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
+                    <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
+                    <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
+                      <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
+                      <div id="h66-series"></div>
+                    </details>
+                  </details>
+                </section>
                 <div id="home-equipment-readings" class="equipment-device-list"></div>
                 <section id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
                   <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></div>
@@ -234,22 +253,8 @@
                 </section>
                 <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
                 <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-              </section>
-              <details id="home-technical-details" class="equipment-fold zone-technical-details">
-                <summary>Technical details &amp; connections</summary>
-                <details id="h66-readings-details" class="equipment-fold">
-                  <summary>All heat-pump readings</summary>
-                  <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
-                  <p id="h66-context" class="muted"></p>
-                  <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
-                  <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
-                  <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
-                    <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
-                    <div id="h66-series"></div>
-                  </details>
-                </details>
                 <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
-              </details>
+              </section>
               <div class="home-actions">
                 <details id="temporary-details" class="dashboard-disclosure temporary-panel zone-availability-fold">
                   <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
@@ -294,41 +299,38 @@
                 </div>
                 <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
                 <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
-              </section>
-              <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
-                <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
-                <section id="garage-controller-details" class="equipment-device garage-heating" aria-labelledby="garage-mitsubishi-title">
-                  <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi heating</h4><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></div>
-                  <div class="garage-native-overview">
-                    <div class="equipment-value"><span>Power</span><strong id="garage-native-power">Unknown</strong></div>
-                    <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode">Unknown</strong></div>
-                    <div class="equipment-value"><span>Target</span><strong id="garage-native-target">Unavailable</strong></div>
-                  </div>
-                  <p id="garage-controller-reason" class="muted"></p>
-                </section>
-                <div id="garage-equipment-readings" class="equipment-device-list"></div>
-                <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
-                <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-              </section>
-              <details id="garage-technical-details" class="equipment-fold zone-technical-details">
-                <summary>Technical details &amp; connections</summary>
-                <details class="equipment-fold garage-secondary">
-                  <summary>All Mitsubishi readings</summary>
-                  <dl id="garage-controller-readings" class="equipment-readings"></dl>
-                  <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
-                </details>
-                <details class="equipment-fold"><summary>Garage settings</summary>
+                <details id="garage-settings-details" class="equipment-fold"><summary>Garage settings</summary>
                   <dl id="garage-settings-values" class="equipment-readings"></dl>
                   <p class="muted">Change the garage protection policy, savings aggressiveness and normal Mitsubishi setting in Configuration, then Apply configuration. Connections and commissioning are separate from these everyday preferences.</p>
                   <p class="muted">Local recovery runs in the Pill software. A dead adapter or failed serial connection cannot transmit ON; unresolved recovery stays visible. Automatic pauses need an implemented compatible contract and installed commissioning.</p>
                 </details>
+              </section>
+              <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
+                <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
+                <section id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
+                  <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></div>
+                  <div class="garage-native-overview pump-native-overview">
+                    <div class="equipment-value"><span>Power</span><strong id="garage-native-power">Unknown</strong></div>
+                    <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode">Unknown</strong></div>
+                    <div class="equipment-value"><span>Target</span><strong id="garage-native-target">Unavailable</strong></div>
+                  </div>
+                  <details id="garage-readings-details" class="equipment-fold garage-secondary">
+                    <summary>All Mitsubishi readings</summary>
+                    <p id="garage-controller-reason" class="muted"></p>
+                    <dl id="garage-controller-readings" class="equipment-readings"></dl>
+                    <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
+                    <div class="equipment-inline-controls">
+                      <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
+                      <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
+                      <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
+                    </div>
+                  </details>
+                </section>
+                <div id="garage-equipment-readings" class="equipment-device-list"></div>
+                <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
+                <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
                 <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
-                <div class="equipment-inline-controls">
-                  <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
-                  <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
-                  <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </div>
-              </details>
+              </section>
               <div class="home-actions">
                 <details id="garage-pause-details" class="dashboard-disclosure temporary-panel zone-availability-fold">
                   <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>

@@ -525,13 +525,17 @@ export class Engine {
   heatingTests() {
     const available = ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
     const native = this.h66?.status(this.clock()), room = native?.manualPreheat?.baseValue ?? native?.readings?.['0203']?.value;
+    const roomMaximum = Math.min(35, native?.controls?.['0203']?.max ?? 35);
+    const roomBoostC = Math.min(5, this.control.maxRoomBoostC, roomMaximum - room);
     const preheatAvailable = available && native?.controls?.['0203']?.available === true
-      && Number.isFinite(room) && room + 1 <= 35 && typeof this.executor.commandTransport.publishDhwr === 'function';
+      && Number.isFinite(room) && Number.isFinite(roomBoostC) && roomBoostC >= 1
+      && typeof this.executor.commandTransport.publishDhwr === 'function';
     return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',
-    preheatAvailable, preheatReason: preheatAvailable ? null
-      : 'Preheating needs a fresh writable ROOM setting with room for a 1 °C boost, and connected heating and circulation controls.',
+    preheatAvailable, preheatRoomBoostC: preheatAvailable ? roomBoostC : null,
+    preheatTargetC: preheatAvailable ? room + roomBoostC : null, preheatReason: preheatAvailable ? null
+      : 'Max preheating needs a fresh writable ROOM setting with room for at least a 1 °C boost, and connected heating and circulation controls.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`) };
   }
   equipmentStatus() {
@@ -610,7 +614,7 @@ export class Engine {
   }
   async testHeating(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
-      || Object.keys(input).length !== 1 || ![...HEATING_COMMANDS, 'preheat'].includes(input.command)) throw new Error('Choose Normal heating, Preheating, Reduced heating or hot-water circulation.');
+      || Object.keys(input).length !== 1 || ![...HEATING_COMMANDS, 'preheat'].includes(input.command)) throw new Error('Choose Normal heating, Max preheating, Reduced heating or hot-water circulation.');
     const capability = this.heatingTests();
     if (!capability.available) throw new Error(capability.reason);
     if (input.command === 'preheat' && !capability.preheatAvailable) throw new Error(capability.preheatReason);
@@ -627,7 +631,7 @@ export class Engine {
       // any later manual choice until that pause ends. MQTT acknowledgement is
       // still not a physical readback.
       const execution = await this.executor.execute(command === 'preheat'
-        ? { phase: 'preheat', commands: ['heaton15', 'heaton60'], roomBoostC: 1 } : { commands: [command] },
+        ? { phase: 'preheat', commands: ['heaton15', 'heaton60'], roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
       { mode: this.settings.mode, now, manualTest: true, pause });
       const result = { command, ...execution, at: this.clock() };
       this.store.setState(`heating-test:${this.config.input}`, result);
@@ -635,7 +639,7 @@ export class Engine {
       if (command === 'heaton60' || command === 'preheat') this.recordDhwr(this.executor.status().pulseUntil, result.at);
       if (command !== 'heaton60') {
         this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'heatoff' ? 'reduction' : 'normal',
-          result.at, command === 'preheat' ? 1 : 0);
+          result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
       }
       return result;
     } catch (error) {

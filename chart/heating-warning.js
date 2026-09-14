@@ -31,7 +31,7 @@ export function confirmPausedHeating({ document, title, message, action = 'Apply
 export function homeHeatingWarning(status, formatTime) {
   const hold = status?.decision?.manualHold;
   if (!(status?.override?.expiresAt > status.now && hold?.until > status.now) || hold.changed === false) return '';
-  const mode = ({ normal: 'Normal heating', reduction: 'Reduced heating', preheat: 'Preheating', recovery: 'Normal heating' })[hold.phase] ?? 'Your heating selection';
+  const mode = ({ normal: 'Normal heating', reduction: 'Reduced heating', preheat: 'Max preheating', recovery: 'Normal heating' })[hold.phase] ?? 'Your heating selection';
   const selection = hold.parameters ? `${mode} and changed heat-pump parameters` : mode;
   return `${selection} will stay until ${formatTime(hold.until)} or Resume now. Automatic price control is paused; room temperatures may change. Previous settings return when the pause ends.`;
 }
