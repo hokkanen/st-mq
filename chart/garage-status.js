@@ -5,6 +5,7 @@ import { setStatusDetail } from './status-details.js';
 import { finnishDateTime } from './home-controls.js';
 import { confirmPausedHeating, garageHeatingWarning } from './heating-warning.js';
 import { GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
+import { renderLearningRows } from './learning-rows.js';
 const finite = Number.isFinite;
 const text = value => typeof value === 'string' ? value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll(/[_-]/g, ' ') : 'Unknown';
 const number = (value, unit = '') => finite(value) ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value)}${unit ? ` ${unit}` : ''}` : 'Unavailable';
@@ -23,6 +24,16 @@ const opportunity = reason => ({
   'credible-price-timing-opportunity': 'Price timing supports a pause within validated limits',
   'prepare-for-later-price-opportunity': 'Heating remains available before a later price opportunity',
 })[reason] ?? text(reason ?? 'Normal heating').replace(/^./, value => value.toUpperCase());
+const opportunitySummary = reason => ({
+  'automatic-control-disabled': 'Automatic control disabled',
+  'normal-heating-preference': 'Normal heating selected',
+  'insufficient-validated-thermal-evidence': 'Awaiting temperature evidence',
+  'learning-episode-recovering': 'Awaiting recovery',
+  'learning-trial-recovery-interval': 'Between learning trials',
+  'benefit-below-warmth-or-prediction-resolution': 'Insufficient timing benefit',
+  'credible-price-timing-opportunity': 'Price-supported pause',
+  'prepare-for-later-price-opportunity': 'Preparing for a later opportunity',
+})[reason] ?? opportunity(reason);
 const coefficientNumber = (value, unit) => finite(value)
   ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 4 }).format(value)} ${unit}` : 'Unavailable';
 const coefficientInfo = Object.fromEntries(Object.values(GARAGE_COEFFICIENT_INFO).map(info => [`${info.location}.${info.parameter}`, info]));
@@ -42,6 +53,7 @@ const coefficientDetails = {
 };
 
 function garageCoefficientRows(learning) {
+  const details = [];
   const rows = Object.entries(learning.coefficients ?? {}).flatMap(([group, values]) => Array.isArray(values) ? values.map(value => {
     const key = `${group}.${value.name}`, info = coefficientInfo[key];
     if (!info) return null;
@@ -54,13 +66,34 @@ function garageCoefficientRows(learning) {
     const ev = /^ev[12]/.test(value.name), activity = /Active/.test(value.name);
     const detail = coefficientDetails[key] ?? (ev
       ? `${group === 'front' ? 'Front–rear difference' : 'Rear temperature'} contribution ${activity ? 'at full charging activity' : 'per kWh of charging electricity'}; fixed charger assumption.` : '');
+    details.push({ key: `${group}-${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')}`,
+      group: scope, title: label, value: coefficientNumber(value.value, info.unit), available: finite(value.value),
+      provenance: !finite(value.value) ? 'Unavailable' : value.basis === 'fitted-effective-response' ? 'Fitted'
+        : value.basis === 'retained-effective-response' ? 'Retained fit' : info.fixed ? 'Fixed assumption' : 'Initial estimate',
+      detail, evidence: `${provenance}. ${evidence}. Input coverage describes exposure to this input; it does not establish that the coefficient was identified or validated.` });
     return [`${scope} · ${label}`, `${coefficientNumber(value.value, info.unit)} · ${provenance}. ${detail} ${evidence}.`];
   }).filter(Boolean) : []);
-  if (finite(learning.structure?.memoryTimeHours)) rows.push(['Building warmth · Memory time',
-    `${coefficientNumber(learning.structure.memoryTimeHours, 'h')} · Fixed assumption. Time scale for modeled building warmth to follow rear air temperature.`]);
-  if (finite(learning.normalReference?.outdoorSlope)) rows.push(['Normal rear warmth · Weather response',
-    `${coefficientNumber(learning.normalReference.outdoorSlope, '°C/°C')} · Fixed assumption. Change in the normal rear-temperature reference per degree outdoors; the reference level is estimated separately.`]);
-  return rows;
+  if (finite(learning.structure?.memoryTimeHours)) {
+    const value = coefficientNumber(learning.structure.memoryTimeHours, 'h');
+    const detail = 'Time scale for modeled building warmth to follow rear air temperature.';
+    rows.push(['Building warmth · Memory time', `${value} · Fixed assumption. ${detail}`]);
+    details.push({ key: 'building-memory-time', group: 'Building assumptions', title: 'Building warmth memory',
+      value, provenance: 'Fixed assumption', detail });
+  }
+  if (finite(learning.normalReference?.outdoorSlope)) {
+    const value = coefficientNumber(learning.normalReference.outdoorSlope, '°C/°C');
+    const detail = 'Change in the normal rear-temperature reference per degree outdoors; the reference level is estimated separately.';
+    rows.push(['Normal rear warmth · Weather response', `${value} · Fixed assumption. ${detail}`]);
+    details.push({ key: 'normal-warmth-weather-response', group: 'Building assumptions', title: 'Normal warmth weather response',
+      value, provenance: 'Fixed assumption', detail });
+  }
+  if (!details.length) details.push({ key: 'coefficients-unavailable', title: 'Model coefficients',
+    value: 'Unavailable', provenance: 'Unavailable', available: false, detail: 'Initial estimates and fitted coefficients are not available yet.' });
+  details.push({ key: 'coefficient-fitting-method', group: 'Learning method', title: 'How coefficients are learned',
+    value: '5 responses + recovery', provenance: 'Method',
+    detail: 'The sparse model can fit five responses, plus a sixth recovery-demand response when supported. Pump electricity and compressor activity are alternative heating paths. Normal rear warmth and the activity baseline are estimated separately. The other coefficients stay fixed.',
+    evidence: 'Hours with an input present describe exposure to that input, not proof that its coefficient was identified or validated. Current values do not replace older chart history.' });
+  return { rows, details };
 }
 
 function garageLearningRows(garage, policy) {
@@ -121,10 +154,91 @@ function garageLearningRows(garage, policy) {
     ['Pump temperature and energy reports', 'Separate equipment readings. Unsupported telemetry remains unknown; compressor frequency is not converted into measured watts.'],
     ['Local exposure recovery', `${number(policy.recoveryDwellMinutes, 'min')} continuously at or above ${number(policy.recoveryAboveC, '°C')} before credit starts; then ${number(policy.recoveryDegreeMinutesPerMinute)} °C·min per warm minute. Each location repays its own exposure.`],
   ];
-  return { outcomeRows, inputRows,
-    outcomeContext: 'Pause support requires complete cooling and recovery checks with a model frozen before the pause, without correcting its predicted temperatures. They use observed weather, so they do not measure weather-forecast accuracy. RMSE is root mean square error; MAE is mean absolute error; positive bias means the prediction was too cold or too low.',
-    inputContext: 'Recorded temperatures and heating inputs teach the Garage model. Estimated building warmth and future pump consumption are modeled values. Missing readings remain unknown. Neither an air-temperature forecast nor the model’s building warmth is a measurement of pipe temperature.',
-    coefficientContext: 'The sparse model can fit five responses, plus a sixth recovery-demand response when supported. Pump electricity and compressor activity are alternative heating paths. Normal rear warmth and the activity baseline are estimated separately. The other coefficients stay fixed. Hours with an input present describe exposure to that input, not proof that its coefficient was identified or validated. Current values do not replace older chart history.' };
+  const outcomeDescriptions = Object.fromEntries(outcomeRows), inputDescriptions = Object.fromEntries(inputRows);
+  const outcome = (key, title, value, group, provenance = 'Calculated', detail = outcomeDescriptions[title]) =>
+    ({ key, title, value, group, provenance, detail, available: value !== 'Unavailable' });
+  const outcomeDetails = [
+    outcome('temperature-prediction', 'Temperature prediction', thermal === true ? 'Validated' : thermal === false ? 'Awaiting validation' : 'Unavailable', 'Pause readiness'),
+    outcome('electricity-prediction', 'Electricity prediction', electrical === true ? 'Qualified' : electrical === false ? 'Awaiting evidence' : 'Unavailable', 'Pause readiness'),
+    outcome('thermal-pause-duration', 'Validated thermal pause duration', supportedDuration, 'Pause readiness', 'Complete episode checks',
+      'Longest pause duration supported by complete passing cooling and recovery episodes. Temperature readiness also requires a learned normal-warmth reference and fitted rear and front cooling responses.'),
+    outcome('economic-pause-support', 'Economic pause support', thermal === true && electrical === true ? supportedDuration
+      : thermal === false || electrical === false ? 'Not yet qualified' : 'Unavailable', 'Pause readiness', 'Calculated',
+      'Temperature and electricity checks must both pass before a pause has economic support. The current plan also checks protection, recovery and price timing.'),
+    outcome('learning-trial-support', 'Learning trial support', evidence ? evidence.trialEligible === true
+      ? `${number(evidence.trialHours, 'h')} maximum` : 'Not eligible' : 'Not assessed', 'Pause readiness', 'Current plan'),
+    outcome('current-opportunity', 'Current opportunity', plan.learningTrial === true ? 'Bounded learning trial' : opportunitySummary(plan.reason), 'Pause readiness', 'Current plan'),
+  ];
+  if (reference) outcomeDetails.push(outcome('normal-rear-warmth', 'Normal rear warmth', number(reference.rearC, '°C'), 'Learned references',
+    reference.initialized === true ? 'Learned' : reference.initialized === false ? 'Initial estimate' : 'Unknown basis',
+    'Rear air temperature achieved during qualified continuous normal heating, adjusted for outdoor temperature. It is distinct from the configured pump setting.'));
+  if (reference) outcomeDetails.at(-1).evidence = `${reference.initialized === true ? 'Learned during continuous normal heating.'
+    : reference.initialized === false ? 'Initial estimate — not validated.' : 'Unknown reference provenance.'} ${number(reference.qualifiedHours, 'h')} qualified reference observations.`;
+  if (learning.nativeActivity) outcomeDetails.push({ ...outcome('normal-activity-baseline', 'Normal activity baseline',
+    finite(learning.nativeActivity.mean) ? `${number(learning.nativeActivity.mean)} / 1` : 'Unavailable', 'Learned references',
+    learning.nativeActivity.basis === 'learned-dimensionless-activity' ? 'Learned'
+      : learning.nativeActivity.basis === 'prior-activity-response' ? 'Initial estimate' : 'Unknown basis',
+    'Compressor activity on a 0–1 scale. The prediction adjusts the learned baseline for outdoor cold and missing rear warmth; it is not measured kW. Before enough activity is observed, activity prediction uses an initial electrical-response assumption.'),
+    evidence: `${number(learning.nativeActivity.hours, 'h')} observed activity.` });
+  if (coefficients.length) outcomeDetails.push(outcome('fitted-responses', 'Fitted responses', `${fittedCount} fitted · ${retainedCount} retained`, 'Model record', 'Current model'));
+  outcomeDetails.push(outcome('recorded-history-reconstruction', 'Recorded history reconstruction', outcomeDescriptions['Recorded history reconstruction'], 'Model record', 'Recorded history',
+    'Reconstruction status of the model built from recorded history. A recorded primary snapshot is supplied by the primary installation.'));
+  if (modelVersion) outcomeDetails.push(outcome('model-version', 'Model version', `Garage ${modelVersion[1]}`, 'Model record', 'Algorithm',
+    'Version of the Garage learning algorithm used for the current model and its recorded reconstruction.'));
+  const evidenceDetails = [];
+  if (validation) {
+    evidenceDetails.push(outcome('complete-clean-episodes', 'Complete clean episodes', number(validation.completedEpisodes), 'Episode evidence', 'Recorded episodes'),
+      outcome('electrical-recovery-checks', 'Electrical recovery checks', finite(validation.recoveryEpisodes) ? `${number(validation.recoveryEpisodes)} passed` : 'Unavailable', 'Episode evidence', 'Validation'),
+      outcome('episode-error-coverage', 'Episode error coverage', number(validation.horizonHours, 'h'), 'Episode evidence', 'Validation'));
+    for (const location of ['rear', 'front']) {
+      const label = location === 'rear' ? 'Rear' : 'Front';
+      evidenceDetails.push({ ...outcome(`${location}-whole-episode-error`, `${label} whole-episode error`,
+        finite(validation[`${location}Rmse`]) ? `RMSE ${number(validation[`${location}Rmse`], '°C')}` : 'Unavailable', 'Temperature errors', 'Validation',
+        'Temperature prediction error across clean ended validation episodes, including failed recovery. The model is frozen before the pause and its predicted temperatures are not corrected during assessment.'),
+        evidence: `Bias ${number(validation[`${location}Bias`], '°C')}. Positive bias means the prediction was too cold.` },
+      outcome(`${location}-cooling-error`, `${label} cooling-only episode error`, finite(validation[`off${label}Rmse`])
+        ? `RMSE ${number(validation[`off${label}Rmse`], '°C')}` : 'Unavailable', 'Temperature errors', 'Validation',
+      'Temperature prediction error during the heating-off portion of clean ended validation episodes. Cooling-only error does not establish recovery or economic pause support.'));
+    }
+    if (validation.active) evidenceDetails.push(outcome('active-episode', 'Episode being assessed',
+      validation.active.phase === 'off' ? 'Cooling' : 'Recovery', 'Current episode', 'In progress'));
+  }
+  if (electricalError) evidenceDetails.push({ ...outcome('electrical-short-step-error', 'Electrical short-step error',
+    finite(electricalError.mae) ? `MAE ${number(electricalError.mae, 'kW')}` : 'Unavailable', 'Electricity error', 'Validation',
+    'Error between modeled and qualified recorded pump power in held-out intervals with heating available. This check is separate from complete cooling and recovery validation.'),
+    evidence: `${number(electricalError.hours, 'h')} checked · ${number(electricalError.n)} predictions · bias ${number(electricalError.bias, 'kW')}. Positive bias means the prediction was too low.` });
+  evidenceDetails.push({ key: 'validation-method', group: 'Learning method', title: 'How validation works', value: 'Cooling + recovery', provenance: 'Method',
+    detail: 'Pause support requires complete cooling and recovery checks with a model frozen before the pause, without correcting its predicted temperatures. They use observed weather, so they do not measure weather-forecast accuracy.',
+    evidence: 'RMSE is root mean square error; MAE is mean absolute error; positive bias means the prediction was too cold or too low. Error coverage includes clean ended validation episodes that failed recovery; supported pause duration requires complete passing episodes.' });
+  const input = (key, title, value, group, provenance, detail, available = true) => ({ key, title, value, group, provenance, detail, available });
+  const observations = garage.observations ?? {};
+  const inputDetails = [
+    input('rear-air-temperature', 'Rear air temperature', temperature(observations.rear), 'Temperatures', 'Recorded', inputDescriptions['Rear air temperature · °C'], finite(observations.rear?.value)),
+    input('front-air-temperature', 'Front air temperature', temperature(observations.front), 'Temperatures', 'Recorded', inputDescriptions['Front air temperature · °C'], finite(observations.front?.value)),
+    input('outdoor-temperature', 'Outdoor temperature', temperature(observations.outdoor), 'Temperatures',
+      observations.outdoor?.source === 'openmeteo' ? 'Modeled' : ['husdata-h66', 'fmi', 'mqtt-temperature', 'shelly-mqtt'].includes(observations.outdoor?.source) ? 'Recorded' : 'Source varies',
+      `${outdoorSourceLabel(observations.outdoor?.source) ?? 'Source unavailable'}. Learning uses the outdoor input recorded for each interval, which can include a modeled fallback estimate. Planning uses forecasts available at the decision time.`, finite(observations.outdoor?.value)),
+    input('front-rear-difference', 'Front–rear temperature difference', number(learning.state?.differenceC, '°C'), 'Temperatures', 'Calculated',
+      'Front air minus rear air, last calculated from qualified observations in the model. This value is carried between qualified front readings; it is not a separate sensor measurement.', finite(learning.state?.differenceC)),
+    input('heat-pump-input', 'Heat-pump input', 'kW or 0–1 activity', 'Heating inputs', 'Recorded',
+      `${inputDescriptions['Heat-pump input · kW or activity']} Qualified electrical telemetry may be verified or provisional; recorded does not imply verified accuracy.`),
+    ...[1, 2].map(id => input(`charger-${id}-input`, `Charger ${id} input`, 'kW or 0–1 activity', 'Heating inputs', 'Recorded / calculated',
+      `Charging electricity or observed activity for charger ${id}, recorded separately from the other vehicle. Electrical input can be calculated from qualified recorded energy. Its thermal effects remain fixed assumptions; protection excludes anticipated charging warmth.`)),
+    input('heating-availability', 'Heating availability', 'Native ON / OFF', 'Operating context', 'Recorded', inputDescriptions['Heating availability']),
+    input('doors-and-local-cooling', 'Doors and local cooling', 'Episode qualification', 'Operating context', 'Context', inputDescriptions['Doors and local cooling']),
+    input('pump-equipment-reports', 'Pump temperature and energy reports', 'Equipment readings', 'Operating context', 'Recorded', inputDescriptions['Pump temperature and energy reports']),
+    input('estimated-building-warmth', 'Estimated building warmth', number(learning.state?.coreC, '°C'), 'Modeled state', 'Modeled',
+      'Slow temperature memory from rear observations; not measured pipe temperature or stored kWh. Neither an air-temperature forecast nor this building-warmth state measures pipe temperature.', finite(learning.state?.coreC)),
+    input('future-pump-response', 'Future pump response', 'kW and 0–1 activity', 'Modeled state', 'Modeled',
+      'Planning predicts future pump electricity and compressor activity from outdoor temperature, normal rear warmth, current warmth and restart state. Heating availability lets the built-in controller run or idle; it does not force compressor activity.'),
+    input('local-exposure-recovery', 'Local exposure recovery', finite(policy.recoveryDwellMinutes) && finite(policy.recoveryAboveC)
+      ? `${number(policy.recoveryDwellMinutes, 'min')} at ≥ ${number(policy.recoveryAboveC, '°C')}` : 'Unavailable', 'Protection context', 'Configured',
+      `${inputDescriptions['Local exposure recovery']} This protection rule is configured separately from learned thermal coefficients.`, finite(policy.recoveryDwellMinutes) && finite(policy.recoveryAboveC)),
+  ];
+  return { outcomeRows, inputRows, outcomeDetails, evidenceDetails, inputDetails,
+    outcomeContext: 'Pause support requires complete cooling and recovery checks. Temperature evidence, electricity qualification and the current plan are shown separately.',
+    inputContext: 'Values show the latest reported temperatures and retained model state; the chart’s Model inputs view shows the original learning inputs. Missing readings remain unknown.',
+    coefficientContext: 'Fitted responses, initial estimates and fixed assumptions are shown separately. Expand a coefficient for its role and input coverage.' };
 }
 
 export function garageColdBudget(garage = {}, location) {
@@ -202,7 +316,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   return { status: text(garage.status ?? (settings.enabled ? 'commissioning' : 'monitoring')),
     reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
       .trim().replace(/^./, value => value.toUpperCase()),
-    rows, settingRows, coefficients, ...learningRows, limitations: learning.limitations ?? [] };
+    rows, settingRows, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
 }
 
 export function renderGarage(document, status) {
@@ -323,10 +437,12 @@ export function renderGarage(document, status) {
   };
   set('garage-controller-state', display.status); set('garage-controller-reason', display.reason);
   list('garage-controller-readings', display.rows); list('garage-settings-values', display.settingRows);
-  list('garage-learning-outcomes', display.outcomeRows); list('garage-learning-inputs', display.inputRows);
+  renderLearningRows(document.getElementById('garage-learning-outcomes'), display.outcomeDetails, { document });
+  renderLearningRows(document.getElementById('garage-learning-evidence'), display.evidenceDetails, { document });
+  renderLearningRows(document.getElementById('garage-learning-inputs'), display.inputDetails, { document });
   set('garage-learning-context', display.outcomeContext); set('garage-input-context', display.inputContext);
   set('garage-coefficient-context', display.coefficientContext);
-  list('garage-learning-coefficients', display.coefficients.length ? display.coefficients : [['Model coefficients', 'Priors or fitted coefficients are not available yet.']]);
+  renderLearningRows(document.getElementById('garage-learning-coefficients'), display.coefficientDetails, { document });
   set('garage-learning-limitations', sentences(display.limitations));
 }
 

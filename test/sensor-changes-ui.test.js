@@ -118,7 +118,30 @@ function panelFixture(options = {}) {
     setAttribute(name, value) { this.attributes.set(name, value); }
     addEventListener(name, handler) { this.events.set(name, handler); }
     get childElementCount() { return this.children.length; }
-    append(...children) { this.children.push(...children); }
+    get firstChild() { return this.children[0] ?? null; }
+    get nextSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] ?? null; }
+    append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
+    insertBefore(child, next) {
+      child.remove(); child.parentElement = this;
+      this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, child);
+    }
+    remove() {
+      if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
+      this.parentElement = null;
+    }
+    querySelector(selector) {
+      const [first, ...rest] = selector.split(' ');
+      const matches = node => first.startsWith('.') ? node.className?.split(' ').includes(first.slice(1))
+        : node.dataset.modelInput === first.match(/data-model-input="([^"]+)"/)?.[1];
+      const visit = node => {
+        for (const child of node.children) {
+          if (matches(child)) return rest.length ? child.querySelector(rest.join(' ')) : child;
+          const nested = visit(child); if (nested) return nested;
+        }
+        return null;
+      };
+      return visit(this);
+    }
     replaceChildren(...children) { this.children = children; this.value = children[0]?.value ?? ''; }
     focus() { document.activeElement = this; }
   }
@@ -292,8 +315,8 @@ test('model input guide mounts each sensor-change fold in its own temperature in
     renderModelInputs(root, undefined, { sensorChanges: indoor, outdoorSensorChanges: outdoor });
     const indoorInput = root.children.find(node => node.dataset.modelInput === 'model_indoor_temperature');
     const outdoorInput = root.children.find(node => node.dataset.modelInput === 'model_outdoor_temperature');
-    assert.equal(indoorInput.children.at(-1), indoor);
-    assert.equal(outdoorInput.children.at(-1), outdoor);
+    assert.equal(indoorInput.querySelector('.learning-entry-body').children.at(-1), indoor);
+    assert.equal(outdoorInput.querySelector('.learning-entry-body').children.at(-1), outdoor);
     assert.equal(indoor.hidden, false);
     assert.equal(outdoor.hidden, false);
     indoor.open = true; outdoor.open = true;

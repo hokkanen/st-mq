@@ -19,11 +19,17 @@ identify them. Heating enters the slow hydronic state before warming the room.
 That state is an effective temperature memory, not measured floor temperature or
 stored kWh. Effective heating response is not measured capacity or COP.
 
-The dashboard's **House model** card summarizes the learning state and reported
+The dashboard's **Learning models** card summarizes Home and Garage learning. Home reports
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
-inferred. **Explore learning** separates **Learning outcomes · Calculated**, **Model
-inputs** and **Model coefficients** into closed sections.
+inferred. **Home learning** and **Garage learning** each separate **Learning outcomes · Calculated**,
+**Model inputs · Recorded & modeled** and **Model coefficients · Current values** into closed sections.
+Both use the same expandable rows: the name, value or unit, and provenance stay visible;
+explanations and supporting evidence open underneath. Inputs and coefficients are grouped by
+their role. **Validation & evidence** keeps detailed checks alongside the outcomes without
+equating Home's conditional temperature, equipment-response and frozen-forecast checks with
+Garage's cooling-and-recovery episode validation. Status refreshes preserve open explanations,
+keyboard focus and the sensor-change forms within Home's temperature inputs.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
 or fixed building assumption. The current-value display uses the existing learning

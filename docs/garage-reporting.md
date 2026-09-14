@@ -61,10 +61,15 @@ accepted lease and unresolved restoration. Its nested settings fold shows the
 three owner preferences using the application's existing configuration-and-reload
 workflow. An End garage pause action releases only an owned restoration obligation;
 it stays disabled on replicas, without compatible actuation capability, or when no
-managed pause needs restoration. The House model area adds a separate, closed
-Garage learning fold with
-outcomes, original inputs and coefficients. Evidence is actual interval counts
-and held-out errors, not a completion percentage.
+managed pause needs restoration. The Learning models card has separate, closed
+Home learning and Garage learning folds. Each uses matching outcome, input and
+coefficient sections with values and provenance visible in expandable rows.
+Garage separates pause readiness, learned references and model records from the
+detailed episode checks under Validation & evidence. Input definitions distinguish
+reported temperatures, the calculated front–rear difference, modeled building warmth
+and protection context. Coefficients are grouped by rear air, front–rear difference,
+pump electricity and fixed building assumptions. Evidence includes complete cooling
+and recovery episodes and prediction errors, without a completion percentage.
 
 The chart selector includes separate Garage model input and coefficient groups.
 Inputs come from the original normalized immutable garage journal, preserving

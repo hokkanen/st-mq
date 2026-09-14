@@ -77,8 +77,8 @@ try {
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
   const actualStatus = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json());
-  assert.equal(await evaluate(`document.getElementById('model-coefficients-content').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
-  assert.equal(await evaluate(`document.getElementById('model-coefficients-content').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);
+  assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
+  assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);
   assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
   await evaluate("document.getElementById('h66-test-register').value='2201'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-mode-field').hidden"), false);
@@ -150,7 +150,7 @@ try {
     assert.equal(await evaluate(marker), '"+"');
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false);
   }
-  assert.equal(await evaluate("document.querySelectorAll('.model-coefficient').length >= 6"), true);
+  assert.equal(await evaluate("document.querySelectorAll('#model-coefficients-content > .learning-entry').length >= 6"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Thermal coefficients:')"), false);
   assert.equal(await evaluate("document.getElementById('home-h66-summary').textContent.includes('Unavailable')"), true);
   assert.equal(await evaluate("document.getElementById('h66-status').textContent"), 'Not connected');
@@ -182,7 +182,7 @@ try {
   assert.equal(existsSync(join(directory, 'options.json')), true, 'Applying standalone configuration retains its permanent private file');
   await evaluate("document.getElementById('controls-details').open=false; document.getElementById('connections-details').open=false; document.getElementById('temporary-details').open=false");
   await evaluate("document.getElementById('learning-panel-details').open = true; document.getElementById('learning-details').open = true; document.getElementById('model-inputs-details').open = true; document.querySelector('#model-inputs-content details').open = true");
-  assert.equal(await evaluate("document.getElementById('model-inputs-content').textContent.includes('recorded sensor')"), true);
+  assert.equal(await evaluate("document.getElementById('model-inputs-content').textContent.includes('configured sensors')"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Action prediction:')"), true);
   for (const key of ['auxiliary_power', 'charger_power']) {
     assert(await evaluate(`(async () => {

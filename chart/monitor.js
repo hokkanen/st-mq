@@ -1,3 +1,4 @@
+import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
@@ -352,36 +353,15 @@ function renderLearning(s) {
   }
   $('learning-detail').textContent = display.message;
   $('learning-process').textContent = display.process;
-  $('learning-metrics').replaceChildren();
-  for (const metric of display.metrics) {
-    const card = document.createElement('div'); card.className = 'learning-metric';
-    const title = document.createElement('h3'); title.textContent = metric.title;
-    const value = document.createElement('strong'); value.textContent = metric.value;
-    const detail = document.createElement('p'); detail.textContent = metric.detail;
-    const evidence = document.createElement('p'); evidence.className = 'muted'; evidence.textContent = metric.evidence;
-    card.append(title, value, detail, evidence); $('learning-metrics').append(card);
-  }
-  $('learning-evidence').replaceChildren();
-  for (const text of display.evidence) {
-    const paragraph = document.createElement('p'); paragraph.textContent = text; $('learning-evidence').append(paragraph);
-  }
+  renderLearningRows($('learning-metrics'), display.metrics);
+  renderLearningRows($('learning-evidence'), display.evidenceRows);
   $('learning-history').textContent = display.history;
   $('coefficient-context').textContent = display.coefficientHistory;
-  $('model-coefficients-content').replaceChildren();
-  for (const row of display.coefficients) {
-    const card = document.createElement('div'); card.className = 'model-coefficient';
-    const title = document.createElement('h3'); title.textContent = row.title;
-    const value = document.createElement('strong'); value.textContent = row.value;
-    const provenance = document.createElement('p'); provenance.className = 'muted'; provenance.textContent = row.provenance;
-    const detail = document.createElement('p'); detail.className = 'muted'; detail.textContent = row.detail;
-    card.append(title, value, provenance, detail);
-    if (row.evidence) { const evidence = document.createElement('p'); evidence.className = 'muted'; evidence.textContent = row.evidence; card.append(evidence); }
-    $('model-coefficients-content').append(card);
-  }
-  for (const text of display.coefficientEvidence) {
-    const paragraph = document.createElement('p'); paragraph.className = 'muted'; paragraph.textContent = text;
-    $('model-coefficients-content').append(paragraph);
-  }
+  renderLearningRows($('model-coefficients-content'), display.coefficients.length ? display.coefficients : [{
+    key: 'unavailable', title: 'Thermal coefficients', value: 'Unavailable', available: false,
+    detail: 'Current model coefficients have not been received yet.',
+  }]);
+  renderLearningRows($('coefficient-evidence'), display.coefficientEvidenceRows);
   $('savings').textContent = s.savings?.explanation ?? 'Cycle profit is a model comparison after recovery; electricity bills alone cannot isolate what normal heating would have cost.';
 }
 function updateH66Selector({ useReadback = false } = {}) {

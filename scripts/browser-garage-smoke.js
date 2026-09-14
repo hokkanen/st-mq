@@ -69,7 +69,38 @@ try {
     for (let attempt = 0; attempt < 200; attempt++) { if (await evaluate(expression)) return; await pause(30); }
     throw new Error(`Garage UI did not settle: ${expression}`);
   };
+  const keyPress = async key => {
+    const code = key === 'Enter' ? 'Enter' : 'Space', virtualKey = key === 'Enter' ? 13 : 32;
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: virtualKey,
+      ...(key === 'Enter' ? { nativeVirtualKeyCode: virtualKey, text: '\r', unmodifiedText: '\r' } : {}) });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtualKey });
+  };
   await send('Runtime.enable'); await send('Page.enable');
+  // Exercise the real status-render path without waiting for the next 15-second poll.
+  // Response edits are confined to this disposable page and synthetic server.
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    const scheduleInterval = globalThis.setInterval.bind(globalThis);
+    globalThis.setInterval = (callback, delay, ...args) => {
+      if (delay === 15_000) globalThis.refreshLearningSmokeStatus = () => callback(...args);
+      return scheduleInterval(callback, delay, ...args);
+    };
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = async (input, options) => {
+      const response = await originalFetch(input, options);
+      if (new URL(input.url ?? String(input), location.href).pathname !== '/api/status'
+        || !globalThis.learningSmokeValues) return response;
+      const status = await response.json(), missing = globalThis.learningSmokeValues === 'missing';
+      status.learning.metrics = { ...status.learning.metrics, profit: { value: 0, count: missing ? 0 : 1 } };
+      status.learning.adaptive.model.parameters.lossPerHour = missing ? null : 0;
+      for (const location of ['rear', 'front'])
+        status.garage.observations[location] = { ...status.garage.observations[location], value: missing ? null : 0 };
+      status.garage.learning.state.coreC = missing ? null : 0;
+      status.garage.learning.state.differenceC = missing ? null : 0;
+      status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value = missing ? null : 0;
+      return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
+    };
+  ` });
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
@@ -96,20 +127,147 @@ try {
   await evaluate("document.querySelector('[data-mode=timing]').click()");
   assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /Timing cost saving/);
   await evaluate("document.querySelector('[data-scope=home]').click(); document.querySelector('[data-mode=model]').click()");
+  const learningSections = [
+    ['learning-metrics', 'home-outcomes'], ['model-inputs-content', 'home-inputs'],
+    ['model-coefficients-content', 'home-coefficients'], ['garage-learning-outcomes', 'garage-outcomes'],
+    ['garage-learning-inputs', 'garage-inputs'], ['garage-learning-coefficients', 'garage-coefficients'],
+  ];
+  for (const [id, name] of learningSections) {
+    assert.equal(await evaluate(`(() => {
+      const root = document.getElementById('${id}'), section = root.closest('.learning-section');
+      return Boolean(section?.querySelector(':scope > summary > .learning-section-title')
+        && section.querySelector(':scope > summary > .learning-section-kind')
+        && section.querySelector(':scope > .learning-section-body')?.contains(root));
+    })()`), true, `${name} uses the shared section structure`);
+    assert.equal(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#${id} > details.learning-entry')];
+      return rows.length > 0 && rows.every(row => row.dataset.learningKey
+        && row.querySelector(':scope > summary .learning-entry-title')?.textContent.trim()
+        && row.querySelector(':scope > summary .learning-entry-value')?.textContent.trim()
+        && row.querySelector(':scope > .learning-entry-body'));
+    })()`), true, `${name} uses named, expandable learning rows`);
+    await evaluate(`(() => {
+      const row = document.querySelector('#${id} > details.learning-entry'); row.open = false;
+      for (let parent = row.parentElement; parent; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') parent.open = true;
+      row.querySelector('summary').focus();
+    })()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.querySelector('#${id} > details.learning-entry').open`), true,
+      `${name} row opens with Enter`);
+    assert.equal(await evaluate(`document.querySelector('#${id} > details.learning-entry > .learning-entry-body').checkVisibility()`), true,
+      `${name} explanation becomes visible`);
+    await keyPress(' ');
+    assert.equal(await evaluate(`document.querySelector('#${id} > details.learning-entry').open`), false,
+      `${name} row closes with Space`);
+    await evaluate(`(() => {
+      const section = document.getElementById('${id}').closest('.learning-section');
+      section.querySelector(':scope > summary').focus();
+    })()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('${id}').closest('.learning-section').open`), false,
+      `${name} section closes with Enter`);
+    await keyPress(' ');
+    assert.equal(await evaluate(`document.getElementById('${id}').closest('.learning-section').open`), true,
+      `${name} section opens with Space`);
+  }
+  // Every list keeps its row mounted across polling, including Home's static input controls.
+  for (const [id, name] of learningSections) {
+    await evaluate(`(() => {
+      const row = document.querySelector('#${id} > details.learning-entry');
+      globalThis.learningSmokeRow = row; row.open = true;
+      for (let parent = row.parentElement; parent; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') parent.open = true;
+      row.querySelector('summary').focus();
+    })()`);
+    await evaluate('globalThis.refreshLearningSmokeStatus()');
+    assert.equal(await evaluate(`globalThis.learningSmokeRow === document.querySelector('#${id} > details.learning-entry')
+      && globalThis.learningSmokeRow.open
+      && document.activeElement === globalThis.learningSmokeRow.querySelector('summary')`), true,
+    `${name} preserves the row, open explanation and keyboard focus during status refresh`);
+  }
+  assert.equal(await evaluate("document.getElementById('sensor-change-form').closest('.learning-entry-body')?.parentElement.dataset.modelInput"),
+    'model_indoor_temperature', 'Indoor sensor maintenance stays inside its model input explanation');
+  assert.equal(await evaluate("document.getElementById('outdoor-sensor-change-form').closest('.learning-entry-body')?.parentElement.dataset.modelInput"),
+    'model_outdoor_temperature', 'Outdoor sensor maintenance stays inside its model input explanation');
+  const valueCases = [
+    ['#learning-metrics [data-learning-key=profit]', /^0[.,]00 €/],
+    ['#model-coefficients-content [data-learning-key=lossPerHour]', /^0[.,]0+ 1\/h$/],
+    ['#garage-learning-inputs [data-learning-key=rear-air-temperature]', /^0 °C(?: · stale)?$/],
+    ['#garage-learning-inputs [data-learning-key=front-rear-difference]', /^0 °C$/],
+    ['#garage-learning-coefficients [data-learning-key=rear-heat-loss]', /^0 1\/h$/],
+  ];
+  await evaluate(`(() => {
+    globalThis.learningSmokeValueRows = ${JSON.stringify(valueCases.map(([selector]) => selector))}.map(selector => {
+      const row = document.querySelector(selector); row.open = true; return row;
+    });
+    const row = globalThis.learningSmokeValueRows.at(-1);
+    for (let parent = row.parentElement; parent; parent = parent.parentElement)
+      if (parent.tagName === 'DETAILS') parent.open = true;
+    row.querySelector('summary').focus();
+  })()`);
+  for (const mode of ['zero', 'missing']) {
+    await evaluate(`globalThis.learningSmokeValues = '${mode}'; globalThis.refreshLearningSmokeStatus()`);
+    assert.equal(await evaluate(`globalThis.learningSmokeValueRows.every(row => row.isConnected && row.open)
+      && document.activeElement === globalThis.learningSmokeValueRows.at(-1).querySelector('summary')`), true,
+      `${mode} status values update mounted rows without closing explanations or losing focus`);
+    for (const [selector, zero] of valueCases) {
+      const value = await evaluate(`document.querySelector(${JSON.stringify(selector)})?.querySelector('.learning-entry-value').textContent`);
+      assert.match(value, mode === 'zero' ? zero : /Unavailable|Not available yet/,
+        `${selector} distinguishes an observed zero from unavailable evidence`);
+    }
+  }
+  await evaluate('globalThis.learningSmokeValues = null; globalThis.refreshLearningSmokeStatus()');
+
+  const prepareLearningShot = async (id, expanded) => evaluate(`(async () => {
+    const card = document.getElementById('house-model');
+    card.querySelectorAll('details').forEach(fold => fold.open = false);
+    const root = document.getElementById('${id}'), section = root.closest('.learning-section');
+    for (let parent = section; parent; parent = parent.parentElement)
+      if (parent.tagName === 'DETAILS') parent.open = true;
+    if (${expanded}) root.querySelector(':scope > details.learning-entry').open = true;
+    await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+    section.scrollIntoView({block: 'start'});
+  })()`);
+  const capture = async name => {
+    await pause(60);
+    const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(join(artifacts, `${name}.png`), Buffer.from(screenshot.data, 'base64'));
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${name} fits the viewport`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.learning-entry > summary')).filter(node => node.checkVisibility())
+      .flatMap(node => {
+        const box = node.getBoundingClientRect();
+        const contentFits = [...node.querySelectorAll('.learning-entry-title, .learning-entry-value, .learning-entry-provenance, .learning-entry-summary')]
+          .filter(field => field.checkVisibility()).every(field => {
+            const fieldBox = field.getBoundingClientRect();
+            return fieldBox.left >= box.left - 1 && fieldBox.right <= box.right + 1
+              && field.scrollWidth <= field.clientWidth + 1;
+          });
+        return box.left >= 0 && box.right <= innerWidth + 1 && contentFits ? []
+          : [{ key: node.parentElement.dataset.learningKey, left: box.left, right: box.right, contentFits }];
+      })`), [], `${name} keeps learning text within its rows`);
+  };
   for (const width of [1440, 390, 320]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
-    for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'],
-      ['learning-panel-details', 'home-learning'], ['garage-learning-details', 'garage-learning'],
-      ['model-inputs-details', 'home-inputs'], ['garage-learning-inputs', 'garage-inputs'],
-      ['model-coefficients-details', 'home-coefficients'], ['garage-learning-coefficients', 'garage-coefficients']]) {
-      await evaluate(`(() => { const element=document.getElementById('${id}'); element.open=true;
-        for(let parent=element.parentElement;parent;parent=parent.parentElement) if(parent.tagName==='DETAILS') parent.open=true;
-        if(['learning-panel-details','garage-learning-details'].includes('${id}')) element.querySelectorAll('details').forEach(fold=>fold.open=true);
-        element.scrollIntoView({block:'start'}); })()`);
-      await pause(100);
-      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${name} fits ${width}px`);
-      const screenshot = await send('Page.captureScreenshot', { format: 'png' });
-      writeFileSync(join(artifacts, `${name}-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+    for (const theme of ['dark', 'light']) {
+      await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
+        document.querySelectorAll('#house-model details').forEach(fold => fold.open = false);
+        document.getElementById('house-model').scrollIntoView({block: 'start'})`);
+      await capture(`learning-overview-${width}-${theme}`);
+      for (const [id, name] of learningSections) {
+        for (const expanded of [false, true]) {
+          await prepareLearningShot(id, expanded);
+          await capture(`${name}-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
+        }
+      }
+    }
+    // Preserve the equipment and savings layout checks from this smoke test.
+    for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment']]) {
+      await evaluate(`(() => { const element = document.getElementById('${id}'); element.open = true;
+        for (let parent = element.parentElement; parent; parent = parent.parentElement)
+          if (parent.tagName === 'DETAILS') parent.open = true;
+        element.scrollIntoView({block: 'start'}); })()`);
+      await capture(`${name}-${width}`);
     }
   }
   for (const left of ['garage_model_front', 'garage_model_difference', 'garage_coefficient_rear_lossPerHour']) {
@@ -122,7 +280,10 @@ try {
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
       'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
-      'Home and Garage learning folds fit desktop and mobile',
+      'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
+      'status refresh preserves learning row identity, open explanations and focus',
+      'sensor maintenance stays inside its input explanation', 'zero values remain distinct from missing evidence',
+      'Home and Garage learning sections fit desktop and mobile in both themes, collapsed and expanded',
       'original input and replay coefficient charts', 'no browser exceptions'] }));
   await send('Page.close');
 } finally {
