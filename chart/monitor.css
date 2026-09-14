@@ -129,6 +129,7 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
      its nested details open without changing the closed dashboard layout. */
   .controller-panels:not(:has(.dashboard-disclosure[open])) { align-items: stretch; }
   .controller-panels:not(:has(.dashboard-disclosure[open])) > .controller-column > .panel:last-child { flex-grow: 1; }
+  .controller-panels:not(:has(.dashboard-disclosure[open])) #home-control { display: flex; flex-direction: column; justify-content: space-between; }
 }
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
