@@ -116,11 +116,6 @@ main { max-width: 1428px; margin: auto; padding: 0 24px 8px; }
 .eyebrow { font-size: 10px; letter-spacing: 1.5px; font-weight: 650; color: var(--muted); margin: 0 0 12px; }
 h2 { font-size: 20px; font-weight: 550; margin: 0 0 14px; letter-spacing: -.4px; }
 p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
-.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 24px; }
-.metrics article { background: var(--surface); padding: 21px 24px; }
-.metrics p { font-size: 10px; letter-spacing: 1.3px; margin: 0 0 12px; }
-.metrics strong { display: block; font-weight: 450; font-size: 31px; letter-spacing: -1px; }
-.metrics small { display: block; font-size: 11px; color: var(--muted); margin-top: 10px; }
 .controller-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; margin-bottom: 24px; }
 .controller-column { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .controller-column > .panel { margin-bottom: 0; }
@@ -129,7 +124,8 @@ p { font-size: 14px; line-height: 1.65; margin: 10px 0; }
      its nested details open without changing the closed dashboard layout. */
   .controller-panels:not(:has(.dashboard-disclosure[open])) { align-items: stretch; }
   .controller-panels:not(:has(.dashboard-disclosure[open])) > .controller-column > .panel:last-child { flex-grow: 1; }
-  .controller-panels:not(:has(.dashboard-disclosure[open])) #home-control { display: flex; flex-direction: column; justify-content: space-between; }
+  .controller-panels:not(:has(.dashboard-disclosure[open])) #home-control { display: flex; flex-direction: column; }
+  .controller-panels:not(:has(.dashboard-disclosure[open])) .home-control-body { margin-top: auto; }
 }
 .panel { --panel-padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: var(--panel-padding); margin-bottom: 24px; min-width: 0; }
 .detail { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 12px 0; font-size: 13px; gap: 16px; }
@@ -446,7 +442,7 @@ details { border-top: 1px solid var(--border); margin-top: 18px; }
 details details { margin-inline-start: 24px; }
 .control-summary { margin: 18px 0; }
 .control-mode { margin: 8px 0 0; font-size: 11px; color: var(--muted); }
-.control-decision { margin: 0 0 6px; font-size: 22px; line-height: 1.4; font-weight: 550; letter-spacing: -.35px; }
+.control-decision { margin: 0 0 6px; font-size: 18px; line-height: 1.4; font-weight: 550; letter-spacing: -.35px; }
 .home-control #reasons { margin: 6px 0 0; }
 .home-control #reasons:empty { display: none; }
 .home-control .detail:last-child { border-bottom: 0; padding-bottom: 0; }
@@ -505,13 +501,49 @@ details details { margin-inline-start: 24px; }
 .control-badge > span { color: var(--muted); }
 .control-badge strong { font-weight: 550; }
 .control-badge[data-state="paused"] { color: var(--stale); }
-.comfort-overview { display: grid; grid-template-columns: 1.25fr 1fr; gap: 24px; padding: 18px 0 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.comfort-overview p { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
-.comfort-overview strong { display: block; font-size: 34px; letter-spacing: -1px; font-weight: 450; line-height: 1.25; }
-.comfort-overview strong[data-empty="true"] { font-size: 24px; letter-spacing: -.4px; }
-.comfort-overview small { display: block; font-size: 11px; color: var(--muted); margin-top: 8px; }
-.comfort-limit { border-left: 1px solid var(--border); padding-left: 24px; }
-.comfort-limit strong { color: var(--muted); }
+.home-heading-actions { display: flex; align-items: center; gap: 10px; }
+.chart-shortcut.secondary-button { display: grid; place-items: center; flex: none; width: 36px; height: 36px; min-height: 36px; margin: 0; padding: 8px; color: var(--muted); border-color: var(--border); border-radius: 6px; }
+.chart-shortcut svg { display: block; width: 19px; height: 19px; }
+.chart-shortcut:hover { color: var(--accent); border-color: var(--accent); }
+.home-overview { margin-top: 24px; }
+.overview-zones { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; }
+.overview-zones > section, .overview-conditions > div { min-width: 0; }
+.overview-label { margin: 0 0 8px; color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: .9px; text-transform: uppercase; line-height: 1.5; }
+.home-overview strong { display: block; font-weight: 450; font-variant-numeric: tabular-nums; }
+.overview-temperature { font-size: 44px; line-height: 1.2; letter-spacing: -1.5px; }
+.overview-home > .overview-temperature { color: var(--accent); }
+.overview-garage { border-left: 1px solid var(--border); padding-left: 24px; }
+.overview-garage > .overview-temperature { font-size: 32px; line-height: 1.65; letter-spacing: -.9px; }
+.overview-note { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.overview-request { margin-top: 20px; }
+.overview-request > .overview-label { margin-bottom: 5px; font-size: 9px; letter-spacing: .7px; }
+.overview-request > strong { font-size: 18px; line-height: 1.4; font-weight: 500; }
+.overview-garage .overview-request > strong { font-size: 16px; line-height: 1.575; }
+.overview-conditions { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; margin-top: 22px; padding: 18px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.overview-conditions > div + div { padding-left: 24px; }
+.overview-conditions strong { font-size: 24px; line-height: 1.3; letter-spacing: -.5px; }
+.home-overview .metric-unavailable { font-size: 22px; letter-spacing: -.5px; }
+.home-overview .metric-unavailable .status-detail-label { white-space: nowrap; }
+.overview-home > .metric-unavailable { line-height: 2.4; }
+.overview-garage > .metric-unavailable { line-height: 2.4; }
+[data-instance-role="replica"] .controller-panels { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 480px) {
+  .home-control > .dashboard-heading { flex-wrap: wrap; gap: 8px; }
+  .home-heading-actions { gap: 6px; margin-left: auto; }
+  .home-heading-actions .control-badge { padding: 5px 6px; font-size: 9px; }
+  .chart-shortcut.secondary-button { width: 34px; height: 34px; min-height: 34px; padding: 7px; }
+  .home-overview { margin-top: 22px; }
+  .overview-zones, .overview-conditions { grid-template-columns: 1.15fr 1fr; gap: 14px; }
+  .overview-garage, .overview-conditions > div + div { padding-left: 14px; }
+  .overview-temperature { font-size: 38px; }
+  .overview-garage > .overview-temperature { font-size: 28px; line-height: 1.63; }
+  .overview-label { font-size: 9px; letter-spacing: .6px; }
+  .overview-request > strong { font-size: 17px; }
+  .overview-garage .overview-request > strong { font-size: 15px; }
+  .home-overview .metric-unavailable { font-size: 17px; }
+  .overview-home > .metric-unavailable, .overview-garage > .metric-unavailable { line-height: 2.7; }
+  .home-overview .metric-unavailable .status-detail-trigger { gap: 4px; }
+}
 .sensor-change-details { margin-top: 14px; }
 .sensor-change-details > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 12px; }
 .sensor-change-details > summary::before { content: '›'; color: var(--muted); }
@@ -559,10 +591,10 @@ details details { margin-inline-start: 24px; }
 .dashboard-disclosure > summary > span { font-weight: 550; }
 .dashboard-disclosure > summary > small { color: var(--muted); font-size: 10px; }
 .dashboard-disclosure[open] > summary { padding-bottom: 12px; }
-.control-fireplace { position: relative; margin: 18px 0; }
-.control-fireplace .control-summary { margin: 0; padding-right: 144px; min-height: 68px; }
+.control-fireplace { position: relative; margin: 0; padding: 20px 0; border-bottom: 1px solid var(--border); }
+.control-fireplace .control-summary { margin: 0; padding-right: 162px; min-height: 72px; }
 .fireplace-details.dashboard-disclosure { margin: 0; border: 0; }
-.fireplace-details.dashboard-disclosure > summary { position: absolute; top: 24px; right: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; width: 128px; min-height: 44px; padding: 4px 0 4px 12px; border-left: 1px solid var(--border); }
+.fireplace-details.dashboard-disclosure > summary { position: absolute; top: 24px; right: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; width: 140px; min-height: 44px; padding: 4px 0 4px 12px; border-left: 1px solid var(--border); }
 .fireplace-details > summary > small { grid-column: 1; line-height: 1.45; }
 .fireplace-details > summary::after { grid-row: 1 / 3; grid-column: 2; }
 .fireplace-content { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
@@ -589,9 +621,9 @@ details details { margin-inline-start: 24px; }
 .fireplace-entry-info small { grid-column: 1 / -1; font-size: 10px; line-height: 1.5; }
 .fireplace-entry .fireplace-remove { margin: 0; font-size: 10px; min-height: 36px; padding: 8px 10px; }
 .fireplace-correction-help { font-size: 10px; margin-bottom: 0; }
-@media (max-width: 800px) {
+@media (max-width: 1050px) {
   .control-fireplace .control-summary { padding-right: 0; }
-  .fireplace-details.dashboard-disclosure { margin-top: 24px; }
+  .fireplace-details.dashboard-disclosure { margin-top: 16px; }
   .fireplace-details.dashboard-disclosure > summary { position: relative; top: 0; width: auto; display: flex; border-left: 0; padding: 8px 0; }
   .fireplace-content { margin-top: 8px; }
 }
@@ -667,9 +699,6 @@ details details { margin-inline-start: 24px; }
   #connection { max-width: 180px; font-size: 10px; text-align: right; }
   main { padding: 0 14px 8px; }
   .context { margin: 16px 0; }
-  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 16px; }
-  .metrics article { padding: 16px 18px; }
-  .metrics strong { font-size: 27px; }
   .controller-panels { grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px; }
   .controller-column { gap: 16px; }
   .panel { --panel-padding: 20px; margin-bottom: 16px; }
@@ -815,8 +844,6 @@ button.status-detail-trigger:hover, button.status-detail-trigger[aria-expanded="
 button.status-detail-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .status-detail-label { min-width: 0; overflow-wrap: anywhere; }
 button.status-detail-trigger .status-detail-label { color: inherit; }
-.metrics .metric-unavailable { font-size: 22px; letter-spacing: -.5px; }
-.metrics .metric-unavailable .status-detail-label { white-space: nowrap; }
 
 .status-detail-popover { position: fixed; inset: auto; margin: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 9px; color: var(--text); background: var(--surface); box-shadow: 0 8px 32px #0003; z-index: 100; overscroll-behavior: contain; overflow: auto; }
 .status-detail-popover[hidden] { display: none; }
@@ -836,11 +863,6 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   button.status-detail-trigger::before { content: ""; position: absolute; inset: -5px -2px; }
   button.status-detail-close { width: 40px; height: 40px; }
 }
-@media (max-width: 480px) {
-  .metrics .metric-unavailable { font-size: clamp(16px, 5vw, 20px); }
-  .metrics .metric-unavailable .status-detail-trigger { gap: 4px; }
-}
-
 /* Equipment is a single workspace: each action stays with its reported state. */
 .equipment-panel { grid-column: 1 / -1; margin-bottom: 0; }
 .equipment-disclosure { margin: 0; border: 0; }

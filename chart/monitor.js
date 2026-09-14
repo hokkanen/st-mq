@@ -421,7 +421,7 @@ function showH66Test(result) {
 }
 function renderH66(s) {
   const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
-  for (const key of ['mode', 'dhw', 'room']) {
+  for (const key of ['mode']) {
     const row = summary.find(row => row.key === key);
     let detail = root.querySelector(`[data-h66-summary=${key}]`);
     if (!detail) {
@@ -429,7 +429,7 @@ function renderH66(s) {
       detail.append(document.createElement('span'), document.createElement('strong')); root.append(detail);
     }
     const [title, value] = detail.children;
-    title.textContent = ({ mode: 'Operating mode', dhw: 'Hot water target', room: 'ROOM setting' })[key];
+    title.textContent = 'Operating mode';
     value.classList.toggle('muted', !row.available);
     setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
       title: title.textContent, detail: row.detail });

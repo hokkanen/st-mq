@@ -222,6 +222,11 @@ export function renderGarage(document, status) {
     : temperatureDevice ? equipmentReadingRows(temperatureDevice).find(row => row.signal === 'garage_temperature') : null;
   detail('garage-main-temperature', main?.value ?? 'Unavailable', 'Main garage temperature',
     main?.detail ?? 'Waiting for a usable rear garage temperature.', main?.stale ?? true);
+  detail('garage-temperature', main?.value ?? 'Unavailable', 'Garage temperature',
+    main?.detail ?? 'Waiting for a usable garage temperature.', main?.stale ?? true);
+  document.getElementById('garage-temperature')?.classList.toggle('metric-unavailable', !main || main.stale);
+  set('garage-temperature-age', !main || main.stale ? 'Waiting for current readings'
+    : main.qualifier ?? 'Readings current');
   for (const location of ['rear', 'front']) {
     const id = `garage-budget-${location}`, budget = garageColdBudget(garage, location);
     detail(id, budget.label, budget.title, budget.detail);
@@ -288,6 +293,18 @@ export function renderGarage(document, status) {
     `${display.reason}. ${adapter.phase === 'paused' ? 'An automatic savings episode is pausing heating.'
       : adapter.restorePending ? 'Restoration has been requested; heating confirmation is pending.'
         : 'Native power and mode reports are available inside the garage section. Power enabled does not confirm compressor activity.'}`);
+  const controls = garage.heatingControls ?? {}, action = garage.plan?.nextAction;
+  const held = controls.paused && controls.holdUntil > now;
+  const requested = controls.requestedMode === 'off' ? 'Off'
+    : controls.requestedMode === 'normal' ? 'Normal'
+      : adapter.phase === 'paused' ? 'Reduction'
+        : adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring' ? 'Restoring'
+          : ['pause', 'renew'].includes(action) ? 'Reduction'
+            : ['available', 'release'].includes(action) || garage.temporary?.pauseActive ? 'Normal' : 'No request';
+  set('garage-requested-label', 'HEATING REQUEST');
+  detail('garage-requested', `${requested}${held ? ' · held' : ''}`, 'Garage heating request',
+    `${display.reason}.${held ? ` Manual heating selection is held until ${clock(controls.holdUntil)} or Resume now.` : ''} The request describes the heating plan. Pump power is reported separately and does not confirm compressor activity.`);
+  set('garage-actual', `${power.fresh && ['on', 'off'].includes(power.value) ? `Pump ${power.value}` : 'Pump state unknown'}${adapter.simulation ? ' · simulated' : ''}`);
   set('garage-pause-overview', garage.temporary?.pauseActive
     ? `Price control paused until ${clock(garage.temporary.pauseUntil)}` : 'Pause automatic price control');
   const list = (id, rows) => {

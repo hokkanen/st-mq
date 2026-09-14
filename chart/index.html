@@ -38,105 +38,55 @@
       <button>Connect</button><p>Kept in this browser tab only.</p>
     </form>
     <p id="error" role="alert" hidden></p>
-    <section class="metrics" aria-label="Latest recorded home conditions" data-snapshot-content>
-      <article><p>INDOOR AVERAGE</p><strong id="indoor">—</strong><small id="indoor-age">Waiting for readings</small></article>
-      <article><p>OUTDOOR</p><strong id="outdoor">—</strong><small id="outdoor-age">Waiting for readings</small></article>
-      <article><p id="requested-label">HEATING REQUEST</p><strong id="requested">—</strong><small id="actual">Actual state unknown</small></article>
-      <article><p id="price-label">ALL-IN PRICE</p><strong id="price">—</strong><small id="price-unit">Waiting for prices and contract rates</small></article>
-    </section>
-
-    <section class="panel history-panel" aria-labelledby="history-title" data-snapshot-content>
-      <div class="section-top chart-heading">
-        <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
-        <div class="chart-explorer-controls" role="group" aria-label="Chart view controls">
-          <button id="chart-pan-back" type="button" aria-label="Pan chart earlier" title="Pan earlier">←</button>
-          <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
-          <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
-          <button id="chart-pan-forward" type="button" aria-label="Pan chart later" title="Pan later">→</button>
-          <button id="chart-zoom-reset" type="button" title="Reset zoom within selected dates">Reset view</button>
-        </div>
-        <div class="chart-axis-actions">
-          <label class="axis-control">Left axis
-            <select id="left-axis">
-              <option value="power">Power</option>
-              <option value="phases">Phase currents</option>
-              <option value="integral">Heating integral</option>
-              <optgroup label="Learning">
-                <option value="learning_profit">Space-heating benefit after recovery</option>
-                <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
-                <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
-                <option value="learning_indoor_temperature">Learned normal temperature</option>
-              </optgroup>
-              <option value="solar_radiation">Solar radiation forecast</option>
-            </select>
-          </label>
-          <button id="chart-fullscreen" type="button" aria-expanded="false" aria-controls="history">Fullscreen</button>
-        </div>
-      </div>
-      <div class="chart-range-controls">
-        <form id="chart-range-form" class="date-range">
-          <label class="date-field"><span class="date-label">Start date</span><input id="date-start" type="date" required></label>
-          <div class="date-field">
-            <label class="date-label end-date-toggle"><input id="date-range-enabled" type="checkbox" aria-label="Use an end date" aria-controls="date-end">End date</label>
-            <input id="date-end" type="date" aria-label="End date" required disabled>
-          </div>
-          <button type="submit">Show dates</button>
-        </form>
-        <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
-          <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
-          <button id="range-yesterday" type="button" aria-pressed="false">Yesterday – today</button>
-          <button id="range-today" type="button" aria-pressed="true">Today</button>
-          <button id="range-tomorrow" type="button" aria-pressed="false">Today – tomorrow</button>
-          <button id="range-forward" class="range-step" type="button" aria-label="Move shown dates forward one day" title="Move shown dates forward one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
-        </div>
-      </div>
-      <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
-      <div id="chart-overview" class="chart-overview">
-        <div class="chart-overview-labels"><span id="chart-selected-start"></span><span id="chart-selected-end"></span></div>
-        <div class="chart-overview-track"><span class="chart-overview-window" aria-hidden="true"></span><input id="chart-navigator" type="range" min="0" max="1000" step="1" value="0" aria-label="Position within selected dates"></div>
-        <div class="chart-view-status"><span id="chart-visible-range"></span><span id="chart-detail-status" role="status" data-state="idle"></span></div>
-      </div>
-      <div class="plot"><canvas id="history" aria-label="Home energy, temperature and electricity prices for selected dates" role="img"></canvas></div>
-      <div id="operating-modes" class="mode-history" aria-label="Heat-pump operating mode history"></div>
-      <div id="dhwr-history" class="mode-history" aria-label="Hot-water recirculation request history"></div>
-      <div id="fireplace-history" class="mode-history" aria-label="Fireplace activity from manually recorded firewood"></div>
-      <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
-      <p id="chart-gesture-help" class="muted chart-gesture-help">Fullscreen: pinch or wheel to zoom, drag to move, tap for values. Keyboard: + / − to zoom, arrows to move, Home to reset, Escape to exit.</p>
-      <p id="chart-notes" class="muted chart-notes"></p>
-      <details id="timing-details" class="timing-details dashboard-disclosure">
-        <summary><span>Energy cost comparisons</span></summary>
-        <div id="timing-benefit" class="timing-benefit">
-          <p class="muted">Loading energy cost comparisons for the selected dates…</p>
-        </div>
-      </details>
-      <details id="recording-details" class="recording-details dashboard-disclosure">
-        <summary><span>Recording details</span></summary>
-        <details id="recording-adaptive-details">
-          <summary>Adaptive measurements</summary>
-          <div id="recording-content"></div>
-        </details>
-        <details id="energy-audit-details">
-          <summary>Meter accuracy checks</summary>
-          <div id="energy-audit-content"></div>
-        </details>
-        <details id="recording-overview-details">
-          <summary>Other recorded data</summary>
-          <div class="recording-overview-toolbar">
-            <p id="recording-overview-message" class="muted" role="status" aria-live="polite">Open this section to inspect the database.</p>
-            <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh overview</button>
-          </div>
-          <div id="recording-overview-content"></div>
-        </details>
-      </details>
-    </section>
-
-    <section class="controller-panels" aria-label="Home controller" data-controller-only>
+    <section class="controller-panels" aria-label="Home controller" data-snapshot-content>
       <div class="controller-column">
       <article id="home-control" class="panel home-control" aria-labelledby="control-title">
           <div class="dashboard-heading">
             <h2 id="control-title">Home &amp; heating</h2>
-            <span class="control-badge"><span>Price control</span><strong id="control-price">—</strong></span>
+            <div class="home-heading-actions">
+              <span class="control-badge" data-controller-only><span>Price control</span><strong id="control-price">—</strong></span>
+              <button id="chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
+              </button>
+            </div>
           </div>
+          <div class="home-overview" aria-label="Latest home conditions">
+            <div class="overview-zones">
+              <section class="overview-home" aria-label="Home">
+                <p class="overview-label">Home · indoor average</p>
+                <strong id="indoor" class="overview-temperature">—</strong>
+                <small id="indoor-age" class="overview-note">Waiting for readings</small>
+                <div class="overview-request">
+                  <p id="requested-label" class="overview-label">Heating request</p>
+                  <strong id="requested">—</strong>
+                  <small id="actual" class="overview-note">Actual state unknown</small>
+                </div>
+              </section>
+              <section class="overview-garage" aria-label="Garage" data-controller-only>
+                <p class="overview-label">Garage</p>
+                <strong id="garage-temperature" class="overview-temperature">—</strong>
+                <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
+                <div class="overview-request">
+                  <p id="garage-requested-label" class="overview-label">Heating request</p>
+                  <strong id="garage-requested">—</strong>
+                  <small id="garage-actual" class="overview-note">Actual state unknown</small>
+                </div>
+              </section>
+            </div>
+            <div class="overview-conditions">
+              <div>
+                <p class="overview-label">Outdoor</p>
+                <strong id="outdoor">—</strong>
+                <small id="outdoor-age" class="overview-note">Waiting for readings</small>
+              </div>
+              <div>
+                <p id="price-label" class="overview-label">All-in price</p>
+                <strong id="price">—</strong>
+                <small id="price-unit" class="overview-note">Waiting for prices and contract rates</small>
+              </div>
+            </div>
+          </div>
+          <div class="home-control-body" data-controller-only>
           <div class="control-fireplace">
             <div class="control-summary" role="status">
               <p id="decision-title" class="control-decision">Waiting for a decision</p>
@@ -164,21 +114,15 @@
               </div>
             </details>
           </div>
-          <div class="comfort-overview">
-            <div class="comfort-reference">
-              <p>Comfort reference</p><strong id="reference">—</strong>
-              <small id="reference-source">Learning normal temperature</small>
-            </div>
-            <div class="comfort-limit">
-              <p>Maximum drop</p><strong id="drop">—</strong>
-              <small id="drop-note">When you are home</small>
-            </div>
-          </div>
           <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
           <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="home-heat-pump-title">
             <summary class="zone-summary equipment-overview">
             <div class="equipment-heading"><h3 id="home-heat-pump-title">Home heating</h3><span id="h66-status" class="muted">Not connected</span></div>
-            <div id="home-h66-summary" class="home-h66-summary"></div>
+            <div id="home-h66-summary" class="home-h66-summary">
+              <div class="equipment-value" data-h66-summary="mode"><span>Operating mode</span><strong>Unavailable</strong></div>
+              <div class="equipment-value"><span>Comfort reference</span><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></div>
+              <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
+            </div>
             <div class="equipment-notes">
               <p><span>Recirculation</span><span id="dhwr">—</span></p>
               <p><span>Tariff control</span><span id="home-tariff-status">—</span></p>
@@ -207,8 +151,8 @@
                   <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><span id="home-pump-connection" class="equipment-device-status">Not connected</span></div>
                   <div class="pump-native-overview">
                     <div class="equipment-value"><span>Current state</span><strong id="home-pump-state">Unavailable</strong></div>
-                    <div class="equipment-value"><span>Hot water temperature</span><strong id="home-pump-dhw">Unavailable</strong></div>
-                    <div class="equipment-value"><span>Outdoor temperature</span><strong id="home-pump-outdoor">Unavailable</strong></div>
+                    <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw">Unavailable</strong></div>
+                    <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room">Unavailable</strong></div>
                   </div>
                   <details id="h66-test-details" class="equipment-fold">
                     <summary>Adjust heat-pump parameters</summary>
@@ -351,9 +295,72 @@
               </div>
             </div>
           </details>
+          </div>
         </article>
       </div>
-      <div class="controller-column">
+      <div class="controller-column" data-controller-only>
+      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
+          <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
+          <div id="provider-overview" class="provider-overview">
+            <ul id="providers" class="provider-list"></ul>
+            <p id="provider-context" class="muted" hidden></p>
+            <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
+          </div>
+          <details id="connections-details" class="dashboard-disclosure">
+            <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
+            <details id="mqtt-devices-details" class="controller-fold">
+              <summary>MQTT</summary>
+              <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
+              <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
+              <div id="equipment-connections"></div>
+              <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
+              <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
+                <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
+                <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
+                <details class="equipment-fold"><summary>Shelly MQTT options</summary>
+                  <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
+                </details>
+                <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
+              </details>
+            </details>
+            <details id="electricity-details" class="controller-fold electricity-panel">
+              <summary>Electricity rates</summary>
+              <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+              <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+              <p class="muted">Rates are set in the configuration.</p>
+            </details>
+            <details id="controls-details" class="controller-fold">
+              <summary>Configuration</summary>
+              <section class="configuration-location" aria-labelledby="settings-location-title">
+                <h3 id="settings-location-title">Configuration file location</h3>
+                <dl id="settings-location"></dl>
+                <p id="settings-location-message" role="status">Loading configuration paths…</p>
+              </section>
+              <ol id="settings-configuration-steps" class="muted"></ol>
+              <details id="settings-format-example" class="configuration-example">
+                <summary>JSON file example</summary>
+                <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
+                <pre><code>{
+  "easee": {
+    "user": "your-easee-username",
+    "pw": "your-easee-password"
+  },
+  "controller": {
+    "web_token": "replace-with-your-private-token"
+  }
+}</code></pre>
+              </details>
+              <p id="settings-access" class="muted" role="status"></p>
+              <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
+              <div id="settings-reload-scope" class="reload-scope"></div>
+              <p id="settings-reload-help" class="muted"></p>
+              <div class="settings-actions">
+                <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
+                <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
+              </div>
+            </details>
+          </details>
+        </article>
       <article id="house-model" class="panel house-model learning-models" aria-labelledby="model-title">
           <div class="dashboard-heading"><h2 id="model-title">Learning models</h2></div>
           <div class="learning-model-overviews">
@@ -445,69 +452,92 @@
             <details><summary>Model coefficients · Current values</summary><p id="garage-coefficient-context" class="muted"></p><dl id="garage-learning-coefficients" class="equipment-readings"></dl></details>
           </details>
         </article>
-      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
-          <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
-          <div id="provider-overview" class="provider-overview">
-            <ul id="providers" class="provider-list"></ul>
-            <p id="provider-context" class="muted" hidden></p>
-            <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
-          </div>
-          <details id="connections-details" class="dashboard-disclosure">
-            <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
-            <details id="mqtt-devices-details" class="controller-fold">
-              <summary>MQTT</summary>
-              <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
-              <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
-              <div id="equipment-connections"></div>
-              <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
-              <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
-                <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
-                <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
-                <details class="equipment-fold"><summary>Shelly MQTT options</summary>
-                  <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
-                </details>
-                <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
-              </details>
-            </details>
-            <details id="electricity-details" class="controller-fold electricity-panel">
-              <summary>Electricity rates</summary>
-              <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
-              <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
-              <p class="muted">Rates are set in the configuration.</p>
-            </details>
-            <details id="controls-details" class="controller-fold">
-              <summary>Configuration</summary>
-              <section class="configuration-location" aria-labelledby="settings-location-title">
-                <h3 id="settings-location-title">Configuration file location</h3>
-                <dl id="settings-location"></dl>
-                <p id="settings-location-message" role="status">Loading configuration paths…</p>
-              </section>
-              <ol id="settings-configuration-steps" class="muted"></ol>
-              <details id="settings-format-example" class="configuration-example">
-                <summary>JSON file example</summary>
-                <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
-                <pre><code>{
-  "easee": {
-    "user": "your-easee-username",
-    "pw": "your-easee-password"
-  },
-  "controller": {
-    "web_token": "replace-with-your-private-token"
-  }
-}</code></pre>
-              </details>
-              <p id="settings-access" class="muted" role="status"></p>
-              <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
-              <div id="settings-reload-scope" class="reload-scope"></div>
-              <p id="settings-reload-help" class="muted"></p>
-              <div class="settings-actions">
-                <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
-                <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
-              </div>
-            </details>
-          </details>
-        </article>
       </div>
+    </section>
+
+    <section class="panel history-panel" aria-labelledby="history-title" data-snapshot-content>
+      <div class="section-top chart-heading">
+        <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
+        <div class="chart-explorer-controls" role="group" aria-label="Chart view controls">
+          <button id="chart-pan-back" type="button" aria-label="Pan chart earlier" title="Pan earlier">←</button>
+          <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+          <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+          <button id="chart-pan-forward" type="button" aria-label="Pan chart later" title="Pan later">→</button>
+          <button id="chart-zoom-reset" type="button" title="Reset zoom within selected dates">Reset view</button>
+        </div>
+        <div class="chart-axis-actions">
+          <label class="axis-control">Left axis
+            <select id="left-axis">
+              <option value="power">Power</option>
+              <option value="phases">Phase currents</option>
+              <option value="integral">Heating integral</option>
+              <optgroup label="Learning">
+                <option value="learning_profit">Space-heating benefit after recovery</option>
+                <option value="learning_aux_profit">Space-heating benefit with auxiliary recovery</option>
+                <option value="learning_recovery_error">Space-heating recovery-cost prediction error</option>
+                <option value="learning_indoor_temperature">Learned normal temperature</option>
+              </optgroup>
+              <option value="solar_radiation">Solar radiation forecast</option>
+            </select>
+          </label>
+          <button id="chart-fullscreen" type="button" aria-expanded="false" aria-controls="history">Fullscreen</button>
+        </div>
+      </div>
+      <div class="chart-range-controls">
+        <form id="chart-range-form" class="date-range">
+          <label class="date-field"><span class="date-label">Start date</span><input id="date-start" type="date" required></label>
+          <div class="date-field">
+            <label class="date-label end-date-toggle"><input id="date-range-enabled" type="checkbox" aria-label="Use an end date" aria-controls="date-end">End date</label>
+            <input id="date-end" type="date" aria-label="End date" required disabled>
+          </div>
+          <button type="submit">Show dates</button>
+        </form>
+        <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
+          <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
+          <button id="range-yesterday" type="button" aria-pressed="false">Yesterday – today</button>
+          <button id="range-today" type="button" aria-pressed="true">Today</button>
+          <button id="range-tomorrow" type="button" aria-pressed="false">Today – tomorrow</button>
+          <button id="range-forward" class="range-step" type="button" aria-label="Move shown dates forward one day" title="Move shown dates forward one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>
+        </div>
+      </div>
+      <p id="chart-status" class="chart-status muted" role="status">Loading selected dates…</p>
+      <div id="chart-overview" class="chart-overview">
+        <div class="chart-overview-labels"><span id="chart-selected-start"></span><span id="chart-selected-end"></span></div>
+        <div class="chart-overview-track"><span class="chart-overview-window" aria-hidden="true"></span><input id="chart-navigator" type="range" min="0" max="1000" step="1" value="0" aria-label="Position within selected dates"></div>
+        <div class="chart-view-status"><span id="chart-visible-range"></span><span id="chart-detail-status" role="status" data-state="idle"></span></div>
+      </div>
+      <div class="plot"><canvas id="history" aria-label="Home energy, temperature and electricity prices for selected dates" role="img"></canvas></div>
+      <div id="operating-modes" class="mode-history" aria-label="Heat-pump operating mode history"></div>
+      <div id="dhwr-history" class="mode-history" aria-label="Hot-water recirculation request history"></div>
+      <div id="fireplace-history" class="mode-history" aria-label="Fireplace activity from manually recorded firewood"></div>
+      <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
+      <p id="chart-gesture-help" class="muted chart-gesture-help">Fullscreen: pinch or wheel to zoom, drag to move, tap for values. Keyboard: + / − to zoom, arrows to move, Home to reset, Escape to exit.</p>
+      <p id="chart-notes" class="muted chart-notes"></p>
+      <details id="timing-details" class="timing-details dashboard-disclosure">
+        <summary><span>Energy cost comparisons</span></summary>
+        <div id="timing-benefit" class="timing-benefit">
+          <p class="muted">Loading energy cost comparisons for the selected dates…</p>
+        </div>
+      </details>
+      <details id="recording-details" class="recording-details dashboard-disclosure">
+        <summary><span>Recording details</span></summary>
+        <details id="recording-adaptive-details">
+          <summary>Adaptive measurements</summary>
+          <div id="recording-content"></div>
+        </details>
+        <details id="energy-audit-details">
+          <summary>Meter accuracy checks</summary>
+          <div id="energy-audit-content"></div>
+        </details>
+        <details id="recording-overview-details">
+          <summary>Other recorded data</summary>
+          <div class="recording-overview-toolbar">
+            <p id="recording-overview-message" class="muted" role="status" aria-live="polite">Open this section to inspect the database.</p>
+            <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh overview</button>
+          </div>
+          <div id="recording-overview-content"></div>
+        </details>
+      </details>
     </section>
 
     <section id="pairing-panel" class="panel pairing-panel" aria-label="Paired computers" hidden>

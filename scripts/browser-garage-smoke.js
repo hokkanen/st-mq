@@ -74,7 +74,7 @@ try {
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
-    ['home-control', 'house-model', 'providers-controls'],
+    ['home-control', 'providers-controls', 'house-model'],
     'The existing dashboard cards are preserved');
   assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4,
     'The existing Home outcome entries are preserved');

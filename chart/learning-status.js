@@ -291,20 +291,14 @@ export function h66HomeSummary(status = {}) {
   return rows;
 }
 
-/** Equipment overview uses measured temperatures and compressor activity,
- * independently of the settings shown in the closed Home heating summary. */
+/** Equipment overview keeps compressor activity alongside current pump settings.
+ * Temperature targets use the same qualified readbacks as the detailed summary. */
 export function h66EquipmentSummary(status = {}) {
   const h66 = status.h66 ?? {}, readings = h66.readings ?? {}, now = status.now ?? Date.now();
-  const rows = [
-    ['state', 'Compressor state', '1A01'],
-    ['dhw', 'Hot water temperature', '0009'],
-    ['outdoor', 'Heat-pump outdoor sensor', '0007'],
-  ].map(([key, title, register]) => {
-    const reading = readings[register], availability = h66ReadingStatus(h66, reading, { now });
-    return { key, title, available: availability.usable,
-      value: availability.usable ? h66ReadingValue(register, reading) : 'Unavailable', detail: availability.detail };
-  });
-  const activity = rows[0], value = readings['1A01']?.value, tracked = h66.compressorState;
+  const availability = h66ReadingStatus(h66, readings['1A01'], { now });
+  const activity = { key: 'state', title: 'Compressor state', available: availability.usable,
+    value: availability.usable ? h66ReadingValue('1A01', readings['1A01']) : 'Unavailable', detail: availability.detail };
+  const value = readings['1A01']?.value, tracked = h66.compressorState;
   if (activity.available && [0, 1].includes(value)) {
     activity.value = value === 1 ? 'Running' : 'Idle';
     if (tracked?.value === value && finite(tracked.since) && tracked.since <= now) {
@@ -321,7 +315,9 @@ export function h66EquipmentSummary(status = {}) {
     activity.available = false;
     activity.detail = 'The heat pump has not reported a recognized compressor state.';
   }
-  return rows;
+  const settings = h66HomeSummary(status);
+  return [activity, ...['dhw', 'room'].map(key => ({ ...settings.find(row => row.key === key),
+    title: key === 'dhw' ? 'Hot water target' : 'Room setting' }))];
 }
 
 export function h66ReadingValue(register, reading) {

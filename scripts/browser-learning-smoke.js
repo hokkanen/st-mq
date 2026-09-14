@@ -262,7 +262,7 @@ try {
   await until("document.getElementById('h66-test-submit')?.disabled === false");
   assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=mode]').textContent.includes('Auto')"), true);
-  assert.equal(await evaluate("document.querySelector('[data-h66-summary=dhw]').textContent.includes('40–55 °C')"), true);
+  assert.equal(await evaluate("document.getElementById('home-pump-dhw').textContent.includes('40–55 °C')"), true);
   assert.equal(await evaluate("document.getElementById('home-tariff-status').textContent"), 'Unknown');
   await evaluate("document.querySelector('#home-tariff-status .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /no device readback/i);
