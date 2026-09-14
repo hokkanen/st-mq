@@ -216,7 +216,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
     const mqtt = { ...(options.mqtt ?? {}) };
-    mqtt.dhwr_topic = mqtt.dhwr_topic || 'from_stmq/dhwr/set';
+    mqtt.dhwr_topic = mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch';
     if (typeof mqtt.dhwr_topic !== 'string' || !mqtt.dhwr_topic.trim() || mqtt.dhwr_topic.length > 500
       || /[+#\u0000]/.test(mqtt.dhwr_topic)) throw new Error('DHWR MQTT topic must be an exact switch command topic');
     mqtt.temperatureTopics = {

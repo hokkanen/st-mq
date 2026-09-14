@@ -590,7 +590,7 @@ export class Engine {
       expiresAt: state.dhwrOutstanding ? state.pulseUntil : null,
       durationMinutes: this.executor.pulseMs / 60_000,
       restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
-      commandTopic: this.config.connections?.mqtt?.dhwr_topic ?? 'from_stmq/dhwr/set',
+      commandTopic: this.config.connections?.mqtt?.dhwr_topic ?? 'stmq/home/dhwr/command/switch',
       actualOn, confirmed: actualOn !== null && actualOn === active,
       feedback: { configured: Boolean(device), stateConfigured, powerConfigured, deviceId: device?.id ?? null, available: device?.available === true,
         state: reportedState, power: reportedPower } };

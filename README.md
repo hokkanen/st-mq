@@ -614,10 +614,11 @@ register `0208` is not a physical compressor temperature cap.
 DHWR uses explicit MQTT ON/OFF switch commands. ST-MQ owns the run timer, configured
 with `controller.dhwr_duration_minutes` (default 10; 1–60 minutes), and saves pending
 OFF commands for restart recovery. The default equipment entry listens for measured
-watts on `to_stmq/dhwr/power`, forwarded by a SmartThings Rule. It shows the last
+watts on `stmq/home/dhwr/status/power`, forwarded by a SmartThings Rule. It shows the last
 reported watts and timestamp without inferring relay state or recording power
 history; chart shading continues to show requested circulation. See
-[DHWR setup and Rule template](docs/dhwr-mqtt.md).
+[DHWR setup and Rule template](docs/dhwr-mqtt.md) and the
+[custom MQTT topic migration](docs/mqtt-topics.md).
 The native periodic hygiene cycle remains unchanged, with an explicitly accepted
 possibility of delayed auxiliary availability during temporary control. No claim
 of a verified hygiene outcome or commissioned hardware follows from the tests.

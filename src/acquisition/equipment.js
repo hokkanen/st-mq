@@ -132,7 +132,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (packet.retain && canonicalTemperature(device) && device.liveSinceConnect) return;
     const input = parse(body), explicitTimestamp = mapping.timestampPath ? property(input, mapping.timestampPath) : input && typeof input === 'object' ? input.timestamp : undefined;
     const at = explicitTimestamp === undefined ? packet.retain ? null : receivedAt : sourceTime(explicitTimestamp);
-    const invalidTime = explicitTimestamp !== undefined && (!scalar(at) || at < 0 || at > receivedAt);
+    const invalidTime = Boolean(mapping.timestampPath && explicitTimestamp === undefined)
+      || explicitTimestamp !== undefined && (!scalar(at) || at < 0 || at > receivedAt);
     const applicable = definitions(device).filter(definition => topic === (definition.topic ?? device.topic));
     if (!applicable.length) return;
     if (packet.retain && !canonicalTemperature(device)) {
@@ -229,7 +230,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     confirmSubscriptions(topics) {
       if (!connected || closed) return;
       const confirmed = new Set(topics);
-      for (const device of devices) if (readTopics(device).every(topic => confirmed.has(topic))) device.subscriptionStatus = 'subscribed';
+      const requests = [];
+      for (const device of devices) if (readTopics(device).every(topic => confirmed.has(topic))) {
+        if (device.subscriptionStatus !== 'subscribed' && device.mqtt.requestTopic) requests.push(device.id);
+        device.subscriptionStatus = 'subscribed';
+      }
       for (const device of devices.filter(row => row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
         const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.heartbeatTopic,
           ...device.mappings.filter(mapping => mapping.required).map(mapping => mapping.topic)].filter(Boolean);
@@ -249,6 +254,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           ...recovered.raw, reportExpiresAt: recovered.reportExpiresAt };
         device.lastAt = recovered.receivedAt; device.liveSinceConnect = true; device.invalid = false;
       }
+      // A successful subscription does not restore a change-only publisher's
+      // current state. Ask its explicitly configured endpoint after all of the
+      // response topics are subscribed, including on broker reconnection.
+      for (const deviceId of requests) void api.recheck({ deviceId }).catch(() => {});
     },
     subscriptionFailed(topic) {
       native?.subscriptionFailed(topic);
@@ -310,7 +319,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           // Reports replayed by subscription refresh are not replies to a later request.
           if (method === 'request') {
             check.reported.clear(); check.at = engine.clock();
-            await publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 0, retain: false });
+            await publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 1, retain: false });
           }
           check.ready = true; completeChecks(device, engine.clock());
           if (method === 'subscription') check.finish(healthy(device, engine.clock()) ? 'last-reported'

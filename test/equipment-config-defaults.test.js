@@ -29,13 +29,13 @@ test('public equipment defaults work with broker-only private settings and prese
   const dhwr = devices.find(row => row.id === 'dhwr');
   assert.equal(dhwr.enabled, true);
   assert.equal(dhwr.kind, 'power');
-  assert.equal(dhwr.topic, 'to_stmq/dhwr/power');
+  assert.equal(dhwr.topic, 'stmq/home/dhwr/status/power');
   assert.equal(dhwr.powerSignal, 'dhwr_power');
   assert.equal(dhwr.stateSignal, null);
   assert.equal(dhwr.record, false);
   assert.equal(dhwr.maxAgeMs, 0);
   assert.equal(dhwr.controlsSwitch, false);
-  assert.equal(config.connections.mqtt.dhwr_topic, 'from_stmq/dhwr/set');
+  assert.equal(config.connections.mqtt.dhwr_topic, 'stmq/home/dhwr/command/switch');
   assert.equal(readFileSync(privatePath, 'utf8'), privateText);
   assert.equal(config.connections.mqtt.pw, 'synthetic-password');
 });

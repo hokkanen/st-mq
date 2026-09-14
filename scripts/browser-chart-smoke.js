@@ -860,7 +860,7 @@ try {
   }
   assert.deepEqual(testPublishes, [
     ...['heatoff', 'heaton15'].map(payload => ({ topic: 'from_stmq/heat/action', payload, options: { qos: 1, retain: false } })),
-    { topic: 'from_stmq/dhwr/set', payload: 'ON', options: { qos: 1, retain: false } },
+    { topic: 'stmq/home/dhwr/command/switch', payload: 'ON', options: { qos: 1, retain: false } },
   ]);
   assert.equal(app.engine.status().observations.actual.mode, 'unknown');
   acknowledgeHeating = null;

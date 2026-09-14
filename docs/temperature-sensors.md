@@ -12,9 +12,10 @@ The dashboard labels these sensors **MQTT** and native devices **Shelly**.
 H66 has no indoor sensor in this installation; its indoor register is not acquired,
 recorded or used as an Upstairs fallback.
 
-The smoke publisher uses `stmq/smoke/1/temperature`, `stmq/smoke/2/temperature`
-and `stmq/smoke/3/temperature`. Assign each exact topic to its corresponding room;
-the subscription fields do not use the wildcard `stmq/smoke/+/temperature`.
+The smoke publisher uses `stmq/home/smoke1/status/temperature`, `stmq/home/smoke2/status/temperature`
+and `stmq/home/smoke3/status/temperature`. Assign each exact topic to its corresponding room;
+the subscription fields require exact topics, not a wildcard such as
+`stmq/home/+/status/temperature`.
 
 The chart shows one **Average indoor** series on the right axis, using the existing
 indoor temperature colour. This is the same fixed average of configured indoor

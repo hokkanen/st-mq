@@ -708,7 +708,7 @@ Retained data can be displayed with its original timestamp, but does not confirm
 a new sensor report or establish usable periodic coverage. Without a source
 timestamp, retained data cannot establish a new reading.
 Give each sensor a distinct exact local topic; the per-room fields do not accept the wildcard
-`stmq/smoke/+/temperature`.
+`stmq/home/+/status/temperature`.
 Broker disconnection records explicit unavailable transitions for configured
 temperature sensors and included H66 signals. Reconnection alone does not confirm
 a fresh sensor measurement. Periodic indoor coverage ends immediately on a known

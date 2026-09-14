@@ -8,7 +8,7 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 
-const INITIAL = Date.parse('2026-09-13T10:00:00Z'), TOPIC = 'to_stmq/dhwr/power';
+const INITIAL = Date.parse('2026-09-13T10:00:00Z'), TOPIC = 'stmq/home/dhwr/status/power';
 const device = { id: 'dhwr', label: 'Hot-water circulation', kind: 'power', connection: `mqtt:${TOPIC}`, record: false, max_age_seconds: 0 };
 function fixture(t, patch = {}) {
   const store = new Store(':memory:'), publications = [], observations = [];
@@ -120,7 +120,7 @@ test('provider MQTT acquisition loads the default DHWR topic and exposes live fe
   assert.equal(status.dhwr.feedback.stateConfigured, false);
   assert.equal(status.dhwr.actualOn, null);
   assert.equal(status.equipment.devices[0].topics[0].role, 'Power');
-  assert.equal(status.equipment.topicGroups.find(row => row.id === 'dhwr').topics[0].topic, 'from_stmq/dhwr/set');
+  assert.equal(status.equipment.topicGroups.find(row => row.id === 'dhwr').topics[0].topic, 'stmq/home/dhwr/command/switch');
   assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM observations WHERE signal IN ('dhwr_power', 'dhwr_active')").get().count, 0);
   assert.deepEqual(publications, []);
 });

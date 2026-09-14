@@ -384,6 +384,7 @@ test('generic status requests wait for every required live topic and a usable he
   f.capture.receive('invented/state', 'OFF'); f.capture.receive('invented/power', '0');
   const pending = f.capture.recheck(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(f.publications.map(row => [row.topic, row.payload]), [['invented/get', 'status']]);
+  assert.deepEqual(f.publications[0].options, { qos: 1, retain: false });
   f.capture.receive('invented/state', 'ON');
   assert.equal(f.capture.status().devices[0].check.checking, true, 'Old readings from another topic cannot complete the request');
   f.capture.receive('invented/power', '300', { retain: true });
@@ -396,6 +397,52 @@ test('generic status requests wait for every required live topic and a usable he
   assert.equal(device.check.method, 'request');
   assert.equal(device.check.retainedReceived, true);
   assert.equal(device.readings.relay_power.value, 300);
+});
+
+test('configured door status is requested after subscriptions and again after reconnect without renewing source time', async t => {
+  const f = fixture(t, [{ ...door, mqtt: { request_topic: 'invented/get', request_payload: 'status_update',
+    state_path: 'value', timestamp_path: 'timestamp' } }], { readbackTimeoutMs: 2000 });
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  f.capture.setConnected(true);
+  f.capture.confirmSubscriptions([]);
+  await flush();
+  assert.equal(f.publications.length, 0, 'No requests before the response subscription succeeds');
+  f.capture.confirmSubscriptions(f.capture.topics);
+  await flush();
+  assert.deepEqual(f.publications, [{ topic: 'invented/get', payload: 'status_update', options: { qos: 1, retain: false } }]);
+  f.capture.receive('invented/door', JSON.stringify({ value: 'closed', timestamp: initial }));
+  assert.equal(f.capture.status().devices[0].check.status, 'available');
+  f.capture.confirmSubscriptions(f.capture.topics);
+  await flush();
+  assert.equal(f.publications.length, 1, 'Repeated confirmation does not send duplicate requests');
+
+  f.now(initial + 600_000);
+  f.capture.setConnected(false);
+  f.capture.setConnected(true);
+  f.capture.confirmSubscriptions(f.capture.topics);
+  await flush();
+  assert.equal(f.publications.length, 2);
+  f.capture.receive('invented/door', JSON.stringify({ value: 'closed', timestamp: initial }), { retain: true });
+  assert.equal(f.capture.status().devices[0].check.checking, true, 'Retained context cannot complete the request');
+  f.capture.receive('invented/door', JSON.stringify({ value: 'closed', timestamp: initial }));
+  const device = f.capture.status().devices[0];
+  assert.equal(device.check.status, 'available');
+  assert.equal(device.readings.garage_door1_open.observedAt, initial, 'An HA snapshot preserves the source state time');
+  assert.equal(f.observations.at(-1).sourceTime, initial);
+});
+
+test('a door snapshot with a configured source timestamp cannot substitute publication time when the timestamp is missing', t => {
+  const f = fixture(t, [{ ...door, mqtt: { state_path: 'value', timestamp_path: 'timestamp' } }]);
+  f.capture.setConnected(true);
+  f.capture.receive('invented/door', JSON.stringify({ value: 'closed', timestamp: initial }));
+  f.now(initial + 60_000);
+  f.capture.receive('invented/door', JSON.stringify({ value: 'open' }));
+  const device = f.capture.status().devices[0];
+  assert.equal(device.available, false);
+  assert.equal(device.readings.garage_door1_open.value, 0);
+  assert.equal(device.readings.garage_door1_open.observedAt, initial);
+  assert.deepEqual(f.observations.at(-1).quality, ['invalid-source-time']);
+  assert.equal(f.observations.at(-1).value, null);
 });
 
 test('a configured generic request that gets only retained data times out without claiming a live reply', async t => {

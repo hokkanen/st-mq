@@ -1,5 +1,8 @@
 # DHWR MQTT switch setup
 
+See [custom MQTT topics](mqtt-topics.md) for publisher migration. This installation
+uses power-only feedback; it does not enable a physical or virtual switch-state feed.
+
 ST-MQ starts and stops domestic hot-water recirculation. Configure a **switch**
 with separate ON and OFF actions in the MQTT-to-device integration. Remove the
 old SmartThings push-button action and its fixed ten-minute duration from this
@@ -9,7 +12,7 @@ The private configuration supports:
 
 ```json
 {
-  "mqtt": { "dhwr_topic": "from_stmq/dhwr/set" },
+  "mqtt": { "dhwr_topic": "stmq/home/dhwr/command/switch" },
   "controller": { "dhwr_duration_minutes": 10 }
 }
 ```
@@ -59,7 +62,7 @@ state nor the commands that start and stop circulation.
 | Condition | `greaterThanOrEquals` against numeric `0`, with `changesOnly: false` |
 | Destination | The separate MQTT Energy device, component `main`, capability `partyvoice23922.setpower`, command `setPower` |
 | Argument | A device operand reading the same physical relay's `main.powerMeter.power`; no fixed value or conversion |
-| MQTT output | Exact topic `to_stmq/dhwr/power`, plain numeric watts such as `24.5` or `0`, QoS 1, retain disabled |
+| MQTT output | Exact topic `stmq/home/dhwr/status/power`, plain numeric watts such as `24.5` or `0`, QoS 1, retain disabled |
 
 The condition includes zero so a stopped pump can report its measured power.
 It remains true for positive readings instead of waiting for another threshold
@@ -90,7 +93,7 @@ Configure the MQTT Energy device in the SmartThings app's device Settings:
 | Preference ID | Selection |
 | --- | --- |
 | `ppublish` | `true` — enable power publishing |
-| `ppubtopic` | `to_stmq/dhwr/power` |
+| `ppubtopic` | `stmq/home/dhwr/status/power` |
 | `punitsset` | `watts` |
 | `qos` | `qos1` |
 
@@ -165,7 +168,7 @@ The public defaults already contain this enabled monitoring entry:
   "label": "Hot-water circulation",
   "area": "home",
   "kind": "power",
-  "connection": "mqtt:to_stmq/dhwr/power",
+  "connection": "mqtt:stmq/home/dhwr/status/power",
   "enabled": true,
   "record": false,
   "max_age_seconds": 0,
@@ -192,7 +195,7 @@ A private `equipment.devices` override replaces the complete public list. If one
 is present, add this entry there while retaining the other equipment entries.
 Use `enabled: false` to disable monitoring where this publisher is not installed.
 The measurement topic must differ from `mqtt.dhwr_topic`, whose default is
-`from_stmq/dhwr/set`. The feedback entry cannot enable `switch_control` or
+`stmq/home/dhwr/command/switch`. The feedback entry cannot enable `switch_control` or
 `tariff_control`; Start/Stop circulation uses ST-MQ's durable timed command path.
 
 ## Optional switch feedback
@@ -213,7 +216,7 @@ power topic. For example, with an invented switch publisher:
   "max_age_seconds": 120,
   "mqtt": { "state_path": "switch" },
   "readings": [
-    { "key": "power", "label": "Pump power", "unit": "W", "topic": "to_stmq/dhwr/power", "record": false }
+    { "key": "power", "label": "Pump power", "unit": "W", "topic": "stmq/home/dhwr/status/power", "record": false }
   ]
 }
 ```

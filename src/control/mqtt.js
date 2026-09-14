@@ -49,7 +49,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
   let active = null;
   let closed = false;
   let heatingRelay = null;
-  const dhwrTopic = connection?.dhwr_topic || 'from_stmq/dhwr/set';
+  const dhwrTopic = connection?.dhwr_topic || 'stmq/home/dhwr/command/switch';
   if (typeof dhwrTopic !== 'string' || !dhwrTopic.trim() || dhwrTopic.length > 500 || /[+#\u0000]/.test(dhwrTopic))
     throw failure('MQTT_DHWR_TOPIC_INVALID');
 

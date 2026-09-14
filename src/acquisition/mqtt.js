@@ -51,7 +51,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     .some(device => device.enabled !== false && device.controlsHeat);
   const topicGroups = [
     { id: 'dhwr', label: 'Hot-water circulation commands', source: 'MQTT', topics: [
-      { role: 'Timed ON/OFF command', topic: config.connections.mqtt.dhwr_topic || 'from_stmq/dhwr/set', direction: 'publish' },
+      { role: 'Timed ON/OFF command', topic: config.connections.mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch', direction: 'publish' },
     ] },
     ...(decoder ? [{ id: 'h66', label: 'Heat pump · H66', source: 'MQTT', topics: [
       { role: 'Telemetry subscription', topic: `${deviceId}/HP/#`, direction: 'subscribe' },

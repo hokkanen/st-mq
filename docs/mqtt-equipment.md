@@ -167,7 +167,10 @@ payload. ST-MQ never guesses that publishing to a sensor topic will request stat
 For a publisher that actually implements a read request, configure its documented
 mapping, for example `mqtt.request_topic: "example/device/get"` and
 `mqtt.request_payload: "status"`. These are invented examples, not a universal MQTT
-command. A sensor that only publishes changes or scheduled reports cannot be made
+command. Requests use QoS 1 without retention and are also sent automatically once
+all of the device's response subscriptions succeed on startup or reconnection.
+There is no automatic periodic polling of generic MQTT publishers.
+A sensor that only publishes changes or scheduled reports cannot be made
 to answer by adding an arbitrary request topic.
 
 Set `record: false` on an MQTT `switch` or `power` entry to keep its readings
@@ -175,7 +178,7 @@ in live monitoring without adding database samples. Additional MQTT readings can
 individually use `record: false`; primary temperatures and cumulative energy
 counters retain their recording contracts. Native Shelly entries do not accept
 `record: false`. DHWR feedback is always live-only. The public defaults enable
-`dhwr` as `kind: "power"` on `mqtt:to_stmq/dhwr/power`, with `record: false` and
+`dhwr` as `kind: "power"` on `mqtt:stmq/home/dhwr/status/power`, with `record: false` and
 `max_age_seconds: 0`. Its SmartThings Rule publishes event-driven watts; ST-MQ
 owns the separate timed ON/OFF command path. See the
 [DHWR Rule, template and feedback setup](dhwr-mqtt.md).
@@ -192,6 +195,11 @@ Door feeds can report only changes. For those, the default maximum age is zero:
 the UI preserves the last reported state and time, while indicating that current
 availability has not been established. A retained value is historical context,
 not proof that the door is currently closed. Invalid payloads show unknown state.
+For JSON snapshots from a bridge, configure `mqtt.timestamp_path` to preserve the
+source state's timestamp. A missing or invalid configured timestamp invalidates
+the reading instead of substituting the bridge's publication time. A live response
+can restore an event-only last-known state without establishing a new physical
+measurement. Bridge availability and sensor availability remain separate evidence.
 
 Use different exact topics for different publishers and for status versus commands.
 MQTT does not assign source priority to publishers sharing a topic. Each configured

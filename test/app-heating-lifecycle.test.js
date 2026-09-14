@@ -72,7 +72,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const pendingResponse = post('heaton60');
   const pending = await pendingPacket;
   assert.equal(clients.length, 2, 'Each explicit test has its own connection');
-  assert.equal(pending.topic, 'from_stmq/dhwr/set');
+  assert.equal(pending.topic, 'stmq/home/dhwr/command/switch');
   assert.equal(pending.command, 'ON');
   assert.deepEqual(pending.publishOptions, { qos: 1, retain: false });
   assert.equal(app.store.getState('executor:providers').dhwrOutstanding, true, 'Unacknowledged ON already has a durable OFF obligation');
