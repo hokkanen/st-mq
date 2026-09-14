@@ -447,23 +447,25 @@
           <div id="provider-overview" class="provider-overview"></div>
           <details id="connections-details" class="dashboard-disclosure">
             <summary><span>Sources &amp; configuration</span><small>Connections, topics &amp; rates</small></summary>
-            <details id="data-sources-details" class="controller-fold"><summary>Data sources</summary>
-            <p id="provider-context" class="muted"></p>
-            <p id="price-status" class="muted"></p><p id="weather-status" class="muted"></p>
-            <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
-            </details>
+            <section id="data-sources-details" class="data-sources-section" aria-labelledby="data-sources-title">
+              <h3 id="data-sources-title">Data sources</h3>
+              <p id="provider-context" class="muted"></p>
+              <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
+              <div id="data-details" class="provider-details"><ul id="providers" class="provider-list"></ul></div>
+            </section>
             <details id="mqtt-devices-details" class="controller-fold">
               <summary>MQTT connections &amp; topics</summary>
-              <div class="equipment-connections-toolbar"><p class="muted">Check subscriptions and request status where supported.</p><button id="equipment-recheck-all" type="button" class="secondary-button" disabled>Recheck connections</button></div>
+              <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
               <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
               <div id="equipment-connections"></div>
               <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
-              <details class="equipment-fold"><summary>Device setup</summary>
-                <p>Configure each device in the private configuration file shown under Configuration below, then choose Apply configuration. Use <code>shelly:example-garage</code> for a native Shelly prefix or <code>mqtt:example/garage/door/state</code> for one exact MQTT topic. Connections do not detect or switch protocols.</p>
-                <p>Enable MQTT on the device and point it to the shared broker. Enter the device’s broker username and password in its own setup; these may differ from this app’s credentials. Keep credentials in private configuration.</p>
-                <p>For Shelly, enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), and RPC over MQTT (<code>enable_rpc</code>) where the device exposes those options. Some older firmware has no separate RPC switch.</p>
-                <p>Give temperature probes physical names in the configuration. Door messages must explicitly map to open and closed; a quiet door is not automatically offline.</p>
-                <p><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration</a></p>
+              <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
+                <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
+                <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
+                <details class="equipment-fold"><summary>Shelly MQTT options</summary>
+                  <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
+                </details>
+                <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
               </details>
             </details>
             <details id="electricity-details" class="controller-fold electricity-panel">

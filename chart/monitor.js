@@ -223,7 +223,7 @@ function renderHeatingTests(s) {
   if (!heatingTestBusy && capability?.lastResult
     && JSON.stringify(capability.lastResult) !== lastHeatingTestResult) showHeatingTestResult(capability.lastResult);
 }
-function renderProviderSeries(root, rows) {
+function renderProviderSeries(root, rows, { datasets = false } = {}) {
   let list = root.querySelector('.provider-series');
   if (!list) { list = document.createElement('ul'); root.append(list); }
   list.className = `provider-series${rows.some(row => row.state) ? ' provider-series-live' : ''}`;
@@ -240,12 +240,15 @@ function renderProviderSeries(root, rows) {
     item.dataset.state = row.tone ?? 'pending';
     if (row.state) item.setAttribute('aria-label', `${row.label}: ${row.value ?? row.state}${row.value ? `, ${row.state}` : ''}`);
     const title = item.children[0], value = item.children[1], source = item.children[2];
-    title.textContent = `${row.label}${row.unit ? ` · ${row.unit}` : ''}`;
+    title.textContent = `${row.label}${!datasets && row.unit ? ` · ${row.unit}` : ''}`;
     if (row.state) {
       value.className = 'provider-series-value';
-      setStatusDetail(value, { key: `provider-series-${key}`, label: row.value ?? row.state,
+      setStatusDetail(value, { key: `${datasets ? 'dataset' : 'provider-series'}-${key}`,
+        label: datasets && row.value && row.value !== row.state ? `${row.value} · ${row.state}` : row.value ?? row.state,
         title: row.label, detail: `${row.state}. ${row.statusDetail ? `${row.statusDetail} ` : ''}${row.detail}${row.source ? ` Source: ${row.source}.` : ''}` });
-      source.className = 'provider-series-source'; source.textContent = row.source ?? ''; source.hidden = !row.source;
+      source.className = 'provider-series-source';
+      source.textContent = datasets ? [row.source, row.unit && !row.value ? row.unit : ''].filter(Boolean).join(' · ') : row.source ?? '';
+      source.hidden = !source.textContent;
     } else {
       value.className = 'provider-series-description';
       value.textContent = `${row.detail}${row.source ? ` Source: ${row.source}.` : ''}`;
@@ -273,7 +276,8 @@ function renderProviders(s) {
   $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
   $('weather-status').textContent = `${weatherStatuses[s.weatherStatus] ?? 'Weather status unavailable'}${weatherSource ? ` · ${weatherSource}` : ''}`;
   $('provider-context').textContent = s.input === 'simulated' ? 'Simulation uses example data; household providers are not polled.'
-    : s.input === 'offline' ? 'Offline history mode does not poll household providers.' : 'Indoor measurements, electricity prices and weather forecasts are updated independently. Gaps remain visible in the chart.';
+    : s.input === 'offline' ? 'Offline history mode does not poll household providers.'
+      : 'Readings, electricity prices and forecasts feed the models. Open a category to check its datasets, sources and availability.';
   const entries = dashboardProviders(s, { now: s.now, formatTime: time });
   const overview = $('provider-overview'), retained = new Set(entries.map(({ key }) => key));
   for (const item of [...overview.children]) if (!retained.has(item.dataset.sourceKey)) item.remove();
@@ -310,26 +314,40 @@ function renderProviders(s) {
     $('provider-overview').append(note);
   }
   for (const row of [...$('providers').children]) if (!retained.has(row.dataset.provider)) row.remove();
-  for (const [index, { key: name, display, series }] of entries.entries()) {
+  for (const [index, entry] of entries.entries()) {
+    const { key: name, display, overviewTitle, source, series } = entry;
+    const datasets = entry.datasets ?? series;
     let row = [...$('providers').children].find(row => row.dataset.provider === name);
     if (!row) {
       row = document.createElement('li'); row.dataset.provider = name;
       const fold = document.createElement('details'); fold.className = 'provider-fold';
       const summary = document.createElement('summary');
       const heading = document.createElement('span'); heading.className = 'provider-heading';
-      heading.append(document.createElement('strong'), document.createElement('span')); summary.append(heading);
+      const state = document.createElement('span'); state.className = 'provider-category-state';
+      const meta = document.createElement('small'); meta.className = 'provider-category-meta';
+      heading.append(document.createElement('strong'), state, meta); summary.append(heading);
       const detail = document.createElement('p'); detail.className = 'muted provider-health';
+      const context = document.createElement('p'); context.className = 'muted provider-category-context';
       const series = document.createElement('div'); series.className = 'provider-series-content';
-      fold.append(summary, detail, series); row.append(fold);
+      fold.append(summary, detail, context, series); row.append(fold);
     }
     if ($('providers').children[index] !== row) $('providers').insertBefore(row, $('providers').children[index] ?? null);
-    row.querySelector('strong').textContent = display.title;
-    const state = row.querySelector('.provider-heading > span');
-    state.textContent = display.state;
-    state.className = display.attention ? 'stale' : 'muted';
+    row.querySelector('strong').textContent = overviewTitle;
+    const attention = datasets.filter(row => row.tone === 'attention').length;
+    const backups = datasets.filter(row => row.tone === 'backup').length;
+    const available = datasets.filter(row => row.tone === 'available').length;
+    const state = row.querySelector('.provider-category-state');
+    state.textContent = !datasets.length ? display.state : attention ? `${attention} ${attention === 1 ? 'needs' : 'need'} attention`
+      : backups ? `${backups} using backup` : available === datasets.length ? 'Available' : `${available} of ${datasets.length} available`;
+    row.dataset.state = attention ? 'attention' : backups ? 'backup' : available === datasets.length && datasets.length ? 'available' : 'pending';
+    state.dataset.state = row.dataset.state;
+    row.querySelector('.provider-category-meta').textContent = `${datasets.length} ${datasets.length === 1 ? 'dataset' : 'datasets'}${source ? ` · ${source}` : ''}`;
+    const context = row.querySelector('.provider-category-context');
+    context.textContent = name === 'market' ? $('price-status').textContent : name === 'weather' ? $('weather-status').textContent : '';
+    context.hidden = !context.textContent;
     setStatusDetail(row.querySelector('.provider-health'), { key: `provider-health-${name}`,
-      label: 'Connection details', title: display.title, detail: `${display.state}. ${display.detail}` });
-    renderProviderSeries(row.querySelector('.provider-series-content'), series);
+      label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
+    renderProviderSeries(row.querySelector('.provider-series-content'), datasets, { datasets: true });
   }
 }
 function renderLearning(s) {

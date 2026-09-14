@@ -224,6 +224,85 @@ function electricityDisplay(entries, options) {
     })) };
 }
 
+const datasetStatus = (row, state, detail, attention = false) => {
+  const { statusDetail, ...dataset } = row;
+  return withStatus(dataset, { state, detail, attention });
+};
+
+/** Dataset readiness can differ from the last download. Keep the compact source
+ * overview stable while the expanded catalogue explains those differences. */
+function detailedDatasets(group, status, options) {
+  if (group.key === 'market') {
+    const unavailable = {
+      'missing-market-data': ['Waiting for prices', 'No current market price intervals are available.'],
+      'stale-market-data': ['Needs attention', 'The downloaded market prices are out of date.', true],
+      'incomplete-market-coverage': ['Partial coverage', 'Market prices do not cover every upcoming interval.', true],
+    };
+    const contract = {
+      'contract-not-configured': ['Not configured', 'Configure an electricity contract to calculate all-in prices.'],
+      'no-contract-coverage': ['Unavailable', 'The electricity contract does not cover the available market price intervals.', true],
+      'partial-contract-coverage': ['Partial coverage', 'The electricity contract covers only some available market price intervals.', true],
+    };
+    return group.series.map(row => {
+      const allIn = row.signals.includes('all_in_price');
+      const priceStatus = status.priceStatus ?? (Object.hasOwn(status, 'contract') && !status.contract ? 'contract-not-configured' : null);
+      const override = Object.hasOwn(unavailable, priceStatus) ? unavailable[priceStatus]
+        : allIn && Object.hasOwn(contract, priceStatus) ? contract[priceStatus] : null;
+      return override ? datasetStatus(row, ...override) : row;
+    });
+  }
+  if (group.key === 'weather') {
+    const health = status.providers?.weather ?? {};
+    const forecast = Array.isArray(status.forecast) ? status.forecast.filter(row =>
+      Number.isFinite(row?.start) && Number.isFinite(row?.end) && row.end > (options?.now ?? Date.now()) && row.end > row.start) : null;
+    return group.series.map(row => {
+      const solar = row.signals.includes('solar_forecast');
+      const field = solar ? 'solarRadiationWm2' : 'outdoorC';
+      const subject = solar ? 'solar radiation' : 'outdoor temperature';
+      const present = forecast?.filter(interval => Number.isFinite(interval[field]));
+      const observedSources = [...new Set((present ?? []).map(interval => solar ? interval.solar?.source : interval.source)
+        .filter(source => ['fmi', 'openmeteo'].includes(source)))];
+      const selected = solar ? health.acquisition?.solarSource : health.source ?? health.acquisition?.selected;
+      const source = observedSources.length > 1 ? 'mixed' : observedSources[0] ?? selected;
+      const dataset = { ...row, source: source === 'mixed' ? 'FMI + Open-Meteo'
+        : ['fmi', 'openmeteo'].includes(source) ? providerName(source) : row.source };
+      if (status.weatherStatus === 'stale-forecast')
+        return datasetStatus(dataset, 'Needs attention', 'The downloaded forecast is out of date.', true);
+      if (status.weatherStatus === 'missing-forecast' || forecast?.length === 0)
+        return datasetStatus(dataset, 'Waiting for forecast', `No current ${subject} forecast intervals are available.`);
+      if (present?.length === 0)
+        return datasetStatus(dataset, 'Unavailable', `The current weather forecast has no usable ${subject} values.`, true);
+      if (present && present.length < forecast.length || status.weatherStatus === 'partial-forecast-coverage')
+        return datasetStatus(dataset, 'Partial coverage', `The ${subject} forecast does not cover every upcoming interval.`, true);
+      if (group.display.attention) return dataset;
+      // FMI temperatures can be complete while only solar radiation uses the backup.
+      if (['fmi', 'openmeteo', 'mixed'].includes(source) && (present?.length || ['ok', 'fallback'].includes(health.status)))
+        return datasetStatus(dataset, source === 'fmi' ? 'Available' : 'Using backup', source === 'mixed'
+          ? 'Open-Meteo fills gaps in the FMI solar radiation forecast.' : source === 'openmeteo'
+            ? `The ${subject} forecast uses Open-Meteo as backup.` : null);
+      return dataset;
+    });
+  }
+  if (group.key === 'main-temperatures') {
+    const sensor = status.sensorChanges?.sensors?.find(sensor => sensor.signal === 'garage_temperature_2');
+    const observed = status.observations?.garageFront;
+    const fallback = status.garage?.observations?.front;
+    if (!observed && !sensor?.configured && !Number.isFinite(fallback?.value) && !Number.isFinite(fallback?.observedAt)) return group.series;
+    const reading = observed ?? (Number.isFinite(fallback?.value) || Number.isFinite(fallback?.observedAt) ? fallback : { configured: sensor?.configured });
+    const readingStatus = temperatureReadingStatus(reading, options);
+    const row = withStatus(seriesRow(['garage_temperature_2'], SIGNAL_INFO.garage_temperature_2.label, '°C',
+      `Front garage protection sensor, recorded separately for garage learning. ${readingStatus.detail}`, providerName(reading.source)), {
+      state: readingStatus.attention ? 'Needs attention' : readingStatus.usable ? 'Available'
+        : reading.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
+    });
+    row.value = readingStatus.usable ? `${reading.value.toFixed(1)} °C` : reading.configured === false ? 'Not configured' : 'Unavailable';
+    const rows = [...group.series];
+    rows.splice(rows.findIndex(row => row.signals.includes('garage_temperature')) + 1, 0, row);
+    return rows;
+  }
+  return group.series;
+}
+
 /** Present electricity and current temperature sources together while keeping each provider's
  * acquisition diagnostics. No device identifiers or arbitrary source strings
  * enter these descriptors, and forecast data remains a separate final entry. */
@@ -245,7 +324,7 @@ export function dashboardProviders(status, options) {
       electricityJobs.includes(entry[0]) ? entry === electricity[0] ? [electricityDisplay(electricity, options)] : [] : [describe(entry)]),
     ...(temperatures.length || ['mqtt', 'providers'].includes(status.input) ? [temperatureDisplay(status, temperatures, options)] : []),
     ...entries.filter(([key]) => key === 'weather').map(describe),
-  ];
+  ].map(group => ({ ...group, datasets: detailedDatasets(group, status, options) }));
 }
 
 function failureLabel(value) {

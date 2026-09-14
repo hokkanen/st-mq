@@ -268,9 +268,9 @@ try {
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /no device readback/i);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelectorAll('#providers .provider-fold').length > 0"), true);
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT, FMI');
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent)"),
-    ['Upstairs · °C', 'Downstairs · °C', 'Bedroom · °C', 'Garage rear temperature · °C', 'Outdoor temperature · °C']);
+    ['Upstairs', 'Downstairs', 'Bedroom', 'Garage rear temperature', 'Garage front temperature', 'Outdoor temperature']);
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast follows the main temperature measurements');
   assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'The closed provider overview has the same weather-last order');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
@@ -284,11 +284,15 @@ try {
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await evaluate("document.getElementById('connections-details').open=true; document.getElementById('data-sources-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
-    await checkNestedFolds('#providers .provider-fold', 12);
+    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
-      const rows = [...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => ({
-        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary') }));
+      const heading = document.getElementById('data-sources-title').getBoundingClientRect();
+      return [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary =>
+        summary.checkVisibility() && Math.abs(summary.getBoundingClientRect().left - heading.left) < 1);
+    })()`), true, 'Dataset categories align with their visible Data sources heading');
+    assert.equal(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#connections-details > .controller-fold, #data-sources-details')].map(fold => ({
+        box: fold.getBoundingClientRect(), summary: fold.querySelector(':scope > summary, :scope > h3') }));
       return rows.length === 4 && rows.every((row, index) => row.summary.checkVisibility()
         && Math.abs(row.summary.getBoundingClientRect().left - rows[0].summary.getBoundingClientRect().left) < 1
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
@@ -309,7 +313,7 @@ try {
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");
   }
-  await evaluate("document.getElementById('connections-details').open=true; document.getElementById('data-sources-details').open=true; document.querySelector('#providers .provider-fold').open=true; document.getElementById('temporary-details').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
+  await evaluate("document.getElementById('connections-details').open=true; document.querySelector('#providers .provider-fold').open=true; document.getElementById('temporary-details').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
   await evaluate("document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input')); document.getElementById('temporary-form').requestSubmit()");
   await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');

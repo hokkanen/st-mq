@@ -602,3 +602,95 @@ test('each physical temperature uses its reading availability rather than the gr
   assert.equal(group.series.find(row => row.signals[0] === 'bedroom_temperature').tone, 'attention');
   assert.equal(group.series.find(row => row.signals[0] === 'garage_temperature').tone, 'pending');
 });
+
+test('expanded market datasets distinguish contract readiness from successful market downloads', () => {
+  for (const [priceStatus, state, tone] of [
+    ['contract-not-configured', 'Not configured', 'pending'],
+    ['no-contract-coverage', 'Unavailable', 'attention'],
+    ['partial-contract-coverage', 'Partial coverage', 'attention'],
+  ]) {
+    const [group] = dashboardProviders({ priceStatus, providers: { market: { status: 'ok', source: 'entsoe' } } }, options);
+    assert.equal(group.display.state, 'Available');
+    assert.equal(group.series[1].state, 'Available');
+    assert.equal(group.datasets[0].state, 'Available');
+    assert.equal(group.datasets[1].state, state);
+    assert.equal(group.datasets[1].tone, tone);
+    assert.match(group.datasets[1].statusDetail, /contract/);
+  }
+  for (const priceStatus of ['stale-market-data', 'incomplete-market-coverage']) {
+    const [group] = dashboardProviders({ priceStatus, providers: { market: { status: 'ok' } } }, options);
+    assert.ok(group.datasets.every(row => row.tone === 'attention'));
+  }
+});
+
+test('expanded weather datasets distinguish primary temperatures from backup radiation', () => {
+  const [group] = dashboardProviders({ weatherStatus: 'available', forecast: [
+    { start: now, end: now + 3_600_000, outdoorC: 12, solarRadiationWm2: 120, source: 'fmi', solar: { source: 'openmeteo' } },
+  ], providers: { weather: { status: 'fallback', source: 'fmi', acquisition: { solarSource: 'openmeteo', fallbackUsed: true } } } }, options);
+  assert.equal(group.display.state, 'Using backup');
+  assert.equal(group.series[0].state, 'Using backup');
+  assert.equal(group.datasets[0].state, 'Available');
+  assert.equal(group.datasets[0].tone, 'available');
+  assert.equal(group.datasets[0].statusDetail, undefined);
+  assert.equal(group.datasets[1].state, 'Using backup');
+  assert.equal(group.datasets[1].source, 'Open-Meteo');
+  assert.match(group.datasets[1].statusDetail, /solar radiation.*Open-Meteo/);
+});
+
+test('missing radiation cannot inherit available temperature status and zero radiation remains valid', () => {
+  const status = { weatherStatus: 'available', forecast: [
+    { start: now, end: now + 3_600_000, outdoorC: 12, solarRadiationWm2: null, source: 'fmi' },
+  ], providers: { weather: { status: 'ok', source: 'fmi' } } };
+  let [group] = dashboardProviders(status, options);
+  assert.equal(group.datasets[0].state, 'Available');
+  assert.equal(group.datasets[1].state, 'Unavailable');
+  assert.equal(group.datasets[1].tone, 'attention');
+  assert.match(group.datasets[1].statusDetail, /no usable solar radiation/);
+  status.forecast[0].solarRadiationWm2 = 0;
+  status.providers.weather.acquisition = { solarSource: 'fmi' };
+  [group] = dashboardProviders(status, options);
+  assert.ok(group.datasets.every(row => row.state === 'Available'));
+  status.forecast.push({ start: now + 3_600_000, end: now + 7_200_000, outdoorC: 13, solarRadiationWm2: null, source: 'fmi' });
+  [group] = dashboardProviders(status, options);
+  assert.equal(group.datasets[0].state, 'Available');
+  assert.equal(group.datasets[1].state, 'Partial coverage');
+});
+
+test('expanded forecast rows do not label expired or failed data available', () => {
+  const status = { weatherStatus: 'stale-forecast', forecast: [], providers: { weather: { status: 'ok', source: 'fmi' } } };
+  assert.ok(dashboardProviders(status, options)[0].datasets.every(row => row.tone === 'attention'));
+  status.weatherStatus = 'available';
+  status.forecast = [{ start: now, end: now + 3_600_000, outdoorC: 12, solarRadiationWm2: 0, source: 'fmi' }];
+  status.providers.weather = { status: 'error', error: 'HTTP-503', source: 'fmi' };
+  assert.ok(dashboardProviders(status, options)[0].datasets.every(row => row.tone === 'attention'));
+});
+
+test('expanded temperature datasets include configured garage front with its own reading status', () => {
+  const status = { input: 'mqtt', observations: {
+    indoor: temperature('mqtt-temperature'), garage: temperature('mqtt-temperature', 16), outdoor: temperature('husdata-h66', 4),
+  }, sensorChanges: { sensors: [{ signal: 'garage_temperature_2', configured: true }] } };
+  const [initial] = dashboardProviders(status, options);
+  let front = initial.datasets.find(row => row.signals[0] === 'garage_temperature_2');
+  assert.equal(front.state, 'Waiting for readings');
+  status.observations.garageFront = temperature('mqtt-equipment', 15, { periodicReports: true,
+    reportExpiresAt: now - 1, stale: true, needsAttention: true, attentionReasons: ['missing-report'] });
+  const [group] = dashboardProviders(status, options);
+  front = group.datasets.find(row => row.signals[0] === 'garage_temperature_2');
+  assert.equal(front.tone, 'attention');
+  assert.equal(front.value, 'Unavailable');
+  assert.equal(front.source, 'MQTT');
+  assert.match(front.detail, /Expected temperature report missing/);
+  assert.deepEqual(group.display, initial.display);
+  assert.deepEqual(group.series, initial.series);
+  assert.deepEqual(group.datasets.flatMap(row => row.signals), ['indoor_temperature', 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature']);
+});
+
+test('garage front is not invented for sparse observations and valid held readings remain visible', () => {
+  const status = { input: 'mqtt', observations: { indoor: temperature('mqtt-temperature'), outdoor: temperature('husdata-h66', 4) } };
+  assert.ok(!dashboardProviders(status, options)[0].datasets.some(row => row.signals.includes('garage_temperature_2')));
+  status.observations.garageFront = temperature('mqtt-temperature', 15, { held: true, observedAt: now - 3 * 3_600_000 });
+  const front = dashboardProviders(status, options)[0].datasets.find(row => row.signals[0] === 'garage_temperature_2');
+  assert.equal(front.tone, 'attention');
+  assert.equal(front.value, '15.0 °C');
+  assert.match(front.detail, /Using last known reading/);
+});

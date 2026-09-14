@@ -67,14 +67,15 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${caravan} .status-detail-label').textContent`), 'Off');
     assert.equal(await evaluate(`document.querySelector('${caravan} button[aria-pressed=true]').textContent`), 'Turn off');
-    await evaluate("document.getElementById('equipment-recheck-all').click();true");
-    await until('window.equipmentUiFixture.calls.length === 2'); await settle();
-    assert.deepEqual(JSON.parse(await evaluate('JSON.stringify(window.equipmentUiFixture.calls[1].body)')), {});
-    await evaluate("document.querySelectorAll('.equipment-topic-details').forEach(d=>d.open=true);true");
+    assert.equal(await evaluate("document.getElementById('equipment-recheck-all') === null && [...document.querySelectorAll('#mqtt-devices-details button')].every(button=>!/^Recheck/i.test(button.textContent))"), true, 'Connections show live status without Recheck controls');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
+    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
+    await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='invented/garage/long-device-prefix/door1/contact/state')"), true);
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /no status-request topic/);
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /Last live packet:/);
-    assert.equal(await evaluate("document.querySelector('[data-topic-group=temperatures] code').textContent"), 'invented/home/upstairs/temperature');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature');
     // Power-only reports are useful independently of run requests or switch confirmation.
     await evaluate("window.equipmentUiFixture.savedDhwr=structuredClone(window.equipmentUiFixture.dhwr);window.equipmentUiFixture.dhwr.actualOn=null;Object.assign(window.equipmentUiFixture.dhwr.feedback,{stateConfigured:false,powerConfigured:true,state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=true;true");
     await refresh();
@@ -96,7 +97,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), 'Unavailable');
     assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Waiting for power');
     assert.equal(await evaluate("document.getElementById('dhwr-live-power-time').hidden"), true);
-    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 2, 'Reading updates never operate equipment');
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 1, 'Reading updates never operate equipment');
     await evaluate("window.equipmentUiFixture.dhwr=window.equipmentUiFixture.savedDhwr;true"); await refresh();
     // Failed circulation feedback belongs beside that control, including externally started runs.
     await evaluate("window.equipmentUiFixture.dhwr.actualOn=true;window.equipmentUiFixture.dhwr.feedback.state.value=1;window.equipmentUiFixture.dhwr.feedback.power.value=38;true");
@@ -107,10 +108,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await until("document.getElementById('dhwr-message').classList.contains('form-error')");
     assert.equal(await evaluate("document.getElementById('dhwr-message').closest('#dhwr-device') !== null"), true);
     await evaluate("document.getElementById('dhwr-stop').click();true");
-    await until('window.equipmentUiFixture.calls.length === 4'); await settle();
+    await until('window.equipmentUiFixture.calls.length === 3'); await settle();
     assert.equal(await evaluate("document.getElementById('dhwr-message').classList.contains('form-error')"), false);
     await evaluate("document.getElementById('test-heaton60').click();true");
-    await until("window.equipmentUiFixture.calls.length === 5 && document.getElementById('test-heaton60').disabled");
+    await until("window.equipmentUiFixture.calls.length === 4 && document.getElementById('test-heaton60').disabled");
     await evaluate("window.equipmentUiFixture.dhwr.actualOn=true;window.equipmentUiFixture.dhwr.feedback.state.value=1;true"); await refresh();
     // Removing/reordering/adding devices retains unrelated row identity and open diagnostics.
     await evaluate(`window.equipmentUiFixture.savedRow=document.querySelector('${caravan}');window.equipmentUiFixture.savedDevices=[...window.equipmentUiFixture.devices];window.equipmentUiFixture.devices=window.equipmentUiFixture.devices.filter(d=>d.id!=='door1').reverse();true`);
@@ -126,11 +127,11 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id=dhwr]').length"), 0);
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='to_stmq/dhwr/power')"), true);
     await evaluate("document.getElementById('test-heaton60').click();true");
-    await until("window.equipmentUiFixture.calls.length === 6 && document.getElementById('test-heaton60').disabled"); await settle();
+    await until("window.equipmentUiFixture.calls.length === 5 && document.getElementById('test-heaton60').disabled"); await settle();
     assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /Switch feedback is not configured/);
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '38 W');
     await evaluate("document.getElementById('dhwr-stop').click();true");
-    await until("window.equipmentUiFixture.calls.length === 7 && document.getElementById('dhwr-stop').disabled"); await settle();
+    await until("window.equipmentUiFixture.calls.length === 6 && document.getElementById('dhwr-stop').disabled"); await settle();
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Stop sent. Switch feedback is not configured.');
     // Popup triggers keep the reading's line-height and baseline without an icon or button margin.
     const trigger = '#garage-equipment-readings [data-device-id=door1] .status-detail-trigger';
@@ -156,7 +157,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     }
     await evaluate("window.equipmentUiFixture.devices=[];true"); await refresh();
     assert.match(await evaluate("document.getElementById('garage-equipment-readings').textContent"), /No garage devices enabled/);
-    assert.equal(await evaluate("document.querySelectorAll('#equipment-connections > section').length"), 0);
+    assert.equal(await evaluate("document.querySelectorAll('#equipment-connections [data-device-id=caravan], #equipment-connections [data-device-id=garage-probes], #equipment-connections [data-device-id=door1], #equipment-connections [data-device-id=door2]').length"), 0);
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature', 'Configured feeds remain after equipment removal');
     assert.doesNotMatch(await evaluate("document.getElementById('equipment-check-message').textContent"), /No MQTT devices configured/, 'Other configured MQTT feeds prevent a false empty state');
   } finally {
     await evaluate("document.querySelector('#status-detail-popover .status-detail-close')?.click();window.fetch=window.equipmentUiFixture.fetch;history.replaceState(null,'',location.pathname+location.search+window.equipmentUiFixture.originalHash);for(const d of document.querySelectorAll('.controller-panels details'))d.open=window.equipmentUiFixture.openDetails.includes(d.id);delete window.equipmentUiFixture;document.getElementById('auth').dispatchEvent(new Event('submit',{cancelable:true}));true");

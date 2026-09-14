@@ -226,6 +226,133 @@ export function equipmentCheckText(device) {
 
 }
 
+const topicKey = row => `${row.direction === 'publish' ? 'publish' : 'subscribe'}:${row.topic}`;
+/** One topic can carry several fields, or both RPC checks and commands. */
+export function equipmentTopicGroups(topics = []) {
+  const unique = new Map();
+  for (const row of topics) {
+    if (typeof row?.topic !== 'string' || !row.topic) continue;
+    const key = topicKey(row), existing = unique.get(key);
+    if (existing) existing.roles.add(pretty(row.role || 'Topic'));
+    else unique.set(key, { ...row, roles: new Set([pretty(row.role || 'Topic')]) });
+  }
+  const groups = new Map();
+  for (const row of unique.values()) {
+    const roles = [...row.roles], statusRequest = roles.some(role => /status request|read request|query/i.test(role));
+    const command = roles.some(role => /command|setting|rpc requests/i.test(role));
+    const label = row.direction !== 'publish' ? 'Incoming' : /rpc requests/i.test(roles.join(' ')) || statusRequest && command
+      ? 'Requests & commands' : statusRequest ? 'Status requests' : 'Commands';
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push({ role: roles.join(' / '), topic: row.topic, direction: row.direction });
+  }
+  return ['Incoming', 'Status requests', 'Commands', 'Requests & commands']
+    .filter(label => groups.has(label)).map(label => ({ label, topics: groups.get(label) }));
+}
+
+export function equipmentConnectionSummary(device) {
+  const mqtt = device.mqttStatus, check = device.check;
+  let label = device.connectionState?.label, state = device.connectionState?.state;
+  if (!label) {
+    [label, state] = device.enabled === false ? ['Not enabled', 'pending']
+      : check?.checking ? ['Checking', 'pending'] : device.available && !device.needsAttention ? ['Available', 'available']
+        : mqtt?.subscriptionStatus === 'disconnected' ? ['Disconnected', 'attention']
+          : check?.status === 'retained-only' ? ['Live state unconfirmed', 'attention']
+            : check?.status === 'timeout' ? ['No live response', 'attention']
+              : ['listening', 'awaiting-report'].includes(check?.status) ? ['Waiting for report', 'pending']
+                : ['failed', 'denied'].includes(mqtt?.subscriptionStatus) || check?.status === 'unavailable'
+                  ? ['Connection issue', 'attention'] : ['Needs attention', 'attention'];
+  }
+  const reportedAt = device.lastReportAt ?? mqtt?.lastLiveAt ?? Math.max(...Object.values(device.readings ?? {})
+    .map(reading => reading.observedAt ?? reading.receivedAt).filter(Number.isFinite));
+  const checkedAt = check?.checkedAt;
+  const recent = check?.checking ? 'Checking connection…'
+    : Number.isFinite(checkedAt) && (!Number.isFinite(reportedAt) || checkedAt > reportedAt) ? `Checked ${clock.format(checkedAt)}`
+      : Number.isFinite(reportedAt) ? `Reported ${clock.format(reportedAt)}`
+        : Number.isFinite(mqtt?.lastRetainedAt) ? 'Saved broker value only' : device.recent ?? 'No live report yet';
+  return { label, state, recent };
+}
+
+/** Fold supplemental routes into their device once; unowned routes remain
+ * separate connections with an explicit, evidence-based monitoring state. */
+export function equipmentConnections(status = {}, devices = equipmentDevices(status), inventory = equipmentInventory(status)) {
+  const rows = devices.map(device => ({ ...device,
+    needsAttention: device.needsAttention || inventory.find(row => row.id === device.id)?.needsAttention,
+    topics: device.topics?.length ? [...device.topics]
+    : device.connection ? [{ role: 'Connection', topic: device.connection, direction: 'subscribe' }] : [] }));
+  const owner = new Map(rows.flatMap(row => row.topics.map(topic => [topicKey(topic), row])));
+  const groups = new Map();
+  for (const group of [...(status.shelly?.topicGroups ?? []), ...(status.equipment?.topicGroups ?? [])]) {
+    const prior = groups.get(group.id);
+    groups.set(group.id, { ...group, topics: [...(prior?.topics ?? []), ...(group.topics ?? [])] });
+  }
+  if (status.dhwr?.commandTopic) {
+    const prior = groups.get('dhwr');
+    groups.set('dhwr', { id: 'dhwr', label: 'Hot-water circulation', ...prior,
+      topics: [...(prior?.topics ?? []), { role: 'Circulation command', topic: status.dhwr.commandTopic, direction: 'publish' }] });
+  }
+  for (const group of groups.values()) {
+    const attached = rows.find(row => row.id === (group.id === 'dhwr' ? status.dhwr?.feedback?.deviceId : group.id));
+    const remaining = [];
+    for (const topic of group.topics) {
+      const existing = owner.get(topicKey(topic)) ?? attached;
+      if (existing) { existing.topics.push(topic); owner.set(topicKey(topic), existing); }
+      else remaining.push(topic);
+    }
+    if (!remaining.length) continue;
+    const parts = group.id === 'temperatures' ? ['home', 'garage'].map(area => ({ area,
+      topics: remaining.filter(topic => (topic.signal?.startsWith('garage_') ? 'garage' : 'home') === area) }))
+      : [{ area: group.id === 'garage-adapter' ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
+    for (const part of parts) {
+      if (!part.topics.length) continue;
+      const row = { id: `connection:${group.id}:${part.area}`, label: group.label ?? pretty(group.id), area: part.area,
+        source: group.source ?? 'MQTT', kind: 'connection', supplemental: true, topics: [],
+        connectionState: { label: 'Configured', state: 'pending' }, recent: 'No live report yet',
+        connectionDetail: 'Configured MQTT routes. Connection health is shown only when device reports are available.' };
+      if (group.id === 'h66') {
+        const native = status.h66 ?? {};
+        Object.assign(row, { kind: 'heat_pump', source: 'H66', lastReportAt: native.lastPublicationAt,
+          connectionState: native.enabled === false ? { label: 'Not enabled', state: 'pending' }
+            : native.available && native.brokerConnected !== false ? { label: 'Live reports', state: 'available' }
+              : native.brokerConnected === false ? { label: 'Disconnected', state: 'attention' }
+                : { label: 'Awaiting pump reports', state: 'pending' },
+          connectionDetail: 'Heat-pump readings, status requests and native parameter commands.',
+          packetDetail: `Broker connection: ${native.brokerConnected === true ? 'connected' : native.brokerConnected === false ? 'disconnected' : 'unknown'}.` });
+      } else if (group.id === 'dhwr' || group.id === 'heating') {
+        row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };
+        row.recent = 'Delivery is confirmed separately';
+        row.connectionDetail = group.id === 'dhwr' ? 'Hot-water circulation uses this timed ON/OFF command route.'
+          : 'Heating mode requests use this command route; a configured topic does not confirm device delivery.';
+      } else if (group.id === 'garage-adapter') {
+        const native = status.garage?.adapter ?? {};
+        const communicating = native.connected === true && native.health?.deviceOnline === true
+          && native.health?.driverProgressing === true && native.health?.pumpCommunicating === true;
+        Object.assign(row, { label: 'Garage heat pump', kind: 'heat_pump', source: 'Mitsubishi',
+          lastReportAt: native.native?.powerAt,
+          connectionState: communicating ? { label: 'Pump communicating', state: 'available' }
+            : native.connected === false ? { label: 'Disconnected', state: 'attention' }
+              : native.health?.deviceOnline === false ? { label: 'Device offline', state: 'attention' }
+                : native.health?.driverProgressing === false ? { label: 'Driver not reporting', state: 'attention' }
+                  : { label: 'Awaiting pump reports', state: 'pending' },
+          connectionDetail: native.liveControlSupported ? 'Garage heat-pump monitoring and control.' : 'Garage heat-pump monitoring. Direct control is not available on this installation yet.' });
+      } else if (group.id === 'temperatures') {
+        const readings = part.topics.map(topic => inventory.flatMap(device => Object.entries(device.readings ?? {}))
+          .find(([signal]) => signal === topic.signal)?.[1]).filter(Boolean);
+        const usable = readings.length === part.topics.length && readings.every(reading => reading.displayStatus?.usable === true);
+        Object.assign(row, { kind: 'temperature', readings: Object.fromEntries(readings.map((reading, index) => [index, reading])),
+          connectionState: usable ? { label: 'Available', state: 'available' } : { label: 'Needs attention', state: 'attention' },
+          connectionDetail: 'Temperature feeds reported directly over MQTT. Each configured probe keeps its own reading and freshness status.' });
+      }
+      for (const topic of part.topics) {
+        const existing = owner.get(topicKey(topic));
+        if (existing) existing.topics.push(topic);
+        else { row.topics.push(topic); owner.set(topicKey(topic), row); }
+      }
+      if (row.topics.length) rows.push(row);
+    }
+  }
+  return rows;
+}
+
 export function dhwrReadingSummary(status) {
   const dhwr = status.dhwr ?? {}, feedback = dhwr.feedback ?? {};
   const stateConfigured = feedback.stateConfigured ?? feedback.configured === true;
@@ -254,7 +381,7 @@ export function dhwrReadingSummary(status) {
 }
 
 export function createEquipmentPanel({ document, request, onStatus, beforeRequest, onBusy = () => {}, blocked = () => false }) {
-  const $ = id => document.getElementById(id), connectionNodes = new Map(), restoreNodes = new Map(), readingNodes = new Map();
+  const $ = id => document.getElementById(id), connectionNodes = new Map(), connectionGroups = new Map(), restoreNodes = new Map(), readingNodes = new Map();
   let current;
   const make = (tag, text = '', className = '') => {
     const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
@@ -337,16 +464,21 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const signature = JSON.stringify(topics);
     if (root.dataset.topics === signature) return;
     root.dataset.topics = signature; root.replaceChildren();
-    for (const row of topics) {
-      const group = make('div'), term = make('dt', `${pretty(row.role)} · ${row.direction === 'publish' ? 'send' : 'receive'}`), description = make('dd');
-      description.append(make('code', row.topic)); group.append(term, description); root.append(group);
+    for (const group of equipmentTopicGroups(topics)) {
+      const section = make('section', '', 'equipment-topic-group'), list = make('dl', '', 'equipment-topic-list');
+      section.append(make('h5', group.label), list);
+      for (const row of group.topics) {
+        const item = make('div'), term = make('dt', row.role), description = make('dd');
+        description.append(make('code', row.topic)); item.append(term, description); list.append(item);
+      }
+      root.append(section);
     }
   }
   function render(snapshot) {
     const { status, busy, message, error, actionKind } = snapshot;
     if (!status) return;
     const devices = equipmentDevices(status), inventory = equipmentInventory(status), active = status.equipmentTests?.active;
-    const managedIds = new Set((status.equipment?.devices ?? []).map(device => device.id));
+    const connections = equipmentConnections(status, devices, inventory);
     const readOnly = isReadOnlyReplica(status), locked = busy || blocked();
     for (const area of ['home', 'garage']) {
       const members = inventory.filter(device => device.area === area);
@@ -374,37 +506,58 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       result.textContent = actionKind === 'test' && actionArea === area ? message : '';
       result.hidden = !result.textContent; result.classList.toggle('form-error', error);
     }
-    for (const device of devices) {
+    const connectionRoot = $('equipment-connections');
+    let groupIndex = 0;
+    for (const [area, label] of [['home', 'Home'], ['garage', 'Garage'], ['other', 'Other']]) {
+      const members = connections.filter(device => (['home', 'garage'].includes(device.area) ? device.area : 'other') === area);
+      let group = connectionGroups.get(area);
+      if (!members.length) { group?.section.remove(); continue; }
+      if (!group) {
+        const section = make('section', '', 'equipment-connection-group'), list = make('div', '', 'equipment-connection-list');
+        section.dataset.connectionArea = area;
+        section.append(make('h4', label, 'equipment-connection-group-title'), list);
+        group = { section, list }; connectionGroups.set(area, group);
+      }
+      if (connectionRoot.children[groupIndex] !== group.section) connectionRoot.insertBefore(group.section, connectionRoot.children[groupIndex] ?? null);
+      groupIndex++;
+      for (const [index, device] of members.entries()) {
       let node = connectionNodes.get(device.id);
       if (!node) {
-        const row = make('section', '', 'equipment-connection'), description = make('div', '', 'equipment-connection-description'), aside = make('div', '', 'equipment-connection-actions');
-        const name = make('h4'), source = make('span', '', 'equipment-source'), state = make('span', '', 'equipment-device-status'), area = make('span'), statusLine = make('p', '', 'equipment-connection-status muted');
+        const row = make('details', '', 'equipment-connection-fold'), summary = make('summary', '', 'equipment-connection-summary');
+        row.dataset.deviceId = device.id;
+        const identity = make('span', '', 'equipment-connection-identity'), health = make('span', '', 'equipment-connection-health');
+        const name = make('strong', '', 'equipment-connection-name'), metadata = make('small', '', 'equipment-connection-meta');
+        const state = make('span', '', 'equipment-device-status'), recent = make('small', '', 'equipment-connection-recent');
+        identity.append(name, metadata); health.append(state, recent); summary.append(identity, health);
+        const body = make('div', '', 'equipment-connection-body'), check = make('div', '', 'equipment-connection-check');
         const checked = make('small', '', 'muted'), detail = make('p', '', 'muted equipment-check-detail');
-        const topics = make('details', '', 'equipment-topic-details'), summary = make('summary', 'Full MQTT topics'), list = make('dl', '', 'equipment-topic-list'), packets = make('p', '', 'muted equipment-packet-status');
-        const check = button('Recheck', () => { if (!blocked()) void actions.recheck(device.id); });
-        check.setAttribute('aria-label', `Recheck ${device.label ?? 'device'}`);
-        topics.append(summary, list, packets); statusLine.append(area, document.createTextNode(' · '), state);
-        description.append(name, statusLine, detail, checked); aside.append(source, check); row.append(description, aside, topics);
-        node = { row, name, source, state, area, checked, detail, topics, list, packets, check }; connectionNodes.set(device.id, node); $('equipment-connections').append(row);
+        const topics = make('div', '', 'equipment-topic-groups'), diagnostics = make('details', '', 'equipment-packet-details');
+        const packets = make('p', '', 'muted equipment-packet-status');
+        diagnostics.append(make('summary', 'Packet diagnostics'), packets);
+        check.append(detail, checked); body.append(check, topics, diagnostics); row.append(summary, body);
+        node = { row, name, metadata, state, recent, checked, detail, topics, diagnostics, packets }; connectionNodes.set(device.id, node);
       }
-      node.name.textContent = device.label ?? labels[device.kind]; node.source.textContent = equipmentSource(device);
-      const topics = device.topics?.length ? device.topics : device.connection ? [{ role: 'Connection', topic: device.connection, direction: 'subscribe' }] : [];
-      renderTopics(node.list, topics); node.topics.hidden = !topics.length;
+      if (group.list.children[index] !== node.row) group.list.insertBefore(node.row, group.list.children[index] ?? null);
+      node.name.textContent = device.label ?? labels[device.kind] ?? 'MQTT connection';
+      node.metadata.textContent = [labels[device.kind] ?? pretty(device.kind || 'connection'), equipmentSource(device)].join(' · ');
+      renderTopics(node.topics, device.topics); node.topics.hidden = !device.topics.length;
       const mqtt = device.mqttStatus;
-      node.packets.textContent = mqtt ? [mqtt.subscriptionStatus ? `Subscription: ${pretty(mqtt.subscriptionStatus)}` : '',
-        Number.isFinite(mqtt.lastLiveAt) ? `Last live packet: ${clock.format(mqtt.lastLiveAt)}` : 'No live packet received',
-        Number.isFinite(mqtt.lastRetainedAt) ? `Saved broker packet: ${clock.format(mqtt.lastRetainedAt)}` : ''].filter(Boolean).join(' · ') : '';
-      node.packets.hidden = !node.packets.textContent;
-      node.area.textContent = device.area === 'home' ? 'Home' : 'Garage';
-      node.state.textContent = device.enabled === false ? 'Not enabled' : device.available ? 'Available' : 'Needs attention';
-      node.state.dataset.state = device.enabled === false ? 'pending' : device.available ? 'available' : 'attention';
-      node.detail.textContent = equipmentCheckText(device);
-      if (device.recheck?.description) node.detail.textContent += `. ${device.recheck.description}`;
+      node.packets.textContent = [mqtt?.subscriptionStatus ? `Subscription: ${pretty(mqtt.subscriptionStatus)}` : '',
+        Number.isFinite(mqtt?.lastLiveAt) ? `Last live packet: ${clock.format(mqtt.lastLiveAt)}` : mqtt ? 'No live packet received' : '',
+        Number.isFinite(mqtt?.lastRetainedAt) ? `Saved broker packet: ${clock.format(mqtt.lastRetainedAt)}` : '',
+        device.packetDetail ?? '', device.recheck?.description ?? ''].filter(Boolean).join(' · ');
+      node.diagnostics.hidden = !node.packets.textContent;
+      const summary = equipmentConnectionSummary(device);
+      node.state.textContent = summary.label; node.state.dataset.state = summary.state; node.recent.textContent = summary.recent;
+      node.detail.textContent = device.connectionDetail ?? (Number.isFinite(device.check?.checkedAt) ? equipmentCheckText(device)
+        : device.enabled === false ? 'Disabled in configuration.' : device.available && !device.needsAttention
+          ? 'Device reports are available.' : 'Waiting for a usable device report.');
       node.checked.textContent = Number.isFinite(device.check?.checkedAt) ? `Checked ${clock.format(device.check.checkedAt)}` : '';
-      node.check.disabled = locked || readOnly || !managedIds.has(device.id) || device.enabled === false || device.check?.checking;
-      node.row.dataset.state = node.state.dataset.state;
+      node.checked.hidden = !node.checked.textContent;
+      node.row.dataset.state = summary.state;
+      }
     }
-    for (const [id, node] of connectionNodes) if (!devices.some(device => device.id === id)) { node.row.remove(); connectionNodes.delete(id); }
+    for (const [id, node] of connectionNodes) if (!connections.some(device => device.id === id)) { node.row.remove(); connectionNodes.delete(id); }
     for (const [id, node] of readingNodes) if (!inventory.some(device => device.id === id)) { node.section.remove(); readingNodes.delete(id); }
     const dhwrDevice = devices.find(device => device.id === status.dhwr?.feedback?.deviceId);
     const dhwrArea = dhwrDevice?.area === 'garage' ? 'garage' : 'home';
@@ -425,27 +578,13 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     $('dhwr-feedback-status').dataset.state = dhwr.available ? 'available' : dhwr.configured ? 'attention' : 'pending';
     $('dhwr-request-state').textContent = dhwr.request;
     $('dhwr-control-help').textContent = `Each click starts a full ${dhwr.duration}-minute run, whether price control is paused or not. Stop ends it immediately.`;
-    const commandTopics = status.dhwr?.commandTopic ? [{ role: 'Circulation command', topic: status.dhwr.commandTopic, direction: 'publish' }] : [];
-    const groups = [...new Map([...(status.shelly?.topicGroups ?? []), ...(status.equipment?.topicGroups ?? [])]
-      .map(group => [group.id, group])).values(), ...(commandTopics.length ? [{ id: 'circulation', label: 'Circulation commands', topics: commandTopics }] : [])];
     const commandRoot = $('heating-mqtt-topics');
-    for (const group of groups) {
-      let node = [...commandRoot.children].find(node => node.dataset.topicGroup === group.id);
-      if (!node) {
-        node = make('details', '', 'equipment-topic-details'); node.dataset.topicGroup = group.id;
-        node.append(make('summary'), make('dl', '', 'equipment-topic-list')); commandRoot.append(node);
-      }
-      node.firstElementChild.textContent = group.label;
-      renderTopics(node.lastElementChild, group.topics);
-    }
-    for (const node of [...commandRoot.children]) if (!groups.some(group => group.id === node.dataset.topicGroup)) node.remove();
-    $('equipment-recheck-all').disabled = !devices.some(device => managedIds.has(device.id) && device.enabled !== false) || locked || readOnly;
+    commandRoot.replaceChildren(); commandRoot.hidden = true;
     const checkMessage = actionKind === 'recheck' ? message : '';
-    $('equipment-check-message').textContent = checkMessage || (devices.length || groups.length ? '' : 'No MQTT devices configured.');
-    $('equipment-check-message').hidden = !checkMessage && (devices.length > 0 || groups.length > 0);
+    $('equipment-check-message').textContent = checkMessage || (connections.length ? '' : 'No MQTT devices configured.');
+    $('equipment-check-message').hidden = !checkMessage && connections.length > 0;
     $('equipment-check-message').classList.toggle('form-error', Boolean(checkMessage && error));
   }
-  $('equipment-recheck-all').addEventListener('click', () => { if (!blocked()) void actions.recheck(); });
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {
     $('connections-details').open = true;
     $(link.hasAttribute('data-open-configuration') ? 'controls-details' : 'mqtt-devices-details').open = true;

@@ -920,6 +920,70 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-command-topics:empty { display: none; }
 .equipment-check-detail { line-height: 1.6; overflow-wrap: anywhere; }
 .equipment-connection[data-state="attention"] .equipment-connection-description > h4 { color: var(--stale); }
+/* Expanded source and connection details keep the dashboard overview unchanged. */
+#data-sources-details { padding: 12px 0 6px; }
+#data-sources-title { margin: 0 0 8px; font-size: 13px; font-weight: 550; }
+#data-sources-details > .muted { margin: 0 0 12px; font-size: 11px; line-height: 1.6; }
+#data-sources-details .provider-details { margin: 0; }
+#data-sources-details .provider-fold { margin: 0; border-top: 1px solid var(--border); }
+#data-sources-details .provider-list > li:first-child > .provider-fold { border-top: 0; }
+#data-sources-details .provider-fold > summary { align-items: center; gap: 12px; padding: 12px 0; list-style: none; }
+#data-sources-details .provider-fold > summary::before { content: none; }
+#data-sources-details .provider-fold > summary::after { content: '›'; flex: none; color: var(--muted); font-size: 18px; line-height: 1; }
+#data-sources-details .provider-fold[open] > summary::after { transform: rotate(90deg); }
+#data-sources-details .provider-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 4px 12px; }
+#data-sources-details .provider-heading > strong { grid-column: 1; font-size: 12px; }
+#data-sources-details .provider-category-state { grid-column: 2; grid-row: 1; max-width: 160px; color: var(--provider-tone, var(--muted)); font-size: 11px; line-height: 1.4; text-align: right; }
+#data-sources-details .provider-category-meta { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.5; text-align: left; }
+#data-sources-details .provider-health { margin: 0 0 9px; font-size: 11px; }
+#data-sources-details .provider-category-context { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+#data-sources-details [data-state="available"] { --provider-tone: var(--chart-indoor); }
+#data-sources-details [data-state="attention"], #data-sources-details [data-state="backup"] { --provider-tone: var(--stale); }
+#data-sources-details [data-state="pending"] { --provider-tone: var(--muted); }
+#data-sources-details .provider-series-live { margin: 0 0 12px; padding: 0; }
+#data-sources-details .provider-series-live > li { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; padding: 10px 0; }
+#data-sources-details .provider-series-live > li > strong { color: var(--provider-tone, var(--text)); font-size: 12px; line-height: 1.5; }
+#data-sources-details .provider-series-value { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 6px; color: var(--provider-tone, var(--muted)); font-size: 11px; line-height: 1.5; }
+#data-sources-details .provider-series-value::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--provider-tone, var(--muted)); align-self: center; }
+#data-sources-details .provider-series-source { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.5; }
+#mqtt-devices-details .mqtt-connections-intro { margin: 0 0 12px; font-size: 11px; line-height: 1.5; }
+#mqtt-devices-details #equipment-check-message:empty { display: none; }
+#mqtt-devices-details .equipment-connection-group { margin: 18px 0 0; }
+#mqtt-devices-details .equipment-connection-group-title { margin: 0 0 4px; color: var(--muted); font-size: 11px; font-weight: 550; }
+#mqtt-devices-details .equipment-connection-fold { margin: 0; border-top: 1px solid var(--border); }
+#mqtt-devices-details .equipment-connection-list > .equipment-connection-fold:first-child { border-top: 0; }
+#mqtt-devices-details .equipment-connection-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 10px; gap: 12px; align-items: center; padding: 12px 0; list-style: none; }
+#mqtt-devices-details .equipment-connection-summary::-webkit-details-marker { display: none; }
+#mqtt-devices-details .equipment-connection-summary::after { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; }
+#mqtt-devices-details .equipment-connection-fold[open] > .equipment-connection-summary::after { transform: rotate(90deg); }
+#mqtt-devices-details .equipment-connection-identity { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
+#mqtt-devices-details .equipment-connection-name { font-size: 12px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
+#mqtt-devices-details .equipment-connection-meta, #mqtt-devices-details .equipment-connection-recent { color: var(--muted); font-size: 10px; line-height: 1.4; }
+#mqtt-devices-details .equipment-connection-health { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 190px; text-align: right; }
+#mqtt-devices-details .equipment-connection-health > .equipment-device-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+#mqtt-devices-details .equipment-connection-health > .equipment-device-status::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+#mqtt-devices-details .equipment-connection-body { padding-bottom: 14px; }
+#mqtt-devices-details .equipment-connection-check { display: grid; gap: 5px; margin: 0 0 14px; }
+#mqtt-devices-details .equipment-connection-check p { margin: 0; font-size: 11px; line-height: 1.6; }
+#mqtt-devices-details .equipment-connection-check small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+#mqtt-devices-details .equipment-topic-group { margin: 14px 0; }
+#mqtt-devices-details .equipment-topic-group > h5 { margin: 0 0 8px; color: var(--muted); font-size: 10px; font-weight: 550; }
+#mqtt-devices-details .equipment-topic-list { grid-template-columns: minmax(80px, .7fr) minmax(0, 2fr); align-items: baseline; gap: 8px 12px; margin: 0; }
+#mqtt-devices-details .equipment-topic-list > div { display: contents; }
+#mqtt-devices-details .equipment-topic-list dt { line-height: 1.5; }
+#mqtt-devices-details .equipment-topic-list dd { min-width: 0; margin: 0; }
+#mqtt-devices-details .equipment-topic-list code { margin: 0; font-size: 11px; line-height: 1.5; }
+#mqtt-devices-details .equipment-packet-details { margin: 12px 0 0; }
+#mqtt-devices-details .equipment-packet-details > summary { display: flex; align-items: center; gap: 10px; padding: 10px 0; font-size: 11px; list-style: none; }
+#mqtt-devices-details .equipment-packet-details > summary::-webkit-details-marker { display: none; }
+#mqtt-devices-details .equipment-packet-details > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 17px; line-height: 1; }
+#mqtt-devices-details .equipment-packet-details[open] > summary::after { transform: rotate(90deg); }
+#mqtt-devices-details .equipment-packet-status { margin: 0 0 8px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+#connection-setup-details { margin: 18px 0 0; }
+#connection-setup-details > .equipment-fold { margin: 12px 0 12px 12px; }
+#connection-setup-details > .equipment-fold > summary { min-height: 36px; padding: 9px 0; font-size: 11px; }
+#connection-setup-details .muted { font-size: 11px; line-height: 1.6; }
+#connection-setup-details a { color: var(--muted); text-underline-offset: 3px; }
 @media (max-width: 800px) {
   .equipment-areas { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .equipment-area + .equipment-area { border-left: 0; border-top: 1px solid var(--border); margin-top: 12px; padding: 24px 0 0; }

@@ -757,23 +757,24 @@ try {
   }
   await checkPowerDrawn();
   assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Using backup')"), true);
-  assert.equal(await evaluate("document.getElementById('providers').textContent.includes('Electricity market · Elering')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-provider=market] .provider-heading > strong').textContent"), 'Electricity prices');
+  assert.equal(await evaluate("document.querySelector('[data-provider=market] .provider-category-meta').textContent.includes('Elering')"), true);
   await evaluate("document.querySelector('#provider-overview [data-source-key=market] .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Next ENTSO-E try/);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
-  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures · MQTT, FMI');
+  assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-heading > strong').textContent"), 'Main temperatures');
   assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-series > li > strong')].map(row => row.textContent).join(',')"),
-    'Upstairs · °C,Downstairs · °C,Bedroom · °C,Garage temperature · °C,Outdoor temperature · °C');
+    'Upstairs,Downstairs,Bedroom,Garage rear temperature,Garage front temperature,Outdoor temperature');
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-heading > strong').textContent"),
-    'Electricity consumption · Easee, Teslamate');
+    'Electricity consumption');
   assert.equal(await evaluate("document.querySelectorAll('[data-provider=easee], [data-provider=teslamate]').length"), 0,
     'Both electricity acquisitions appear in one connection card');
   const electricitySeries = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll(
     '[data-provider=electricity] .provider-series > li > strong')].map(row => row.textContent))`));
   assert.deepEqual(electricitySeries.filter(label => label.startsWith('Charger 2')), [
-    'Charger 2 total power · kW', 'Charger 2 total energy · kWh', 'Charger 2 session check · kWh',
+    'Charger 2 total power', 'Charger 2 total energy', 'Charger 2 session check',
   ], 'Charger 2 exposes total quantities and the audit reference without invented phase readings');
-  for (const label of ['Property phase energy L1–L3 · kWh', 'Charger 1 phase energy L1–L3 · kWh'])
+  for (const label of ['Property phase energy L1–L3', 'Charger 1 phase energy L1–L3'])
     assert.ok(electricitySeries.includes(label), `${label} remains in the combined catalogue`);
   const electricityOverview = () => evaluate(`JSON.stringify((() => {
     const row = [...document.querySelectorAll('#provider-overview > .source-overview')]
@@ -791,7 +792,7 @@ try {
       }));
       const bullets = [...document.querySelectorAll('[data-provider=electricity] .provider-series > li')].map(node => ({
         label: node.querySelector('strong').textContent, state: node.dataset.state,
-        color: getComputedStyle(node, '::marker').color, accessible: node.getAttribute('aria-label'),
+        color: getComputedStyle(node.querySelector('.provider-series-value'), '::before').backgroundColor, accessible: node.getAttribute('aria-label'),
       }));
       return {names, bullets};
     })())`));
@@ -808,7 +809,8 @@ try {
   };
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Available', attention: false });
-  await evaluate(`document.getElementById('connections-details').open = true; document.getElementById('data-sources-details').open = true;
+  assert.equal(await evaluate("document.getElementById('data-sources-details').tagName"), 'SECTION');
+  await evaluate(`document.getElementById('connections-details').open = true;
     document.querySelector('[data-provider=electricity] summary').focus(); true`);
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'electricity-keyboard',
     actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
@@ -818,7 +820,7 @@ try {
   charger2Status = { ...charger2Status, status: 'error', reason: 'mqtt-disconnected',
     connected: false, recording: false, healthy: false };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
-  await until("document.querySelector('[data-provider=electricity] .provider-heading > span').textContent === 'Needs attention'");
+  await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === '3 need attention'");
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
     source: 'Easee, Teslamate', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
   await checkProviderColors(true);
@@ -831,7 +833,7 @@ try {
   charger2Status = { ...charger2Status, status: 'ok', reason: 'recording',
     connected: true, recording: true, healthy: true };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
-  await until("document.querySelector('[data-provider=electricity] .provider-heading > span').textContent === 'Available'");
+  await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast is the final provider');
   assert.equal(await evaluate("document.querySelector('#provider-overview > :last-child > span').textContent"), 'Weather forecast', 'Weather forecast is last in the closed overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
@@ -870,7 +872,7 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('h66-readings-details').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.getElementById('data-sources-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('h66-readings-details').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));
