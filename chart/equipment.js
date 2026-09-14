@@ -1,11 +1,107 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
+import { temperatureReadingStatus } from './temperature-status.js';
+import { h66ReadingStatus } from './learning-status.js';
+import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
-export const equipmentSource = device => ['Shelly', 'MQTT-shelly'].includes(device.source) ? 'Shelly' : 'MQTT';
+export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
+  : ['H66', 'Mitsubishi', 'Simulation'].includes(device.source) ? device.source : 'MQTT';
+const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
+  garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
+const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
+  bedroom: 'bedroom_temperature', garage: 'garage_temperature', garage_front: 'garage_temperature_2' };
+const heatPumpTemperatures = {
+  '0007': ['outdoor_temperature', 'Outdoor'], '0002': ['supply_temperature', 'Heating supply'],
+  '0001': ['return_temperature', 'Heating return'], '0009': ['dhw_temperature', 'Hot-water tank'],
+  '0005': ['brine_in_temperature', 'Brine in'], '0006': ['brine_out_temperature', 'Brine out'],
+};
+
+/** Legacy Shelly captures are separate only when the equipment adapter is absent.
+ * Keep actual device identities separate from the read-only inventory below. */
+export function equipmentDevices(status = {}) {
+  const devices = new Map();
+  for (const device of [...(status.shelly?.devices ?? []), ...(status.equipment?.devices ?? [])]) {
+    if (!device?.id) continue;
+    devices.set(device.id, { ...device, area: device.area ?? (device.controls?.tariff || device.controlsHeat
+      || device.role === 'heat_savings' ? 'home' : 'garage') });
+  }
+  return [...devices.values()];
+}
+
+/** Public observations also contain legacy room feeds and pump temperatures.
+ * These views have no control or connection-check route of their own. */
+export function equipmentInventory(status = {}) {
+  const now = status.now ?? Date.now(), observations = status.observations ?? {};
+  const sensorSignals = device => [...(device.ownedSignals ?? []), ...(device.topics ?? []).map(topic => topic.signal).filter(Boolean),
+    ...(device.kind === 'temperature' ? [temperatureIds[device.id] ?? (Object.hasOwn(temperatureKeys, device.id) ? device.id : null)].filter(Boolean) : [])];
+  const observation = signal => observations[temperatureKeys[signal]] ?? (signal.startsWith('garage_')
+    ? status.garage?.observations?.[signal === 'garage_temperature' ? 'rear' : 'front'] : null);
+  const sensorReading = (signal, reading, label) => {
+    const displayStatus = temperatureReadingStatus(reading, { now, formatTime: value => clock.format(value),
+      outdoor: signal === 'outdoor_temperature' });
+    return { ...reading, label, unit: 'degC', displayStatus };
+  };
+  const inventory = equipmentDevices(status).filter(device => device.enabled !== false).map(device => {
+    const deviceReadings = { ...device.readings };
+    for (const signal of sensorSignals(device)) if (Object.hasOwn(temperatureKeys, signal) && !deviceReadings[signal])
+      deviceReadings[signal] = { label: TEMPERATURE_SENSORS[signal] };
+    const readings = Object.fromEntries(Object.entries(deviceReadings).map(([signal, reading]) => {
+      if (!Object.hasOwn(temperatureKeys, signal)) return [signal, reading];
+      const observed = observation(signal);
+      return [signal, sensorReading(signal, observed ?? { ...reading, source: device.source }, reading.label ?? TEMPERATURE_SENSORS[signal])];
+    }));
+    return { ...device, readings, needsAttention: Object.values(readings).some(reading => reading.displayStatus?.attention) };
+  });
+  const represented = new Set(inventory.flatMap(device => [...Object.keys(device.readings), ...sensorSignals(device)]));
+  const append = (id, label, area, source, readings) => {
+    if (!Object.keys(readings).length) return;
+    const rows = Object.values(readings);
+    inventory.push({ id: `inventory:${id}`, label, area, source, kind: 'temperature', inventoryOnly: true,
+      available: rows.every(reading => reading.displayStatus?.usable === true),
+      needsAttention: rows.some(reading => reading.displayStatus?.attention), readings,
+      controls: { switch: false, tariff: false } });
+    for (const signal of Object.keys(readings)) represented.add(signal);
+  };
+  const h66 = status.h66 ?? {}, nativeReadings = {};
+  for (const [register, [signal, label]] of Object.entries(heatPumpTemperatures)) {
+    const reading = h66.readings?.[register];
+    if (!reading || represented.has(signal)) continue;
+    nativeReadings[signal] = { ...reading, label, unit: 'degC', observedAt: reading.observedAt ?? reading.receivedAt,
+      displayStatus: h66ReadingStatus(h66, reading, { now }) };
+  }
+  append('heat-pump-temperatures', 'Heat-pump temperatures', 'home', 'H66', nativeReadings);
+
+  const sensors = new Map((status.sensorChanges?.sensors ?? []).map(sensor => [sensor.signal, sensor]));
+  for (const signal of Object.keys(temperatureKeys)) {
+    if (represented.has(signal)) continue;
+    const garage = signal.startsWith('garage_');
+    const reading = observation(signal);
+    const sensor = sensors.get(signal), observed = Number.isFinite(reading?.value) || Number.isFinite(reading?.observedAt);
+    if (sensor?.configured !== true && !observed) continue;
+    // Weather fallback is already described by the outdoor reading/source UI;
+    // it is not another physical sensor in the equipment inventory.
+    if (signal === 'outdoor_temperature' && !['husdata-h66', 'mqtt-temperature', 'mqtt-equipment', 'shelly-mqtt'].includes(reading?.source)) continue;
+    const source = reading?.source === 'husdata-h66' ? 'H66' : reading?.source === 'simulation' ? 'Simulation' : reading?.source;
+    append(`sensor:${signal}`, `${sensor?.label ?? TEMPERATURE_SENSORS[signal]} temperature`, garage ? 'garage' : 'home', source,
+      { [signal]: sensorReading(signal, reading ?? {}, 'Temperature') });
+  }
+  const garageReadings = {};
+  for (const [signal, label] of [['garage_native_indoor_temperature', 'Pump indoor'], ['garage_native_outdoor_temperature', 'Pump outdoor']]) {
+    const reading = status.garage?.adapter?.telemetry?.[signal];
+    if (!reading?.supported || represented.has(signal)) continue;
+    const usable = reading.usable === true && Number.isFinite(reading.value);
+    garageReadings[signal] = { ...reading, label, unit: 'degC', observedAt: reading.sourceTime,
+      displayStatus: { usable, attention: !usable, detail: usable
+        ? `Reported by the Mitsubishi heat pump${Number.isFinite(reading.sourceTime) ? ` · ${clock.format(reading.sourceTime)}` : ''}.`
+        : 'The Mitsubishi temperature reading is unavailable or not qualified for use.' } };
+  }
+  append('garage-pump-temperatures', 'Mitsubishi temperatures', 'garage', 'Mitsubishi', garageReadings);
+  return inventory;
+}
 const isState = (signal, reading) => reading.unit === 'state' || /_(active|open)$/.test(signal) || typeof reading.value === 'boolean';
 const stateNumber = value => value === true || value === 'open' || value === 'on' ? 1
   : value === false || value === 'closed' || value === 'off' ? 0 : value;
@@ -24,13 +120,15 @@ function valueText(signal, reading, device) {
  * acquisition layer owns health; the browser must not invent an age timeout. */
 export function equipmentReadingRows(device) {
   const rows = Object.entries(device.readings ?? {}).map(([signal, reading]) => {
-    const state = isState(signal, reading), fresh = reading.stale === false || (reading.stale === undefined && device.available);
+    const state = isState(signal, reading), projected = reading.displayStatus;
+    const fresh = projected ? projected.usable : reading.stale === false || (reading.stale === undefined && device.available);
     const last = valueText(signal, reading, device), known = !['Unknown', 'Unavailable'].includes(last);
     const observed = Number.isFinite(reading.observedAt) ? clock.format(reading.observedAt) : 'time unavailable';
     return { signal, label: device.kind === 'heat_pump' && /_active$/.test(signal) ? 'Power enabled'
       : `${reading.label ?? pretty(signal)}${reading.estimated ? ' (estimate)' : ''}`,
       value: fresh ? last : state ? 'Unknown' : 'Unavailable', stale: !fresh,
-      detail: known ? `${fresh ? 'Last reported' : `Last reported ${last}`} · ${observed}` : 'No usable reading received',
+      ...(projected?.attention && fresh ? { qualifier: 'Needs attention' } : {}),
+      detail: projected?.detail ?? (known ? `${fresh ? 'Last reported' : `Last reported ${last}`} · ${observed}` : 'No usable reading received'),
     };
   });
   if (device.energy) {
@@ -188,8 +286,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       }
       if (root.children[index] !== node.section) root.insertBefore(node.section, root.children[index] ?? null);
       node.title.textContent = device.label ?? labels[device.kind] ?? 'Device';
-      node.source.textContent = device.available ? 'Available' : 'Needs attention';
-      node.source.dataset.state = device.available ? 'available' : 'attention';
+      const healthy = device.available && !device.needsAttention;
+      node.source.textContent = healthy ? 'Available' : 'Needs attention';
+      node.source.dataset.state = healthy ? 'available' : 'attention';
       node.source.setAttribute('aria-label', `${equipmentSource(device)} · ${node.source.textContent}`);
       const rows = equipmentReadingRows(device);
       node.empty.hidden = rows.length > 0; node.list.hidden = !rows.length;
@@ -246,13 +345,15 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   function render(snapshot) {
     const { status, busy, message, error, actionKind } = snapshot;
     if (!status) return;
-    const devices = status.equipment?.devices ?? [], active = status.equipmentTests?.active;
+    const devices = equipmentDevices(status), inventory = equipmentInventory(status), active = status.equipmentTests?.active;
+    const managedIds = new Set((status.equipment?.devices ?? []).map(device => device.id));
     const readOnly = isReadOnlyReplica(status), locked = busy || blocked();
     for (const area of ['home', 'garage']) {
-      const members = devices.filter(device => (device.area ?? 'garage') === area && device.enabled !== false);
-      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId && (area !== 'garage' || device.kind !== 'door')).sort((a, b) => area === 'garage' ? Number(b.kind === 'temperature') - Number(a.kind === 'temperature') : 0), snapshot);
+      const members = inventory.filter(device => device.area === area);
+      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId)
+        .sort((a, b) => area === 'garage' ? Number(b.kind === 'temperature') - Number(a.kind === 'temperature') : 0), snapshot);
       if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'No garage devices enabled.', 'muted equipment-empty'));
-      const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available).length;
+      const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available || device.needsAttention).length;
       if (overview) {
         overview.textContent = !members.length ? '' : unavailable ? `${unavailable} ${unavailable === 1 ? 'needs' : 'need'} attention`
           : `${members.length} available`;
@@ -300,11 +401,11 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.detail.textContent = equipmentCheckText(device);
       if (device.recheck?.description) node.detail.textContent += `. ${device.recheck.description}`;
       node.checked.textContent = Number.isFinite(device.check?.checkedAt) ? `Checked ${clock.format(device.check.checkedAt)}` : '';
-      node.check.disabled = locked || readOnly || device.enabled === false || device.check?.checking;
+      node.check.disabled = locked || readOnly || !managedIds.has(device.id) || device.enabled === false || device.check?.checking;
       node.row.dataset.state = node.state.dataset.state;
     }
     for (const [id, node] of connectionNodes) if (!devices.some(device => device.id === id)) { node.row.remove(); connectionNodes.delete(id); }
-    for (const [id, node] of readingNodes) if (!devices.some(device => device.id === id && device.enabled !== false)) { node.section.remove(); readingNodes.delete(id); }
+    for (const [id, node] of readingNodes) if (!inventory.some(device => device.id === id)) { node.section.remove(); readingNodes.delete(id); }
     const dhwrDevice = devices.find(device => device.id === status.dhwr?.feedback?.deviceId);
     const dhwrArea = dhwrDevice?.area === 'garage' ? 'garage' : 'home';
     const dhwrNode = $('dhwr-device'), dhwrAnchor = $(`${dhwrArea}-test-notice`);
@@ -325,7 +426,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     $('dhwr-request-state').textContent = dhwr.request;
     $('dhwr-control-help').textContent = `Each click starts a full ${dhwr.duration}-minute run, whether price control is paused or not. Stop ends it immediately.`;
     const commandTopics = status.dhwr?.commandTopic ? [{ role: 'Circulation command', topic: status.dhwr.commandTopic, direction: 'publish' }] : [];
-    const groups = [...(status.equipment?.topicGroups ?? []), ...(commandTopics.length ? [{ id: 'circulation', label: 'Circulation commands', topics: commandTopics }] : [])];
+    const groups = [...new Map([...(status.shelly?.topicGroups ?? []), ...(status.equipment?.topicGroups ?? [])]
+      .map(group => [group.id, group])).values(), ...(commandTopics.length ? [{ id: 'circulation', label: 'Circulation commands', topics: commandTopics }] : [])];
     const commandRoot = $('heating-mqtt-topics');
     for (const group of groups) {
       let node = [...commandRoot.children].find(node => node.dataset.topicGroup === group.id);
@@ -337,7 +439,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       renderTopics(node.lastElementChild, group.topics);
     }
     for (const node of [...commandRoot.children]) if (!groups.some(group => group.id === node.dataset.topicGroup)) node.remove();
-    $('equipment-recheck-all').disabled = !devices.some(device => device.enabled !== false) || locked || readOnly;
+    $('equipment-recheck-all').disabled = !devices.some(device => managedIds.has(device.id) && device.enabled !== false) || locked || readOnly;
     const checkMessage = actionKind === 'recheck' ? message : '';
     $('equipment-check-message').textContent = checkMessage || (devices.length || groups.length ? '' : 'No MQTT devices configured.');
     $('equipment-check-message').hidden = !checkMessage && (devices.length > 0 || groups.length > 0);

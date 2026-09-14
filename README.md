@@ -123,6 +123,12 @@ equipment commands.
 
 Under **Home & heating → Home heating**, **Heating configuration** contains
 the manual heating buttons; **Adjust heat-pump parameters** contains native settings.
+Home and Garage share the same expanded layout: heating controls, equipment and
+temperatures, technical details, then Away/Pause. Selection marks sit beside the
+button labels. The equipment inventory includes individual room and protection
+sensors, native heat-pump temperatures, tariff relays and legacy Shelly devices.
+Held changes during Pause show an amber notice even when the sections are closed;
+changing a paused heating setting opens a confirmation explaining its lifetime.
 With live `providers` or `mqtt` input and configured controls, Normal and Reduced
 send tariff requests through the controller's executor. **Preheating** requests
 normal tariff operation and circulation, and raises the selected ROOM setting

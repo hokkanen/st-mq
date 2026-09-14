@@ -2,6 +2,8 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
+import { finnishDateTime } from './home-controls.js';
+import { confirmPausedHeating, garageHeatingWarning } from './heating-warning.js';
 const finite = Number.isFinite;
 const text = value => typeof value === 'string' ? value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll(/[_-]/g, ' ') : 'Unknown';
 const number = (value, unit = '') => finite(value) ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value)}${unit ? ` ${unit}` : ''}` : 'Unavailable';
@@ -142,7 +144,8 @@ export function renderGarage(document, status) {
   nativeReading('mode', 'Mitsubishi mode', text);
   nativeReading('targetC', 'Mitsubishi target', value => number(value, '°C'));
   let heating = 'Heating unverified';
-  if (adapter.phase === 'paused') heating = power.fresh && power.value === 'off' ? 'Saving mode' : 'Saving · unverified';
+  if (garage.heatingControls?.requestedMode === 'off') heating = power.fresh && power.value === 'off' ? 'Heating off' : 'Off requested';
+  else if (adapter.phase === 'paused') heating = power.fresh && power.value === 'off' ? 'Saving mode' : 'Saving · unverified';
   else if (adapter.restorePending || garage.episode?.restorationPending || adapter.phase === 'restoring') heating = 'Restoring heating';
   else if (adapter.connected === false || adapter.health?.deviceOnline === false) heating = 'Offline';
   else if (!adapter.liveControlSupported && !adapter.simulation) heating = 'Monitoring only';
@@ -151,7 +154,8 @@ export function renderGarage(document, status) {
     `${display.reason}. ${adapter.phase === 'paused' ? 'An automatic savings episode is pausing heating.'
       : adapter.restorePending ? 'Restoration has been requested; heating confirmation is pending.'
         : 'Native power and mode reports are available inside the garage section. Power enabled does not confirm compressor activity.'}`);
-  set('garage-pause-overview', 'Keep normal garage heating');
+  set('garage-pause-overview', garage.temporary?.pauseActive
+    ? `Price control paused until ${clock(garage.temporary.pauseUntil)}` : 'Pause automatic price control');
   const list = (id, rows) => {
     const root = document.getElementById(id); if (!root) return;
     const fragment = document.createDocumentFragment();
@@ -179,9 +183,84 @@ export function garageReleaseAvailable(status) {
  * generic switch capable of overriding an unmanaged or manual OFF state. */
 export function createGarageControls({ document, request, onStatus = () => {}, onBusy = () => {},
   beforeRequest = () => {}, afterRequest = () => {}, blocked = () => false }) {
-  const button = document.getElementById('garage-release'), message = document.getElementById('garage-release-message');
-  let status = null, busy = false, closed = false;
-  const refreshControls = () => { if (button) button.disabled = closed || busy || blocked() || !garageReleaseAvailable(status); };
+  const $ = id => document.getElementById(id);
+  const button = $('garage-release'), message = $('garage-release-message');
+  const form = $('garage-pause-form'), until = $('garage-pause-until');
+  let status = null, busy = false, closed = false, dirty = false;
+  const refreshControls = () => {
+    const locked = closed || busy || blocked() || !status || isReadOnlyReplica(status);
+    if (button) button.disabled = locked || !garageReleaseAvailable(status);
+    const controls = status?.garage?.heatingControls ?? {}, temporary = status?.garage?.temporary ?? {};
+    for (const mode of ['normal', 'off']) {
+      const node = $(`garage-mode-${mode}`); if (!node) continue;
+      node.disabled = locked || controls[`${mode}Available`] !== true;
+      const selected = (controls.requestedMode ?? controls.selectedMode) === mode;
+      node.setAttribute('aria-pressed', String(selected));
+      node.setAttribute('aria-label', `${mode === 'normal' ? 'Normal heating' : 'Heating off'}${selected ? controls.confirmed ? ' · active' : ' · requested' : ''}`);
+      node.querySelector('.heating-button-state').textContent = selected ? '✓' : '';
+    }
+    if ($('garage-pause-submit')) $('garage-pause-submit').disabled = locked || !temporary.available || !dirty;
+    if ($('garage-resume-now')) $('garage-resume-now').disabled = locked || !temporary.available || !temporary.pauseActive;
+    if (until) until.disabled = locked || !temporary.available;
+  };
+  const render = () => {
+    const controls = status?.garage?.heatingControls ?? {}, temporary = status?.garage?.temporary ?? {};
+    if (until && !dirty) until.value = temporary.pauseUntilLocal ?? finnishDateTime(temporary.pauseUntil);
+    if ($('garage-pause-status')) $('garage-pause-status').textContent = temporary.pauseActive
+      ? `Price control paused until ${clock(temporary.pauseUntil)}.` : 'Price control is not paused.';
+    if ($('garage-heating-help')) $('garage-heating-help').textContent = controls.available
+      ? 'If price control is not paused, manual changes revert on the next update, normally within 1 minute. During Pause, they stay until it ends. Freeze protection can restore heating sooner.'
+      : controls.reason ?? 'Waiting for the garage heating connection.';
+    const off = $('garage-mode-off');
+    if (off) off.title = controls.offAvailable ? '' : controls.offReason ?? controls.reason ?? 'Heating off is unavailable.';
+    const warning = garageHeatingWarning(status, clock), node = $('garage-hold-warning');
+    if (node) { node.hidden = !warning; node.textContent = warning; }
+    refreshControls();
+  };
+  const send = async (path, input, target, pending, success) => {
+    if (closed || busy || blocked() || !status || isReadOnlyReplica(status)) return;
+    busy = true; beforeRequest(); onBusy(true); refreshControls();
+    target.classList.remove('form-error'); target.textContent = pending;
+    try {
+      const result = await request(path, input);
+      if (path.endsWith('/temporary')) dirty = false;
+      status = result; onStatus(result); render(); target.textContent = success(result);
+    } catch (error) { target.classList.add('form-error'); target.textContent = error.message; }
+    finally { busy = false; onBusy(false); refreshControls(); }
+    await afterRequest();
+  };
+  const heat = async mode => {
+    const controls = status?.garage?.heatingControls;
+    if (!controls?.[`${mode}Available`] || busy || blocked() || closed) return;
+    if (status.garage.temporary?.pauseActive && !await confirmPausedHeating({ document,
+      title: mode === 'off' ? 'Turn garage heating off during Pause?' : 'Change garage heating during Pause?',
+      message: `${mode === 'off' ? 'Heating will stay off' : 'Normal heating will stay selected'} until ${clock(status.garage.temporary.pauseUntil)} or Resume now. ${mode === 'off'
+        ? 'A cold garage can freeze pipes and stored equipment. Freeze protection may restore heating sooner.'
+        : 'Automatic price control stays paused until then.'} Normal heating returns when the pause ends.`,
+      action: mode === 'off' ? 'Turn heating off' : 'Apply normal heating' })) return;
+    if (!status?.garage?.heatingControls?.[`${mode}Available`]) return;
+    await send('/api/garage/heating', { mode }, $('garage-heating-message'), 'Applying garage heating…', result => {
+      const next = result.garage?.heatingControls, held = next?.paused && next.holdUntil > result.now;
+      return `${mode === 'off' ? 'Heating off' : 'Normal heating'} requested. ${held
+        ? `Held until ${clock(next.holdUntil)} or Resume now.` : 'Automatic control takes over on its next update, normally within 1 minute.'} Check the reported pump state for confirmation.`;
+    });
+  };
+  const pause = event => {
+    event.preventDefault();
+    if (!dirty || !status?.garage?.temporary?.available) return;
+    void send('/api/garage/temporary', { pauseUntilLocal: until.value || null }, $('garage-pause-message'), 'Updating garage pause…',
+      result => result.garage?.temporary?.pauseActive ? 'Pause saved. Normal heating is requested; later manual changes stay until the pause ends.' : 'Price control resumed.');
+  };
+  const resume = () => {
+    if (!status?.garage?.temporary?.available) return;
+    void send('/api/garage/temporary', { pauseUntil: null }, $('garage-pause-message'), 'Resuming garage price control…', () => 'Price control resumed. Normal heating is being restored.');
+  };
+  const edit = () => { dirty = true; refreshControls(); };
+  const normal = () => { void heat('normal'); }, off = () => { void heat('off'); };
+  $('garage-mode-normal')?.addEventListener('click', normal);
+  $('garage-mode-off')?.addEventListener('click', off);
+  form?.addEventListener('submit', pause); until?.addEventListener('input', edit);
+  $('garage-resume-now')?.addEventListener('click', resume);
   const release = async () => {
     if (closed || busy || blocked() || !garageReleaseAvailable(status)) return;
     busy = true; beforeRequest(); onBusy(true); refreshControls();
@@ -200,6 +279,11 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     await afterRequest();
   };
   button?.addEventListener('click', release); refreshControls();
-  return { update(value) { status = value; refreshControls(); }, refreshControls,
-    close() { closed = true; button?.removeEventListener('click', release); refreshControls(); } };
+  return { update(value) { status = value; render(); }, refreshControls,
+    close() {
+      closed = true; button?.removeEventListener('click', release);
+      $('garage-mode-normal')?.removeEventListener('click', normal); $('garage-mode-off')?.removeEventListener('click', off);
+      form?.removeEventListener('submit', pause); until?.removeEventListener('input', edit);
+      $('garage-resume-now')?.removeEventListener('click', resume); refreshControls();
+    } };
 }

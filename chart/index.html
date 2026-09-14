@@ -174,6 +174,7 @@
               <small id="drop-note">When you are home</small>
             </div>
           </div>
+          <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
           <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="home-heat-pump-title">
             <summary class="zone-summary equipment-overview">
             <div class="equipment-heading"><h3 id="home-heat-pump-title">Home heating</h3><span id="h66-status" class="muted">Not connected</span></div>
@@ -185,24 +186,23 @@
               <span class="zone-expand" aria-hidden="true"></span>
             </summary>
             <div class="zone-content equipment-area">
-              <span id="home-equipment-status" class="equipment-device-status zone-equipment-status"></span>
-              <section id="home-manual-controls" class="equipment-device equipment-heat-pump" aria-label="Home heat pump controls">
+              <section id="home-manual-controls" class="zone-section zone-configuration equipment-heat-pump" aria-labelledby="heating-configuration-title">
                 <div id="heating-test-details">
-                  <div class="equipment-device-heading heating-configuration-heading"><h4 id="heating-configuration-title">Heating configuration</h4></div>
-                  <p id="heating-test-help" class="muted">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
-                  <p id="heating-pause-warning" class="muted" role="status" hidden></p>
-                  <div id="heating-test-buttons" class="heating-test-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help heating-pause-warning heating-test-status">
-                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" aria-pressed="false" disabled>Normal heating<small class="heating-button-state" aria-hidden="true"></small></button>
-                    <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled>Preheating<small class="heating-button-state" aria-hidden="true"></small></button>
-                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" aria-pressed="false" disabled>Reduced heating<small class="heating-button-state" aria-hidden="true"></small></button>
+                  <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating configuration</h4></div>
+                  <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
+                  <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
+                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                    <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   </div>
-                  <p id="heating-preheat-help" class="muted" hidden></p>
+                  <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
+                  <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
                   <p id="heating-test-status" class="muted"></p>
                   <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </div>
                 <details id="h66-test-details" class="equipment-fold">
                   <summary>Adjust heat-pump parameters</summary>
-                  <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help heating-pause-warning h66-test-status">
+                  <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
                     <label>Setting<select id="h66-test-register">
                       <option value="0203">Room setting</option><option value="0212">Hot water start</option>
                       <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
@@ -215,6 +215,28 @@
                   <p id="h66-test-status" class="muted">H66 is not connected.</p>
                   <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </details>
+              </section>
+              <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
+                <div class="zone-section-heading"><h4 id="home-equipment-title">Equipment &amp; temperatures</h4><span id="home-equipment-status" class="equipment-device-status"></span></div>
+                <div id="home-equipment-readings" class="equipment-device-list"></div>
+                <section id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
+                  <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></div>
+                  <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
+                  <div id="dhwr-controls" class="equipment-inline-controls">
+                    <p id="dhwr-request-state" class="muted"></p>
+                    <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
+                      <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
+                      <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+                    </div>
+                    <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
+                    <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
+                  </div>
+                </section>
+                <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
+                <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+              </section>
+              <details id="home-technical-details" class="equipment-fold zone-technical-details">
+                <summary>Technical details &amp; connections</summary>
                 <details id="h66-readings-details" class="equipment-fold">
                   <summary>All heat-pump readings</summary>
                   <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
@@ -226,46 +248,30 @@
                     <div id="h66-series"></div>
                   </details>
                 </details>
-              </section>
-              <div id="home-equipment-readings" class="equipment-device-list"></div>
-              <section id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
-                <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></div>
-                <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
-                <div id="dhwr-controls" class="equipment-inline-controls">
-                  <p id="dhwr-request-state" class="muted"></p>
-                  <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
-                    <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
-                    <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
-                  </div>
-                  <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
-                  <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
-                </div>
-              </section>
-              <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
-              <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-              <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
-          <div class="home-actions">
-            <details id="temporary-details" class="dashboard-disclosure temporary-panel">
-              <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-              <form id="temporary-form" class="temporary-form">
-                <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                <div class="temporary-field">
-                  <label for="away-until">Away until</label>
-                  <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-                  <p id="away-status" class="temporary-status">At home.</p>
-                  <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
-                </div>
-                <div class="temporary-field">
-                  <label for="pause-until">Pause until</label>
-                  <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                  <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                  <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
-                </div>
-                <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-                <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-              </form>
-            </details>
-          </div>
+                <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+              </details>
+              <div class="home-actions">
+                <details id="temporary-details" class="dashboard-disclosure temporary-panel zone-availability-fold">
+                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
+                  <form id="temporary-form" class="temporary-form">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="away-until">Away until</label>
+                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                      <p id="away-status" class="temporary-status">At home.</p>
+                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+                    </div>
+                    <div class="temporary-field">
+                      <label for="pause-until">Pause until</label>
+                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
+                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+                  </form>
+                </details>
+              </div>
             </div>
           </details>
           <details id="garage-equipment-details" class="dashboard-disclosure heating-zone garage-zone" aria-labelledby="garage-title">
@@ -279,14 +285,33 @@
               <span class="zone-expand" aria-hidden="true"></span>
             </summary>
             <div class="zone-content equipment-area">
-              <section id="garage-controller-details" class="equipment-device garage-heating" aria-labelledby="garage-mitsubishi-title">
-                <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi heating</h4><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></div>
-                <div class="garage-native-overview">
-                  <div class="equipment-value"><span>Power</span><strong id="garage-native-power">Unknown</strong></div>
-                  <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode">Unknown</strong></div>
-                  <div class="equipment-value"><span>Target</span><strong id="garage-native-target">Unavailable</strong></div>
+              <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
+                <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating configuration</h4></div>
+                <p id="garage-heating-help" class="muted zone-control-help">Choose Normal heating or turn heating off temporarily. Without a savings pause, the controller resumes on its next update. During a pause, your selection stays until the pause ends or you select Resume now.</p>
+                <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-heating-configuration-title" aria-describedby="garage-heating-help garage-hold-warning">
+                  <button id="garage-mode-normal" class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="garage-mode-off" class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
                 </div>
-                <p id="garage-controller-reason" class="muted"></p>
+                <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
+                <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
+              </section>
+              <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
+                <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
+                <section id="garage-controller-details" class="equipment-device garage-heating" aria-labelledby="garage-mitsubishi-title">
+                  <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi heating</h4><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></div>
+                  <div class="garage-native-overview">
+                    <div class="equipment-value"><span>Power</span><strong id="garage-native-power">Unknown</strong></div>
+                    <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode">Unknown</strong></div>
+                    <div class="equipment-value"><span>Target</span><strong id="garage-native-target">Unavailable</strong></div>
+                  </div>
+                  <p id="garage-controller-reason" class="muted"></p>
+                </section>
+                <div id="garage-equipment-readings" class="equipment-device-list"></div>
+                <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
+                <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+              </section>
+              <details id="garage-technical-details" class="equipment-fold zone-technical-details">
+                <summary>Technical details &amp; connections</summary>
                 <details class="equipment-fold garage-secondary">
                   <summary>All Mitsubishi readings</summary>
                   <dl id="garage-controller-readings" class="equipment-readings"></dl>
@@ -297,28 +322,26 @@
                   <p class="muted">Change the garage protection policy, savings aggressiveness and normal Mitsubishi setting in Configuration, then Apply configuration. Connections and commissioning are separate from these everyday preferences.</p>
                   <p class="muted">Local recovery runs in the Pill software. A dead adapter or failed serial connection cannot transmit ON; unresolved recovery stays visible. Automatic pauses need an implemented compatible contract and installed commissioning.</p>
                 </details>
-              </section>
-              <div id="garage-equipment-readings" class="equipment-device-list"></div>
-              <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
-              <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-              <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+                <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+                <div class="equipment-inline-controls">
+                  <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
+                  <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
+                  <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </div>
+              </details>
               <div class="home-actions">
-                <details id="garage-pause-details" class="dashboard-disclosure temporary-panel">
-                  <summary><span>Pause savings</span><small id="garage-pause-overview">Keep normal garage heating</small></summary>
-                  <div class="temporary-form">
+                <details id="garage-pause-details" class="dashboard-disclosure temporary-panel zone-availability-fold">
+                  <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
+                  <form id="garage-pause-form" class="temporary-form">
                     <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                     <div class="temporary-field">
                       <label for="garage-pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-help"><button class="secondary-button" type="button" disabled>Resume now</button></div>
-                      <p id="garage-pause-help" class="muted">Pause savings and keep normal Mitsubishi heating until the selected time.</p>
+                      <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
+                      <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
                     </div>
-                    <div class="temporary-actions"><button type="button" disabled>Apply changes</button><p class="muted">Timed savings pause is not available yet.</p></div>
-                <div class="equipment-inline-controls">
-                  <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End garage pause</button>
-                  <p id="garage-release-help" class="muted">Ends a pause managed by ST-MQ and awaits restoration of normal heating.</p>
-                  <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </div>
-                  </div>
+                    <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
+                  </form>
                 </details>
               </div>
             </div>

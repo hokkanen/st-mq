@@ -12,6 +12,7 @@ import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInsta
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
+import { confirmPausedHeating, homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 
 const $ = id => document.getElementById(id);
 for (const summary of document.querySelectorAll('.zone-summary')) {
@@ -186,7 +187,6 @@ function showHeatingTestResult(result) {
 }
 function renderHeatingTests(s) {
   const capability = s.heatingTests;
-  const paused = s.override?.expiresAt > s.now;
   const actual = s.observations?.actual;
   const phase = actual?.phase ?? actual?.mode;
   const current = actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
@@ -197,7 +197,7 @@ function renderHeatingTests(s) {
     button.setAttribute('aria-pressed', String(id === selected));
     button.setAttribute('aria-label', `${name}${state ? ` · ${state}${state === 'Requested' ? ', awaiting device confirmation' : ''}` : ''}`);
     button.dataset.modeState = state.toLowerCase();
-    button.querySelector('.heating-button-state').textContent = state ? `${state === 'Active' ? '✓ ' : ''}${state}` : '';
+    button.querySelector('.heating-button-state').textContent = state ? '✓' : '';
   }
   $('heating-test-help').textContent = 'Use the controls below to temporarily adjust heating and heat-pump parameters. '
     + 'If price control is not paused, your changes revert on the next controller update, normally within 1 minute. '
@@ -206,9 +206,14 @@ function renderHeatingTests(s) {
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
     : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable room setting and circulation control.';
   $('test-preheat').title = $('heating-preheat-help').textContent;
-  $('heating-pause-warning').hidden = !paused;
-  $('heating-pause-warning').textContent = paused
-    ? `Price control is paused until ${time(s.override.expiresAt)}. Changes made now stay until then or Resume now, then the previous settings are restored.` : '';
+  const warning = homeHeatingWarning(s, time);
+  $('home-hold-warning').hidden = !warning;
+  $('home-hold-warning').textContent = warning;
+  const garageWarning = garageHeatingWarning(s, time);
+  const held = [warning && `Home settings held until ${time(s.decision.manualHold.until)}`,
+    garageWarning && `Garage heating ${s.garage.heatingControls.requestedMode === 'off' ? 'held off' : 'held'} until ${time(s.garage.heatingControls.holdUntil)}`].filter(Boolean);
+  $('heating-held-summary').hidden = !held.length;
+  $('heating-held-summary').textContent = `${held.join(' · ')}. Price control is paused; review the held settings below or select Resume now.`;
   setStatusDetail($('heating-test-status'), { key: 'manual-heating-availability', title: 'Heating control',
     label: capability?.available ? 'Control available' : 'Control unavailable', detail: capability?.available
       ? 'Requests are sent over MQTT. The reported state updates when device feedback arrives.'
@@ -688,7 +693,10 @@ async function testHeating(command) {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !lastStatus?.heatingTests?.available) return;
   if (command === 'preheat' && lastStatus.heatingTests.preheatAvailable !== true) return;
   if (command !== 'heaton60' && lastStatus.override?.expiresAt > lastStatus.now
-    && !window.confirm(`Price control is paused until ${time(lastStatus.override.expiresAt)}. ${heatingCommandLabel(command)} will stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled. Apply this selection?`)) return;
+    && !await confirmPausedHeating({ document, title: 'Change heating while price control is paused?',
+      message: `${heatingCommandLabel(command)} will stay until ${time(lastStatus.override.expiresAt)} or Resume now. Room temperatures may change while automatic price control is paused. Previous settings return when the pause ends.`,
+      action: `Apply ${heatingCommandLabel(command).toLowerCase()}` })) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
   heatingTestBusy = true;
   ++refreshSequence;
   updateTemporaryButtons();
@@ -731,7 +739,10 @@ $('h66-test-form').addEventListener('submit', async event => {
   const register = $('h66-test-register').value;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !h66Control(lastStatus?.h66, register).available) return;
   if (lastStatus.override?.expiresAt > lastStatus.now
-    && !window.confirm(`Price control is paused until ${time(lastStatus.override.expiresAt)}. This parameter change will stay until the pause ends or you select Resume now, then the previous setting is restored. Automatic price control then resumes if enabled. Apply this parameter?`)) return;
+    && !await confirmPausedHeating({ document, title: 'Change a parameter while price control is paused?',
+      message: `This parameter will stay until ${time(lastStatus.override.expiresAt)} or Resume now. It can affect heating and hot water while automatic price control is paused. The previous value returns when the pause ends.`,
+      action: 'Apply parameter' })) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
   $('h66-test-form').setAttribute('aria-busy', 'true');
   $('h66-test-message').classList.remove('form-error');

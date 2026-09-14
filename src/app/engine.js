@@ -1051,7 +1051,10 @@ export class Engine {
     decision.nextState = { phase: decision.phase };
     if (holdManualSettings) decision.manualHold = { until: override.expiresAt,
       phase: manualPause ? priorExecutor.manualRequested?.phase ?? this.applied.phase : this.applied.phase,
-      parameters: Boolean(h66.pauseId) };
+      parameters: Object.keys(h66.obligations ?? {}).length > 0,
+      changed: Boolean(priorExecutor.manualRequested?.confirmed && priorExecutor.manualBaseline
+        && priorExecutor.manualRequested.phase !== priorExecutor.manualBaseline.phase)
+        || Object.keys(h66.obligations ?? {}).length > 0 };
     this.store.setState(`pending-plan:${input}`, this.pendingPlan);
     const onExecution = execution => {
       const executorStatus = this.executor.status?.();
@@ -1174,7 +1177,9 @@ export class Engine {
       && (!executor.manualPause || executor.manualPause.id === pauseIdentity(override) && executor.manualPause.expiresAt > now)
       && (!native.pauseId || native.phase === 'manual-pause' && native.pauseId === pauseIdentity(override) && native.expiresAt > now);
     if (holding) result.decision.manualHold = { until: override.expiresAt, phase: manual?.phase ?? this.applied.phase,
-      parameters: Boolean(native.pauseId) };
+      parameters: Object.keys(native.obligations ?? {}).length > 0,
+      changed: Boolean(manual?.confirmed && executor.manualBaseline && manual.phase !== executor.manualBaseline.phase)
+        || Object.keys(native.obligations ?? {}).length > 0 };
     else delete result.decision.manualHold;
     result.providers = this.providerStatus();
     this.temperatureObservations(result.observations, now);

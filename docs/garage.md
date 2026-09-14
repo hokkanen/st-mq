@@ -43,6 +43,39 @@ legacy exact-topic options `mqtt.garage_temperature_topic` and
 are fresh; repeated timestamps, retained packets, missing reports and native pump
 temperatures cannot refresh protection evidence.
 
+## Everyday controls
+
+**Home & heating → Garage heating** follows the Home layout: heating controls,
+equipment and temperatures, technical details, then **Pause savings**. The
+inventory includes both protection probes, the pump's own temperatures, doors
+and Caravan. A selected mode has an inline check; requested state remains
+distinct from confirmed native power.
+
+**Pause savings** suspends economic scheduling until a Finnish local deadline
+and restores Normal heating when started or reset. **Normal heating** and
+**Heating off** are manual selections: without Pause, control takes over on its
+next update, bounded by a one-minute expiry. During Pause, the selection stays
+until the deadline or **Resume now**. Normal restores the existing native
+baseline through the adapter's owned release route; it does not overwrite a
+device switched off independently of ST-MQ. Restart keeps the price-control
+deadline but restores an owned OFF request instead of resuming it.
+
+Manual OFF uses the same native lease, authority, recovery and freeze-protection
+checks as automatic control. It does not require an economic saving prediction;
+both protection temperatures and exposure margin are still required. Protection
+or loss of fresh control evidence can restore heating before the chosen deadline.
+These controls require active mode and a supported adapter; the current
+provisional contract supports host simulation only, as described above.
+
+While Pause holds an OFF selection, an amber warning stays visible even with the
+fold closed. Changing heating during Pause also opens a confirmation describing
+the duration and freezing risk. Home uses the same warning style for held heating
+or native parameter changes. Circulation retains its separate configured timer.
+
+The authenticated routes are `POST /api/garage/temporary` with `pauseUntilLocal`
+or offset-aware `pauseUntil` (null resumes), and `POST /api/garage/heating` with
+`mode: "normal"` or `mode: "off"`. Both return the full dashboard status.
+
 ## Control, recovery and evidence
 
 The rear/core state describes effective building memory; the coupled front

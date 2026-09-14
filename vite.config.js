@@ -24,11 +24,29 @@ export default defineConfig({
         return context.server ? html : html.replace('src="./theme.js"', `src="./${themeFile}"`);
       },
     },
+  }, {
+    name: 'same-origin-api-preview',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.startsWith('/api') || !req.headers.origin) return next();
+        try { if (new URL(req.headers.origin).host === req.headers.host) return next(); } catch { /* Reject malformed origins. */ }
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Cross-origin request rejected' }));
+      });
+    },
   }],
   server: {
     host: '0.0.0.0', // Allow LAN access
     port: 1212,
-    proxy: { '/api': 'http://127.0.0.1:1234' },
+    proxy: { '/api': { target: 'http://127.0.0.1:1234', changeOrigin: true,
+      configure(proxy) {
+        proxy.on('proxyReq', (upstream, req) => {
+          // The middleware above validates the browser origin before translating
+          // it alongside Host for the loopback development backend.
+          if (req.headers.origin) upstream.setHeader('origin', 'http://127.0.0.1:1234');
+        });
+      },
+    } },
     fs: {
       allow: (() => { // Redefine accessible folders due to HASSIO symlink to outside dir
         const allow = [
