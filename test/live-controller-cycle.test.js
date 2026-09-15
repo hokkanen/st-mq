@@ -57,7 +57,7 @@ test('a due base cycle remains intent until broker acknowledgement, then pause r
   assert.equal(r.engine.applied.phase,'reduction');assert.ok(r.engine.cycles.active());
   assert.deepEqual(r.commands,[['heatoff']]);
   r.engine.setOverride(15);await Promise.resolve();r.acknowledge();await r.settle();
-  assert.equal(r.engine.applied.phase,'recovery');assert.deepEqual(r.commands.at(-1),['heaton15']);
+  assert.equal(r.engine.applied.phase,'normal');assert.deepEqual(r.commands.at(-1),['heaton15']);
   const request=r.store.latestObservation('controller_phase');assert.equal(request.raw.expiresAt,r.now+1_800_000);assert.equal(request.raw.verified,false);
 });
 
@@ -71,16 +71,20 @@ test('native setting tests remain active for their bounded interval across contr
   assert.equal(native.values['0212'],47);r.engine.tick();await r.settle();assert.deepEqual(r.commands.at(-1),['heaton15']);
 });
 
-test('direct native settings remain chosen through controller ticks without a manual expiry', async t => {
+test('direct native settings outside Pause restore on the next controller update with a one-minute deadline', async t => {
   const r = setup(t, { mode: 'shadow' }), native = r.native();
+  r.engine.tick(); await r.settle();
   await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 20, durationMinutes: 2 }), /Choose an H66/);
   const changed = await r.engine.setH66Setting({ register: '0203', value: 20 });
   assert.equal(changed.h66.lastManual.confirmed, true);
   assert.equal(native.values['0203'], 20);
   assert.equal(r.engine.heatingTestBusy, false);
-  assert.equal(changed.h66.expiresAt, null);
-  r.advance(3 * 60_000); r.engine.tick(); await r.settle();
-  assert.equal(native.values['0203'], 20);
+  assert.equal(changed.h66.expiresAt, r.now + 60_000);
+  assert.equal(changed.h66.obligations['0203'].baseline, 19);
+  r.advance(1000); r.engine.tick(); await r.settle();
+  assert.equal(native.values['0203'], 19);
+  assert.equal(native.h66.status().expiresAt, null);
+  assert.deepEqual(native.h66.status().obligations, {});
   r.engine.dispatchPending = Promise.resolve();
   await assert.rejects(r.engine.setH66Setting({ register: '0203', value: 21 }), /current heating operation/);
   r.engine.dispatchPending = null;

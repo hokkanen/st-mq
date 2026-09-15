@@ -15,8 +15,8 @@ function memoryStore(seed = {}) {
     setState: (key, value) => states.set(key, structuredClone(value)),
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
-function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null } = {}) {
-  let now = initialTime;
+function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime } = {}) {
+  let now = startAt;
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
   let controller;
@@ -29,8 +29,7 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
       const index = topic.split('/').at(-1);
       sent.push({ index, payload, options });
       const saved = store.getState(`h66:control:${deviceId}`);
-      assert.ok(saved.obligations[index] || saved.lastManual?.status === 'pending' && saved.lastManual.register === index,
-        'restoration obligation or explicit permanent request is durable before publication');
+      assert.ok(saved.obligations[index], 'restoration obligation is durable before publication');
       if (behavior && await behavior({ index, payload, sent, feed, native }) === 'silent') return;
       native[index] = Number(payload);
       queueMicrotask(() => feed(index));
@@ -53,24 +52,48 @@ test('H66 transport settings can tighten but cannot extend the shared five-minut
   }
 });
 
-test('manual native settings become the new normal without expiry or restart restoration', async t => {
+test('manual native settings retain the original baseline and restore within one minute or on restart', async t => {
   const r = rig(); t.after(() => r.controller.close());
   const result = await r.controller.setSetting({ register: '0203', value: 21 });
   assert.equal(result.confirmed, true); assert.equal(result.sent, true);
   assert.equal(result.previousValue, 20); assert.equal(result.readback, 21);
+  assert.equal(r.controller.status().obligations['0203'].baseline, 20);
+  assert.equal(r.controller.status().expiresAt, initialTime + 60_000);
+  r.setNow(initialTime + 30_000);
+  await r.controller.setSetting({ register: '0203', value: 22 });
+  assert.equal(r.controller.status().obligations['0203'].baseline, 20);
+  assert.equal(r.controller.status().expiresAt, initialTime + 60_000, 'Repeated edits do not extend the temporary deadline');
+  r.setNow(initialTime + 60_000); await r.controller.reconcile();
+  assert.equal(r.native['0203'], 20);
   assert.deepEqual(r.controller.status().obligations, {});
   assert.equal(r.controller.status().expiresAt, null);
-  r.setNow(initialTime + 24 * 3_600_000); await r.controller.reconcile();
-  assert.equal(r.native['0203'], 21); assert.equal(r.sent.length, 1);
+  await r.controller.setSetting({ register: '0203', value: 21 });
   await r.controller.close();
-  const restarted = rig({ store: r.store, values: r.native });
+  const restarted = rig({ store: r.store, values: r.native, startAt: r.now });
   t.after(() => restarted.controller.close());
   await nextTurn(); await restarted.controller.reconcile();
-  assert.equal(restarted.sent.length, 0);
+  assert.deepEqual(restarted.sent.map(({ payload }) => payload), ['20']);
   await restarted.controller.setPhase({ phase: 'preheat', roomBoostC: 1 });
-  assert.equal(restarted.native['0203'], 22);
+  assert.equal(restarted.native['0203'], 21);
   await restarted.controller.restore();
-  assert.equal(restarted.native['0203'], 21, 'Automatic cycles restore to the newly chosen native setting');
+  assert.equal(restarted.native['0203'], 20, 'Automatic cycles keep the original native setting');
+});
+
+test('paused manual native settings remain selected until the pause deadline and restore their original baseline', async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  const pause = { pauseId: 'fixture-pause', expiresAt: initialTime + 3_600_000 };
+  await r.controller.setSetting({ register: '0203', value: 21, ...pause });
+  r.setNow(initialTime + 60_000); await r.controller.reconcile();
+  assert.equal(r.native['0203'], 21);
+  assert.equal(r.sent.length, 1);
+  assert.equal(r.controller.status().phase, 'manual-pause');
+  await r.controller.setSetting({ register: '0203', value: 22, ...pause });
+  assert.equal(r.controller.status().obligations['0203'].baseline, 20);
+  r.setNow(pause.expiresAt);
+  r.feed('0203'); await r.controller.reconcile();
+  assert.equal(r.native['0203'], 20);
+  assert.deepEqual(r.controller.status().obligations, {});
+  assert.equal(r.controller.status().expiresAt, null);
 });
 
 test('manual native changes respect controller ownership and cannot make a stale value look confirmed', async t => {
@@ -89,18 +112,23 @@ test('manual native changes respect controller ownership and cannot make a stale
     await assert.rejects(r.controller.setSetting({ register, value }), { code: 'H66_SETTINGS_INVALID' });
 });
 
-test('an unconfirmed manual native change is visible but is neither reversed nor replayed', async t => {
-  const r = rig({ behavior: () => 'silent' }); t.after(() => r.controller.close());
+test('an unconfirmed manual native change keeps its restoration obligation and restores on reconnect without replay', async t => {
+  let silent = true;
+  const r = rig({ behavior: () => silent ? 'silent' : undefined }); t.after(() => r.controller.close());
   await assert.rejects(r.controller.setSetting({ register: '0203', value: 21 }), { code: 'H66_READBACK_TIMEOUT' });
   assert.equal(r.controller.status().lastManual.confirmed, false);
   assert.equal(r.controller.status().lastManual.status, 'unconfirmed');
   assert.equal(r.controller.status().restorationPending, false);
-  assert.deepEqual(r.controller.status().obligations, {});
+  assert.equal(r.controller.status().obligations['0203'].baseline, 20);
+  assert.equal(r.controller.status().obligations['0203'].confirmed, false);
   await r.controller.reconcile();
+  assert.equal(r.sent.length, 1, 'An uncertain write is neither replayed nor restored before its deadline');
   r.controller.setConnected(false); r.controller.setConnected(true);
-  r.feed('0203', 21); await nextTurn();
-  assert.equal(r.sent.length, 1);
-  assert.equal(r.controller.status().readings['0203'].value, 21);
+  silent = false;
+  r.native['0203'] = 21; r.feed('0203'); await nextTurn();
+  assert.deepEqual(r.sent.map(({ payload }) => payload), ['21', '20']);
+  assert.equal(r.controller.status().readings['0203'].value, 20);
+  assert.deepEqual(r.controller.status().obligations, {});
 });
 
 test('preheat and reduction restore exact original native settings, never write ROOM10', async t => {

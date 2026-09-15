@@ -35,15 +35,12 @@ for the algorithm, native-setting restoration and equipment testing limits.
    supplies Upstairs, channel 2 Bedroom and channel 3 Downstairs. See
    [temperature configuration](docs/recording.md#local-mqtt-temperature-sensors-and-interface)
    for the topic fields and payload formats.
-7. Add `controller.h66_device` when H66 arrives. Both live inputs then subscribe
-   to C60 telemetry and request snapshots; active mode additionally uses the four
-   documented settings. Native baselines are read before each cycle. Optional
-   `controller.h66_verification_file` overrides documented engineering-unit scaling.
-   A missing gateway still permits conservative tariff reduction, without ROOM
-   preheat or claimed compressor-only protection. **Home & heating** summarizes
-   current native settings; its **Equipment → Husdata H66** fold lists
-   series and current readbacks. **House model → Explore learning** contains
-   model evidence.
+7. Follow [H66 MQTT setup](docs/h66-mqtt.md) to connect the gateway and set
+   `controller.h66_device` to its exact MQTT prefix. Verify C60 telemetry, native
+   settings and restoration before enabling automatic H66 control.
+   **Home & heating → Home heating** summarizes current settings; **Ground-source
+   heat pump** contains parameter controls and all readbacks. **House model →
+   Explore learning** contains model evidence.
 
    Existing coordinates and market country enable FMI, Open-Meteo and Elering
    without new keys. ENTSO-E is primary for prices and Elering is the backup.

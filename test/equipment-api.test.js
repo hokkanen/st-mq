@@ -63,7 +63,8 @@ async function serverFixture(t, serverOptions = {}) {
     const response = await fetch(`${base}${path}`, { method: 'POST', headers, body: JSON.stringify(value), ...options });
     return { status: response.status, body: await response.json(), headers: response.headers };
   };
-  return { engine, store, calls, checks, base, headers, post, confirm(value) { confirmation = value; } };
+  return { engine, store, calls, checks, base, headers, post, confirm(value) { confirmation = value; },
+    advance(ms) { now += ms; } };
 }
 
 test('all equipment HTTP actions require authenticated same-origin JSON before dispatch', async t => {
@@ -134,7 +135,7 @@ test('manual switch HTTP controls change and confirm state without scheduling a 
   assert.equal(f.engine.status().equipmentControls.lastResult.sent, true);
 });
 
-test('manual H66 HTTP changes validate native settings and report device readback without expiry', async t => {
+test('manual H66 HTTP changes validate native settings, confirm readback and restore after one minute', async t => {
   const f = await serverFixture(t), sent = [], deviceId = 'synthetic-h66';
   const decoder = createH66Decoder({ deviceId });
   let h66;
@@ -147,6 +148,7 @@ test('manual H66 HTTP changes validate native settings and report device readbac
   h66.setConnected(true);
   for (const [register, value] of Object.entries({ '0203': 20, '0212': 44, '0208': 60, '2201': 1 })) feed(register, value);
   f.engine.setH66(h66);
+  f.engine.tick(); await f.engine.dispatchPending;
   for (const input of [null, [], {}, { register: '0203', value: 40 }, { register: 'invalid', value: 20 },
     { register: '0203', value: 21, durationMinutes: 2 }])
     assert.equal((await f.post('/api/equipment/h66', input)).status, 400);
@@ -155,9 +157,15 @@ test('manual H66 HTTP changes validate native settings and report device readbac
   assert.equal(changed.status, 200);
   assert.equal(changed.body.h66.lastManual.confirmed, true);
   assert.equal(changed.body.h66.readings['0203'].value, 21);
-  assert.equal(changed.body.h66.expiresAt, null);
-  assert.deepEqual(changed.body.h66.obligations, {});
+  assert.equal(changed.body.h66.expiresAt, INITIAL + 60_000);
+  assert.equal(changed.body.h66.obligations['0203'].baseline, 20);
   assert.equal(sent.length, 1);
+  f.advance(60_000); await h66.reconcile();
+  const restored = await (await fetch(`${f.base}/api/status`, { headers: f.headers })).json();
+  assert.equal(restored.h66.readings['0203'].value, 20);
+  assert.equal(restored.h66.expiresAt, null);
+  assert.deepEqual(restored.h66.obligations, {});
+  assert.deepEqual(sent.map(({ payload }) => payload), ['21', '20']);
 });
 
 test('an unconfirmed HTTP switch command leaves a visible durable restoration obligation', async t => {

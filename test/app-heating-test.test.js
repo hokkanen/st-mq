@@ -15,7 +15,7 @@ function setup(t, { input = 'providers', commandTransport, mode = 'shadow' } = {
   return { engine, store, config };
 }
 
-test('manual heating tests use the normal executor without replacing decisions, occupancy or learned state', async t => {
+test('paused manual heating selections use the executor and preserve the automatic schedule, occupancy and learned parameters', async t => {
   const commands = [], switches = [];
   const commandTransport = { publish: async batch => { commands.push(batch); return { status: 'mqtt', sent: true, actual: null }; },
     publishDhwr: async on => { switches.push(on); return { status: 'mqtt', sent: true, actual: null }; } };
@@ -23,11 +23,19 @@ test('manual heating tests use the normal executor without replacing decisions, 
   engine.setTemporary({ awayUntilLocal: '2026-09-09T12:00', pauseUntilLocal: '2026-09-08T12:00' });
   const before = engine.status();
   const checkpoint = store.getState('controller:providers:shadow');
+  const parameters = structuredClone(engine.checkpoint.model.parameters);
   const execute = engine.executor.execute.bind(engine.executor), calls = [];
   engine.executor.execute = (decision, options) => { calls.push({ decision, options }); return execute(decision, options); };
   for (const command of ['heatoff', 'heaton15', 'heaton60']) {
     const result = await engine.testHeating({ command });
-    assert.deepEqual(result, { command, status: 'mqtt', sent: true, actual: null, at: engine.clock() });
+    assert.equal(result.command, command); assert.equal(result.status, 'mqtt');
+    assert.equal(result.sent, true); assert.equal(result.actual, null); assert.equal(result.at, engine.clock());
+    if (command !== 'heaton60') {
+      assert.equal(result.phase, command === 'heatoff' ? 'reduction' : 'normal');
+      assert.equal(result.physicalStateVerified, false);
+      assert.equal(result.expiresAt, before.override.expiresAt);
+      assert.equal(result.holdUntil, before.override.expiresAt);
+    }
     assert.deepEqual(calls.at(-1).decision.commands, [command]);
     assert.equal(calls.at(-1).options.manualTest, true);
   }
@@ -35,15 +43,23 @@ test('manual heating tests use the normal executor without replacing decisions, 
   assert.deepEqual(switches, [true]);
   const after = engine.status();
   assert.equal(after.liveWrites, false, 'Automatic physical control remains disabled');
-  assert.equal(after.observations.actual.mode, 'unknown');
-  for (const field of ['settings', 'override', 'decision', 'execution']) assert.deepEqual(after[field], before[field]);
+  assert.equal(after.observations.actual.mode, 'normal');
+  assert.equal(after.observations.actual.verified, false);
+  assert.equal(after.observations.actual.source, 'mqtt-request');
+  for (const field of ['settings', 'override', 'execution']) assert.deepEqual(after[field], before[field]);
+  const { manualHold, ...automaticDecision } = after.decision;
+  assert.deepEqual(automaticDecision, before.decision);
+  assert.equal(manualHold.until, before.override.expiresAt);
+  assert.deepEqual(engine.checkpoint.model.parameters, parameters);
   assert.deepEqual(store.getState('controller:providers:shadow'), checkpoint);
   assert.equal(store.events().filter(event => event.type === 'heating-test-sent').length, 3);
   assert.equal(store.events().filter(event => event.type === 'decision').length, 1);
   const restarted = new Engine({ store, config, commandTransport, clock: engine.clock });
   t.after(() => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; });
   assert.equal(restarted.status().heatingTests.lastResult.command, 'heaton60');
+  await restarted.dispatchPending;
   assert.equal(commands.length, 2, 'Startup and normal ticks do not replay manual commands');
+  assert.deepEqual(switches, [true, false], 'Restart restores the outstanding circulation run');
 });
 
 test('manual MQTT tests require live input, exact commands and a configured transport', async t => {
@@ -60,7 +76,7 @@ test('manual MQTT tests require live input, exact commands and a configured tran
   const { engine, store } = setup(t, { commandTransport });
   for (const body of [null, [], {}, { command: 'unknown' }, { command: ['heatoff'] },
     { command: 'heatoff', topic: 'arbitrary/device' }, { command: 'heatoff', retain: true }]) {
-    await assert.rejects(engine.testHeating(body), /Choose heatoff/);
+    await assert.rejects(engine.testHeating(body), /Choose Normal heating, Max preheating, Reduced heating or hot-water circulation/);
   }
   assert.equal(publishes, 0);
   assert.equal(store.events().filter(event => event.type.startsWith('heating-test')).length, 0);
@@ -70,6 +86,7 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   let rejectPublish;
   const commandTransport = { publish: () => new Promise((resolve, reject) => { rejectPublish = reject; }) };
   const { engine, store } = setup(t, { commandTransport });
+  engine.tick(); await engine.dispatchPending;
   const pending = engine.testHeating({ command: 'heatoff' });
   await assert.rejects(engine.testHeating({ command: 'heaton15' }), /already in progress/);
   rejectPublish(new Error('synthetic-private-broker-password'));
@@ -79,14 +96,21 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   assert.equal(result.sent, false);
   assert.equal(result.actual, null);
   assert.equal(JSON.stringify(store.events()).includes('synthetic-private-broker-password'), false);
+  assert.equal(engine.executor.status().restorationPending, true);
+  commandTransport.publish = async () => ({ status: 'mqtt', sent: true, actual: null });
+  await engine.executor.restore();
   commandTransport.publish = async () => { throw Object.assign(new Error('synthetic-private-broker-password'), { code: 'MQTT_TIMEOUT' }); };
   await assert.rejects(engine.testHeating({ command: 'heaton15' }), /acknowledgement timed out/);
   assert.equal(JSON.stringify(store.events()).includes('synthetic-private-broker-password'), false);
+  commandTransport.publish = async () => ({ status: 'mqtt', sent: true, actual: null });
+  await engine.executor.restore();
   commandTransport.publishDhwr = async () => { throw Object.assign(new Error('synthetic-private-broker-address'), { code: 'MQTT_NETWORK_UNREACHABLE' }); };
   await assert.rejects(engine.testHeating({ command: 'heaton60' }), /unreachable from this server.*No command was sent/);
   assert.match(engine.status().heatingTests.lastResult.error, /unreachable from this server/);
   assert.equal(JSON.stringify(store.events()).includes('synthetic-private-broker-address'), false);
-  commandTransport.publish = async () => ({ status: 'mqtt', sent: true, actual: null });
+  commandTransport.publishDhwr = async () => ({ status: 'mqtt', sent: true, actual: null });
+  await engine.executor.restore();
+  assert.equal(engine.executor.status().restorationPending, false);
   assert.equal((await engine.testHeating({ command: 'heaton15' })).sent, true);
 });
 
