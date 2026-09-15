@@ -1,3 +1,4 @@
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -22,6 +23,7 @@ function setup(t, { live = false, approved = true } = {}) {
     canControl: () => owner, onState: value => runtime.adapterChanged(value),
     ...(live ? {} : { simulationTransport: createGarageSimulationTransport(async command => { commands.push(command); }) }) });
   runtime.setAdapter(adapter);
+  runtime.exposure = knownGarageReserve(runtime.settings, { at: BASE });
   function temperatures(rear = 9, front = 8) {
     for (const [signal, value] of [['garage_temperature', rear], ['garage_temperature_2', front], ['outdoor_temperature', 0]])
       engine.latest[signal] = { value, sourceTime: now, receivedAt: now, quality: [], source: 'fixture-temperature', device: signal };
@@ -59,10 +61,10 @@ test('garage pause selects Normal; manual Off uses bounded renewed leases withou
   const first = f.commands.at(-1);
   assert.equal(first.action, 'start');
   assert.equal(first.endpointAt, BASE + 30 * MINUTE);
-  assert.equal(first.requestedExpiryAt, BASE + 10 * MINUTE);
+  assert.equal(first.requestedExpiryAt, BASE + 3 * MINUTE);
   assert.equal(f.runtime.episode, null, 'manual selection must not create an economic savings assessment');
   for (let minute = 1; minute <= 5; minute++) {
-    f.at(BASE + minute * MINUTE); f.temperatures(); f.state(first); await f.tick();
+    f.at(BASE + minute * MINUTE); f.temperatures(); f.state(f.commands.at(-1)); await f.tick();
   }
   const renewal = f.commands.at(-1);
   assert.equal(renewal.action, 'renew');
@@ -126,7 +128,7 @@ test('freeze protection overrides manual Off during a price-control pause', asyn
   await f.runtime.setTemporary({ pauseUntil: new Date(BASE + 30 * MINUTE).toISOString() });
   await f.runtime.setHeating({ mode: 'off' });
   f.at(BASE + 1000); f.state(f.commands[0]); await flush();
-  f.at(BASE + MINUTE); f.temperatures(-1, 8); f.state(f.commands[0]); f.runtime.safetyTick(); await flush();
+  f.at(BASE + MINUTE); f.temperatures(-10, 8); f.state(f.commands[0]); f.runtime.safetyTick(); await flush();
   assert.equal(f.commands.at(-1).action, 'release');
   assert.equal(f.runtime.status().temporary.pauseActive, true);
   assert.equal(f.runtime.status().heatingControls.manualChanged, false);

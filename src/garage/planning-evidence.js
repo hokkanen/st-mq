@@ -23,19 +23,18 @@ export function garagePlanningEvidence(model, summary, { now, observation, stepM
   const latestEnd = latest?.endedAt ?? latest?.endAt;
   const recovered = !model.validation?.active || active;
   const recent = finite(latestEnd) && now >= latestEnd && now - latestEnd < 6 * HOUR;
-  const disturbance = observation?.doorFront === true || observation?.doorRear === true
-    || [1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true);
-  const doorBlocked = observation?.doorEvidenceRequired === true && observation.doorFront !== false;
+  const doorDisturbance = observation?.doorFront === true || observation?.doorRear === true
+    || observation?.doorEvidenceRequired === true && observation.doorFront !== false;
+  const evDisturbance = [1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true);
   const trialEligible = model.normalReference?.initialized === true
     && model.rear.samples >= 24 && model.front.samples >= 12
     && observation?.baselineVerified === true && (active || observation?.available === true)
-    && !doorBlocked && !disturbance && recovered && (!recent || active);
-  const maxPauseHours = doorBlocked ? 0 : Math.max(economicHours, trialEligible ? trialHours : 0);
+    && !evDisturbance && (!doorDisturbance || active) && recovered && (!recent || active);
+  const maxPauseHours = Math.max(economicHours, trialEligible ? trialHours : 0);
   return { thermalReady: summary.thermalReady === true, electricalReady: summary.electricalReady === true,
     economicHours, trialEligible, trialHours, maxPauseHours, trialCoolingLimitC: Math.min(3, 1 + .25 * economicHours),
     completedEpisodes: validation.completedEpisodes ?? episodes.length,
-    reason: doorBlocked ? observation.doorFront === true ? 'garage-door-open' : 'garage-door-unavailable'
-      : maxPauseHours > 0 ? economicHours >= maxPauseHours ? 'validated-episode-duration' : 'bounded-learning-trial'
+    reason: maxPauseHours > 0 ? economicHours >= maxPauseHours ? 'validated-episode-duration' : 'bounded-learning-trial'
       : !recovered ? 'learning-episode-recovering' : recent ? 'learning-trial-recovery-interval'
         : 'insufficient-validated-thermal-evidence' };
 }

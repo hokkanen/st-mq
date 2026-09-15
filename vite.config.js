@@ -52,6 +52,7 @@ export default defineConfig({
         const allow = [
           resolve(__dirname, 'chart'), // Root path (needed because this list overwrites defaults)
           resolve(__dirname, 'src/domain'), // Shared, credential-free history catalogue.
+          resolve(__dirname, 'src/garage/settings.js'), // Public protection policy and fixed safety factor.
         ];
         const sharePath = resolve(__dirname, 'share');
         if (fs.existsSync(sharePath) && fs.lstatSync(sharePath).isSymbolicLink()) {

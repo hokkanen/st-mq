@@ -223,7 +223,7 @@
                 <div class="equipment-value"><span>Caravan power</span><strong id="garage-caravan-power">Unavailable</strong></div>
               </div>
               <div class="equipment-notes garage-charging-notes">
-                <p><span>Cold budget</span><span class="garage-budget-values"><span id="garage-budget-rear">Rear —</span><span aria-hidden="true">·</span><span id="garage-budget-front">Front —</span><span>remaining</span></span></p>
+                <p><span>Cold allowance</span><span class="garage-budget-values"><span id="garage-budget-rear">Rear —</span><span aria-hidden="true">·</span><span id="garage-budget-front">Front —</span><span>remaining</span></span></p>
                 <p><span>Charger 1</span><span id="charger1-summary" class="charger-summary">Control OFF</span></p>
                 <p><span>Charger 2</span><span id="charger2-summary" class="charger-summary">Forecast unavailable</span></p>
               </div>
@@ -247,20 +247,20 @@
                   </section>
                   <section class="garage-settings-group" aria-labelledby="garage-protection-title">
                     <div class="garage-settings-heading"><h5 id="garage-protection-title">Freezing protection</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
-                    <p class="garage-settings-help">Rear and front are assessed independently. These limits use air temperatures, not measured pipe temperatures.</p>
+                    <p class="garage-settings-help">Protects pipes and stored liquids using local temperature history, with a water-filled copper pipe as the reference. Rear and front are assessed independently.</p>
                     <dl id="garage-protection-settings" class="garage-setting-list"></dl>
-                    <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Budget recovery<small>Sustained warmth</small></summary>
-                      <p class="muted">Each location earns its allowance back after sustained warmth. A brief warm reading or warmth at the other sensor does not reset it.</p>
+                    <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Allowance &amp; recovery<small>Continuous</small></summary>
+                      <p class="muted">The allowance follows stored warmth through cooling and recovery. Each location keeps its own history.</p>
                       <dl id="garage-recovery-settings" class="garage-setting-list"></dl>
                     </details>
                   </section>
                   <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
-                    <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold budget remaining</h5><span class="garage-live-label">Live assessment</span></div>
+                    <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold allowance remaining</h5><span class="garage-live-label">Live estimate</span></div>
                     <div class="garage-budget-grid">
-                      <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><meter id="garage-settings-budget-rear-meter" min="0" max="100" value="0" aria-label="Rear cold budget remaining" hidden></meter><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
-                      <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><meter id="garage-settings-budget-front-meter" min="0" max="100" value="0" aria-label="Front cold budget remaining" hidden></meter><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
+                      <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
+                      <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
                     </div>
-                    <p class="garage-settings-help">Remaining allowance, assessed from temperature history. Heating may resume before 0%; open a percentage for details.</p>
+                    <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
                   </section>
                 </details>
               </section>

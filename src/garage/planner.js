@@ -1,5 +1,5 @@
 import { garageSettings, garageWarmthPrice, GARAGE_PREFERENCE_VERSION } from './settings.js';
-import { createGarageExposure, updateGarageExposure, assessGarageProtection } from './protection.js';
+import { assessGarageProtection, projectGarageExposure, projectCurrentGarageExposure } from './protection.js';
 import { forecastGarage, predictGarageStep, knownGarageEvAt, normalGarageTemperature, garageModelSummary } from './model.js';
 import { garagePlanningEvidence, garagePlanningMargins, garagePlanningEnergyUncertainty } from './planning-evidence.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
@@ -61,15 +61,18 @@ function paretoBeam(nodes) {
 /** Bounded, joint whole-outlook search of native availability schedules. Always
  * models preparation, OFF, recovery and residual debt. No temperature boost. */
 export function planGarage({ now, model, exposure, observation, settings = {}, prices = [], forecast = [],
-  knownEvPlans = [], activeEpisode = null, referenceInitialState = null, restorationDelayMs = 10 * 60_000 } = {}) {
+  knownEvPlans = [], activeEpisode = null, referenceInitialState = null, restorationDelayMs = null } = {}) {
   const config = garageSettings(settings);
   if (!finite(now)) throw new Error('Garage planner requires numeric UTC time');
-  const protection = assessGarageProtection(exposure, { now, observation, settings: config, restorationDelayMs });
+  const delayKnown = finite(restorationDelayMs) && restorationDelayMs >= 0;
+  const protection = assessGarageProtection(exposure, { now, observation, settings: config, restorationDelayMs: delayKnown ? restorationDelayMs : 0 });
   const base = { at: now, state: 'normal', reason: 'normal-heating', nextAction: 'available', pauseUntil: null,
     steps: [], timingBenefitEur: 0, modelBenefitEur: 0, heatDebt: null, uncertainty: null, protection,
     preferenceVersion: GARAGE_PREFERENCE_VERSION, algorithm: model?.algorithm, provisional: true };
   const stop = reason => ({ ...base, reason });
   if (!config.enabled) return stop('automatic-control-disabled');
+  if (!delayKnown) return stop('heating-response-bound-unavailable');
+  if (restorationDelayMs > config.maxHorizonHours * HOUR) return stop('heating-response-exceeds-planning-horizon');
   if (config.aggressiveness === 0) return stop('normal-heating-preference');
   if (!protection.safeToPause) return stop(protection.reasons[0] ?? 'protection-unavailable');
   const summary = garageModelSummary(model);
@@ -95,7 +98,7 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
   const averagePrice = reference.costEur / reference.electricityKwh; // EUR/kWh
   // Unknown continuation prices never become an assumed cheap recovery window.
   const terminalPrice = Math.max(.01, maxPrice / 100, ...steps.slice(-8).map(s => s.priceCtPerKwh / 100));
-  const initialExposure = updateGarageExposure(exposure ?? createGarageExposure(config), { ...observation, at: now }, config);
+  const initialExposure = projectCurrentGarageExposure(exposure, observation, now, config);
   const active = activeEpisode && !['completed', 'released', 'cancelled'].includes(activeEpisode.state);
   const existingEnd = active ? activeEpisode.authorizedEndAt ?? activeEpisode.pauseUntil ?? activeEpisode.endpointAt : null;
   const initialAvailable = active ? false : observation.available !== false;
@@ -108,7 +111,6 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
       cycleOffHours: initialAvailable ? 0 : Math.max(0, (now - pauseStartedAt) / HOUR), cycleRecoveryHours: 0,
       cycleRearC: initial.rearC, cycleFrontC: initial.frontC, cycleOutdoorC: observation.outdoorC,
       rearDropC: 0, frontDropC: 0, path: [] }];
-  const engineering = { ...config, maxSensorAgeMs: 4 * HOUR };
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i], ref = reference.points[i], hours = (step.end - step.start) / HOUR, nodes = [];
     for (const node of beam) {
@@ -152,19 +154,39 @@ export function planGarage({ now, model, exposure, observation, settings = {}, p
         }
         const margins = garagePlanningMargins(summary, (step.end - now) / HOUR);
         const rearMargin = margins.rearC, frontMargin = margins.frontC;
-        const projected = updateGarageExposure(node.exposure, { at: step.end,
-          rearC: robust.rearC - rearMargin, frontC: robust.frontC - frontMargin }, engineering);
-        const nearLimit = ['rear', 'front'].some(location => {
-          const local = projected.locations[location], rate = Math.max(0, config.protection.floorC - local.lastC);
-          return local.lastC <= config.protection.hardMinimumC || local.degreeMinutes
-            + rate * restorationDelayMs / 60_000 >= config.protection.budgetDegreeMinutes || local.uncertain;
-        });
-        if (nearLimit && !available) continue;
-        if (trial && !available && (robust.rearC - rearMargin < Math.max(config.protection.floorC + 1, initial.rearC - evidence.trialCoolingLimitC)
-          || robust.frontC - frontMargin < Math.max(config.protection.floorC + 1, initial.frontC - evidence.trialCoolingLimitC))) continue;
-        // Returning native availability does not instantly restore local allowance.
-        if (!available && switching && ['rear', 'front'].some(location =>
-          node.exposure.locations[location].degreeMinutes > config.protection.budgetDegreeMinutes * .8)) continue;
+        const point = { at: step.end, rearAt: step.end, frontAt: step.end,
+          rearC: robust.rearC - rearMargin, frontC: robust.frontC - frontMargin };
+        const path = projectGarageExposure(node.exposure, point, config);
+        const projected = path.exposure;
+        // Check the entire predicted interval: later warmth cannot erase an
+        // earlier exhausted reserve. Forecast steps are not sensor reports.
+        if (!available && (path.interventionAt !== null
+          || ['rear', 'front'].some(location => projected.locations[location].uncertain))) continue;
+        if (!available && restorationDelayMs > 0) {
+          // Air may keep cooling until useful heat arrives. Continue the same
+          // OFF model, without EV heat, at the existing planning resolution;
+          // holding the last air temperature would overstate the reserve.
+          let responseState = robust.state, responseExposure = projected, responsePoint = point;
+          const until = step.end + restorationDelayMs;
+          let exhausted = false;
+          while (responsePoint.at < until) {
+            const at = Math.min(until, responsePoint.at + config.stepMinutes * 60_000);
+            const continuation = predictGarageStep(model, responseState,
+              { outdoorC: step.outdoorC, available: false, ev1Kw: 0, ev2Kw: 0 }, (at - responsePoint.at) / HOUR);
+            const responseMargins = garagePlanningMargins(summary, (at - now) / HOUR);
+            const nextPoint = { at,
+              rearC: Math.min(responsePoint.rearC, continuation.rearC - responseMargins.rearC),
+              frontC: Math.min(responsePoint.frontC, continuation.frontC - responseMargins.frontC) };
+            const margin = projectGarageExposure(responseExposure, nextPoint, config);
+            if (margin.interventionAt !== null) { exhausted = true; break; }
+            responseState = continuation.state; responseExposure = margin.exposure; responsePoint = nextPoint;
+          }
+          if (exhausted) continue;
+        }
+        // Learning trials retain their supported cooling excursion; freeze
+        // protection no longer supplies a second absolute air-temperature floor.
+        if (trial && !available && (robust.rearC - rearMargin < initial.rearC - evidence.trialCoolingLimitC
+          || robust.frontC - frontMargin < initial.frontC - evidence.trialCoolingLimitC)) continue;
         const electricityKwh = node.electricityKwh + next.electricityKwh;
         const costEur = node.costEur + next.electricityKwh * step.priceCtPerKwh / 100;
         const cooling = node.cooling + hours * (Math.max(0, ref.coreC - next.coreC)

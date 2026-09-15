@@ -38,9 +38,9 @@ test('Garage and Total presentation keeps provisional missing coverage and count
 
 test('Garage monitoring shows independent budgets and actual adapter readbacks, health and unresolved recovery', () => {
   const omittedCredential = randomUUID();
-  const status = { settings: { baselineC: 10, aggressiveness: 50, frontRequired: true, protection: { approved: true, budgetDegreeMinutes: 120 } },
+  const status = { settings: { baselineC: 10, aggressiveness: 50, frontRequired: true, protection: { approved: true, marginC: 1 } },
     observations: { rear: { value: 5.7 }, front: { value: 6.2, stale: true } },
-    protection: { limitingLocation: 'front', locations: { rear: { remainingDegreeMinutes: 80 }, front: { remainingDegreeMinutes: 12, uncertain: true } } },
+    protection: { limitingLocation: 'front', locations: { rear: { remainingKjPerM: 6.3, estimatedC: 5.5 }, front: { remainingKjPerM: 2.1, estimatedC: 2.5, uncertain: true } } },
     adapter: { contractVersion: 'stmq-garage-fixture/v1', contractStatus: 'provisional-fixture-only', liveControlSupported: false,
       native: { power: 'on' }, health: { deviceOnline: true, driverProgressing: false, pumpCommunicating: false }, restorePending: true,
       telemetry: { garage_native_indoor_temperature: { value: 0, supported: true, usable: true },
@@ -50,7 +50,8 @@ test('Garage monitoring shows independent budgets and actual adapter readbacks, 
     learning: { trainedIntervals: 0, heldOut: { rear: { n: 0, mae: null, bias: null } },
       coefficients: { rear: [{ name: 'lossPerHour', value: 0.022, unit: '1/h', basis: 'prior', evidence: 0 }] } } };
   const display = garageDisplay(status, now), rows = Object.fromEntries(display.rows);
-  assert.match(rows['Rear exposure remaining'], /80 \/ 120/); assert.match(rows['Front exposure remaining'], /12 \/ 120.*uncertain/);
+  assert.equal(rows['Rear allowance remaining'], '6.3 kJ/m'); assert.match(rows['Front allowance remaining'], /2\.1 kJ\/m.*uncertain/);
+  assert.equal(rows['Rear reference estimate'], '5.5 °C');
   assert.equal(rows['Limiting protection location'], 'front'); assert.match(rows['Front air · near door'], /stale/);
   assert.equal(rows['Pump indoor temperature'], '0 °C · provisional'); assert.equal(rows['Pump outdoor temperature'], '-7 °C · stale');
   assert.equal(rows['Electrical power'], 'Unavailable'); assert.equal(rows['Device online'], 'Yes'); assert.equal(rows['Driver progressing'], 'No');
@@ -72,19 +73,23 @@ test('Garage equipment and learning are closed disclosures inside the existing i
 
 test('Garage settings keep configured values separate from descriptions and live exposure', () => {
   const settings = garageSettings({ aggressiveness: 0 });
-  const garage = { settings, protection: { locations: { rear: { degreeMinutes: 89 }, front: { degreeMinutes: 0 } } } };
+  const garage = { settings, protection: { locations: { rear: { remainingKjPerM: 0 }, front: { remainingKjPerM: 12 } } } };
   const before = structuredClone(garage), display = garageDisplay(garage);
   const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
   assert.deepEqual(groups.heating, { 'Normal Mitsubishi setting': '10 °C', 'Savings aggressiveness': '0 / 100' });
-  assert.deepEqual(groups.protection, { 'Cold exposure starts below': '2 °C', 'Restore heating by': '-1 °C', 'Cold allowance per location': '90 °C·min' });
-  assert.deepEqual(groups.recovery, { 'Recovery temperature': '4 °C', 'Continuous warm-up': '20 min', 'Allowance restored per minute': '1 °C·min' });
+  assert.deepEqual(groups.protection, { 'Protection margin': '1 °C', 'Reference pipe diameter': '21 mm', 'Assumed wall thickness': '1 mm', 'Heat transfer': '20 W/m²K', 'Safety factor': '2×' });
+  assert.deepEqual(groups.recovery, { 'Cold allowance': 'Calculated · kJ/m', 'Recovery': 'Continuous' });
   for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
-    assert(description.length > 30); assert(!value.includes(' · '));
+    assert(description.length > 30); assert(value.length < 30);
   }
   assert.deepEqual(garage, before);
   assert.deepEqual(garageDisplay({ settings, protection: {} }).settingGroups, display.settingGroups);
-  for (const rows of Object.values(garageDisplay().settingGroups))
-    assert(rows.every(([, value]) => value === 'Unavailable'));
+  const missing = garageDisplay().settingGroups;
+  assert(missing.heating.every(([, value]) => value === 'Unavailable'));
+  assert(missing.protection.filter(([label]) => label !== 'Safety factor').every(([, value]) => value === 'Unavailable'));
+  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  assert.match(html, /pipes and stored liquids.*water-filled copper pipe/);
+  assert(!html.includes('garage-settings-budget-rear-meter'));
 });
 
 
@@ -195,8 +200,7 @@ test('Garage learning distinguishes thermal duration, electrical qualification a
 });
 
 test('Garage absent learning evidence remains unknown and air measurements remain distinct from modeled states', () => {
-  const display = garageDisplay({ settings: { frontRequired: false, protection: {
-    recoveryAboveC: 4, recoveryDwellMinutes: 20, recoveryDegreeMinutesPerMinute: 1 } },
+  const display = garageDisplay({ settings: { frontRequired: false, protection: { marginC: 1 } },
     observations: { rear: { value: 5 }, front: { value: 4 } },
     learning: { normalReference: { rearC: 10 }, nativeActivity: { mean: .4 }, state: { coreC: 6 } } });
   const outcomes = Object.fromEntries(display.outcomeRows), inputs = Object.fromEntries(display.inputRows);
@@ -207,7 +211,7 @@ test('Garage absent learning evidence remains unknown and air measurements remai
   assert.match(outcomes['Normal activity baseline'], /0\.4 on a 0–1 scale.*Unknown activity provenance.*adjusts this baseline/);
   assert.match(inputs['Front air temperature · °C'], /Both locations need fresh readings for every automatic pause/);
   assert.match(inputs['Estimated building warmth · °C'], /^6 °C.*not measured pipe temperature or stored kWh/);
-  assert.match(inputs['Local exposure recovery'], /20 min continuously at or above 4 °C.*1 °C·min per warm minute/);
+  assert.match(inputs['Local allowance recovery'], /recovers continuously.*temperature.*rate.*independently/);
   assert.equal(Object.fromEntries(display.rows)['Rear air · near pipe'], '5 °C');
   assert.equal(Object.fromEntries(display.rows)['Front air · near door'], '4 °C');
 });
@@ -227,7 +231,7 @@ test('Garage learning rows separate model values, provenance, episode evidence a
   model.rear.fitted[3] = true; model.rear.evidence[3] = 6;
   model.state.differenceC = -1.25;
   const garage = { observations: { rear: { value: 0, stale: false }, front: { value: 1, stale: true } },
-    settings: { protection: { recoveryDwellMinutes: 20, recoveryAboveC: 4, recoveryDegreeMinutesPerMinute: 1 } },
+    settings: { protection: { marginC: 1 } },
     learning: garageModelSummary(model) };
   const before = structuredClone(garage), display = garageDisplay(garage);
   const inputs = Object.fromEntries(display.inputDetails.map(row => [row.key, row]));
@@ -242,9 +246,9 @@ test('Garage learning rows separate model values, provenance, episode evidence a
   assert.equal(inputs['front-rear-difference'].provenance, 'Calculated');
   assert.match(inputs['front-rear-difference'].detail, /last calculated.*carried between qualified front readings/);
   assert.equal(inputs['estimated-building-warmth'].provenance, 'Modeled');
-  assert.equal(inputs['local-exposure-recovery'].group, 'Protection context');
-  assert.equal(inputs['local-exposure-recovery'].value, '20 min at ≥ 4 °C');
-  assert.match(inputs['local-exposure-recovery'].detail, /configured separately from learned thermal coefficients/);
+  assert.equal(inputs['local-allowance-recovery'].group, 'Protection context');
+  assert.equal(inputs['local-allowance-recovery'].value, 'Continuous');
+  assert.match(inputs['local-allowance-recovery'].detail, /water-filled copper reference.*separate from learned building coefficients/);
   const coefficient = (group, title) => display.coefficientDetails.find(row => row.group === group && row.title === title);
   assert.equal(coefficient('Rear air', 'Heat loss').value, '0.022 1/h');
   assert.equal(coefficient('Rear air', 'Heat loss').provenance, 'Fitted');

@@ -1,6 +1,6 @@
 # Learned garage heating
 
-Garage heating has its own coupled thermal learner, two independent exposure
+Garage heating has its own coupled thermal learner, two independent heat-reserve
 histories, whole-outlook planner, frozen episode accounting and compact equipment
 and learning disclosures. Home heating, its indoor average, EV charging priorities
 and household electrical accounting retain their existing behavior.
@@ -19,8 +19,9 @@ configuration** workflow, on both standalone and Home Assistant add-on installs.
 The `garage` object in `config.json` documents defaults and the add-on schema.
 Its three everyday preferences are:
 
-- `protection`: owner approval and an exposure policy, independently applied at
-  rear and front. Defaults are unapproved examples, not a pipe-safety assessment.
+- `protection`: owner approval and a thermal-reserve policy, independently applied
+  at rear and front to protect pipes and stored liquids. A water-filled copper pipe
+  is the reference; defaults are unapproved engineering assumptions.
 - `aggressiveness`: 0–100. Zero ends owned economic pauses and keeps learning;
   higher values reduce the stable cost assigned to depth and duration of cooling.
 - `baselineC`: the existing Mitsubishi setting, initially 10°C. It supplies
@@ -43,6 +44,13 @@ legacy exact-topic options `mqtt.garage_temperature_topic` and
 are fresh; repeated timestamps, retained packets, missing reports and native pump
 temperatures cannot refresh protection evidence.
 
+**Freezing protection** shows the 1°C estimated-temperature margin, reference
+pipe dimensions (21 mm outside diameter and assumed 1 mm wall), nominal heat
+transfer (20 W/m²·K), and fixed safety factor (2). The calculated reserve follows
+recent local cooling and warming, with no fixed cold allowance, hard air cutoff,
+warm-up timer or constant repayment rate. Rear and front cannot borrow reserve
+from each other. See [protection parameters and assumptions](garage-protection-defaults.md).
+
 ## Everyday controls
 
 **Home & heating → Garage heating** follows the Home layout: heating controls,
@@ -62,7 +70,7 @@ deadline but restores an owned OFF request instead of resuming it.
 
 Manual OFF uses the same native lease, authority, recovery and freeze-protection
 checks as automatic control. It does not require an economic saving prediction;
-both protection temperatures and exposure margin are still required. Protection
+both protection temperatures and thermal reserve are still required. Protection
 or loss of fresh control evidence can restore heating before the chosen deadline.
 These controls require active mode and a supported adapter; the current
 provisional contract supports host simulation only, as described above.
@@ -96,7 +104,9 @@ Each pause has its own endpoint; renewals cannot extend it. The host retains one
 frozen model/reference and unpaid recovery debt across those pauses and refits.
 
 Before the first possible OFF request, both host accounting and adapter recovery
-obligations are persisted. Only a fresh planner tick may renew. A five-second
+obligations are persisted. Only a fresh planner tick may renew, at a one-minute
+cadence and no later than three minutes from its supporting temperature evidence.
+An earlier thermal deadline shortens the requested permission. A five-second
 safety check and acquisition failures can request restoration and stop permission;
 they cannot renew it. Restart reconciles ON and never revives saved OFF intent.
 Shutdown/configuration reload requests restoration through the original route;
@@ -118,7 +128,8 @@ actual electrical response is explicitly modeled. Price-boundary segments are
 weighted separately. Missing intervals invalidate completion savings rather than
 becoming zeros. Reporting timeouts and source corrections never forgive physical
 debt. Completion requires both local temperatures, slow estimated state and local
-exposure to recover; incomplete evidence can finish only without a savings claim.
+thermal reserve to recover; a positive freeze-protection reserve alone is not
+complete building recovery. Incomplete evidence can finish only without a savings claim.
 
 ## Recording, replay and UI
 
@@ -131,14 +142,15 @@ fixed age expiry. Source/bridge outages and invalid state make it unknown until
 a live snapshot and availability evidence restore it. The original source time
 remains distinct from confirmation; a recovered closed state cannot erase an
 opening or outage between learning samples. Configured open or unknown doors
-block economic pauses and clean learning evidence. The same ordered entry function drives live learning, rebuilding and
+exclude affected learning evidence but do not automatically revoke heating pauses.
+The same ordered entry function drives live learning, rebuilding and
 coefficient charts. Cache digests detect accidental corruption. File-backed
 reconstruction runs in a worker, catches up the current journal and checks the
 selected correction revision and epoch before atomic publication.
 
 Sensor additions/replacements and reversals retain original source events.
 Corrected replay projects measurement eligibility without editing telemetry or
-frozen forecasts. Garage exposure/recovery state remains separate from that
+frozen forecasts. Garage thermal-reserve/recovery state remains separate from that
 rebuild. Imported rear-only history and simulation retain separate input scopes;
 absent front, OFF and native electrical evidence remain unknown.
 

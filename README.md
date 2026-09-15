@@ -400,6 +400,13 @@ in both `providers` and `mqtt` input modes. Smoke channel 1 is Upstairs, channel
 is Bedroom and channel 3 is Downstairs. These three MQTT sensors are the indoor
 inputs; there is no H66 indoor sensor or fallback. Garage rear/front protection
 and learned scheduling are independent of Home; see [Garage heating](docs/garage.md).
+Freezing protection tracks separate local heat reserves for pipes and stored
+liquids, using a water-filled copper pipe as the reference. Garage settings show
+the temperature margin, reference dimensions, heat-transfer estimate and fixed
+safety factor. Cooling and recovery follow measured air temperature continuously;
+there is no fixed refill timer or automatic door-open veto. See
+[protection parameters](docs/garage-protection-defaults.md) for assumptions and
+reporting/restoration deadlines.
 The Pill integration remains provisional and read-only until its actual contract
 and commissioning are available. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.

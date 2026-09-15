@@ -4,7 +4,8 @@ import { Store } from '../src/storage/store.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { GARAGE_ALGORITHM_VERSION, createGarageModel } from '../src/garage/model.js';
 import { GARAGE_POLICY_VERSION, garageSettings } from '../src/garage/settings.js';
-import { createGarageExposure, updateGarageExposure, assessGarageProtection } from '../src/garage/protection.js';
+import { createGarageExposure, updateGarageExposure, assessGarageProtection, reserveProperties, validGarageExposure } from '../src/garage/protection.js';
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import { startGarageAssessment } from '../src/garage/episodes.js';
 import { garageDigest, garageInput, replayGarageJournal } from '../src/garage/learning.js';
 import { Engine } from '../src/app/engine.js';
@@ -27,9 +28,7 @@ function setup(t, { mismatchedSnapshot = false, mismatchedAccounting = false, ex
   const archivedRows = structuredClone(store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: LEGACY }));
   store.setState('garage:configuration:mqtt', oldSettings);
   store.setState('garage:checkpoint:mqtt', { algorithmVersion: LEGACY, model, cursor: oldId });
-  const exposure = createGarageExposure(settings);
-  exposure.at = START;
-  for (const state of Object.values(exposure.locations)) Object.assign(state, { lastAt: START, lastC: 8 });
+  const exposure = knownGarageReserve(settings, { at: START, rearC: 8, frontC: 8 });
   if (existingDebt) {
     exposure.version = 'garage-exposure-v1';
     exposure.locations.front.degreeMinutes = 170;
@@ -68,7 +67,7 @@ function setup(t, { mismatchedSnapshot = false, mismatchedAccounting = false, ex
     at(value) { now = value; }, now: () => now };
 }
 
-test('new Garage epoch preserves archived journal, frozen accounting and independent exposure debt', t => {
+test('new Garage epoch preserves archived journal and accounting while retiring unconvertible exposure indices', t => {
   const f = setup(t);
   assert.deepEqual(f.store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: LEGACY }), f.archivedRows);
   const entries = f.store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: GARAGE_ALGORITHM_VERSION });
@@ -78,8 +77,9 @@ test('new Garage epoch preserves archived journal, frozen accounting and indepen
   assert.equal(entries[0].payload.seed.algorithm, GARAGE_ALGORITHM_VERSION);
   assert.equal(entries[0].payload.settings.protection.version, GARAGE_POLICY_VERSION);
   assert.deepEqual(replayGarageJournal(f.store, 'mqtt'), f.runtime.checkpoint);
-  assert.equal(f.runtime.exposure.locations.front.degreeMinutes, 170);
-  assert.equal(f.runtime.exposure.locations.rear.degreeMinutes, 90);
+  assert.equal(f.runtime.exposure.previousVersion, 'garage-exposure-v1');
+  assert.ok(f.runtime.exposure.locations.front.energyJPerM < 0);
+  assert.ok(f.runtime.exposure.locations.rear.energyJPerM < 0);
   assert.equal(f.runtime.exposure.locations.front.uncertain, true);
   assert.deepEqual(f.runtime.episode.accounting, f.episode.accounting);
   assert.deepEqual(f.runtime.episode.frozenModel, f.episode.frozenModel);
@@ -92,7 +92,7 @@ test('archived frozen dynamics are not advanced and cannot renew their old pause
   assert.equal(f.runtime.plan.nextAction, 'available'); assert.equal(f.runtime.plan.reason, 'archived-model-recovery');
   assert.equal(f.calls.at(-1).valid, false);
   assert.deepEqual(f.runtime.episode.accounting, { ...accounting, qualified: false });
-  assert.equal(f.runtime.exposure.locations.front.degreeMinutes, 170);
+  assert.ok(f.runtime.exposure.locations.front.energyJPerM < 0);
   assert.equal(f.store.getState('garage:episode:mqtt').pauseId, 'archived-pause');
   assert.deepEqual(f.store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: LEGACY }), f.archivedRows);
 });
@@ -168,7 +168,7 @@ test('malformed saved Garage exposure cannot prevent Home construction or grant 
         garage: garageSettings({ enabled: true, protection: { approved: true } }) }, clock: () => START });
       assert.equal(engine.garage.corruptState, true);
       for (const row of Object.values(engine.garage.exposure.locations)) {
-        assert.equal(row.degreeMinutes, 90); assert.equal(row.uncertain, true);
+        assert.ok(row.energyJPerM < 0); assert.equal(row.uncertain, true);
       }
       assert.deepEqual(store.getState('garage:exposure:mqtt'), saved, 'constructor does not rewrite the invalid source');
       engine.garage.safetyTick();
@@ -177,31 +177,30 @@ test('malformed saved Garage exposure cannot prevent Home construction or grant 
   });
 });
 
-test('malformed exposure counters preserve larger independent debt and valid measurement anchors', async t => {
+test('malformed thermal state cannot preserve fabricated reserve or prevent Home control', async t => {
   const store = new Store(':memory:'), settings = garageSettings({ enabled: true, protection: { approved: true } });
   const saved = updateGarageExposure(null, { at: START, rearC: 8, frontC: 7 }, settings);
-  saved.locations.front.degreeMinutes = 250; saved.locations.rear.degreeMinutes = 25;
-  delete saved.locations.front.recoveryMinutes;
+  saved.locations.front.energyJPerM = Infinity;
+  delete saved.locations.front.estimatedC;
   store.setState('garage:exposure:mqtt', saved);
   const runtime = new GarageRuntime({ store, engine: { latest: {}, settings: { mode: 'active' } },
     config: { input: 'mqtt', garage: settings }, clock: () => START });
   t.after(async () => { await runtime.close({ restore: false }); store.close(); });
-  assert.equal(runtime.exposure.locations.front.degreeMinutes, 250);
-  assert.equal(runtime.exposure.locations.rear.degreeMinutes, 90);
-  assert.equal(runtime.exposure.locations.front.lastAt, START);
-  assert.equal(runtime.exposure.locations.front.lastC, 7);
-  assert.equal(runtime.exposure.locations.front.recoveryMinutes, 0);
+  assert.equal(runtime.corruptState, true);
+  assert.ok(runtime.exposure.locations.front.energyJPerM < -reserveProperties(settings).latentJPerM);
+  assert.equal(runtime.exposure.locations.front.lastAt, null);
+  assert.equal(runtime.exposure.locations.front.lastC, null);
   assert.equal(runtime.exposure.locations.front.uncertain, true);
   const next = updateGarageExposure(runtime.exposure, { at: START + MINUTE, rearC: 8, frontC: 7 }, settings);
-  assert.equal(next.locations.front.degreeMinutes, 250); assert.equal(next.locations.front.uncertain, true);
+  assert.ok(next.locations.front.energyJPerM < 0); assert.equal(next.locations.front.uncertain, true);
+  assert.equal(validGarageExposure(next, START + MINUTE, settings), true);
 });
 
 test('nonfinite exposure created by invalid internal state never passes protection assessment', () => {
   const settings = garageSettings({ protection: { approved: true } });
   let exposure = updateGarageExposure(null, { at: START, rearC: 8, frontC: 7 }, settings);
-  delete exposure.locations.front.recoveryMinutes;
-  exposure = updateGarageExposure(exposure, { at: START + MINUTE, rearC: 8, frontC: 7 }, settings);
-  assert.equal(Number.isNaN(exposure.locations.front.degreeMinutes), true);
+  exposure.locations.front.energyJPerM = NaN;
+  assert.throws(() => updateGarageExposure(exposure, { at: START + MINUTE, rearC: 8, frontC: 7 }, settings), /Invalid/);
   const assessed = assessGarageProtection(exposure, { now: START + MINUTE,
     observation: { at: START + MINUTE, rearC: 8, frontC: 7 }, settings });
   assert.equal(assessed.safeToPause, false);

@@ -5,6 +5,7 @@ import { setStatusDetail } from './status-details.js';
 import { finnishDateTime } from './home-controls.js';
 import { confirmPausedHeating, garageHeatingWarning } from './heating-warning.js';
 import { GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
+import { GARAGE_HEAT_TRANSFER_SAFETY_FACTOR } from '../src/garage/settings.js';
 import { renderLearningRows } from './learning-rows.js';
 const finite = Number.isFinite;
 const text = value => typeof value === 'string' ? value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll(/[_-]/g, ' ') : 'Unknown';
@@ -152,7 +153,7 @@ function garageLearningRows(garage, policy) {
     ['Doors and local cooling', 'Known disturbances exclude affected episodes from validation. A cold plunge still contributes fully to local protection exposure.'],
     ['Estimated building warmth · °C', `${number(learning.state?.coreC, '°C')}. Slow temperature memory from rear observations; not measured pipe temperature or stored kWh.`],
     ['Pump temperature and energy reports', 'Separate equipment readings. Unsupported telemetry remains unknown; compressor frequency is not converted into measured watts.'],
-    ['Local exposure recovery', `${number(policy.recoveryDwellMinutes, 'min')} continuously at or above ${number(policy.recoveryAboveC, '°C')} before credit starts; then ${number(policy.recoveryDegreeMinutesPerMinute)} °C·min per warm minute. Each location repays its own exposure.`],
+    ['Local allowance recovery', 'Allowance recovers continuously as the local reference warms. Its temperature and the surrounding air determine the rate; rear and front recover independently.'],
   ];
   const outcomeDescriptions = Object.fromEntries(outcomeRows), inputDescriptions = Object.fromEntries(inputRows);
   const outcome = (key, title, value, group, provenance = 'Calculated', detail = outcomeDescriptions[title]) =>
@@ -231,9 +232,8 @@ function garageLearningRows(garage, policy) {
       'Slow temperature memory from rear observations; not measured pipe temperature or stored kWh. Neither an air-temperature forecast nor this building-warmth state measures pipe temperature.', finite(learning.state?.coreC)),
     input('future-pump-response', 'Future pump response', 'kW and 0–1 activity', 'Modeled state', 'Modeled',
       'Planning predicts future pump electricity and compressor activity from outdoor temperature, normal rear warmth, current warmth and restart state. Heating availability lets the built-in controller run or idle; it does not force compressor activity.'),
-    input('local-exposure-recovery', 'Local exposure recovery', finite(policy.recoveryDwellMinutes) && finite(policy.recoveryAboveC)
-      ? `${number(policy.recoveryDwellMinutes, 'min')} at ≥ ${number(policy.recoveryAboveC, '°C')}` : 'Unavailable', 'Protection context', 'Configured',
-      `${inputDescriptions['Local exposure recovery']} This protection rule is configured separately from learned thermal coefficients.`, finite(policy.recoveryDwellMinutes) && finite(policy.recoveryAboveC)),
+    input('local-allowance-recovery', 'Local allowance recovery', finite(policy.marginC) ? 'Continuous' : 'Unavailable', 'Protection context', 'Calculated',
+      `${inputDescriptions['Local allowance recovery']} The water-filled copper reference is separate from learned building coefficients.`, finite(policy.marginC)),
   ];
   return { outcomeRows, inputRows, outcomeDetails, evidenceDetails, inputDetails,
     outcomeContext: 'Pause support requires complete cooling and recovery checks. Temperature evidence, electricity qualification and the current plan are shown separately.',
@@ -244,27 +244,31 @@ function garageLearningRows(garage, policy) {
 export function garageColdBudget(garage = {}, location) {
   const name = location === 'rear' ? 'Rear' : 'Front';
   const policy = garage.settings?.protection, protection = garage.protection;
-  const local = protection?.locations?.[location], total = policy?.budgetDegreeMinutes;
-  const title = `${name} cold budget remaining`;
-  const unavailable = (summary, detail) => ({ label: `${name} —`, title, summary, detail, percent: null, available: false, attention: false });
+  const local = protection?.locations?.[location];
+  const title = `${name} cold allowance remaining`;
+  const unavailable = (summary, detail) => ({ label: `${name} —`, value: '—', title, summary, detail, remaining: null, available: false, attention: false });
   if (policy?.approved !== true)
-    return unavailable(policy?.approved === false ? 'Policy not approved' : 'Approval unknown', 'No approved garage cold-exposure policy is available.');
+    return unavailable(policy?.approved === false ? 'Policy not approved' : 'Approval unknown', 'The garage freezing-protection policy has not been approved.');
   if (protection?.approved !== true)
-    return unavailable('Assessment unavailable', 'No approved garage cold-exposure assessment is available.');
-  if (!local || !finite(total) || total <= 0 || !finite(local.degreeMinutes) || local.degreeMinutes < 0)
-    return unavailable('Assessment unavailable', 'A valid cold-exposure total and allowance are not available for this location.');
+    return unavailable('Assessment unavailable', 'No approved garage freezing-protection assessment is available.');
+  if (!local || !finite(local.remainingKjPerM) || local.remainingKjPerM < 0 || !finite(local.estimatedC))
+    return unavailable('Assessment unavailable', 'A valid thermal reserve estimate is not available for this location.');
   if (local.fresh !== true)
-    return unavailable('Awaiting fresh temperature', 'A fresh, qualified temperature report is required to show this location’s cold budget.');
+    return unavailable('Awaiting fresh temperature', 'A fresh, qualified temperature report is required to show this location’s allowance.');
+  if (local.reason === 'initializing-reserve')
+    return unavailable('Establishing reserve', 'Fresh local temperature reports are establishing the reference’s warmth. Allowance becomes available as it recovers.');
   if (local.uncertain)
-    return unavailable('Temperature history uncertain', 'Missing temperature history makes this location’s exposure uncertain. Known sustained warmth must repay that exposure before the percentage is available again.');
-  const used = local.degreeMinutes, exhausted = used >= total, remaining = Math.max(0, total - used);
-  // Reserve 0% for exhaustion and 100% for an untouched allowance.
-  const percent = exhausted ? 0 : used === 0 ? 100 : Math.min(99, Math.max(1, Math.ceil(remaining / total * 100)));
-  const reason = local.reason != null ? ` Current protection limit: ${text(local.reason)}.` : '';
-  return { label: `${name} ${percent}%`, title, percent, remaining, available: true,
-    summary: exhausted ? 'Budget exhausted' : local.reason != null ? 'Protection limit reached' : 'Allowance remaining',
-    attention: exhausted || local.reason != null,
-    detail: `${remaining} / ${total} °C·min remaining.${used > total ? ` Accumulated exposure: ${used} °C·min.` : ''}${reason} 0% means the cold-exposure budget is exhausted. Heating may resume earlier because of a hard temperature limit, sensor uncertainty or the time needed to restore heating. This is not a freezing probability or countdown.` };
+    return unavailable('Temperature history uncertain', 'Missing temperature history makes this location’s reserve uncertain. Fresh local readings must establish its recovery before an allowance is shown.');
+  const remaining = local.remainingKjPerM, exhausted = remaining === 0;
+  // A small positive reserve must not be displayed as exhausted.
+  const value = remaining > 0 && remaining < .01 ? '<0.01 kJ/m' : number(remaining, 'kJ/m');
+  const limit = local.reason ?? (protection.limitingLocation === location
+    && protection.reasons?.includes('restoration-margin-exhausted') ? 'restoration-margin-exhausted' : null);
+  const reason = limit != null ? ` Current protection limit: ${text(limit)}.` : '';
+  return { label: `${name} ${value}`, value, title, remaining, estimatedC: local.estimatedC, available: true,
+    summary: exhausted ? 'Allowance exhausted' : limit != null ? 'Heating reserve required' : `Reference estimate ${number(local.estimatedC, '°C')}`,
+    attention: exhausted || limit != null,
+    detail: `${value} of estimated warmth above the ${number(policy.marginC, '°C')} protection margin, per metre of the water-filled copper reference. Reference temperature: ${number(local.estimatedC, '°C')}.${reason} Heating resumes while enough reserve remains to restore useful heat. The allowance changes continuously with local temperature history; it is not a measured pipe temperature or a countdown.` };
 }
 
 /** Public monitoring projection only. Never serialize raw adapter state, topics,
@@ -285,8 +289,10 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     const label = location === 'rear' ? 'Rear air · near pipe' : 'Front air · near door';
     const local = locations[location] ?? {}, observation = garage.observations?.[location];
     rows.push([label, temperature(observation)]);
-    rows.push([`${location === 'rear' ? 'Rear' : 'Front'} exposure remaining`, finite(local.remainingDegreeMinutes)
-      ? `${number(local.remainingDegreeMinutes)} / ${number(settings.protection?.budgetDegreeMinutes)} °C·min${local.uncertain ? ' · uncertain history' : ''}` : 'Unavailable']);
+    rows.push([`${location === 'rear' ? 'Rear' : 'Front'} allowance remaining`, finite(local.remainingKjPerM)
+      ? `${number(local.remainingKjPerM, 'kJ/m')}${local.uncertain ? ' · uncertain history' : ''}` : 'Unavailable']);
+    rows.push([`${location === 'rear' ? 'Rear' : 'Front'} reference estimate`, finite(local.estimatedC)
+      ? `${number(local.estimatedC, '°C')}${local.uncertain ? ' · uncertain history' : ''}` : 'Unavailable']);
     if (finite(local.interventionAt)) rows.push([`${location === 'rear' ? 'Rear' : 'Front'} intervention by`, clock(local.interventionAt)]);
   }
   rows.push(['Limiting protection location', text(protection.limitingLocation)],
@@ -315,14 +321,15 @@ export function garageDisplay(garage = {}, now = Date.now()) {
       ['Savings aggressiveness', finite(settings.aggressiveness) ? `${number(settings.aggressiveness)} / 100` : 'Unavailable', 'Higher values favor savings over the depth and duration of cooling. At 0, normal heating remains available and learning continues.'],
     ],
     protection: [
-      ['Cold exposure starts below', number(policy.floorC, '°C'), 'Each minute 1 °C below this temperature uses 1 °C·min of that location’s allowance.'],
-      ['Restore heating by', number(policy.hardMinimumC, '°C'), 'The hard temperature limit, even with budget left. Recovery time or uncertain readings can require an earlier return to heating.'],
-      ['Cold allowance per location', number(policy.budgetDegreeMinutes, '°C·min'), 'The full allowance for each sensor. Rear and front track their own exposure; neither can borrow from the other.'],
+      ['Protection margin', number(policy.marginC, '°C'), 'Heat reserve is calculated above this temperature. Heating is requested early to allow time for warming.'],
+      ['Reference pipe diameter', number(policy.pipeOutsideDiameterMm, 'mm'), 'Outside diameter of the bare, water-filled copper pipe used as the protection reference.'],
+      ['Assumed wall thickness', number(policy.pipeWallMm, 'mm'), 'The copper wall thickness used to calculate the reference’s capacity to store warmth.'],
+      ['Heat transfer', number(policy.heatTransferWPerM2K, 'W/m²K'), 'Initial estimate of how readily the reference exchanges heat with the surrounding air.'],
+      ['Safety factor', `${GARAGE_HEAT_TRANSFER_SAFETY_FACTOR}×`, 'Counts cooling twice as quickly and warming half as quickly.'],
     ],
     recovery: [
-      ['Recovery temperature', number(policy.recoveryAboveC, '°C'), 'A location must remain at or above this temperature to begin earning back its allowance.'],
-      ['Continuous warm-up', number(policy.recoveryDwellMinutes, 'min'), 'The uninterrupted warm period required before any allowance is restored. Cooling below the recovery temperature restarts this wait.'],
-      ['Allowance restored per minute', number(policy.recoveryDegreeMinutesPerMinute, '°C·min'), 'After the warm-up, each additional warm minute restores this much allowance, up to the full budget.'],
+      ['Cold allowance', 'Calculated · kJ/m', 'The reference’s stored warmth determines each location’s allowance. A warmer starting point provides more reserve.'],
+      ['Recovery', 'Continuous', 'Local air warms the reference and restores allowance gradually. A greater temperature difference restores it faster.'],
     ],
   };
   const coefficients = garageCoefficientRows(learning);
@@ -366,17 +373,10 @@ export function renderGarage(document, status) {
     const node = document.getElementById(id);
     if (node) node.dataset.state = budget.attention ? 'attention' : 'muted';
     const settingId = `garage-settings-budget-${location}`;
-    detail(settingId, budget.available ? `${budget.percent}%` : '—', budget.title, budget.detail);
+    detail(settingId, budget.value, budget.title, budget.detail);
     const settingNode = document.getElementById(settingId);
     if (settingNode) settingNode.dataset.state = budget.attention ? 'attention' : 'muted';
-    set(`${settingId}-remaining`, budget.available
-      ? `${number(budget.remaining, '°C·min')} left${budget.attention ? ` · ${budget.summary}` : ''}` : budget.summary);
-    const meter = document.getElementById(`${settingId}-meter`);
-    if (meter) {
-      meter.hidden = !budget.available;
-      meter.value = budget.percent ?? 0;
-      meter.dataset.state = budget.attention ? 'attention' : 'muted';
-    }
+    set(`${settingId}-remaining`, budget.summary);
   }
   const doors = devices.filter(device => device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
     || Object.keys(device.readings ?? {}).some(signal => /^garage_door/.test(signal)))).flatMap(device => {

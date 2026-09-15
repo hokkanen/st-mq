@@ -1,15 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { garageSettings, garageWarmthPrice } from '../src/garage/settings.js';
-import { createGarageExposure, updateGarageExposure, assessGarageProtection } from '../src/garage/protection.js';
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import { createGarageModel, updateGarageModel, replayGarageModel, predictGarageStep, forecastGarage,
   garageModelSummary, normalGarageTemperature, knownGarageEvAt } from '../src/garage/model.js';
-import { planGarage } from '../src/garage/planner.js';
+import { planGarage as planGarageImplementation } from '../src/garage/planner.js';
 import { assignGaragePlanningEvidence } from './helpers/garage-model-fixture.js';
 const HOUR = 3_600_000, MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
 const settings = garageSettings({ enabled: true, maxSensorAgeMs: 4 * HOUR,
-  protection: { approved: true, floorC: 4, hardMinimumC: 2, budgetDegreeMinutes: 120,
-    recoveryAboveC: 6, recoveryDegreeMinutesPerMinute: .25, recoveryDwellMinutes: 30 } });
+  protection: { approved: true } });
 const observation = (i, extra = {}) => ({ at: start + i * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
   available: true, baselineVerified: true, powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0, ...extra });
 function trainedModel(hours = 96) {
@@ -31,10 +30,17 @@ function outlook(values) {
     forecast: [{ start, end: start + values.length * HOUR, outdoorC: 0, issuedAt: start }] };
 }
 
+// Scheduling tests start with explicitly known, warm synthetic objects.
+function planFixture(args) {
+  return planGarageImplementation({ restorationDelayMs: 2 * MINUTE,
+    exposure: knownGarageReserve(args.settings ?? settings, { at: args.now,
+      rearC: args.observation?.rearC ?? 7, frontC: args.observation?.frontC ?? 6.7 }), ...args });
+}
+
 test('owner policy is explicit, versioned and independent of stable economic preference', () => {
   assert.equal(garageSettings().enabled, false); assert.equal(garageSettings().protection.approved, false);
   assert.throws(() => garageSettings({ aggressiveness: 101 }));
-  assert.throws(() => garageSettings({ protection: { hardMinimumC: 5 } }));
+  assert.throws(() => garageSettings({ protection: { marginC: 0 } }));
   assert.throws(() => garageSettings({ secret: 'unused-test-value' }), /Unknown garage setting/);
   assert.throws(() => garageSettings({ protection: { extra: true } }), /Unknown garage protection/);
   const values = [0, 25, 50, 75, 100].map(garageWarmthPrice);
@@ -42,52 +48,16 @@ test('owner policy is explicit, versioned and independent of stable economic pre
   assert.equal(garageWarmthPrice(100), 0);
 });
 
-test('alternating cold locations retain independent exposure; warmer front can limit first', () => {
-  let state = createGarageExposure(settings);
-  state = updateGarageExposure(state, observation(0, { rearC: 5, frontC: 3 }), settings);
-  state = updateGarageExposure(state, observation(1, { rearC: 5, frontC: 3 }), settings);
-  assert.equal(state.locations.front.degreeMinutes, 60); assert.equal(state.locations.rear.degreeMinutes, 0);
-  state = updateGarageExposure(state, observation(2, { rearC: 3, frontC: 5 }), settings);
-  assert.equal(state.locations.front.degreeMinutes, 75); assert.equal(state.locations.rear.degreeMinutes, 15);
-  const assessment = assessGarageProtection(state, { now: start + 2 * HOUR, observation: observation(2, { rearC: 3.8, frontC: 3.9 }), settings });
-  assert.equal(assessment.limitingLocation, 'front');
-  assert.equal(assessment.locations.front.degreeMinutes, 75);
-  const replayed = JSON.parse(JSON.stringify(state));
-  assert.deepEqual(assessGarageProtection(replayed, { now: start + 2 * HOUR, observation: observation(2, { rearC: 3.8, frontC: 3.9 }), settings }), assessment);
-});
-
-test('brief warmth and rear recovery cannot erase front debt; policy changes preserve exposure', () => {
-  let state = createGarageExposure(settings);
-  state = updateGarageExposure(state, observation(0, { frontC: 3 }), settings);
-  state = updateGarageExposure(state, observation(1, { frontC: 3 }), settings);
-  state = updateGarageExposure(state, observation(1.1, { frontC: 7 }), settings);
-  const debt = state.locations.front.degreeMinutes;
-  state = updateGarageExposure(state, observation(1.2, { frontC: 7 }), settings);
-  assert.equal(state.locations.front.degreeMinutes, debt);
-  state = updateGarageExposure(state, observation(1.3, { frontC: 7 }), { ...settings, aggressiveness: 100 });
-  assert.equal(state.locations.front.degreeMinutes, debt);
-  assert.equal(state.locations.rear.degreeMinutes, 0);
-  state = updateGarageExposure(state, observation(2.3, { frontC: 7 }), settings);
-  assert.ok(state.locations.front.degreeMinutes < debt && state.locations.front.degreeMinutes > 0);
-});
-
-test('stale/missing front stops permission, retains unknown exposure and cannot substitute rear', () => {
-  const config = { ...settings, maxSensorAgeMs: 2 * MINUTE };
-  let state = updateGarageExposure(null, observation(0), config);
-  state = updateGarageExposure(state, observation(1, { frontC: null }), config);
-  const assessment = assessGarageProtection(state, { now: start + HOUR, observation: observation(1, { frontC: null, pumpIndoorC: 10 }), settings: config });
-  assert.equal(assessment.safeToPause, false); assert.equal(assessment.requiredFresh, false);
-  assert.equal(state.locations.front.uncertain, true); assert.ok(state.locations.front.degreeMinutes > 0);
-  const recovered = updateGarageExposure(state, observation(1 + 1 / 60), config);
-  assert.equal(recovered.locations.front.uncertain, true);
-});
-
-test('restoration margin and independent forecast lower bounds trigger the limiting location', () => {
-  const state = updateGarageExposure(null, observation(0, { frontC: 3 }), settings);
-  const future = [{ at: start + HOUR, rearC: 7, frontC: 3, rearLowerC: 6.5, frontLowerC: 2 }];
-  const assessment = assessGarageProtection(state, { now: start, observation: observation(0, { frontC: 3 }), settings,
-    forecast: future, restorationDelayMs: HOUR });
-  assert.equal(assessment.safeToPause, false); assert.equal(assessment.limitingLocation, 'front');
+test('protection parameters do not retune or reset the garage learner', () => {
+  const original = createGarageModel({ seedAt: start });
+  let normal = original, changedProtection = structuredClone(original);
+  for (let i = 0; i < 200; i++) {
+    const row = observation(i / 4);
+    normal = updateGarageModel(normal, row, settings);
+    changedProtection = updateGarageModel(changedProtection, row, { ...settings,
+      protection: { ...settings.protection, marginC: 2, heatTransferWPerM2K: 30, pipeOutsideDiameterMm: 25 } });
+  }
+  assert.deepEqual(changedProtection, normal);
 });
 
 test('ordered replay from saved seed/settings exactly matches online learning and stays bounded', () => {
@@ -195,17 +165,17 @@ test('EV plans use only decision-time knowledge, retain both identities and prot
 });
 
 test('flat prices and aggression zero always preserve normal availability and zero timing benefit', () => {
-  const args = { now: start, model: plannerModel(), observation: observation(0), exposure: createGarageExposure(settings), settings, ...outlook(Array(12).fill(12)) };
-  const flat = planGarage(args);
+  const args = { now: start, model: plannerModel(), observation: observation(0), settings, ...outlook(Array(12).fill(12)) };
+  const flat = planFixture(args);
   assert.equal(flat.nextAction, 'available'); assert.equal(flat.timingBenefitEur, 0); assert.match(flat.reason, /flat/);
-  const disabled = planGarage({ ...args, settings: { ...settings, aggressiveness: 0 }, ...outlook([2, 100, 100, 2, 2, 2]) });
+  const disabled = planFixture({ ...args, settings: { ...settings, aggressiveness: 0 }, ...outlook([2, 100, 100, 2, 2, 2]) });
   assert.equal(disabled.nextAction, 'available'); assert.equal(disabled.reason, 'normal-heating-preference');
 });
 
 test('planner covers multiple opportunities, retains terminal debt and monotonic warmth preference', () => {
-  const args = { now: start, model: plannerModel(), observation: observation(0), exposure: createGarageExposure(settings),
+  const args = { now: start, model: plannerModel(), observation: observation(0),
     ...outlook([5, 5, 35, 35, 5, 5, 5, 5, 5, 90, 90, 90, 5, 5, 5, 5]) };
-  const results = [25, 50, 75, 100].map(aggressiveness => planGarage({ ...args, settings: { ...settings, aggressiveness } }));
+  const results = [25, 50, 75, 100].map(aggressiveness => planFixture({ ...args, settings: { ...settings, aggressiveness } }));
   assert.ok(results.some(result => result.timingBenefitEur > 0));
   assert.ok(results.at(-1).steps.some(step => step.phase === 'pause'));
   assert.ok(results.at(-1).steps.some(step => step.phase === 'recovery'));
@@ -215,7 +185,7 @@ test('planner covers multiple opportunities, retains terminal debt and monotonic
 });
 
 test('planner never pauses with one protection sensor even when rear-only monitoring is configured', () => {
-  const result = planGarage({ now: start, model: plannerModel(), observation: observation(0, { frontC: null }), settings,
+  const result = planFixture({ now: start, model: plannerModel(), observation: observation(0, { frontC: null }), settings,
     ...outlook([100, 100, 1, 1, 1, 1]) });
   assert.equal(result.nextAction, 'available'); assert.match(result.reason, /front/);
 });
@@ -258,7 +228,7 @@ test('controlled thermal excitation fits rear response without qualifying EV-dis
 
 test('48 hour plan uses ordinary peaks, reserves preparation and never credits unknown cheap terminal recovery', () => {
   const model = plannerModel(), values = Array.from({ length: 48 }, (_, i) => i % 24 >= 17 && i % 24 <= 20 ? 40 : 7);
-  const result = planGarage({ now: start, model, settings: { ...settings, aggressiveness: 75 }, observation: observation(0), ...outlook(values) });
+  const result = planFixture({ now: start, model, settings: { ...settings, aggressiveness: 75 }, observation: observation(0), ...outlook(values) });
   assert.equal(result.reason, 'prepare-for-later-price-opportunity');
   assert.equal(result.steps.length, 192);
   assert.ok(result.timingBenefitEur > .05);
@@ -269,7 +239,7 @@ test('48 hour plan uses ordinary peaks, reserves preparation and never credits u
 
 test('same-episode renewals remain bounded by their original authorization endpoint', () => {
   const endpoint = start + HOUR;
-  const result = planGarage({ now: start, model: plannerModel(), settings: { ...settings, aggressiveness: 100 },
+  const result = planFixture({ now: start, model: plannerModel(), settings: { ...settings, aggressiveness: 100 },
     observation: observation(0, { available: false, availableChangedAt: start - HOUR }),
     activeEpisode: { state: 'active', authorizedEndAt: endpoint }, ...outlook([60, 60, 5, 5, 5, 5, 5, 5]) });
   assert.equal(result.nextAction, 'renew'); assert.ok(result.pauseUntil <= endpoint);
@@ -281,8 +251,8 @@ test('later opportunities retain frozen host debt while scoring only incremental
   model.state = { rearC: 6.5, frontC: 6.2, coreC: 6.6, differenceC: -.3 };
   const args = { now: start, model, observation: observation(0, { rearC: 6.5, frontC: 6.2 }),
     settings: { ...settings, aggressiveness: 100 }, ...outlook([65, 65, 5, 5, 5, 5, 5, 5]) };
-  const continuation = planGarage(args);
-  const outstanding = planGarage({ ...args, referenceInitialState: { rearC: 7, frontC: 6.7, coreC: 7, differenceC: -.3 } });
+  const continuation = planFixture(args);
+  const outstanding = planFixture({ ...args, referenceInitialState: { rearC: 7, frontC: 6.7, coreC: 7, differenceC: -.3 } });
   assert.equal(outstanding.nextAction, 'pause');
   assert.equal(outstanding.obligationReference.basis, 'frozen-host-normal-reference');
   assert.ok(outstanding.heatDebt.coreC > continuation.heatDebt.coreC);

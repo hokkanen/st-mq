@@ -1,146 +1,186 @@
-# Garage air protection defaults and pipe sensitivity audit
+# Garage freezing protection and reference heat reserve
 
-The September 2026 audit lowers the air-policy thresholds and shortens recovery
-lockout while preserving independent rear/front measurements, accumulated local
-exposure and early restoration. The installation information supplied for this
-audit is a **bare copper pipe, 21 mm outside diameter, with stagnant water**.
-The temperature gauges measure adjacent air; the new front gauge will sit beside
-the pipe near the door opening. Wall thickness and actual local draft speed were
-not supplied.
+`garage-thermal-reserve-v1` protects pipes and stored liquids by tracking a
+small water-filled copper pipe as the reference. Rear and front each have an
+independent estimate driven by the adjacent air sensor. A brief cold-air plunge
+spends part of the local reserve; later warming restores it gradually.
 
-These facts support allowing brief freezing air without declaring that the pipe
-has instantly frozen. They do **not** establish a safe subzero duration. A pipe
-already near zero can start freezing much sooner than a pipe that has been warm.
-The control inputs therefore remain the two real air sensors. The separate pipe
-calculation is an audit tool and supplies no live inferred pipe temperature,
-latent-heat allowance, or permission to ignore either sensor.
+The reference is the described **bare 21 mm outside-diameter copper pipe with
+stagnant water**. Its wall thickness is assumed to be 1 mm. Actual wall thickness,
+local airflow and the response of the stored liquids have not been measured.
+Using this reference does not establish that every container or fitting cools
+more slowly, or that the pipe wall cannot begin freezing before the estimated
+bulk temperature reaches zero.
 
-## Default changes
+## Parameters shown in Garage settings
 
-| Setting | Previous | Current | Effect |
-| --- | ---: | ---: | --- |
-| Exposure floor | 4°C | 2°C | Ordinary air between 2°C and 4°C no longer consumes allowance. |
-| Hard restoration threshold | 2°C | −1°C | Brief near-zero air is not an immediate hard-limit event. |
-| Independent exposure budget | 120°C·min | 90°C·min | Reduced nominal allowance partly offsets the lower floor. |
-| Recovery threshold | 6°C | 4°C | Recovery can start earlier as local air warms. |
-| Continuous recovery dwell | 30 min | 20 min | Short warm blips still cannot refill the allowance. |
-| Recovery rate after dwell | 0.25°C·min/min | 1°C·min/min | A fully spent allowance needs 110 warm minutes instead of 510. |
+| Parameter | Initial value | Meaning |
+| --- | ---: | --- |
+| Protection margin | 1°C | Estimated reference temperature where usable reserve reaches zero. |
+| Reference pipe outside diameter | 21 mm | Sets the exposed surface and quantity of copper and water. |
+| Reference pipe wall thickness | 1 mm | Assumed copper thickness; the water bore is calculated from it. |
+| Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
+| Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
 
-Normal heating remains 10°C; aggressiveness remains 50. Automation remains
-disabled, and the protection policy remains unapproved. The defaults are an
-explicit operational proposal, not an installation safety certificate or an
-automatic hardware commissioning action.
+Normal heating remains 10°C; aggressiveness remains 50. Automatic operation is
+disabled and the protection policy is unapproved by default. The heat-transfer
+coefficient and safety factor are engineering assumptions, not values learned
+from the garage or an installed safety certificate.
 
-Exposure integrates `max(0, 2 - airC)` separately at each location. Starting with
-an unused allowance, constant 1°C air spends it in 90 minutes and constant 0°C
-air in 45 minutes. These are **index arithmetic**, not safe pipe exposure times.
-Restoration lead time and forecast uncertainty reduce the permitted pause;
-reaching −1°C requests restoration immediately regardless of remaining index.
-This threshold is a control response point, not a predicted freezing point.
-An open door may still drive the air below it while heating is already available.
+The old air-temperature hard limit, fixed degree-minute allowance, recovery
+temperature, recovery dwell and constant refill rate are removed. Opening a
+configured door does not directly block or revoke a pause. Door disturbances
+still exclude affected intervals from ordinary thermal fitting, baseline
+qualification and clean validation evidence.
 
-Lowering the floor and hard threshold much further would be difficult to justify
-for this bare pipe next to the door. The audit explicitly includes a strong-draft
-sensitivity case; the warm bulk-water times should not be used to dismiss it.
+## Continuous thermal calculation
 
-## Independent physics calculation
+Per metre, with the assumed 1 mm wall, the pipe contains approximately 0.284 kg
+of water and 0.563 kg of copper. Their combined heat capacity is approximately
+1,402 J/(m·K); exposed surface is 0.066 m²/m. The fixed material values are water
+and copper density 1,000/8,960 kg/m³ and specific heat 4,180/385 J/(kg·K).
 
-Run `node scripts/garage-pipe-simulation.js` for the reproducible selected results.
-The script tests 432 combinations of wall thickness (0.75/1/1.5 mm), insulation
-(0/10/20 mm), effective surface heat transfer (5/10/30/60 W/m²K), initial water
-temperature (2/5/10°C), and air temperature (−1/−5/−10/−20°C). Insulation is a
-sensitivity comparison; **the actual pipe is treated as bare**. Eighteen door
-pulse/recovery scenarios cover 2/5/10 minute plunges, initial 2/10°C and three
-surface heat-transfer rates. None is fitted to the garage controller.
+For each location, the reference temperature follows:
 
-Per metre, assuming a 1 mm copper wall, the pipe contains about 0.284 kg of water
-and 0.563 kg of copper. The total sensible thermal capacity is approximately
-1,402 J/(m·K). The calculation uses water/copper densities of 1,000/8,960 kg/m³,
-specific heats of 4,180/385 J/(kg·K), and water latent heat of 333,550 J/kg.
-These rounded material values are adequate for sensitivity analysis. The
-specific-heat scale is consistent with the [University of Texas material table](https://ch301.cm.utexas.edu/data/heat-capacities.php);
-the ice enthalpy scale is given by the [IAPWS ice formulation](https://iapws.org/relguide/Ice-Rev2009.pdf).
+```text
+C = waterMass × waterSpecificHeat + copperMass × copperSpecificHeat
+G = heatTransfer × exposedSurface
+effectiveG = G × 2 when cooling; G / 2 when warming
+responseTime = C / effectiveG
+d(referenceTemperature)/dt = (airTemperature − referenceTemperature) / responseTime
+reserveKjPerMetre = C × max(referenceTemperature − marginC, 0) / 1000
+```
 
-The uniform bulk approximation uses `C dT/dt = G (air - T)` and time constant
-`tau = C / G`, followed by a separate latent phase at 0°C. For insulation, its
-cylindrical conduction resistance is added in series with surface resistance;
-the illustrative insulation conductivity is 0.035 W/(m·K). Radiation and air
-movement are represented together by the selected effective transfer values,
-not by invented measurements of local wind. The underlying thermal-capacitance
-and conductance relation is described in [NASA's thermal time-constant analysis](https://ntrs.nasa.gov/citations/20090037689).
+These inputs derive approximately **8.85 minutes for cooling and 35.42 minutes
+for warming**. They are not additional settings or times until freezing. The
+asymmetry applies the uncertainty factor once; there is no second multiplier on
+the calculated reserve. The ordinary lumped thermal relation and its limitations
+are described in [MIT's heat-transfer notes](https://web.mit.edu/course/16/16.unified/www/FALL/thermodynamics/notes/node129.html).
 
-For **bare pipe, 1 mm wall, constant −10°C surrounding air**:
+At an estimated 6°C, usable reserve above the 1°C margin is approximately
+**7.01 kJ/m**. The underlying estimate continues below the margin even though
+displayed available reserve cannot be negative. No latent heat is granted as
+permission to freeze part of the water. If the estimate enters a possible frozen
+state, energy is retained as thawing debt: temperature remains at 0°C during the
+phase change, and warming must repay that debt before positive reserve returns.
+Below fully frozen zero, the calculation uses ice specific heat 2,090 J/(kg·K).
 
-| Effective surface transfer | Time constant | Bulk reaches 0°C from 10°C | Bulk reaches 0°C from 2°C | Additional complete-phase-change time |
-| ---: | ---: | ---: | ---: | ---: |
-| 5 W/m²K | 70.8 min | 49.1 min | 12.9 min | 477.8 min |
-| 10 W/m²K | 35.4 min | 24.5 min | 6.5 min | 238.9 min |
-| 30 W/m²K | 11.8 min | 8.2 min | 2.2 min | 79.6 min |
-| 60 W/m²K | 5.9 min | 4.1 min | 1.1 min | 39.8 min |
+Cooling and warming use elapsed time, not report counts. Air above 1°C can still
+spend reserve: a reference at 5°C continues cooling in 2°C air. Conversely,
+recovery starts immediately when air is warmer than the reference. A brief warm
+report credits only the heat transferred during that interval; it cannot reset
+the reserve. Neither another location warming nor native ON replenishes it.
 
-The last column is deliberately separate: **a long time to freeze all the water
-is not a long delay before freezing begins**. Local ice or an obstructing plug
-can form before full phase change. Internal stagnant-water temperature gradients,
-fittings, pipe support conduction, axial heat from connected sections, actual
-surface radiation, ice nucleation and local drafts are omitted. The uniform
-temperature approximation is particularly weak at high transfer rates: first
-ice near the wall may precede the reported bulk-zero time. This calculation
-cannot predict bursting pressure or time to pipe damage. The
-[Copper Development Association handbook](https://www.copper.org/applications/plumbing/cth/design-installation/cth_3design_gencon.html)
-also distinguishes copper's ability to tolerate some freezing expansion from
-permission to expose water lines to freezing.
+## Reporting and pause permission
 
-At 30 W/m²K, a five-minute −10°C door pulse leaves water initially at 10°C above
-3°C in this approximation. Starting at 2°C, the identical pulse reaches bulk
-zero after about 2.2 minutes and enters the latent phase. Repeated two-minute
-plunges separated by only two-minute warm intervals eventually do the same,
-even starting warm. That supports retaining local exposure and recovery across
-door cycles, rather than forgetting each plunge when air briefly rebounds.
+Shelly status is requested every **30 seconds**, and protection is reassessed on
+valid temperature evidence. Unchanged valid reports count; retained packets,
+duplicates, invalid readings and unrelated device traffic do not refresh a probe.
+A status response confirms the device's reported value, not necessarily a new
+hardware conversion at that instant. Both required locations must be fresh for a
+new pause or renewal. The maximum temperature age is **2 minutes**; protection
+can restore earlier if the thermal reserve is insufficient. Missing outside
+temperature does not establish that freezing is impossible.
+Between reports, assessment may project further cooling but cannot credit warming
+from cached readings. Forecasts begin at the decision time, so predicted recovery
+cannot be interpolated backward into the time since the last genuine report.
 
-## Protection arithmetic corrections
+The planner revalidates at its **1-minute** cadence. A requested Pill permission
+is capped at **3 minutes from the older supporting temperature report**, and can
+be shorter when the thermal reserve requires it. Evidence deadlines overlap;
+they are not three sequential waits. UI polling, broker traffic and repeat
+revalidation of old temperature evidence cannot extend that deadline.
+Two minutes without a planner revalidation also revokes the host's permission.
+The adapter's published renewal interval must permit the one-minute schedule.
 
-`garage-exposure-v2` integrates recovery across the actual linear crossing of
-the recovery threshold, including partial warm intervals. It processes the
-warm and cold parts in time order, so an early warm portion cannot repay cold
-exposure that occurs later in the same coarse interval. Equivalent 1/5/15/30
-minute samples of the same piecewise linear path produce the same index and
-warm dwell, provided the observation gaps are qualified.
+Before an OFF request or renewal, the projected reserve must cover cooling until
+the requested permission expires and the subsequent delay until heating becomes
+useful near the reference. Runtime checks also cover already accepted permission
+and requests that may have been accepted while acknowledgement is pending.
+Reducing a host deadline does not by itself shorten an outstanding device lease.
+The planner continues its cooling forecast through the restoration delay, with
+no assumed EV heat and with the same growing forecast uncertainty margins.
+There is no unconditional 15-minute reserve assembled from a maximum lease and
+an unrelated restoration constant.
 
-Forecast assessment locates hard-limit crossings and budget exhaustion inside
-each step. It no longer waits until the next 15-minute row or overlooks an
-exhausted budget that recovers before the row endpoint. A supported recovering
-forecast also replaces the previous constant-current-temperature extrapolation;
-otherwise that extrapolation could deny restoration margin even when the
-supplied trajectory warmed in time. Missing future local temperatures cannot
-authorize a pause. These improvements preserve the existing distinction between
-observed exposure and uncertain temperature forecasts.
+The useful-heating delay must be supplied by the adapter's qualified restoration
+bound and installation evidence. Native ON, command acceptance and local warming
+are separate events. A maximum communication interval is not guaranteed cold
+exposure time: sustained cold can require immediate restoration.
 
-The old v1 calculation remains an archival algorithm requiring its matching
-repository revision. Upgrading a saved v1 operational exposure retains at least
-its previous accumulated index, starts no lower than the current full budget,
-clears warm dwell and marks both locations uncertain. Genuine local recovery
-must repay that carried debt before permission returns. This is an explicit
-operational transition, not replay of old measurements with new arithmetic.
-Neither a model refit nor an aggressiveness change upgrades or resets exposure.
+For example, a uniform initial 4°C reference exposed continuously to −10°C air
+reaches the 1°C margin after approximately **2 minutes 8 seconds** with these
+assumptions. This does not permit a three-minute pause, and a sufficient
+heating-response delay can make immediate restoration necessary. Cold outdoor air
+entering a garage does not imply that both adjacent sensors immediately measure
+the outdoor temperature.
 
-An explicitly configured `garage-exposure-v1` value is accepted at the input
-boundary and normalized to v2 in the effective configuration. Supplied numeric
-policy values, enablement and approval are preserved; no private configuration
-file is rewritten. The effective configuration is recorded with its configuration
-digest and new Garage learning epoch. Saved v1 exposure still undergoes the
-separate uncertain-debt transition above, so retaining configuration approval
-does not create fresh allowance. Unknown configured policy versions remain errors.
-This narrow normalization prevents an obsolete Garage version field from
-blocking Home startup while keeping old journal accounting archival.
+The actual published Pill protocol and installed timing evidence are still
+missing from this repository. These rules are implemented and tested at the
+explicit `stmq-garage-fixture/v1` consumer boundary; they are not a claim that
+deployed firmware has been configured to these intervals. See the
+[adapter boundary](garage-adapter.md) and [Pill handoff](shelly-pill-handoff.md).
 
-Malformed or unsupported saved exposure cannot prevent Home startup. Garage
-retains any valid larger local debt, marks both budgets exhausted and uncertain,
-and requires measured warm recovery. Invalid or nonfinite exposure counters
-cannot authorize a pause.
+## Persistence, initialization and learning
 
-Validation: `node --test test/garage-protection-simulation.test.js` covers the
-432-case sensitivity matrix, constant-air analytic/segment agreement, cold-soak
-and repeated-door behavior, default/schema agreement, independent budgets,
-cadence invariance, chronological recovery, precise forecast limits, unavailable
-forecasts and debt-preserving version transition. Software/simulation validation
-does not establish actual pipe temperatures or installed restoration performance.
+The two reference temperatures are operational protection state, separate from
+the learned garage model, its slow building-memory estimate and frozen episode
+accounting. Changing economic preference, replacing a learned checkpoint,
+reconnecting or restarting must not create fresh thermal reserve. Missing history
+cannot be repaid by assuming warmth during the gap. Startup without usable
+thermal history requires measured recovery before a pause can be authorized.
+
+Without valid saved thermal history, initialization starts from the fully frozen
+reference at **−40°C**, the lower supported air-temperature bound. This is a
+conservative unknown-history state, not a claim that the garage or pipe was
+actually that cold. One warm air reading cannot establish that the contents are
+liquid and warm. Continuous genuine reports repay the initial sensible and
+thawing debt at the same temperature-dependent warming rate as ordinary recovery.
+At constant 4°C air the default reference needs approximately 10.9 hours to reach
+the 1°C margin; at 6°C it needs 7.4 hours, and at 10°C about 4.6 hours. These are
+calculated initialization times, not a separate lockout timer. Heating remains
+available while the reserve is being established.
+
+Ordinary missing-report intervals **do not restart this fully frozen assumption**.
+They debit only the elapsed conservative heat loss, using the coldest of the
+previous local reading, a valid returning local reading and qualified outside air.
+The outside reading must already cover the start of the gap and remain within
+its 30-minute freshness window through the end. A fresh warm return reading
+cannot establish past conditions. Without that evidence, the −40°C bound is used. No warming is
+credited during missing history. A new genuine interval can resolve uncertainty
+once its remaining heat reserve is positive; cached reports cannot do so.
+
+Old degree-minute debt is not numerically convertible into this heat reserve.
+The policy version marks an explicit operational boundary; old protection
+records keep their historical meaning. The transition does not reinterpret an
+old learning journal, reset learned garage coefficients or forgive an outstanding
+restoration obligation. Changes to geometry, margin or heat-transfer settings
+also cannot manufacture additional stored joules: the transition retains at most
+the previous usable reserve, preserves possible frozen debt, and requires new
+temperature evidence. See [reconstruction and versioning](reconstruction-and-versioning.md).
+
+Freeze-protection recovery remains separate from whole-garage recovery. A positive
+local reserve alone does not establish comparable building warmth, complete a
+pause-and-recovery episode or qualify a savings claim.
+
+## Independent sensitivity audit and installation checks
+
+`node scripts/garage-pipe-simulation.js` retains a separate physical sensitivity
+audit. Its 432 combinations vary wall thickness, insulation, effective surface
+transfer, initial water temperature and cold-air temperature. Eighteen repeated
+door-pulse scenarios vary duration, recovery and starting temperature. Insulation
+is a comparison only; this installation's reference is bare pipe.
+
+That audit also calculates full phase-change time, using water latent heat of
+333,550 J/kg. **Full freezing time is not time before freezing begins, time to
+damage or an operational exposure allowance.** Local wall ice or a plug can
+precede full phase change. The model omits internal water gradients, fittings,
+support conduction, connected warm sections and local radiation/draft geometry.
+The [Copper Development Association handbook](https://www.copper.org/applications/plumbing/cth/design-installation/cth_3design_gencon.html)
+distinguishes tolerance of some expansion from permission to freeze water lines.
+
+Validate the assumed heat transfer with a temporary contact probe on the copper,
+recorded alongside the air sensor during ordinary cooling and reheating. Measure
+the delay from requesting heat to useful local warming. Garage air history can
+describe exposure and reporting cadence, but cannot identify the pipe's response
+or certify that every stored liquid follows the same reference.

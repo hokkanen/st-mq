@@ -81,14 +81,31 @@ These are tests of the host consumer; the injected receiver does not implement
 CN105 decoding or prove that a real device enforces a lease.
 
 The runtime calls `plannerTick({now, valid, plan, recoveryReady, demand})` with a
-stable plan/episode ID and bounded `pauseFrom`/`pauseUntil`. Only that method can
+stable plan/episode ID, bounded `pauseFrom`/`pauseUntil`, and an independently
+bounded permission deadline. Only that method can
 start or renew. `safetyTick` can revoke permission and request release, but cannot
 renew, and there is no networking renewal timer. Commands carry current device,
 boot, adapter session, host ownership, episode, monotonic command sequence,
 one-use challenge and a short deadline. A renewal uses the original episode and
 can never enlarge its authorized endpoint. The accepted fixture lease limits
 provide maximum lease, renewal interval, minimum ON lock and restoration delay.
-No second configurable heartbeat timer is introduced.
+The host additionally caps permission at three minutes from the older supporting
+rear/front temperature report, with earlier expiry when the thermal reserve
+requires it. A stale report cannot gain a later deadline from repeated planning.
+Revalidation runs each minute; no network-owned renewal loop is introduced.
+The published adapter renewal interval must support that cadence. A device that
+requires more than one minute between renewals cannot authorize a pause under
+this policy; the host does not silently override its advertised limits. The
+synthetic fixture advertises a one-minute renewal interval and three-minute cap.
+
+The projected heat reserve must cover permission expiry plus the qualified delay
+until heating becomes useful near the references. Existing accepted permission
+and a pending request that might have been accepted both count. A shorter local
+host deadline is not proof that the device shortened its lease. The runtime no
+longer unconditionally reserves the advertised maximum lease plus another fixed
+delay; it uses the outstanding or proposed permission and the restoration bound.
+Temperature expiry at two minutes and maximum permission at three minutes are
+overlapping deadlines measured from evidence, not sequential grace periods.
 
 An OFF attempt persists a compact restoration obligation before publication.
 Requested, published, accepted, native-confirmed, uncertain, rejected, failed and

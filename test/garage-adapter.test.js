@@ -38,7 +38,8 @@ function fixture(options = {}) {
   return { adapter, sent, saved, observations, energy, state, accepted, now: () => now,
     at(value) { now = value; }, owner(value) { owner = value; },
     plan: { id: 'fixture-episode-1', pauseFrom: BASE, pauseUntil: BASE + 1_200_000 },
-    start(plan = this.plan) { return adapter.plannerTick({ now, valid: true, plan, recoveryReady: true }); } };
+    start(plan = this.plan) { return adapter.plannerTick({ now, valid: true,
+      plan: { temperatureEvidenceAt: now, permissionExpiresAt: now + 180_000, ...plan }, recoveryReady: true }); } };
 }
 
 test('real MQTT fixture observations can never arm live control, including forged configuration', async () => {
@@ -50,6 +51,13 @@ test('real MQTT fixture observations can never arm live control, including forge
   assert.equal(f.adapter.status().automaticControl, false);
   assert.deepEqual((await f.start()).reasons, ['real-adapter-contract-unavailable']);
   assert.equal(f.adapter.status().contractStatus, 'provisional-fixture-only');
+});
+
+test('a published renewal interval incompatible with the host schedule cannot authorize OFF', async () => {
+  const f = fixture({ initialState: { leaseLimits: { ...TEMPLATE.leaseLimits, maximumMs: 600_000, renewAfterMs: 300_000 } } });
+  assert.equal(f.adapter.status().automaticControl, false);
+  assert.ok((await f.start()).reasons.includes('pause-renewal-interval-incompatible'));
+  assert.equal(f.sent.length, 0);
 });
 
 test('start, broker publication, acceptance, native confirmation and useful heat remain different evidence', async () => {
@@ -72,7 +80,7 @@ test('start, broker publication, acceptance, native confirmation and useful heat
 
 test('only valid planner ticks renew, with the same episode and immutable authorized endpoint', async () => {
   const f = fixture(); await f.start(); f.at(BASE + 1); f.accepted();
-  f.at(BASE + 300_000); f.accepted(f.sent[0]);
+  f.at(BASE + 60_000); f.accepted(f.sent[0]);
   for (let i = 0; i < 10; i++) await f.adapter.safetyTick({ now: f.now(), valid: true });
   assert.equal(f.sent.length, 1);
   await f.start({ ...f.plan, pauseUntil: f.plan.pauseUntil + 3_600_000 });
@@ -80,10 +88,10 @@ test('only valid planner ticks renew, with the same episode and immutable author
   assert.equal(f.sent[1].action, 'renew');
   assert.equal(f.sent[1].episodeId, f.sent[0].episodeId);
   assert.equal(f.sent[1].endpointAt, f.sent[0].endpointAt);
-  assert.equal(f.sent[1].requestedExpiryAt, BASE + 900_000);
+  assert.equal(f.sent[1].requestedExpiryAt, BASE + 240_000);
   assert.equal(f.sent[1].sequence, 2);
   assert.notEqual(f.sent[1].challenge, f.sent[0].challenge);
-  f.at(BASE + 900_000); f.accepted(f.sent[1]);
+  f.at(BASE + 240_000); f.accepted(f.sent[1]);
   await f.adapter.safetyTick({ now: f.now(), valid: true });
   assert.equal(f.sent.at(-1).action, 'release');
 });
@@ -284,10 +292,10 @@ test('late asynchronous START publication success cannot replace the newer relea
 
 test('accepted shorter endpoints remain binding and overlong reported leases force unresolved release', async () => {
   const shorter = fixture(); await shorter.start(); shorter.at(BASE + 1000);
-  shorter.accepted(shorter.sent[0], { lease: { episodeId: shorter.plan.id, expiresAt: BASE + 600_000, endpointAt: BASE + 700_000 } });
+  shorter.accepted(shorter.sent[0], { lease: { episodeId: shorter.plan.id, expiresAt: BASE + 180_000, endpointAt: BASE + 700_000 } });
   assert.equal(shorter.adapter.status().episode.endpointAt, BASE + 700_000);
-  shorter.at(BASE + 300_000); shorter.accepted(shorter.sent[0], {
-    lease: { episodeId: shorter.plan.id, expiresAt: BASE + 600_000, endpointAt: BASE + 700_000 } });
+  shorter.at(BASE + 60_000); shorter.accepted(shorter.sent[0], {
+    lease: { episodeId: shorter.plan.id, expiresAt: BASE + 180_000, endpointAt: BASE + 700_000 } });
   await shorter.start();
   assert.equal(shorter.sent.at(-1).endpointAt, BASE + 700_000);
   const longer = fixture(); await longer.start(); longer.at(BASE + 1000);
@@ -308,4 +316,57 @@ test('an explicit incompatible contract or malformed state immediately revokes p
     await f.start();
     assert.equal(f.sent.length, 1, 'unsupported schema cannot reuse the old session for another write');
   }
+});
+
+test('fresh adapter traffic cannot extend an OFF permission supported by unchanged temperatures', async () => {
+  const f = fixture(); await f.start(); const original = f.sent[0];
+  f.at(BASE + 1); f.accepted(original);
+  f.at(BASE + 60_000); f.accepted(original);
+  await f.start({ ...f.plan, temperatureEvidenceAt: BASE, permissionExpiresAt: f.now() + 180_000 });
+  assert.equal(f.sent.length, 1, 'Native status and a new challenge do not renew temperature evidence');
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, original.requestedExpiryAt);
+  f.at(BASE + 120_000); f.accepted(original);
+  await f.start({ ...f.plan, temperatureEvidenceAt: BASE, permissionExpiresAt: f.now() + 180_000 });
+  assert.equal(f.sent.at(-1).action, 'release', 'The two-minute evidence boundary ends the pause');
+});
+
+test('a potentially accepted renewal remains reserved through publication delay, disconnect and restart', async () => {
+  let finishRenewal;
+  const pending = new Promise(resolve => { finishRenewal = resolve; });
+  const f = fixture({ send: command => command.action === 'renew' ? pending : undefined });
+  await f.start(); f.at(BASE + 1); f.accepted();
+  f.at(BASE + 60_000); f.accepted(f.sent[0]);
+  const renewing = f.start();
+  assert.equal(f.sent.at(-1).action, 'renew');
+  const requestedExpiry = f.sent.at(-1).requestedExpiryAt;
+  assert.equal(requestedExpiry, BASE + 240_000);
+  assert.equal(f.adapter.status().episode.leaseExpiresAt, BASE + 180_000);
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, requestedExpiry);
+  f.adapter.setConnected(false);
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, requestedExpiry);
+  const restarted = fixture({ persisted: f.adapter.snapshot(), initialize: false });
+  assert.equal(restarted.adapter.status().outstandingPermissionExpiresAt, requestedExpiry);
+  finishRenewal(); await renewing;
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, requestedExpiry);
+});
+
+test('causal acceptance of a shorter local lease replaces the requested upper bound', async () => {
+  const f = fixture(); await f.start();
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 180_000);
+  f.at(BASE + 1000); f.accepted(f.sent[0], { lease: {
+    episodeId: f.plan.id, endpointAt: f.plan.pauseUntil, expiresAt: BASE + 120_000,
+  } });
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 120_000);
+  assert.equal(f.adapter.snapshot().outstandingPermissionExpiresAt, BASE + 120_000);
+});
+
+test('completed OFF commands cannot inflate the reserve of a later shorter episode', async () => {
+  const f = fixture(); await f.start(); f.at(BASE + 1000); f.accepted();
+  await f.adapter.release({ now: f.now() });
+  f.at(BASE + 2000); f.accepted();
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, null);
+  f.at(BASE + 3000); f.state();
+  await f.start({ ...f.plan, id: 'fixture-next-episode', permissionExpiresAt: BASE + 93_000 });
+  assert.equal(f.sent.at(-1).action, 'start');
+  assert.equal(f.adapter.status().outstandingPermissionExpiresAt, BASE + 93_000);
 });

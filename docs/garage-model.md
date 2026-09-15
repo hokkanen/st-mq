@@ -15,28 +15,32 @@ initially disabled and the protection policy is initially **unapproved**. The
 illustrative defaults need owner approval after reviewing the actual sensor
 placement and installation; they are not a recommended pipe-safety specification.
 
-Each external sensor has its own persisted degree-minute index. For every known
-interval the index gains the integral of `max(0, floorC - localTemperatureC)` over
-minutes. Version `garage-exposure-v2` integrates the cold and warm portions of
-linear segments in chronological order. With the defaults, the exposure floor
-is 2°C, the hard restoration threshold is −1°C and the budget is 90°C·minutes per location.
-Reaching either the hard minimum or the independent budget forbids a pause.
+Each external sensor drives an independent persisted reference temperature under
+`garage-thermal-reserve-v1`. A water-filled copper pipe supplies the reference
+heat capacity for protecting pipes and stored liquids. Defaults are 21 mm outside
+diameter, assumed 1 mm wall, 20 W/m²·K nominal heat transfer and a fixed uncertainty
+factor of 2. The factor doubles cooling and halves warming. Heat reserve is the
+calculated sensible heat above an estimated reference temperature of 1°C, in
+kJ per metre; at 6°C it is approximately 7.01 kJ/m. The 1°C margin is not an
+air-temperature cutoff. No latent-heat allowance permits partial freezing.
 
-Recovery requires continuous local temperature at least 4°C for 20 minutes before
-credit starts, then subtracts 1°C·minute per warm minute, never below zero. A
-brief warm report, the other location warming, changing aggressiveness, restoring
-native ON, model refitting and reconnecting do not reset this state. Missing
-history accumulates a conservative index using at least the floor-to-hard-limit
-rate, marks the history uncertain and earns no recovery. Uncertainty clears only
-after known continuous warm recovery has repaid that location's index. A gap index
-is a conservative accounting bound, not a reconstructed temperature measurement.
-Forecast crossings are located within each step; a brief exhausted budget is not
-hidden by later warming. The [pipe sensitivity audit](garage-protection-defaults.md)
-explains the lower thresholds, bare 21 mm copper sensitivity and why adjacent air
-temperature cannot establish a safe freezing duration.
+The estimate follows the air/reference temperature difference continuously.
+There is no assigned full allowance, warm dwell, recovery threshold or constant
+repayment rate. Air above 1°C can still cool a warmer reference. A brief warm
+report, the other location warming, changing aggressiveness, restoring native ON,
+model refitting and reconnecting cannot reset the state. Missing history earns
+no assumed warming, and unavailable evidence cannot authorize a pause. Absent or
+unsupported initial history starts from fully frozen reference contents at the
+supported −40°C air bound. Genuine warmth must repay this assumed thawing debt;
+there is no elapsed-time shortcut. Ordinary gaps debit their elapsed cooling
+without restarting that initial frozen state.
+Forecast checks must detect exhaustion within a step even if later warmth
+recovers the reserve. The [protection and sensitivity notes](garage-protection-defaults.md)
+explain initialization, thermal assumptions and the limits of adjacent-air
+estimates for actual pipes, fittings and containers.
 
-`maxSensorAgeMs` defaults to two minutes and is an engineering setting which must
-match the installed sensors' genuine reporting contract. Receipt of a retained
+Shelly uses a fixed 30-second status request cadence. `maxSensorAgeMs` is capped
+at two minutes for automatic protection. Receipt of a retained
 packet or heartbeat does not refresh a temperature. New reports with unchanged
 values do count as new evidence. Both locations must be fresh for every automatic
 pause even when historical/monitoring configuration permits rear-only data.
@@ -44,9 +48,12 @@ pause even when historical/monitoring configuration permits rear-only data.
 removing a front sensor is not an automatic reaction to stale data.
 
 Protection forecasts use independent lower-temperature trajectories and assume
-both EVs can stop charging. The runtime adds remaining accepted local permission
-and restoration/recovery delay. Neither the thermal memory nor a pump internal
-sensor substitutes for either external protection measurement.
+both EVs can stop charging. Pause permission is revalidated each minute, capped
+at three minutes from the older supporting temperature report and shortened when
+the thermal reserve requires it. The runtime accounts for outstanding possible
+device permission plus useful-heating delay, without an unconditional fifteen-minute
+reserve. Neither building memory nor a pump internal sensor substitutes for
+either external protection measurement. See [adapter timing](garage-adapter.md).
 
 ## Coupled thermal model
 
@@ -78,8 +85,8 @@ which preserves the contact's original source timestamp. Samples carry compact
 uninterrupted-closed evidence, so an opening or outage between temperature reports
 cannot vanish when the final state is closed again. Such intervals cannot fit
 thermal coefficients, baseline warmth or clean validation evidence. Unknown or
-open configured contacts block economic pauses while temperature protection keeps
-its independent rules. Solar is deliberately excluded in this version until a
+open configured contacts do not directly veto a pause; current independent
+temperature protection still applies. Solar is deliberately excluded in this version until a
 versioned model comparison shows held-out improvement.
 
 Both EV identities and their power/activity units remain separate. Shared rear
@@ -185,7 +192,7 @@ The planner searches all contiguous available price/weather intervals, up to
 Every candidate includes preparation (normal availability), any number of bounded
 OFF periods, recovery/continuation and an explicit terminal heat-equivalent debt.
 Native regulation is predicted through all phases; preparation never raises the
-thermostat. Minimum ON/OFF dwell, two separate projected exposure histories and
+thermostat. Minimum ON/OFF dwell, two separate projected heat reserves and
 restoration margins constrain candidates. Restoration remains the fallback if a
 discretionary dwell would conflict with protection.
 
@@ -250,7 +257,9 @@ All times below are numeric UTC milliseconds. Main exports are:
   active, confidence, cancelled }`; newest applicable known revision wins.
 - `createGarageExposure(settings)`, `updateGarageExposure(state, observation,
   settings)` and `assessGarageProtection(state, { now, observation, settings,
-  forecast, restorationDelayMs })` preserve independent front/rear indices.
+  forecast, restorationDelayMs })` preserve independent front/rear reference
+  temperatures and assess their available heat reserves. The retained exposure
+  API names do not imply degree-minute arithmetic.
 - `planGarage({ now, model, exposure, observation, settings, prices, forecast,
   knownEvPlans, activeEpisode, referenceInitialState, restorationDelayMs })` returns `nextAction`
   (`available`, `pause`, `renew`), `pauseUntil`, complete phase-labelled `steps`,
@@ -264,7 +273,7 @@ All times below are numeric UTC milliseconds. Main exports are:
 The persistent runtime records the explicit seed, algorithm and configuration for
 ordered journal updates and corrections. The same update function rebuilds model
 state. Unsupported versions are archival boundaries, not silently reinterpreted
-journals. Exposure, frozen forecasts and observed behavior are independent of
+journals. Protection state, frozen forecasts and observed behavior are independent of
 correction-driven model replacement. Pure functions do not publish MQTT commands.
 
 ## Explicit historical reconstruction
@@ -303,4 +312,4 @@ seed/configuration and selected sensor corrections. Other actual journal scopes
 are `mqtt`, `offline`, and `simulated`. The CLI prints a compact evidence summary
 and checksum, never raw household rows, device identifiers or private paths.
 Historical observer context is not silently installed as today's live seed and
-never mutates the current journal, exposure, episode, chart state or equipment.
+never mutates the current journal, protection reserve, episode, chart state or equipment.

@@ -233,7 +233,14 @@ Successful room-topic subscriptions can restore a recent genuine reading after
 a connection failure when its saved route signature matches. This does not
 renew its timestamp or erase the outage. Older unsigned readings require one
 new genuine report before they can be recovered on a later reconnect.
-ST-MQ requests direct Shelly status every 30 seconds. Standard MQTT equipment
+ST-MQ requests status every 30 seconds from any Shelly supplying
+`garage_temperature` or `garage_temperature_2`, including custom component
+mappings. Each device has its own polling clock; an unrelated Shelly's configured
+polling interval does not change the garage schedule. Garage Shelly readings
+expire after at most two minutes, including when a device is configured with a
+longer or unlimited equipment age. Reporting metadata records this effective
+cadence and grace. A full reply with one missing or errored probe cannot refresh
+that probe from the other readings. Standard MQTT equipment
 with a finite deadline must provide genuine periodic reports, preferably every
 minute for a two-minute deadline, even when the value is unchanged. Broker connectivity, generic heartbeats and repeated source
 timestamps cannot extend measurement validity.

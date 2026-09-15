@@ -122,14 +122,14 @@ test('interrupted door evidence cannot train or validate and replay keeps the or
   assert.equal(checkpoint.algorithmVersion, GARAGE_ALGORITHM_VERSION);
 });
 
-test('configured unknown and open doors block even previously validated pause durations', () => {
+test('configured unknown and open doors preserve previously validated pause durations', () => {
   const model = createGarageModel({ seedAt: START });
   const summary = { thermalReady: true, electricalReady: true, maxPauseHours: 2 };
   for (const doorFront of [null, true]) {
     const evidence = garagePlanningEvidence(model, summary, { now: START,
       observation: sample(0, { doorFront }) });
-    assert.equal(evidence.maxPauseHours, 0);
-    assert.equal(evidence.reason, doorFront === true ? 'garage-door-open' : 'garage-door-unavailable');
+    assert.equal(evidence.maxPauseHours, 2);
+    assert.equal(evidence.reason, 'validated-episode-duration');
   }
   assert.equal(garagePlanningEvidence(model, summary, { now: START, observation: sample(0) }).maxPauseHours, 2);
 });

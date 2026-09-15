@@ -6,17 +6,21 @@ import { planGarage } from '../src/garage/planner.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { createGarageModel, updateGarageModel, garageModelSummary } from '../src/garage/model.js';
 import { createGarageExposure, updateGarageExposure } from '../src/garage/protection.js';
+import { knownGarageReserve } from '../test/helpers/garage-reserve-fixture.js';
 import { runScenario } from './garage-simulation-audit.js';
 import { AUDIT_START, HOUR, outdoorAt, createPlant, plantInputs, stepPlant,
   observedPlant, randomSource } from '../test/helpers/garage-plant.js';
 const round = value => Number.isFinite(value) ? Math.round(value * 100000) / 100000 : value;
+// Declared simulation allowance, preserving the previous comparison's assumed
+// heating response. This is not a measured bound for the installed heat pump.
+const SIMULATED_HEATING_RESPONSE_MS = 10 * 60_000;
 const PRICES = [
   { name: 'flat', values: Array(24).fill(7) },
   { name: 'mild-peak', values: Array.from({ length: 24 }, (_, i) => i >= 6 && i < 10 ? 12 : 7) },
   { name: 'ordinary-peak', values: Array.from({ length: 24 }, (_, i) => i >= 6 && i < 10 ? 40 : 7) },
   { name: 'two-peaks', values: Array.from({ length: 24 }, (_, i) => i >= 4 && i < 7 || i >= 15 && i < 18 ? 40 : 7) },
 ];
-export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {} } = {}) {
+export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {}, restorationDelayMs = SIMULATED_HEATING_RESPONSE_MS } = {}) {
   const started = performance.now();
   const trained = runScenario({ days, cadenceMinutes, parameters, offDurations: [], includeSnapshot: true });
   const { model, plant, observation } = trained.snapshot, now = observation.at, hour = (now - AUDIT_START) / HOUR;
@@ -25,9 +29,12 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
   const rows = [];
   for (const tariff of PRICES) for (const aggressiveness of [0, 25, 50, 75, 100]) {
     const settings = garageSettings({ enabled: true, aggressiveness, protection: { approved: true } });
-    const exposure = updateGarageExposure(createGarageExposure(settings), observation, settings);
+    // This frozen comparison starts with explicitly warm synthetic reference
+    // objects. It does not infer installed pipe warmth from one air report.
+    const exposure = knownGarageReserve(settings, { at: now, rearC: plant.state.rearC, frontC: plant.state.frontC,
+      rearAirC: observation.rearC, frontAirC: observation.frontC });
     const prices = tariff.values.map((value, i) => ({ start: now + i * HOUR, end: now + (i + 1) * HOUR, priceCtPerKwh: value }));
-    const planned = planGarage({ now, model, observation, exposure, prices, forecast, settings });
+    const planned = planGarage({ now, model, observation, exposure, prices, forecast, settings, restorationDelayMs });
     const candidate = structuredClone(plant), reference = structuredClone(plant);
     const totals = { candidateKwh: 0, referenceKwh: 0, candidateCostEur: 0, referenceCostEur: 0,
       offHours: 0, coolingDegreeHours: 0, minimumRearC: Infinity, minimumFrontC: Infinity };
@@ -58,6 +65,7 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
       ...Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, round(value)])), horizonDebtC, endDebtC });
   }
   return { fixtureVersion: 'independent-garage-plant-v1', algorithm: model.algorithm,
+    protectionVersion: garageSettings().protection.version, restorationDelayMs,
     scope: 'Open-loop software simulation of a frozen plan with 24h extra recovery at 7c/kWh; residual mass debt remains explicit. No installed performance or realized savings claim.',
     training: { days, cadenceMinutes, ready: trained.ready, electricalReady: trained.electricalReady, maxPauseHours: trained.maxPauseHours },
     defaults: garageSettings(), runtimeMs: round(performance.now() - started), rows };
@@ -67,8 +75,11 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
  * continuation before the next decision. This tests learning/control economics,
  * not the external adapter's native lease or acknowledgements. */
 export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = {}, seed = 731,
-  peakCents = 40, baseCents = 7 } = {}) {
+  peakCents = 40, baseCents = 7, restorationDelayMs = SIMULATED_HEATING_RESPONSE_MS } = {}) {
   const started = performance.now(), plant = createPlant(parameters), random = randomSource(seed);
+  // Extra protection reports must not consume the learner's existing noise
+  // sequence. Both consumers use the same report at each learning boundary.
+  const protectionRandom = randomSource(seed);
   const settings = garageSettings({ enabled: true, aggressiveness: 50,
     maxSensorAgeMs: Math.max(120_000, cadenceMinutes * 120_000), protection: { approved: true } });
   let model = createGarageModel({ seedAt: AUDIT_START }), exposure = createGarageExposure(settings), planned = null;
@@ -81,16 +92,17 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
     if (available !== previousAvailable) { availableChangedAt = at; previousAvailable = available; }
     let input = { ...plantInputs(plant, hour, { available }), managedPause: !available,
       recovering: row?.phase === 'recovery', availableChangedAt };
-    if (minute % cadenceMinutes === 0) {
-      const observation = observedPlant(plant, hour, input, random);
+    const learningReport = minute % cadenceMinutes === 0;
+    const observation = observedPlant(plant, hour, input, learningReport ? random : protectionRandom);
+    exposure = updateGarageExposure(exposure, observation, settings);
+    if (learningReport) {
       model = updateGarageModel(model, observation, settings);
-      exposure = updateGarageExposure(exposure, observation, settings);
       if (minute >= 40 * 60 && (minute - 40 * 60) % (56 * 60) === 0) {
         const forecast = Array.from({ length: 24 }, (_, i) => ({ start: at + i * HOUR, end: at + (i + 1) * HOUR,
           outdoorC: outdoorAt(hour + i, plant.parameters), issuedAt: at }));
         const prices = Array.from({ length: 24 }, (_, i) => ({ start: at + i * HOUR, end: at + (i + 1) * HOUR,
           priceCtPerKwh: i < 4 ? peakCents : baseCents }));
-        planned = planGarage({ now: at, model, exposure, observation, prices, forecast, settings });
+        planned = planGarage({ now: at, model, exposure, observation, prices, forecast, settings, restorationDelayMs });
         const summary = garageModelSummary(model);
         opportunities.push({ day: round(hour / 24), ready: summary.ready, electricalReady: summary.electricalReady,
           maxPauseHours: round(summary.maxPauseHours), completedEpisodes: summary.validation.completedEpisodes,
@@ -106,6 +118,7 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
   }
   const summary = garageModelSummary(model);
   return { algorithm: model.algorithm, days, cadenceMinutes, seed, parameters, peakCents, baseCents,
+    protectionVersion: settings.protection.version, protectionCadenceMinutes: 1, restorationDelayMs,
     nativeSamples: model.native.samples, totalOffHours: round(totalOffHours),
     ready: summary.ready, electricalReady: summary.electricalReady, maxPauseHours: round(summary.maxPauseHours),
     validation: summary.validation, stateBytes: Buffer.byteLength(JSON.stringify(model)),
