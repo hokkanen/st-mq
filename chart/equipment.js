@@ -5,10 +5,10 @@ import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
-  : ['H66', 'Mitsubishi', 'Simulation'].includes(device.source) ? device.source : 'MQTT';
+  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate'].includes(device.source) ? device.source : 'MQTT';
 const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
 const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
@@ -307,7 +307,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     if (!remaining.length) continue;
     const parts = group.id === 'temperatures' ? ['home', 'garage'].map(area => ({ area,
       topics: remaining.filter(topic => (topic.signal?.startsWith('garage_') ? 'garage' : 'home') === area) }))
-      : [{ area: ['garage-adapter', 'teslamate'].includes(group.id) ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
+      : [{ area: group.id === 'garage-adapter' ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
     for (const part of parts) {
       if (!part.topics.length) continue;
       const row = { id: `connection:${group.id}:${part.area}`, label: group.label ?? pretty(group.id), area: part.area,
@@ -335,7 +335,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const retainedAt = reception.lastRetainedAt;
         const lastMessageAt = reception.lastMessageAt ?? provider.lastMessageAt;
         const failed = ['failed', 'denied', 'error'].includes(subscription);
-        Object.assign(row, { label: 'TeslaMate', source: 'TeslaMate', mqttStatus: reception,
+        Object.assign(row, { label: 'Charger 1 vehicle', kind: 'vehicle', source: 'TeslaMate', mqttStatus: reception,
           lastReportAt: liveAt,
           connectionState: provider.enabled === false ? { label: 'Not enabled', state: 'pending' }
             : connected === false ? { label: 'Disconnected', state: 'attention' }
@@ -431,9 +431,12 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     for (const [index, device] of devices.entries()) {
       let node = readingNodes.get(device.id);
       if (!node) {
-        const section = make('section', '', 'equipment-device'), heading = make('div', '', 'equipment-device-heading');
+        const section = make('details', '', 'equipment-device'), summary = make('summary', '', 'equipment-device-summary');
+        const heading = make('div', '', 'equipment-device-heading'), body = make('div', '', 'equipment-device-body');
         section.dataset.deviceId = device.id;
-        const title = make('h4'), source = make('span', '', 'equipment-source');
+        const title = make('h4'), metadata = make('small', '', 'equipment-device-meta');
+        const preview = make('span', '', 'equipment-device-preview'), health = make('span', '', 'equipment-device-health');
+        const source = make('span', '', 'equipment-source'), recent = make('small', '', 'equipment-device-recent');
         const list = make('dl', '', 'equipment-readings'), empty = make('p', 'Waiting for readings', 'muted');
         const controls = make('div', '', 'equipment-inline-controls'), buttons = make('div', '', 'equipment-switch-buttons');
         buttons.setAttribute('role', 'group');
@@ -457,17 +460,28 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         coverHelp.id = `equipment-cover-${device.id}-help`;
         coverResult.setAttribute('role', 'status'); coverResult.setAttribute('aria-live', 'polite');
         coverControls.append(coverButtons, coverHelp, coverResult);
-        heading.append(title, source); section.append(heading, list, empty, controls, coverControls);
-        node = { section, title, source, list, empty, controls, buttons, on, off, help, result,
+        heading.append(title, metadata); health.append(source, recent); summary.append(heading, preview, health);
+        body.append(list, empty, controls, coverControls); section.append(summary, body);
+        node = { section, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
           coverControls, coverButtons, coverActions, coverHelp, coverResult, rows: new Map() }; readingNodes.set(device.id, node);
       }
-      if (root.children[index] !== node.section) root.insertBefore(node.section, root.children[index] ?? null);
+      if (root.children[index] !== node.section) {
+        // Moving a details element preserves its open state. Keep keyboard focus
+        // on its current control too when a status update changes device order.
+        const focused = node.section.contains(document.activeElement) ? document.activeElement : null;
+        root.insertBefore(node.section, root.children[index] ?? null);
+        focused?.focus({ preventScroll: true });
+      }
       node.title.textContent = device.label ?? labels[device.kind] ?? 'Device';
-      const healthy = device.available && !device.needsAttention;
-      node.source.textContent = healthy ? 'Available' : 'Needs attention';
-      node.source.dataset.state = healthy ? 'available' : 'attention';
-      node.source.setAttribute('aria-label', `${equipmentSource(device)} · ${node.source.textContent}`);
+      node.metadata.textContent = [labels[device.kind] ?? pretty(device.kind || 'device'), equipmentSource(device)].join(' · ');
+      const connection = equipmentConnectionSummary(device);
+      node.source.textContent = connection.label;
+      node.source.dataset.state = connection.state;
+      node.section.dataset.state = connection.state;
+      node.recent.textContent = connection.recent;
       const rows = equipmentReadingRows(device);
+      node.preview.textContent = rows.slice(0, 2).map(row => `${rows.length > 1 || device.kind === 'heat_pump' ? `${row.label}: ` : ''}${row.value}${row.qualifier ? ` (${row.qualifier})` : ''}`).join(' · ');
+      node.preview.hidden = !rows.length;
       node.empty.hidden = rows.length > 0; node.list.hidden = !rows.length;
       for (const [index, row] of rows.entries()) {
         let cells = node.rows.get(row.signal);
@@ -632,6 +646,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     if (dhwrNode.parentElement !== dhwrAnchor.parentElement) dhwrAnchor.parentElement.insertBefore(dhwrNode, dhwrAnchor);
     $('dhwr-title').textContent = dhwrDevice?.label ?? 'Hot-water circulation';
     const dhwr = dhwrReadingSummary(status);
+    const dhwrPreview = $('dhwr-preview');
+    if (dhwrPreview) dhwrPreview.textContent = `${dhwr.state.value} · ${dhwr.powerLabel}: ${dhwr.power.value}`;
     $('dhwr-live-power-label').textContent = dhwr.powerLabel;
     $('dhwr-live-power-time').textContent = dhwr.powerReportedAt;
     $('dhwr-live-power-time').hidden = !dhwr.powerReportedAt;

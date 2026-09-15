@@ -422,11 +422,13 @@ export function renderGarage(document, status) {
     detail(`garage-native-${field === 'targetC' ? 'target' : field}`, fresh ? last : 'Unknown', title,
       last === 'Unknown' ? 'No usable native reading received.'
         : `${fresh ? 'Last reported' : `Last reported ${last}`} · ${finite(at) ? clock(at) : 'freshness unknown'}`, !fresh);
-    return { value, fresh };
+    return { value, fresh, label: fresh ? last : 'Unknown' };
   };
   const power = nativeReading('power', 'Mitsubishi power', text);
-  nativeReading('mode', 'Mitsubishi mode', text);
-  nativeReading('targetC', 'Mitsubishi target', value => number(value, '°C'));
+  const mode = nativeReading('mode', 'Mitsubishi mode', text);
+  const target = nativeReading('targetC', 'Mitsubishi target', value => number(value, '°C'));
+  set('garage-pump-preview', [power, mode, target].some(reading => reading.label !== 'Unknown')
+    ? `Power: ${power.label} · Mode: ${mode.label} · Target: ${target.label}` : 'Waiting for heat-pump readings');
   let heating = 'Heating unverified';
   if (garage.heatingControls?.requestedMode === 'off') heating = power.fresh && power.value === 'off' ? 'Heating off' : 'Off requested';
   else if (adapter.phase === 'paused') heating = power.fresh && power.value === 'off' ? 'Saving mode' : 'Saving · unverified';

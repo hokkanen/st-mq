@@ -351,7 +351,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
 });
 
 class Node {
-  constructor(document) { this.document = document; this.children = []; this.listeners = new Map(); this.attributes = new Map(); this.value = ''; this.disabled = false;
+  constructor(document, tag = 'div') { this.document = document; this.tagName = tag.toUpperCase(); this.children = []; this.listeners = new Map(); this.attributes = new Map(); this.value = ''; this.disabled = false;
     this.dataset = {}; this.classList = { add() {}, remove() {}, toggle() {} }; }
   set id(value) { this._id = value; this.document.nodes.set(value, this); }
   get id() { return this._id; }
@@ -364,7 +364,7 @@ class Node {
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(node => node !== this); }
 }
 function documentFixture() {
-  const document = { nodes: new Map(), createElement: () => new Node(document), createDocumentFragment: () => new Node(document), getElementById(id) { return this.nodes.get(id); } };
+  const document = { nodes: new Map(), createElement: tag => new Node(document, tag), createDocumentFragment: () => new Node(document), getElementById(id) { return this.nodes.get(id); } };
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   for (const match of html.matchAll(/id="((?:charging|charger)[^"]+)"/g)) { const node = document.createElement(); node.id = match[1]; }
   return document;
@@ -392,8 +392,12 @@ test('identical forms adapt to capabilities and automatic values, with no shared
 test('refresh preserves a fallback edit and serializes mutations', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let resolve;
   const panel = createChargingPanel({ document, request: async (path, payload) => { calls.push([path, payload]); return new Promise(done => { resolve = done; }); } });
-  panel.update(status()); const field = $('charger1-setting-manualSoc'); field.value = '45'; field.listeners.get('input')();
-  panel.update(status()); assert.equal(field.value, '45'); const pending = submit($('charger1-settings-form'));
+  panel.update(status()); const device = $('charger1-device'), field = $('charger1-setting-manualSoc');
+  device.open = true; field.value = '45'; field.listeners.get('input')();
+  panel.update(status()); assert.equal(device.open, true); assert.equal(field.value, '45');
+  device.open = false; panel.update(status()); assert.equal(device.open, false);
+  device.open = true; assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45');
+  const pending = submit($('charger1-settings-form'));
   assert.deepEqual(calls, [['/api/charging/chargers/charger1/settings', { manualSoc: 45 }]]);
   assert($('charger1-enabled').disabled); await $('charger1-enabled').listeners.get('click')(); assert.equal(calls.length, 1);
   const updated = status(); updated.charging.chargers[0].settings.manualSoc = 45; resolve(updated); await pending;
@@ -447,7 +451,7 @@ test('automatic SoC takes priority while preserving a draft to use when automati
 });
 
 
-test('the rendered overview hides disconnected percentages, retains settings, and keeps critical times unfolded', () => {
+test('the equipment fold keeps critical charging information visible and opens directly to settings', () => {
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
   panel.update(status()); assert($('charger1-overview').hidden); assert($('charger1-reading-time').hidden);
   assert.equal($('charger1-enabled-label').textContent, 'Automatic charging');
@@ -459,7 +463,15 @@ test('the rendered overview hides disconnected percentages, retains settings, an
   assert.equal($('charger1-deadline').textContent, 'tomorrow 06:00');
   assert.equal($('charger1-sources').textContent, 'Vehicle MQTT');
   assert.match($('charger1-remaining').textContent, /32.9 kWh grid to target/);
-  assert.equal($('charger1-reading-time').parentElement.id, 'charger1-device');
+  const device = $('charger1-device'), summary = $('charger1-device-summary'), body = $('charger1-settings-details');
+  assert.equal(device.tagName, 'DETAILS'); assert.equal(summary.tagName, 'SUMMARY'); assert.equal(body.tagName, 'DIV');
+  assert.deepEqual(device.children, [summary, body]);
+  assert.equal($('charger1-reading-time').parentElement, summary);
+  assert.equal($('charger1-settings-form').parentElement, body);
+  const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
+  assert(!descendants(summary).some(node => ['BUTTON', 'INPUT', 'FORM', 'DETAILS', 'A'].includes(node.tagName)),
+    'The whole equipment header toggles the fold without competing controls');
+  assert.deepEqual(descendants(body).filter(node => node.tagName === 'DETAILS').map(node => node.id), ['charger1-explanation-details']);
   assert.equal($('charger1-explanation-details').parentElement.id, 'charger1-settings-details');
   panel.close();
 });

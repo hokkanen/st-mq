@@ -43,7 +43,7 @@ try {
   const command=async(method,params)=>{
     if(method==='browsingContext.setViewport')return send('Emulation.setDeviceMetricsOverride',{...params.viewport,deviceScaleFactor:1,mobile:false});
     if(method==='browsingContext.captureScreenshot')return send('Page.captureScreenshot',{format:'png'});
-    if(method==='input.performActions'){for(const group of params.actions)for(const action of group.actions){const key=action.value==='\uE00C'?'Escape':'Enter';await send('Input.dispatchKeyEvent',{type:action.type==='keyDown'?'keyDown':'keyUp',key,code:key,windowsVirtualKeyCode:key==='Escape'?27:13});}return;}
+    if(method==='input.performActions'){for(const group of params.actions)for(const action of group.actions){const key=action.value==='\uE00C'?'Escape':'Enter';await send('Input.dispatchKeyEvent',{type:action.type==='keyDown'?'keyDown':'keyUp',key,code:key,windowsVirtualKeyCode:key==='Escape'?27:13,...(key==='Enter'&&action.type==='keyDown'?{text:'\r',unmodifiedText:'\r'}:{})});}return;}
     throw new Error(`Unsupported browser operation ${method}`);
   };
   await send('Runtime.enable');await send('Page.enable');

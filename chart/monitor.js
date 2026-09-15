@@ -420,7 +420,11 @@ function renderH66(s) {
     setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
       title: title.textContent, detail: row.detail });
   }
-  for (const row of h66EquipmentSummary(s)) {
+  const pumpReadings = h66EquipmentSummary(s);
+  $('home-pump-preview').textContent = pumpReadings.some(row => row.available)
+    ? pumpReadings.map(row => `${row.title}: ${row.available ? row.value : 'Unavailable'}`).join(' · ')
+    : 'Waiting for heat-pump readings';
+  for (const row of pumpReadings) {
     const equipmentValue = $(`home-pump-${row.key}`);
     equipmentValue.classList.toggle('muted', !row.available);
     setStatusDetail(equipmentValue, { key: `home-pump-${row.key}`, label: row.available ? row.value : 'Unavailable',
@@ -437,9 +441,8 @@ function renderH66(s) {
     : 'Waiting for a live H66 connection and fresh values from the heat pump.')).trim().replace(/^./, value => value.toUpperCase());
   setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
     title: 'Heat-pump connection', detail: connectionDetail });
-  setStatusDetail($('home-pump-connection'), { key: 'home-pump-connection',
-    label: h66.connected ? 'H66 connected' : h66.brokerConnected ? 'H66 awaiting readings' : 'H66 not connected',
-    title: 'Ground-source heat-pump connection', detail: connectionDetail });
+  $('home-pump-health').textContent = h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
+  $('home-pump-health').dataset.state = h66.connected ? 'available' : 'attention';
   if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
   if (h66.restorationPending) setStatusDetail($('h66-context'), { key: 'h66-context',
     label: 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.', detail: '' });

@@ -30,7 +30,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     ];
     fixture.dhwr={active:false,durationMinutes:10,actualOn:false,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
-    fixture.response = base => ({...base,equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[{id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]}]},dhwr:fixture.dhwr,
+    fixture.response = base => ({...base,equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
+      {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
+      {id:'teslamate',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
+    ]},providers:{...base.providers,teslamate:{enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at,chargerId:'charger2'}}},dhwr:fixture.dhwr,
       heatingTests:{available:true},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}});
     window.fetch = async (...args) => {
       const path = new URL(args[0],location.href).pathname;
@@ -63,6 +66,18 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.getElementById('garage-equipment-readings').textContent.includes('By the back wall')"), true);
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 0, 'Monitoring sends no commands');
     const caravan = '#garage-equipment-readings [data-device-id=caravan]';
+    assert.equal(await evaluate(`document.querySelector('${caravan}').tagName`), 'DETAILS');
+    assert.equal(await evaluate(`document.querySelector('${caravan}').open`), false, 'Equipment starts as a compact summary');
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-device-body').checkVisibility()`), false);
+    assert.equal(await evaluate("document.querySelectorAll('.equipment-device > summary button, .equipment-device > summary input, .equipment-device > summary a').length"), 0, 'A device summary has one native disclosure action');
+    assert.match(await evaluate(`document.querySelector('${caravan} > summary').textContent`), /Caravan.*Shelly.*Switch: On.*Available/);
+    await evaluate(`document.querySelector('${caravan} > summary h4').click();document.querySelector('${caravan} > summary').focus();true`);
+    await settle();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-device-body').checkVisibility()`), true, 'Clicking the equipment heading expands the full row');
+    await command('input.performActions',{context,actions:[{type:'key',id:'equipment-fold',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
+    await settle();
+    assert.equal(await evaluate(`document.querySelector('${caravan}').open`), false, 'Enter toggles the native equipment disclosure');
+    await evaluate("document.querySelectorAll('.equipment-device').forEach(node=>node.open=true);true");
     assert.equal(await evaluate(`document.querySelector('${caravan} button[aria-pressed=true]').textContent`), 'Turn on');
     await evaluate(`document.querySelector('${caravan} .equipment-switch-buttons button:last-child').click();true`);
     await until('window.equipmentUiFixture.calls.length === 1'); await settle();
@@ -77,6 +92,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Charger 1 vehicle');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'other');
+    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
     await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='invented/garage/long-device-prefix/door1/contact/state')"), true);
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /no status-request topic/);
@@ -120,11 +138,13 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await until("window.equipmentUiFixture.calls.length === 4 && !document.getElementById('test-heaton60').disabled");
     await evaluate("window.equipmentUiFixture.dhwr.actualOn=true;window.equipmentUiFixture.dhwr.feedback.state.value=1;true"); await refresh();
     // Removing/reordering/adding devices retains unrelated row identity and open diagnostics.
-    await evaluate(`window.equipmentUiFixture.savedRow=document.querySelector('${caravan}');window.equipmentUiFixture.savedDevices=[...window.equipmentUiFixture.devices];window.equipmentUiFixture.devices=window.equipmentUiFixture.devices.filter(d=>d.id!=='door1').reverse();true`);
+    await evaluate(`window.equipmentUiFixture.savedRow=document.querySelector('${caravan}');document.querySelector('${caravan} > summary').focus();window.equipmentUiFixture.savedDevices=[...window.equipmentUiFixture.devices];window.equipmentUiFixture.devices=window.equipmentUiFixture.devices.filter(d=>d.id!=='door1').reverse();true`);
     await refresh();
     assert.equal(await evaluate("document.querySelector('#garage-equipment-readings [data-device-id=door1]') === null"), true);
     assert.equal(await evaluate(`document.querySelector('${caravan}')===window.equipmentUiFixture.savedRow`), true);
+    assert.equal(await evaluate(`document.querySelector('${caravan}').open`), true, 'Polling and device reordering preserve an expanded device');
     await evaluate("window.equipmentUiFixture.devices=window.equipmentUiFixture.savedDevices;true"); await refresh();
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${caravan} > summary')`), true, 'Reordering preserves keyboard focus on the same equipment');
     await evaluate("window.equipmentUiFixture.dhwr.feedback.deviceId='dhwr';window.equipmentUiFixture.devices.push({id:'dhwr',label:'Circulation pump',area:'garage',kind:'switch',available:true});true"); await refresh();
     assert.equal(await evaluate("document.getElementById('dhwr-device').closest('#garage-equipment-details')!==null"), true, 'Circulation follows its configured location');
     assert.equal(await evaluate("document.querySelectorAll('#garage-equipment-readings [data-device-id=dhwr]').length"), 0, 'Circulation feedback has one row');
@@ -141,6 +161,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Stop sent. Switch feedback is not configured.');
     // Cover operations remain separate from the contact state and from other device results.
     const door1 = '#garage-equipment-readings [data-device-id=door1]', door2 = '#garage-equipment-readings [data-device-id=door2]';
+    await evaluate(`document.querySelector('${door1}').open=true;document.querySelector('${door2}').open=true;true`);
     const coverCalls = await evaluate('window.equipmentUiFixture.calls.length');
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${door1} [data-cover-action]')].filter(node=>!node.hidden).map(node=>node.textContent)`), ['Open', 'Close']);
     assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), false, 'An open contact does not establish fully open position');
@@ -171,7 +192,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
       await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();
       await evaluate("document.getElementById('garage-equipment-details').scrollIntoView({block:'start'});true");
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `No page overflow at ${width}px`);
-      assert.equal(await evaluate(`(() => {const boxes=[...document.querySelectorAll('#garage-equipment-readings > section')].map(node=>node.getBoundingClientRect());return boxes.every((box,index)=>boxes.slice(index+1).every(other=>box.right<=other.left+1||other.right<=box.left+1||box.bottom<=other.top+1||other.bottom<=box.top+1))})()`), true, 'Device cards never overlap');
+      assert.equal(await evaluate(`(() => {const boxes=[...document.querySelectorAll('#garage-equipment-readings > .equipment-device')].map(node=>node.getBoundingClientRect());return boxes.length>0&&boxes.every((box,index)=>boxes.slice(index+1).every(other=>box.right<=other.left+1||other.right<=box.left+1||box.bottom<=other.top+1||other.bottom<=box.top+1))})()`), true, 'Equipment rows never overlap');
       assert.equal(await evaluate(`(() => {const n=document.querySelector('${trigger}'),s=getComputedStyle(n);return s.marginTop==='0px'&&s.minHeight==='0px'&&getComputedStyle(n,'::after').content==='none'})()`), true, 'No inherited button spacing or circled i');
       const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
       writeFileSync(`var/equipment-controls-${width}.png`,Buffer.from(shot.data,'base64'));

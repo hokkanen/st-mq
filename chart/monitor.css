@@ -909,7 +909,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-heat-pump .h66-test-form .equipment-control-state { grid-column: 1 / -1; }
 .equipment-heat-pump .h66-test-form button { margin-top: 12px; }
 .equipment-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; color: var(--muted); }
-#dhwr-device { margin-top: 12px; }
+
 #dhwr-controls > :first-child { margin-top: 0; }
 .equipment-connection { gap: 12px 18px; padding: 16px 0; }
 .equipment-connection-description { min-width: 0; }
@@ -1043,11 +1043,11 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-summary .equipment-notes p:last-child { padding-right: 30px; }
 .zone-expand::before { content: '+'; font-size: 20px; font-weight: 400; line-height: 1; }
 .heating-zone[open] > summary .zone-expand::before { content: '−'; }
-/* Major sections have a continuous outline; each device has its own inset card. */
-.zone-content { display: grid; gap: 14px; margin-top: 20px; padding: 0 0 4px; border: 0; }
-.zone-section { --section-padding: 14px; min-width: 0; padding: var(--section-padding); border: 1px solid var(--border); border-radius: 8px; container-type: inline-size; }
-.zone-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; margin: calc(-1 * var(--section-padding)) calc(-1 * var(--section-padding)) var(--section-padding); padding: 14px var(--section-padding); border-bottom: 1px solid var(--border); border-radius: 7px 7px 0 0; background: var(--surface-soft); }
-.zone-section-heading > h4 { min-width: 0; margin: 0; font-size: 13px; font-weight: 600; }
+/* Equipment is one list: a generous summary row opens its readings and controls. */
+.zone-content { display: grid; gap: 30px; margin-top: 24px; padding: 0 0 4px; border: 0; }
+.zone-section { min-width: 0; padding: 0; border: 0; container-type: inline-size; }
+.zone-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 14px; }
+.zone-section-heading > h4 { min-width: 0; margin: 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .065em; text-transform: uppercase; }
 .zone-section-heading > .equipment-device-status { font-size: 10px; }
 .zone-content .zone-control-help { margin: 8px 0 12px; line-height: 1.65; }
 .zone-content .heating-mode-buttons { margin: 12px 0 0; }
@@ -1056,31 +1056,49 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .heating-mode-buttons button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .heating-mode-buttons button:not(:disabled):hover { background: var(--surface-soft); border-color: var(--accent); }
 .zone-content .zone-configuration > .equipment-fold { margin: 14px 0 0; }
-.zone-content .equipment-device { min-width: 0; padding: 14px; margin: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
-.zone-content .equipment-device-heading { gap: 4px 12px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.zone-content .equipment-device { min-width: 0; padding: 0; margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
+.zone-content .equipment-device[open] { background: color-mix(in srgb, var(--surface-soft) 65%, var(--surface)); }
+.equipment-device > .equipment-device-summary { position: relative; display: grid; gap: 6px 16px; grid-template-columns: minmax(0, 1fr) auto; min-height: 86px; padding: 18px 38px 18px 12px; list-style: none; }
+.equipment-device-summary > * { min-width: 0; grid-column: 1 / -1; }
+.equipment-device-summary::-webkit-details-marker { display: none; }
+.equipment-device-summary::after { content: '›'; position: absolute; right: 13px; top: 21px; color: var(--muted); font-size: 20px; line-height: 20px; }
+.equipment-device[open] > .equipment-device-summary::after { transform: rotate(90deg); }
+.equipment-device-summary:hover { background: var(--surface-soft); }
+.equipment-device-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.zone-content .equipment-device-heading { gap: 4px 12px; padding: 0; margin: 0; border: 0; }
 .zone-content .equipment-device-heading > * { min-width: 0; overflow-wrap: anywhere; }
-.zone-content .equipment-device-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.zone-content .equipment-device-list > .equipment-device:has(.equipment-controls) { grid-column: 1 / -1; }
-.zone-equipment > .equipment-device, .zone-equipment > .equipment-device-list:not(:empty), .zone-equipment > .charging-device-list:not(:empty) { margin-bottom: 12px; }
+.equipment-device-summary > .equipment-device-heading:has(.equipment-device-meta) { grid-column: 1; display: grid; align-content: start; }
+.equipment-device-meta, .equipment-device-recent { color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.6; }
+.equipment-device-summary > .equipment-device-health { grid-column: 2; grid-row: 1; display: grid; gap: 4px; align-content: start; text-align: right; }
+.equipment-device-preview { display: block; margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.equipment-device > .equipment-device-body { min-width: 0; padding: 0 14px 18px; overflow-wrap: anywhere; }
+.equipment-device-body > :first-child { margin-top: 0; }
+.equipment-device-body > :last-child { margin-bottom: 0; }
+.equipment-body-title { margin: 18px 0 10px; font-size: 12px; font-weight: 550; }
+.equipment-reading-section { margin-top: 18px; }
+.zone-content .equipment-device-list { grid-template-columns: minmax(0, 1fr); gap: 0; }
 .zone-content .equipment-device .equipment-readings { margin-top: 8px; }
 .zone-content .equipment-fold { margin-top: 8px; }
 .zone-content .equipment-fold + .equipment-fold { margin-top: 0; }
 .zone-content .equipment-readings { font-size: 12px; }
-.zone-content .native-heat-pump > .equipment-fold { margin-inline-start: 0; }
-.zone-content .native-heat-pump > .equipment-fold > summary { color: var(--muted); }
+.zone-content .native-heat-pump .equipment-device-body > .equipment-fold { margin-inline: 0; }
+.zone-content .native-heat-pump .equipment-fold > summary { color: var(--muted); }
 .native-heat-pump .equipment-fold > .equipment-inline-controls { margin-top: 14px; }
-.zone-content .zone-availability-fold { margin: 0; }
-.zone-availability-fold > summary { display: grid; gap: 4px; }
-.zone-content .temporary-form { padding-top: 10px; container-type: inline-size; }
+.zone-content .zone-availability-fold { margin: 16px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.zone-availability-fold > summary { display: grid; gap: 4px; padding-left: 0; border-radius: 0; }
+.zone-availability-fold[open] > summary { border: 0; border-radius: 0; background: transparent; }
+.zone-content .temporary-form { padding: 0 0 8px; container-type: inline-size; }
 .zone-content .temporary-form .form-timezone { margin-bottom: 12px; font-size: 10px; }
 .zone-content .temporary-field { margin: 14px 0; }
 .zone-content .temporary-status:empty { display: none; }
-.zone-connections { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.zone-connections { margin-top: 0; padding-top: 16px; border-top: 1px solid var(--border); }
 @container (max-width: 360px) {
-  .zone-section .equipment-device-list { grid-template-columns: minmax(0, 1fr); }
-  .zone-section .pump-native-overview { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .zone-section .pump-native-overview > .equipment-value { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px; }
-  .zone-section .pump-native-overview > .equipment-value > strong { text-align: right; overflow-wrap: anywhere; }
+  .equipment-device > .equipment-device-summary { grid-template-columns: minmax(0, 1fr); padding-left: 8px; padding-right: 30px; }
+  .equipment-device-summary > .equipment-device-health { grid-column: 1; grid-row: auto; display: flex; flex-wrap: wrap; gap: 4px 10px; text-align: left; }
+  .equipment-device > .equipment-device-body { padding-inline: 8px; }
+  .zone-section .pump-native-overview:not(.charging-overview) { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .zone-section .pump-native-overview:not(.charging-overview) > .equipment-value { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px; }
+  .zone-section .pump-native-overview:not(.charging-overview) > .equipment-value > strong { text-align: right; overflow-wrap: anywhere; }
   .zone-section .heating-mode-buttons, .zone-section .h66-test-form { grid-template-columns: minmax(0, 1fr); }
   .temporary-form .temporary-input-row { grid-template-columns: minmax(0, 1fr); }
   .temporary-form .temporary-input-row > button { justify-self: start; min-width: 112px; }
@@ -1127,7 +1145,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-budget-location > strong { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .garage-budget-location > small { color: var(--muted); font-size: 10px; line-height: 1.6; }
 .garage-budget-location > [data-state="attention"] { color: var(--stale); }
-.charging-device-list { display: grid; gap: 12px; }
+.charging-device-list { display: grid; gap: 0; }
 .charging-device-list:empty { display: none; }
 .charging-overview { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
 .charging-overview[hidden] { display: none; }
@@ -1176,8 +1194,6 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 }
 @media (max-width: 480px) {
   .heating-zone > .zone-summary { padding: 12px 0 0; }
-  .zone-section { --section-padding: 12px; }
-  .zone-content .equipment-device { padding: 12px; }
   .garage-overview, .garage-native-overview, .pump-native-overview { gap: 10px; }
   .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
 }

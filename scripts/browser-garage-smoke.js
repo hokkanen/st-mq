@@ -75,6 +75,16 @@ try {
       ...(key === 'Enter' ? { nativeVirtualKeyCode: virtualKey, text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: virtualKey });
   };
+  const clickSummaryPadding = async id => {
+    const point = await evaluate(`(() => {
+      const summary = document.querySelector('#${id} > summary');
+      summary.scrollIntoView({block: 'center'});
+      const box = summary.getBoundingClientRect();
+      return {x: box.left + 6, y: box.bottom - 6};
+    })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+  };
   await send('Runtime.enable'); await send('Page.enable');
   // Exercise the real status-render path without waiting for the next 15-second poll.
   // Response edits are confined to this disposable page and synthetic server.
@@ -175,12 +185,12 @@ try {
   assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), false);
   assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), true);
   assert.equal(await evaluate("document.getElementById('charger2-enabled').disabled"), true);
-  assert.equal(await evaluate("[...document.querySelectorAll('.charging-settings')].some(fold=>fold.open)"), false);
+  assert.equal(await evaluate("[...document.querySelectorAll('#charging-devices > details')].some(fold=>fold.open)"), false);
   assert.equal(await evaluate("document.getElementById('charging-installation-details')"), null);
   assert.equal(await evaluate("document.querySelector('.charging-secondary, .charging-soc-form')"), null);
   await evaluate("document.getElementById('garage-equipment-details').open=true; true");
   for (const [charger, value] of [[1, '76'], [2, '59']]) {
-    await evaluate(`(() => { document.getElementById('charger${charger}-settings-details').open=true;
+    await evaluate(`(() => { document.getElementById('charger${charger}-device').open=true;
       const input=document.getElementById('charger${charger}-setting-capacityKwh'); input.value='${value}';
       input.dispatchEvent(new Event('input')); document.getElementById('charger${charger}-settings-form').requestSubmit(); })()`);
     await until(`document.getElementById('charger${charger}-settings-message').textContent === 'Settings saved.'`);
@@ -189,12 +199,13 @@ try {
   await until("document.getElementById('charger1-soc').textContent==='43 %'");
   await send('Page.reload');
   await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
+  await until("typeof globalThis.refreshLearningSmokeStatus === 'function'");
   assert.deepEqual(await evaluate("['charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['76', '59']);
   assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '43');
   assert.equal(await evaluate("document.getElementById('charger1-soc').textContent"), '43 %');
   assert.equal(await evaluate("document.getElementById('charger1-sources').textContent"), 'Starting charge');
   assert.equal(await evaluate("document.getElementById('charger1-overview').hidden"), true);
-  await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charger1-settings-details').open=true");
+  await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charger1-device').open=true");
   const secondChargerNode = await evaluate("window.originalChargingSmokeNode=document.getElementById('charger2-device'); true");
   assert(secondChargerNode);
   await evaluate("globalThis.chargingSmokeValues='scheduled'; globalThis.refreshLearningSmokeStatus()");
@@ -204,8 +215,8 @@ try {
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '62');
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), true);
   assert.match(await evaluate("document.getElementById('charger2-event').textContent"), /^Scheduled /);
-  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:garage\"] .equipment-device-status').textContent"), 'Connected');
-  assert.doesNotMatch(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:garage\"]').textContent"), /No live report yet/);
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-device-status').textContent"), 'Connected');
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"]').textContent"), /No live report yet/);
   assert.equal(await evaluate("document.getElementById('charger2-device')===window.originalChargingSmokeNode"), true);
   await evaluate("globalThis.chargingSmokeValues='charging'; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger2-state').textContent==='Charging'");
@@ -261,6 +272,34 @@ try {
   assert.equal(await evaluate("document.getElementById('garage-controller-details').open || document.getElementById('garage-learning-details').open"), false);
   assert.equal(await evaluate("document.getElementById('garage-settings-details').open || document.getElementById('garage-recovery-details').open"), false,
     'Garage settings and recovery explanations start closed');
+  for (const id of ['home-pump-device', 'garage-controller-details', 'charger1-device', 'charger2-device']) {
+    await evaluate(`(() => {
+      const device = document.getElementById('${id}'); device.open = false;
+      for (let parent = device.parentElement; parent; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') parent.open = true;
+      device.querySelector(':scope > summary').focus();
+    })()`);
+    assert.equal(await evaluate(`document.querySelector('#${id} > summary').querySelector(
+      'button, a, input, select, textarea, [tabindex]') === null`), true,
+      `${id} summary has one disclosure action without nested interactive readings`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('${id}').open
+      && document.querySelector('#${id} > .equipment-device-body').checkVisibility()`), true,
+      `${id} opens its readings and controls with Enter`);
+    await evaluate('globalThis.refreshLearningSmokeStatus()');
+    assert.equal(await evaluate(`document.getElementById('${id}').open
+      && document.activeElement === document.querySelector('#${id} > summary')`), true,
+      `${id} keeps its open body and keyboard focus after status refresh`);
+    await keyPress(' ');
+    assert.equal(await evaluate(`document.getElementById('${id}').open`), false,
+      `${id} closes with Space`);
+    await clickSummaryPadding(id);
+    assert.equal(await evaluate(`document.getElementById('${id}').open`), true,
+      `${id} opens when clicking the summary surface outside its text`);
+    await clickSummaryPadding(id);
+    assert.equal(await evaluate(`document.getElementById('${id}').open`), false,
+      `${id} closes from the same full-row click target`);
+  }
   assert.equal(await evaluate("document.querySelector('#garage-equipment-details > summary').textContent.includes('Freezing protection')"), false,
     'Garage overview shows the current cold budget instead of repeating configured protection values');
   assert.equal(await evaluate("document.querySelector('[data-scope=home]').getAttribute('aria-pressed')"), 'true');
@@ -512,8 +551,20 @@ try {
       }
       await evaluate("document.getElementById('garage-live-budgets').scrollIntoView({block: 'center'})");
       await capture(`garage-live-budgets-${width}-${theme}`);
+      for (const [area, zone, device] of [
+        ['home', 'home-heat-pump-details', 'home-pump-device'],
+        ['garage', 'garage-equipment-details', 'garage-controller-details'],
+      ]) {
+        for (const expanded of [false, true]) {
+          await evaluate(`document.getElementById('${zone}').open=true;
+            document.querySelectorAll('#${area}-equipment-section details').forEach(fold=>fold.open=false);
+            document.getElementById('${device}').open=${expanded};
+            document.getElementById('${area}-equipment-section').scrollIntoView({block:'start'})`);
+          await capture(`${area}-equipment-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
+        }
+      }
       for (const expanded of [false, true]) {
-        await evaluate(`document.querySelectorAll('.charging-settings').forEach(fold=>fold.open=${expanded});
+        await evaluate(`document.querySelectorAll('#charging-devices > details').forEach(fold=>fold.open=${expanded});
           document.getElementById('charger1-device').scrollIntoView({block:'start'})`);
         await capture(`chargers-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
       }
@@ -521,7 +572,7 @@ try {
         const id = state === 'charging' ? 'charger2' : 'charger1';
         await evaluate(`globalThis.chargingSmokeValues='${state}'; globalThis.refreshLearningSmokeStatus()`);
         await until(`document.getElementById('${id}-state').textContent==='${({ manual: 'Manual schedule', periods: 'Scheduled', paused: 'Paused between periods', problem: 'Update unconfirmed', charging: 'Charging', progress: 'Charging' })[state]}'`);
-        await evaluate(`document.getElementById('${id}-settings-details').open=true;
+        await evaluate(`document.getElementById('${id}-device').open=true;
           document.getElementById('${id}-device').scrollIntoView({block:'start'})`);
         await capture(`charger-${state}-${width}-${theme}`);
         if (state === 'periods') {
@@ -551,6 +602,7 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
+      'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
       'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',

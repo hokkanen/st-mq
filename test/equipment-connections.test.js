@@ -95,7 +95,10 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
     providers: { teslamate: { enabled: true, status: 'idle', healthy: false, recording: false, reception } },
     equipment: { topicGroups: [{ id: 'teslamate', topics: [topic('Vehicle subscription', 'teslamate/cars/7/#')] }] } })[0];
   const live = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW - 86_400_000, lastMessageAt: NOW - 86_400_000 });
-  assert.equal(live.area, 'garage');
+  assert.equal(live.area, 'other');
+  assert.equal(live.id, 'connection:teslamate:other');
+  assert.equal(live.label, 'Charger 1 vehicle');
+  assert.equal(live.source, 'TeslaMate');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
   assert.match(live.connectionDetail, /Charger 2.*sleeping or idle/);

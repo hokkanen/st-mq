@@ -57,6 +57,7 @@ test('Caravan and future heat-pump monitoring preserve estimation, coverage and 
 test('transport labels match throughout equipment, providers and chart tooltips', () => {
   assert.equal(equipmentSource(plug), 'Shelly');
   assert.equal(equipmentSource({ source: 'MQTT' }), 'MQTT');
+  assert.equal(equipmentSource({ source: 'TeslaMate' }), 'TeslaMate');
   assert.equal(providerName('mqtt-temperature'), 'MQTT'); assert.equal(providerName('shelly-mqtt'), 'Shelly');
   assert.equal(historyValueLabel('garage_door1_open', 1, 'state'), 'Open');
   assert.equal(historyValueLabel('garage_door2_open', 0, 'state'), 'Closed');
