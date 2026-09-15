@@ -8,13 +8,14 @@ const now = Date.parse('2026-09-15T18:00:00Z'), startAt = now + 2 * 3600_000, de
 const status = patch => ({ role: 'primary', now, charging: { settings: structuredClone(DEFAULT_CHARGING_SETTINGS),
   soc: { soc: 0, source: 'assumed', assumed: true }, ...patch } });
 
-test('garage keeps one compact charger pair below protection and charger equipment first', () => {
+test('garage keeps one compact charger pair below cold budgets and charger equipment first', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert.match(html, /id="home-heat-pump-title">Home<\/h3>/);
   assert.match(html, /id="garage-title">Garage<\/h3>/);
   assert.equal((html.match(/<span>Heating mode<\/span>/g) ?? []).length, 2);
-  assert(!html.includes('home-tariff-status')); assert(!html.includes('Cold budget'));
-  assert(html.indexOf('id="garage-freezing-protection"') < html.indexOf('id="charger1-summary"'));
+  assert(!html.includes('home-tariff-status')); assert(!html.includes('garage-freezing-protection'));
+  assert(html.indexOf('id="garage-budget-rear"') < html.indexOf('id="garage-budget-front"'));
+  assert(html.indexOf('id="garage-budget-front"') < html.indexOf('id="charger1-summary"'));
   assert(html.indexOf('id="charger1-summary"') < html.indexOf('id="charger2-summary"'));
   const equipment = html.slice(html.indexOf('id="garage-equipment-section"'));
   assert(equipment.indexOf('id="charger1-device"') < equipment.indexOf('id="charger2-device"'));

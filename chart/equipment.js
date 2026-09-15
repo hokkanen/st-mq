@@ -356,9 +356,10 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
       if (row.topics.length) rows.push(row);
     }
   }
-  const order = row => row.area !== 'home' ? 3 : row.source === 'H66' ? 0
-    : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 1
-      : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 2 : 3;
+  // Stable sorting keeps room temperatures in their configured order.
+  const order = row => row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
+    : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2
+      : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 3 : 4;
   return rows.sort((a, b) => order(a) - order(b));
 }
 

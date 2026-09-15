@@ -88,15 +88,29 @@ try {
     globalThis.fetch = async (input, options) => {
       const response = await originalFetch(input, options);
       if (new URL(input.url ?? String(input), location.href).pathname !== '/api/status'
-        || !globalThis.learningSmokeValues) return response;
-      const status = await response.json(), missing = globalThis.learningSmokeValues === 'missing';
-      status.learning.metrics = { ...status.learning.metrics, profit: { value: 0, count: missing ? 0 : 1 } };
-      status.learning.adaptive.model.parameters.lossPerHour = missing ? null : 0;
-      for (const location of ['rear', 'front'])
-        status.garage.observations[location] = { ...status.garage.observations[location], value: missing ? null : 0 };
-      status.garage.learning.state.coreC = missing ? null : 0;
-      status.garage.learning.state.differenceC = missing ? null : 0;
-      status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value = missing ? null : 0;
+        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState)) return response;
+      const status = await response.json();
+      if (globalThis.learningSmokeValues) {
+        const missing = globalThis.learningSmokeValues === 'missing';
+        status.learning.metrics = { ...status.learning.metrics, profit: { value: 0, count: missing ? 0 : 1 } };
+        status.learning.adaptive.model.parameters.lossPerHour = missing ? null : 0;
+        for (const location of ['rear', 'front'])
+          status.garage.observations[location] = { ...status.garage.observations[location], value: missing ? null : 0 };
+        status.garage.learning.state.coreC = missing ? null : 0;
+        status.garage.learning.state.differenceC = missing ? null : 0;
+        status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value = missing ? null : 0;
+      }
+      if (globalThis.garageBudgetSmokeState) {
+        const state = globalThis.garageBudgetSmokeState, approved = state !== 'unapproved';
+        status.garage.settings.protection = { ...status.garage.settings.protection, approved, budgetDegreeMinutes: 90 };
+        status.garage.protection = { ...status.garage.protection, approved, locations: {
+          rear: { degreeMinutes: 18, remainingDegreeMinutes: 72, fresh: true, uncertain: false, reason: null },
+          front: { degreeMinutes: state === 'exhausted' ? 90 : 63,
+            remainingDegreeMinutes: state === 'exhausted' ? 0 : 27,
+            fresh: state !== 'stale', uncertain: state === 'uncertain',
+            reason: state === 'exhausted' ? 'exposure-exhausted' : null },
+        } };
+      }
       return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
     };
   ` });
@@ -141,6 +155,10 @@ try {
     assert.ok((await evaluate(`document.getElementById('${id}').textContent`)).trim(), `${id} explains its list`);
   assert.equal(await evaluate("document.getElementById('garage-release').disabled"), true);
   assert.equal(await evaluate("document.getElementById('garage-controller-details').open || document.getElementById('garage-learning-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('garage-settings-details').open || document.getElementById('garage-recovery-details').open"), false,
+    'Garage settings and recovery explanations start closed');
+  assert.equal(await evaluate("document.querySelector('#garage-equipment-details > summary').textContent.includes('Freezing protection')"), false,
+    'Garage overview shows the current cold budget instead of repeating configured protection values');
   assert.equal(await evaluate("document.querySelector('[data-scope=home]').getAttribute('aria-pressed')"), 'true');
   await evaluate("document.getElementById('timing-details').open=true; document.querySelector('[data-scope=garage]').click()");
   assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /-€1.00.*Provisional/);
@@ -241,6 +259,89 @@ try {
   }
   await evaluate('globalThis.learningSmokeValues = null; globalThis.refreshLearningSmokeStatus()');
 
+  await evaluate(`(() => {
+    const settings = document.getElementById('garage-settings-details');
+    for (let parent = settings; parent; parent = parent.parentElement)
+      if (parent.tagName === 'DETAILS') parent.open = true;
+    settings.querySelector(':scope > summary').focus();
+  })()`);
+  for (const id of ['garage-heating-settings', 'garage-protection-settings', 'garage-recovery-settings']) {
+    assert.equal(await evaluate(`(() => {
+      const rows = [...document.querySelectorAll('#${id} > .garage-setting')];
+      return rows.length > 0 && rows.every(row => row.querySelector(':scope > dt small')?.textContent.trim()
+        && row.querySelector(':scope > dd')?.textContent.trim()
+        && row.querySelector(':scope > dd').children.length === 0);
+    })()`), true, `${id} puts setting explanations beside plain values`);
+  }
+  assert.equal(await evaluate(`(() => {
+    const live = document.getElementById('garage-live-budgets');
+    return live.tagName === 'SECTION' && live.closest('#garage-settings-details') !== null
+      && !live.closest('dl') && !live.querySelector('.garage-setting');
+  })()`), true, 'Live cold budgets have a separate section outside configured setting rows');
+  await evaluate("document.querySelector('#garage-recovery-details > summary').focus()");
+  await keyPress('Enter');
+  assert.equal(await evaluate("document.getElementById('garage-recovery-details').open"), true,
+    'Recovery explanations open with Enter');
+  await keyPress(' ');
+  assert.equal(await evaluate("document.getElementById('garage-recovery-details').open"), false,
+    'Recovery explanations close with Space');
+  await evaluate("globalThis.garageBudgetSmokeState = 'available'; globalThis.refreshLearningSmokeStatus()");
+  assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-budget-' + location).textContent)"),
+    ['Rear 80%', 'Front 30%'], 'Overview shows independent live remaining budgets');
+  assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-settings-budget-' + location).textContent)"),
+    ['80%', '30%'], 'Settings show the same remaining percentages as the overview');
+  assert.match(await evaluate("document.getElementById('garage-settings-budget-rear-remaining').textContent"), /72\b.*°C·min/);
+  assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /27\b.*°C·min/);
+  assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-settings-budget-' + location + '-meter').hidden)"),
+    [false, false], 'Available live budgets show their meters');
+  const configuredValues = await evaluate("[...document.querySelectorAll('#garage-settings-details .garage-setting > dd')].map(node => node.textContent)");
+  assert(configuredValues.includes('90 °C·min'), 'The configured allowance stays a degree-minute value');
+  await evaluate(`(() => {
+    globalThis.garageBudgetSmokeTriggers = ['rear','front'].map(location =>
+      document.querySelector('#garage-settings-budget-' + location + ' .status-detail-trigger'));
+    globalThis.garageBudgetSmokeOverview = ['rear','front'].map(location =>
+      document.querySelector('#garage-budget-' + location + ' .status-detail-trigger'));
+    document.getElementById('garage-recovery-details').open = true;
+    globalThis.garageBudgetSmokeTriggers[1].focus();
+  })()`);
+  const unavailableReasons = { stale: /fresh|report|reading/i, uncertain: /history|uncertain|recover/i, unapproved: /approv/i };
+  for (const state of ['stale', 'uncertain', 'unapproved', 'exhausted', 'available']) {
+    await evaluate(`globalThis.garageBudgetSmokeState = '${state}'; globalThis.refreshLearningSmokeStatus()`);
+    const unavailable = Object.hasOwn(unavailableReasons, state), frontValue = unavailable ? '—' : state === 'exhausted' ? '0%' : '30%';
+    assert.equal(await evaluate("document.getElementById('garage-settings-budget-front').textContent"), frontValue,
+      `${state} live evidence is reflected in settings`);
+    assert.equal(await evaluate("document.getElementById('garage-budget-front').textContent"), `Front ${frontValue}`,
+      `${state} live evidence agrees with the overview`);
+    assert.equal(await evaluate("document.getElementById('garage-settings-budget-front-meter').hidden"), unavailable,
+      `${state} never renders an unavailable budget as an exhausted meter`);
+    if (unavailable) assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"),
+      unavailableReasons[state], `${state} explains why the current budget is unavailable`);
+    if (state === 'exhausted') {
+      assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /0\b.*°C·min/);
+      assert.equal(await evaluate("document.getElementById('garage-budget-front').dataset.state"), 'attention');
+    }
+    assert.equal(await evaluate("document.getElementById('garage-settings-budget-rear').textContent"), state === 'unapproved' ? '—' : '80%',
+      `${state} keeps the rear assessment independent`);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('#garage-settings-details .garage-setting > dd')].map(node => node.textContent)"),
+      configuredValues, `${state} changes live budgets without changing configured values`);
+    assert.equal(await evaluate(`globalThis.garageBudgetSmokeTriggers.every((node, index) => node ===
+      document.querySelector('#garage-settings-budget-' + ['rear','front'][index] + ' .status-detail-trigger'))
+      && globalThis.garageBudgetSmokeOverview.every((node, index) => node ===
+        document.querySelector('#garage-budget-' + ['rear','front'][index] + ' .status-detail-trigger'))
+      && document.getElementById('garage-recovery-details').open
+      && document.activeElement === globalThis.garageBudgetSmokeTriggers[1]`), true,
+      `${state} status refresh preserves budget triggers, keyboard focus and expanded recovery explanations`);
+  }
+  await keyPress('Enter');
+  assert.equal(await evaluate("globalThis.garageBudgetSmokeTriggers[1].getAttribute('aria-expanded')"), 'true',
+    'The live budget explanation opens with Enter');
+  await evaluate('globalThis.refreshLearningSmokeStatus()');
+  assert.equal(await evaluate("globalThis.garageBudgetSmokeTriggers[1].getAttribute('aria-expanded')"), 'true',
+    'An open budget explanation survives status refresh');
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click()");
+  assert.equal(await evaluate('document.activeElement === globalThis.garageBudgetSmokeTriggers[1]'), true,
+    'Closing a budget explanation returns focus to its trigger');
+
   const prepareLearningShot = async (id, expanded) => evaluate(`(async () => {
     const card = document.getElementById('house-model');
     card.querySelectorAll('details').forEach(fold => fold.open = false);
@@ -268,6 +369,18 @@ try {
         return box.left >= 0 && box.right <= innerWidth + 1 && contentFits ? []
           : [{ key: node.parentElement.dataset.learningKey, left: box.left, right: box.right, contentFits }];
       })`), [], `${name} keeps learning text within its rows`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#garage-settings-details .garage-setting, #garage-live-budgets'))
+      .filter(node => node.checkVisibility()).flatMap(node => {
+        const box = node.getBoundingClientRect();
+        const fields = [...node.querySelectorAll('dt, dd, small, meter, .status-detail-trigger')].filter(field => field.checkVisibility());
+        const contentFits = fields.every(field => {
+          const bounds = field.getBoundingClientRect();
+          return bounds.left >= box.left - 1 && bounds.right <= box.right + 1
+            && field.scrollWidth <= field.clientWidth + 1;
+        });
+        return box.left >= 0 && box.right <= innerWidth + 1 && contentFits ? []
+          : [{ id: node.id, left: box.left, right: box.right, contentFits }];
+      })`), [], `${name} keeps garage settings and live budget content within their sections`);
   };
   for (const width of [1440, 390, 320]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
@@ -282,6 +395,19 @@ try {
           await capture(`${name}-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
         }
       }
+      for (const expanded of [false, true]) {
+        await evaluate(`(async () => {
+          const settings = document.getElementById('garage-settings-details');
+          for (let parent = settings; parent; parent = parent.parentElement)
+            if (parent.tagName === 'DETAILS') parent.open = true;
+          document.getElementById('garage-recovery-details').open = ${expanded};
+          await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
+          settings.scrollIntoView({block: 'start'});
+        })()`);
+        await capture(`garage-settings-${width}-${theme}-${expanded ? 'recovery-expanded' : 'recovery-collapsed'}`);
+      }
+      await evaluate("document.getElementById('garage-live-budgets').scrollIntoView({block: 'center'})");
+      await capture(`garage-live-budgets-${width}-${theme}`);
     }
     // Preserve the equipment and savings layout checks from this smoke test.
     for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'], ['charger1-device', 'charging']]) {
@@ -306,6 +432,10 @@ try {
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',
       'sensor maintenance stays inside its input explanation', 'zero values remain distinct from missing evidence',
+      'Garage settings keep descriptions outside values and live budgets in a separate section',
+      'overview and settings agree for independent, stale, uncertain, unapproved and exhausted cold budgets',
+      'status refresh preserves budget triggers, focus, open explanations and the recovery fold',
+      'Garage settings and live budgets fit desktop and mobile in both themes',
       'Home and Garage learning sections fit desktop and mobile in both themes, collapsed and expanded',
       'original input and replay coefficient charts', 'no browser exceptions'] }));
   await send('Page.close');

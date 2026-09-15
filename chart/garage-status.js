@@ -246,20 +246,23 @@ export function garageColdBudget(garage = {}, location) {
   const policy = garage.settings?.protection, protection = garage.protection;
   const local = protection?.locations?.[location], total = policy?.budgetDegreeMinutes;
   const title = `${name} cold budget remaining`;
-  const unavailable = detail => ({ label: `${name} —`, title, detail, percent: null, available: false, attention: false });
-  if (policy?.approved !== true || protection?.approved !== true)
-    return unavailable('No approved garage cold-exposure assessment is available.');
+  const unavailable = (summary, detail) => ({ label: `${name} —`, title, summary, detail, percent: null, available: false, attention: false });
+  if (policy?.approved !== true)
+    return unavailable(policy?.approved === false ? 'Policy not approved' : 'Approval unknown', 'No approved garage cold-exposure policy is available.');
+  if (protection?.approved !== true)
+    return unavailable('Assessment unavailable', 'No approved garage cold-exposure assessment is available.');
   if (!local || !finite(total) || total <= 0 || !finite(local.degreeMinutes) || local.degreeMinutes < 0)
-    return unavailable('A valid cold-exposure total and allowance are not available for this location.');
+    return unavailable('Assessment unavailable', 'A valid cold-exposure total and allowance are not available for this location.');
   if (local.fresh !== true)
-    return unavailable('A fresh, qualified temperature report is required to show this location’s cold budget.');
+    return unavailable('Awaiting fresh temperature', 'A fresh, qualified temperature report is required to show this location’s cold budget.');
   if (local.uncertain)
-    return unavailable('Missing temperature history makes this location’s exposure uncertain. Known sustained warmth must repay that exposure before the percentage is available again.');
+    return unavailable('Temperature history uncertain', 'Missing temperature history makes this location’s exposure uncertain. Known sustained warmth must repay that exposure before the percentage is available again.');
   const used = local.degreeMinutes, exhausted = used >= total, remaining = Math.max(0, total - used);
   // Reserve 0% for exhaustion and 100% for an untouched allowance.
   const percent = exhausted ? 0 : used === 0 ? 100 : Math.min(99, Math.max(1, Math.ceil(remaining / total * 100)));
   const reason = local.reason != null ? ` Current protection limit: ${text(local.reason)}.` : '';
-  return { label: `${name} ${percent}%`, title, percent, available: true,
+  return { label: `${name} ${percent}%`, title, percent, remaining, available: true,
+    summary: exhausted ? 'Budget exhausted' : local.reason != null ? 'Protection limit reached' : 'Allowance remaining',
     attention: exhausted || local.reason != null,
     detail: `${remaining} / ${total} °C·min remaining.${used > total ? ` Accumulated exposure: ${used} °C·min.` : ''}${reason} 0% means the cold-exposure budget is exhausted. Heating may resume earlier because of a hard temperature limit, sensor uncertainty or the time needed to restore heating. This is not a freezing probability or countdown.` };
 }
@@ -306,17 +309,28 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     ['Control capability', adapter.liveControlSupported ? 'Installed contract' : 'Monitoring · real contract unavailable'],
     ['Plan', text(plan.reason ?? garage.reason)], ['Planned pause endpoint', finite(plan.pauseUntil) ? clock(plan.pauseUntil) : 'No pause planned']);
   const policy = settings.protection ?? {};
-  const settingRows = [
-    ['Freezing protection', `${policy.approved ? 'Owner-approved' : 'Not approved'} · exposure below ${number(policy.floorC, '°C')} · restore heating at ${number(policy.hardMinimumC, '°C')} · ${number(policy.budgetDegreeMinutes, '°C·min')} independently at each location`],
-    ['Savings aggressiveness', finite(settings.aggressiveness) ? `${settings.aggressiveness} / 100${settings.aggressiveness === 0 ? ' · normal heating' : ''}` : 'Unavailable'],
-    ['Normal Mitsubishi setting', number(settings.baselineC, '°C')],
-  ];
+  const settingGroups = {
+    heating: [
+      ['Normal Mitsubishi setting', number(settings.baselineC, '°C'), 'The existing pump setting used as the normal-heating reference. ST-MQ does not raise the thermostat.'],
+      ['Savings aggressiveness', finite(settings.aggressiveness) ? `${number(settings.aggressiveness)} / 100` : 'Unavailable', 'Higher values favor savings over the depth and duration of cooling. At 0, normal heating remains available and learning continues.'],
+    ],
+    protection: [
+      ['Cold exposure starts below', number(policy.floorC, '°C'), 'Each minute 1 °C below this temperature uses 1 °C·min of that location’s allowance.'],
+      ['Restore heating by', number(policy.hardMinimumC, '°C'), 'The hard temperature limit, even with budget left. Recovery time or uncertain readings can require an earlier return to heating.'],
+      ['Cold allowance per location', number(policy.budgetDegreeMinutes, '°C·min'), 'The full allowance for each sensor. Rear and front track their own exposure; neither can borrow from the other.'],
+    ],
+    recovery: [
+      ['Recovery temperature', number(policy.recoveryAboveC, '°C'), 'A location must remain at or above this temperature to begin earning back its allowance.'],
+      ['Continuous warm-up', number(policy.recoveryDwellMinutes, 'min'), 'The uninterrupted warm period required before any allowance is restored. Cooling below the recovery temperature restarts this wait.'],
+      ['Allowance restored per minute', number(policy.recoveryDegreeMinutesPerMinute, '°C·min'), 'After the warm-up, each additional warm minute restores this much allowance, up to the full budget.'],
+    ],
+  };
   const coefficients = garageCoefficientRows(learning);
   const learningRows = garageLearningRows(garage, policy);
   return { status: text(garage.status ?? (settings.enabled ? 'commissioning' : 'monitoring')),
     reason: text(garage.reason ?? 'Automatic control awaits the implemented adapter contract and installed commissioning')
       .trim().replace(/^./, value => value.toUpperCase()),
-    rows, settingRows, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
+    rows, settingGroups, coefficients: coefficients.rows, coefficientDetails: coefficients.details, ...learningRows, limitations: learning.limitations ?? [] };
 }
 
 export function renderGarage(document, status) {
@@ -351,6 +365,18 @@ export function renderGarage(document, status) {
     detail(id, budget.label, budget.title, budget.detail);
     const node = document.getElementById(id);
     if (node) node.dataset.state = budget.attention ? 'attention' : 'muted';
+    const settingId = `garage-settings-budget-${location}`;
+    detail(settingId, budget.available ? `${budget.percent}%` : '—', budget.title, budget.detail);
+    const settingNode = document.getElementById(settingId);
+    if (settingNode) settingNode.dataset.state = budget.attention ? 'attention' : 'muted';
+    set(`${settingId}-remaining`, budget.available
+      ? `${number(budget.remaining, '°C·min')} left${budget.attention ? ` · ${budget.summary}` : ''}` : budget.summary);
+    const meter = document.getElementById(`${settingId}-meter`);
+    if (meter) {
+      meter.hidden = !budget.available;
+      meter.value = budget.percent ?? 0;
+      meter.dataset.state = budget.attention ? 'attention' : 'muted';
+    }
   }
   const doors = devices.filter(device => device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
     || Object.keys(device.readings ?? {}).some(signal => /^garage_door/.test(signal)))).flatMap(device => {
@@ -436,8 +462,21 @@ export function renderGarage(document, status) {
     root.replaceChildren(fragment);
   };
   set('garage-controller-state', display.status); set('garage-controller-reason', display.reason);
-  set('garage-freezing-protection', display.settingRows.find(([label]) => label === 'Freezing protection')?.[1] ?? 'Unavailable');
-  list('garage-controller-readings', display.rows); list('garage-settings-values', display.settingRows);
+  list('garage-controller-readings', display.rows);
+  const approved = garage.settings?.protection?.approved;
+  set('garage-protection-approval', approved === true ? 'Owner-approved' : approved === false ? 'Not approved' : 'Approval unknown');
+  for (const [group, rows] of Object.entries(display.settingGroups)) {
+    const root = document.getElementById(`garage-${group}-settings`); if (!root) continue;
+    const fragment = document.createDocumentFragment();
+    for (const [label, value, description] of rows) {
+      const row = document.createElement('div'), dt = document.createElement('dt'), dd = document.createElement('dd');
+      const help = document.createElement('small');
+      row.className = 'garage-setting';
+      dt.textContent = label; help.textContent = description; dt.append(help);
+      dd.textContent = value; row.append(dt, dd); fragment.append(row);
+    }
+    root.replaceChildren(fragment);
+  }
   renderLearningRows(document.getElementById('garage-learning-outcomes'), display.outcomeDetails, { document });
   renderLearningRows(document.getElementById('garage-learning-evidence'), display.evidenceDetails, { document });
   renderLearningRows(document.getElementById('garage-learning-inputs'), display.inputDetails, { document });

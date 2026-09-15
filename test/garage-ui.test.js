@@ -8,6 +8,7 @@ import { heatingDisplay } from '../chart/heating-benefit.js';
 import { timingDisplay } from '../chart/timing-model.js';
 import { buildHeatingSavings } from '../src/app/garage-reporting.js';
 import { createGarageModel, garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
+import { garageSettings } from '../src/garage/settings.js';
 
 const range = { from: Date.parse('2026-09-08T00:00:00+03:00'), to: Date.parse('2026-09-09T00:00:00+03:00') }, now = range.to;
 
@@ -66,7 +67,24 @@ test('Garage equipment and learning are closed disclosures inside the existing i
     assert(!/\sopen(?:\s|>|=)/.test(tag));
   }
   assert.match(html, /Learning outcomes<\/span><small[^>]*> · Calculated/); assert.match(html, /Garage settings/);
-  assert.match(html, /Change the garage protection policy, savings aggressiveness and normal Mitsubishi setting in Configuration/);
+  assert.match(html, /To change these values, edit Configuration, then select Apply configuration/);
+});
+
+test('Garage settings keep configured values separate from descriptions and live exposure', () => {
+  const settings = garageSettings({ aggressiveness: 0 });
+  const garage = { settings, protection: { locations: { rear: { degreeMinutes: 89 }, front: { degreeMinutes: 0 } } } };
+  const before = structuredClone(garage), display = garageDisplay(garage);
+  const groups = Object.fromEntries(Object.entries(display.settingGroups).map(([key, rows]) => [key, Object.fromEntries(rows)]));
+  assert.deepEqual(groups.heating, { 'Normal Mitsubishi setting': '10 °C', 'Savings aggressiveness': '0 / 100' });
+  assert.deepEqual(groups.protection, { 'Cold exposure starts below': '2 °C', 'Restore heating by': '-1 °C', 'Cold allowance per location': '90 °C·min' });
+  assert.deepEqual(groups.recovery, { 'Recovery temperature': '4 °C', 'Continuous warm-up': '20 min', 'Allowance restored per minute': '1 °C·min' });
+  for (const rows of Object.values(display.settingGroups)) for (const [, value, description] of rows) {
+    assert(description.length > 30); assert(!value.includes(' · '));
+  }
+  assert.deepEqual(garage, before);
+  assert.deepEqual(garageDisplay({ settings, protection: {} }).settingGroups, display.settingGroups);
+  for (const rows of Object.values(garageDisplay().settingGroups))
+    assert(rows.every(([, value]) => value === 'Unavailable'));
 });
 
 

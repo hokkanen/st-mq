@@ -1122,7 +1122,34 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-budget-values > [data-state="attention"] { color: var(--stale); }
 .garage-charging-notes p > span:first-child { flex-basis: 108px; }
 .garage-charging-notes .charger-summary { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.garage-protection-note { align-items: baseline; }
+.garage-settings-group { padding: 16px 0; border-top: 1px solid var(--border); }
+.garage-settings h5 { margin: 0; font-size: 12px; font-weight: 600; }
+.garage-settings-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 14px; }
+.garage-policy-status, .garage-live-label { color: var(--muted); font-size: 10px; }
+.garage-policy-status { padding: 3px 8px; border: 1px solid var(--border); border-radius: 20px; }
+.garage-setting-list { margin: 8px 0 0; }
+.garage-setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 18px; padding: 10px 0; font-size: 12px; }
+.garage-setting dt { min-width: 0; }
+.garage-setting dt small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.garage-setting dd { margin: 0; text-align: right; font-weight: 550; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.garage-settings-help { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.garage-settings .garage-recovery { margin-top: 8px; padding-left: 12px; border-left: 1px solid var(--border); }
+.garage-settings .garage-recovery > summary { min-height: 36px; padding: 6px 0; }
+.garage-settings .garage-recovery > :last-child:not(summary) { margin-bottom: 0; }
+.garage-live-budgets { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.garage-live-label { text-transform: uppercase; font-size: 9px; letter-spacing: .6px; }
+.garage-budget-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 16px 0; }
+.garage-budget-location { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.garage-budget-location > span { color: var(--muted); font-size: 11px; }
+.garage-budget-location > strong { font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.garage-budget-location > small { color: var(--muted); font-size: 10px; line-height: 1.6; }
+.garage-budget-location > [data-state="attention"] { color: var(--stale); }
+.garage-budget-location meter { appearance: none; width: 100%; height: 5px; margin: 3px 0; border: 0; border-radius: 8px; background: var(--border); }
+.garage-budget-location meter::-webkit-meter-bar { border: 0; border-radius: 8px; background: var(--border); }
+.garage-budget-location meter::-webkit-meter-optimum-value { background: var(--accent); }
+.garage-budget-location meter::-moz-meter-bar { background: var(--accent); }
+.garage-budget-location meter[data-state="attention"]::-webkit-meter-optimum-value { background: var(--stale); }
+.garage-budget-location meter[data-state="attention"]::-moz-meter-bar { background: var(--stale); }
 .charging-master { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; font-size: 13px; }
 .charging-master button { width: 68px; min-height: 36px; margin: 0; }
 .charging-master button[aria-checked="false"] { color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); }
