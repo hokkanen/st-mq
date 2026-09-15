@@ -1,7 +1,6 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
-import { h66ReadingStatus } from './learning-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
@@ -14,12 +13,6 @@ const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
 const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
   bedroom: 'bedroom_temperature', garage: 'garage_temperature', garage_front: 'garage_temperature_2' };
-const heatPumpTemperatures = {
-  '0007': ['outdoor_temperature', 'Outdoor'], '0002': ['supply_temperature', 'Heating supply'],
-  '0001': ['return_temperature', 'Heating return'], '0009': ['dhw_temperature', 'Hot-water tank'],
-  '0005': ['brine_in_temperature', 'Brine in'], '0006': ['brine_out_temperature', 'Brine out'],
-};
-
 /** Legacy Shelly captures are separate only when the equipment adapter is absent.
  * Keep actual device identities separate from the read-only inventory below. */
 export function equipmentDevices(status = {}) {
@@ -32,7 +25,7 @@ export function equipmentDevices(status = {}) {
   return [...devices.values()];
 }
 
-/** Public observations also contain legacy room feeds and pump temperatures.
+/** Public observations also contain legacy room feeds and garage pump temperatures.
  * These views have no control or connection-check route of their own. */
 export function equipmentInventory(status = {}) {
   const now = status.now ?? Date.now(), observations = status.observations ?? {};
@@ -66,15 +59,6 @@ export function equipmentInventory(status = {}) {
       controls: { switch: false, tariff: false } });
     for (const signal of Object.keys(readings)) represented.add(signal);
   };
-  const h66 = status.h66 ?? {}, nativeReadings = {};
-  for (const [register, [signal, label]] of Object.entries(heatPumpTemperatures)) {
-    const reading = h66.readings?.[register];
-    if (!reading || represented.has(signal)) continue;
-    nativeReadings[signal] = { ...reading, label, unit: 'degC', observedAt: reading.observedAt ?? reading.receivedAt,
-      displayStatus: h66ReadingStatus(h66, reading, { now }) };
-  }
-  append('heat-pump-temperatures', 'Heat-pump temperatures', 'home', 'H66', nativeReadings);
-
   const sensors = new Map((status.sensorChanges?.sensors ?? []).map(sensor => [sensor.signal, sensor]));
   for (const signal of Object.keys(temperatureKeys)) {
     if (represented.has(signal)) continue;
@@ -82,10 +66,10 @@ export function equipmentInventory(status = {}) {
     const reading = observation(signal);
     const sensor = sensors.get(signal), observed = Number.isFinite(reading?.value) || Number.isFinite(reading?.observedAt);
     if (sensor?.configured !== true && !observed) continue;
-    // Weather fallback is already described by the outdoor reading/source UI;
-    // it is not another physical sensor in the equipment inventory.
-    if (signal === 'outdoor_temperature' && !['husdata-h66', 'mqtt-temperature', 'mqtt-equipment', 'shelly-mqtt'].includes(reading?.source)) continue;
-    const source = reading?.source === 'husdata-h66' ? 'H66' : reading?.source === 'simulation' ? 'Simulation' : reading?.source;
+    // H66 temperatures and weather already have dedicated readings; do not
+    // repeat them as separate equipment in the inventory.
+    if (signal === 'outdoor_temperature' && !['mqtt-temperature', 'mqtt-equipment', 'shelly-mqtt'].includes(reading?.source)) continue;
+    const source = reading?.source === 'simulation' ? 'Simulation' : reading?.source;
     append(`sensor:${signal}`, `${sensor?.label ?? TEMPERATURE_SENSORS[signal]} temperature`, garage ? 'garage' : 'home', source,
       { [signal]: sensorReading(signal, reading ?? {}, 'Temperature') });
   }
@@ -372,7 +356,10 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
       if (row.topics.length) rows.push(row);
     }
   }
-  return rows;
+  const order = row => row.area !== 'home' ? 3 : row.source === 'H66' ? 0
+    : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 1
+      : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 2 : 3;
+  return rows.sort((a, b) => order(a) - order(b));
 }
 
 export function dhwrReadingSummary(status) {

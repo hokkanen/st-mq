@@ -56,19 +56,14 @@ test('a missed periodic report is unavailable even when an equipment packet and 
   assert.match(row.detail, /report missing/i);
 });
 
-test('pump measurements include physical H66 temperatures without turning ROOM or weather into sensors', () => {
+test('H66 temperatures stay in the dedicated pump readings instead of duplicate inventory sections', () => {
   const h66Reading = value => ({ value, observedAt: now - 1000, available: true, usableForControl: true, stale: false });
   const inventory = equipmentInventory({ now, h66: { connected: true, readings: {
     '0007': h66Reading(-2), '0001': h66Reading(28), '0002': h66Reading(33), '0009': h66Reading(50),
     '0005': h66Reading(4), '0006': h66Reading(1), '0203': h66Reading(21), '0008': h66Reading(22),
-  } }, observations: { outdoor: temperature(-1, { source: 'openmeteo' }), indoor: temperature(21) },
+  } }, observations: { outdoor: temperature(-2, { source: 'husdata-h66' }), indoor: temperature(21) },
   sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } });
-  assert.equal(inventory.length, 1);
-  assert.equal(inventory[0].label, 'Heat-pump temperatures');
-  assert.equal(Object.keys(inventory[0].readings).length, 6);
-  assert.equal(signals(inventory).includes('room_setting'), false);
-  assert.equal(signals(inventory).includes('indoor_temperature'), false);
-  assert.equal(equipmentReadingRows(inventory[0]).find(row => row.signal === 'outdoor_temperature').value, '-2 °C');
+  assert.deepEqual(inventory, []);
   assert.equal(equipmentInventory({ now, observations: { outdoor: temperature(-1, { source: 'fmi' }) },
     sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } }).length, 0);
 });

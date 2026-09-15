@@ -7,14 +7,15 @@ const topic = (role, value, direction = 'subscribe') => ({ role, topic: value, d
 const circulation = { id: 'fixture-circulation', label: 'Hot-water circulation', area: 'home', source: 'MQTT',
   kind: 'switch', available: true, topics: [topic('State', 'fixture/circulation/state')], readings: {} };
 
-test('connection rows attach circulation commands once and preserve all H66 topic directions', () => {
+test('home connections show pump, circulation and tariff in order while preserving MQTT routes', () => {
   const groups = [{ id: 'dhwr', label: 'Circulation commands', topics: [topic('Timed ON/OFF command', 'fixture/circulation/set', 'publish')] },
     { id: 'h66', label: 'Heat pump · H66', topics: [topic('Telemetry subscription', 'fixture/h66/HP/#'),
       topic('Status request', 'fixture/h66/HP/CMD', 'publish'), topic('Setting 0203', 'fixture/h66/HP/SET/0203', 'publish')] }];
-  const rows = equipmentConnections({ now: NOW, equipment: { devices: [circulation], topicGroups: groups },
+  const rows = equipmentConnections({ now: NOW, equipment: { devices: [{ id: 'fixture-tariff', area: 'home', controls: { tariff: true },
+    topics: [topic('State', 'fixture/tariff/state')] }, circulation], topicGroups: groups },
     shelly: { topicGroups: groups }, dhwr: { feedback: { deviceId: circulation.id }, commandTopic: 'fixture/circulation/set' },
     h66: { available: true, brokerConnected: true, lastPublicationAt: NOW } });
-  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', circulation.id, 'fixture-tariff']);
   const device = rows.find(row => row.id === circulation.id);
   const deviceTopics = equipmentTopicGroups(device.topics).flatMap(group => group.topics);
   assert.deepEqual(deviceTopics.map(row => row.topic), ['fixture/circulation/state', 'fixture/circulation/set']);
