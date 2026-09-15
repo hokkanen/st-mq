@@ -97,7 +97,7 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
   const live = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW - 86_400_000, lastMessageAt: NOW - 86_400_000 });
   assert.equal(live.area, 'other');
   assert.equal(live.id, 'connection:teslamate:other');
-  assert.equal(live.label, 'Charger 1 vehicle');
+  assert.equal(live.label, 'Charger 2 vehicle');
   assert.equal(live.source, 'TeslaMate');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
@@ -112,4 +112,5 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
   assert.equal(equipmentConnectionSummary(connection({ brokerConnected: false, subscriptionStatus: 'disconnected', lastLiveAt: NOW })).label, 'Disconnected');
   assert.equal(equipmentConnectionSummary(connection({ brokerConnected: true, subscriptionStatus: 'denied' })).label, 'Subscription failed');
   assert.match(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).connectionDetail, /Configured vehicle feed for Charger 1/);
+  assert.equal(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).label, 'Charger 1 vehicle');
 });

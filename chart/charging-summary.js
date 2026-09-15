@@ -4,6 +4,35 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
   && ['automatic-current-forecast', 'vehicle-stop-unknown'].includes(forecast.reason)
   || forecast?.state === 'forecast' || forecast?.controlled === false && forecast.state !== 'planned';
 
+/** Price the remaining native charging forecast only when rates cover it fully. */
+export function chargingCost(charger, view, summary, { now = Date.now(), prices = [] } = {}) {
+  const forecast = charger.forecast, remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh;
+  const unavailable = { value: 'No estimate', detail: 'A current charging forecast and electricity rates covering the time to target are needed.' };
+  if (!view.showMetrics || !finite(remaining)) return unavailable;
+  if (remaining <= 0) return { value: '€0.00', detail: 'No additional grid energy is needed to reach the target.' };
+  const finish = summary.completion.at;
+  if (summary.roleState === 'uncertain' || !finite(finish) || finish <= now) return unavailable;
+  const planned = view.rows.find(([label]) => label === 'Estimated cost to target');
+  if (planned) return { value: planned[1], detail: 'Estimated electricity cost to reach the target during the planned charging periods.' };
+  const start = Math.max(now, timestamp(forecast?.startAt) ?? Infinity);
+  if (!nativeForecast(forecast) || finish <= start) return unavailable;
+  let cursor = start, cents = 0;
+  const intervals = (Array.isArray(prices) ? prices : []).map(row => ({ start: timestamp(row.start), end: timestamp(row.end),
+    price: row.allInCentsPerKWh ?? row.priceCtPerKwh ?? row.totalCtPerKwh ?? row.price }))
+    .filter(row => row.start !== null && row.end !== null && row.end > row.start && finite(row.price))
+    .sort((a, b) => a.start - b.start);
+  for (const interval of intervals) {
+    if (interval.end <= cursor) continue;
+    if (interval.start > cursor) break;
+    const end = Math.min(finish, interval.end);
+    cents += remaining * (end - cursor) / (finish - start) * interval.price;
+    cursor = end;
+    if (cursor >= finish) return { value: `€${(cents / 100).toFixed(2)}`,
+      detail: 'Remaining grid energy, including charging losses, priced at the electricity rates during the forecast charging time.' };
+  }
+  return unavailable;
+}
+
 /** Keep charger role, present activity and estimated completion separate. */
 export function chargerSummary(charger, view, { now = Date.now(), formatTime = value => new Date(value).toISOString() } = {}) {
   const values = charger.values ?? {}, control = charger.control ?? {}, plan = charger.plan ?? {}, forecast = charger.forecast;

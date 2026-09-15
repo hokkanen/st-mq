@@ -368,10 +368,7 @@ export function renderGarage(document, status) {
   detail('garage-caravan-power', caravanPower?.value ?? 'Unavailable', 'Caravan power',
     caravanPower?.detail ?? 'Waiting for a usable caravan power reading.', caravanPower?.stale ?? true);
   for (const location of ['rear', 'front']) {
-    const id = `garage-budget-${location}`, budget = garageColdBudget(garage, location);
-    detail(id, budget.label, budget.title, budget.detail);
-    const node = document.getElementById(id);
-    if (node) node.dataset.state = budget.attention ? 'attention' : 'muted';
+    const budget = garageColdBudget(garage, location);
     const settingId = `garage-settings-budget-${location}`;
     detail(settingId, budget.value, budget.title, budget.detail);
     const settingNode = document.getElementById(settingId);
@@ -419,16 +416,17 @@ export function renderGarage(document, status) {
     const fresh = finite(at) && at <= now && now - at < maxAge && adapter.connected !== false
       && adapter.health?.deviceOnline !== false && adapter.health?.pumpCommunicating !== false;
     const last = value === null || value === undefined ? 'Unknown' : format(value);
-    detail(`garage-native-${field === 'targetC' ? 'target' : field}`, fresh ? last : 'Unknown', title,
-      last === 'Unknown' ? 'No usable native reading received.'
-        : `${fresh ? 'Last reported' : `Last reported ${last}`} · ${finite(at) ? clock(at) : 'freshness unknown'}`, !fresh);
-    return { value, fresh, label: fresh ? last : 'Unknown' };
+    const id = `garage-native-${field === 'targetC' ? 'target' : field}`;
+    const available = fresh && last !== 'Unknown';
+    set(id, available ? last : '—');
+    const node = document.getElementById(id); node?.classList.toggle('stale', !available); node?.classList.toggle('muted', !available);
+    return { value, fresh, detail: `${title}: ${last === 'Unknown' ? 'No usable native reading received.'
+      : `Last reported ${last} · ${finite(at) ? clock(at) : 'freshness unknown'}${fresh ? '' : ' · current reading unavailable'}`}` };
   };
   const power = nativeReading('power', 'Mitsubishi power', text);
   const mode = nativeReading('mode', 'Mitsubishi mode', text);
   const target = nativeReading('targetC', 'Mitsubishi target', value => number(value, '°C'));
-  set('garage-pump-preview', [power, mode, target].some(reading => reading.label !== 'Unknown')
-    ? `Power: ${power.label} · Mode: ${mode.label} · Target: ${target.label}` : 'Waiting for heat-pump readings');
+  detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings', [power, mode, target].map(reading => reading.detail).join('\n\n'));
   let heating = 'Heating unverified';
   if (garage.heatingControls?.requestedMode === 'off') heating = power.fresh && power.value === 'off' ? 'Heating off' : 'Off requested';
   else if (adapter.phase === 'paused') heating = power.fresh && power.value === 'off' ? 'Saving mode' : 'Saving · unverified';
@@ -464,7 +462,7 @@ export function renderGarage(document, status) {
     root.replaceChildren(fragment);
   };
   set('garage-controller-state', display.status); set('garage-controller-reason', display.reason);
-  list('garage-controller-readings', display.rows);
+  list('garage-controller-readings', display.rows.filter(([label]) => !['Native power', 'Native mode', 'Native target'].includes(label)));
   const approved = garage.settings?.protection?.approved;
   set('garage-protection-approval', approved === true ? 'Owner-approved' : approved === false ? 'Not approved' : 'Approval unknown');
   for (const [group, rows] of Object.entries(display.settingGroups)) {

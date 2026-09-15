@@ -421,15 +421,17 @@ function renderH66(s) {
       title: title.textContent, detail: row.detail });
   }
   const pumpReadings = h66EquipmentSummary(s);
-  $('home-pump-preview').textContent = pumpReadings.some(row => row.available)
-    ? pumpReadings.map(row => `${row.title}: ${row.available ? row.value : 'Unavailable'}`).join(' · ')
-    : 'Waiting for heat-pump readings';
   for (const row of pumpReadings) {
     const equipmentValue = $(`home-pump-${row.key}`);
+    const state = row.key === 'state' && row.available ? row.value.match(/^(Running|Idle)(?: (for .+))?$/) : null;
     equipmentValue.classList.toggle('muted', !row.available);
-    setStatusDetail(equipmentValue, { key: `home-pump-${row.key}`, label: row.available ? row.value : 'Unavailable',
-      title: row.title, detail: row.detail });
+    equipmentValue.textContent = row.available ? state?.[1] ?? row.value : '—';
+    if (row.key === 'state') {
+      const age = $('home-pump-state-age'); age.textContent = state?.[2] ?? ''; age.hidden = !age.textContent;
+    }
   }
+  setStatusDetail($('home-pump-reading-info'), { key: 'home-pump-readings', label: 'Reading details', title: 'Ground-source heat-pump readings',
+    detail: pumpReadings.map(row => `${row.title}: ${row.detail}`).join('\n\n') });
   let notice = root.querySelector('.equipment-alarm');
   const alarm = summary.find(row => row.key === 'alarm');
   if (alarm?.available && alarm.value === 'Alarm active') {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEquipmentActions, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
+import { createEquipmentActions, createEquipmentPanel, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
 import { historyDatasets, historyValueLabel } from '../chart/history-model.js';
 import { providerName } from '../chart/provider-status.js';
 
@@ -230,4 +230,103 @@ test('monitoring-only power devices never gain ordinary switch or timed-test con
   assert.equal(equipmentTestAllowed(status(), device), false);
   assert.equal(equipmentControlAllowed(status({ equipmentControls: { available: true } }), device), false);
   assert.deepEqual(equipmentReadingRows(device).map(row => row.value), ['38 W']);
+});
+
+function equipmentDocument() {
+  class Element {
+    constructor(document, tag) {
+      this.ownerDocument = document; this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {};
+      this.attributes = new Map(); this.listeners = new Map(); this.style = {}; this.hidden = false; this.className = '';
+      this.classList = { contains: value => this.className.split(' ').includes(value),
+        add: value => { if (!this.classList.contains(value)) this.className += ` ${value}`; },
+        toggle: (value, present) => { this.className = this.className.split(' ').filter(name => name !== value).join(' ');
+          if (present) this.classList.add(value); } };
+    }
+    set id(value) { this.attributes.set('id', value); this.ownerDocument.nodes.set(value, this); }
+    get id() { return this.attributes.get('id'); }
+    set textContent(value) { this._text = String(value); this.replaceChildren(); }
+    get textContent() { return (this._text ?? '') + this.children.map(child => child.textContent).join(''); }
+    append(...children) { for (const child of children) this.insertBefore(child, null); }
+    insertBefore(child, next) { child.remove(); const index = next ? this.children.indexOf(next) : this.children.length;
+      this.children.splice(index, 0, child); child.parentElement = this; }
+    remove() { const parent = this.parentElement; if (parent) parent.children.splice(parent.children.indexOf(this), 1); this.parentElement = null; }
+    replaceChildren(...children) { for (const child of [...this.children]) child.remove(); this.append(...children); }
+    setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
+    hasAttribute(name) { return this.attributes.has(name); }
+    addEventListener(name, callback) { this.listeners.set(name, callback); }
+    contains(target) { return this === target || this.children.some(child => child.contains(target)); }
+    querySelector(selector) { return descendants(this).find(child => selector.startsWith('.')
+      ? child.classList.contains(selector.slice(1)) : child.tagName === selector.toUpperCase()) ?? null; }
+    focus() { this.ownerDocument.activeElement = this; }
+  }
+  const document = { nodes: new Map(), activeElement: null, addEventListener() {}, querySelectorAll: () => [],
+    defaultView: { addEventListener() {} }, createElement(tag) { return new Element(this, tag); },
+    createElementNS(namespace, tag) { return this.createElement(tag); },
+    getElementById(id) {
+      if (!this.nodes.has(id)) { const node = this.createElement('div'); node.id = id; this.body.append(node); }
+      return this.nodes.get(id);
+    } };
+  document.body = document.createElement('body'); return document;
+}
+const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
+const deviceNode = (document, rootId, id) => document.getElementById(rootId).children.find(node => node.dataset.deviceId === id);
+
+test('temperature-only equipment exposes every reading without an empty fold and updates existing rows in place', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  const upstairs = { id: 'upstairs', label: 'Upstairs', area: 'home', kind: 'temperature', source: 'MQTT', available: false,
+    readings: { indoor_temperature: { label: 'Temperature', unit: 'degC', value: null, stale: true } } };
+  const initial = status({ equipment: { devices: [upstairs, plug] } }); panel.update(initial);
+  const row = deviceNode(document, 'home-equipment-readings', 'upstairs');
+  assert.equal(row.tagName, 'SECTION'); assert(row.classList.contains('equipment-device-static'));
+  assert.equal(row.children[0].tagName, 'DIV');
+  assert.equal(row.hasAttribute('tabindex'), false); assert.equal(row.children[0].hasAttribute('tabindex'), false);
+  assert.equal(row.querySelector('details'), null); assert.equal(row.querySelector('summary'), null);
+  assert.equal(row.querySelector('.equipment-device-preview'), null, 'The direct readings replace the collapsed preview');
+  assert.equal(row.querySelector('.equipment-inline-controls'), null);
+  const readings = row.querySelector('.equipment-readings'), value = readings.querySelector('.status-detail-label');
+  assert.equal(readings.hidden, false); assert.equal(value.textContent, 'Unavailable');
+  assert.equal(value.parentElement.tagName, 'BUTTON', 'Reading provenance remains available through its explanation');
+  const updated = structuredClone(initial);
+  updated.equipment.devices[0].available = true;
+  updated.observations = { upstairs: { value: 21.4, observedAt: now, source: 'mqtt-temperature', stale: false } };
+  panel.update(updated);
+  assert.equal(deviceNode(document, 'home-equipment-readings', 'upstairs'), row);
+  assert.equal(row.querySelector('.equipment-readings'), readings); assert.equal(readings.querySelector('.status-detail-label'), value);
+  assert.equal(value.textContent, '21.4 °C');
+  const caravan = deviceNode(document, 'garage-equipment-readings', 'caravan');
+  assert.equal(caravan.tagName, 'DETAILS'); assert.equal(caravan.children[0].tagName, 'SUMMARY');
+  assert(caravan.querySelector('.equipment-inline-controls'), 'Equipment with controls remains expandable');
+});
+
+test('temperature groups show all probes directly, including Mitsubishi inventory readings', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  panel.update(status({ equipment: { devices: [{ id: 'temperature-group', label: 'Garage temperatures', area: 'garage', kind: 'temperature',
+    available: true, readings: Object.fromEntries([8.2, 11.3, 13.4].map((value, index) => [`probe_${index}`,
+      { value, label: `Probe ${index + 1}`, unit: 'degC', observedAt: now, stale: false }])) }] },
+    garage: { adapter: { telemetry: { garage_native_indoor_temperature: { value: 16.5, sourceTime: now, supported: true, usable: true } } } } }));
+  const row = deviceNode(document, 'garage-equipment-readings', 'temperature-group');
+  assert.equal(row.tagName, 'SECTION');
+  assert.deepEqual(descendants(row).filter(node => node.classList.contains('status-detail-label')).map(node => node.textContent),
+    ['8.2 °C', '11.3 °C', '13.4 °C']);
+  const native = deviceNode(document, 'garage-equipment-readings', 'inventory:garage-pump-temperatures');
+  assert.equal(native.tagName, 'SECTION'); assert.match(native.textContent, /16.5 °C/);
+  assert.equal(native.querySelector('summary'), null);
+});
+
+test('vehicle connections identify the assigned TeslaMate charger and generic vehicle MQTT route', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  panel.update(status({ equipment: { devices: [], topicGroups: [
+    { id: 'teslamate', topics: [{ role: 'Vehicle subscription', topic: 'fixture/vehicle/teslamate', direction: 'subscribe' }] },
+    { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
+      topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] },
+  ] } }));
+  const connections = descendants(document.getElementById('equipment-connections'));
+  const tesla = connections.find(node => node.dataset.deviceId === 'connection:teslamate:other');
+  assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Charger 2 vehicle');
+  assert.equal(tesla.querySelector('.equipment-connection-meta').textContent, 'Vehicle · TeslaMate');
+  const generic = connections.find(node => node.dataset.deviceId === 'connection:charger1-vehicle:other');
+  assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'Charger 1 vehicle');
+  assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · MQTT');
+  assert.equal(generic.tagName, 'DETAILS', 'Connection folds still reveal their configured MQTT topics');
 });

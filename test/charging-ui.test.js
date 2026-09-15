@@ -19,13 +19,13 @@ const view = item => chargerDisplay(item, { now });
 const active = () => { const item = charger(); return { ...item, settings: { ...item.settings, enabled: true },
   values: { ...item.values, connected: reading(true) }, plan: { startAt, finishAt: deadlineAt, deadlineAt } }; };
 
-test('garage preserves cold budgets and renders shared charger cards without installation settings', () => {
+test('garage keeps cold budgets in settings and renders shared charger cards without installation settings', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert.match(html, /id="home-heat-pump-title">Home<\/h3>/);
   assert.match(html, /id="garage-title">Garage<\/h3>/);
   assert.equal((html.match(/<span>Heating mode<\/span>/g) ?? []).length, 2);
   assert(!html.includes('home-tariff-status'));
-  assert(html.indexOf('id="garage-budget-front"') < html.indexOf('id="charger1-summary"'));
+  assert(!html.includes('id="garage-budget-front"')); assert(html.includes('id="garage-settings-budget-front"'));
   assert(html.indexOf('id="charging-devices"') < html.indexOf('id="garage-controller-details"'));
   assert(!html.includes('id="charger1-settings-form"'), 'Per-charger forms come from the same renderer');
   assert(!html.includes('charging-installation'));
@@ -351,9 +351,20 @@ test('the explanation fold discloses operational assumptions without exposing ir
 });
 
 class Events {
-  constructor() { this.listeners = new Map(); }
-  addEventListener(key, listener) { this.listeners.set(key, listener); }
-  removeEventListener(key, listener) { if (this.listeners.get(key) === listener) this.listeners.delete(key); }
+  constructor() { this.listeners = new Map(); this.handlers = new Map(); }
+  addEventListener(key, listener) {
+    if (!this.handlers.has(key)) {
+      this.handlers.set(key, new Set());
+      this.listeners.set(key, (...args) => {
+        let result; for (const action of this.handlers.get(key) ?? []) result = action(...args); return result;
+      });
+    }
+    this.handlers.get(key).add(listener);
+  }
+  removeEventListener(key, listener) {
+    this.handlers.get(key)?.delete(listener);
+    if (!this.handlers.get(key)?.size) { this.handlers.delete(key); this.listeners.delete(key); }
+  }
   dispatch(type, options = {}) {
     const event = { target: this, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, ...options };
     this.listeners.get(type)?.(event); return event;
@@ -445,9 +456,13 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   assert(!$('charger1-setting-readyBy').disabled); assert($('charger2-setting-readyBy').disabled);
   assert.equal($('charger2-setting-minimumSoc').value, 85); assert($('charger2-setting-minimumSoc').disabled);
   assert.equal($('charger2-setting-manualSoc').value, 62); assert($('charger2-setting-manualSoc').disabled);
-  assert.doesNotMatch($('charger2-setting-minimumSoc-help').textContent, /Saved fallback/);
-  assert.match(openDetail($('charger2-setting-minimumSoc-help')).textContent, /Saved fallback: 80%/);
-  assert.match(openDetail($('charger2-setting-manualSoc-help')).textContent, /Saved fallback: 20%/);
+  assert.match($('charger2-setting-minimumSoc-help').textContent, /Saved fallback: 80%/);
+  assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 20%/);
+  for (const id of ['charger1', 'charger2']) for (const { key } of chargingFields) {
+    const help = $(`${id}-setting-${key}-help`);
+    assert(!help.querySelector('button'), 'Settings instructions remain inline beside their fields');
+    assert.equal($(`${id}-setting-${key}`).getAttribute('aria-describedby'), help.id);
+  }
   assert(!$('charger2-setting-capacityKwh').disabled); assert($('charger2-enabled').disabled);
   assert.equal($('charger1-setting-manualSoc').value, 20);
   const original = $('charger2-device'); panel.update(status()); assert.equal($('charger2-device'), original);
@@ -518,26 +533,31 @@ test('automatic SoC takes priority while preserving a draft to use when automati
   panel.close();
 });
 
-test('charger help updates an open popup without disturbing form drafts, fold state or keyboard focus', () => {
+test('charge summary explanations update without disturbing form drafts, fold state or keyboard focus', () => {
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
-  const two = charger('charger2'), vehicle = { ...two, values: { ...two.values, soc: reading(62) } };
+  const two = charger('charger2'), vehicle = { ...two, values: { ...two.values, connected: reading(true), soc: reading(62, 'teslamate', { measuredAt: now - 60_000 }) } };
   panel.update(status(active(), vehicle));
   const device = $('charger2-device'), field = $('charger1-setting-manualSoc');
-  device.open = true; field.value = '45'; field.dispatch('input');
-  const help = $('charger2-setting-manualSoc-help'), trigger = help.querySelector('.status-detail-trigger'), popup = openDetail(help);
+  device.open = false; $('charger1-device').open = true; field.value = '45'; field.dispatch('input');
+  const help = $('charger2-charge-label'), trigger = help.querySelector('.status-detail-trigger');
+  const click = trigger.dispatch('click'), popup = $('status-detail-popover');
+  assert(click.defaultPrevented, 'Opening an explanation cancels the enclosing fold action');
+  assert.equal(popup.hidden, false); assert.equal(device.open, false);
   const close = popup.querySelector('.status-detail-close'), popupBody = popup.querySelector('.status-detail-body');
   assert.equal(document.activeElement, close);
   popup.scrollTop = 42; popupBody.scrollTop = 18;
-  panel.update(status(active(), { ...vehicle, settings: { ...vehicle.settings, manualSoc: 22 }, values: { ...vehicle.values, soc: reading(63) } }));
+  panel.update(status(active(), { ...vehicle, settings: { ...vehicle.settings, manualSoc: 22 }, values: { ...vehicle.values, soc: reading(63, 'teslamate', { measuredAt: now }) } }));
   document.flushFrames();
-  assert.equal($('charger2-setting-manualSoc-help').querySelector('.status-detail-trigger'), trigger);
+  assert.equal($('charger2-charge-label').querySelector('.status-detail-trigger'), trigger);
   assert.equal($('status-detail-popover'), popup); assert.equal(popup.hidden, false); assert.equal(popup.showCount, 1);
-  assert.match(popupBody.textContent, /Saved fallback: 22%/);
+  assert.match(popupBody.textContent, /TeslaMate/); assert.match(popupBody.textContent, /Charge measured .*21:00/);
+  assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 22%/);
   assert.equal(popup.scrollTop, 42); assert.equal(popupBody.scrollTop, 18); assert.equal(document.activeElement, close);
-  assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45'); assert.equal(device.open, true);
+  assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45'); assert.equal(device.open, false);
   assert.equal($('charger2-setting-manualSoc').value, 63); assert($('charger2-setting-manualSoc').disabled);
   const escape = document.dispatch('keydown', { key: 'Escape' });
   assert(escape.defaultPrevented); assert.equal(popup.hidden, true); assert.equal(document.activeElement, trigger);
+  assert(!document.getElementById('charger2-source-info') && !document.getElementById('charger2-completion-info'));
   panel.close();
 });
 
@@ -561,6 +581,8 @@ test('controlled and observed equipment use the same charge, target and completi
   assert.equal($('charger2-state').textContent, 'Observed'); assert.match($('charger2-summary').textContent, /^Observed · Scheduled start/);
   assert.equal($('charger1-completion').textContent, 'tomorrow 06:00'); assert.equal($('charger2-completion').textContent, 'tomorrow 04:00');
   assert.equal($('charger1-energy').textContent, '32.9 kWh'); assert.equal($('charger1-cost').textContent, '€2.07');
+  assert.equal($('charger1-periods').hidden, false, 'The only charging period remains visible in details');
+  assert.match($('charger1-periods').textContent, /Period 123:00 onwards/);
   assert.equal($('charger1-deadline').parentElement.hidden, false); assert.equal($('charger2-deadline').parentElement.hidden, true);
   for (const id of ['charger1', 'charger2']) {
     const device = $(`${id}-device`), summary = $(`${id}-device-summary`), body = $(`${id}-settings-details`), overview = $(`${id}-overview`);
@@ -569,11 +591,21 @@ test('controlled and observed equipment use the same charge, target and completi
     assert(overview.contains($(`${id}-soc`)) && overview.contains($(`${id}-minimum`)) && overview.contains($(`${id}-completion`)));
     assert.notEqual($(`${id}-soc`).parentElement, $(`${id}-minimum`).parentElement, 'Charge and target have separate metric columns');
     assert.equal($(`${id}-event`).parentElement, $(`${id}-deadline`).parentElement.parentElement, 'Start and ready-by share a timing row');
+    assert.equal($(`${id}-event-label`).textContent, 'Starts'); assert.equal($(`${id}-event-value`).textContent, '23:00');
     assert(body.contains($(`${id}-remaining`)) && body.contains($(`${id}-energy`)) && body.contains($(`${id}-reading-time`)));
+    assert(body.contains($(`${id}-delivered`)) && body.contains($(`${id}-cost`)), 'Both roles share all three energy and cost facts');
     assert(!summary.textContent.includes('kWh') && !summary.textContent.includes('€'), 'Energy and cost belong to unfolded details');
     assert.equal($(`${id}-settings-form`).parentElement, body);
-    assert(!descendants(summary).some(node => ['BUTTON', 'INPUT', 'FORM', 'DETAILS', 'A'].includes(node.tagName)),
-      'The whole equipment header toggles the fold without competing controls');
+    assert(!descendants(summary).some(node => ['INPUT', 'FORM', 'DETAILS', 'A'].includes(node.tagName)));
+    const buttons = descendants(summary).filter(node => node.tagName === 'BUTTON');
+    assert.equal(buttons.length, 3);
+    assert(buttons.every(node => node.matches('.status-detail-trigger') && node.type === 'button'), 'Header controls only explain the three metrics');
+    for (const label of ['charge', 'target', 'completion']) {
+      const root = $(`${id}-${label}-label`), popup = openDetail(root);
+      assert(overview.contains(root)); assert.equal(popup.getAttribute('role'), 'dialog');
+      document.dispatch('keydown', { key: 'Escape' });
+      assert.equal(document.activeElement, root.querySelector('.status-detail-trigger'));
+    }
     assert.deepEqual(descendants(body).filter(node => node.tagName === 'DETAILS').map(node => node.id), [`${id}-explanation-details`]);
   }
   panel.update(status({ ...item, control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } },
@@ -584,6 +616,27 @@ test('controlled and observed equipment use the same charge, target and completi
     assert.equal($(`${id}-device-summary`).textContent.split($(`${id}-completion`).textContent).length - 1, id === 'charger1' ? 2 : 1,
       'The estimate appears only in its metric; ready-by can independently match the estimate');
   }
+  panel.close();
+});
+
+test('observed charger energy and cost use the same detail metrics with complete forecast rate coverage', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
+  const item = charger('charger2'), finishAt = startAt + 2 * 3600_000;
+  const observed = { ...item, values: { ...item.values, connected: reading(true), scheduledStartAt: reading(startAt) },
+    progress: { deliveredGridKwh: 4, remainingGridKwh: 32 }, forecast: { state: 'forecast', controlled: false, startAt, finishAt } };
+  const snapshot = { ...status(active(), observed), prices: [
+    { start: startAt, end: startAt + 3600_000, allInCentsPerKWh: 5 },
+    { start: startAt + 3600_000, end: finishAt, allInCentsPerKWh: 15 },
+  ] };
+  panel.update(snapshot);
+  assert.equal($('charger2-state').textContent, 'Observed'); assert.equal($('charger2-completion').textContent, 'tomorrow 01:00');
+  assert.equal($('charger2-delivered').textContent, '4 kWh'); assert.equal($('charger2-energy').textContent, '32 kWh');
+  assert.equal($('charger2-cost').textContent, '€3.20', '32 kWh at an average rate of 10 cents per kWh');
+  assert.doesNotMatch($('charger2-readings').textContent, /Delivered since starting charge/);
+  assert.equal($('charger2-delivered').parentElement.parentElement, $('charger2-cost').parentElement.parentElement);
+  panel.update({ ...snapshot, prices: snapshot.prices.slice(0, 1) });
+  assert.equal($('charger2-cost').textContent, 'No estimate', 'Partial price coverage never produces a partial total');
+  assert.equal($('charger2-completion').textContent, 'tomorrow 01:00', 'Missing rates do not remove an otherwise valid completion forecast');
   panel.close();
 });
 

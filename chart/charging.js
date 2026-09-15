@@ -1,6 +1,6 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
-import { chargerSummary } from './charging-summary.js';
+import { chargerSummary, chargingCost } from './charging-summary.js';
 
 const finite = Number.isFinite;
 const number = (value, unit = '') => finite(value) ? `${Number(value.toFixed(1))}${unit ? ` ${unit}` : ''}` : 'Unknown';
@@ -282,6 +282,25 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   const writable = () => Boolean(status?.charging && status.readOnly !== true && status.charging.readOnly !== true && !isReadOnlyReplica(status));
   const set = (id, text) => { if ($(id)) $(id).textContent = text; };
   const rowNodes = new WeakMap();
+  const energyNodes = new WeakMap();
+  function energyText(root, text) {
+    let parts = energyNodes.get(root);
+    if (!parts) {
+      parts = { value: make('span'), unit: make('span', '', 'charging-energy-unit') };
+      root.replaceChildren(parts.value, parts.unit); energyNodes.set(root, parts);
+    }
+    const match = text.match(/^(.*) kWh$/);
+    parts.value.textContent = match?.[1] ?? text;
+    parts.unit.textContent = match ? ' kWh' : '';
+  }
+  const metricTriggers = new WeakSet();
+  function metricDetail(root, options) {
+    const trigger = setStatusDetail(root, options);
+    if (trigger && !metricTriggers.has(trigger)) {
+      metricTriggers.add(trigger);
+      bind(trigger, 'click', event => { event.preventDefault(); event.stopPropagation(); });
+    }
+  }
   function list(root, rows) {
     const nodes = rowNodes.get(root) ?? new Map(); rowNodes.set(root, nodes);
     const keys = new Set(), occurrences = new Map();
@@ -334,15 +353,20 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const charge = make('div', '', 'equipment-value charging-charge');
     const current = make('strong', 'Unknown', '', `${id}-soc`), target = make('strong', 'Unknown', '', `${id}-minimum`);
     const sources = make('small', '', '', `${id}-sources`);
-    charge.append(make('span', 'Charge'), current, sources);
+    const chargeLabel = make('span', 'Charge', '', `${id}-charge-label`);
+    charge.append(chargeLabel, current, sources);
     const arrow = make('span', '→', 'charging-progress-arrow'); arrow.setAttribute('aria-hidden', 'true');
-    const targetMetric = make('div', '', 'equipment-value'); targetMetric.append(make('span', 'Target'), target);
+    const targetMetric = make('div', '', 'equipment-value charging-target');
+    const targetLabel = make('span', 'Target', '', `${id}-target-label`); targetMetric.append(targetLabel, target);
     const completionMetric = make('div', '', 'equipment-value charging-completion');
     const completion = make('strong', 'No estimate', '', `${id}-completion`);
-    completionMetric.append(make('span', 'Est. target'), completion);
+    const completionLabel = make('span', 'Est. target', '', `${id}-completion-label`); completionMetric.append(completionLabel, completion);
     overview.append(charge, arrow, targetMetric, completionMetric);
     metrics.soc = { value: current }; metrics.minimum = { value: target };
-    const timing = make('div', '', 'charging-timing'), event = make('p', '', 'charging-event', `${id}-event`);
+    const timing = make('div', '', 'charging-timing'), event = make('div', '', 'charging-event', `${id}-event`);
+    const eventLabel = make('span', '', 'charging-event-label', `${id}-event-label`);
+    const eventValue = make('strong', '', 'charging-event-value', `${id}-event-value`);
+    event.append(eventLabel, eventValue);
     const deadlineGroup = make('div', '', 'charging-ready-by');
     const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
     deadlineGroup.append(make('span', 'Ready by'), deadline); timing.append(event, deadlineGroup);
@@ -352,22 +376,22 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const problem = make('p', '', 'charging-problem', `${id}-problem`); problem.setAttribute('role', 'status'); summary.append(problem);
     const body = make('div', '', 'equipment-device-body charging-settings', `${id}-settings-details`);
     const facts = make('div', '', 'charging-fact-overview');
-    const remaining = make('div', '', 'charging-detail-metric', `${id}-remaining`);
+    const delivered = make('div', '', 'charging-detail-metric charging-delivered');
+    const deliveredLabel = make('span'), deliveredValue = make('strong', '', '', `${id}-delivered`);
+    delivered.append(deliveredLabel, deliveredValue);
+    const remaining = make('div', '', 'charging-detail-metric charging-remaining', `${id}-remaining`);
     const energyLabel = make('span'), energyValue = make('strong', '', '', `${id}-energy`);
     remaining.append(energyLabel, energyValue);
-    const costMetric = make('div', '', 'charging-detail-metric');
+    const costMetric = make('div', '', 'charging-detail-metric charging-cost');
     const costLabel = make('span'), cost = make('strong', '', '', `${id}-cost`); costMetric.append(costLabel, cost);
-    facts.append(remaining, costMetric);
-    const context = make('div', '', 'charging-reading-context');
-    const sourceInfo = make('span', '', '', `${id}-source-info`), completionInfo = make('span', '', '', `${id}-completion-info`);
+    facts.append(delivered, remaining, costMetric);
     const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
-    context.append(sourceInfo, completionInfo, readingTime);
     const scheduleHeading = make('div', '', 'charging-schedule-heading');
     const scheduleInfo = make('span', '', '', `${id}-schedule-info`), periodCount = make('span', '', 'charging-period-count', `${id}-period-count`);
     scheduleHeading.append(scheduleInfo, periodCount);
     const readings = make('dl', '', 'equipment-readings charging-facts', `${id}-readings`), notes = make('ul', '', 'charging-notes', `${id}-notes`);
     const periods = make('dl', '', 'equipment-readings charging-periods', `${id}-periods`);
-    body.append(facts, context, scheduleHeading, periods, readings, notes);
+    body.append(facts, readingTime, scheduleHeading, periods, readings, notes);
     const master = make('div', '', 'charging-master'), masterLabel = make('span', 'Automatic charging', '', `${id}-enabled-label`);
     const toggle = make('button', 'OFF', '', `${id}-enabled`); toggle.type = 'button'; toggle.setAttribute('role', 'switch');
     toggle.setAttribute('aria-checked', 'false'); toggle.setAttribute('aria-labelledby', masterLabel.id); master.append(masterLabel, toggle);
@@ -384,7 +408,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, section, title, state, event, overview, sources, metrics, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, remaining, energyLabel, energyValue, costLabel, cost, costMetric, sourceInfo, completionInfo, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger };
+    const device = { id, section, title, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger };
     bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
     bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
     devices.set(id, device); return device;
@@ -404,8 +428,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const unsupported = field.scheduling && !charger?.capabilities?.scheduling;
       const detail = live ? `${sourceLabel(reading)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}. ${field.help ?? ''}`
         : unsupported ? 'Scheduling is unavailable with this integration.' : field.help ?? '';
-      setStatusDetail(help, { label: live ? sourceLabel(reading) : unsupported ? 'Observation only' : 'About this setting',
-        title: field.label, detail, key: help.id });
+      help.textContent = detail;
       help.hidden = !detail;
     }
   }
@@ -442,40 +465,49 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.section.dataset.state = view.state;
       device.state.textContent = presentation.roleLabel; device.state.dataset.state = presentation.roleState;
       device.state.title = presentation.roleDetail;
-      device.event.textContent = presentation.activity; device.event.dataset.state = view.risk ? 'attention' : 'normal';
+      const timedEvent = presentation.activity.match(/^(Starts|Scheduled start|Proposed start|Last confirmed start|Resumes|Last confirmed resume) (.+)$/);
+      device.eventLabel.textContent = timedEvent ? timedEvent[1] === 'Scheduled start' ? 'Starts' : timedEvent[1] : '';
+      device.eventLabel.hidden = !timedEvent;
+      device.eventValue.textContent = timedEvent ? timedEvent[2] : presentation.activity;
+      device.event.dataset.state = view.risk ? 'attention' : 'normal';
       device.overview.hidden = !view.showMetrics;
       device.metrics.soc.value.textContent = view.soc; device.metrics.minimum.value.textContent = view.minimum;
       device.sources.textContent = view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
       device.completion.textContent = presentation.completion.value;
+      const sourceDetail = [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
+      metricDetail(device.chargeLabel, { label: 'Charge', title: 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
+      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: view.minimumSource, key: `${charger.id}:target` });
+      const completionDetail = presentation.completion.at !== null
+        ? 'Forecast time to reach the displayed target at the expected charging power. Charging can continue after the target is reached.'
+        : presentation.completion.detail;
+      metricDetail(device.completionLabel, { label: 'Est. target', title: 'Estimated target time', detail: completionDetail, key: `${charger.id}:completion` });
       device.readingTime.textContent = view.readingTime; device.readingTime.hidden = !view.readingTime;
       device.deadline.textContent = view.deadline.replace(/^Ready by /, ''); device.deadlineGroup.hidden = !view.deadline;
       device.readiness.textContent = view.risk ? view.readiness : '';
       device.readiness.hidden = !view.risk; device.readiness.dataset.state = view.risk ? 'attention' : 'normal';
       device.remaining.hidden = !view.showMetrics;
-      device.energyValue.textContent = view.gridEnergy;
+      energyText(device.energyValue, view.gridEnergy);
+      const deliveredEnergy = charger.progress?.deliveredGridKwh ?? charger.progress?.creditedGridKwh;
+      energyText(device.deliveredValue, finite(deliveredEnergy) ? number(deliveredEnergy, 'kWh') : '—');
+      setStatusDetail(device.deliveredLabel, { label: 'Added so far', title: 'Energy added since starting charge',
+        detail: finite(deliveredEnergy) ? 'Measured energy delivered from the grid since the starting charge. Some energy is lost during charging.' : 'No delivered-energy reading is available for the current starting charge.', key: `${charger.id}:delivered` });
       setStatusDetail(device.energyLabel, { label: view.energyLabel, title: view.energyLabel,
         detail: `${view.energyNote}. ${explanation['Energy estimate'] ?? ''}`, key: `${charger.id}:energy` });
-      const cost = view.rows.find(([label]) => label === 'Estimated cost to target');
-      device.costMetric.hidden = !cost; device.cost.textContent = cost?.[1] ?? '';
-      device.facts.hidden = !view.showMetrics && !cost;
+      const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });
+      device.cost.textContent = cost.value;
+      device.facts.hidden = !view.showMetrics;
       setStatusDetail(device.costLabel, { label: 'Estimated cost', title: 'Estimated cost to target',
-        detail: 'Cost of the planned grid energy needed to reach the target. The final charging period can continue until the vehicle finishes.', key: `${charger.id}:cost` });
-      setStatusDetail(device.sourceInfo, { label: 'Charge source', title: 'Charge reading and estimate',
-        detail: [view.socSource, view.readingTime, explanation['Charging progress'], explanation['Readings & fallbacks']].filter(Boolean).join('\n\n'), key: `${charger.id}:source` });
-      setStatusDetail(device.completionInfo, { label: 'Target estimate', title: 'Estimated time to target',
-        detail: [presentation.completion.detail, view.deadline, view.readiness, 'Estimated when the displayed target will be reached, using current charge and forecast charging power. It can change as readings update. This is not a scheduled stop.'].filter(Boolean).join('\n\n'), key: `${charger.id}:completion` });
+        detail: cost.detail, key: `${charger.id}:cost` });
       device.priority.textContent = view.priority; device.priority.hidden = !view.priority;
       device.periodCount.textContent = view.periodCount; device.periodCount.hidden = !view.periodCount;
       device.problem.textContent = view.problem; device.problem.hidden = !view.problem;
-      const scheduleExplanation = [view.periodRows.map(([label, text]) => `${label}: ${text}`).join('\n'),
-        explanation['Price planning']].filter(Boolean).join('\n\n');
       setStatusDetail(device.scheduleInfo, { label: 'Charging schedule', title: 'Charging periods',
-        detail: scheduleExplanation, key: `${charger.id}:schedule` });
+        detail: explanation['Price planning'], key: `${charger.id}:schedule` });
       device.scheduleHeading.hidden = !view.periodRows.length;
       list(device.periods, view.periodRows.map(([label, text]) => [label, text.replace(' onwards · vehicle finishes naturally', ' onwards')]));
-      device.periods.hidden = view.periodRows.length < 2;
+      device.periods.hidden = !view.periodRows.length;
       list(device.explanations, view.explanations);
-      const rows = view.rows.filter(([label]) => label !== 'Estimated cost to target').map(([label, text]) => {
+      const rows = view.rows.filter(([label]) => !['Estimated cost to target', 'Delivered since starting charge'].includes(label)).map(([label, text]) => {
         if (label === 'Last reported Equalizer allowance') return ['Reported allowance', text.split(' · ')[0], `${text}. ${explanation['Current allocation'] ?? ''}`];
         if (label === 'Forecast charging power') return ['Forecast power', text.replace(' average during planned periods', ''), `${text}. ${explanation['Current allocation'] ?? explanation['Energy estimate'] ?? ''}`];
         if (label === 'Other scheduled charging') return ['Other charging', text.split(' · ')[0], `${text}. ${explanation['Other charging'] ?? ''}`];

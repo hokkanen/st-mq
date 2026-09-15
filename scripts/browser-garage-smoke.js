@@ -98,8 +98,18 @@ try {
     globalThis.fetch = async (input, options) => {
       const response = await originalFetch(input, options);
       if (new URL(input.url ?? String(input), location.href).pathname !== '/api/status'
-        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues)) return response;
+        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues && !globalThis.nativePumpSmokeValues)) return response;
       const status = await response.json();
+      if (globalThis.nativePumpSmokeValues) {
+        const at = status.now, reading = value => ({ value, available: true, observedAt: at });
+        status.h66 = { ...status.h66, connected: true, brokerConnected: true,
+          compressorState: { value: 1, since: at - 75 * 60_000, transitionObserved: false },
+          readings: { '1A01': reading(1), '0203': reading(21), '0212': reading(44), '0208': reading(60), '2201': reading(1) } };
+        status.garage.adapter = { ...status.garage.adapter, connected: true,
+          health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true },
+          native: { power: 'on', mode: 'heat', targetC: 10,
+            readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: at }])) } };
+      }
       if (globalThis.learningSmokeValues) {
         const missing = globalThis.learningSmokeValues === 'missing';
         status.learning.metrics = { ...status.learning.metrics, profit: { value: 0, count: missing ? 0 : 1 } };
@@ -132,14 +142,17 @@ try {
         charger.values.charging = observation(globalThis.chargingSmokeValues === 'charging');
         charger.values.powerKw = observation(8.2);
         charger.requiredGridKwh = 15; charger.progress = null;
-        charger.forecast = { state: 'forecast', feasible: true, finishAt: status.now + 3.5 * 3600_000,
+        charger.forecast = { state: 'forecast', feasible: true, startAt: status.now + 2 * 3600_000, finishAt: status.now + 3.5 * 3600_000,
           powerKw: 10, shortfallGridKwh: 0 };
+        status.prices = [{ start: status.now, end: status.now + 24 * 3600_000, allInCentsPerKWh: 20 }];
         if (state === 'unavailable') charger.forecast = { state: 'unavailable', finishAt: null,
           reason: 'electrical-telemetry-unavailable', feasible: null };
         status.providers.teslamate = { enabled: true, status: 'idle', recording: false, reception: {
           brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: status.now, lastLiveAt: status.now } };
-        status.equipment.topicGroups = [...(status.equipment.topicGroups ?? []).filter(group => group.id !== 'teslamate'),
-          { id: 'teslamate', label: 'TeslaMate', topics: [{ role: 'Vehicle subscription', topic: 'teslamate/cars/7/#', direction: 'subscribe' }] }];
+        status.equipment.topicGroups = [...(status.equipment.topicGroups ?? []).filter(group => !['teslamate', 'charger1-vehicle'].includes(group.id)),
+          { id: 'teslamate', label: 'TeslaMate', topics: [{ role: 'Vehicle subscription', topic: 'teslamate/cars/7/#', direction: 'subscribe' }] },
+          { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
+            topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] }];
         status.charging.coordination.assumptions.householdReference = { nights: 8, minimumNights: 6, limited: false,
           temperatureRangeC: [-5, 2], oldestAt: status.now - 220 * 86400_000, legacy: true };
         if (manual) {
@@ -204,6 +217,8 @@ try {
   assert.equal(await evaluate("[...document.querySelectorAll('#charging-devices > details')].some(fold=>fold.open)"), false);
   assert.equal(await evaluate("document.getElementById('charging-installation-details')"), null);
   assert.equal(await evaluate("document.querySelector('.charging-secondary, .charging-soc-form')"), null);
+  assert.equal(await evaluate("document.querySelector('.charging-settings-form .status-detail-trigger')"), null,
+    'Charger form guidance stays inline beside each input');
   await evaluate("document.getElementById('garage-equipment-details').open=true; true");
   for (const [charger, value] of [[1, '76'], [2, '59']]) {
     await evaluate(`(() => { document.getElementById('charger${charger}-device').open=true;
@@ -233,17 +248,45 @@ try {
   assert.equal(await evaluate("document.getElementById('charger2-state').textContent"), 'Observed');
   assert.match(await evaluate("document.getElementById('charger2-summary').textContent"), /^Observed · Scheduled /,
     'The compact Garage charger summary uses the same observed role');
-  assert.match(await evaluate("document.getElementById('charger2-event').textContent"), /^Scheduled /);
+  assert.equal(await evaluate("document.getElementById('charger2-event-label').textContent"), 'Starts');
+  assert.equal(await evaluate("document.getElementById('charger2-event-value').textContent"), '17:00');
   assert.equal(await evaluate("document.getElementById('charger2-completion').textContent"), '18:30');
+  assert.equal(await evaluate("document.getElementById('charger2-cost').textContent"), '€3.00',
+    'Observed charging estimates remaining cost from forecast time and the supplied electricity rates');
+  assert.equal(await evaluate("document.getElementById('charger2-source-info') || document.getElementById('charger2-completion-info')"), null,
+    'Charger bodies omit repeated charge-source and target-estimate links');
   assert.equal(await evaluate("document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-remaining'))"), false,
     'Grid energy stays inside the equipment body for both charging roles');
   assert.equal(await evaluate("document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-reading-time'))"), false,
     'The original reading timestamp remains available inside the equipment body');
-  assert.equal(await evaluate("document.querySelector('#charger2-device > summary button')"), null,
-    'The equipment summary keeps a single, full-row expand target');
   assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-device-status').textContent"), 'Connected');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Charger 2 vehicle');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-connection-meta').textContent"), 'Vehicle · TeslaMate');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:charger1-vehicle:other\"] .equipment-connection-meta').textContent"), 'Vehicle · MQTT');
   assert.doesNotMatch(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"]').textContent"), /No live report yet/);
   assert.equal(await evaluate("document.getElementById('charger2-device')===window.originalChargingSmokeNode"), true);
+  for (const expanded of [false, true]) for (const metric of ['charge', 'target', 'completion']) {
+    await evaluate(`(() => {
+      document.getElementById('charger2-device').open=${expanded};
+      const trigger = document.querySelector('#charger2-${metric}-label .status-detail-trigger');
+      globalThis.chargerMetricSmokeTrigger = trigger; trigger.focus();
+    })()`);
+    await pause(60);
+    await keyPress('Enter');
+    assert.equal(await evaluate("document.getElementById('status-detail-popover').hidden"), false);
+    assert.equal(await evaluate("document.getElementById('charger2-device').open"), expanded,
+      `${metric} help opens with Enter without toggling ${expanded ? 'open' : 'closed'} equipment`);
+    await evaluate('globalThis.refreshLearningSmokeStatus()');
+    assert.equal(await evaluate("document.getElementById('status-detail-popover').hidden"), false,
+      'Metric help stays open during status refresh');
+    await keyPress('Escape');
+    assert.equal(await evaluate("document.activeElement===globalThis.chargerMetricSmokeTrigger"), true);
+    await evaluate('globalThis.chargerMetricSmokeTrigger.click()');
+    assert.equal(await evaluate("document.getElementById('status-detail-popover').hidden"), false);
+    assert.equal(await evaluate("document.getElementById('charger2-device').open"), expanded,
+      `${metric} help opens by pointer without toggling equipment`);
+    await keyPress('Escape');
+  }
   await evaluate("globalThis.chargingSmokeValues='charging'; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger2-device').dataset.state==='Charging'");
   assert.equal(await evaluate("document.getElementById('charger2-state').textContent"), 'Observed');
@@ -278,13 +321,17 @@ try {
   assert.match(await evaluate("document.getElementById('charger1-remaining').textContent.toLowerCase()"), /grid remaining.*≈27 kwh|≈27 kwh.*grid remaining/);
   assert.equal(await evaluate("document.getElementById('charger1-deadline').textContent"), 'tomorrow 06:00');
   assert.equal(await evaluate("document.getElementById('charger1-completion').textContent"), 'tomorrow 01:00');
+  assert.equal(await evaluate("document.getElementById('charger1-delivered').textContent"), '10 kWh');
   assert.match(await evaluate("document.getElementById('charger1-explanations').textContent"), /6–8 comparable nights/);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#charger1-readings dt')].slice(0,3).map(node=>node.textContent)"),
     ['Drawing now', 'Reported allowance', 'Charging limit']);
   await evaluate("globalThis.chargingSmokeValues='single'; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger1-device').dataset.state==='Scheduled'");
-  assert.equal(await evaluate("document.getElementById('charger1-periods').hidden"), true,
-    'A single final period does not repeat the summary start as another table row');
+  assert.equal(await evaluate("document.getElementById('charger1-periods').hidden"), false,
+    'Every planned period remains visible inside the equipment details');
+  assert.equal(await evaluate("document.getElementById('charger1-periods').textContent"), 'Period 117:00 onwards');
+  assert.equal(await evaluate("document.getElementById('charger1-event-label').textContent"), 'Starts');
+  assert.equal(await evaluate("document.getElementById('charger1-event-value').textContent"), '17:00');
   assert.equal(await evaluate("document.getElementById('charger1-cost').textContent"), '€1.25');
   assert.match(await evaluate("document.getElementById('charger1-summary').textContent"), /^Controlled · Starts /,
     'The compact Garage charger summary uses the same controlled role');
@@ -336,7 +383,7 @@ try {
         if (parent.tagName === 'DETAILS') parent.open = true;
       device.querySelector(':scope > summary').focus();
     })()`);
-    assert.equal(await evaluate(`document.querySelector('#${id} > summary').querySelector(
+    if (!id.startsWith('charger')) assert.equal(await evaluate(`document.querySelector('#${id} > summary').querySelector(
       'button, a, input, select, textarea, [tabindex]') === null`), true,
       `${id} summary has one disclosure action without nested interactive readings`);
     await keyPress('Enter');
@@ -357,8 +404,38 @@ try {
     assert.equal(await evaluate(`document.getElementById('${id}').open`), false,
       `${id} closes from the same full-row click target`);
   }
-  assert.equal(await evaluate("document.querySelector('#garage-equipment-details > summary').textContent.includes('Freezing protection')"), false,
-    'Garage overview shows the current cold budget instead of repeating configured protection values');
+  for (const [id, metrics] of [['home-pump-device', ['home-pump-state', 'home-pump-dhw', 'home-pump-room']],
+    ['garage-controller-details', ['garage-native-power', 'garage-native-mode', 'garage-native-target']]]) {
+    assert.equal(await evaluate(`(() => {
+      const device = document.getElementById('${id}'), summary = device.querySelector(':scope > summary');
+      return !device.open && ${JSON.stringify(metrics)}.every(id => {
+        const metric = document.getElementById(id);
+        return summary.contains(metric) && metric.checkVisibility() && document.querySelectorAll('#' + id).length === 1;
+      }) && device.querySelector(':scope > .equipment-device-body .pump-native-overview') === null;
+    })()`), true, `${id} shows each primary reading once in its closed equipment row`);
+  }
+  assert.equal(await evaluate("document.getElementById('home-pump-preview') || document.getElementById('garage-pump-preview')"), null,
+    'Native heat pumps use their actual metric rows instead of a second preview');
+  assert.equal(await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.equipment-device-static')];
+    for (const row of rows) for (let parent = row.parentElement; parent; parent = parent.parentElement)
+      if (parent.tagName === 'DETAILS') parent.open = true;
+    return rows.length > 0 && rows.every(row => row.tagName === 'SECTION'
+      && !row.querySelector(':scope > summary') && row.querySelector('.equipment-readings')?.checkVisibility()
+      && ['none', 'normal', '""'].includes(getComputedStyle(row.querySelector('.equipment-device-summary'), '::after').content));
+  })()`), true, 'Temperature-only equipment rows show their readings without a disclosure');
+  for (const id of ['temporary-details', 'garage-pause-details']) {
+    assert.equal(await evaluate(`document.getElementById('${id}').classList.contains('equipment-fold')`), true,
+      `${id} uses the shared equipment disclosure style`);
+    await evaluate(`document.getElementById('${id}').open=false; document.querySelector('#${id} > summary').focus()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
+    await keyPress(' ');
+    assert.equal(await evaluate(`document.getElementById('${id}').open`), false);
+  }
+  assert.equal(await evaluate("document.querySelector('#garage-equipment-details > summary').textContent.includes('Cold allowance')"), false,
+    'The compact Garage summary keeps thermal allowance inside the detailed settings');
+  assert.equal(await evaluate("document.getElementById('garage-budget-rear') || document.getElementById('garage-budget-front')"), null);
   assert.equal(await evaluate("document.querySelector('[data-scope=home]').getAttribute('aria-pressed')"), 'true');
   await evaluate("document.getElementById('timing-details').open=true; document.querySelector('[data-scope=garage]').click()");
   assert.match(await evaluate("document.querySelector('.timing-device[data-device=heatPump]').textContent"), /-€1.00.*Provisional/);
@@ -486,10 +563,8 @@ try {
   assert.equal(await evaluate("document.getElementById('garage-recovery-details').open"), false,
     'Recovery explanations close with Space');
   await evaluate("globalThis.garageBudgetSmokeState = 'available'; globalThis.refreshLearningSmokeStatus()");
-  assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-budget-' + location).textContent)"),
-    ['Rear 6.3 kJ/m', 'Front 2.1 kJ/m'], 'Overview shows independent live thermal reserves');
   assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-settings-budget-' + location).textContent)"),
-    ['6.3 kJ/m', '2.1 kJ/m'], 'Settings show the same energy reserve as the overview');
+    ['6.3 kJ/m', '2.1 kJ/m'], 'Detailed settings show independent live thermal reserves');
   assert.match(await evaluate("document.getElementById('garage-settings-budget-rear-remaining').textContent"), /Reference estimate 5\.5 °C/);
   assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /Reference estimate 2\.5 °C/);
   assert.equal(await evaluate("document.querySelector('#garage-live-budgets meter') === null"), true,
@@ -501,8 +576,6 @@ try {
   await evaluate(`(() => {
     globalThis.garageBudgetSmokeTriggers = ['rear','front'].map(location =>
       document.querySelector('#garage-settings-budget-' + location + ' .status-detail-trigger'));
-    globalThis.garageBudgetSmokeOverview = ['rear','front'].map(location =>
-      document.querySelector('#garage-budget-' + location + ' .status-detail-trigger'));
     document.getElementById('garage-recovery-details').open = true;
     globalThis.garageBudgetSmokeTriggers[1].focus();
   })()`);
@@ -512,13 +585,10 @@ try {
     const unavailable = Object.hasOwn(unavailableReasons, state), frontValue = unavailable ? '—' : state === 'exhausted' ? '0 kJ/m' : '2.1 kJ/m';
     assert.equal(await evaluate("document.getElementById('garage-settings-budget-front').textContent"), frontValue,
       `${state} live evidence is reflected in settings`);
-    assert.equal(await evaluate("document.getElementById('garage-budget-front').textContent"), `Front ${frontValue}`,
-      `${state} live evidence agrees with the overview`);
     if (unavailable) assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"),
       unavailableReasons[state], `${state} explains why the current budget is unavailable`);
     if (state === 'exhausted') {
       assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /Allowance exhausted/);
-      assert.equal(await evaluate("document.getElementById('garage-budget-front').dataset.state"), 'attention');
     }
     assert.equal(await evaluate("document.getElementById('garage-settings-budget-rear').textContent"), state === 'unapproved' ? '—' : '6.3 kJ/m',
       `${state} keeps the rear assessment independent`);
@@ -526,8 +596,6 @@ try {
       configuredValues, `${state} changes live budgets without changing configured values`);
     assert.equal(await evaluate(`globalThis.garageBudgetSmokeTriggers.every((node, index) => node ===
       document.querySelector('#garage-settings-budget-' + ['rear','front'][index] + ' .status-detail-trigger'))
-      && globalThis.garageBudgetSmokeOverview.every((node, index) => node ===
-        document.querySelector('#garage-budget-' + ['rear','front'][index] + ' .status-detail-trigger'))
       && document.getElementById('garage-recovery-details').open
       && document.activeElement === globalThis.garageBudgetSmokeTriggers[1]`), true,
       `${state} status refresh preserves budget triggers, keyboard focus and expanded recovery explanations`);
@@ -588,10 +656,11 @@ try {
           .filter(field => field.checkVisibility());
         const overflow = fields.filter(field => {
           const bounds = field.getBoundingClientRect();
+          const range = document.createRange(); range.selectNodeContents(field);
           return bounds.left < box.left - 1 || bounds.right > box.right + 1
             || field.scrollWidth > field.clientWidth + 1
             || /-(?:soc|minimum)$/.test(field.id) && /%$/.test(field.textContent)
-              && bounds.height > parseFloat(getComputedStyle(field).lineHeight) + 1;
+              && range.getBoundingClientRect().height > parseFloat(getComputedStyle(field).lineHeight) + 1;
         }).map(field => {
           const style = getComputedStyle(field), context = document.createElement('canvas').getContext('2d');
           context.font = style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily;
@@ -601,6 +670,40 @@ try {
         });
         return overflow.length ? [{ id: node.id, overflow }] : [];
       })`), [], `${name} keeps charger roles, metrics and timing within their summary`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#charging-devices > details'))
+      .filter(device => device.querySelector('.charging-overview').checkVisibility()).flatMap(device => {
+        const id = device.id.replace(/-device$/, ''), errors = [];
+        const range = document.createRange(), textBox = element => {
+          range.selectNodeContents(element); return range.getBoundingClientRect();
+        };
+        if (device.open) for (const [upper, lower] of [['soc', 'delivered'], ['minimum', 'energy'], ['completion', 'cost']]) {
+          const first = textBox(document.getElementById(id + '-' + upper));
+          const second = textBox(document.getElementById(id + '-' + lower));
+          const firstAnchor = upper === 'completion' ? first.left : (first.left + first.right) / 2;
+          const secondAnchor = upper === 'completion' ? second.left : (second.left + second.right) / 2;
+          if (Math.abs(firstAnchor - secondAnchor) > 1) errors.push({ upper, lower, first: firstAnchor, second: secondAnchor });
+        }
+        range.selectNodeContents(device.querySelector('.charging-progress-arrow')); const arrow = range.getBoundingClientRect();
+        range.selectNodeContents(document.getElementById(id + '-soc')); const charge = range.getBoundingClientRect();
+        const difference = Math.abs((arrow.top + arrow.bottom - charge.top - charge.bottom) / 2);
+        if (difference > 4) errors.push({ arrowCenterDifference: difference });
+        const target = textBox(document.getElementById(id + '-minimum'));
+        const expectedArrowCenter = (charge.left + charge.right + target.left + target.right) / 4;
+        const midpointDifference = Math.abs((arrow.left + arrow.right) / 2 - expectedArrowCenter);
+        if (midpointDifference > (innerWidth > 600 ? 1 : 6)) errors.push({ arrowMidpointDifference: midpointDifference });
+        return errors.length ? [{ id, errors }] : [];
+      })`), [], `${name} aligns charger body metrics with the overview and centers the charge arrow`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.native-heat-pump > summary .pump-native-overview strong'))
+      .filter(value => value.checkVisibility() && value.childNodes.length === 1 && value.firstChild.nodeType === Node.TEXT_NODE)
+      .flatMap(value => {
+        const broken = [], lineHeight = parseFloat(getComputedStyle(value).lineHeight);
+        for (const word of value.textContent.matchAll(/\\S+/g)) {
+          const range = document.createRange(); range.setStart(value.firstChild, word.index);
+          range.setEnd(value.firstChild, word.index + word[0].length);
+          if (range.getBoundingClientRect().height > lineHeight + 1) broken.push(word[0]);
+        }
+        return broken.length ? [{ id: value.id, broken }] : [];
+      })`), [], `${name} keeps native heat-pump values readable without breaking words`);
   };
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
@@ -628,6 +731,19 @@ try {
       }
       await evaluate("document.getElementById('garage-live-budgets').scrollIntoView({block: 'center'})");
       await capture(`garage-live-budgets-${width}-${theme}`);
+      for (const [area, fold] of [['home', 'temporary-details'], ['garage', 'garage-pause-details']]) {
+        await evaluate(`(() => {
+          const element = document.getElementById('${fold}');
+          for (let parent = element; parent; parent = parent.parentElement)
+            if (parent.tagName === 'DETAILS') parent.open = true;
+          element.scrollIntoView({block:'start'});
+        })()`);
+        await capture(`${area}-availability-${width}-${theme}`);
+        await evaluate(`document.getElementById('${fold}').open=false`);
+      }
+      await evaluate("globalThis.nativePumpSmokeValues=true; globalThis.refreshLearningSmokeStatus()");
+      await until("document.getElementById('home-pump-state').textContent==='Running'");
+      assert.equal(await evaluate("document.getElementById('home-pump-state-age').textContent"), 'for at least 1 h 15 min');
       for (const [area, zone, device] of [
         ['home', 'home-heat-pump-details', 'home-pump-device'],
         ['garage', 'garage-equipment-details', 'garage-controller-details'],
@@ -639,6 +755,8 @@ try {
             document.getElementById('${area}-equipment-section').scrollIntoView({block:'start'})`);
           await capture(`${area}-equipment-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
         }
+        await evaluate(`document.querySelector('#${area}-equipment-section .equipment-device-static').scrollIntoView({block:'center'})`);
+        await capture(`${area}-temperatures-${width}-${theme}`);
       }
       for (const expanded of [false, true]) {
         await evaluate(`document.querySelectorAll('#charging-devices > details').forEach(fold=>fold.open=${expanded});
@@ -659,11 +777,11 @@ try {
           await capture(`charger-fractional-percentage-${width}-${theme}`);
           await evaluate("document.getElementById('charger1-soc').textContent='≈100 %'");
         }
-        if (state === 'single') {
-          await evaluate("document.querySelector('#charger1-schedule-info .status-detail-trigger').scrollIntoView({block:'center'})");
+        if (state === 'single') for (const [help, target] of [['schedule', 'schedule-info'], ['metric', 'charge-label']]) {
+          await evaluate(`document.querySelector('#charger1-${target} .status-detail-trigger').scrollIntoView({block:'center'})`);
           await pause(60);
-          await evaluate("document.querySelector('#charger1-schedule-info .status-detail-trigger').click()");
-          await capture(`charger-schedule-help-${width}-${theme}`);
+          await evaluate(`document.querySelector('#charger1-${target} .status-detail-trigger').click()`);
+          await capture(`charger-${help}-help-${width}-${theme}`);
           assert.equal(await evaluate(`(() => {
             const popover = document.getElementById('status-detail-popover'), box = popover.getBoundingClientRect();
             return !popover.hidden && box.width > 0 && box.height > 0
@@ -677,7 +795,7 @@ try {
           await evaluate("document.getElementById('charger1-explanation-details').open=false");
         }
       }
-      await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
+      await evaluate("globalThis.chargingSmokeValues=null; globalThis.nativePumpSmokeValues=false; globalThis.refreshLearningSmokeStatus()");
       await until("document.getElementById('charger2-setting-manualSoc').disabled===false");
     }
     // Preserve the equipment and savings layout checks from this smoke test.
@@ -701,13 +819,13 @@ try {
       'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
       'Controlled and Observed roles with shared charge, target and completion metrics, separate start and ready-by timing, grid energy and cost inside the equipment body',
-      'routine charging descriptions open with the keyboard, stay open during refresh and return focus on Escape; a single final period avoids repeating its start',
+      'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
       'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',
       'sensor maintenance stays inside its input explanation', 'zero values remain distinct from missing evidence',
       'Garage settings keep descriptions outside values and live budgets in a separate section',
-      'overview and settings agree for independent, stale, uncertain, unapproved and exhausted cold budgets',
+      'detailed settings retain independent, stale, uncertain, unapproved and exhausted cold budgets without repeating them in the compact summary',
       'status refresh preserves budget triggers, focus, open explanations and the recovery fold',
       'Garage settings and live budgets fit desktop and mobile in both themes',
       'Home and Garage learning sections fit desktop and mobile in both themes, collapsed and expanded',

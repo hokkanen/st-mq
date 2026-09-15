@@ -71,6 +71,61 @@ test('Garage equipment and learning are closed disclosures inside the existing i
   assert.match(html, /To change these values, edit Configuration, then select Apply configuration/);
 });
 
+test('heat-pump metric rows stay visible once in their summaries while controls and explanations stay inside', () => {
+  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  for (const [id, metrics, info] of [
+    ['home-pump-device', ['home-pump-state', 'home-pump-dhw', 'home-pump-room'], 'home-pump-reading-info'],
+    ['garage-controller-details', ['garage-native-power', 'garage-native-mode', 'garage-native-target'], 'garage-pump-reading-info'],
+  ]) {
+    const equipment = html.slice(html.indexOf(`<details id="${id}"`)), summary = equipment.slice(0, equipment.indexOf('</summary>'));
+    assert.match(summary, /class="[^"]*pump-native-overview/);
+    for (const metric of metrics) {
+      assert(summary.includes(`id="${metric}"`), `${metric} remains visible when folded`);
+      assert.equal(html.split(`id="${metric}"`).length - 1, 1, `${metric} has one permanent value`);
+      assert(summary.includes(`id="${metric}" class="muted">—</strong>`), 'Unknown compact values use a quiet dash instead of breaking a long word');
+    }
+    assert(!summary.includes('-preview') && !summary.includes('<button'));
+    assert(equipment.indexOf(`id="${info}"`) > equipment.indexOf('</summary>'));
+  }
+  assert.match(html, /id="home-pump-state-age" hidden/);
+  assert(!html.includes('home-pump-preview') && !html.includes('garage-pump-preview'));
+});
+
+test('Away and Pause use the same disclosure style as Garage settings inside heating configuration', () => {
+  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  for (const [id, configuration, equipment] of [
+    ['temporary-details', 'home-manual-controls', 'home-equipment-section'],
+    ['garage-pause-details', 'garage-manual-controls', 'garage-equipment-section'],
+  ]) {
+    const tag = html.match(new RegExp(`<details id="${id}"[^>]*>`))[0];
+    assert.match(tag, /class="equipment-fold /); assert(!tag.includes('section-fold'));
+    assert(!/\sopen(?:\s|>|=)/.test(tag));
+    assert(html.indexOf(`id="${configuration}"`) < html.indexOf(`id="${id}"`));
+    assert(html.indexOf(`id="${id}"`) < html.indexOf(`id="${equipment}"`));
+  }
+  assert(!html.includes('zone-availability-fold'));
+  const overview = html.slice(html.indexOf('<details id="garage-equipment-details"'), html.indexOf('id="garage-manual-controls"'));
+  assert(!overview.includes('Cold allowance'));
+  assert(!html.includes('id="garage-budget-rear"') && !html.includes('id="garage-budget-front"'));
+  for (const location of ['rear', 'front']) assert(html.includes(`id="garage-settings-budget-${location}"`));
+});
+
+test('permanent Mitsubishi summary values remain plain text and stop claiming stale readings', () => {
+  const nodes = new Map(['power', 'mode', 'target'].map(field => [`garage-native-${field}`, {
+    textContent: '', stale: false, classList: { toggle(name, value) { nodes.get(`garage-native-${field}`)[name] = value; } },
+  }]));
+  const document = { getElementById: id => nodes.get(id) };
+  const garage = { settings: { maxSensorAgeMs: 120_000 }, adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true },
+    native: { power: 'on', mode: 'heat', targetC: 10, readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: now }])) } } };
+  renderGarage(document, { garage, now });
+  assert.deepEqual([...nodes.values()].map(node => node.textContent), ['on', 'heat', '10 °C']);
+  assert([...nodes.values()].every(node => !node.stale));
+  renderGarage(document, { garage, now: now + 120_000 });
+  assert([...nodes.values()].every(node => node.textContent === '—' && node.stale && node.muted));
+  renderGarage(document, { garage: { ...garage, adapter: { ...garage.adapter, connected: false } }, now });
+  assert([...nodes.values()].every(node => node.textContent === '—' && node.stale && node.muted));
+});
+
 test('Garage settings keep configured values separate from descriptions and live exposure', () => {
   const settings = garageSettings({ aggressiveness: 0 });
   const garage = { settings, protection: { locations: { rear: { remainingKjPerM: 0 }, front: { remainingKjPerM: 12 } } } };

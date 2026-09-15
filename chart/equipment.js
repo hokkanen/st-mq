@@ -335,7 +335,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const retainedAt = reception.lastRetainedAt;
         const lastMessageAt = reception.lastMessageAt ?? provider.lastMessageAt;
         const failed = ['failed', 'denied', 'error'].includes(subscription);
-        Object.assign(row, { label: 'Charger 1 vehicle', kind: 'vehicle', source: 'TeslaMate', mqttStatus: reception,
+        Object.assign(row, { label: `${chargerLabel} vehicle`, kind: 'vehicle', source: 'TeslaMate', mqttStatus: reception,
           lastReportAt: liveAt,
           connectionState: provider.enabled === false ? { label: 'Not enabled', state: 'pending' }
             : connected === false ? { label: 'Disconnected', state: 'attention' }
@@ -347,6 +347,8 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
           packetDetail: Number.isFinite(liveAt) ? `Latest live report: ${clock.format(liveAt)}.`
             : Number.isFinite(retainedAt) ? `Saved broker reading received ${clock.format(retainedAt)}; no live vehicle report received yet.`
               : 'Connection status follows the MQTT subscription; vehicle charge readings keep their own timestamps.' });
+      } else if (typeof group.id === 'string' && group.id.endsWith('-vehicle')) {
+        row.kind = 'vehicle';
       } else if (group.id === 'dhwr' || group.id === 'heating') {
         row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };
         row.recent = 'Delivery is confirmed separately';
@@ -429,9 +431,15 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   function renderReadingList(root, devices, snapshot) {
     const { status, busy, message, error, actionKind, actionDeviceId } = snapshot;
     for (const [index, device] of devices.entries()) {
+      const staticReadings = device.kind === 'temperature' && !device.controls?.switch
+        && !Object.values(device.controls?.cover ?? {}).some(Boolean);
       let node = readingNodes.get(device.id);
+      if (node && node.staticReadings !== staticReadings) {
+        node.section.remove(); readingNodes.delete(device.id); node = null;
+      }
       if (!node) {
-        const section = make('details', '', 'equipment-device'), summary = make('summary', '', 'equipment-device-summary');
+        const section = make(staticReadings ? 'section' : 'details', '', `equipment-device${staticReadings ? ' equipment-device-static' : ''}`);
+        const summary = make(staticReadings ? 'div' : 'summary', '', 'equipment-device-summary');
         const heading = make('div', '', 'equipment-device-heading'), body = make('div', '', 'equipment-device-body');
         section.dataset.deviceId = device.id;
         const title = make('h4'), metadata = make('small', '', 'equipment-device-meta');
@@ -460,9 +468,14 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         coverHelp.id = `equipment-cover-${device.id}-help`;
         coverResult.setAttribute('role', 'status'); coverResult.setAttribute('aria-live', 'polite');
         coverControls.append(coverButtons, coverHelp, coverResult);
-        heading.append(title, metadata); health.append(source, recent); summary.append(heading, preview, health);
-        body.append(list, empty, controls, coverControls); section.append(summary, body);
-        node = { section, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
+        heading.append(title, metadata); health.append(source, recent);
+        if (staticReadings) {
+          summary.append(heading, health, list, empty); section.append(summary);
+        } else {
+          summary.append(heading, preview, health);
+          body.append(list, empty, controls, coverControls); section.append(summary, body);
+        }
+        node = { section, staticReadings, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
           coverControls, coverButtons, coverActions, coverHelp, coverResult, rows: new Map() }; readingNodes.set(device.id, node);
       }
       if (root.children[index] !== node.section) {

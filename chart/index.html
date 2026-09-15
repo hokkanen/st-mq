@@ -136,43 +136,41 @@
                   <p id="heating-test-status" class="muted"></p>
                   <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </div>
-                <div class="home-actions">
-                  <details id="temporary-details" class="section-fold temporary-panel zone-availability-fold">
-                    <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-                    <form id="temporary-form" class="temporary-form section-fold-body">
-                      <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                      <div class="temporary-field">
-                        <label for="away-until">Away until</label>
-                        <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-                        <p id="away-status" class="temporary-status">At home.</p>
-                        <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
-                      </div>
-                      <div class="temporary-field">
-                        <label for="pause-until">Pause until</label>
-                        <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                        <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                        <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
-                      </div>
-                      <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-                      <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-                    </form>
-                  </details>
-                </div>
+                <details id="temporary-details" class="equipment-fold temporary-panel">
+                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
+                  <form id="temporary-form" class="temporary-form">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="away-until">Away until</label>
+                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                      <p id="away-status" class="temporary-status">At home.</p>
+                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+                    </div>
+                    <div class="temporary-field">
+                      <label for="pause-until">Pause until</label>
+                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
+                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+                  </form>
+                </details>
               </section>
               <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
                 <div class="zone-section-heading"><h4 id="home-equipment-title">Equipment &amp; temperatures</h4><span id="home-equipment-status" class="equipment-device-status"></span></div>
                 <details id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
                   <summary class="equipment-device-summary">
                     <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><small class="equipment-device-meta">Heat pump · H66</small></div>
-                    <p id="home-pump-preview" class="equipment-device-preview">Waiting for readings</p>
                     <span class="equipment-device-health"><span id="home-pump-health" class="equipment-device-status">Not connected</span></span>
+                    <div class="pump-native-overview">
+                      <div class="equipment-value"><span>Current state</span><strong id="home-pump-state" class="muted">—</strong><small id="home-pump-state-age" hidden></small></div>
+                      <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw" class="muted">—</strong></div>
+                      <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room" class="muted">—</strong></div>
+                    </div>
                   </summary>
                   <div class="equipment-device-body">
-                    <div class="pump-native-overview">
-                      <div class="equipment-value"><span>Current state</span><strong id="home-pump-state">Unavailable</strong></div>
-                      <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw">Unavailable</strong></div>
-                      <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room">Unavailable</strong></div>
-                    </div>
+                    <p id="home-pump-reading-info" class="pump-reading-info"></p>
                     <details id="h66-test-details" class="equipment-fold">
                       <summary>Adjust heat-pump parameters</summary>
                       <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
@@ -236,7 +234,6 @@
                 <div class="equipment-value"><span>Caravan power</span><strong id="garage-caravan-power">Unavailable</strong></div>
               </div>
               <div class="equipment-notes garage-charging-notes">
-                <p><span>Cold allowance</span><span class="garage-budget-values"><span id="garage-budget-rear">Rear —</span><span aria-hidden="true">·</span><span id="garage-budget-front">Front —</span><span>remaining</span></span></p>
                 <p><span>Charger 1</span><span id="charger1-summary" class="charger-summary">Automatic charging OFF</span></p>
                 <p><span>Charger 2</span><span id="charger2-summary" class="charger-summary">Monitoring</span></p>
               </div>
@@ -276,21 +273,19 @@
                     <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
                   </section>
                 </details>
-                <div class="home-actions">
-                  <details id="garage-pause-details" class="section-fold temporary-panel zone-availability-fold">
-                    <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
-                    <form id="garage-pause-form" class="temporary-form section-fold-body">
-                      <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                      <div class="temporary-field">
-                        <label for="garage-pause-until">Pause until</label>
-                        <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                        <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
-                        <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
-                      </div>
-                      <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
-                    </form>
-                  </details>
-                </div>
+                <details id="garage-pause-details" class="equipment-fold temporary-panel">
+                  <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
+                  <form id="garage-pause-form" class="temporary-form">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="garage-pause-until">Pause until</label>
+                      <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
+                      <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
+                  </form>
+                </details>
               </section>
               <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
                 <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
@@ -299,17 +294,17 @@
                 <details id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
                   <summary class="equipment-device-summary">
                     <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><small class="equipment-device-meta">Heat pump · Mitsubishi</small></div>
-                    <p id="garage-pump-preview" class="equipment-device-preview">Waiting for readings</p>
                     <span class="equipment-device-health"><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></span>
+                    <div class="garage-native-overview pump-native-overview">
+                      <div class="equipment-value"><span>Power</span><strong id="garage-native-power" class="muted">—</strong></div>
+                      <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode" class="muted">—</strong></div>
+                      <div class="equipment-value"><span>Target</span><strong id="garage-native-target" class="muted">—</strong></div>
+                    </div>
                   </summary>
                   <div class="equipment-device-body">
-                    <div class="garage-native-overview pump-native-overview">
-                      <div class="equipment-value"><span>Power</span><strong id="garage-native-power">Unknown</strong></div>
-                      <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode">Unknown</strong></div>
-                      <div class="equipment-value"><span>Target</span><strong id="garage-native-target">Unavailable</strong></div>
-                    </div>
+                    <p id="garage-pump-reading-info" class="pump-reading-info"></p>
                     <section id="garage-readings-details" class="equipment-reading-section garage-secondary">
-                      <h5 class="equipment-body-title">All Mitsubishi readings</h5>
+                      <h5 class="equipment-body-title">More Mitsubishi readings</h5>
                       <p id="garage-controller-reason" class="muted"></p>
                       <dl id="garage-controller-readings" class="equipment-readings"></dl>
                       <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>

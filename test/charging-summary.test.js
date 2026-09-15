@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargerSummary } from '../chart/charging-summary.js';
+import { chargerSummary, chargingCost } from '../chart/charging-summary.js';
 import { chargerDisplay, chargingTime } from '../chart/charging.js';
 
 const now = Date.parse('2026-09-15T18:00:00Z'), hour = 3_600_000;
@@ -125,4 +125,92 @@ test('disconnection and missing native activity suppress old vehicle forecasts',
 test('a valid late estimate remains explicitly at risk', () => {
   const late = summary(charger({ forecast: { finishAt: deadlineAt + hour, feasible: false, reason: 'insufficient-time' } }));
   assert.equal(late.completion.at, deadlineAt + hour); assert.equal(late.completion.detail, 'Target at risk');
+});
+
+function observed(patch = {}) {
+  return charger({ capabilities: { scheduling: false }, plan: { state: 'observing' },
+    forecast: { state: 'forecast', reason: 'automatic-current-forecast', startAt, finishAt }, ...patch });
+}
+const rate = (start, end, price) => ({ start, end, allInCentsPerKWh: price });
+function cost(item, prices = []) {
+  const view = chargerDisplay(item, { now });
+  return chargingCost(item, view, summary(item), { now, prices });
+}
+
+test('observed target cost integrates remaining grid energy across actual rate boundaries', () => {
+  const item = observed({ progress: { remainingGridKwh: 20 } });
+  const prices = [rate(startAt + hour, finishAt + hour, 25), rate(now - hour, startAt + hour, 10)];
+  assert.equal(cost(item, prices).value, '€4.40', '4 kWh at 10 c/kWh plus 16 kWh at 25 c/kWh; rates outside charging are excluded');
+  assert.match(cost(item, prices).detail, /including charging losses/);
+  const projectedRates = prices.map(({ allInCentsPerKWh, ...interval }) => ({ ...interval, totalCtPerKwh: allInCentsPerKWh }));
+  assert.equal(cost(item, projectedRates).value, '€4.40');
+});
+
+test('native cost clips an already-running forecast to now and prices only energy still needed', () => {
+  const item = observed(), active = { ...item, values: { ...item.values, charging: reading(true) },
+    progress: { remainingGridKwh: 8 }, forecast: { ...item.forecast, startAt: now - hour, finishAt: now + 2 * hour } };
+  const prices = [rate(now - hour, now, 100), rate(now, now + hour, 10), rate(now + hour, now + 2 * hour, 30)];
+  assert.equal(cost(active, prices).value, '€1.60', 'The earlier expensive charging is excluded from the remaining cost');
+});
+
+test('negative and zero electricity prices retain their actual arithmetic', () => {
+  const item = observed({ requiredGridKwh: 10 });
+  assert.equal(cost(item, [rate(startAt, finishAt, -15)]).value, '€-1.50');
+  assert.equal(cost(item, [rate(startAt, finishAt, 0)]).value, '€0.00');
+  assert.equal(cost(item, [rate(startAt, startAt + hour, -20), rate(startAt + hour, finishAt, 5)]).value, '€0.00');
+});
+
+test('missing or invalid rates never become a partial target cost', () => {
+  const item = observed();
+  const missing = [null, {}, [], [rate(startAt + 1, finishAt, 10)], [rate(startAt, finishAt - 1, 10)],
+    [rate(startAt, startAt + hour, 10), rate(startAt + hour + 1, finishAt, 20)],
+    [rate(startAt, finishAt, null)], [rate(startAt, finishAt, NaN)], [rate(startAt, finishAt, Infinity)],
+    [rate(startAt, startAt, 10)], [rate('invalid', finishAt, 10)]];
+  for (const prices of missing) assert.equal(cost(item, prices).value, 'No estimate');
+});
+
+test('native cost rejects stale, absent and inapplicable forecasts even when rates are available', () => {
+  const item = observed(), prices = [rate(now - hour, finishAt + hour, 10)];
+  const cases = [
+    { ...item, forecast: null },
+    { ...item, forecast: { ...item.forecast, finishAt: null } },
+    { ...item, forecast: { ...item.forecast, finishAt: now - 1 } },
+    { ...item, forecast: { ...item.forecast, startAt: null } },
+    { ...item, forecast: { ...item.forecast, startAt: finishAt } },
+    { ...item, forecast: { ...item.forecast, state: 'unavailable' } },
+    { ...item, forecast: { ...item.forecast, state: 'planned', controlled: true } },
+    { ...item, values: { ...item.values, connected: reading(false) } },
+    { ...item, values: { ...item.values, scheduledStartAt: reading(now - hour) } },
+    { ...item, requiredGridKwh: null },
+  ];
+  for (const candidate of cases) assert.equal(cost(candidate, prices).value, 'No estimate');
+});
+
+test('confirmed controlled cost uses the backend period estimate, while invalidated plans cannot keep an old cost', () => {
+  const item = charger(), planned = { ...item, plan: { ...item.plan, costCents: 207 } };
+  assert.equal(cost(planned).value, '€2.07', 'The backend estimate already accounts for planned periods and variable power');
+  assert.match(cost(planned).detail, /planned charging periods/);
+  for (const candidate of [
+    { ...planned, forecast: { finishAt: null } },
+    { ...planned, forecast: null },
+    { ...planned, forecast: { finishAt: now - 1 } },
+    { ...planned, control: { phase: 'waiting', owned: { startAt }, confirmed: false } },
+    { ...planned, plan: { ...planned.plan, startAt: startAt + hour } },
+  ]) assert.equal(cost(candidate).value, 'No estimate');
+});
+
+test('a reached target costs zero even with an old nonzero plan or missing rates', () => {
+  const item = charger(), planned = { ...item, plan: { ...item.plan, costCents: 207 }, progress: { remainingGridKwh: 0 } };
+  assert.equal(cost(planned).value, '€0.00');
+  assert.equal(cost(observed({ requiredGridKwh: 0, forecast: null })).value, '€0.00');
+  assert.match(cost(planned).detail, /No additional grid energy/);
+});
+
+test('an enforced native stop before target invalidates target cost rather than pricing undeliverable energy', () => {
+  const item = observed(), prices = [rate(startAt, finishAt, 10)];
+  const earlyStop = { ...item, values: { ...item.values, scheduledEndAt: reading(startAt + hour) },
+    telemetry: { scheduledEndKind: 'scheduled-stop' } };
+  assert.equal(cost(earlyStop, prices).value, 'No estimate');
+  const sufficientWindow = { ...earlyStop, values: { ...earlyStop.values, scheduledEndAt: reading(finishAt) } };
+  assert.equal(cost(sufficientWindow, prices).value, '€3.00');
 });
