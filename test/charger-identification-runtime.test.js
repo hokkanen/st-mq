@@ -68,6 +68,7 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
   send('charging_state', 'Disconnected'); send('geofence', 'Home'); send('plugged_in', true);
   send('since', new Date(now).toISOString()); send('charge_energy_added', energy);
   send('healthy', true); send('charging_state', 'Charging'); send('charger_power', power); send('charger_actual_current', amps);
+  send('battery_level', 80); send('charge_limit_soc', 100); send('charge_current_request', 16); send('charger_voltage', 230);
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (payload, headers = {}) => {
     const response = await fetch(`${base}/api/charger-identification`, payload === undefined ? { headers }
@@ -90,29 +91,34 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
   };
 }
 
-test('provider and MQTT runtime share the opted-in control while heat-pump control remains in shadow mode', async t => {
+test('the common charging runtime uses the configured TeslaMate feed without acquiring legacy probe control', async t => {
   const f = await fixture(t);
-  assert.equal(f.factoryCalls, 1);
+  assert.equal(f.factoryCalls, 0);
   assert.deepEqual(f.mock.subscriptions, ['stmq/garage/charger1/vehicle', 'teslamate/cars/1/#']);
   assert.equal(f.engine.settings.mode, 'shadow');
   await f.baseline();
-  assert.deepEqual(f.commands, [{ amps: 10, minutes: 1 }]);
+  assert.deepEqual(f.commands, []);
   assert(f.providerPolls >= 3);
   assert.equal(f.engine.electricitySnapshot.charger.currentA, 16);
   assert.equal(f.engine.teslamate.identificationSnapshot().currentA, 16);
   f.engine.tick();
   const status = f.engine.status();
-  assert.equal(status.liveWrites, false, 'The independent EV opt-in must not enable heat-pump writes');
-  assert.equal(status.chargerIdentification.active, true);
-  assert.equal((await f.call()).body.phase, 'holding');
+  assert.equal(status.liveWrites, false, 'Legacy identification preferences cannot enable heat-pump writes');
+  assert.deepEqual(status.chargerIdentification, { enabled: false, active: false, verdict: null });
+  const vehicle = status.charging.chargers.find(charger => charger.id === 'charger2');
+  assert.equal(vehicle.values.soc.value, 80);
+  assert.equal(vehicle.values.soc.source, 'teslamate');
+  assert.equal(vehicle.values.minimumSoc.value, 100);
+  assert.equal(vehicle.values.connected.value, true);
+  assert.deepEqual((await f.call()).body, { enabled: false, active: false, verdict: null });
   assert.deepEqual(f.mock.publications, []);
   for (let i = 0; i < 11; i++) await f.sample(5, { amps: 10, power: 6.9, teslaAmps: 10 });
   await f.sample(5, { amps: 16, power: 11.04, teslaAmps: 16 }); await f.sample();
-  assert.equal((await f.call()).body.verdict, 'easee');
+  assert.equal((await f.call()).body.verdict, null, 'Correlated charger readings never reassign the configured vehicle');
   await f.restartProviders();
-  assert.equal(f.factoryCalls, 2);
-  assert.equal((await f.call()).body.verdict, null, 'Identification cannot survive a new runtime');
-  assert.equal((await f.call()).body.phase, 'idle');
+  assert.equal(f.factoryCalls, 0);
+  assert.deepEqual(f.commands, [], 'Neither startup, live samples nor provider restart may request a probe');
+  assert.deepEqual((await f.call()).body, { enabled: false, active: false, verdict: null });
   const durable = JSON.stringify(f.store.db.prepare('SELECT key,value FROM state').all());
   assert(!durable.includes('matched-charging-response'));
   assert(!durable.includes('applying-temporary-limit'));
@@ -132,12 +138,12 @@ test('disabled identification and explicit charger assignments do not acquire a 
   }
 });
 
-test('identification API accepts bounded strategies and rejects invalid or cross-origin control requests', async t => {
+test('legacy identification API reports unavailable while retaining input and origin validation', async t => {
   const f = await fixture(t);
   for (const strategy of ['auto', 'reduce', 'pause']) {
     const response = await f.call({ strategy });
-    assert.equal(response.status, 202);
-    assert.equal(response.body.strategy, strategy);
+    assert.equal(response.status, 409);
+    assert.match(response.body.error, /not enabled|unavailable/);
     assert.equal(response.headers.get('cache-control'), 'no-store');
   }
   for (const invalid of [null, [], {}, { strategy: 'increase' }, { strategy: 'pause', minutes: 0 },
@@ -149,36 +155,31 @@ test('identification API accepts bounded strategies and rejects invalid or cross
     request.on('error', reject); request.end();
   });
   assert.equal(otherHost, 403);
-  assert.deepEqual(f.commands, [], 'A request cannot bypass live preflight or stable baseline requirements');
+  assert.deepEqual(f.commands, [], 'The obsolete API cannot acquire a command capability');
   await f.baseline();
-  assert.deepEqual(f.commands, [{ amps: 0, minutes: 1 }]);
-  assert.equal((await f.call()).body.pauseExpected, true);
+  assert.deepEqual(f.commands, []);
   const duplicate = await f.call({ strategy: 'reduce' });
   assert.equal(duplicate.status, 409);
-  assert.match(duplicate.body.error, /already running|unavailable/);
-  assert.equal((await f.call()).body.strategy, 'pause');
-  assert.deepEqual(f.commands, [{ amps: 0, minutes: 1 }], 'A rejected request cannot replace the active command');
+  assert.match(duplicate.body.error, /not enabled|unavailable/);
+  assert.deepEqual((await f.call()).body, { enabled: false, active: false, verdict: null });
+  assert.deepEqual(f.commands, [], 'Repeated requests remain unavailable after a stable baseline');
 });
 
-test('provider shutdown aborts pending preflight and ignores its late completion', async t => {
-  let resolveRead, signal;
-  const f = await fixture(t, { read: args => { signal = args.signal;
-    return new Promise(resolve => { resolveRead = resolve; }); } });
+test('provider lifecycle never starts a probe preflight for the common charging runtime', async t => {
+  let reads = 0;
+  const f = await fixture(t, { read: () => { reads++; throw new Error('Probe preflight must not be called'); } });
   await f.baseline();
-  assert(signal); assert.equal(signal.aborted, false);
-  const previous = f.engine.chargerIdentification;
+  assert.equal(reads, 0);
+  assert.equal(f.factoryCalls, 0);
+  assert.equal(f.engine.chargerIdentification == null, true);
   await f.providers.close();
-  assert.equal(signal.aborted, true);
-  assert.equal(f.engine.chargerIdentification, null);
-  resolveRead({ safeToProbe: true, connected: true, receivedAt: INITIAL + 25_000,
-    powerKw: 11.04, currents: [16, 16, 16], minCurrentA: 7 });
   await drain(); await drain();
   assert.deepEqual(f.commands, []);
-  assert.equal(previous.status().phase, 'stopped');
+  assert.equal(reads, 0);
   assert.equal((await f.call()).body.enabled, false);
 });
 
-test('application startup installs Tesla MQTT before the enabled identification provider', async t => {
+test('application startup installs Tesla MQTT while a legacy identification opt-in acquires no probe controller', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-identification-main-'));
   const mock = mqttClient(); let factoryCalls = 0;
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt',
@@ -193,9 +194,10 @@ test('application startup installs Tesla MQTT before the enabled identification 
       }; } } } });
   try {
     assert(app.engine.teslamate);
-    assert.equal(factoryCalls, 1);
-    assert.equal(app.engine.chargerIdentification.status().enabled, true);
-    assert.equal(app.engine.status().chargerIdentification.enabled, true);
+    assert(app.engine.charging);
+    assert.equal(factoryCalls, 0);
+    assert.equal(app.engine.chargerIdentification == null, true);
+    assert.equal(app.engine.status().chargerIdentification.enabled, false);
     assert.deepEqual(mock.publications, []);
   } finally { await app.close(); rmSync(directory, { recursive: true, force: true }); }
 });

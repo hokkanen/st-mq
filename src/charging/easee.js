@@ -233,7 +233,7 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     && limits.equalizerAvailableA.every(value => amps(value) !== null);
   if (externalLoadBalancing && equalizerKnown) limitValues.push(...limits.equalizerAvailableA);
   const currentA = limitValues.length && (!externalLoadBalancing || equalizerKnown) ? Math.min(...limitValues) : null;
-  const fixedCeilings = [limits.chargerA, limits.cableA].filter(value => amps(value) !== null);
+  const fixedCeilings = [limits.chargerA, limits.cableA, ...(limits.circuitA ?? [])].filter(value => amps(value) !== null);
   const maxCurrentA = fixedCeilings.length ? Math.min(...fixedCeilings) : null;
   const currentIds = [22, 23, 24, 47, 48, 104, 111, 112, 113, ...(externalLoadBalancing ? [230, 231, 232] : [])];
   const voltage = snapshot.supply?.voltageV;
@@ -246,7 +246,7 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     capacityKwh: signal(null), soc: signal(null), minimumSoc: signal(null),
     connected: signal(snapshot.pluggedIn, [100, 109]),
     currentA: signal(currentA, currentIds, externalLoadBalancing ? 'easee-equalizer' : 'easee'),
-    maxCurrentA: signal(maxCurrentA, [47, 104]),
+    maxCurrentA: signal(maxCurrentA, [22, 23, 24, 47, 104]),
     availableCurrentA: signal(equalizerKnown ? Math.min(...limits.equalizerAvailableA) : null, [230, 231, 232], 'easee-equalizer'),
     actualCurrentA: signal(snapshot.supply?.chargerCurrentA?.reduce((sum, value) => sum + value, 0) / 3, [183, 184, 185]),
     phases: { value: 3, available: true, source: 'installation-assumption', assumed: true },
@@ -262,7 +262,7 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
 /** Inject existing authenticated/rate-limited transport; raw account data stays local. */
 export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, clock = Date.now, canControl = () => false }) {
   const base = `https://api.easee.com/api/chargers/${encodeURIComponent(chargerId)}/schedules`;
-  let allocationA = null, allocationReadAt = -Infinity;
+  let allocationA = null, allocationReadAt = -Infinity, allocationConfirmedAt = -Infinity;
   const adapter = {
     normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options }); },
     async read({ signal } = {}) {
@@ -278,8 +278,14 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
       } catch { throw failure('read-failed', 'Easee state could not be read.'); }
       if (equalizerId && now - allocationReadAt >= 3600_000) {
         allocationReadAt = now;
-        try { allocationA = amps((await request(`https://api.easee.com/api/equalizers/${encodeURIComponent(equalizerId)}/config`, { method: 'GET', signal }))?.maxAllocatedCurrent); }
-        catch { allocationA = null; }
+        try {
+          allocationA = amps((await request(`https://api.easee.com/api/equalizers/${encodeURIComponent(equalizerId)}/config`, { method: 'GET', signal }))?.maxAllocatedCurrent);
+          allocationConfirmedAt = clock();
+        } catch {
+          // An occasional config failure must not erase a still-supported
+          // ceiling while current observations remain available.
+          if (now - allocationConfirmedAt > 24 * 3600_000) allocationA = null;
+        }
       }
       now = clock();
       try {
@@ -297,14 +303,18 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
         };
         const currents = [183, 184, 185].map(id => amps(snapshot.observations[id]?.value));
         // Charger currents are change events; an unchanged zero remains valid.
-        // Recovering future headroom additionally requires recent meter samples.
+        // Preserve the meter's original event state for the bounded forecast
+        // estimator. Its timestamp policy differs from live current adjustment.
         const recentProperty = [31, 32, 33].every(id => pick(id) && now - instant(pick(id).timestamp) <= 5 * 60_000);
         snapshot.supply = { availableCurrentA: snapshot.limits.equalizerAvailableA,
           propertyCurrentA: recentProperty ? vector([31, 32, 33]) : null,
+          reportedPropertyCurrentA: vector([31, 32, 33]),
           chargerCurrentA: currents.every(value => value !== null) ? currents : null,
           voltageV: vector([34, 35, 36], 200, 250), allocationA, observedAt: now,
           observationTimes: { allowance: snapshot.limits.equalizerAvailableAt,
-            property: [31, 32, 33].map(id => instant(pick(id)?.timestamp)), voltage: [34, 35, 36].map(id => instant(pick(id)?.timestamp)) } };
+            property: [31, 32, 33].map(id => instant(pick(id)?.timestamp)),
+            charger: [183, 184, 185].map(id => snapshot.observations[id]?.at ?? null),
+            voltage: [34, 35, 36].map(id => instant(pick(id)?.timestamp)) } };
         return snapshot;
       } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },

@@ -1,88 +1,45 @@
-const MAX_GAP_MS = 120_000, HOUR = 3_600_000;
 const finite = Number.isFinite;
-const field = (charger, name) => charger.values?.[name] ?? {};
 const observedTime = value => finite(value) && value >= 0 ? value : null;
 
-function referenceFor(charger, now) {
-  const soc = field(charger, 'soc'), measuredAt = observedTime(soc.measuredAt);
-  const receivedAt = measuredAt === null ? observedTime(soc.receivedAt) : null;
-  return {
-    key: JSON.stringify([charger.id, soc.source, soc.readingId ?? null, soc.value,
-      measuredAt, receivedAt, field(charger, 'capacityKwh').value,
-      field(charger, 'minimumSoc').value, charger.configuration?.efficiency]),
-    // A receipt timestamp bounds which later energy we can attribute. It is
-    // never presented as the time the battery itself was measured.
-    at: measuredAt ?? receivedAt ?? now,
-  };
-}
-
-/** Keep earned credit on restart, but never integrate through an unobserved
- * process gap. Runtime restoration must use this before accepting new samples. */
 export function restoreChargingProgress(previous) {
-  if (!previous || typeof previous.reference?.key !== 'string') return null;
-  return { reference: { key: previous.reference.key, at: observedTime(previous.reference.at) },
-    creditKwh: finite(previous.creditKwh) && previous.creditKwh >= 0 ? previous.creditKwh : 0,
-    lastSample: null, connected: typeof previous.connected === 'boolean' ? previous.connected : null };
+  return previous?.version === 2 && typeof previous.reference?.key === 'string' ? structuredClone(previous) : null;
 }
 
-/** Estimate delivered grid energy only between adjacent, fresh, attributable
- * power measurements. The SoC reading and its original clocks stay untouched.
- * State stays bounded: one reference, accumulated credit, and one power sample. */
-export function updateChargingProgress(previous, charger, now) {
+/** Keep the raw vehicle reading intact. A separate estimate advances from that
+ * reading (or starting charge) using the recorder's existing grid energy.
+ * Capacity, target and efficiency changes preserve delivered energy. */
+export function updateChargingProgress(previous, charger, now, readEnergy = () => null) {
   if (!charger?.id || !finite(now)) throw new Error('Charging progress requires a charger and numeric UTC time');
-  const rawRequiredGridKwh = finite(charger.requiredGridKwh) && charger.requiredGridKwh >= 0 ? charger.requiredGridKwh : 0;
-  const connection = field(charger, 'connected');
-  const connected = connection.available === true && typeof connection.value === 'boolean'
+  const soc = charger.values.soc, connection = charger.values.connected;
+  const connected = connection.available && typeof connection.value === 'boolean'
     && charger.telemetry?.providerConnected !== false ? connection.value : null;
-  const reference = referenceFor(charger, now);
-  const sameReference = previous?.reference?.key === reference.key;
-  const state = { reference: sameReference ? { ...previous.reference } : reference,
-    creditKwh: sameReference && finite(previous.creditKwh) ? Math.max(0, Math.min(rawRequiredGridKwh, previous.creditKwh)) : 0,
-    lastSample: sameReference && previous.lastSample ? { ...previous.lastSample } : null, connected };
-  const result = status => ({ state, remainingGridKwh: Math.max(0, rawRequiredGridKwh - state.creditKwh),
-    basis: { source: state.creditKwh > 0 ? 'integrated-measured-power' : 'soc', status,
-      rawRequiredGridKwh, creditedGridKwh: state.creditKwh,
-      referenceAt: state.reference?.at ?? null, lastMeasuredAt: state.lastSample?.measuredAt ?? null,
-      continuousSince: state.lastSample?.continuousSince ?? null } });
-  if (connected === false) {
-    state.reference = null; state.creditKwh = 0; state.lastSample = null;
-    return result('not-connected');
-  }
-  if (connected !== true) { state.lastSample = null; return result('connection-unknown'); }
-  const power = field(charger, 'powerKw'), measuredAt = observedTime(power.measuredAt);
-  if (power.available !== true || power.assumed === true || !finite(power.value) || power.value < 0
-    || power.value > 1000 || measuredAt === null || typeof power.source !== 'string' || !power.source) {
-    state.lastSample = null;
-    return result('power-measurement-unavailable');
-  }
-  if (measuredAt > now || now - measuredAt > MAX_GAP_MS) {
-    state.lastSample = null;
-    return result('power-measurement-not-current');
-  }
-  const sample = { measuredAt, powerKw: power.value, source: power.source, observedAt: now,
-    continuousSince: Math.max(measuredAt, state.reference.at ?? measuredAt) };
-  const last = state.lastSample;
-  if (last && last.source === sample.source && measuredAt <= last.measuredAt) {
-    // Duplicate and reordered deliveries never earn energy or refresh clocks.
-    // Conflicting values for the same measurement revoke continuity entirely.
-    if (measuredAt === last.measuredAt && sample.powerKw !== last.powerKw) state.lastSample = null;
-    return result('awaiting-new-power-measurement');
-  }
-  state.lastSample = sample;
-  if (!last || last.source !== sample.source || previous?.connected !== true)
-    return result(sameReference ? 'awaiting-next-power-measurement' : 'reference-established');
-  const duration = measuredAt - last.measuredAt;
-  if (!(duration > 0) || duration > MAX_GAP_MS || !finite(last.observedAt)
-    || now < last.observedAt || now - last.observedAt > MAX_GAP_MS)
-    return result('measurement-gap');
-  // Coverage distinguishes a fully observed zero-energy period from a period
-  // with no usable measurements. Both have zero credit, but only the former is
-  // evidence that the planned energy was not delivered.
-  sample.continuousSince = Math.max(last.continuousSince ?? last.measuredAt, state.reference.at ?? 0);
-  const start = Math.max(last.measuredAt, state.reference.at ?? now);
-  if (start >= measuredAt) return result('awaiting-post-reference-measurement');
-  const initialPower = last.powerKw + (power.value - last.powerKw) * (start - last.measuredAt) / duration;
-  const energy = (initialPower + power.value) / 2 * (measuredAt - start) / HOUR;
-  state.creditKwh = Math.min(rawRequiredGridKwh, state.creditKwh + energy);
-  return result('tracking');
+  const automatic = soc.source !== 'manual-fallback';
+  const measuredAt = observedTime(soc.measuredAt), receivedAt = observedTime(soc.receivedAt);
+  // Receipt-only change feeds cannot establish a newer unchanged battery
+  // measurement. A retained replay must not erase energy-based progress.
+  const key = JSON.stringify([charger.id, soc.source, soc.value, measuredAt,
+    measuredAt === null && soc.timeBasis !== 'receipt-only' ? soc.readingId ?? null : null]);
+  const same = previous?.reference?.key === key && previous.connected !== false;
+  const connectionAt = previous?.connected !== false ? previous?.connectionAt ?? now : now;
+  const reference = same || connected === null && previous?.reference ? { ...previous.reference } : { key, at: Math.max(connectionAt, Math.min(now,
+    automatic ? measuredAt ?? receivedAt ?? now : now)), soc: soc.value };
+  const state = { version: 2, reference, connected, connectionAt, creditKwh: reference.key === previous?.reference?.key ? previous.creditKwh ?? 0 : 0 };
+  let energy = null;
+  if (connected !== false) {
+    energy = readEnergy({ id: charger.id, start: reference.at, end: now });
+    if (finite(energy?.gridKwh)) state.creditKwh = Math.max(state.creditKwh, energy.gridKwh);
+  } else { state.reference = null; state.creditKwh = 0; }
+  const capacity = charger.values.capacityKwh.value, efficiency = charger.configuration.efficiency;
+  const estimatedSoc = Math.min(100, reference.soc + state.creditKwh * efficiency / capacity * 100);
+  const rawRequiredGridKwh = Math.max(0, charger.requiredGridKwh ?? 0);
+  const remainingGridKwh = Math.max(0, capacity * (charger.values.minimumSoc.value - estimatedSoc) / 100 / efficiency);
+  return { state, estimatedSoc, hasEnergyEstimate: state.creditKwh > .00001,
+    estimatedSocSource: automatic ? 'vehicle' : 'starting-charge', anchorAt: reference.at,
+    deliveredGridKwh: state.creditKwh, remainingGridKwh,
+    basis: { source: state.creditKwh > 0 ? 'recorded-charger-energy' : 'soc',
+      status: connected === false ? 'not-connected' : connected === null ? 'connection-unknown'
+        : energy?.coveredMs > 0 ? 'tracking' : 'awaiting-recorded-energy',
+      rawRequiredGridKwh, creditedGridKwh: state.creditKwh, referenceAt: reference.at,
+      lastMeasuredAt: energy?.lastMeasuredAt ?? null, continuousSince: energy?.continuousSince ?? null,
+      energyCoverageIncomplete: energy?.incomplete ?? false } };
 }

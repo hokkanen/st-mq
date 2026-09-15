@@ -1152,15 +1152,17 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .charging-charge-pair > span { white-space: nowrap; }
 .charging-pair-divider { color: var(--muted); }
 .charging-timing { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 16px; }
-.charging-deadline { margin: 10px 0 0; font-size: 12px; line-height: 1.6; white-space: nowrap; }
+.charging-deadline { font-variant-numeric: tabular-nums; }
 .charging-priority { font-size: 11px; line-height: 1.6; margin: 5px 0 0; }
 .charging-reading-time, .charging-period-count { color: var(--muted); font-size: 10px; line-height: 1.6; margin: 5px 0 0; }
+.charging-remaining { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 5px 0 0; }
 .charging-problem { color: var(--stale); font-size: 11px; line-height: 1.6; margin: 10px 0 0; }
 .charging-explanations .equipment-readings { display: block; font-size: 11px; line-height: 1.6; }
 .charging-explanations .equipment-readings dt { color: var(--text); font-weight: 500; margin-top: 16px; }
 .charging-explanations .equipment-readings dd { color: var(--muted); text-align: left; margin-top: 4px; }
 .charging-overview .equipment-value { min-width: 0; }
 .charging-overview .equipment-value > small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.charging-overview .equipment-value > small[data-state="attention"] { color: var(--stale); }
 .charging-event { margin: 10px 0 0; font-size: 12px; line-height: 1.6; }
 .charging-event[data-state="attention"] { color: var(--stale); }
 .charging-settings > summary { color: var(--muted); }

@@ -39,8 +39,8 @@ function assign(object, path, value) {
 // One field definition and one renderer serve every charger. The server supplies
 // first-use defaults and capabilities, including for chargers added later.
 export const chargingFields = [
-  { key: 'manualSoc', reading: 'soc', label: 'Current charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
-    help: 'Used until an automatic charge reading is available.' },
+  { key: 'manualSoc', reading: 'soc', label: 'Starting charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
+    help: 'Starting point when the vehicle does not report its charge. Delivered energy updates the estimate from here.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
     help: 'The vehicle charge target takes priority when available.' },
   { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
@@ -55,6 +55,26 @@ export function chargingReadingTime(value, timezone = 'Europe/Helsinki') {
     hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
+function householdReferenceText(reference, now) {
+  if (!reference) return 'Household reference details are not available yet.';
+  const hasReference = finite(reference.nights) && reference.nights > 0;
+  if (reference.loading && !hasReference) return 'Preparing household history. A confirmed schedule stays in effect; otherwise charging is allowed while the forecast is prepared.';
+  if ((reference.unavailable || reference.error) && !hasReference) return 'Household history could not be prepared. A confirmed schedule stays in effect; otherwise charging is allowed while preparation retries.';
+  if (reference.noHistory) return 'No usable household reference yet; zero other household load is assumed.';
+  const count = reference.nights;
+  const countText = finite(reference.minimumNights) && reference.minimumNights < count ? `${reference.minimumNights}–${count}` : count;
+  const parts = [finite(count) ? `${countText} comparable ${count === 1 ? 'night' : 'nights'}` : 'Comparable household history'];
+  if (reference.limited) parts.push('early estimate');
+  if (Array.isArray(reference.temperatureRangeC) && reference.temperatureRangeC.length === 2
+    && reference.temperatureRangeC.every(finite)) parts.push(`${number(reference.temperatureRangeC[0])} to ${number(reference.temperatureRangeC[1], '°C')}`);
+  if (validTime(reference.oldestAt) && now - Number(reference.oldestAt) > 180 * 86400_000) parts.push('includes older seasonal readings');
+  if (reference.unknownCharger2) parts.push('older readings may include unmeasured charging');
+  if (reference.missingHours > 0) parts.push('zero other load for hours without any usable reference');
+  if (reference.loading) parts.push('refreshing the reference');
+  else if (reference.unavailable || reference.error) parts.push('last reference retained while refresh retries');
+  return `${parts.join(' · ')}.`;
+}
+
 export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/Helsinki', assumptions = {} } = {}) {
   const values = charger.values ?? {}, settings = charger.settings ?? {}, control = charger.control ?? {};
   const plan = charger.plan ?? {}, forecast = charger.forecast ?? {}, soc = values.soc ?? {};
@@ -67,6 +87,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const activeManual = yielded && manual?.kind !== 'unknown';
   const handoverUnconfirmed = !enabled && control.handoverConfirmed === false;
   const released = enabled && ['released', 'charging'].includes(phase);
+  const provisional = enabled && phase === 'provisional';
   const owned = enabled && !yielded && control.confirmed !== false ? control.owned : null;
   const execution = enabled && !yielded ? control.execution : null;
   const ownedPeriods = (execution?.periods ?? owned?.periods ?? []).filter(period => validTime(period.startAt));
@@ -82,11 +103,13 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const nativeStart = values.scheduledStartAt?.value, nativeEnd = values.scheduledEndAt?.value;
   const endKind = charger.scheduledEndKind ?? charger.telemetry?.scheduledEndKind ?? values.scheduledEndAt?.kind;
   const nativeStops = ['enforced', 'scheduled-stop'].includes(endKind);
-  const creditedGridKwh = charger.progress?.creditedGridKwh;
+  const progress = charger.progress ?? {};
+  const creditedGridKwh = progress.deliveredGridKwh ?? progress.creditedGridKwh;
   const hasProgress = finite(creditedGridKwh) && creditedGridKwh > 0;
+  const estimatedSoc = finite(progress.estimatedSoc) && progress.hasEnergyEstimate === true;
   const requiredGridKwh = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? plan.requiredGridKwh ?? forecast.requiredGridKwh ?? forecast.gridEnergyKwh;
   const minimum = values.minimumSoc?.value, socKnown = finite(soc.value) && (soc.available || soc.source === 'manual-fallback');
-  const finishAt = charging || released ? forecast.finishAt : plan.finishAt ?? forecast.finishAt;
+  const finishAt = Object.hasOwn(forecast, 'finishAt') ? forecast.finishAt : plan.finishAt;
   const manualStart = manual?.startsAt ?? manual?.startAt ?? nativeStart;
   const manualEnd = manual?.windowEndAt ?? manual?.endsAt ?? manual?.endAt ?? (nativeStops ? nativeEnd : null);
   const resumeAt = manual?.resumeAt ?? manual?.expiresAt ?? manualEnd;
@@ -118,7 +141,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     else if (currentPeriod && validTime(currentPeriod.endAt) && !released) event += ` · pauses ${time(currentPeriod.endAt)}`;
     else if (!enabled && nativeStops && validTime(nativeEnd) && Number(nativeEnd) > now) event += ` · scheduled until ${time(nativeEnd)}`;
     else if (finite(requiredGridKwh) && requiredGridKwh <= 0) event += ' · target reached';
-    else if (validTime(finishAt)) event += ` · target estimated ${time(finishAt)}`;
+    else if (validTime(finishAt)) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
   } else if (ownedStart != null && nextPeriod) {
     const resuming = periods.some(period => Number(period.startAt) <= now);
     state = uncertain ? 'Update unconfirmed' : resuming ? 'Paused between periods' : 'Scheduled';
@@ -128,9 +151,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     state = 'Handover unconfirmed'; event = 'Waiting for the charger to confirm the handover.';
   } else if (uncertain || enabled && manual?.kind === 'unknown') {
     state = 'Control unavailable'; event = 'Waiting for a confirmed charger instruction.';
-  } else if (released || (owned || execution) && currentPeriod) {
+  } else if (released || provisional || (owned || execution) && currentPeriod) {
     event = 'Charging is allowed';
-    if (validTime(finishAt) && Number(finishAt) > now && requiredGridKwh > 0) event += ` · target estimated ${time(finishAt)}`;
+    if (validTime(finishAt) && Number(finishAt) > now && requiredGridKwh > 0) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
   } else if (enabled && validTime(nextPeriod?.startAt ?? plan.startAt) && Number(nextPeriod?.startAt ?? plan.startAt) > now) {
     eventAt = nextPeriod?.startAt ?? plan.startAt; eventKind = 'proposed'; event = `Proposed start ${time(eventAt)}`;
   } else if (!enabled && validTime(nativeStart) && Number(nativeStart) > now) {
@@ -141,30 +164,49 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (handoverUnconfirmed) state = 'Handover unconfirmed';
   const showMetrics = connected === true;
   const showPlan = enabled && showMetrics && !yielded && (!uncertain || ownedStart != null);
-  const risk = showPlan && plan.feasible === false && plan.reason === 'insufficient-time';
-  if (risk) event += ' · target at risk';
+  const currentForecast = Object.hasOwn(forecast, 'feasible') ? forecast : plan;
+  const risk = showPlan && currentForecast.feasible === false && currentForecast.reason === 'insufficient-time';
   const deadline = showMetrics && enabled && !yielded && validTime(plan.deadlineAt ?? charger.deadlineAt) ? `Ready by ${time(plan.deadlineAt ?? charger.deadlineAt)}` : '';
+  const readiness = !deadline ? '' : finite(requiredGridKwh) && requiredGridKwh <= 0 ? 'Target reached'
+    : risk ? `${number(minimum, '%')} by ready-by is at risk`
+      : currentForecast.feasible === true && validTime(finishAt) ? 'Expected on time' : 'Readiness being checked';
   const readingTime = showMetrics && automatic(soc) ? validTime(soc.measuredAt) ? `Charge measured ${chargingReadingTime(soc.measuredAt, timezone)}`
     : validTime(soc.receivedAt) ? `Charge received ${chargingReadingTime(soc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
   const rows = [];
   if (activeManual && validTime(manual.detectedAt)) rows.push(['Manual change noticed', chargingReadingTime(manual.detectedAt, timezone)]);
-  if (showMetrics && hasProgress) rows.push(['Delivered since charge reading', `${number(creditedGridKwh, 'kWh')} · estimated from measured charging power`]);
-  if (showMetrics && finite(values.maximumCurrentA?.value)) rows.push(['Charging limit', number(values.maximumCurrentA.value, 'A per phase')]);
+  if (charging && finite(values.actualCurrentA?.value)) rows.push(['Drawing now', number(values.actualCurrentA.value, 'A per phase')]);
   if (showMetrics && charger.capabilities?.externalLoadBalancing && finite(values.availableCurrentA?.value))
     rows.push(['Last reported Equalizer allowance', `${number(values.availableCurrentA.value, 'A per phase')}${validTime(values.availableCurrentA.measuredAt)
       ? ` · ${time(values.availableCurrentA.measuredAt)}` : validTime(values.availableCurrentA.receivedAt) ? ` · received ${time(values.availableCurrentA.receivedAt)}` : ''}`]);
   else if (showMetrics && !charger.capabilities?.externalLoadBalancing && finite(values.currentA?.value)) rows.push(['Selected charging current', number(values.currentA.value, 'A per phase')]);
-  if (charging && finite(values.actualCurrentA?.value)) rows.push(['Drawing now', number(values.actualCurrentA.value, 'A per phase')]);
+  if (showMetrics && finite(values.maximumCurrentA?.value)) rows.push(['Charging limit', number(values.maximumCurrentA.value, 'A per phase')]);
+  if (showPlan && requiredGridKwh > 0 && finite(forecast.powerKw) && finite(forecast.shortfallGridKwh)
+    && typeof forecast.feasible === 'boolean')
+    rows.push(['Forecast charging power', `${number(forecast.powerKw, 'kW')} average during planned periods`]);
+  if (showPlan) for (const load of assumptions.competingLoads ?? []) {
+    if (load.chargerId === charger.id || load.known !== true || !validTime(load.startAt) || !validTime(load.endAt)
+      || Number(load.endAt) <= now || validTime(plan.deadlineAt ?? charger.deadlineAt) && Number(load.startAt) >= Number(plan.deadlineAt ?? charger.deadlineAt)
+      || !finite(load.powerKw) || load.powerKw <= 0) continue;
+    rows.push(['Other scheduled charging', `${load.label ?? human(load.chargerId)} · ${Number(load.startAt) > now ? `starts ${time(load.startAt)} · ` : ''}${number(load.powerKw, 'kW')} until about ${time(load.endAt)}`]);
+  }
+  if (showMetrics && hasProgress) rows.push(['Delivered since starting charge', `${number(creditedGridKwh, 'kWh')} from the grid`]);
+  if (showMetrics && estimatedSoc && automatic(soc)) rows.push(['Vehicle charge reading', `${number(soc.value, '%')} · ${sourceLabel(soc)}`]);
   if (showPlan && !released && !charging && finite(plan.costCents) && !uncertain && !revisionPending) {
     rows.push(['Estimated cost to target', `€${(plan.costCents / 100).toFixed(2)}`]);
     if (periods.length > 1 && finite(plan.savingsCents) && plan.savingsCents > 0) rows.push(['Saving from pauses', `€${(plan.savingsCents / 100).toFixed(2)} compared with one continuous period`]);
   }
-  const periodRows = showPlan && !released ? periods.map((period, index) => [`Period ${index + 1}`, validTime(period.endAt)
+  const periodRows = showPlan && !released && !provisional ? periods.map((period, index) => [`Period ${index + 1}`, validTime(period.endAt)
     ? window(period.startAt, period.endAt, true) : `${time(period.startAt)} onwards · vehicle finishes naturally`]) : [];
-  const periodCount = showPlan && !released && periods.length > 1 ? `${periods.length} charging periods${ownedPeriods.length ? '' : ' proposed'}` : '';
+  const periodCount = showPlan && !released && !provisional && periods.length > 1 ? `${periods.length} charging periods${ownedPeriods.length ? '' : ' proposed'}` : '';
   const fallbackNotice = /manual (?:fallback|battery percentage|minimum)|remembered manual|assumes? (?:0|20)%|phase count is known|preview assumes the vehicle/i;
+  const shortfall = currentForecast.shortfallGridKwh;
+  const shortfallNote = risk && finite(shortfall) && shortfall > 0 && finite(minimum) && deadline
+    ? `Forecast is ${shortfall < 0.1 ? 'less than 0.1 kWh' : number(shortfall, 'kWh')} short of the ${number(minimum, '%')} target by ${deadline.replace(/^Ready by /, '')}.` : '';
   const notes = enabled && showMetrics && !yielded && !uncertain
-    ? [...notices(plan.warnings), ...notices(forecast.warnings)].filter(note => !fallbackNotice.test(note)) : [];
+    ? [...notices(plan.warnings), ...notices(forecast.warnings)].filter(note => !fallbackNotice.test(note)
+      && !(shortfallNote && /predicted charging capacity cannot deliver/i.test(note))
+      && !(currentForecast !== plan && currentForecast.feasible !== false && /cannot deliver|insufficient.*time|target at risk/i.test(note))) : [];
+  if (shortfallNote && !uncertain) notes.push(shortfallNote);
   let problem = uncertain || handoverUnconfirmed || enabled && manual?.kind === 'unknown' ? control.reason || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';
   if (charger.error) problem ||= ({ 'charging-adapter-unavailable': 'The charger connection is unavailable. Automatic control is waiting for a connection.',
     'charging-reconciliation-unavailable': 'The charger schedule could not be confirmed. The last instruction may still be active; another reading will be requested.',
@@ -172,31 +214,46 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const missed = control.lastMissedTransition;
   if (enabled && showMetrics && !yielded && validTime(missed?.pauseAt) && validTime(missed?.resumeAt))
     notes.push(`Planned pause ${window(missed.pauseAt, missed.resumeAt, true)} was not confirmed; charging may have continued.`);
-  if (showMetrics && charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription'].includes(charger.mqtt.reason)) notes.push(`Vehicle reading unavailable: ${human(charger.mqtt.reason)}.`);
+  if (showMetrics && charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription', 'awaiting-report', 'idle', 'asleep'].includes(charger.mqtt.reason))
+    notes.push(`Vehicle feed: ${human(charger.mqtt.reason)}. The last valid reading remains visible with its original timestamp.`);
+  if (showMetrics && progress.basis?.energyCoverageIncomplete) notes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
   const controlDetail = !supported ? 'This integration supports monitoring only.'
     : activeManual ? 'Resume automatic charging to end manual priority early. A later manual change takes priority again.'
+      : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
       : 'Choose economical charging periods to reach the target by the ready-by time.';
   const efficiency = charger.configuration?.efficiency;
   const explanations = [
-    ['Readings & fallbacks', 'Automatic charge, target and usable capacity take priority. Saved manual values are used when an automatic value is unavailable. A valid charge reading remains usable as it ages; its original date and time stay visible.'],
-    ['Charging progress', 'Measured charging power can reduce the remaining grid energy during this connection. This does not change the vehicle charge reading. Progress resets with a new charge reading or disconnection; missing measurements receive no assumed credit.'],
+    ['Readings & fallbacks', 'Vehicle charge, target and usable capacity take priority when available. Otherwise, the saved starting charge, requested target and capacity are used. The original date and time of a vehicle reading stay visible as it ages.'],
+    ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. A new vehicle reading updates that starting point. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target.'],
     ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings.${finite(efficiency) ? ` Charging efficiency is ${number(efficiency * 100, '%')}; grid energy includes those losses.` : ''}`],
   ];
   if (supported) explanations.push(
-    ['Price planning', 'Charging may pause between cheaper periods. The final period leaves charging enabled until the vehicle finishes, including beyond the target and ready-by time. Estimates cover reaching the target.'],
+    ['Price planning', 'Charging may pause between cheaper periods when the saving is worthwhile. Planned pauses last at least 15 minutes. The final period leaves charging enabled until the vehicle finishes, including beyond the target and ready-by time. Estimates cover reaching the requested target.'],
     ['Period transitions', 'Installing planned pauses and next starts requires this service and the Easee cloud. Easee shows the current instruction; this page shows all planned periods. If contact is lost, the last instruction remains in effect and an open period may continue past a planned pause. Missed or unconfirmed transitions are reported when contact resumes.'],
-    ['Household consumption', assumptions.household === 'history' ? 'The forecast averages non-charging household consumption at the same local hour over the last seven days, weighted by measurement duration. Each hour needs at least 15 minutes of usable history.'
-      : assumptions.household === 'mixed' ? 'The forecast averages the last seven days at the same local hour, weighted by measurement duration. It assumes zero other load for hours with less than 15 minutes of usable history.'
-        : 'Without usable household history, the forecast assumes zero other household load.'],
+    ['Household forecast', 'Property consumption is reduced by known charging, then matched to local hours and outdoor conditions. A couple of usable nights can begin the estimate. Recent similar nights carry more weight, while older cold-weather readings remain useful when those conditions return. Broader history is used when close matches are scarce; zero other load is assumed only when no usable reference exists.'],
+    ['Current reference', householdReferenceText(assumptions.householdReference, now)],
     ['Other charging', 'Another charger is reserved as a future load only when a charging event is scheduled. Actual consumption is already reflected in property readings.'],
     ['Manual priority', 'A noticed external schedule change has priority until its window ends or the next ready-by time, whichever comes first. Resume automatic charging ends that priority early; a later manual change takes priority again. Changes are observed with automatic charging off too. A fresh charger read is required before handover.'],
     ['Saved priority', 'The first charger reading establishes a baseline; existing schedules alone do not claim priority. Our own changes and normal schedule expiry do not count as manual changes. Priority survives reconnection and restart. Editing ready-by does not move an already recorded expiry.'],
-    ['Unavailable data', 'Without a reliable price or power forecast, or with too little time, charging is allowed immediately when control is available. A disabled charger, fault or authorization requirement must be resolved first. An unconfirmed change is shown beside the last known instruction and retried after another charger reading.'],
+    ['Unavailable data', 'Without a reliable price or power forecast, or with too little time, charging is allowed immediately while planning continues. Economical periods can still be scheduled when the forecast improves. A disabled charger, fault or authorization requirement must be resolved first. Unconfirmed changes retain the last known instruction and are retried after another charger reading.'],
   );
-  if (charger.capabilities?.externalLoadBalancing) explanations.splice(2, 0, ['Current allocation', 'Equalizer controls the current and protects the property supply. Its live allowance can change; the charging limit is a ceiling, not a promise of power throughout the night. Automatic charging does not change Equalizer limits.']);
+  if (charger.capabilities?.externalLoadBalancing) {
+    const basis = ({
+      'observed-budget': 'The forecast infers available supply from Equalizer and property readings, then applies expected household use.',
+      'observed-lower-bound': 'The forecast uses a lower bound inferred from capped Equalizer and property readings; actual headroom may be higher. Expected household use is deducted from that bound.',
+      'equalizer-adjusted': 'The forecast replaces current household demand in Equalizer and property readings with expected household use.',
+      'equalizer-live': 'Supply-budget evidence is unavailable, so the forecast uses the last reported Equalizer allowance without subtracting household use again.',
+      unavailable: 'A usable supply estimate is still being established.',
+    })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
+    explanations.splice(2, 0, ['Current allocation', `Equalizer controls the current and protects the property supply. ${basis} The charging limit caps the forecast. Automatic charging does not change Equalizer limits.`]);
+  }
+  const socSource = estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
+    : automatic(soc) ? sourceLabel(soc) : 'Starting charge';
+  const targetSource = automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc)}` : 'Requested target';
   return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics,
-    soc: socKnown ? number(soc.value, '%') : 'Unknown', socSource: sourceLabel(soc), minimum: number(minimum, '%'),
-    minimumSource: sourceLabel(values.minimumSoc), gridEnergy: number(requiredGridKwh, 'kWh'), deadline, readingTime, periodCount, periodRows,
+    soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
+    minimumSource: targetSource, sources: socSource,
+    gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
     priority: activeManual && showMetrics ? resumption : '',
     energyLabel: hasProgress ? 'Grid remaining' : 'Grid to target',
     energyNote: requiredGridKwh === 0 ? hasProgress ? 'Target energy delivered' : 'Target already met' : 'Includes losses', problem,
@@ -260,18 +317,19 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const overview = make('div', '', 'pump-native-overview charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value'), pair = make('strong', '', 'charging-charge-pair');
     const current = make('span', 'Unknown', '', `${id}-soc`), target = make('span', 'Unknown', '', `${id}-minimum`);
-    pair.append(current, make('span', ' / ', 'charging-pair-divider'), target);
+    pair.append(current, make('span', ' → ', 'charging-pair-divider'), target);
     const sources = make('small', '', '', `${id}-sources`);
-    charge.append(make('span', 'Current / target'), pair, sources); overview.append(charge);
+    charge.append(make('span', 'Charge → target'), pair, sources); overview.append(charge);
     metrics.soc = { value: current }; metrics.minimum = { value: target };
     const energy = make('div', '', 'equipment-value'), energyValue = make('strong', 'Unknown', '', `${id}-energy`), energyHint = make('small');
-    const energyLabel = make('span', 'Grid to target'); energy.append(energyLabel, energyValue, energyHint); overview.append(energy);
+    const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
+    const energyLabel = make('span', 'Grid to target'); energy.append(energyLabel, energyValue, deadline, energyHint); overview.append(energy);
     metrics.energy = { value: energyValue, hint: energyHint, label: energyLabel };
     const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
     const timing = make('div', '', 'charging-timing'), event = make('p', '', 'charging-event', `${id}-event`);
-    const deadline = make('p', '', 'charging-deadline', `${id}-deadline`), periodCount = make('p', '', 'charging-period-count', `${id}-period-count`);
+    const remaining = make('p', '', 'charging-remaining', `${id}-remaining`), periodCount = make('p', '', 'charging-period-count', `${id}-period-count`);
     const priority = make('p', '', 'charging-priority', `${id}-priority`);
-    timing.append(event, deadline); section.append(overview, readingTime, timing, periodCount, priority);
+    timing.append(event); section.append(overview, readingTime, timing, remaining, periodCount, priority);
     const problem = make('p', '', 'charging-problem', `${id}-problem`); problem.setAttribute('role', 'status'); section.append(problem);
     const fold = make('details', '', 'equipment-fold charging-settings', `${id}-settings-details`);
     fold.append(make('summary', 'Settings & details'));
@@ -294,7 +352,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); fold.append(explanationFold);
     section.append(fold); $('charging-devices')?.append(section);
-    const device = { id, section, title, state, event, overview, sources, metrics, priority, readingTime, deadline, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger };
+    const device = { id, section, title, state, event, overview, sources, metrics, priority, readingTime, deadline, remaining, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger };
     bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
     bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
     devices.set(id, device); return device;
@@ -346,15 +404,20 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.event.textContent = view.event; device.event.dataset.state = view.risk ? 'attention' : 'normal';
       device.overview.hidden = !view.showMetrics;
       device.metrics.soc.value.textContent = view.soc; device.metrics.minimum.value.textContent = view.minimum;
-      device.sources.textContent = view.socSource === view.minimumSource ? `Both: ${view.socSource}` : `Current: ${view.socSource} · target: ${view.minimumSource}`;
+      device.sources.textContent = view.sources;
       device.readingTime.textContent = view.readingTime; device.readingTime.hidden = !view.readingTime;
-      device.deadline.textContent = view.deadline; device.deadline.hidden = !view.deadline;
+      device.deadline.textContent = view.deadline.replace(/^Ready by /, ''); device.deadline.hidden = !view.deadline;
+      device.remaining.textContent = `${view.gridEnergy} ${view.energyLabel.toLowerCase()} · ${view.energyNote.toLowerCase()}`;
+      device.remaining.hidden = !view.showMetrics || !view.deadline;
       device.priority.textContent = view.priority; device.priority.hidden = !view.priority;
       device.periodCount.textContent = view.periodCount; device.periodCount.hidden = !view.periodCount;
       device.problem.textContent = view.problem; device.problem.hidden = !view.problem;
       list(device.periods, view.periodRows); device.periods.hidden = !view.periodRows.length;
       list(device.explanations, view.explanations);
-      device.metrics.energy.label.textContent = view.energyLabel; device.metrics.energy.value.textContent = view.gridEnergy; device.metrics.energy.hint.textContent = view.energyNote;
+      device.metrics.energy.label.textContent = view.deadline ? 'Ready by' : view.energyLabel;
+      device.metrics.energy.value.textContent = view.gridEnergy; device.metrics.energy.value.hidden = Boolean(view.deadline);
+      device.metrics.energy.hint.textContent = view.deadline ? view.readiness : view.energyNote;
+      device.metrics.energy.hint.dataset.state = view.risk ? 'attention' : 'normal';
       list(device.readings, view.rows); device.readings.hidden = !view.rows.length;
       device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
       device.controlDetail.textContent = view.controlDetail;

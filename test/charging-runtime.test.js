@@ -378,9 +378,10 @@ test('vehicle association routes battery values once and preserves Equalizer ele
   assert.equal(chargerView(runtime, 'charger2').forecast.state, 'none', 'The same Tesla cannot also reserve Charger 2');
   vehicle.assignment = 'auto'; runtime.tick();
   assert.equal(chargerView(runtime).automatic.soc.available, false);
-  assert.equal(chargerView(runtime, 'charger2').automatic.soc.available, false,
-    'Uncertain attribution cannot attach the Tesla battery to an unidentified charger');
-  assert.equal(chargerView(runtime, 'charger2').values.connected.available, false);
+  assert.equal(chargerView(runtime, 'charger2').automatic.soc.available, true,
+    'The configured Charger 2 feed never depends on a probing verdict');
+  assert.equal(chargerView(runtime, 'charger2').values.soc.value, 63);
+  assert.equal(chargerView(runtime, 'charger2').values.connected.value, true);
   assert.notEqual(chargerView(runtime, 'charger2').forecast.state, 'none', 'An actual reported future schedule remains a possible competing load');
 });
 
@@ -526,6 +527,7 @@ test('measured energy lowers the remaining requirement once and survives restart
   adapter.setObservation({ powerKw: 6, powerMeasuredAt: initialNow, mode: 3 });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   const raw = chargerView(runtime).requiredGridKwh;
+  runtime.readEnergy = () => ({ gridKwh: .1, coveredMs: 60_000, continuousSince: initialNow, lastMeasuredAt: initialNow + 60_000 });
   f.setNow(initialNow + 60_000); adapter.setObservation({ powerMeasuredAt: f.clock() });
   await runtime.reconcile();
   const progress = chargerView(runtime).progress;
@@ -624,6 +626,7 @@ test('a fully observed zero-power period replans remaining energy once at the ga
   runtime.tick({ prices: [1, 50, 2, 50].map((price, index) => ({ start: initialNow + index * HOUR,
     end: initialNow + (index + 1) * HOUR, price })) });
   await runtime.reconcile();
+  runtime.readEnergy = () => ({ gridKwh: 0, coveredMs: f.clock() - initialNow, continuousSince: initialNow, lastMeasuredAt: f.clock() });
   const original = structuredClone(chargerView(runtime).plan);
   assert.equal(original.periods[0].endAt, initialNow + HOUR);
   for (let minute = 1; minute <= 60; minute++) {
@@ -652,4 +655,38 @@ test('the next wakeup includes an earlier proposed start while its native update
   runtime.scheduleWakeup();
   assert.equal(runtime.boundaryAt, proposed);
   assert.ok(runtime.boundaryAt < confirmed);
+});
+
+test('archive preparation is nonblocking, permits only provisional charging and then installs the ready forecast', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  const finishes = [];
+  runtime.historyService = { request: () => new Promise(resolve => { finishes.push(resolve); }), close() {} };
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'provisional');
+  assert.equal(chargerView(runtime).control.released, false);
+  assert.equal(chargerView(runtime).forecast.feasible, null);
+  assert.equal(runtime.status().coordination.assumptions.householdReference.loading, true);
+  assert.equal(runtime.status().coordination.assumptions.householdReference.noHistory, false);
+  for (const finish of finishes) finish([]); await new Promise(resolve => setImmediate(resolve)); await runtime.reconcile();
+  assert.equal(runtime.status().coordination.assumptions.householdReference.loading, false);
+  assert.equal(chargerView(runtime).control.phase, 'waiting');
+  assert.equal(chargerView(runtime).forecast.feasible, true);
+});
+
+test('restarting with a confirmed delayed start does not briefly release it while archive history warms', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), original = f.create(), adapter = fakeAdapter(f.clock);
+  await original.setAdapter('charger1', adapter); original.tick({ prices }); await original.reconcile();
+  const ownedStart = chargerView(original).control.owned.startAt;
+  await original.close();
+  const restarted = f.create(); t.after(() => restarted.close());
+  restarted.historyService = { request: () => new Promise(() => {}), close() {} };
+  restarted.tick({ prices });
+  const clears = adapter.calls.filter(call => call.kind === 'clear').length;
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).control.phase, 'waiting');
+  assert.equal(chargerView(restarted).control.owned.startAt, ownedStart);
+  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clears);
+  assert.equal(chargerView(restarted).forecast.feasible, null);
 });

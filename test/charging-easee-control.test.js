@@ -732,3 +732,27 @@ test('a confirmed intermediate pause survives restart without being reported as 
   assert.equal(result.phase, 'released'); assert.equal(result.lastMissedTransition, undefined);
   assert.equal(h.writes.length, 2);
 });
+
+test('a provisional immediate allowance can recover to a cheaper future schedule, including after restart', async () => {
+  const h = harness();
+  const provisional = { id: 'waiting-for-inputs', startAt: h.now, feasible: false, provisional: true,
+    periods: [{ startAt: h.now, endAt: null }] };
+  let result = await h.update({ plan: provisional });
+  assert.equal(result.phase, 'provisional'); assert.equal(result.released, false);
+  assert.equal(result.execution, null);
+  h.restart();
+  result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.provisional, false);
+  assert.equal(result.owned.startAt, NOW + 3 * 3600_000);
+});
+
+test('a feasible final period clears provisional status and is never price-paused afterward', async () => {
+  const h = harness();
+  await h.update({ plan: { id: 'uncertain', startAt: h.now, provisional: true } });
+  const final = { id: 'final', startAt: h.now, feasible: true, periods: [{ startAt: h.now, endAt: null }] };
+  let result = await h.update({ plan: final });
+  assert.equal(result.phase, 'released'); assert.equal(result.provisional, false);
+  assert.equal(result.released, true);
+  result = await h.update();
+  assert.equal(result.phase, 'released'); assert.equal(h.writes.length, 0);
+});

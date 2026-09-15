@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargingSettings } from '../src/charging/settings.js';
 import { buildCharger } from '../src/charging/model.js';
-import { forecastCharger, planChargers } from '../src/charging/planner.js';
+import { forecastCharger, forecastFixedPlan, planChargers } from '../src/charging/planner.js';
 
 const HOUR = 3_600_000, now = Date.parse('2026-01-15T00:00:00Z');
 const settings = chargingSettings();
@@ -45,7 +45,9 @@ test('current and AC voltage are required but three phases are assumed before ch
     const result = run([make('first', { telemetry })], { supply: { ...supply, voltageV: null } });
     assert.equal(result.plans.first.reason, 'electrical-telemetry-unavailable');
     assert.equal(result.plans.first.startAt, now);
-    assert.equal(result.forecasts.first.state, 'none');
+    assert.equal(result.forecasts.first.state, 'uncertain');
+    assert.equal(result.forecasts.first.finishAt, null);
+    assert.equal(result.plans.first.provisional, true);
   }
   const unknown = run([make()], { supply: {} });
   assert.equal(unknown.plans.first.reason, 'equalizer-allowance-unavailable');
@@ -325,4 +327,126 @@ test('Equalizer allocation caps its charger without constraining independent cha
   assert.ok(result.feasible);
   assert.ok(result.allocations.every(row => (row.chargers.equalizer?.currentA ?? 0) <= 10));
   assert.ok(result.allocations.some(row => row.phaseCurrentA[0] > 10));
+});
+
+test('a fractional 45-second gap is removed in the real schedule and energy timing is re-optimized', () => {
+  const quarter = HOUR / 4;
+  const result = run([make('first', { preferences: { capacityKwh: 11.04 * (1 - 45 / 3600) },
+    telemetry: { minimumSoc: 100 }, deadlineAt: now + HOUR })], {
+    prices: [1, 2, 2, 1].map((price, index) => ({ start: now + index * quarter, end: now + (index + 1) * quarter, price })),
+  });
+  const plan = result.plans.first;
+  assert.equal(plan.feasible, true);
+  assert.equal(plan.periods.length, 1);
+  assert.equal(plan.periods[0].endAt, null);
+  assert.ok(Math.abs(plan.deliveredGridKwh - plan.requiredGridKwh) < 1e-6);
+});
+
+test('extra transitions require meaningful savings and every intermediate span and pause lasts fifteen minutes', () => {
+  const tinySaving = run([make('first', { preferences: { capacityKwh: 25 }, deadlineAt: now + 4 * HOUR })],
+    { prices: prices([1, 1.01, 1, 1.01]) }).plans.first;
+  assert.equal(tinySaving.periods.length, 1);
+  const chunks = [
+    { start: now, end: now + HOUR / 12, price: -100 },
+    { start: now + HOUR / 12, end: now + HOUR, price: 20 },
+    { start: now + HOUR, end: now + 2 * HOUR, price: 1 },
+    { start: now + 2 * HOUR, end: now + 3 * HOUR, price: 30 },
+  ];
+  const practical = run([make('first', { preferences: { capacityKwh: 20 }, deadlineAt: now + 3 * HOUR })], { prices: chunks }).plans.first;
+  assert.equal(practical.feasible, true);
+  practical.periods.forEach((period, index) => {
+    if (index < practical.periods.length - 1) {
+      assert.ok(period.endAt - period.startAt >= HOUR / 4);
+      assert.ok(practical.periods[index + 1].startAt - period.endAt >= HOUR / 4);
+    }
+  });
+});
+
+test('37 kWh fits an eleven-hour readiness horizon even with a constant three-phase 6 A allowance', () => {
+  const result = run([make('first', { preferences: { capacityKwh: 37 }, telemetry: { minimumSoc: 100 },
+    deadlineAt: now + 11 * HOUR })], { supply: { availableCurrentA: [6, 6, 6], voltageV: 230 },
+    prices: prices(Array(11).fill(10)) });
+  assert.equal(result.plans.first.feasible, true);
+  assert.ok(result.plans.first.finishAt < now + 9 * HOUR);
+  assert.equal(result.forecasts.first.powerKw, 4.14);
+  assert.equal(result.plans.first.provisional, false);
+});
+
+test('a stable budget restores overnight capacity while the displayed evening allowance remains 6 A', () => {
+  const result = run([make('first', { preferences: { capacityKwh: 37 }, telemetry: { minimumSoc: 100, currentA: 6 },
+    deadlineAt: now + 12 * HOUR })], {
+    supply: { availableCurrentA: [6, 6, 6], voltageV: 230,
+      estimate: { available: true, budgetCurrentA: [25, 25, 25], quality: 'observed-budget' } },
+    household: [{ start: now, end: now + 6 * HOUR, phaseCurrentA: [19, 19, 19] },
+      { start: now + 6 * HOUR, end: now + 12 * HOUR, phaseCurrentA: [3, 4, 5] }],
+    prices: prices([...Array(6).fill(50), ...Array(6).fill(1)]),
+  });
+  assert.equal(result.plans.first.feasible, true);
+  assert.ok(result.plans.first.startAt >= now + 6 * HOUR);
+  assert.equal(result.plans.first.periods.length, 1);
+  assert.equal(result.assumptions.supply, 'observed-budget');
+});
+
+test('historical phase patterns are converted to deliverable charging power before averaging', () => {
+  const rows = [{ start: now, end: now + 2 * HOUR, phaseCurrentA: [18, 18, 18], scenarios: [
+    { phaseCurrentA: [20, 16, 16], weight: 1 },
+    { phaseCurrentA: [16, 20, 20], weight: 1 },
+  ] }];
+  const result = run([make('first', { preferences: { capacityKwh: 5 }, deadlineAt: now + 2 * HOUR })],
+    { household: rows, prices: prices([1, 1]) });
+  assert.equal(result.plans.first.feasible, false, 'Each actual phase pattern leaves only 5 A, below the charging threshold');
+  assert.equal(result.plans.first.provisional, true);
+  assert.equal(result.forecasts.first.finishAt, null);
+  assert.equal(result.forecasts.first.powerKw, 0);
+  const cycling = run([make('first', { preferences: { capacityKwh: 5 }, deadlineAt: now + 2 * HOUR })],
+    { household: [{ ...rows[0], scenarios: [
+      { phaseCurrentA: [21, 21, 21], weight: 1 }, { phaseCurrentA: [9, 9, 9], weight: 1 },
+    ] }], prices: prices([1, 1]) });
+  assert.equal(cycling.forecasts.first.powerKw, 5.52, 'Half the time charging is suspended; the other half it receives 16 A');
+  assert.equal(cycling.plans.first.feasible, true);
+});
+
+test('confirmed execution readiness is recomputed from the same constrained forecast as its completion estimate', () => {
+  const charger = make('first', { preferences: { capacityKwh: 37 }, telemetry: { minimumSoc: 100, charging: true },
+    control: { released: true, phase: 'released' }, deadlineAt: now + 11 * HOUR });
+  const current = forecastFixedPlan({ now, charger, periods: [{ startAt: now - HOUR, endAt: null }],
+    supply: { availableCurrentA: [6, 6, 6], voltageV: 230 }, prices: prices(Array(11).fill(10)) });
+  assert.equal(current.plan.feasible, true);
+  assert.equal(current.forecast.feasible, true);
+  assert.equal(current.forecast.finishAt, current.plan.finishAt);
+  assert.equal(current.forecast.powerKw, 4.14);
+  const impossible = forecastFixedPlan({ now, charger: { ...charger, deadlineAt: now + HOUR },
+    periods: [{ startAt: now, endAt: null }], supply: { availableCurrentA: [6, 6, 6], voltageV: 230 }, prices: prices([10]) });
+  assert.equal(impossible.plan.feasible, false);
+  assert.equal(impossible.forecast.finishAt, null, 'An unconstrained 11 kW finish cannot accompany the constrained readiness warning');
+  assert.ok(impossible.plan.shortfallGridKwh > 32);
+  const withoutPrices = forecastFixedPlan({ now, charger, periods: [{ startAt: now, endAt: null }],
+    supply: { availableCurrentA: [6, 6, 6], voltageV: 230 } });
+  assert.equal(withoutPrices.forecast.feasible, true, 'Missing electricity prices do not prevent a physical readiness estimate');
+  assert.equal(withoutPrices.plan.costCents, null);
+});
+
+test('a provisional allowance remains eligible for economical planning even with an earlier release flag', () => {
+  const charger = make('first', { control: { released: true, phase: 'released', provisional: true } });
+  const result = run([charger]);
+  assert.equal(result.plans.first.feasible, true);
+  assert.equal(result.plans.first.provisional, false);
+  assert.equal(result.plans.first.state, 'waiting');
+  assert.equal(result.plans.first.startAt, now + 2 * HOUR);
+});
+
+test('a known peer target bounds its scheduled reservation by the actual remaining energy', () => {
+  const peer = make('second', { capabilities: { scheduling: false, externalLoadBalancing: false },
+    preferences: { capacityKwh: 57 }, configuration: { efficiency: .9 },
+    telemetry: { soc: 80, minimumSoc: 100, currentA: 16, scheduledStartAt: now + 3 * HOUR } });
+  const result = run([make(), peer]);
+  const forecast = result.forecasts.second;
+  assert.ok(forecast.endAt > now + 4 * HOUR && forecast.endAt < now + 4.2 * HOUR);
+  assert.ok(result.plans.first.intervals.filter(row => row.start >= forecast.endAt)
+    .every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
+  const full = make('second', { capabilities: { scheduling: false, externalLoadBalancing: false },
+    telemetry: { soc: 100, minimumSoc: 100, charging: true, scheduledStartAt: now + 3 * HOUR } });
+  const satisfied = run([make(), full]);
+  assert.equal(satisfied.forecasts.second.reason, 'vehicle-target-already-reached');
+  assert.ok(satisfied.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
 });

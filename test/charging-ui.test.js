@@ -41,7 +41,7 @@ test('both chargers use the same compact model and retain useful energy informat
   const original = charger(), renamed = { ...original, id: 'another-charger', label: 'Another charger' };
   const first = view(original), second = view(renamed);
   assert.deepEqual({ ...first, id: second.id, label: second.label }, second);
-  assert.equal(first.soc, '20 %'); assert.equal(first.socSource, 'Manual fallback'); assert.equal(first.gridEnergy, '32.9 kWh');
+  assert.equal(first.soc, '20 %'); assert.equal(first.socSource, 'Starting charge'); assert.equal(first.gridEnergy, '32.9 kWh');
   assert.equal(chargingDisplay(status().charging, now).chargers.length, 2);
   assert.equal(view(charger('charger2')).event, 'Monitoring');
   assert(!first.rows.some(([label]) => ['Current charge', 'Minimum charge', 'Grid energy to minimum'].includes(label)), 'Do not repeat overview metrics');
@@ -83,7 +83,7 @@ test('charging shows live power and remaining completion estimate without stale 
   const item = active(), earlierFinish = deadlineAt - 3600_000;
   const displayed = view({ ...item, values: { ...item.values, charging: reading(true), powerKw: reading(8.2),
     scheduledStartAt: reading(startAt), scheduledEndAt: reading(deadlineAt) }, control: { phase: 'released' }, forecast: { finishAt: earlierFinish } });
-  assert.equal(displayed.state, 'Charging'); assert.equal(displayed.event, '8.2 kW now · target estimated tomorrow 05:00');
+  assert.equal(displayed.state, 'Charging'); assert.equal(displayed.event, '8.2 kW now · 80 % estimated tomorrow 05:00');
   assert(!displayed.rows.some(([label]) => /start|minimum reached|ready by|end|stopping|power/i.test(label)));
   assert(!JSON.stringify(displayed.rows).includes('23:00'));
   const met = view({ ...item, requiredGridKwh: 0, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
@@ -214,13 +214,15 @@ test('manual resumption shows the earlier of the window end and cycle boundary, 
   assert.match(expired.problem, /Handover awaits/);
 });
 
-test('delivered energy reduces grid remaining without inventing a newer SoC', () => {
+test('delivered energy raises estimated charge while retaining the original vehicle reading and timestamp', () => {
   const item = active(), measuredAt = now - 86400_000;
   const result = view({ ...item, values: { ...item.values, soc: reading(20, 'mqtt', { measuredAt }) },
-    progress: { creditedGridKwh: 12, remainingGridKwh: 20.888, basis: 'measured-power' } });
-  assert.equal(result.soc, '20 %'); assert.equal(result.gridEnergy, '20.9 kWh'); assert.equal(result.energyLabel, 'Grid remaining');
+    progress: { deliveredGridKwh: 12, remainingGridKwh: 20.888, estimatedSoc: 34.59, hasEnergyEstimate: true, estimatedSocSource: 'vehicle' } });
+  assert.equal(result.soc, '≈35 %'); assert.equal(result.gridEnergy, '≈20.9 kWh'); assert.equal(result.energyLabel, 'Grid remaining');
   assert.match(result.readingTime, /14 Sept 2026/);
-  assert.equal(Object.fromEntries(result.rows)['Delivered since charge reading'], '12 kWh · estimated from measured charging power');
+  assert.equal(Object.fromEntries(result.rows)['Delivered since starting charge'], '12 kWh from the grid');
+  assert.equal(Object.fromEntries(result.rows)['Vehicle charge reading'], '20 % · Vehicle MQTT');
+  assert.equal(result.sources, 'Estimated from vehicle charge + delivered energy');
 });
 
 test('live allowance is distinct from the configured ceiling and measured draw, including valid zero', () => {
@@ -231,13 +233,115 @@ test('live allowance is distinct from the configured ceiling and measured draw, 
   assert(!result.rows.some(([label]) => label === 'Drawing now'));
   const zero = view({ ...item, capabilities: { ...item.capabilities, externalLoadBalancing: true }, values: { ...item.values, maximumCurrentA: reading(16), availableCurrentA: reading(0) } });
   assert.match(Object.fromEntries(zero.rows)['Last reported Equalizer allowance'], /^0 A per phase/);
+  const drawing = view({ ...item, capabilities: { ...item.capabilities, externalLoadBalancing: true }, values: { ...item.values,
+    charging: reading(true), actualCurrentA: reading(16), maximumCurrentA: reading(16), availableCurrentA: reading(22) } });
+  assert.deepEqual(drawing.rows.slice(0, 3).map(([label]) => label), ['Drawing now', 'Last reported Equalizer allowance', 'Charging limit']);
+});
+
+test('current readiness replaces an obsolete risk without mixing different completion forecasts', () => {
+  const item = active(), warnings = ['Predicted charging capacity cannot deliver this minimum by its ready by time.'];
+  const recovered = view({ ...item, plan: { ...item.plan, feasible: false, reason: 'insufficient-time', warnings },
+    forecast: { feasible: true, finishAt: deadlineAt - 3600_000 },
+    control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(11) } });
+  assert.equal(recovered.risk, false); assert.equal(recovered.readiness, 'Expected on time');
+  assert.equal(recovered.event, '11 kW now · 80 % estimated tomorrow 05:00');
+  assert(!recovered.notes.some(note => /cannot deliver/.test(note)));
+  const insufficient = view({ ...item, forecast: { feasible: false, reason: 'insufficient-time', finishAt: null },
+    values: { ...item.values, charging: reading(true), powerKw: reading(3) } });
+  assert.equal(insufficient.risk, true); assert.equal(insufficient.readiness, '80 % by ready-by is at risk');
+  assert.equal(insufficient.event, '3 kW now', 'An unavailable current finish must not fall back to the old plan finish');
+  const preparing = view({ ...item, plan: { ...item.plan, feasible: false, reason: 'insufficient-time', warnings },
+    forecast: { feasible: null, finishAt: null, reason: 'household-history-loading',
+      warnings: ['Household history is being prepared. Charging is allowed until the forecast is ready.'] },
+    control: { phase: 'provisional' } });
+  assert.equal(preparing.risk, false); assert.equal(preparing.readiness, 'Readiness being checked');
+  assert(!preparing.notes.some(note => /cannot deliver/.test(note)));
+  assert.match(preparing.notes.join(' '), /Household history is being prepared/);
+});
+
+test('a temporary immediate allowance is not presented as the unrestricted final period', () => {
+  const item = active(), result = view({ ...item, plan: { ...item.plan, startAt: now,
+    periods: [{ startAt: now, endAt: null }], provisional: true, feasible: false, reason: 'electrical-telemetry-unavailable' },
+    forecast: { feasible: false, finishAt: null, reason: 'electrical-telemetry-unavailable' },
+    control: { phase: 'provisional' } });
+  assert.equal(result.event, 'Charging is allowed'); assert.equal(result.readiness, 'Readiness being checked');
+  assert.equal(result.periodRows.length, 0); assert.equal(result.risk, false);
+  assert.match(result.controlDetail, /for now.*economical periods can still be scheduled/);
+});
+
+test('an infeasible forecast quantifies the target shortfall and separates forecast power from current draw', () => {
+  const item = active(), result = view({ ...item, plan: { ...item.plan, feasible: false, reason: 'insufficient-time',
+    warnings: ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'] },
+    forecast: { feasible: false, reason: 'insufficient-time', finishAt: null, shortfallGridKwh: 4.26, powerKw: 4.14,
+      warnings: ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'] },
+    control: { phase: 'provisional' }, values: { ...item.values, charging: reading(true), powerKw: reading(11), actualCurrentA: reading(16) } });
+  assert.equal(result.event, '11 kW now');
+  assert.deepEqual(result.notes, ['Forecast is 4.3 kWh short of the 80 % target by tomorrow 06:00.']);
+  assert.equal(Object.fromEntries(result.rows)['Drawing now'], '16 A per phase');
+  assert.equal(Object.fromEntries(result.rows)['Forecast charging power'], '4.1 kW average during planned periods');
+  const loading = view({ ...item, forecast: { feasible: null, shortfallGridKwh: 4.26, powerKw: 4.14 } });
+  assert(!loading.rows.some(([label]) => label === 'Forecast charging power'));
+});
+
+test('current allocation explains the effective budget, lower-bound evidence and live fallback', () => {
+  const item = active(); item.capabilities.externalLoadBalancing = true;
+  const text = supply => Object.fromEntries(chargerDisplay(item, { now, assumptions: { supply } }).explanations)['Current allocation'];
+  assert.match(text('observed-budget'), /infers available supply.*expected household use/);
+  assert.match(text('observed-lower-bound'), /lower bound.*actual headroom may be higher/);
+  assert.match(text('equalizer-live'), /last reported Equalizer allowance without subtracting household use again/);
+});
+
+test('only a known scheduled peer affecting this deadline appears as competing charging', () => {
+  const item = active(), result = chargerDisplay(item, { now, assumptions: { competingLoads: [
+    { chargerId: 'charger2', label: 'Charger 2', known: true, startAt, endAt: startAt + 3600_000, powerKw: 11 },
+    { chargerId: 'unresolved', label: 'Unresolved', known: false, startAt, endAt: deadlineAt, powerKw: 11 },
+    { chargerId: 'late', label: 'Later', known: true, startAt: deadlineAt + 3600_000, endAt: deadlineAt + 7200_000, powerKw: 11 },
+    { chargerId: 'charger1', label: 'Charger 1', known: true, startAt, endAt: deadlineAt, powerKw: 11 },
+  ] } });
+  assert.deepEqual(result.rows.filter(([label]) => label === 'Other scheduled charging'), [
+    ['Other scheduled charging', 'Charger 2 · starts 23:00 · 11 kW until about tomorrow 00:00'],
+  ]);
+});
+
+test('estimated starting charge progresses beyond the requested target and identifies missing energy coverage', () => {
+  const item = active(), result = view({ ...item, progress: { estimatedSoc: 91, hasEnergyEstimate: true,
+    estimatedSocSource: 'starting-charge', deliveredGridKwh: 58.4, remainingGridKwh: 0,
+    basis: { energyCoverageIncomplete: true } }, values: { ...item.values, charging: reading(true), powerKw: reading(8) } });
+  assert.equal(result.soc, '≈91 %'); assert.equal(result.minimum, '80 %'); assert.equal(result.gridEnergy, '0 kWh');
+  assert.equal(result.sources, 'Estimated from starting charge + delivered energy');
+  assert.equal(result.minimumSource, 'Requested target');
+  assert.equal(result.readiness, 'Target reached'); assert.match(result.event, /target reached$/);
+  assert.match(result.notes.join(' '), /Some charging energy was not measured/);
+  assert(!result.sources.includes('fallback'));
+});
+
+test('the history explanation shows a modest early estimate and preserves the value of older seasonal references', () => {
+  const item = active();
+  const limited = chargerDisplay(item, { now, assumptions: { householdReference: { nights: 2, limited: true,
+    oldestAt: now - 240 * 86400_000, temperatureRangeC: [-22, -17], unknownCharger2: true } } });
+  const text = Object.fromEntries(limited.explanations)['Current reference'];
+  assert.match(text, /2 comparable nights · early estimate · -22 to -17 °C/);
+  assert.match(text, /older seasonal readings/); assert.match(text, /may include unmeasured charging/);
+  const zero = chargerDisplay(item, { now, assumptions: { householdReference: { nights: 0, noHistory: true } } });
+  assert.match(Object.fromEntries(zero.explanations)['Current reference'], /No usable household reference.*zero other household load/);
+});
+
+test('preparing or unavailable history is not described as evidence for zero household consumption', () => {
+  const explain = householdReference => Object.fromEntries(chargerDisplay(active(), { now,
+    assumptions: { householdReference } }).explanations)['Current reference'];
+  assert.match(explain({ loading: true, noHistory: false }), /Preparing household history.*charging is allowed/);
+  assert.match(explain({ unavailable: true, noHistory: false }), /could not be prepared.*preparation retries/);
+  assert.doesNotMatch(explain({ loading: true, noHistory: false }), /zero/);
+  assert.match(explain({ nights: 8, loading: true }), /8 comparable nights.*refreshing/);
+  assert.match(explain({ nights: 8, unavailable: true }), /8 comparable nights.*last reference retained/);
 });
 
 test('the explanation fold discloses operational assumptions without exposing irrelevant integration data', () => {
   const item = active(), result = view({ ...item, configuration: { efficiency: .9 }, capabilities: { ...item.capabilities, externalLoadBalancing: true } });
   const explanations = Object.fromEntries(result.explanations);
   assert.match(explanations['Energy estimate'], /Three-phase.*90 %/);
-  assert.match(explanations['Household consumption'], /zero other household load/);
+  assert.match(explanations['Household forecast'], /older cold-weather readings remain useful/);
+  assert.match(explanations['Current reference'], /details are not available yet/);
   assert.match(explanations['Current allocation'], /Equalizer controls/);
   assert.match(explanations['Period transitions'], /service and the Easee cloud/);
   assert.match(explanations['Price planning'], /final period leaves charging enabled/);
@@ -352,7 +456,9 @@ test('the rendered overview hides disconnected percentages, retains settings, an
   panel.update(status(item)); assert(!$('charger1-overview').hidden);
   assert.equal($('charger1-soc').textContent, '20 %'); assert.equal($('charger1-minimum').textContent, '80 %');
   assert.match($('charger1-reading-time').textContent, /14 Sept 2026, 21:00/);
-  assert.equal($('charger1-deadline').textContent, 'Ready by tomorrow 06:00');
+  assert.equal($('charger1-deadline').textContent, 'tomorrow 06:00');
+  assert.equal($('charger1-sources').textContent, 'Vehicle MQTT');
+  assert.match($('charger1-remaining').textContent, /32.9 kWh grid to target/);
   assert.equal($('charger1-reading-time').parentElement.id, 'charger1-device');
   assert.equal($('charger1-explanation-details').parentElement.id, 'charger1-settings-details');
   panel.close();

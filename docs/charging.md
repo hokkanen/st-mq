@@ -8,9 +8,11 @@ Heating mode and charging permission are independent.
 ## Dashboard and saved preferences
 
 The first equipment cards in **Garage → Equipment & temperatures** show
-connection and, while connected, current/target charge, grid energy to the
-minimum, the next proposed/confirmed start and ready-by time. During charging or
-a planned pause, the event changes to the current period or next resumption.
+connection and, while connected, charge → target, ready-by and the next
+proposed/confirmed action. Remaining grid energy is secondary. During charging
+or a planned pause, the event shows power, the next pause or resumption, or the
+estimated time to the stated target. Readiness and completion use the same
+current forecast of the periods actually being executed.
 Times use short local labels; automatic SoC keeps its original measurement date
 and time visible, or an explicitly labeled receipt time when that is all the
 provider supplies. Disconnected cards hide vehicle percentages and energy.
@@ -23,10 +25,10 @@ Preferences persist independently for each charger in the application database:
 | First-use preference | Charger 1 | Charger 2 |
 | --- | --- | --- |
 | Automatic charging | OFF | Unavailable |
-| Manual minimum fallback | 80% | 80% |
+| Requested target | 80% | 80% |
 | Ready by | 06:00 | 06:00, scheduling disabled |
 | Manual usable-capacity fallback | 74 kWh | 57 kWh |
-| Manual SoC fallback | 20% | 20% |
+| Starting charge | 20% | 20% |
 
 Ready-by is an ST-MQ preference, using the same timezone as the rest of ST-MQ
 (`TIME_ZONE`, currently Europe/Helsinki). The chosen time is the deadline;
@@ -35,7 +37,8 @@ there is no additional readiness margin.
 Valid automatic capacity, SoC and vehicle charge target each take precedence
 over their saved manual fallback. Automatic SoC has no temporary manual override.
 The fallback number remains saved while automatic readings are in use and is
-shown again if they become unavailable. Source labels identify fallback values.
+shown again if they become unavailable. The card identifies the charge source;
+the requested target is a preference, not an uncertain measurement.
 Neither current provider supplies usable capacity; it is never guessed from
 range or charging-session energy. See the [provider matrix](charging-provider-capabilities.md).
 
@@ -46,12 +49,13 @@ unavailable, a manual 80% minimum can coexist with the vehicle continuing toward
 100%. The final charging period has no automatic end; charging may continue past
 the minimum and deadline.
 
-Connection, current, voltage and native schedules are automatic only. A vehicle
-away from Home is not assigned to a household charger. Existing explicit
-TeslaMate charger assignment takes precedence over inferred attribution.
-Uncertain attribution never attaches another vehicle's SoC or target. Active
-identification probes are suppressed while ST-MQ scheduling or pending handover
-needs the charger.
+Connection, current, voltage and native schedules are automatic only. The
+configured TeslaMate feed belongs to Charger 2; its values do not depend on
+identification probes or simultaneous charging observations. Home location
+gates household connection and load accounting. The explicit legacy
+`charger_assignment: "easee"` option still attaches TeslaMate's vehicle values to
+Charger 1 and avoids recording that charging again as Charger 2. With the charger
+model enabled, legacy `auto` configuration uses Charger 2 without active probes.
 
 ## Deployment configuration and vehicle MQTT
 
@@ -105,42 +109,114 @@ Old valid MQTT readings remain usable with their source timestamps preserved.
 TeslaMate scalar topics preserve receipt clocks separately because they carry no
 measurement timestamps. WiCAN firmware and hardware setup remain for later.
 
+The **TeslaMate** connection entry reports MQTT subscription and actual reception
+separately from charging or energy-recorder health. A sleeping or idle vehicle
+does not imply MQTT disconnection. Live and retained packets are distinguished;
+repeated unchanged values can confirm reception without refreshing a vehicle
+measurement's displayed age.
+
+## Charge progress
+
+The displayed estimate uses the same recorded grid-energy intervals as the
+history charts, including the recorder's durable pending interval. It does not
+run a second power integrator or treat a command as delivered energy:
+
+`estimated SoC = starting SoC + delivered grid kWh × efficiency / capacity × 100`.
+
+The vehicle's raw percentage and original timestamp stay unchanged. A genuinely
+new charge reading rebases the estimate, counting only energy after that
+reference and within the current connection. Unchanged receipt-only messages and
+retained replays do not erase progress. Capacity, target and efficiency edits
+recalculate the estimate without discarding already delivered energy.
+
+The estimate is marked **≈** and identifies whether it started from vehicle
+telemetry or the saved starting charge. Missing energy intervals receive no
+invented credit; incomplete coverage is visible. Progress survives a restart and
+planned pauses. Confirmed disconnection resets connection progress, without
+pretending the remembered starting charge measures the vehicle after driving.
+The estimate can rise beyond the requested target, up to 100%, while the final
+period continues naturally.
+
 ## Planning and Equalizer
 
 ST-MQ assumes **three-phase charging** for both chargers, including while
 unplugged. Easee current limits do not depend on an active output-phase reading.
-Voltage comes from Equalizer/property readings for Easee and vehicle telemetry
-for TeslaMate; no nominal-voltage fallback is invented.
+Voltage comes from Equalizer/property readings or vehicle telemetry. Both
+chargers share the property supply, so an available provider voltage can serve
+either charger; no nominal-voltage fallback is invented.
 
-The dashboard separates the configured charger ceiling, Equalizer's actual
-reported per-phase allowance, and measured current/power. A 16 A ceiling does not
+The dashboard lists measured draw, Equalizer's last reported per-phase allowance,
+then the charger ceiling. A 16 A ceiling does not
 mean 16 A is available now. Dynamic or schedule-related zero current is not
 mislabeled as Equalizer allowance or projected across the whole night.
 
-The planner uses the charger ceiling and Equalizer's reported allowance. With recent property currents and the charger's actual
-currents, it replaces present non-charger demand with forecast household demand
-and scheduled competing charging. This is an effective power estimate, not a
-physical fuse rating. If those meter currents are unavailable it uses the live
-net Equalizer allowance without subtracting household demand again. Equalizer's
-configured allocation caps its own charger, not a separate Tesla charger.
+The planner reconstructs an effective supply budget from coherent Equalizer
+allowance, property current and Charger 1 draw, then replaces present demand with
+forecast household demand and scheduled competing charging. Recent evidence is
+retained through sparse change-only reports, so an evening load does not freeze
+its reduced allowance across the night. Allocation-capped observations establish
+only a lower bound; the estimate is not a physical fuse rating. If usable budget
+evidence is unavailable, the planner uses the live net allowance without
+subtracting household demand twice. Equalizer's configured allocation caps its
+own charger, not a separate Tesla charger.
 Equalizer continues to manage actual current and protect the installation.
 There are no manual fuse/allocation fields or planning reserves.
 
-Household history uses intersected electricity intervals with recorded charger
-consumption removed. The duration-weighted mean of matching local
-hours over the last seven days informs each phase's forecast; without usable
-history the forecast household load is zero. Only evidence of a scheduled
-Charger 2 event reserves future competing load. An unknown connection or missing
-unscheduled Charger 2 readings cannot block Charger 1. Current property
-consumption is already reflected in live Equalizer readings. Missing electrical
-information for a scheduled peer produces a short unavailable-estimate note,
-not a global planning block.
+Only evidence of a scheduled Charger 2 event reserves future competing load.
+Its automatic charge and target determine remaining energy and expected duration;
+an estimated completion is not an enforced stop. An unknown connection or missing
+unscheduled Charger 2 reading cannot block Charger 1. Missing electrical
+information for a scheduled peer produces an unavailable-estimate note. Actual
+consumption is already present in property readings.
+
+### Household history
+
+The reference uses original imported 0.7.5 Easee phase currents, with Charger 1
+removed from property current, and the original st-mq outdoor temperatures.
+Adjacent current reports support a bounded estimate across gaps of at most
+30 minutes. Modern recorded electricity intervals contribute the same kind of
+per-phase household reference. Known Charger 2 energy is removed where it
+overlaps. Missing older Charger 2 records do not discard an otherwise useful
+night: unmeasured charging remains in household demand and its uncertainty is
+reported. Invalid or conflicting records cannot become invented zero load.
+
+Each forecast hour selects up to 20 independent nights, matching local time and
+outdoor temperature, with the preceding six-hour temperature where available.
+Usable coverage is weighted by duration, not poll count; even one or two nights
+begin an explicitly limited estimate. Recent examples of similar conditions
+gradually replace older ones. Mild calendar decay retains a floor, and storage
+keeps separate local-hour/5 °C groups, so summer does not erase the only winter
+reference. Poor matches fall back to broader observed history; zero household
+load is used only when no usable reference exists.
+
+Short household load patterns remain separate. The planner applies per-phase
+limits and the 6 A charging minimum to each pattern before averaging available
+power. This captures heating cycles that an hourly average alone would miss.
+The card's **How charging works** shows reference count, temperature range and
+limited or older-reference context.
+
+The compact index is versioned as `charging-household-v1-comparable-nights` and
+rebuildable from original imports and observations. Native intervals replace
+overlapping imported references. Source records and thermal-learning journals
+are unchanged; this is a separate household-power forecast.
+
+Archive preparation runs in a read-only background worker. Initial preparation
+is shown explicitly. An existing confirmed schedule remains in effect; otherwise
+charging is allowed provisionally. An unfinished or failed read is not evidence
+of zero household consumption. Subsequent refreshes
+retain the usable reference while new history is prepared. Preparation failures
+remain visible and retry automatically.
+
+### Period selection and execution
 
 The planner compares continuous charging with cheaper split periods across actual
 price intervals. Earlier ready-by times and remaining energy guide joint planning.
-It uses multiple periods only when they improve the feasible energy-to-minimum
-cost; equally priced choices prefer fewer periods. The final period is always
-open-ended. Once that final release is reached, the connected session is not
+Pauses and intermediate periods are at least 15 minutes. Joining a short gap
+changes the real energy allocation: surplus energy is trimmed from expensive
+edges and the candidate is simulated again. Each additional period must justify
+a 1 cent cost preference for simplicity; otherwise fewer periods win. A feasible
+continuous candidate remains available. The final period is always open-ended.
+Once that final release is reached, the connected session is not
 automatically delayed again. An overdue connected deadline does not silently
 advance to tomorrow; an expiring manual readiness cycle is a separate handback.
 
@@ -154,13 +230,16 @@ continued. The notice survives restart for that connection. No final stop is
 preinstalled. The full proposed periods
 are shown here; the Easee app shows the currently installed instruction.
 
-Fresh, attributable measured-power intervals reduce the remaining grid-energy
-estimate between SoC updates. They do not change the displayed SoC or its clocks.
-Duplicate measurements, uncertain connections and gaps longer than two minutes
-earn no estimated energy; accumulated credit survives restart but integration
-does not bridge the outage. A new SoC/capacity/target reference resets this credit.
-Active periods finish as planned; future periods can be revised at a gap using
-updated remaining energy. A confirmed disconnect resets vehicle progress and
+An active confirmed period keeps its planned end. Future periods can be revised
+using delivered energy, prices, household forecast and peer schedules. The
+current readiness forecast evaluates retained execution periods, so a new
+proposal does not claim a finish that the installed instruction cannot deliver.
+A failed update retains the last confirmed periods with its explanation.
+
+When inputs are missing or time is insufficient, immediate charging is a
+temporary allowance and planning continues. Improved readings can still produce
+economical later periods. This is distinct from the unrestricted final release,
+which is never delayed again during the same connection. A confirmed disconnect
 relinquishes an owned future delay; new planning waits for connection.
 
 Future command adapters can declare scheduling and current-control capabilities.

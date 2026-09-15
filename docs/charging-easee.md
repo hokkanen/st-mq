@@ -8,6 +8,15 @@ connection. A missed pause may cost more, but cannot leave an automatic final
 stop waiting on the charger. The Easee app shows the current native instruction;
 the dashboard shows the complete proposed periods and their confirmation state.
 
+The planner avoids pauses and intermediate periods shorter than 15 minutes and
+prefers fewer periods unless the extra period improves estimated cost by more
+than 1 cent. Intermediate periods retain their confirmed end while updated
+remaining energy and power forecasts can revise later periods. Completion and
+readiness are recalculated against the periods actually retained for execution.
+An immediate allowance caused by missing inputs or insufficient predicted time
+remains provisional: it can be rescheduled when the forecast improves. A genuine
+final release stays open for the remainder of the connection.
+
 New vehicle planning waits for a confirmed connection. Disconnect relinquishes
 an owned future delay, while readiness-cycle manual priority survives. Replanning
 uses fresh connection state before any write. The existing Easee authentication,
@@ -136,13 +145,27 @@ actual load balancing; no installer limits are changed.
 Three-phase charging is assumed, independent of active output-phase observation.
 The adapter also reads [Equalizer observations](https://developer.easee.com/docs/equalizer-observations)
 31–33 for property currents and 34–36 for phase-to-neutral voltage. Charger
-observations 183–185 provide its phase currents. Recent property samples permit
-replacement of present household demand with historical/zero forecast demand;
-otherwise planning uses live net Equalizer allowance. Charger-current events may
-be old because unchanged values need not be republished. All original clocks
-are retained separately from the successful read time. Missing voltage never
-becomes an invented 230 V value. Missing or conflicting property/current data
-cannot inflate recovered headroom.
+observations 183–185 provide its phase currents. A coherent observation estimates
+the supply budget as Equalizer allowance plus property draw minus Charger 1
+draw. Positive allowance reports and source readings within 20 minutes are
+required to establish new evidence; original event clocks remain distinct from
+a successful API poll. Confirmed idle current can remain unchanged.
+
+Up to 12 independent samples from the preceding 24 hours survive restart.
+Uncapped observations provide a robust central estimate; observations clipped
+by allocation only establish a lower bound. Configuration changes reset this
+evidence, and an offline charger cannot make it available. This prevents a
+single busy-evening allowance or sparse current update from defining every
+overnight slot, without claiming to have retrieved the physical fuse rating.
+
+The planner replaces present demand with comparable household-history patterns
+and known scheduled charging, applies per-phase limits and the 6 A minimum, then
+averages the resulting charging power. The household reference includes original
+0.7.5 current/temperature imports and keeps older cold-weather conditions useful;
+see [household history](charging.md#household-history). With no usable supply-budget
+evidence it uses live net allowance without subtracting demand twice. Missing
+voltage never becomes an invented 230 V value; valid property voltage can serve
+both household chargers.
 
 `test/charging-easee-control.test.js` covers the documented wire format,
 normalization, delayed release, replanning, restarts, in-flight OFF races,

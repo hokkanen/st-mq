@@ -4,6 +4,7 @@ import { chargingSnapshot, createEaseeScheduleAdapter, easeeChargerTelemetry, ma
   normalizeScheduleState } from '../src/charging/easee.js';
 import { createChargingTeslaCapture, decodeChargingTeslaField, teslamateChargerTelemetry,
   teslamateChargerAssignment } from '../src/charging/teslamate.js';
+import { updateSupplyEstimate } from '../src/charging/supply.js';
 
 const now = Date.parse('2026-09-15T18:00:00Z');
 const hour = 3_600_000;
@@ -255,12 +256,13 @@ test('a continuously open recurrence has no fabricated daily stop boundary', () 
   });
 });
 
-test('Tesla assignment separates confirmed vehicle routing from an uncertain external load', () => {
+test('TeslaMate is the configured Charger 2 vehicle feed unless explicitly assigned to Easee', () => {
   assert.deepEqual(teslamateChargerAssignment({ assignment: 'auto' }), {
-    chargerId: null, uncertain: true, reservationChargerId: 'charger2',
+    chargerId: 'charger2', uncertain: false, reservationChargerId: null,
   });
-  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger1');
+  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger2');
   assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'bmw' }).chargerId, 'charger2');
+  assert.equal(teslamateChargerAssignment({ assignment: 'easee' }, { identified: 'bmw' }).chargerId, 'charger1');
   assert.equal(teslamateChargerAssignment({ assignment: 'bmw' }, { identified: 'easee' }).chargerId, 'charger2',
     'An explicit assignment is the owner decision, not a hint for automatic attribution');
 });
@@ -286,4 +288,51 @@ test('a charger observation arriving during the state request is not discarded a
   assert.equal(reading.readAt, now + 25);
   assert.equal(reading.controlKnown, true);
   assert.equal(reading.limits.chargerA, 32);
+});
+
+const supplySnapshot = ({ allowance = [6, 8, 7], property = [19, 17, 18], charger = [0, 0, 0], at = now - 10 * 60_000,
+  allocation = 27, online = true, ...extra } = {}) => ({
+  online, readAt: now, mode: charger.some(value => value > 0) ? 3 : 2, externalLoadBalancing: true,
+  limits: { allocationA: allocation, circuitA: [16, 16, 16] },
+  supply: { availableCurrentA: allowance, reportedPropertyCurrentA: property, propertyCurrentA: null,
+    chargerCurrentA: charger, allocationA: allocation,
+    observationTimes: { allowance: [at, at, at], property: [at, at, at], charger: [at, at, at] } }, ...extra,
+});
+
+test('sparse ten-minute meter events establish a nighttime budget independently of the momentary allowance', () => {
+  const estimate = updateSupplyEstimate(null, supplySnapshot(), now);
+  assert.equal(estimate.available, true);
+  assert.equal(estimate.quality, 'observed-budget');
+  assert.deepEqual(estimate.budgetCurrentA, [25, 25, 25]);
+  assert.equal(estimate.measuredAt, now - 10 * 60_000);
+  const charging = updateSupplyEstimate(null, supplySnapshot({ allowance: [20, 20, 20],
+    property: [21, 21, 21], charger: [16, 16, 16] }), now);
+  assert.deepEqual(charging.budgetCurrentA, [25, 25, 25], 'The controlled charger is subtracted exactly once');
+});
+
+test('supply evidence survives short sparse-event gaps without pretending polling measured a new budget', () => {
+  const snapshot = supplySnapshot(), estimate = updateSupplyEstimate(null, snapshot, now);
+  const later = now + hour;
+  const held = updateSupplyEstimate(estimate, { ...snapshot, readAt: later }, later);
+  assert.equal(held.available, true);
+  assert.equal(held.samples.length, 1);
+  assert.equal(held.measuredAt, estimate.measuredAt);
+  assert.deepEqual(held.budgetCurrentA, [25, 25, 25]);
+  assert.equal(updateSupplyEstimate(held, { ...snapshot, readAt: later, online: false }, later).available, false);
+  assert.equal(updateSupplyEstimate(held, { ...snapshot, readAt: later + 24 * hour }, later + 24 * hour).budgetCurrentA, null);
+  const changed = { ...snapshot, limits: { ...snapshot.limits, allocationA: 20 },
+    supply: { ...snapshot.supply, reportedPropertyCurrentA: null } };
+  assert.equal(updateSupplyEstimate(held, changed, now).budgetCurrentA, null, 'A changed installation config invalidates old capacity evidence');
+});
+
+test('allocation is only a charging ceiling and clipped or absent readings cannot identify property capacity', () => {
+  const clipped = updateSupplyEstimate(null, supplySnapshot({ allowance: [27, 27, 27], property: [3, 4, 5] }), now);
+  assert.equal(clipped.quality, 'observed-lower-bound');
+  assert.deepEqual(clipped.budgetCurrentA, [30, 31, 32]);
+  const missing = supplySnapshot({ property: null });
+  assert.equal(updateSupplyEstimate(null, missing, now).available, false, 'Allocation alone never becomes the property budget');
+  assert.equal(updateSupplyEstimate(null, supplySnapshot({ allowance: [0, 0, 0], property: [40, 40, 40] }), now).available, false,
+    'A clipped zero may indicate overload, not a 40 A property supply');
+  assert.equal(updateSupplyEstimate(null, supplySnapshot({ at: now - hour }), now).available, false);
+  assert.equal(updateSupplyEstimate(null, supplySnapshot({ at: now + 1 }), now).available, false);
 });

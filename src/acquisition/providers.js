@@ -161,7 +161,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true, canControl = () => true } = {}) {
   const connections = config.connections ?? {};
-  const identifyCharger = connections.teslamate?.enabled === true
+  const identifyCharger = !engine.charging && connections.teslamate?.enabled === true
     && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
   http ??= createHttp({ allowChargerIdentification: identifyCharger, allowChargerScheduling: true, canControl });
   const location = configuredLocation(connections);

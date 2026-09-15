@@ -107,7 +107,7 @@ function decorate(reading, signal, now) {
 export class Engine {
   providerStatus() {
     const providers = { ...(this.store.getState('providers:health') ?? {}) };
-    if (this.teslamate) providers.teslamate = { source: 'teslamate', enabled: true, ...this.teslamate.status() };
+    if (this.teslamate) providers.teslamate = { source: 'teslamate', enabled: true, ...this.teslamate.status(), reception: this.charging?.teslaCapture?.reception?.() ?? null };
     else if (['mqtt', 'providers'].includes(this.config.input)) {
       const enabled = this.config.connections?.teslamate?.enabled === true;
       providers.teslamate = { source: 'teslamate', enabled, status: enabled ? 'waiting' : 'disabled',
@@ -860,7 +860,7 @@ export class Engine {
     this.temperatureObservations(observations, now);
     try { this.garage.tick({ now, prices: outlook.prices, forecast: outlook.forecast }); }
     catch { this.garage.fail('garage-runtime-unavailable'); }
-    this.charging.tick({ now, prices: outlook.prices });
+    this.charging.tick({ now, prices: outlook.prices, weather: outlook.forecast });
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
     const manualPause = priorExecutor?.manualPause;

@@ -111,7 +111,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       }
     }
     if (snapshot.controlKnown && snapshot.pluggedIn === false) {
-      state.disconnected = true; state.released = false; state.execution = null;
+      state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
       if (state.manual && !['window', 'schedule'].includes(state.manual.kind)) state.manual = null;
       if (state.owned && now >= state.owned.startAt) state.owned = null;
@@ -270,7 +270,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         await phase('disconnected', snapshot.pluggedIn === false ? 'Connect a vehicle to plan automatic charging.'
           : 'Waiting for Easee to confirm whether a vehicle is connected.'); return status();
       }
-      if (state.released) {
+      if (state.released && !state.provisional) {
         // Take over a pre-existing stopping schedule without interrupting a
         // charge already underway. Only its restriction is removed.
         if (snapshot.schedule.enabled !== 'none' && !ownsCurrent()) {
@@ -296,8 +296,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
         }
       }
       let plannedPause = false;
-      if (execution && now >= execution.periods[0].startAt) {
-        state.execution = copy(execution);
+      if (execution && !plan?.provisional && now >= execution.periods[0].startAt) {
+        state.execution = copy(execution); state.provisional = false;
         if (now >= execution.finalStartAt) {
           if (snapshot.schedule.enabled !== 'none') { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
           state.released = true; await phase('released', RELEASE_REASON); return status();
@@ -318,9 +318,12 @@ export function createChargingController({ adapter, initialState = null, saveSta
       if (!plan || !isTime(plan.startAt)) { await phase('unavailable', 'Waiting for a charging plan.'); return status(); }
       if (plan.startAt <= now) {
         if (snapshot.schedule.enabled !== 'none') { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
-        state.released = true; state.manual = null; state.execution = null;
-        await phase('released', RELEASE_REASON); return status();
+        state.provisional = plan.provisional === true || plan.feasible === false;
+        state.released = !state.provisional; state.manual = null; state.execution = null;
+        await phase(state.provisional ? 'provisional' : 'released', state.provisional
+          ? 'Charging is allowed while planning inputs are incomplete or insufficient. The schedule will be reconsidered when the forecast improves.' : RELEASE_REASON); return status();
       }
+      state.provisional = false;
       const pauseRequested = plannedPause || snapshot.mode === 3;
       const maximumAmps = typeof getMaximumAmps === 'function' ? getMaximumAmps(copy(snapshot)) : desired.maximumAmps;
       operation = 'invalid-plan';

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { teslamateConfiguration } from '../app/config.js';
 
 // TeslaMate's change-only scalar topics do not contain measurement timestamps.
@@ -25,27 +26,49 @@ export function decodeChargingTeslaField(field, payload) {
   return text;
 }
 
-export function createChargingTeslaCapture({ settings = {}, clock = Date.now }) {
+export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {} } = {}) {
   settings = teslamateConfiguration(settings);
   const root = `teslamate/${settings.namespace ? `${settings.namespace}/` : ''}cars/${settings.carId ?? '1'}/`;
-  let connected = false, fields = {}, sequence = 0;
+  const signature = createHash('sha256').update(JSON.stringify([root, settings.homeGeofence])).digest('hex');
+  const restored = initialState?.signature === signature ? initialState : {};
+  let connected = false, brokerConnected = false, subscriptionStatus = 'pending';
+  const liveFields = new Set();
+  let fields = restored.fields ?? {}, sequence = restored.sequence ?? 0;
+  let lastMessageAt = restored.lastMessageAt ?? null, lastLiveAt = null, lastRetainedAt = null;
+  const reception = () => ({ brokerConnected, connected, subscribed: connected, subscriptionStatus,
+    chargerId: settings.chargerAssignment === 'easee' ? 'charger1' : 'charger2',
+    lastMessageAt, lastLiveAt, lastRetainedAt,
+    reason: !brokerConnected ? 'mqtt-disconnected' : !connected ? 'awaiting-subscription' : null });
   return {
     topic: `${root}#`,
-    setConnected(value) { connected = value; if (!value) fields = {}; },
+    setConnected(value, reason) { if (!value) liveFields.clear(); connected = value; brokerConnected = ['subscription-failed', 'awaiting-subscription'].includes(reason) || value;
+      subscriptionStatus = value ? 'subscribed' : reason === 'subscription-failed' ? 'failed' : 'pending'; },
+    reception,
     receive(topic, payload, packet = {}, now = clock()) {
       if (!connected || !topic.startsWith(root)) return false;
       const field = topic.slice(root.length), value = decodeChargingTeslaField(field, payload);
+      if (packet.dup && (value === undefined || fields[field]?.value === value)) return value !== undefined;
+      lastMessageAt = now;
+      if (packet.retain) lastRetainedAt = now; else lastLiveAt = now;
       if (value === undefined) return false;
-      if (packet.dup && fields[field]?.value === value || packet.retain && fields[field]?.retained === false) return true;
+      if (packet.retain && liveFields.has(field)) return true;
+      if (!packet.retain) liveFields.add(field);
+      if (fields[field]?.value === value && (packet.retain || ['battery_level', 'charge_limit_soc'].includes(field))) return true;
+      const previousField = fields[field], previousSequence = sequence;
       fields[field] = { value, receivedAt: now, measuredAt: null, retained: packet.retain === true,
         timeBasis: 'receipt-only', sequence: ++sequence };
+      try { saveState({ signature, fields: structuredClone(fields), sequence, lastMessageAt }); }
+      catch (error) {
+        if (previousField) fields[field] = previousField; else delete fields[field];
+        sequence = previousSequence; throw error;
+      }
       return true;
     },
     snapshot() {
       const value = field => fields[field]?.value;
       const newest = [fields.state, fields.charging_state].filter(Boolean).sort((a, b) => b.sequence - a.sequence)[0];
       const assignment = settings.chargerAssignment;
-      return { connected, atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === (settings.homeGeofence ?? 'Home') : undefined,
+      return { connected, reception: reception(), atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === (settings.homeGeofence ?? 'Home') : undefined,
         assignment, assignedToCharger1: assignment === 'easee',
         pluggedIn: value('plugged_in'), charging: newest ? ['Charging', 'charging'].includes(newest.value) : undefined,
         batteryLevel: value('battery_level'), chargeLimitSoc: value('charge_limit_soc'),
@@ -57,15 +80,11 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now }) 
   };
 }
 
-/** Keep legacy device names at the provider boundary. Unidentified home charging
- * is reserved as a possible external load, without attaching that vehicle's
- * battery readings to either unconfirmed charger. */
-export function teslamateChargerAssignment(snapshot = {}, { identified } = {}) {
-  const aliases = new Map([['easee', 'charger1'], ['bmw', 'charger2']]);
-  const configured = aliases.get(snapshot.assignment);
-  const chargerId = configured ?? aliases.get(identified) ?? null;
-  return { chargerId, uncertain: chargerId === null,
-    reservationChargerId: chargerId === null ? 'charger2' : null };
+/** The configured TeslaMate feed belongs to Charger 2. An explicit legacy
+ * Easee assignment remains supported; automatic probing never hides its SoC. */
+export function teslamateChargerAssignment(snapshot = {}) {
+  return { chargerId: snapshot.assignment === 'easee' ? 'charger1' : 'charger2',
+    uncertain: false, reservationChargerId: null };
 }
 
 /** TeslaMate is a read-only vehicle source, not a charger command adapter.
@@ -74,10 +93,11 @@ export function teslamateChargerAssignment(snapshot = {}, { identified } = {}) {
 export function teslamateChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) {
   const transportAvailable = snapshot.connected === true;
   const signal = (value, field, extra = {}) => {
+    const usable = transportAvailable || ['battery_level', 'charge_limit_soc'].includes(field);
     const metadata = snapshot.fields?.[field] ?? {};
-    return { ...metadata, value: transportAvailable && value !== undefined ? value : null,
+    return { ...metadata, value: usable && value !== undefined ? value : null,
       source: 'teslamate', field: field ?? null,
-      available: transportAvailable && value !== undefined && value !== null,
+      available: usable && value !== undefined && value !== null,
       measuredAt: metadata.measuredAt ?? null, receivedAt: metadata.receivedAt ?? null,
       timeBasis: 'receipt-only', ...extra };
   };

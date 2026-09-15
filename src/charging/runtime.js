@@ -3,18 +3,21 @@ import { acceptSocReading } from './soc.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
-import { planChargers } from './planner.js';
+import { planChargers, forecastFixedPlan } from './planner.js';
 import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateChargerTelemetry, teslamateChargerAssignment } from './teslamate.js';
-import { forecastHousehold } from './history.js';
+import { forecastHousehold, householdReferenceSummary } from './history.js';
 import { createHash, randomUUID } from 'node:crypto';
+import { createHouseholdForecastService } from './history-service.js';
+import { recordedChargingEnergy } from './energy.js';
+import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 
 const MINUTE = 60_000;
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const planBasis = (view, prices) => digest({ deadlineAt: view.deadlineAt, efficiency: view.configuration.efficiency,
+const planBasis = (view, prices, environment) => digest({ environment, deadlineAt: view.deadlineAt, efficiency: view.configuration.efficiency,
   readings: ['soc', 'minimumSoc', 'capacityKwh'].map(key => { const value = view.values[key];
     return [value.value, value.source, value.measuredAt, value.measuredAt === null ? value.receivedAt : null, value.readingId]; }),
   prices: prices.map(row => [row.start, row.end, row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price]) });
@@ -22,7 +25,7 @@ const initialMqtt = () => ({ connected: false, subscribed: false, reason: 'await
 const activePeriod = (control, now) => control?.execution?.periods?.some(period => period.startAt <= now
   && (period.endAt === null || period.endAt > now));
 const scheduleCeiling = snapshot => {
-  const limits = [snapshot?.limits?.chargerA, snapshot?.limits?.cableA].filter(value => Number.isFinite(value) && value > 0);
+  const limits = [snapshot?.limits?.chargerA, snapshot?.limits?.cableA, ...[snapshot?.limits?.circuitA].flat()].filter(value => Number.isFinite(value) && value > 0);
   return limits.length ? Math.floor(Math.min(...limits)) : undefined;
 };
 
@@ -40,11 +43,15 @@ export class ChargingRuntime {
       const association = this.configuration.chargers[definition.id].mqttTopic;
       const automaticSoc = association && previous.automaticSoc?.association === association ? previous.automaticSoc : null;
       return [definition.id, { definition, automaticSoc, plan: previous.plan ?? null,
-        progress: restoreChargingProgress(previous.progress),
+        progress: restoreChargingProgress(previous.progress), supplyEstimate: previous.supplyEstimate ?? null,
         wasPluggedIn: previous.progress?.connected,
         mqtt: initialMqtt(), lastReconcileAt: null }];
     }));
+    this.weather = [];
+    this.readEnergy = query => recordedChargingEnergy(this.store, query);
     this.prices = []; this.pricesInitialized = false;
+    this.historyService = store.path && store.path !== ':memory:' ? createHouseholdForecastService({ store }) : null;
+    this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Set();
     this.household = []; this.historyAt = null; this.coordination = null; this.closed = false;
   }
   charger(id) {
@@ -59,7 +66,7 @@ export class ChargingRuntime {
   }
   persist() {
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress }]));
+      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate }]));
     this.store.setState(this.key, { version: 3, settings: this.settings, chargers, view: this.status() });
   }
   mqttRoutes() {
@@ -117,6 +124,10 @@ export class ChargingRuntime {
       const control = item.controller?.status(), snapshot = control?.snapshot;
       const normalize = item.adapter?.normalize ?? (item.definition.provider === 'easee' ? easeeChargerTelemetry : null);
       result[id] = normalize ? normalize(snapshot ?? {}, { now }) : {};
+      if (item.definition.provider === 'easee' && snapshot) {
+        item.supplyEstimate = updateSupplyEstimate(item.supplyEstimate, snapshot, now);
+        if (result[id].supply) result[id].supply = { ...result[id].supply, estimate: item.supplyEstimate };
+      }
       if (item.adapter?.capabilities) result[id].capabilities = { ...result[id].capabilities, ...item.adapter.capabilities };
       if (result[id].scheduledStartAt?.available && Number.isSafeInteger(control?.owned?.startAt)
         && (control.owned.activeFingerprint && snapshot?.schedule
@@ -143,17 +154,9 @@ export class ChargingRuntime {
         }
       }
     }
-    if (assignment.uncertain && this.chargers[assignment.reservationChargerId]
-      && !this.chargers[assignment.reservationChargerId].adapter?.normalize) {
-      const vehicle = teslamateChargerTelemetry(snapshot, { now });
-      result[assignment.reservationChargerId] = { ...vehicle,
-        connected: vehicle.connected.value === false ? vehicle.connected : { value: null, available: false, source: 'teslamate' },
-        pluggedIn: null,
-        soc: { value: null, available: false }, minimumSoc: { value: null, available: false },
-        charging: { value: null, available: false }, powerKw: { value: null, available: false },
-        actualCurrentA: { value: null, available: false },
-        batteryLevel: null, chargeLimitSoc: null, assignmentUncertain: true };
-    }
+    const propertyVoltage = Object.values(result).find(item => item.voltageV?.available)?.voltageV;
+    if (propertyVoltage) for (const item of Object.values(result)) if (!item.voltageV?.available)
+      item.voltageV = { ...propertyVoltage, source: 'property-supply' };
     return result;
   }
   controlStatus(id) {
@@ -175,11 +178,12 @@ export class ChargingRuntime {
         deadlineAt: item.plan?.replanReadyBy && !activePeriod(control, now)
           ? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE)
           : item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
-      const progress = updateChargingProgress(item.progress, charger, now);
+      const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
       return { ...charger, referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
-        progress: { creditedGridKwh: progress.state.creditKwh, remainingGridKwh: progress.remainingGridKwh, basis: progress.basis },
+        progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
         automaticSoc: item.automaticSoc, plan: item.plan,
-        forecast: item.forecast ?? null, mqtt: item.mqtt, error: item.error ?? null };
+        forecast: item.forecast ?? null, mqtt: item.definition.provider === 'teslamate'
+          ? this.teslaCapture?.reception?.() ?? null : item.mqtt, error: item.error ?? null };
     });
   }
   updatePlan(now = this.clock()) {
@@ -195,34 +199,79 @@ export class ChargingRuntime {
       if (resumed && resumed.reason !== 'explicit' && resumed.at >= resumed.deadlineAt
         && item.plan?.deadlineAt <= resumed.deadlineAt) item.plan = null;
       const raw = { ...view, requiredGridKwh: view.referenceGridKwh };
-      item.progress = updateChargingProgress(item.progress, raw, now).state;
+      item.progress = updateChargingProgress(item.progress, raw, now, this.readEnergy).state;
       if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
     }
     views = this.views(now);
     const deadlineAt = Math.max(...views.map(view => view.deadlineAt));
     const external = views.find(view => view.capabilities.externalLoadBalancing);
     const supply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
-    if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || deadlineAt > this.historyDeadline) {
-      this.household = forecastHousehold(this.store, { now, deadlineAt, input: this.config.input, voltageV: supply?.voltageV, timezone: TIME_ZONE });
-      this.historyAt = now; this.historyDeadline = deadlineAt;
+    const historyOptions = { now, deadlineAt, input: this.config.input, voltageV: supply?.voltageV, timezone: TIME_ZONE,
+      weather: this.weather, outdoorC: this.engine.latest?.outdoor_temperature?.value };
+    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: supply?.voltageV?.map?.(Math.round) ?? null });
+    if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || historyKey !== this.historyKey) {
+      this.historyKey = historyKey;
+      if (!this.historyService) {
+        this.household = forecastHousehold(this.store, historyOptions);
+        this.historyReady = true; this.historyAt = now; this.historyDeadline = deadlineAt;
+      } else if (!this.historyFlights.has(historyKey)) {
+        const generation = ++this.historyGeneration;
+        this.historyFlights.add(historyKey); this.historyError = null;
+        void this.historyService.request(historyOptions).then(rows => {
+          if (this.closed || generation !== this.historyGeneration || historyKey !== this.historyKey || !rows) return;
+          this.household = rows; this.historyReady = true; this.historyAt = now; this.historyDeadline = deadlineAt;
+        }).catch(() => {
+          if (this.closed || generation !== this.historyGeneration || historyKey !== this.historyKey) return;
+          this.historyError = 'household-history-unavailable'; this.historyAt = this.clock();
+        }).finally(() => {
+          this.historyFlights.delete(historyKey);
+          if (!this.closed && generation === this.historyGeneration) this.tick({ force: true });
+        });
+      }
     }
     const result = planChargers({ now, chargers: views, prices: this.prices, household: this.household, supply });
     this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
-      currentLimitsAreProposals: true, warnings: result.warnings, assumptions: result.assumptions };
+      currentLimitsAreProposals: true, warnings: result.warnings, assumptions: { ...result.assumptions,
+        householdReference: { ...householdReferenceSummary(this.household),
+          noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
+          loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
+    const environment = { supply: { budget: supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA,
+        voltageV: supply?.voltageV, allocationA: supply?.allocationA, quality: supply?.estimate?.quality },
+      household: this.household.map(row => [row.start, row.end, row.phaseCurrentA, row.scenarios]),
+      chargers: views.map(view => [view.id, view.requiredGridKwh, view.values.connected.value,
+        view.values.currentA.value, view.values.maximumCurrentA.value, view.values.voltageV.value,
+        view.values.scheduledStartAt.value, view.values.scheduledEndAt.value]) };
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
-      const previousForecast = item.forecast;
       item.forecast = result.forecasts?.[view.id] ?? null;
+      if (!this.historyReady && view.settings.enabled && view.capabilities.scheduling) {
+        const reason = this.historyError ?? 'household-history-loading';
+        const warning = this.historyError ? 'Household history is unavailable. Charging is allowed while preparation retries.'
+          : 'Household history is being prepared. Charging is allowed until the forecast is ready.';
+        const plan = result.plans[view.id];
+        Object.assign(plan, { state: 'release', reason, startAt: now, finishAt: null,
+          periods: [{ startAt: now, endAt: null }], provisional: true, feasible: null, warnings: [warning] });
+        item.forecast = { ...item.forecast, reason, state: 'uncertain', finishAt: null, feasible: null, warnings: [warning] };
+      }
       if (!this.pricesInitialized) continue;
+      // A cold archive rebuild must not briefly release and reinstall a known
+      // delayed start. Keep the confirmed instruction until its replacement can
+      // be assessed; fresh controller reads still enforce manual priority.
+      const retainedInstruction = control?.owned ?? this.savedOwnership(view.id)?.owned;
+      if (!this.historyReady && retainedInstruction && item.plan && !item.newEpisode) continue;
       const handbackDue = Number.isSafeInteger(control?.manual?.resumeAt) && now >= control.manual.resumeAt;
       // A manual native instruction is separate from the automatic plan. Keep
       // the last automatic context until the controller verifies handback.
       if (control?.manual && !handbackDue && item.plan && !item.newEpisode) continue;
-      if ((control?.released || control?.phase === 'released') && !handbackDue && !item.newEpisode) continue;
+      if ((control?.released || control?.phase === 'released') && !control?.provisional && !handbackDue && !item.newEpisode) {
+        if (this.historyReady) item.forecast = forecastFixedPlan({ now, charger: view, periods: [{ startAt: now, endAt: null }],
+          chargers: views, prices: this.prices, household: this.household, supply }).forecast;
+        continue;
+      }
       const execution = control?.execution;
       const started = execution?.periods?.some(period => period.startAt <= now);
       const active = activePeriod(control, now);
-      const basis = planBasis(view, this.prices);
+      const basis = planBasis(view, this.prices, environment);
       const credit = view.progress.creditedGridKwh;
       const precedingPeriod = execution?.periods?.filter(period => Number.isSafeInteger(period.endAt) && period.endAt <= now).at(-1);
       const coverage = view.progress.basis;
@@ -234,7 +283,8 @@ export class ChargingRuntime {
       if (started && !handbackDue && !item.newEpisode && item.plan
         && (active || item.plan.basis === basis && item.plan.creditedGridKwh === credit
           && (!observedGap || item.plan.replannedGapAt === observedGap))) {
-        item.forecast = previousForecast;
+        if (this.historyReady) item.forecast = forecastFixedPlan({ now, charger: view, periods: execution.periods,
+          chargers: views, prices: this.prices, household: this.household, supply }).forecast;
         continue;
       }
       const next = result.plans?.[view.id];
@@ -258,8 +308,9 @@ export class ChargingRuntime {
       this.boundaryTimer.unref?.();
     }
   }
-  tick({ now = this.clock(), prices, force = false } = {}) {
+  tick({ now = this.clock(), prices, weather, force = false } = {}) {
     if (this.closed) return;
+    if (Array.isArray(weather) && digest(weather) !== digest(this.weather)) { this.weather = weather; this.historyAt = null; }
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     try {
       this.updatePlan(now);
@@ -289,7 +340,7 @@ export class ChargingRuntime {
     for (const view of this.views()) if (next.chargers[view.id].enabled && !view.capabilities.scheduling)
       throw new Error(`${view.label} does not support automatic scheduling`);
     const oldRecords = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress }]));
+      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate }]));
     this.settings = next;
     for (const [id, item] of Object.entries(this.chargers)) {
       const before = previous.chargers[id], after = next.chargers[id];
@@ -328,6 +379,7 @@ export class ChargingRuntime {
   }
   async close() {
     this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer);
+    await this.historyService?.close();
     await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }
 }

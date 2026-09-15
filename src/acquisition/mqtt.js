@@ -9,6 +9,7 @@ import { createTeslaMateCapture } from './teslamate.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createGarageAdapter } from '../garage/adapter.js';
+import { teslamateConfiguration } from '../app/config.js';
 import { createChargingTeslaCapture } from '../charging/teslamate.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
@@ -46,10 +47,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       reportIntervalMs: signal.startsWith('garage_') ? 30_000 : config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
       reportGraceMs: signal.startsWith('garage_') ? 90_000 : config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
     });
+  // The charger model owns vehicle attribution. Its configured Charger 2 feed
+  // must also feed Charger 2's energy recorder, without an identification pause.
+  const teslaSettings = teslamateConfiguration(config.connections.teslamate);
+  if (engine.charging && teslaSettings.chargerAssignment === 'auto') {
+    teslaSettings.chargerAssignment = 'bmw'; teslaSettings.chargerIdentification = false;
+  }
   const teslamate = config.connections.teslamate?.enabled === true
-    ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
-  const chargingTesla = teslamate && engine.charging ? createChargingTeslaCapture({ settings: config.connections.teslamate,
-    clock: () => engine.clock() }) : null;
+    ? createTeslaMateCapture({ engine, store, settings: teslaSettings }) : null;
+  const chargingTesla = teslamate && engine.charging ? createChargingTeslaCapture({ settings: teslaSettings,
+    clock: () => engine.clock(), initialState: store.getState('charging:teslamate'),
+    saveState: state => store.setState('charging:teslamate', state) }) : null;
   if (chargingTesla) engine.charging.teslaCapture = chargingTesla;
   const hasEquipmentHeating = (equipmentSettings?.devices ?? config.connections.shelly?.devices ?? [])
     .some(device => device.enabled !== false && device.controlsHeat);
@@ -80,7 +88,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   // Every connect explicitly subscribes below. MQTT.js automatic resubscription
   // can otherwise report cached success before the broker acknowledges a route.
   const client = connect(address, { username, password, reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false, resubscribe: false });
-  let connectionGeneration = 0, stopping = false, equipmentSubscriptionBuffer = null;
+  let connectionGeneration = 0, stopping = false, equipmentSubscriptionBuffer = null, teslaSubscriptionBuffer = null, teslaBufferSequence = 0;
   let connected = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
@@ -272,10 +280,20 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         }
       });
     }
-    if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, error => {
+    if (teslamate) { chargingTesla?.setConnected(false, 'awaiting-subscription'); teslaSubscriptionBuffer = new Map(); }
+    if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, (error, granted) => {
       if (!currentSubscription()) return;
-      if (error) { teslamate.setConnected(false); chargingTesla?.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
-      else { teslamate.setConnected(true); chargingTesla?.setConnected(true); }
+      const buffered = teslaSubscriptionBuffer; teslaSubscriptionBuffer = null;
+      if (subscriptionRejected(teslamate.topic, error, granted)) { teslamate.setConnected(false); chargingTesla?.setConnected(false, 'subscription-failed'); report('mqtt-teslamate-subscribe-error'); }
+      else {
+        teslamate.setConnected(true); chargingTesla?.setConnected(true);
+        for (const message of [...(buffered?.values() ?? [])].sort((a, b) => a.order - b.order)) {
+          try {
+            chargingTesla?.receive(message.topic, message.payload, message.packet, message.at);
+            teslamate.receive(message.topic, message.payload, message.packet, message.at);
+          } catch { report('mqtt-observation-rejected'); }
+        }
+      }
     });
     for (const topic of garage?.topics ?? []) client.subscribe(topic, { qos: 1 }, (error, granted) => {
       if (!currentSubscription()) return;
@@ -286,7 +304,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('error', () => report('mqtt-error'));
   const disconnected = () => {
     if (stopped) return;
-    connected = false; connectionGeneration++; equipmentSubscriptionBuffer = null; h66?.setConnected(false);
+    connected = false; connectionGeneration++; equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null; h66?.setConnected(false);
     teslamate?.setConnected(false);
     chargingTesla?.setConnected(false);
     engine.charging?.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
@@ -305,6 +323,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('message', (topic, payload, packet = {}) => {
     if (!connected || stopped) return;
     try {
+      if (teslaSubscriptionBuffer && topic.startsWith(teslamate.topic.slice(0, -1))) {
+        if (Buffer.byteLength(payload) <= 4096 && (teslaSubscriptionBuffer.has(topic) || teslaSubscriptionBuffer.size < 64))
+          teslaSubscriptionBuffer.set(topic, { topic, payload: Buffer.from(payload), packet: { retain: packet.retain, dup: packet.dup }, at: engine.clock(), order: ++teslaBufferSequence });
+        return;
+      }
       if (engine.charging?.receiveSoc(topic, payload, packet, engine.clock())) return;
       chargingTesla?.receive(topic, payload, packet, engine.clock());
       if (garage?.receive(topic, payload, packet, engine.clock())) return;
@@ -376,7 +399,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
       if (stopped || stopping) return;
-      stopping = true; connectionGeneration++; equipmentSubscriptionBuffer = null;
+      stopping = true; connectionGeneration++; equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null;
       for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT closed'));
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);

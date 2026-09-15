@@ -307,7 +307,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     if (!remaining.length) continue;
     const parts = group.id === 'temperatures' ? ['home', 'garage'].map(area => ({ area,
       topics: remaining.filter(topic => (topic.signal?.startsWith('garage_') ? 'garage' : 'home') === area) }))
-      : [{ area: group.id === 'garage-adapter' ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
+      : [{ area: ['garage-adapter', 'teslamate'].includes(group.id) ? 'garage' : ['h66', 'dhwr', 'heating'].includes(group.id) ? 'home' : 'other', topics: remaining }];
     for (const part of parts) {
       if (!part.topics.length) continue;
       const row = { id: `connection:${group.id}:${part.area}`, label: group.label ?? pretty(group.id), area: part.area,
@@ -323,6 +323,30 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
                 : { label: 'Awaiting pump reports', state: 'pending' },
           connectionDetail: 'Heat-pump readings, status requests and native parameter commands.',
           packetDetail: `Broker connection: ${native.brokerConnected === true ? 'connected' : native.brokerConnected === false ? 'disconnected' : 'unknown'}.` });
+      } else if (group.id === 'teslamate') {
+        const provider = status.providers?.teslamate ?? {};
+        const reception = provider.reception ?? status.charging?.chargers?.find(charger => charger.id === 'charger2')?.mqtt ?? {};
+        const chargerLabel = status.charging?.chargers?.find(charger => charger.id === reception.chargerId)?.label
+          ?? (reception.chargerId === 'charger1' ? 'Charger 1' : 'Charger 2');
+        const connected = reception.brokerConnected ?? reception.connected ?? provider.connected;
+        const subscription = reception.subscriptionStatus;
+        const subscribed = reception.subscribed === true || subscription === 'subscribed';
+        const liveAt = reception.lastLiveAt;
+        const retainedAt = reception.lastRetainedAt;
+        const lastMessageAt = reception.lastMessageAt ?? provider.lastMessageAt;
+        const failed = ['failed', 'denied', 'error'].includes(subscription);
+        Object.assign(row, { label: 'TeslaMate', source: 'TeslaMate', mqttStatus: reception,
+          lastReportAt: liveAt,
+          connectionState: provider.enabled === false ? { label: 'Not enabled', state: 'pending' }
+            : connected === false ? { label: 'Disconnected', state: 'attention' }
+              : failed ? { label: 'Subscription failed', state: 'attention' }
+                : connected === true && (subscribed || Number.isFinite(lastMessageAt)) ? { label: 'Connected', state: 'available' }
+                  : { label: 'Awaiting subscription', state: 'pending' },
+          recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}` : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
+          connectionDetail: `Configured vehicle feed for ${chargerLabel}. A sleeping or idle vehicle can remain quiet while MQTT stays connected.`,
+          packetDetail: Number.isFinite(liveAt) ? `Latest live report: ${clock.format(liveAt)}.`
+            : Number.isFinite(retainedAt) ? `Saved broker reading received ${clock.format(retainedAt)}; no live vehicle report received yet.`
+              : 'Connection status follows the MQTT subscription; vehicle charge readings keep their own timestamps.' });
       } else if (group.id === 'dhwr' || group.id === 'heating') {
         row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };
         row.recent = 'Delivery is confirmed separately';

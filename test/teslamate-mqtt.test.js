@@ -31,6 +31,11 @@ test('Tesla-only MQTT opt-in starts without H66 and stores total energy through 
     assert.equal(app.engine.status().providers.teslamate.reason, 'awaiting-readings');
     const send = (name, value) => client.emit('message', `teslamate/invented/cars/2/${name}`, Buffer.from(String(value)));
     send('charging_state', 'Disconnected'); send('charge_energy_added', 0); send('geofence', 'Home');
+    send('battery_level', 80); send('charge_limit_soc', 100); send('plugged_in', true);
+    assert.equal(app.engine.status().charging.chargers[1].values.soc.value, 80);
+    assert.equal(app.engine.status().charging.chargers[1].values.minimumSoc.value, 100);
+    assert.equal(app.engine.status().providers.teslamate.reception.lastLiveAt, now);
+    assert.equal(app.engine.status().providers.teslamate.reception.subscribed, true);
     send('healthy', true); send('since', new Date(now).toISOString()); send('charging_state', 'Charging'); send('charger_power', 11);
     app.engine.teslamate.tick(now);
     now += 20_000; app.engine.teslamate.tick(now);
@@ -107,4 +112,32 @@ for (const sinkFails of [false, true]) test(`TeslaMate timer survives a SQLite w
   client.emit('error', new Error('Invented private broker error'));
   const event = store.db.prepare("SELECT payload FROM events WHERE type='mqtt-error'").get();
   assert.deepEqual(JSON.parse(event.payload), { source: 'teslamate' }, 'Normal logging recovers without recording raw broker errors');
+});
+
+test('Tesla subscription acknowledgement preserves early retained fields and denied subscriptions stay visibly failed', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-tesla-subscribe-'));
+  const store = new Store(join(directory, 'test.sqlite')), recorder = new Recorder(store);
+  const client = new EventEmitter(); let acknowledge, now = Date.parse('2026-09-15T18:00:00Z');
+  client.subscribe = (_topic, _options, done) => { acknowledge = done; };
+  client.end = (_force, _options, done) => done();
+  const engine = { clock: () => now, recorder, charging: { mqttRoutes: () => [], setMqttStatus() {}, receiveSoc: () => false } };
+  const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://test.invalid' }, teslamate: { enabled: true } } };
+  const mqtt = await startMqtt({ engine, store, config, connect: () => client });
+  t.after(async () => { await mqtt.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  client.emit('connect');
+  assert.equal(engine.charging.teslaCapture.reception().brokerConnected, true);
+  assert.equal(engine.charging.teslaCapture.reception().subscribed, false);
+  client.emit('message', 'teslamate/cars/1/battery_level', Buffer.from('80'), { retain: true });
+  now += 1000;
+  acknowledge(null, [{ topic: 'teslamate/cars/1/#', qos: 0 }]);
+  assert.equal(engine.charging.teslaCapture.snapshot().batteryLevel, 80);
+  assert.equal(engine.charging.teslaCapture.reception().lastRetainedAt, now - 1000);
+  assert.equal(engine.charging.teslaCapture.reception().lastLiveAt, null);
+  client.emit('message', 'teslamate/cars/1/healthy', Buffer.from('true'), {});
+  assert.equal(engine.charging.teslaCapture.reception().lastLiveAt, now, 'Any vehicle subscription report proves reception');
+  client.emit('offline'); client.emit('connect');
+  acknowledge(null, [{ topic: 'teslamate/cars/1/#', qos: 128 }]);
+  assert.equal(engine.charging.teslaCapture.reception().subscriptionStatus, 'failed');
+  assert.equal(engine.charging.teslaCapture.reception().brokerConnected, true);
+  assert.equal(engine.charging.teslaCapture.reception().subscribed, false);
 });

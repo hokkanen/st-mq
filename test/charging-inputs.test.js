@@ -26,7 +26,7 @@ test('advance telemetry uses requested current at zero measured power and retain
   snapshot = capture.snapshot();
   assert.equal(snapshot.connected, false);
   assert.equal(snapshot.atHome, undefined);
-  assert.equal(snapshot.batteryLevel, undefined);
+  assert.equal(snapshot.batteryLevel, 40, 'Broker loss preserves the last valid charge and its original clock; connection status is separate');
   capture.setConnected(true);
   send('battery_level', 42, 3000, { dup: true });
   assert.equal(capture.snapshot().batteryLevel, 42, 'DUP is not proof this subscriber previously consumed a reading');
@@ -51,12 +51,12 @@ test('household forecast intersects clocks and subtracts both three-phase charge
   const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 3), energy(`ev1_energy_l${p}`, 1)]);
   rows.push(energy('ev2_energy', 2, start + HOUR / 2, start + HOUR));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
-  assert.equal(profile[12].coverageMs, HOUR / 2);
-  assert.ok(profile[12].phaseCurrentA.every(current => Math.abs(current - 2000 / 3 / 230) < 1e-9),
-    '9 kW property minus 3 kW Charger 1 minus 4 kW Charger 2 leaves 2 kW household across three phases');
+  assert.equal(profile[12].coverageMs, HOUR);
+  assert.ok(profile[12].phaseCurrentA.every(current => Math.abs(current - 4000 / 3 / 230) < 1e-9),
+    'Known Charger 2 energy is subtracted only over its overlap; unknown earlier consumption remains in the reference');
   assert.equal(profile[13], null);
-  assert.equal(householdProfile(rows.slice(0, -1), { timezone: 'UTC', voltageV: 230 })[12], null,
-    'Missing Charger 2 coverage cannot silently mean zero');
+  assert.equal(householdProfile(rows.slice(0, -1), { timezone: 'UTC', voltageV: 230 })[12].unknownCharger2, true,
+    'Missing Charger 2 records retain useful household history with attribution uncertainty');
 });
 
 test('household forecast preserves phase imbalance and requires automatic voltage', () => {
@@ -72,7 +72,7 @@ test('overlapping source intervals and negative residuals cannot create headroom
   rows.push(energy('ev2_energy', 2));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
   rows.at(-1).value = 0;
-  rows.push(energy('property_energy_l1', 1));
+  rows.push(energy('property_energy_l1', 2));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
 });
 

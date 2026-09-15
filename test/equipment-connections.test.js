@@ -89,3 +89,24 @@ test('garage adapter requires the connection and all device health evidence befo
   for (const key of ['deviceOnline', 'driverProgressing', 'pumpCommunicating'])
     assert.notEqual(summary({ ...healthy, health: { ...healthy.health, [key]: false } }).state, 'available');
 });
+
+test('TeslaMate connection follows its vehicle subscription rather than idle charging or recorder health', () => {
+  const connection = reception => equipmentConnections({ now: NOW,
+    providers: { teslamate: { enabled: true, status: 'idle', healthy: false, recording: false, reception } },
+    equipment: { topicGroups: [{ id: 'teslamate', topics: [topic('Vehicle subscription', 'teslamate/cars/7/#')] }] } })[0];
+  const live = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW - 86_400_000, lastMessageAt: NOW - 86_400_000 });
+  assert.equal(live.area, 'garage');
+  assert.equal(equipmentConnectionSummary(live).label, 'Connected');
+  assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
+  assert.match(live.connectionDetail, /Charger 2.*sleeping or idle/);
+  assert.doesNotMatch(JSON.stringify(live), /No live report yet/);
+  const retained = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastRetainedAt: NOW, lastMessageAt: NOW });
+  assert.equal(equipmentConnectionSummary(retained).label, 'Connected');
+  assert.equal(equipmentConnectionSummary(retained).recent, 'Saved broker value only');
+  assert.match(retained.packetDetail, /no live vehicle report received yet/);
+  const waiting = connection({ brokerConnected: true, subscriptionStatus: 'subscribed' });
+  assert.equal(equipmentConnectionSummary(waiting).recent, 'Waiting for the first vehicle report');
+  assert.equal(equipmentConnectionSummary(connection({ brokerConnected: false, subscriptionStatus: 'disconnected', lastLiveAt: NOW })).label, 'Disconnected');
+  assert.equal(equipmentConnectionSummary(connection({ brokerConnected: true, subscriptionStatus: 'denied' })).label, 'Subscription failed');
+  assert.match(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).connectionDetail, /Configured vehicle feed for Charger 1/);
+});
