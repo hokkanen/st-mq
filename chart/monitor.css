@@ -327,11 +327,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .timing-period { color: var(--muted); font-size: 12px; }
 .timing-period:empty { display: none; }
 .timing-comparison { display: flex; align-items: center; min-height: 46px; margin: 16px 0; }
-.timing-comparison-switch { gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--input); }
-.timing-comparison-option { flex: 1 1 0; min-width: 0; min-height: 36px; margin: 0; padding: 7px 4px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); font-size: 12px; line-height: 1.3; }
-.timing-comparison-option:hover { color: var(--text); background: var(--surface-soft); }
-.timing-comparison-option[aria-pressed="true"] { color: var(--accent-text); background: var(--accent); }
-.timing-comparison-option:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .timing-comparison-fixed { color: var(--muted); font-size: 12px; padding: 8px 12px; border-left: 2px solid var(--chart-ev); }
 .firewood-card .timing-comparison-fixed { border-left-color: var(--chart-firewood); }
 .timing-card .timing-comparison-label { color: var(--muted); font-size: 12px; margin: 0; }
@@ -392,17 +387,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .timing-amount { font-size: 28px; }
   .timing-explanations { margin-top: 24px; padding-top: 24px; }
 }
-.controller-fold { margin-top: 12px; }
-.controller-fold > summary { padding: 14px 0; }
-.learning-model-details > .learning-section { margin: 8px 0 0; border: 1px solid var(--border); border-radius: 8px; }
-.learning-section > summary { position: relative; display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; padding: 14px 36px 14px 14px; list-style: none; }
+/* Shared rounded disclosures for learning, connections and temporary controls. */
+.section-fold { min-width: 0; margin: 8px 0 0; border: 1px solid var(--border); border-radius: 8px; }
+.section-fold > summary { position: relative; display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; min-height: 48px; padding: 14px 38px 14px 14px; list-style: none; font-size: 13px; font-weight: 550; border-radius: 7px; }
+.section-fold > summary > small { font-size: 11px; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
 .learning-section-title { font-size: 13px; font-weight: 550; }
 .learning-section-kind { font-size: 11px; color: var(--muted); }
-.learning-section > summary::after, .learning-support > summary::after { content: '+'; margin-left: auto; color: var(--muted); font-size: 16px; line-height: 1; }
-.learning-section > summary::after { position: absolute; right: 14px; top: 16px; }
-.learning-section[open] > summary { border-bottom: 1px solid var(--border); background: var(--surface-soft); border-radius: 7px 7px 0 0; }
-.learning-section[open] > summary::after, .learning-support[open] > summary::after { content: '−'; }
-.learning-section > summary::-webkit-details-marker, .learning-support > summary::-webkit-details-marker, .learning-entry > summary::-webkit-details-marker { display: none; }
+.section-fold > summary::after, .learning-support > summary::after { content: '+'; margin-left: auto; color: var(--muted); font-size: 16px; font-weight: 400; line-height: 1; }
+.section-fold > summary::after { position: absolute; right: 14px; top: 16px; }
+.section-fold[open] > summary { border-bottom: 1px solid var(--border); background: var(--surface-soft); border-radius: 7px 7px 0 0; }
+.section-fold[open] > summary::after, .learning-support[open] > summary::after { content: '−'; }
+.section-fold > summary::-webkit-details-marker, .learning-support > summary::-webkit-details-marker, .learning-entry > summary::-webkit-details-marker { display: none; }
+.section-fold > summary:hover { background: var(--surface-soft); }
+.section-fold > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.section-fold-body { min-width: 0; padding: 6px 14px 14px; overflow-wrap: anywhere; }
 .learning-section-body { padding: 0 14px 8px; container-type: inline-size; }
 .learning-section-body .learning-intro { margin: 16px 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .learning-row-group { margin: 22px 0 4px; color: var(--muted); font-size: 10px; font-weight: 550; letter-spacing: .6px; text-transform: uppercase; }
@@ -650,13 +648,7 @@ details details { margin-inline-start: 24px; }
   .fireplace-entry-info { flex-basis: 100%; }
   .fireplace-entry .fireplace-remove { min-height: 40px; }
 }
-.home-actions { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 24px; border-top: 1px solid var(--border); }
-.home-actions > details { margin-top: 0; border-top: 0; }
-.home-actions > details > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; }
-.home-actions > details > summary > small { grid-column: 1; }
-.home-actions > details > summary::after { grid-column: 2; grid-row: 1 / 3; }
-.home-actions:has(> details[open]) { grid-template-columns: minmax(0, 1fr); }
-.home-actions:has(> details[open]) > details + details { border-top: 1px solid var(--border); margin-top: 16px; }
+.home-actions { min-width: 0; }
 .equipment-fold > summary { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 12px 0; font-size: 12px; list-style: none; }
 .equipment-fold > summary > small { margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; }
 .equipment-fold > summary:has(> small)::after { margin-left: 0; }
@@ -919,13 +911,6 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; color: var(--muted); }
 #dhwr-device { margin-top: 12px; }
 #dhwr-controls > :first-child { margin-top: 0; }
-/* One consistent level of disclosures prevents source details crowding rates. */
-#connections-details > .controller-fold { margin: 0; padding: 0; }
-#connections-details > .controller-fold > summary { display: flex; gap: 12px; align-items: center; list-style: none; min-height: 48px; font-size: 12px; padding: 14px 0; }
-#connections-details > .controller-fold > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 18px; }
-#connections-details > .controller-fold[open] > summary::after { transform: rotate(90deg); }
-#connections-details > .controller-fold > summary::-webkit-details-marker { display: none; }
-#connections-details > .controller-fold[open] { padding-bottom: 18px; }
 .equipment-connection { gap: 12px 18px; padding: 16px 0; }
 .equipment-connection-description { min-width: 0; }
 .equipment-connection-actions button { margin: 0; min-height: 36px; }
@@ -1036,9 +1021,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 #connections-details > summary::after { grid-column: 2; grid-row: 1 / 3; }
 .equipment-packet-status { font-size: 10px; line-height: 1.6; }
 
-/* Garage stays inside existing disclosures; Home remains the default saving scope. */
-.heating-scope-switch { display: flex; gap: 3px; margin: 1px 0 10px; }
-.heating-scope-switch .timing-comparison-option { font-size: 10px; padding: 3px 8px; margin: 0; border-radius: 3px; }
+/* Secondary garage readings keep a lighter disclosure level. */
 .garage-secondary { margin-top: 16px; font-size: 12px; }
 .garage-secondary > summary { display: flex; gap: 12px; align-items: baseline; }
 .garage-secondary > summary small { color: var(--muted); font-size: 10px; font-weight: 400; }
@@ -1060,11 +1043,11 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-summary .equipment-notes p:last-child { padding-right: 30px; }
 .zone-expand::before { content: '+'; font-size: 20px; font-weight: 400; line-height: 1; }
 .heating-zone[open] > summary .zone-expand::before { content: '−'; }
-.zone-content { margin-top: 0; padding: 0 0 18px; border: 0; }
-.zone-content .zone-section { min-width: 0; padding-top: 20px; }
-.zone-content .zone-configuration { padding-top: 18px; }
-.zone-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 10px; }
-.zone-section-heading > h4 { margin: 0; font-size: 14px; font-weight: 550; }
+/* Major sections have a continuous outline; each device has its own inset card. */
+.zone-content { display: grid; gap: 14px; margin-top: 20px; padding: 0 0 4px; border: 0; }
+.zone-section { --section-padding: 14px; min-width: 0; padding: var(--section-padding); border: 1px solid var(--border); border-radius: 8px; container-type: inline-size; }
+.zone-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 14px; margin: calc(-1 * var(--section-padding)) calc(-1 * var(--section-padding)) var(--section-padding); padding: 14px var(--section-padding); border-bottom: 1px solid var(--border); border-radius: 7px 7px 0 0; background: var(--surface-soft); }
+.zone-section-heading > h4 { min-width: 0; margin: 0; font-size: 13px; font-weight: 600; }
 .zone-section-heading > .equipment-device-status { font-size: 10px; }
 .zone-content .zone-control-help { margin: 8px 0 12px; line-height: 1.65; }
 .zone-content .heating-mode-buttons { margin: 12px 0 0; }
@@ -1073,35 +1056,35 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .heating-mode-buttons button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .heating-mode-buttons button:not(:disabled):hover { background: var(--surface-soft); border-color: var(--accent); }
 .zone-content .zone-configuration > .equipment-fold { margin: 14px 0 0; }
-.zone-content .zone-equipment { margin-top: 4px; }
-.zone-content .equipment-device { padding: 14px 0; }
-.zone-content .equipment-device-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
-.zone-content .equipment-device-list > .equipment-device { border-top: 0; }
+.zone-content .equipment-device { min-width: 0; padding: 14px; margin: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.zone-content .equipment-device-heading { gap: 4px 12px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.zone-content .equipment-device-heading > * { min-width: 0; overflow-wrap: anywhere; }
+.zone-content .equipment-device-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .zone-content .equipment-device-list > .equipment-device:has(.equipment-controls) { grid-column: 1 / -1; }
-.zone-equipment > .zone-section-heading + .equipment-device { border-top: 0; }
+.zone-equipment > .equipment-device, .zone-equipment > .equipment-device-list:not(:empty), .zone-equipment > .charging-device-list:not(:empty) { margin-bottom: 12px; }
 .zone-content .equipment-device .equipment-readings { margin-top: 8px; }
 .zone-content .equipment-fold { margin-top: 8px; }
 .zone-content .equipment-fold + .equipment-fold { margin-top: 0; }
 .zone-content .equipment-readings { font-size: 12px; }
-.zone-content #dhwr-device { margin-top: 0; }
 .zone-content .native-heat-pump > .equipment-fold { margin-inline-start: 0; }
 .zone-content .native-heat-pump > .equipment-fold > summary { color: var(--muted); }
 .native-heat-pump .equipment-fold > .equipment-inline-controls { margin-top: 14px; }
-.zone-content .home-actions { margin-top: 8px; }
-.zone-content .home-actions > details[open] > summary { padding-bottom: 4px; }
-.zone-content .home-actions > details > summary::after { content: '›'; }
-.zone-content .home-actions > details[open] > summary::after { transform: rotate(90deg); }
 .zone-content .zone-availability-fold { margin: 0; }
-.zone-content .zone-availability-fold > summary { display: list-item; list-style: disclosure-closed inside; padding: 14px 0 4px; font-size: 14px; }
-#home-heat-pump-details > .zone-content { padding-bottom: 4px; }
-.zone-content .zone-availability-fold[open] > summary { list-style-type: disclosure-open; }
-.zone-content .zone-availability-fold > summary::-webkit-details-marker { display: revert; }
-.zone-content .home-actions > .zone-availability-fold > summary::after { content: none; }
-.zone-content .zone-availability-fold > summary > small { display: block; margin: 5px 0 0 20px; font-size: 11px; }
-.zone-content .temporary-form { padding-top: 10px; }
+.zone-availability-fold > summary { display: grid; gap: 4px; }
+.zone-content .temporary-form { padding-top: 10px; container-type: inline-size; }
 .zone-content .temporary-form .form-timezone { margin-bottom: 12px; font-size: 10px; }
 .zone-content .temporary-field { margin: 14px 0; }
 .zone-content .temporary-status:empty { display: none; }
+.zone-connections { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+@container (max-width: 360px) {
+  .zone-section .equipment-device-list { grid-template-columns: minmax(0, 1fr); }
+  .zone-section .pump-native-overview { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .zone-section .pump-native-overview > .equipment-value { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px; }
+  .zone-section .pump-native-overview > .equipment-value > strong { text-align: right; overflow-wrap: anywhere; }
+  .zone-section .heating-mode-buttons, .zone-section .h66-test-form { grid-template-columns: minmax(0, 1fr); }
+  .temporary-form .temporary-input-row { grid-template-columns: minmax(0, 1fr); }
+  .temporary-form .temporary-input-row > button { justify-self: start; min-width: 112px; }
+}
 .heating-hold-warning { margin: 12px 0; padding: 11px 13px; border-left: 3px solid var(--stale); border-radius: 4px; color: var(--text); background: color-mix(in srgb, var(--stale) 10%, var(--surface)); font-size: 12px; line-height: 1.6; }
 .heating-hold-warning-strong { font-weight: 500; }
 .heating-hold-warning strong { font-weight: 650; }
@@ -1113,7 +1096,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .heating-warning-dialog strong { color: var(--stale); font-weight: 650; }
 .heating-warning-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .heating-warning-actions button { margin: 0; min-width: 100px; }
-.zone-connections { padding-top: 6px; font-size: 11px; }
+.zone-connections { font-size: 11px; }
 .zone-connections a { color: var(--muted); text-decoration: none; }
 .zone-connections a:hover { color: var(--accent); text-decoration: underline; }
 .garage-overview, .garage-native-overview, .pump-native-overview { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
@@ -1144,8 +1127,8 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-budget-location > strong { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .garage-budget-location > small { color: var(--muted); font-size: 10px; line-height: 1.6; }
 .garage-budget-location > [data-state="attention"] { color: var(--stale); }
-.charging-device-list { display: contents; }
-.charging-device-list > .charging-device:first-child { border-top: 0; }
+.charging-device-list { display: grid; gap: 12px; }
+.charging-device-list:empty { display: none; }
 .charging-overview { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
 .charging-overview[hidden] { display: none; }
 .charging-charge-pair { display: flex; flex-wrap: wrap; gap: 5px; font-variant-numeric: tabular-nums; }
@@ -1193,7 +1176,8 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 }
 @media (max-width: 480px) {
   .heating-zone > .zone-summary { padding: 12px 0 0; }
-  .zone-content { padding: 0 0 16px; }
+  .zone-section { --section-padding: 12px; }
+  .zone-content .equipment-device { padding: 12px; }
   .garage-overview, .garage-native-overview, .pump-native-overview { gap: 10px; }
   .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
 }

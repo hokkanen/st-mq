@@ -1,6 +1,6 @@
 import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
-import { createChargingPanel, chargingContext } from './charging.js';
+import { createChargingPanel } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
@@ -497,8 +497,6 @@ function render(s) {
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
       : s.liveWrites ? 'Learning from the house and controlling heating through preheating, reduction and recovery.'
         : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
-  const upcomingCharging = chargingContext(s.charging, s.now);
-  if (upcomingCharging) $('context').textContent += ` ${upcomingCharging}`;
   for (const key of ['indoor', 'outdoor']) {
     const obs = s.observations[key] ?? {};
     const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });

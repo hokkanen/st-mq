@@ -114,10 +114,23 @@ function dom(storage = new Map()) {
     addEventListener(type, listener) { this.listeners.set(type, listener); }
     removeEventListener(type) { this.listeners.delete(type); }
     click() { this.listeners.get('click')?.({ currentTarget: this }); }
+    pressKey(key) {
+      let prevented = false;
+      this.listeners.get('keydown')?.({ currentTarget: this, key, preventDefault() { prevented = true; } });
+      return prevented;
+    }
     getBoundingClientRect() { return { height: 200 }; }
     focus() { document.activeElement = this; }
   }
   return { root: new Element('div'), document, disconnected: () => disconnected };
+}
+
+function findByLabel(node, label) {
+  if (node.attributes['aria-label'] === label) return node;
+  for (const child of node.children) {
+    const found = findByLabel(child, label);
+    if (found) return found;
+  }
 }
 
 test('three cost cards retain their folds and focus across updates and keep the saved timing baseline scoped', () => {
@@ -150,7 +163,7 @@ test('heating choice changes its amount and details while preserving focus, fold
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children;
   const overview = heating.children[0].children[0];
-  const comparison = overview.children.find(node => node.attributes['aria-label'] === 'Heating savings comparison');
+  const comparison = findByLabel(overview, 'Heating savings comparison');
   const [modelButton, timingButton] = comparison.children;
   const fold = heating.children[1]; fold.open = true;
   assert.equal(modelButton.attributes['aria-pressed'], 'true');
@@ -190,7 +203,7 @@ test('heating defaults to the model estimate with missing, blocked or invalid br
     panel.render(payload);
     const heating = root.children[1].children[0];
     assert.match(heating.textContent, /Model-estimated saving.*Estimate unavailable/);
-    const comparison = heating.children[0].children[0].children.find(node => node.attributes['aria-label'] === 'Heating savings comparison');
+    const comparison = findByLabel(heating, 'Heating savings comparison');
     comparison.children[1].click();
     assert.match(heating.textContent, /Timing cost saving/);
     comparison.children[0].click();
@@ -208,8 +221,8 @@ test('Home/Garage/Total changes only heating scope and keeps both comparison con
   }, firewoodBenefit: estimate, timingBenefit: { charger: { value: 2 } } };
   panel.render(data);
   const [heating, charger, fireplace] = root.children[1].children, overview = heating.children[0].children[0];
-  const scopes = overview.children.find(node => node.attributes['aria-label'] === 'Heating savings scope');
-  const comparisons = overview.children.find(node => node.attributes['aria-label'] === 'Heating savings comparison');
+  const scopes = findByLabel(overview, 'Heating savings scope');
+  const comparisons = findByLabel(overview, 'Heating savings comparison');
   const [home, garage, total] = scopes.children;
   assert.equal(home.attributes['aria-pressed'], 'true'); assert.match(heating.textContent, /€3.00/);
   const fold = heating.children[1]; fold.open = true;
@@ -218,6 +231,20 @@ test('Home/Garage/Total changes only heating scope and keeps both comparison con
   comparisons.children[1].click(); assert.match(heating.textContent, /Timing cost saving.*-€0.50/);
   total.click(); assert.match(heating.textContent, /Timing cost saving.*€0.50/);
   home.click(); assert.match(heating.textContent, /Timing cost saving.*€1.00/);
+  assert.equal(home.pressKey('ArrowLeft'), true);
+  assert.equal(document.activeElement, total); assert.match(heating.textContent, /Timing cost saving.*€0.50/);
+  total.pressKey('Home'); assert.equal(document.activeElement, home);
+  home.pressKey('End'); assert.equal(document.activeElement, total);
+  total.pressKey('ArrowRight'); assert.equal(document.activeElement, home);
+  home.pressKey('ArrowDown'); assert.equal(document.activeElement, garage);
+  assert.match(heating.textContent, /Timing cost saving.*-€0.50/);
+  garage.pressKey('ArrowUp'); assert.equal(document.activeElement, home);
+  comparisons.children[1].pressKey('ArrowRight');
+  assert.equal(document.activeElement, comparisons.children[0]);
+  assert.match(heating.textContent, /Model-estimated saving.*€3.00/);
+  assert.equal(comparisons.children[0].pressKey('Tab'), false, 'Ordinary Tab navigation is left to the browser');
+  assert.equal(fold.open, true);
   assert.match(charger.textContent, /€2.00/); assert.match(fireplace.textContent, /€1.25/);
   panel.close();
+  assert.equal(home.pressKey('ArrowRight'), false, 'Closing removes keyboard handlers as well as click handlers');
 });

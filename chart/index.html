@@ -7,6 +7,7 @@
   <title>Home Energy</title>
   <script vite-ignore src="./theme.js"></script>
   <link rel="stylesheet" href="./monitor.css">
+  <link rel="stylesheet" href="./timing-benefit.css">
 </head>
 <body>
   <header>
@@ -136,6 +137,28 @@
                   <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                 </div>
               </section>
+              <div class="home-actions">
+                <details id="temporary-details" class="section-fold temporary-panel zone-availability-fold">
+                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
+                  <form id="temporary-form" class="temporary-form section-fold-body">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="away-until">Away until</label>
+                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                      <p id="away-status" class="temporary-status">At home.</p>
+                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+                    </div>
+                    <div class="temporary-field">
+                      <label for="pause-until">Pause until</label>
+                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
+                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+                  </form>
+                </details>
+              </div>
               <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
                 <div class="zone-section-heading"><h4 id="home-equipment-title">Equipment &amp; temperatures</h4><span id="home-equipment-status" class="equipment-device-status"></span></div>
                 <section id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
@@ -190,28 +213,6 @@
                 <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
                 <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
               </section>
-              <div class="home-actions">
-                <details id="temporary-details" class="dashboard-disclosure temporary-panel zone-availability-fold">
-                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-                  <form id="temporary-form" class="temporary-form">
-                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                    <div class="temporary-field">
-                      <label for="away-until">Away until</label>
-                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-                      <p id="away-status" class="temporary-status">At home.</p>
-                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
-                    </div>
-                    <div class="temporary-field">
-                      <label for="pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
-                    </div>
-                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-                  </form>
-                </details>
-              </div>
             </div>
           </details>
           <details id="garage-equipment-details" class="dashboard-disclosure heating-zone garage-zone" aria-labelledby="garage-title">
@@ -264,6 +265,21 @@
                   </section>
                 </details>
               </section>
+              <div class="home-actions">
+                <details id="garage-pause-details" class="section-fold temporary-panel zone-availability-fold">
+                  <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
+                  <form id="garage-pause-form" class="temporary-form section-fold-body">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="garage-pause-until">Pause until</label>
+                      <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
+                      <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
+                  </form>
+                </details>
+              </div>
               <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
                 <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
                 <p id="charging-status" class="charging-event" role="status" hidden></p>
@@ -292,21 +308,6 @@
                 <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
                 <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
               </section>
-              <div class="home-actions">
-                <details id="garage-pause-details" class="dashboard-disclosure temporary-panel zone-availability-fold">
-                  <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
-                  <form id="garage-pause-form" class="temporary-form">
-                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                    <div class="temporary-field">
-                      <label for="garage-pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                      <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
-                      <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
-                    </div>
-                    <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
-                  </form>
-                </details>
-              </div>
             </div>
           </details>
           </div>
@@ -322,39 +323,44 @@
           </div>
           <details id="connections-details" class="dashboard-disclosure">
             <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
-            <details id="mqtt-devices-details" class="controller-fold">
-              <summary>MQTT</summary>
-              <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
-              <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
-              <div id="equipment-connections"></div>
-              <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
-              <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
-                <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
-                <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
-                <details class="equipment-fold"><summary>Shelly MQTT options</summary>
-                  <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
+            <details id="mqtt-devices-details" class="section-fold controller-fold">
+              <summary><span>MQTT</span><small> · Devices &amp; topics</small></summary>
+              <div class="section-fold-body">
+                <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
+                <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
+                <div id="equipment-connections"></div>
+                <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
+                <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
+                  <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
+                  <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
+                  <details class="equipment-fold"><summary>Shelly MQTT options</summary>
+                    <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
+                  </details>
+                  <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
                 </details>
-                <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
-              </details>
+              </div>
             </details>
-            <details id="electricity-details" class="controller-fold electricity-panel">
-              <summary>Electricity rates</summary>
-              <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
-              <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
-              <p class="muted">Rates are set in the configuration.</p>
+            <details id="electricity-details" class="section-fold controller-fold electricity-panel">
+              <summary><span>Electricity rates</span><small> · Contracts &amp; prices</small></summary>
+              <div class="section-fold-body">
+                <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+                <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+                <p class="muted">Rates are set in the configuration.</p>
+              </div>
             </details>
-            <details id="controls-details" class="controller-fold">
-              <summary>Configuration</summary>
-              <section class="configuration-location" aria-labelledby="settings-location-title">
-                <h3 id="settings-location-title">Configuration file location</h3>
-                <dl id="settings-location"></dl>
-                <p id="settings-location-message" role="status">Loading configuration paths…</p>
-              </section>
-              <ol id="settings-configuration-steps" class="muted"></ol>
-              <details id="settings-format-example" class="configuration-example">
-                <summary>JSON file example</summary>
-                <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
-                <pre><code>{
+            <details id="controls-details" class="section-fold controller-fold">
+              <summary><span>Configuration</span><small> · File &amp; settings</small></summary>
+              <div class="section-fold-body">
+                <section class="configuration-location" aria-labelledby="settings-location-title">
+                  <h3 id="settings-location-title">Configuration file location</h3>
+                  <dl id="settings-location"></dl>
+                  <p id="settings-location-message" role="status">Loading configuration paths…</p>
+                </section>
+                <ol id="settings-configuration-steps" class="muted"></ol>
+                <details id="settings-format-example" class="configuration-example">
+                  <summary>JSON file example</summary>
+                  <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
+                  <pre><code>{
   "easee": {
     "user": "your-easee-username",
     "pw": "your-easee-password"
@@ -363,14 +369,15 @@
     "web_token": "replace-with-your-private-token"
   }
 }</code></pre>
-              </details>
-              <p id="settings-access" class="muted" role="status"></p>
-              <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
-              <div id="settings-reload-scope" class="reload-scope"></div>
-              <p id="settings-reload-help" class="muted"></p>
-              <div class="settings-actions">
-                <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
-                <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
+                </details>
+                <p id="settings-access" class="muted" role="status"></p>
+                <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
+                <div id="settings-reload-scope" class="reload-scope"></div>
+                <p id="settings-reload-help" class="muted"></p>
+                <div class="settings-actions">
+                  <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
+                  <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
+                </div>
               </div>
             </details>
           </details>
@@ -393,7 +400,7 @@
           </div>
           <details id="learning-panel-details" class="dashboard-disclosure learning-groups learning-model-details">
             <summary><span>Home learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
-            <details id="learning-details" class="learning-section">
+            <details id="learning-details" class="learning-section section-fold">
               <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
               <div class="learning-section-body">
                 <p id="learning-detail" class="learning-intro"></p>
@@ -407,7 +414,7 @@
                 </details>
               </div>
             </details>
-            <details id="model-inputs-details" class="learning-section">
+            <details id="model-inputs-details" class="learning-section section-fold">
               <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
               <div class="learning-section-body">
                 <p class="learning-intro">The temperatures, heating inputs and control context saved for learning. Expand an input for its source and meaning.</p>
@@ -459,7 +466,7 @@
                 <details class="learning-support"><summary>How input history is shown</summary><p class="learning-note">Select Model inputs on the chart to explore recorded intervals and manual additions. Temperature inputs preserve the averages originally supplied, including sensor-change settling gaps. Corrected learning can use preserved readings behind those gaps; Model coefficients shows that reconstruction. Fireplace release follows corrected firewood history. Unknown and rejected intervals remain gaps.</p></details>
               </div>
             </details>
-            <details id="model-coefficients-details" class="learning-section">
+            <details id="model-coefficients-details" class="learning-section section-fold">
               <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
               <div class="learning-section-body">
                 <p class="learning-intro">Current thermal responses and fixed building assumptions. Each value shows how it was established; fitting alone does not establish readiness.</p>
@@ -470,7 +477,7 @@
           </details>
           <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
             <summary><span>Garage learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
-            <details id="garage-outcomes-details" class="learning-section">
+            <details id="garage-outcomes-details" class="learning-section section-fold">
               <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
               <div class="learning-section-body">
                 <p id="garage-learning-context" class="learning-intro"></p>
@@ -478,11 +485,11 @@
                 <details id="garage-validation-details" class="learning-support"><summary>Validation &amp; evidence</summary><div id="garage-learning-evidence"></div><p id="garage-learning-limitations" class="learning-note"></p></details>
               </div>
             </details>
-            <details id="garage-inputs-details" class="learning-section">
+            <details id="garage-inputs-details" class="learning-section section-fold">
               <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
               <div class="learning-section-body"><p id="garage-input-context" class="learning-intro"></p><div id="garage-learning-inputs"></div></div>
             </details>
-            <details id="garage-coefficients-details" class="learning-section">
+            <details id="garage-coefficients-details" class="learning-section section-fold">
               <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
               <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
             </details>

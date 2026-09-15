@@ -100,6 +100,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       const r = element.getBoundingClientRect();
       return r.left >= 0 && r.right <= innerWidth && element.scrollWidth <= element.clientWidth + 1;
     })`), true, 'Inline explanations wrap inside their cards and the viewport');
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('.heating-selection .timing-comparison-option')).every(button => {
+      const r = button.getBoundingClientRect();
+      return r.height >= 40 && button.scrollWidth <= button.clientWidth + 1;
+    })`), true, 'Both heating selectors keep readable labels and full touch targets');
   };
   const scrollTo = css => evaluate(`document.querySelector(${JSON.stringify(css)}).scrollIntoView({ block: 'start' }); true`);
   const checkOpen = expected => evaluate(expanded).then(actual => assert.equal(actual, expected,
@@ -229,6 +233,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await switchComparison('timing', () => key(' '));
   assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.comparisons.timing'), true,
     'The comparison selector also supports Space without losing keyboard focus');
+  await switchComparison('model', () => key('\uE012'));
+  assert.equal(await evaluate('document.activeElement === window.timingFoldFixture.comparisons.model'), true,
+    'Arrow keys move focus and selection together within the comparison group');
+  await switchComparison('timing', () => key('\uE010'));
 
   assert.match(await text(card('heatPump')), /unavailable/i);
   assert.match(await text(`${card('charger')} .timing-amount`), /€[\d.]+/);

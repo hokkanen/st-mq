@@ -30,6 +30,19 @@ export function createTimingBenefit(root) {
     modeStatus.textContent = `Heating: ${heatingMode === 'model' ? 'model-estimated saving' : 'timing cost saving'}. ${display.amount ?? 'Unavailable'}${display.outcome ? `, ${display.outcome}` : ''}.`;
   }
 
+  function navigateOptions(event) {
+    const buttons = event.currentTarget.dataset.scope ? scopeButtons : modeButtons;
+    const current = buttons.indexOf(event.currentTarget);
+    let next;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % buttons.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (current + buttons.length - 1) % buttons.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = buttons.length - 1;
+    else return;
+    event.preventDefault();
+    buttons[next].focus(); buttons[next].click();
+  }
+
   function element(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -38,6 +51,11 @@ export function createTimingBenefit(root) {
   }
   function paragraph(parent, text, className = '') {
     if (text) parent.append(element('p', className, text));
+  }
+  function selectionRow(label, options) {
+    const row = element('div', 'heating-selection-row');
+    row.append(element('span', 'heating-selection-label', label), options);
+    return row;
   }
   function explanation(parent, title, paragraphs, className = '') {
     const section = element('section', `timing-explanation ${className}`.trim());
@@ -76,30 +94,37 @@ export function createTimingBenefit(root) {
           button.type = 'button'; button.dataset.mode = mode;
           button.setAttribute('aria-controls', 'heating-saving-result');
           button.addEventListener('click', chooseMode);
+          button.addEventListener('keydown', navigateOptions);
           modeButtons.push(button); comparison.append(button);
         }
       } else comparison.append(element('span', 'timing-comparison-fixed', display.key === 'firewood' ? 'Model estimate' : 'Timing cost'));
       const label = element('p', 'timing-comparison-label');
       const figures = element('div', 'timing-figures');
+      const result = element('div', 'timing-saving-result');
+      result.append(label, figures);
       if (display.key === 'heatPump') {
-        figures.id = 'heating-saving-result';
+        result.id = 'heating-saving-result';
         modeStatus = element('span', 'timing-selection-status');
         modeStatus.setAttribute('role', 'status');
         modeStatus.setAttribute('aria-live', 'polite'); modeStatus.setAttribute('aria-atomic', 'true');
       }
       overview.append(heading);
       if (display.key === 'heatPump') {
+        const selection = element('div', 'heating-selection');
         const scopes = element('div', 'heating-scope-switch');
         scopes.setAttribute('role', 'group'); scopes.setAttribute('aria-label', 'Heating savings scope');
         for (const [scope, text] of [['home', 'Home'], ['garage', 'Garage'], ['total', 'Total']]) {
           const button = element('button', 'timing-comparison-option', text);
           button.type = 'button'; button.dataset.scope = scope;
           button.setAttribute('aria-controls', 'heating-saving-result');
-          button.addEventListener('click', chooseScope); scopeButtons.push(button); scopes.append(button);
+          button.addEventListener('click', chooseScope);
+          button.addEventListener('keydown', navigateOptions);
+          scopeButtons.push(button); scopes.append(button);
         }
-        overview.append(scopes);
-      }
-      overview.append(comparison, label, figures);
+        selection.append(selectionRow('Area', scopes), selectionRow('Compare', comparison));
+        overview.append(selection);
+      } else overview.append(comparison);
+      overview.append(result);
       if (display.key === 'heatPump') overview.append(modeStatus);
       const details = element('details', 'timing-device-detail'); details.dataset.device = display.key;
       details.append(element('summary', '', `${display.name} details`));
@@ -299,6 +324,7 @@ export function createTimingBenefit(root) {
       closed = true; overviewObserver?.disconnect();
       for (const button of modeButtons) button.removeEventListener('click', chooseMode);
       for (const button of scopeButtons) button.removeEventListener('click', chooseScope);
+      for (const button of [...modeButtons, ...scopeButtons]) button.removeEventListener('keydown', navigateOptions);
     },
   };
 }
