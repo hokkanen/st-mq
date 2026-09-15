@@ -5,7 +5,7 @@ const isTime = value => Number.isSafeInteger(value) && value >= 0;
 
 /** Persisted ownership of the ONE native Easee schedule. No local start/stop timer. */
 export function createChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getPlan } = {}) {
+  canControl = () => false, getPlan, getMaximumAmps } = {}) {
   let state = { version: 1, phase: 'off', owned: null, pending: null, manual: null, released: false,
     disconnected: false, handoverConfirmed: true, reason: 'ST-MQ charging control is off.',
     ...(initialState?.version === 1 ? copy(initialState) : {}) };
@@ -176,8 +176,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
         state.released = true; state.manual = null;
         await phase('released', 'Charging is released and may continue beyond the minimum and deadline.'); return status();
       }
-      const delayed = delayedScheduleFor({ startAt: plan.startAt, timezone: desired.timezone,
-        maximumAmps: desired.maximumAmps }, now);
+      const maximumAmps = typeof getMaximumAmps === 'function' ? getMaximumAmps(copy(snapshot)) : desired.maximumAmps;
+      const delayed = delayedScheduleFor({ startAt: plan.startAt, timezone: desired.timezone, maximumAmps }, now);
       const expectedState = { ...copy(snapshot.schedule), enabled: 'delayed', delayed };
       const expectedFingerprint = scheduleFingerprint(expectedState);
       if (state.owned && snapshot.fingerprint === expectedFingerprint) {
@@ -188,7 +188,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         expectedFingerprint, previousFingerprint: snapshot.fingerprint, startedAt: now };
       const pending = copy(state.pending);
       await phase('unconfirmed', 'The delayed start is being confirmed with Easee.');
-      snapshot = await adapter.installDelayed({ startAt: plan.startAt, timezone: desired.timezone, maximumAmps: desired.maximumAmps,
+      snapshot = await adapter.installDelayed({ startAt: plan.startAt, timezone: desired.timezone, maximumAmps,
         expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
         canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true });
       state.lastReadAt = snapshot.readAt;

@@ -1150,6 +1150,18 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-budget-location meter::-moz-meter-bar { background: var(--accent); }
 .garage-budget-location meter[data-state="attention"]::-webkit-meter-optimum-value { background: var(--stale); }
 .garage-budget-location meter[data-state="attention"]::-moz-meter-bar { background: var(--stale); }
+.charging-device-list { display: contents; }
+.charging-device-list > .charging-device:first-child { border-top: 0; }
+.charging-overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.charging-overview .equipment-value { min-width: 0; }
+.charging-overview .equipment-value > small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.charging-event { margin: 10px 0 0; font-size: 12px; line-height: 1.6; }
+.charging-event[data-state="attention"] { color: var(--stale); }
+.charging-settings > summary { color: var(--muted); }
+.charging-settings > .equipment-readings { margin-bottom: 16px; }
+.charging-settings .charging-secondary { margin: 8px 0; padding-left: 12px; border-left: 1px solid var(--border); }
+.charging-settings .charging-secondary > summary { font-size: 11px; }
+.charging-installation { padding: 4px 0 12px; }
 .charging-master { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; font-size: 13px; }
 .charging-master button { width: 68px; min-height: 36px; margin: 0; }
 .charging-master button[aria-checked="false"] { color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); }
@@ -1159,7 +1171,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .charging-fields input { width: 100%; }
 .charging-field-disabled { opacity: .55; }
 .charging-form-help { font-size: 11px; }
-.charging-soc-form { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0 12px; }
+.charging-soc-form { margin-top: 18px; padding-top: 4px; border-top: 1px solid var(--border); display: flex; align-items: flex-end; flex-wrap: wrap; gap: 0 12px; }
 .charging-soc-form label { flex: 1 1 170px; }
 .charging-soc-form button { flex: 1 1 150px; min-height: 42px; margin-top: 12px; }
 .charging-soc-form .charging-form-help { flex-basis: 100%; }

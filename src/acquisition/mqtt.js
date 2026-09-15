@@ -54,9 +54,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const hasEquipmentHeating = (equipmentSettings?.devices ?? config.connections.shelly?.devices ?? [])
     .some(device => device.enabled !== false && device.controlsHeat);
   const topicGroups = [
-    ...(engine.charging ? [{ id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT', topics: [
-      { role: 'Timestamped state of charge', topic: engine.charging.settings.mqttTopic, direction: 'subscribe' },
-    ] }] : []),
+    ...(engine.charging?.mqttRoutes() ?? []).map(route => ({ id: `${route.id}-vehicle`, label: `${route.label} vehicle`, source: 'MQTT', topics: [
+      { role: 'Timestamped vehicle readings', topic: route.topic, direction: 'subscribe' },
+    ] })),
     { id: 'dhwr', label: 'Hot-water circulation commands', source: 'MQTT', topics: [
       { role: 'Timed ON/OFF command', topic: config.connections.mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch', direction: 'publish' },
     ] },
@@ -212,22 +212,30 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     await publish(`${deviceId}/HP/CMD`, 'GETALL', { qos: 0, retain: false });
   };
   const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings }) : null;
-  const subscribeChargingSoc = () => {
+  const subscribeChargingSoc = selectedId => {
     if (!engine.charging || !connected || stopped || stopping) return;
-    const generation = connectionGeneration, topic = engine.charging.settings.mqttTopic;
-    engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription' });
-    client.subscribe(topic, { qos: 1 }, (error, granted) => {
-      if (!connected || stopped || stopping || generation !== connectionGeneration || topic !== engine.charging.settings.mqttTopic) return;
-      const rejected = subscriptionRejected(topic, error, granted);
-      engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null });
-    });
+    const generation = connectionGeneration;
+    for (const { id, topic } of engine.charging.mqttRoutes().filter(route => !selectedId || route.id === selectedId)) {
+      engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription' }, id);
+      client.subscribe(topic, { qos: 1 }, (error, granted) => {
+        if (!connected || stopped || stopping || generation !== connectionGeneration
+          || !engine.charging.mqttRoutes().some(route => route.id === id && route.topic === topic)) return;
+        const rejected = subscriptionRejected(topic, error, granted);
+        engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null }, id);
+      });
+    }
   };
-  if (engine.charging) engine.charging.onMqttTopicChange = (topic, previous) => {
+  if (engine.charging) engine.charging.onMqttTopicChange = (topic, previous, id) => {
     // Old deliveries cannot match the new selected route, even before UNSUBACK.
-    if (connected) client.unsubscribe?.(previous, () => {});
-    const group = topicGroups.find(group => group.id === 'charger1-vehicle');
-    if (group) group.topics[0].topic = topic;
-    subscribeChargingSoc();
+    if (connected && previous) client.unsubscribe?.(previous, () => {});
+    const index = topicGroups.findIndex(group => group.id === `${id}-vehicle`);
+    if (index >= 0) topicGroups.splice(index, 1);
+    const route = engine.charging.mqttRoutes().find(route => route.id === id);
+    if (route) topicGroups.unshift({ id: `${id}-vehicle`, label: `${route.label} vehicle`, source: 'MQTT', topics: [
+      { role: 'Timestamped vehicle readings', topic, direction: 'subscribe' },
+    ] });
+    engine.charging.setMqttStatus({ connected, subscribed: false, reason: topic ? 'awaiting-subscription' : 'not-configured' }, id);
+    subscribeChargingSoc(id);
   };
   const connectedHandler = () => {
     if (connected || stopped || stopping) return;

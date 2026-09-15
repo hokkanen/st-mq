@@ -13,8 +13,8 @@ import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAt
   temperatureBoundaryStatus } from './temperature-status.js';
 import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../garage/model.js';
 import { LEARNING_ALGORITHM } from './committed-learning.js';
-import { chargingSettings } from '../charging/settings.js';
-import { effectiveSoc } from '../charging/soc.js';
+import { migrateChargingSettings } from '../charging/settings.js';
+import { CHARGER_DEFINITIONS, buildCharger } from '../charging/model.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -51,16 +51,26 @@ function chargingSnapshot(snapshot) {
   const saved = snapshot.store.getState(`charging:${snapshot.input}`);
   if (!saved) return null;
   const snapshotAt = snapshot.publication.sourceAt;
-  const ownership = snapshot.store.getState(`charging:${snapshot.input}:ownership`);
-  const settings = chargingSettings(saved.settings ?? {});
-  const automaticSoc = saved.automaticSoc ?? null, manualSoc = saved.manualSoc ?? null;
-  return { readOnly: true, recorded: true, snapshotAt, settings,
-    automaticSoc, manualSoc, soc: effectiveSoc({ automatic: automaticSoc, manual: manualSoc, now: snapshotAt }),
-    plan: saved.plan ?? null,
-    control: { ...(ownership ?? { phase: 'unavailable', released: false }), enabled: settings.enabled,
-      readOnly: true, snapshotAt, snapshot: null,
-      reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` },
-    charger2: null, mqtt: { connected: null, subscribed: null, reason: 'read-only-snapshot' }, error: null };
+  const settings = migrateChargingSettings(saved.settings ?? {});
+  const chargers = CHARGER_DEFINITIONS.map(definition => {
+    const id = definition.id;
+    const record = saved.chargers?.[id] ?? (id === 'charger1' ? saved : {});
+    const ownership = snapshot.store.getState(`charging:${snapshot.input}:${id}:ownership`)
+      ?? (id === 'charger1' ? snapshot.store.getState(`charging:${snapshot.input}:ownership`) : null);
+    const recorded = saved.view?.chargers?.find(charger => charger.id === id);
+    const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
+      enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
+      reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` };
+    return { ...buildCharger({ definition, settings: settings.chargers[id], timezone: settings.timezone,
+      telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc, manualSoc: record.manualSoc,
+      now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control }),
+      readOnly: true, recorded: true, snapshotAt, control,
+      automaticSoc: record.automaticSoc ?? null, manualSoc: record.manualSoc ?? null,
+      plan: record.plan ?? null, forecast: recorded?.forecast ?? null,
+      mqtt: { connected: null, subscribed: null, reason: 'read-only-snapshot' }, error: null };
+  });
+  return { readOnly: true, recorded: true, snapshotAt, settings, chargers,
+    coordination: saved.view?.coordination ?? null, error: null };
 }
 
 function recordedInput(store) {

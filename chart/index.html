@@ -266,44 +266,17 @@
               </section>
               <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
                 <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
-                <section id="charger1-device" class="equipment-device charging-device" aria-labelledby="charger1-title">
-                  <div class="equipment-device-heading"><h4 id="charger1-title">Charger 1</h4><span id="charger1-control-state" class="equipment-device-status">Control OFF</span></div>
-                  <div class="charging-master"><span id="charging-enabled-label">ST-MQ charging control</span><button id="charging-enabled" type="button" role="switch" aria-checked="false" aria-labelledby="charging-enabled-label" disabled>OFF</button></div>
-                  <p id="charging-control-detail" class="muted">Automatic charging control starts OFF.</p>
-                  <dl id="charger1-readings" class="equipment-readings"></dl>
-                  <details id="charger1-notes-details" class="equipment-fold" hidden><summary>Planning notes &amp; assumptions</summary><ul id="charger1-notes" class="charging-notes"></ul></details>
-                  <form id="charging-soc-form" class="charging-soc-form">
-                    <label for="charging-manual-soc">Temporary current charge · %<input id="charging-manual-soc" type="number" min="0" max="100" step="0.1" value="40" required disabled></label>
-                    <button id="charging-soc-apply" class="secondary-button" type="submit" disabled>Use until next ready-by time</button>
-                    <button id="charging-soc-automatic" class="secondary-button" type="button" disabled>Return to MQTT</button>
-                    <p class="muted charging-form-help">Reapplying sets a new expiration at the next readiness deadline. MQTT readings continue to arrive underneath a manual value.</p>
+                <p id="charging-status" class="charging-event" role="status" hidden></p>
+                <div id="charging-devices" class="charging-device-list"></div>
+                <details id="charging-installation-details" class="equipment-fold charging-installation">
+                  <summary>Shared charging setup</summary>
+                  <p class="muted charging-form-help">Both chargers share these household limits and planning assumptions. Current and connection readings come from their integrations.</p>
+                  <form id="charging-installation-form" class="charging-settings-form">
+                    <div id="charging-installation-fields" class="charging-fields"></div>
+                    <button id="charging-installation-save" class="secondary-button" type="submit" disabled>Save charging setup</button>
                   </form>
-                  <p id="charging-soc-message" class="temporary-status" role="status" aria-live="polite"></p>
-                  <form id="charger1-settings-form" class="charging-settings-form">
-                    <div id="charger1-readiness-fields" class="charging-fields"></div>
-                    <p class="muted charging-form-help">The minimum is a readiness target. Charging may continue beyond it and after the deadline toward the vehicle's own limit.</p>
-                    <details id="charging-installation-details" class="equipment-fold">
-                      <summary>Connections &amp; planning assumptions</summary>
-                      <p class="muted">Standard three-phase charging. These limits constrain the forecast; Equalizer continues to balance actual charging. Enter the actual household main-fuse rating. Blank circuit and charging-allocation limits use verified Easee settings where available.</p>
-                      <div id="charger1-planning-fields" class="charging-fields"></div>
-                    </details>
-                    <button id="charger1-settings-save" class="secondary-button" type="submit" disabled>Save Charger 1 settings</button>
-                  </form>
-                  <p id="charger1-settings-message" class="temporary-status" role="status" aria-live="polite"></p>
-                  <button id="charging-resume" class="secondary-button" type="button" disabled hidden>Resume automatic charging control</button>
-                  <p id="charging-control-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </section>
-                <section id="charger2-device" class="equipment-device charging-device" aria-labelledby="charger2-title">
-                  <div class="equipment-device-heading"><h4 id="charger2-title">Charger 2</h4><span class="equipment-device-status">Read-only · TeslaMate</span></div>
-                  <dl id="charger2-readings" class="equipment-readings"></dl>
-                  <details id="charger2-notes-details" class="equipment-fold" hidden><summary>Forecast notes &amp; assumptions</summary><ul id="charger2-notes" class="charging-notes"></ul></details>
-                  <p class="muted">The forecast uses the vehicle's selected current, including while it waits to charge. ST-MQ does not control Charger 2.</p>
-                  <form id="charger2-settings-form" class="charging-settings-form">
-                    <div id="charger2-settings-fields" class="charging-fields"></div>
-                    <button id="charger2-settings-save" class="secondary-button" type="submit" disabled>Save Charger 2 settings</button>
-                  </form>
-                  <p id="charger2-settings-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </section>
+                  <p id="charging-installation-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </details>
                 <section id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
                   <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></div>
                   <div class="garage-native-overview pump-native-overview">

@@ -1,207 +1,286 @@
-import { chargingSettings, resolveChargingDeadline } from './settings.js';
-import { acceptSocReading, createManualSoc, effectiveSoc } from './soc.js';
-import { forecastCharger2, planCharging } from './planner.js';
+import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
+import { acceptSocReading, createManualSoc } from './soc.js';
+import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
+import { planChargers } from './planner.js';
 import { createChargingController } from './controller.js';
+import { easeeChargerTelemetry } from './easee.js';
+import { teslamateChargerTelemetry, teslamateChargerAssignment } from './teslamate.js';
 import { forecastHousehold } from './history.js';
 import { randomUUID } from 'node:crypto';
 
 const MINUTE = 60_000;
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
+const initialMqtt = () => ({ connected: false, subscribed: false, reason: 'awaiting-mqtt' });
+const scheduleCeiling = snapshot => {
+  const limits = [snapshot?.limits?.chargerA, snapshot?.limits?.cableA].filter(value => Number.isFinite(value) && value > 0);
+  return limits.length ? Math.floor(Math.min(...limits)) : undefined;
+};
 
-/** Charging has its own durable UI preferences and command ownership. Heating's
- * mode and learning journals do not grant or revoke this separate permission. */
+/** Every charger has the same durable preferences, readings, planning episode
+ * and controller slot. Adapters own provider-specific native command semantics. */
 export class ChargingRuntime {
-  constructor({ engine, store, config, clock = Date.now, canControl = () => true }) {
-    Object.assign(this, { engine, store, config, clock, canControl });
+  constructor({ engine, store, config, clock = Date.now, canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
+    Object.assign(this, { engine, store, config, clock, canControl, definitions });
     this.key = `charging:${config.input}`;
-    this.saved = store.getState(this.key) ?? {};
-    this.settings = chargingSettings(this.saved.settings ?? {});
-    this.automaticSoc = this.saved.automaticSoc ?? null;
-    this.manualSoc = this.saved.manualSoc ?? null;
-    this.plan = this.saved.plan ?? null;
-    this.prices = [];
-    this.pricesInitialized = false;
-    this.household = [];
-    this.historyAt = null;
-    this.lastReconcileAt = null;
-    this.mqtt = { connected: false, subscribed: false, reason: 'awaiting-mqtt' };
-    this.closed = false;
+    const saved = store.getState(this.key) ?? {};
+    this.settings = migrateChargingSettings(saved.settings ?? {});
+    this.chargers = Object.fromEntries(definitions.map(definition => {
+      const previous = saved.chargers?.[definition.id] ?? (definition.id === 'charger1' ? saved : {});
+      return [definition.id, { definition, automaticSoc: previous.automaticSoc ?? null,
+        manualSoc: previous.manualSoc ?? null, plan: previous.plan ?? null,
+        mqtt: initialMqtt(), lastReconcileAt: null }];
+    }));
+    this.prices = []; this.pricesInitialized = false;
+    this.household = []; this.historyAt = null; this.coordination = null; this.closed = false;
+  }
+  charger(id) {
+    const record = this.chargers[id];
+    if (!record) throw new Error('Unknown charger');
+    return record;
+  }
+  ownershipKey(id) { return `${this.key}:${id}:ownership`; }
+  savedOwnership(id) {
+    return this.store.getState(this.ownershipKey(id))
+      ?? (id === 'charger1' ? this.store.getState(`${this.key}:ownership`) : null);
   }
   persist() {
-    this.store.setState(this.key, { settings: this.settings, automaticSoc: this.automaticSoc,
-      manualSoc: this.manualSoc, plan: this.plan });
+    const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
+      { automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, plan: item.plan }]));
+    this.store.setState(this.key, { version: 2, settings: this.settings, chargers, view: this.status() });
   }
-  setAdapter(adapter) {
+  mqttRoutes() {
+    return Object.entries(this.settings.chargers).filter(([, item]) => item.mqtt.topic)
+      .map(([id, item]) => ({ id, label: this.chargers[id].definition.label, ...item.mqtt }));
+  }
+  hasAutomaticControl() {
+    return Object.entries(this.chargers).some(([id, item]) => this.settings.chargers[id].enabled
+      || item.controller?.status()?.owned || this.savedOwnership(id)?.owned || this.savedOwnership(id)?.pending);
+  }
+  setAdapter(id, adapter) {
+    const item = this.charger(id);
     if (this.closed) return Promise.resolve();
-    clearInterval(this.timer);
-    // Revoke immediately; load the replacement's durable ownership only after
-    // all old reads/writes and their confirmations have drained.
-    this.controller?.close();
-    const generation = this.adapterGeneration = (this.adapterGeneration ?? 0) + 1;
-    this.adapterPending = true;
-    this.adapterFlight = (this.adapterFlight ?? Promise.resolve()).catch(() => {}).then(async () => {
-      await this.controller?.close();
-      if (this.closed || generation !== this.adapterGeneration) return;
-      this.controller = createChargingController({ adapter,
-        initialState: this.store.getState(`${this.key}:ownership`),
-        saveState: state => this.store.setState(`${this.key}:ownership`, state), clock: this.clock,
+    item.controller?.close();
+    const generation = item.adapterGeneration = (item.adapterGeneration ?? 0) + 1;
+    item.adapterPending = true;
+    item.adapterFlight = (item.adapterFlight ?? Promise.resolve()).catch(() => {}).then(async () => {
+      await item.controller?.close();
+      if (this.closed || generation !== item.adapterGeneration) return;
+      item.adapter = adapter;
+      const createController = adapter?.createController ?? createChargingController;
+      item.controller = createController({ adapter, initialState: this.savedOwnership(id),
+        saveState: state => this.store.setState(this.ownershipKey(id), state), clock: this.clock,
         canControl: () => !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
-        getPlan: () => { this.updatePlan(); return this.pricesInitialized ? this.plan : null; } });
-      this.lastReconcileAt = null;
-      this.timer = setInterval(() => this.tick(), MINUTE);
-      this.timer.unref?.();
+        getMaximumAmps: scheduleCeiling,
+        getPlan: () => { this.updatePlan(); return this.pricesInitialized ? item.plan : null; } });
+      item.lastReconcileAt = null;
+      if (!this.timer) { this.timer = setInterval(() => this.tick(), MINUTE); this.timer.unref?.(); }
       this.tick();
-    }).catch(() => { this.error = 'charging-adapter-unavailable'; }).finally(() => {
-      if (generation === this.adapterGeneration) this.adapterPending = false;
+    }).catch(() => { item.error = 'charging-adapter-unavailable'; }).finally(() => {
+      if (generation === item.adapterGeneration) item.adapterPending = false;
     });
-    return this.adapterFlight;
+    return item.adapterFlight;
   }
-  setMqttStatus(status) { this.mqtt = { ...this.mqtt, ...status }; }
+  setMqttStatus(status, id) {
+    for (const item of id ? [this.charger(id)] : Object.values(this.chargers)) item.mqtt = { ...item.mqtt, ...status };
+  }
   receiveSoc(topic, payload, packet = {}, now = this.clock()) {
     if (this.closed) return false;
-    if (topic !== this.settings.mqttTopic) return false;
-    if (Buffer.byteLength(payload) > 4096) { this.mqtt.reason = 'invalid-payload'; return true; }
-    const result = acceptSocReading(this.automaticSoc, payload, { now, vehicleId: this.settings.vehicleId, sourceId: this.settings.sourceId });
+    const route = this.mqttRoutes().find(item => item.topic === topic);
+    if (!route) return false;
+    const item = this.charger(route.id);
+    if (Buffer.byteLength(payload) > 4096) { item.mqtt.reason = 'invalid-payload'; return true; }
+    const result = acceptSocReading(item.automaticSoc, payload, { now, vehicleId: route.vehicleId, sourceId: route.sourceId });
     if (result.accepted) {
-      const previous = this.automaticSoc;
-      this.automaticSoc = result.reading;
-      try { this.persist(); } catch (error) { this.automaticSoc = previous; throw error; }
-      this.mqtt.reason = null;
-      this.tick({ now });
-    } else if (!['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason)) this.mqtt.reason = result.reason;
+      const previous = item.automaticSoc; item.automaticSoc = result.reading;
+      try { this.persist(); } catch (error) { item.automaticSoc = previous; throw error; }
+      item.mqtt.reason = null; this.tick({ now });
+    } else if (!['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason)) item.mqtt.reason = result.reason;
     return true;
   }
-  telemetry() {
-    const result = this.teslaCapture?.snapshot() ?? {};
-    const identified = this.engine.chargerIdentification?.status()?.verdict;
-    if (result.assignedToCharger1 || identified === 'easee') return { ...result, atHome: false, assignmentReason: 'vehicle-on-charger-1' };
-    // The pre-existing automatic attribution cannot establish a pending vehicle
-    // on Charger 2; reserve conservatively until its identity is known.
-    if (result.assignment === 'auto' && !identified && result.atHome === true)
-      return { ...result, atHome: undefined, assignmentReason: 'charger-assignment-uncertain' };
+  telemetry(now) {
+    const result = {};
+    for (const [id, item] of Object.entries(this.chargers)) {
+      const control = item.controller?.status(), snapshot = control?.snapshot;
+      const normalize = item.adapter?.normalize ?? (item.definition.provider === 'easee' ? easeeChargerTelemetry : null);
+      result[id] = normalize ? normalize(snapshot ?? {}, { now }) : {};
+      if (item.adapter?.capabilities) result[id].capabilities = { ...result[id].capabilities, ...item.adapter.capabilities };
+      if (result[id].scheduledStartAt?.available && Number.isSafeInteger(control?.owned?.startAt)
+        && control.owned.fingerprint === snapshot?.fingerprint) {
+        // A native local clock cannot roll our confirmed one-off occurrence to
+        // tomorrow just because the release time has passed.
+        result[id].scheduledStartAt = { ...result[id].scheduledStartAt, value: control.owned.startAt };
+      }
+    }
+    const snapshot = this.teslaCapture?.snapshot() ?? {};
+    const assignment = teslamateChargerAssignment(snapshot, { identified: this.engine.chargerIdentification?.status()?.verdict });
+    if (assignment.chargerId && this.chargers[assignment.chargerId]) {
+      const id = assignment.chargerId, vehicle = teslamateChargerTelemetry(snapshot, { now });
+      if (this.chargers[id].definition.provider === 'teslamate' && !this.chargers[id].adapter?.normalize) result[id] = vehicle;
+      else {
+        // Attribution establishes which vehicle is attached. The charger remains
+        // authoritative for its own connection, electrical limits and schedule.
+        for (const key of ['capacityKwh', 'soc', 'minimumSoc']) if (vehicle[key]?.available) result[id][key] = vehicle[key];
+        for (const [otherId, item] of Object.entries(this.chargers)) if (otherId !== id
+          && item.definition.provider === 'teslamate' && !item.adapter?.normalize) {
+          result[otherId] = { connected: { value: false, available: true, source: 'vehicle-assignment' },
+            assignmentReason: 'vehicle-on-another-charger' };
+        }
+      }
+    }
+    if (assignment.uncertain && this.chargers[assignment.reservationChargerId]
+      && !this.chargers[assignment.reservationChargerId].adapter?.normalize) {
+      const vehicle = teslamateChargerTelemetry(snapshot, { now });
+      result[assignment.reservationChargerId] = { ...vehicle,
+        connected: vehicle.connected.value === false ? vehicle.connected : { value: null, available: false, source: 'teslamate' },
+        pluggedIn: null,
+        soc: { value: null, available: false }, minimumSoc: { value: null, available: false },
+        charging: { value: null, available: false }, powerKw: { value: null, available: false },
+        actualCurrentA: { value: null, available: false },
+        batteryLevel: null, chargeLimitSoc: null, assignmentUncertain: true };
+    }
     return result;
   }
+  controlStatus(id) {
+    const item = this.charger(id), enabled = this.settings.chargers[id].enabled;
+    if (item.controller) return item.controller.status();
+    const outstanding = this.savedOwnership(id), handoverOutstanding = Boolean(outstanding?.owned || outstanding?.pending);
+    return { phase: enabled ? 'unavailable' : 'off', handoverConfirmed: !enabled && !handoverOutstanding,
+      reason: handoverOutstanding ? 'Control is unavailable; charger handover is unconfirmed.'
+        : item.definition.capabilities?.scheduling ? 'Charger connection is not configured.' : 'This integration observes charging; scheduling is unavailable.',
+      released: false };
+  }
+  views(now = this.clock()) {
+    const telemetry = this.telemetry(now);
+    return Object.entries(this.chargers).map(([id, item]) => {
+      const settings = this.settings.chargers[id], control = this.controlStatus(id);
+      const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
+      return { ...buildCharger({ definition, settings, telemetry: telemetry[id], timezone: this.settings.timezone,
+        automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, now, control,
+        deadlineAt: item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, this.settings.timezone) }),
+        automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, plan: item.plan,
+        forecast: item.forecast ?? null, mqtt: item.mqtt, error: item.error ?? null };
+    });
+  }
   updatePlan(now = this.clock()) {
-    if (this.manualSoc && this.manualSoc.expiresAt <= now) {
-      const previous = this.manualSoc;
-      this.manualSoc = null;
-      try { this.persist(); } catch (error) { this.manualSoc = previous; throw error; }
+    for (const item of Object.values(this.chargers)) if (item.manualSoc && item.manualSoc.expiresAt <= now) {
+      const previous = item.manualSoc; item.manualSoc = null;
+      try { this.persist(); } catch (error) { item.manualSoc = previous; throw error; }
     }
-    const control = this.controller?.status(), snapshot = control?.snapshot;
-    // A real unplug transition opens the next planning episode. Zero power and
-    // Equalizer pauses cannot roll the deadline or reclaim a released session.
-    const newEpisode = snapshot?.pluggedIn === false && (this.wasPluggedIn !== false || this.plan?.deadlineAt <= now)
-      || snapshot?.pluggedIn === true && this.wasPluggedIn === false;
-    if (newEpisode) this.plan = null;
-    if (typeof snapshot?.pluggedIn === 'boolean') this.wasPluggedIn = snapshot.pluggedIn;
-    const deadlineAt = this.plan?.deadlineAt ?? resolveChargingDeadline(now, this.settings.readyBy, this.settings.timezone);
-    if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE) {
+    let views = this.views(now);
+    for (const view of views) {
+      const item = this.charger(view.id), pluggedIn = view.values.connected.value;
+      item.newEpisode = pluggedIn === false && (item.wasPluggedIn !== false || item.plan?.deadlineAt <= now)
+        || pluggedIn === true && item.wasPluggedIn === false;
+      if (item.newEpisode) item.plan = null;
+      if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
+    }
+    views = this.views(now);
+    const deadlineAt = Math.max(...views.map(view => view.deadlineAt));
+    if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || deadlineAt > this.historyDeadline) {
       this.household = forecastHousehold(this.store, { now, deadlineAt, settings: this.settings, input: this.config.input });
-      this.historyAt = now;
+      this.historyAt = now; this.historyDeadline = deadlineAt;
     }
-    this.soc = effectiveSoc({ automatic: this.automaticSoc, manual: this.manualSoc, now });
-    this.charger2 = forecastCharger2({ now, deadlineAt, settings: this.settings, telemetry: this.telemetry() });
-    // Adapter attachment happens before the engine supplies its first outlook.
-    // Reconcile the charger first without converting that startup gap into a
-    // permanent release of an otherwise valid saved native schedule.
-    if (!this.pricesInitialized) return;
-    const observed = snapshot?.limits ?? {};
-    const limits = { mainFuseA: observed.mainFuseA, circuitA: observed.circuitA,
-      chargingAllocationA: observed.allocationA,
-      charger1MaxA: [observed.chargerA, observed.cableA].filter(Number.isFinite).length
-        ? Math.min(...[observed.chargerA, observed.cableA].filter(Number.isFinite)) : undefined };
-    const next = planCharging({ now, settings: this.settings, timezone: this.settings.timezone,
-      soc: this.soc, deadlineAt, prices: this.prices, charger2: this.charger2, household: this.household, limits });
-    // Keep the actual released plan as context; incoming SoC and deadlines never
-    // turn it back into a restriction. The controller independently enforces it.
-    const handbackDue = control?.manual?.kind === 'window' && Number.isSafeInteger(control.manual.resumeAt)
-      && now >= control.manual.resumeAt;
-    if ((control?.released || control?.phase === 'released') && !handbackDue && !newEpisode) return;
-    next.id = this.plan?.id ?? randomUUID();
-    if (JSON.stringify(next) !== JSON.stringify(this.plan)) { this.plan = next; this.persist(); }
+    const result = planChargers({ now, settings: this.settings, chargers: views, prices: this.prices, household: this.household });
+    this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
+      currentLimitsAreProposals: true, warnings: result.warnings };
+    for (const view of views) {
+      const item = this.charger(view.id), control = view.control;
+      item.forecast = result.forecasts?.[view.id] ?? null;
+      if (!this.pricesInitialized) continue;
+      const handbackDue = control?.manual?.kind === 'window' && Number.isSafeInteger(control.manual.resumeAt) && now >= control.manual.resumeAt;
+      // A manual native instruction is separate from the automatic plan. Keep
+      // the last automatic context until the controller verifies handback.
+      if (control?.manual && !handbackDue && item.plan && !item.newEpisode) continue;
+      if ((control?.released || control?.phase === 'released') && !handbackDue && !item.newEpisode) continue;
+      const next = result.plans?.[view.id];
+      if (next) item.plan = { ...next, id: item.plan?.id ?? randomUUID() };
+    }
+    this.persist();
   }
   tick({ now = this.clock(), prices } = {}) {
     if (this.closed) return;
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     try {
       this.updatePlan(now);
-      if (this.controller && (this.lastReconcileAt === null || now - this.lastReconcileAt >= MINUTE))
-        void this.reconcile().catch(() => { this.error = 'charging-reconciliation-unavailable'; });
+      for (const [id, item] of Object.entries(this.chargers)) if (item.controller && (item.lastReconcileAt === null || now - item.lastReconcileAt >= MINUTE))
+        void this.reconcile(id).catch(() => { item.error = 'charging-reconciliation-unavailable'; });
+      this.error = null;
     } catch { this.error = 'charging-planning-unavailable'; }
   }
-  async reconcile({ resume = false } = {}) {
-    if (this.adapterPending) await this.adapterFlight;
-    if (!this.controller || this.closed) return;
-    const controller = this.controller;
-    this.lastReconcileAt = this.clock();
-    await controller.update({ enabled: this.settings.enabled, plan: this.pricesInitialized ? this.plan : null,
-      timezone: this.settings.timezone, maximumAmps: this.settings.installation.charger1MaxA, resume });
-    if (this.closed || controller !== this.controller) return;
-    this.error = null;
-    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+  async reconcile(id, { resume = false } = {}) {
+    if (id === undefined) { await Promise.all(Object.keys(this.chargers).map(key => this.reconcile(key))); return; }
+    const item = this.charger(id);
+    if (item.adapterPending) await item.adapterFlight;
+    if (!item.controller || this.closed) return;
+    const controller = item.controller, settings = this.settings.chargers[id];
+    item.lastReconcileAt = this.clock();
+    // The native schedule ceiling follows the reported fixed charger limit;
+    // it is never a command to change Equalizer's live allowance.
+    const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
+    await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
+      timezone: this.settings.timezone, maximumAmps, resume });
+    if (this.closed || controller !== item.controller) return;
+    item.error = null;
+    try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
   }
   async setSettings(input) {
-    if (!object(input)) throw new Error('Charging settings must be an object');
-    if (input.installation !== undefined && !object(input.installation)) throw new Error('Charging installation must be an object');
-    const previous = this.settings;
-    const next = chargingSettings({ ...previous, ...input,
-      installation: { ...previous.installation, ...(input.installation ?? {}) } });
-    const oldState = { settings: this.settings, automaticSoc: this.automaticSoc, manualSoc: this.manualSoc, plan: this.plan };
+    const previous = this.settings, next = mergeChargingSettings(previous, input);
+    for (const view of this.views()) if (next.chargers[view.id].enabled && !view.capabilities.scheduling)
+      throw new Error(`${view.label} does not support ST-MQ scheduling`);
+    const oldRecords = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
+      { automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, plan: item.plan }]));
     this.settings = next;
-    if (next.vehicleId !== previous.vehicleId || next.sourceId !== previous.sourceId || next.mqttTopic !== previous.mqttTopic) {
-      this.automaticSoc = null;
-      // A vehicle association change cannot carry another vehicle's manual SoC.
-      if (next.vehicleId !== previous.vehicleId) this.manualSoc = null;
+    for (const [id, item] of Object.entries(this.chargers)) {
+      const before = previous.chargers[id], after = next.chargers[id];
+      if (JSON.stringify(before.mqtt) !== JSON.stringify(after.mqtt)) item.automaticSoc = null;
+      if (before.mqtt.vehicleId !== after.mqtt.vehicleId) item.manualSoc = null;
+      if ((before.readyBy !== after.readyBy || next.timezone !== previous.timezone) && !item.controller?.status()?.released) item.plan = null;
     }
-    if ((next.readyBy !== previous.readyBy || next.timezone !== previous.timezone) && !this.controller?.status()?.released) this.plan = null;
-    try { this.persist(); } catch (error) { Object.assign(this, oldState); throw error; }
+    try { this.persist(); } catch (error) {
+      this.settings = previous;
+      for (const [id, saved] of Object.entries(oldRecords)) Object.assign(this.chargers[id], saved);
+      throw error;
+    }
     this.historyAt = null;
-    if (next.mqttTopic !== previous.mqttTopic) {
-      try { this.onMqttTopicChange?.(next.mqttTopic, previous.mqttTopic); }
-      catch { this.mqtt.reason = 'mqtt-subscription-unavailable'; }
+    for (const [id, after] of Object.entries(next.chargers)) if (after.mqtt.topic !== previous.chargers[id].mqtt.topic) {
+      try { this.onMqttTopicChange?.(after.mqtt.topic, previous.chargers[id].mqtt.topic, id); }
+      catch { this.chargers[id].mqtt.reason = 'mqtt-subscription-unavailable'; }
     }
-    if (!next.enabled) {
-      // Revoke pending automatic intent before any optional forecast/history work
-      // can fail. Controller cleanup still rereads and respects manual changes.
-      await this.reconcile();
-      return;
-    }
-    this.updatePlan();
-    await this.reconcile();
+    // Revoke OFF before optional history/forecast work can fail.
+    for (const id of Object.keys(this.chargers)) if (!next.chargers[id].enabled) await this.reconcile(id);
+    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    for (const id of Object.keys(this.chargers)) if (next.chargers[id].enabled) await this.reconcile(id);
   }
-  async setSoc(input) {
-    if (!object(input)) throw new Error('Choose a manual SoC or return to MQTT');
+  async setChargerSettings(id, input) {
+    this.charger(id);
+    if (!object(input)) throw new Error('Charger settings must be an object');
+    await this.setSettings({ chargers: { [id]: input } });
+  }
+  async setSoc(id, input) {
+    const item = this.charger(id), settings = this.settings.chargers[id];
+    if (!object(input)) throw new Error('Choose a manual SoC or return to automatic readings');
     const clear = input.action === 'automatic';
     if (clear ? Object.keys(input).some(key => key !== 'action') : Object.keys(input).some(key => key !== 'soc'))
-      throw new Error('Choose a manual SoC or return to MQTT');
-    const previous = { manualSoc: this.manualSoc, settings: this.settings };
-    this.manualSoc = clear ? null : createManualSoc(input.soc, { now: this.clock(), readyBy: this.settings.readyBy, timezone: this.settings.timezone });
-    if (!clear) this.settings = chargingSettings({ ...this.settings, manualSoc: input.soc });
-    try { this.persist(); } catch (error) { Object.assign(this, previous); throw error; }
-    this.updatePlan();
-    await this.reconcile();
+      throw new Error('Choose a manual SoC or return to automatic readings');
+    const previous = { manualSoc: item.manualSoc, settings: this.settings };
+    item.manualSoc = clear ? null : createManualSoc(input.soc, { now: this.clock(), readyBy: settings.readyBy, timezone: this.settings.timezone });
+    if (!clear) this.settings = mergeChargingSettings(this.settings, { chargers: { [id]: { manualSoc: input.soc } } });
+    try { this.persist(); } catch (error) { item.manualSoc = previous.manualSoc; this.settings = previous.settings; throw error; }
+    this.updatePlan(); await this.reconcile();
   }
-  async resume(input) {
+  async resume(id, input) {
+    this.charger(id);
     if (!object(input) || Object.keys(input).length) throw new Error('Resume automatic charging with an empty object');
-    if (!this.settings.enabled) throw new Error('Enable ST-MQ charging control before resuming');
-    this.updatePlan();
-    await this.reconcile({ resume: true });
+    const view = this.views().find(item => item.id === id);
+    if (!view.capabilities.scheduling) throw new Error(`${view.label} does not support ST-MQ scheduling`);
+    if (!view.settings.enabled) throw new Error('Enable ST-MQ charging control before resuming');
+    this.updatePlan(); await this.reconcile(id, { resume: true });
   }
   status(now = this.clock()) {
-    const savedOwnership = this.controller ? null : this.store.getState(`${this.key}:ownership`);
-    const handoverOutstanding = Boolean(savedOwnership?.owned || savedOwnership?.pending);
-    return { settings: this.settings, soc: effectiveSoc({ automatic: this.automaticSoc, manual: this.manualSoc, now }),
-      automaticSoc: this.automaticSoc, manualSoc: this.manualSoc, plan: this.plan,
-      charger2: this.charger2 ?? null, control: this.controller?.status() ?? {
-        phase: this.settings.enabled ? 'unavailable' : 'off', handoverConfirmed: !this.settings.enabled && !handoverOutstanding,
-        reason: handoverOutstanding ? 'Control is unavailable; charger handover is unconfirmed.' : 'Charger 1 Easee connection is not configured.',
-        released: false }, mqtt: this.mqtt, error: this.error ?? null };
+    return { settings: this.settings, chargers: this.views(now), coordination: this.coordination, error: this.error ?? null };
   }
   async close() {
-    this.closed = true;
-    clearInterval(this.timer);
-    this.onMqttTopicChange = null;
-    await this.controller?.close();
-    await this.adapterFlight;
+    this.closed = true; clearInterval(this.timer); this.onMqttTopicChange = null;
+    await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }
 }

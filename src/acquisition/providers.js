@@ -170,7 +170,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices ??= createDeviceProviders({ connections, http, clock, canControl,
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   if (connections.easee?.charger_id && devices.chargerScheduleControl)
-    engine.charging?.setAdapter(devices.chargerScheduleControl());
+    engine.charging?.setAdapter('charger1', devices.chargerScheduleControl());
   const identificationControl = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
     ? devices.chargerIdentificationControl() : null;
   const identification = identificationControl ? createChargerIdentification({ clock, control: {
@@ -187,7 +187,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (!canControl()) { identification.stop(); return; }
     // A diagnostic current restriction must not become a second controller for
     // a native charging schedule or defeat a manual app override.
-    if (engine.charging?.settings.enabled || engine.charging?.status()?.control?.owned) return;
+    if (engine.charging?.hasAutomaticControl()) return;
     try {
       await identification.tick({ tesla: engine.teslamate?.identificationSnapshot(),
         charger: engine.electricitySnapshot?.charger }, clock());

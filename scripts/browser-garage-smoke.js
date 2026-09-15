@@ -88,7 +88,7 @@ try {
     globalThis.fetch = async (input, options) => {
       const response = await originalFetch(input, options);
       if (new URL(input.url ?? String(input), location.href).pathname !== '/api/status'
-        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState)) return response;
+        || (!globalThis.learningSmokeValues && !globalThis.garageBudgetSmokeState && !globalThis.chargingSmokeValues)) return response;
       const status = await response.json();
       if (globalThis.learningSmokeValues) {
         const missing = globalThis.learningSmokeValues === 'missing';
@@ -111,6 +111,17 @@ try {
             reason: state === 'exhausted' ? 'exposure-exhausted' : null },
         } };
       }
+      if (globalThis.chargingSmokeValues) {
+        const charger = status.charging.chargers.find(item => item.id === 'charger2');
+        const observation = value => ({ value, source: 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
+        charger.values.soc = observation(62);
+        charger.values.minimumSoc = observation(85);
+        charger.values.connected = observation(true);
+        charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
+        charger.values.charging = observation(globalThis.chargingSmokeValues === 'charging');
+        charger.values.powerKw = observation(8.2);
+        charger.requiredGridKwh = 15;
+      }
       return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
     };
   ` });
@@ -118,28 +129,45 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
-  await until("document.getElementById('charging-enabled')?.disabled === false");
+  await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
   assert.deepEqual(await evaluate("['home-heat-pump-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('#garage-equipment-section > .equipment-device')].slice(0,2).map(node=>node.id)"), ['charger1-device', 'charger2-device']);
-  assert.deepEqual(await evaluate("['minimumSoc','readyBy','capacity1Kwh','capacity2Kwh'].map(key=>document.getElementById('charging-setting-'+key).value)"), ['80', '06:00', '74', '57']);
-  assert.equal(await evaluate("document.getElementById('charging-manual-soc').value"), '40');
-  assert.equal(await evaluate("document.getElementById('charging-enabled').getAttribute('aria-checked')"), 'false');
-  assert.equal(await evaluate("document.getElementById('charging-setting-readyBy').disabled"), true);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#charging-devices > .equipment-device')].map(node=>node.id)"), ['charger1-device', 'charger2-device']);
+  assert.deepEqual(await evaluate("['charger1-setting-minimumSoc','charger1-setting-readyBy','charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['80', '06:00', '74', '57']);
+  assert.equal(await evaluate("document.getElementById('charger1-manual-soc').value"), '40');
+  assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false');
+  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('charger2-enabled').disabled"), true);
+  assert.equal(await evaluate("[...document.querySelectorAll('.charging-settings')].some(fold=>fold.open)"), false);
   await evaluate("document.getElementById('garage-equipment-details').open=true; true");
-  for (const [charger, key, value] of [[1, 'capacity1Kwh', '76'], [2, 'capacity2Kwh', '59']]) {
-    await evaluate(`(() => { const input=document.getElementById('charging-setting-${key}'); input.value='${value}';
+  for (const [charger, value] of [[1, '76'], [2, '59']]) {
+    await evaluate(`(() => { document.getElementById('charger${charger}-settings-details').open=true;
+      const input=document.getElementById('charger${charger}-setting-capacityKwh'); input.value='${value}';
       input.dispatchEvent(new Event('input')); document.getElementById('charger${charger}-settings-form').requestSubmit(); })()`);
     await until(`document.getElementById('charger${charger}-settings-message').textContent === 'Settings saved.'`);
   }
-  await evaluate("document.getElementById('charging-manual-soc').value='43'; document.getElementById('charging-soc-form').requestSubmit()");
-  await until("document.getElementById('charger1-readings').textContent.includes('43 % · manual')");
+  await evaluate("document.getElementById('charger1-manual-soc').value='43'; document.getElementById('charger1-soc-form').requestSubmit()");
+  await until("document.getElementById('charger1-readings').textContent.includes('43 % · Temporary manual value')");
   await send('Page.reload');
-  await until("document.getElementById('charging-enabled')?.disabled === false");
-  assert.deepEqual(await evaluate("['capacity1Kwh','capacity2Kwh'].map(key=>document.getElementById('charging-setting-'+key).value)"), ['76', '59']);
-  assert.equal(await evaluate("document.getElementById('charging-manual-soc').value"), '43');
-  assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /43 % · manual.*Manual value expires/);
-  await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charging-soc-automatic').click()");
-  await until("document.getElementById('charger1-readings').textContent.includes('Unknown · planning assumes 0%')");
+  await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
+  assert.deepEqual(await evaluate("['charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['76', '59']);
+  assert.equal(await evaluate("document.getElementById('charger1-manual-soc').value"), '43');
+  assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /43 % · Temporary manual value.*Manual value expires/);
+  await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charger1-settings-details').open=true; document.getElementById('charger1-soc-automatic').click()");
+  await until("document.getElementById('charger1-readings').textContent.includes('43 % · Manual fallback')");
+  const secondChargerNode = await evaluate("window.originalChargingSmokeNode=document.getElementById('charger2-device'); true");
+  assert(secondChargerNode);
+  await evaluate("globalThis.chargingSmokeValues='scheduled'; globalThis.refreshLearningSmokeStatus()");
+  await until("document.getElementById('charger2-soc').textContent==='62 %'");
+  assert.equal(await evaluate("document.getElementById('charger2-setting-minimumSoc').value"), '85');
+  assert.equal(await evaluate("document.getElementById('charger2-setting-minimumSoc').disabled"), true);
+  assert.match(await evaluate("document.getElementById('charger2-event').textContent"), /^Scheduled /);
+  assert.equal(await evaluate("document.getElementById('charger2-device')===window.originalChargingSmokeNode"), true);
+  await evaluate("globalThis.chargingSmokeValues='charging'; globalThis.refreshLearningSmokeStatus()");
+  await until("document.getElementById('charger2-state').textContent==='Charging'");
+  assert.match(await evaluate("document.getElementById('charger2-event').textContent"), /^8.2 kW now/);
+  await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
+  await until("document.getElementById('charger2-setting-minimumSoc').disabled===false");
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
     ['home-control', 'providers-controls', 'house-model'],
     'The existing dashboard cards are preserved');
@@ -408,6 +436,11 @@ try {
       }
       await evaluate("document.getElementById('garage-live-budgets').scrollIntoView({block: 'center'})");
       await capture(`garage-live-budgets-${width}-${theme}`);
+      for (const expanded of [false, true]) {
+        await evaluate(`document.querySelectorAll('.charging-settings').forEach(fold=>fold.open=${expanded});
+          document.getElementById('charger1-device').scrollIntoView({block:'start'})`);
+        await capture(`chargers-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
+      }
     }
     // Preserve the equipment and savings layout checks from this smoke test.
     for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'], ['charger1-device', 'charging']]) {
@@ -427,7 +460,7 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
-      'charging first-use defaults, OFF readiness fields, persisted capacities and manual percentage, return to MQTT',
+      'shared charger cards, automatic values and disabled unsupported features, persisted per-charger capacities and manual charge, charging and scheduled summaries',
       'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',

@@ -16,7 +16,8 @@ export function socMeasurementTime(value) {
 
 /** Pure duplicate-safe MQTT ingestion. Caller persists reading only if accepted. */
 export function acceptSocReading(previous, payload, {
-  now = Date.now(), vehicleId = DEFAULT_CHARGING_SETTINGS.vehicleId, sourceId = DEFAULT_CHARGING_SETTINGS.sourceId,
+  now = Date.now(), vehicleId = DEFAULT_CHARGING_SETTINGS.chargers.charger1.mqtt.vehicleId,
+  sourceId = DEFAULT_CHARGING_SETTINGS.chargers.charger1.mqtt.sourceId,
 } = {}) {
   const reject = reason => ({ accepted: false, reading: previous ?? null, reason });
   let value;
@@ -24,6 +25,9 @@ export function acceptSocReading(previous, payload, {
   catch { return reject('malformed-json'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return reject('invalid-payload');
   if (!validSoc(value.soc)) return reject('invalid-soc');
+  if (value.usableCapacityKwh !== undefined && (!Number.isFinite(value.usableCapacityKwh)
+    || value.usableCapacityKwh < 1 || value.usableCapacityKwh > 300)) return reject('invalid-capacity');
+  if (value.chargeLimitSoc !== undefined && !validSoc(value.chargeLimitSoc)) return reject('invalid-charge-limit');
   if (value.vehicleId !== vehicleId || value.sourceId !== sourceId) return reject('identity-mismatch');
   if (!identity(value.readingId)) return reject('missing-reading-id');
   const measuredAt = socMeasurementTime(value.measuredAt);
@@ -40,8 +44,20 @@ export function acceptSocReading(previous, payload, {
       if (sequence <= previous.sequence) return reject('older-reading');
     } else if (Number.isFinite(previous.measuredAt) && !Number.isFinite(measuredAt)) return reject('unordered-reading');
   }
+  const optional = {}, fields = {};
+  for (const key of ['usableCapacityKwh', 'chargeLimitSoc']) {
+    if (value[key] !== undefined) {
+      optional[key] = value[key]; fields[key] = { measuredAt, receivedAt: now, readingId: value.readingId };
+    } else if (sameIdentity && Number.isFinite(previous[key])) {
+      // Configuration-like vehicle facts may be published less frequently than
+      // SoC. Retain their own clocks instead of making them look freshly read.
+      optional[key] = previous[key]; fields[key] = previous.fields?.[key]
+        ?? { measuredAt: previous.measuredAt ?? null, receivedAt: previous.receivedAt ?? null, readingId: previous.readingId };
+    }
+  }
   return { accepted: true, reason: null, reading: { vehicleId, sourceId, readingId: value.readingId,
-    soc: value.soc, measuredAt, receivedAt: now, sequence } };
+    soc: value.soc, measuredAt, receivedAt: now, sequence, ...optional,
+    ...(Object.keys(fields).length ? { fields } : {}) } };
 }
 
 export function createManualSoc(soc, { now = Date.now(), readyBy, timezone } = {}) {
@@ -50,13 +66,15 @@ export function createManualSoc(soc, { now = Date.now(), readyBy, timezone } = {
 }
 
 /** Source selection never alters a charger command or the stored observations. */
-export function effectiveSoc({ automatic = null, manual = null, now = Date.now() } = {}) {
+export function effectiveSoc({ automatic = null, manual = null, fallbackSoc = null, now = Date.now() } = {}) {
   if (validSoc(manual?.soc) && Number.isFinite(manual.enteredAt) && Number.isFinite(manual.expiresAt) && manual.enteredAt <= now && now < manual.expiresAt) {
     return { soc: manual.soc, source: 'manual', assumed: false, measuredAt: null,
       enteredAt: manual.enteredAt, expiresAt: manual.expiresAt };
   }
-  if (validSoc(automatic?.soc)) return { soc: automatic.soc, source: 'mqtt', assumed: false,
-    measuredAt: automatic.measuredAt ?? null, enteredAt: null, expiresAt: null,
+  if (validSoc(automatic?.soc)) return { soc: automatic.soc, source: automatic.source ?? 'mqtt', assumed: false,
+    measuredAt: automatic.measuredAt ?? null, receivedAt: automatic.receivedAt ?? null, enteredAt: null, expiresAt: null,
     readingId: automatic.readingId, vehicleId: automatic.vehicleId, sourceId: automatic.sourceId };
-  return { soc: 0, source: 'assumed', assumed: true, measuredAt: null, enteredAt: null, expiresAt: null };
+  if (validSoc(fallbackSoc)) return { soc: fallbackSoc, source: 'manual-fallback', assumed: true,
+    measuredAt: null, receivedAt: null, enteredAt: null, expiresAt: null };
+  return { soc: 0, source: 'assumed', assumed: true, measuredAt: null, receivedAt: null, enteredAt: null, expiresAt: null };
 }
