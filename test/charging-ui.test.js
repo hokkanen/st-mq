@@ -350,26 +350,93 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert(!Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
 });
 
-class Node {
-  constructor(document, tag = 'div') { this.document = document; this.tagName = tag.toUpperCase(); this.children = []; this.listeners = new Map(); this.attributes = new Map(); this.value = ''; this.disabled = false;
-    this.dataset = {}; this.classList = { add() {}, remove() {}, toggle() {} }; }
+class Events {
+  constructor() { this.listeners = new Map(); }
+  addEventListener(key, listener) { this.listeners.set(key, listener); }
+  removeEventListener(key, listener) { if (this.listeners.get(key) === listener) this.listeners.delete(key); }
+  dispatch(type, options = {}) {
+    const event = { target: this, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, ...options };
+    this.listeners.get(type)?.(event); return event;
+  }
+}
+class Node extends Events {
+  constructor(document, tag = 'div') {
+    super();
+    Object.assign(this, { document, ownerDocument: document, tagName: tag.toUpperCase(), children: [], attributes: new Map(),
+      value: '', disabled: false, hidden: false, dataset: {}, style: {}, className: '', ownText: '', scrollTop: 0, parentElement: null });
+    this.classList = { add: (...values) => this.classes(values, []), remove: (...values) => this.classes([], values),
+      toggle: (value, force) => { const enabled = force ?? !this.className.split(' ').includes(value); this.classes(enabled ? [value] : [], enabled ? [] : [value]); return enabled; } };
+  }
+  classes(add, remove) { this.className = [...new Set([...this.className.split(' ').filter(value => value && !remove.includes(value)), ...add])].join(' '); }
   set id(value) { this._id = value; this.document.nodes.set(value, this); }
   get id() { return this._id; }
-  append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
-  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
-  setAttribute(key, value) { this.attributes.set(key, value); }
-  addEventListener(key, value) { this.listeners.set(key, value); }
-  removeEventListener(key) { this.listeners.delete(key); }
+  get parentNode() { return this.parentElement; }
+  get isConnected() { return this === this.document.body || Boolean(this.parentElement?.isConnected); }
+  get textContent() { return this.ownText + this.children.map(child => child.textContent).join(''); }
+  set textContent(value) { this.replaceChildren(); this.ownText = String(value); }
+  append(...nodes) {
+    for (const node of nodes) {
+      if (node.tagName === '#DOCUMENT-FRAGMENT') { this.append(...node.children); continue; }
+      node.remove(); node.parentElement = this; this.children.push(node);
+    }
+  }
+  insertBefore(node, reference) {
+    if (node === reference) return node;
+    if (reference == null) { this.append(node); return node; }
+    assert.equal(reference.parentElement, this);
+    node.remove(); node.parentElement = this; this.children.splice(this.children.indexOf(reference), 0, node); return node;
+  }
+  replaceChildren(...nodes) { for (const child of this.children) child.parentElement = null; this.children = []; this.ownText = ''; this.append(...nodes); }
+  setAttribute(key, value) { this.attributes.set(key, String(value)); }
+  getAttribute(key) { return this.attributes.get(key) ?? null; }
+  removeAttribute(key) { this.attributes.delete(key); }
+  contains(target) { return target === this || this.children.some(child => child.contains(target)); }
+  matches(selector) {
+    if (selector === ':popover-open') return this.popoverOpen === true;
+    if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1));
+    if (selector.startsWith('#')) return this.id === selector.slice(1);
+    return this.tagName === selector.toUpperCase();
+  }
+  querySelector(selector) {
+    for (const child of this.children) {
+      if (child.matches(selector)) return child;
+      const result = child.querySelector(selector); if (result) return result;
+    }
+    return null;
+  }
+  focus() { this.document.activeElement = this; }
+  showPopover() { this.popoverOpen = true; this.showCount = (this.showCount ?? 0) + 1; }
+  hidePopover() { this.popoverOpen = false; this.dispatch('toggle', { newState: 'closed' }); }
+  getBoundingClientRect() {
+    const left = Number.parseFloat(this.style.left) || 30, top = Number.parseFloat(this.style.top) || 80;
+    const width = Number.parseFloat(this.style.width) || 80, height = this.id === 'status-detail-popover' ? 200 : 24;
+    return { left, top, width, height, right: left + width, bottom: top + height };
+  }
   reportValidity() { return true; }
-  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(node => node !== this); }
+  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(node => node !== this); this.parentElement = null; }
 }
 function documentFixture() {
-  const document = { nodes: new Map(), createElement: tag => new Node(document, tag), createDocumentFragment: () => new Node(document), getElementById(id) { return this.nodes.get(id); } };
+  const document = new Events(), frames = [];
+  Object.assign(document, { nodes: new Map(), createElement: tag => new Node(document, tag), createDocumentFragment: () => new Node(document, '#document-fragment'),
+    getElementById(id) { const node = this.nodes.get(id); return node?.isConnected ? node : null; },
+    flushFrames() { while (frames.length) frames.shift()(); }, documentElement: { clientWidth: 390, clientHeight: 640 } });
+  document.defaultView = Object.assign(new Events(), { innerWidth: 390, innerHeight: 640, requestAnimationFrame: callback => frames.push(callback) });
+  document.body = document.createElement('body');
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  for (const match of html.matchAll(/id="((?:charging|charger)[^"]+)"/g)) { const node = document.createElement(); node.id = match[1]; }
+  for (const match of html.matchAll(/id="((?:charging|charger)[^"]+)"/g)) { const node = document.createElement(); node.id = match[1]; document.body.append(node); }
   return document;
 }
 const submit = node => node.listeners.get('submit')({ preventDefault() {} });
+const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
+function openDetail(root) {
+  const trigger = root.querySelector('.status-detail-trigger');
+  assert(trigger, 'The concise label opens its full explanation');
+  assert.equal(trigger.tagName, 'BUTTON'); assert.equal(trigger.type, 'button');
+  trigger.dispatch('click');
+  const popup = root.ownerDocument.getElementById('status-detail-popover');
+  assert.equal(popup.hidden, false); assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+  return popup;
+}
 
 test('identical forms adapt to capabilities and automatic values, with no shared or connection setup', () => {
   const document = documentFixture(), panel = createChargingPanel({ document, request: async () => {} }), $ = id => document.getElementById(id);
@@ -378,8 +445,9 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   assert(!$('charger1-setting-readyBy').disabled); assert($('charger2-setting-readyBy').disabled);
   assert.equal($('charger2-setting-minimumSoc').value, 85); assert($('charger2-setting-minimumSoc').disabled);
   assert.equal($('charger2-setting-manualSoc').value, 62); assert($('charger2-setting-manualSoc').disabled);
-  assert.match($('charger2-setting-minimumSoc-help').textContent, /Saved fallback: 80%/);
-  assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 20%/);
+  assert.doesNotMatch($('charger2-setting-minimumSoc-help').textContent, /Saved fallback/);
+  assert.match(openDetail($('charger2-setting-minimumSoc-help')).textContent, /Saved fallback: 80%/);
+  assert.match(openDetail($('charger2-setting-manualSoc-help')).textContent, /Saved fallback: 20%/);
   assert(!$('charger2-setting-capacityKwh').disabled); assert($('charger2-enabled').disabled);
   assert.equal($('charger1-setting-manualSoc').value, 20);
   const original = $('charger2-device'); panel.update(status()); assert.equal($('charger2-device'), original);
@@ -393,8 +461,8 @@ test('refresh preserves a fallback edit and serializes mutations', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let resolve;
   const panel = createChargingPanel({ document, request: async (path, payload) => { calls.push([path, payload]); return new Promise(done => { resolve = done; }); } });
   panel.update(status()); const device = $('charger1-device'), field = $('charger1-setting-manualSoc');
-  device.open = true; field.value = '45'; field.listeners.get('input')();
-  panel.update(status()); assert.equal(device.open, true); assert.equal(field.value, '45');
+  device.open = true; field.focus(); field.value = '45'; field.listeners.get('input')();
+  panel.update(status()); assert.equal(device.open, true); assert.equal(field.value, '45'); assert.equal(document.activeElement, field);
   device.open = false; panel.update(status()); assert.equal(device.open, false);
   device.open = true; assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45');
   const pending = submit($('charger1-settings-form'));
@@ -450,28 +518,93 @@ test('automatic SoC takes priority while preserving a draft to use when automati
   panel.close();
 });
 
+test('charger help updates an open popup without disturbing form drafts, fold state or keyboard focus', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
+  const two = charger('charger2'), vehicle = { ...two, values: { ...two.values, soc: reading(62) } };
+  panel.update(status(active(), vehicle));
+  const device = $('charger2-device'), field = $('charger1-setting-manualSoc');
+  device.open = true; field.value = '45'; field.dispatch('input');
+  const help = $('charger2-setting-manualSoc-help'), trigger = help.querySelector('.status-detail-trigger'), popup = openDetail(help);
+  const close = popup.querySelector('.status-detail-close'), popupBody = popup.querySelector('.status-detail-body');
+  assert.equal(document.activeElement, close);
+  popup.scrollTop = 42; popupBody.scrollTop = 18;
+  panel.update(status(active(), { ...vehicle, settings: { ...vehicle.settings, manualSoc: 22 }, values: { ...vehicle.values, soc: reading(63) } }));
+  document.flushFrames();
+  assert.equal($('charger2-setting-manualSoc-help').querySelector('.status-detail-trigger'), trigger);
+  assert.equal($('status-detail-popover'), popup); assert.equal(popup.hidden, false); assert.equal(popup.showCount, 1);
+  assert.match(popupBody.textContent, /Saved fallback: 22%/);
+  assert.equal(popup.scrollTop, 42); assert.equal(popupBody.scrollTop, 18); assert.equal(document.activeElement, close);
+  assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45'); assert.equal(device.open, true);
+  assert.equal($('charger2-setting-manualSoc').value, 63); assert($('charger2-setting-manualSoc').disabled);
+  const escape = document.dispatch('keydown', { key: 'Escape' });
+  assert(escape.defaultPrevented); assert.equal(popup.hidden, true); assert.equal(document.activeElement, trigger);
+  panel.close();
+});
 
-test('the equipment fold keeps critical charging information visible and opens directly to settings', () => {
+
+test('controlled and observed equipment use the same charge, target and completion header with details inside the fold', () => {
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
   panel.update(status()); assert($('charger1-overview').hidden); assert($('charger1-reading-time').hidden);
   assert.equal($('charger1-enabled-label').textContent, 'Automatic charging');
   assert.equal($('charger1-resume').textContent, 'Resume automatic charging');
-  const item = active(); item.values.soc = reading(20, 'mqtt', { measuredAt: now - 86400_000 });
-  panel.update(status(item)); assert(!$('charger1-overview').hidden);
+  const item = active(), two = charger('charger2');
+  item.values.soc = reading(20, 'mqtt', { measuredAt: now - 86400_000 });
+  item.plan.costCents = 207; item.control = { phase: 'waiting', owned: { startAt } };
+  const observed = { ...two, values: { ...two.values, connected: reading(true), scheduledStartAt: reading(startAt) },
+    forecast: { state: 'forecast', controlled: false, finishAt: deadlineAt - 2 * 3600_000 } };
+  panel.update(status(item, observed)); assert(!$('charger1-overview').hidden);
   assert.equal($('charger1-soc').textContent, '20 %'); assert.equal($('charger1-minimum').textContent, '80 %');
   assert.match($('charger1-reading-time').textContent, /14 Sept 2026, 21:00/);
   assert.equal($('charger1-deadline').textContent, 'tomorrow 06:00');
   assert.equal($('charger1-sources').textContent, 'Vehicle MQTT');
-  assert.match($('charger1-remaining').textContent, /32.9 kWh grid to target/);
-  const device = $('charger1-device'), summary = $('charger1-device-summary'), body = $('charger1-settings-details');
-  assert.equal(device.tagName, 'DETAILS'); assert.equal(summary.tagName, 'SUMMARY'); assert.equal(body.tagName, 'DIV');
-  assert.deepEqual(device.children, [summary, body]);
-  assert.equal($('charger1-reading-time').parentElement, summary);
-  assert.equal($('charger1-settings-form').parentElement, body);
-  const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
-  assert(!descendants(summary).some(node => ['BUTTON', 'INPUT', 'FORM', 'DETAILS', 'A'].includes(node.tagName)),
-    'The whole equipment header toggles the fold without competing controls');
-  assert.deepEqual(descendants(body).filter(node => node.tagName === 'DETAILS').map(node => node.id), ['charger1-explanation-details']);
-  assert.equal($('charger1-explanation-details').parentElement.id, 'charger1-settings-details');
+  assert.equal($('charger1-state').textContent, 'Controlled'); assert.match($('charger1-summary').textContent, /^Controlled · Starts/);
+  assert.equal($('charger2-state').textContent, 'Observed'); assert.match($('charger2-summary').textContent, /^Observed · Scheduled start/);
+  assert.equal($('charger1-completion').textContent, 'tomorrow 06:00'); assert.equal($('charger2-completion').textContent, 'tomorrow 04:00');
+  assert.equal($('charger1-energy').textContent, '32.9 kWh'); assert.equal($('charger1-cost').textContent, '€2.07');
+  assert.equal($('charger1-deadline').parentElement.hidden, false); assert.equal($('charger2-deadline').parentElement.hidden, true);
+  for (const id of ['charger1', 'charger2']) {
+    const device = $(`${id}-device`), summary = $(`${id}-device-summary`), body = $(`${id}-settings-details`), overview = $(`${id}-overview`);
+    assert.equal(device.tagName, 'DETAILS'); assert.equal(summary.tagName, 'SUMMARY'); assert.equal(body.tagName, 'DIV');
+    assert.deepEqual(device.children, [summary, body]);
+    assert(overview.contains($(`${id}-soc`)) && overview.contains($(`${id}-minimum`)) && overview.contains($(`${id}-completion`)));
+    assert.notEqual($(`${id}-soc`).parentElement, $(`${id}-minimum`).parentElement, 'Charge and target have separate metric columns');
+    assert.equal($(`${id}-event`).parentElement, $(`${id}-deadline`).parentElement.parentElement, 'Start and ready-by share a timing row');
+    assert(body.contains($(`${id}-remaining`)) && body.contains($(`${id}-energy`)) && body.contains($(`${id}-reading-time`)));
+    assert(!summary.textContent.includes('kWh') && !summary.textContent.includes('€'), 'Energy and cost belong to unfolded details');
+    assert.equal($(`${id}-settings-form`).parentElement, body);
+    assert(!descendants(summary).some(node => ['BUTTON', 'INPUT', 'FORM', 'DETAILS', 'A'].includes(node.tagName)),
+      'The whole equipment header toggles the fold without competing controls');
+    assert.deepEqual(descendants(body).filter(node => node.tagName === 'DETAILS').map(node => node.id), [`${id}-explanation-details`]);
+  }
+  panel.update(status({ ...item, control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } },
+    { ...observed, values: { ...observed.values, charging: reading(true), powerKw: reading(11.2) } }));
+  for (const id of ['charger1', 'charger2']) {
+    assert.match($(`${id}-event`).textContent, /^Charging · /);
+    assert.doesNotMatch($(`${id}-event`).textContent, /estimated/);
+    assert.equal($(`${id}-device-summary`).textContent.split($(`${id}-completion`).textContent).length - 1, id === 'charger1' ? 2 : 1,
+      'The estimate appears only in its metric; ready-by can independently match the estimate');
+  }
+  panel.close();
+});
+
+test('compact operational facts keep their explanations and focus through the transition into charging', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
+  const item = active(); item.capabilities.externalLoadBalancing = true;
+  item.control = { phase: 'waiting', owned: { startAt } };
+  item.values = { ...item.values, maximumCurrentA: reading(16), availableCurrentA: reading(23, 'easee-equalizer', { receivedAt: now }) };
+  panel.update(status(item)); $('charger1-device').open = true;
+  const readings = $('charger1-readings'), allowance = readings.children.find(node => node.tagName === 'DT' && node.textContent === 'Reported allowance');
+  assert(allowance); assert.equal(readings.children[readings.children.indexOf(allowance) + 1].textContent, '23 A per phase');
+  assert.doesNotMatch(readings.textContent, /received/);
+  const popup = openDetail(allowance), trigger = allowance.querySelector('.status-detail-trigger');
+  assert.match(popup.textContent, /23 A per phase · received 21:00/);
+  panel.update(status({ ...item, values: { ...item.values, charging: reading(true), powerKw: reading(11), actualCurrentA: reading(16),
+    availableCurrentA: reading(22, 'easee-equalizer', { receivedAt: now + 60_000 }) } }));
+  document.flushFrames();
+  assert.match(readings.textContent, /^Drawing now16 A per phaseReported allowance22 A per phase/);
+  const refreshed = readings.children.find(node => node.tagName === 'DT' && node.textContent === 'Reported allowance');
+  assert(refreshed.querySelector('.status-detail-trigger') === trigger, 'Adding a live-current row retains the existing explanation trigger');
+  assert.equal(popup.hidden, false); assert.match(popup.textContent, /22 A per phase · received 21:01/);
+  document.dispatch('keydown', { key: 'Escape' }); assert.equal(document.activeElement, trigger); assert(trigger.isConnected);
   panel.close();
 });

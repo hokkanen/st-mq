@@ -1,4 +1,6 @@
 import { isReadOnlyReplica } from './replica-status.js';
+import { setStatusDetail } from './status-details.js';
+import { chargerSummary } from './charging-summary.js';
 
 const finite = Number.isFinite;
 const number = (value, unit = '') => finite(value) ? `${Number(value.toFixed(1))}${unit ? ` ${unit}` : ''}` : 'Unknown';
@@ -279,19 +281,32 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   const bind = (node, event, action) => { if (!node) return; node.addEventListener(event, action); listeners.push(() => node.removeEventListener(event, action)); };
   const writable = () => Boolean(status?.charging && status.readOnly !== true && status.charging.readOnly !== true && !isReadOnlyReplica(status));
   const set = (id, text) => { if ($(id)) $(id).textContent = text; };
+  const rowNodes = new WeakMap();
   function list(root, rows) {
-    const fragment = document.createDocumentFragment();
-    for (const [label, text] of rows) fragment.append(make('dt', label), make('dd', text));
-    root.replaceChildren(fragment);
+    const nodes = rowNodes.get(root) ?? new Map(); rowNodes.set(root, nodes);
+    const keys = new Set(), occurrences = new Map();
+    rows.forEach(([label, text, detail], index) => {
+      const occurrence = occurrences.get(label) ?? 0; occurrences.set(label, occurrence + 1);
+      const key = `${label}:${occurrence}`; keys.add(key);
+      let row = nodes.get(key);
+      if (!row) { row = { term: make('dt'), value: make('dd') }; nodes.set(key, row); root.append(row.term, row.value); }
+      setStatusDetail(row.term, { label, title: label, detail, key: `${root.id}:${key}` });
+      row.value.textContent = text;
+      if (root.children[index * 2] !== row.term) root.insertBefore(row.term, root.children[index * 2] ?? null);
+      if (root.children[index * 2 + 1] !== row.value) root.insertBefore(row.value, root.children[index * 2 + 1] ?? null);
+    });
+    for (const [key, row] of nodes) if (!keys.has(key)) { row.term.remove(); row.value.remove(); nodes.delete(key); }
   }
   function createField(group, field, root) {
+    const container = make('div', '', 'charging-field');
     const label = make('label', field.label), input = make('input', '', '', settingId(group.id, field.key));
     input.type = field.type; input.disabled = true; input.required = !field.nullable;
     for (const key of ['min', 'max', 'step']) if (field[key] !== undefined) input[key] = field[key];
     if (field.nullable) input.placeholder = 'Not set';
-    const help = make('small', field.help ?? '', '', `${input.id}-help`);
-    label.htmlFor = input.id; input.setAttribute('aria-describedby', help.id); label.append(input, help); root.append(label);
-    group.fields.set(field.key, { field, input, label, help });
+    const help = make('small', '', 'charging-field-help', `${input.id}-help`);
+    label.htmlFor = input.id; input.setAttribute('aria-describedby', help.id);
+    container.append(label, input, help); root.append(container);
+    group.fields.set(field.key, { field, input, label: container, help });
     bind(input, 'input', () => { group.dirty.add(field.key); group.drafts.set(field.key, input.value); refreshControls(); });
   }
   function group(id, descriptors, root, form, save, message, path) {
@@ -315,27 +330,44 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const summary = make('summary', '', 'equipment-device-summary', `${id}-device-summary`);
     const heading = make('div', '', 'equipment-device-heading'), title = make('h4', charger.label, '', `${id}-title`);
     const state = make('span', '', 'equipment-device-status', `${id}-state`); heading.append(title, state); summary.append(heading);
-    const overview = make('div', '', 'pump-native-overview charging-overview', `${id}-overview`), metrics = {};
-    const charge = make('div', '', 'equipment-value'), pair = make('strong', '', 'charging-charge-pair');
-    const current = make('span', 'Unknown', '', `${id}-soc`), target = make('span', 'Unknown', '', `${id}-minimum`);
-    pair.append(current, make('span', ' → ', 'charging-pair-divider'), target);
+    const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
+    const charge = make('div', '', 'equipment-value charging-charge');
+    const current = make('strong', 'Unknown', '', `${id}-soc`), target = make('strong', 'Unknown', '', `${id}-minimum`);
     const sources = make('small', '', '', `${id}-sources`);
-    charge.append(make('span', 'Charge → target'), pair, sources); overview.append(charge);
+    charge.append(make('span', 'Charge'), current, sources);
+    const arrow = make('span', '→', 'charging-progress-arrow'); arrow.setAttribute('aria-hidden', 'true');
+    const targetMetric = make('div', '', 'equipment-value'); targetMetric.append(make('span', 'Target'), target);
+    const completionMetric = make('div', '', 'equipment-value charging-completion');
+    const completion = make('strong', 'No estimate', '', `${id}-completion`);
+    completionMetric.append(make('span', 'Est. target'), completion);
+    overview.append(charge, arrow, targetMetric, completionMetric);
     metrics.soc = { value: current }; metrics.minimum = { value: target };
-    const energy = make('div', '', 'equipment-value'), energyValue = make('strong', 'Unknown', '', `${id}-energy`), energyHint = make('small');
-    const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
-    const energyLabel = make('span', 'Grid to target'); energy.append(energyLabel, energyValue, deadline, energyHint); overview.append(energy);
-    metrics.energy = { value: energyValue, hint: energyHint, label: energyLabel };
-    const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
     const timing = make('div', '', 'charging-timing'), event = make('p', '', 'charging-event', `${id}-event`);
-    const remaining = make('p', '', 'charging-remaining', `${id}-remaining`), periodCount = make('p', '', 'charging-period-count', `${id}-period-count`);
+    const deadlineGroup = make('div', '', 'charging-ready-by');
+    const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
+    deadlineGroup.append(make('span', 'Ready by'), deadline); timing.append(event, deadlineGroup);
+    const readiness = make('p', '', 'charging-readiness', `${id}-readiness`);
     const priority = make('p', '', 'charging-priority', `${id}-priority`);
-    timing.append(event); summary.append(overview, readingTime, timing, remaining, periodCount, priority);
+    summary.append(overview, timing, readiness, priority);
     const problem = make('p', '', 'charging-problem', `${id}-problem`); problem.setAttribute('role', 'status'); summary.append(problem);
     const body = make('div', '', 'equipment-device-body charging-settings', `${id}-settings-details`);
-    const readings = make('dl', '', 'equipment-readings', `${id}-readings`), notes = make('ul', '', 'charging-notes', `${id}-notes`);
+    const facts = make('div', '', 'charging-fact-overview');
+    const remaining = make('div', '', 'charging-detail-metric', `${id}-remaining`);
+    const energyLabel = make('span'), energyValue = make('strong', '', '', `${id}-energy`);
+    remaining.append(energyLabel, energyValue);
+    const costMetric = make('div', '', 'charging-detail-metric');
+    const costLabel = make('span'), cost = make('strong', '', '', `${id}-cost`); costMetric.append(costLabel, cost);
+    facts.append(remaining, costMetric);
+    const context = make('div', '', 'charging-reading-context');
+    const sourceInfo = make('span', '', '', `${id}-source-info`), completionInfo = make('span', '', '', `${id}-completion-info`);
+    const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
+    context.append(sourceInfo, completionInfo, readingTime);
+    const scheduleHeading = make('div', '', 'charging-schedule-heading');
+    const scheduleInfo = make('span', '', '', `${id}-schedule-info`), periodCount = make('span', '', 'charging-period-count', `${id}-period-count`);
+    scheduleHeading.append(scheduleInfo, periodCount);
+    const readings = make('dl', '', 'equipment-readings charging-facts', `${id}-readings`), notes = make('ul', '', 'charging-notes', `${id}-notes`);
     const periods = make('dl', '', 'equipment-readings charging-periods', `${id}-periods`);
-    body.append(periods, readings, notes);
+    body.append(facts, context, scheduleHeading, periods, readings, notes);
     const master = make('div', '', 'charging-master'), masterLabel = make('span', 'Automatic charging', '', `${id}-enabled-label`);
     const toggle = make('button', 'OFF', '', `${id}-enabled`); toggle.type = 'button'; toggle.setAttribute('role', 'switch');
     toggle.setAttribute('aria-checked', 'false'); toggle.setAttribute('aria-labelledby', masterLabel.id); master.append(masterLabel, toggle);
@@ -352,7 +384,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, section, title, state, event, overview, sources, metrics, priority, readingTime, deadline, remaining, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger };
+    const device = { id, section, title, state, event, overview, sources, metrics, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, remaining, energyLabel, energyValue, costLabel, cost, costMetric, sourceInfo, completionInfo, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger };
     bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
     bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
     devices.set(id, device); return device;
@@ -369,9 +401,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     for (const [key, { field, input, help }] of group.fields) {
       const reading = charger?.values?.[field.reading ?? key], live = field.automatic && automatic(reading);
       input.value = (live ? reading.value : group.dirty.has(key) ? group.drafts.get(key) : get(settings, key)) ?? '';
-      help.textContent = live ? `${sourceLabel(reading)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}.`
-        : field.scheduling && !charger?.capabilities?.scheduling ? 'Scheduling is unavailable with this integration.' : field.help ?? '';
-      help.hidden = !help.textContent;
+      const unsupported = field.scheduling && !charger?.capabilities?.scheduling;
+      const detail = live ? `${sourceLabel(reading)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}. ${field.help ?? ''}`
+        : unsupported ? 'Scheduling is unavailable with this integration.' : field.help ?? '';
+      setStatusDetail(help, { label: live ? sourceLabel(reading) : unsupported ? 'Observation only' : 'About this setting',
+        title: field.label, detail, key: help.id });
+      help.hidden = !detail;
     }
   }
   function refreshControls() {
@@ -380,10 +415,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
         const unsupported = field.scheduling && !supported, live = field.automatic && automatic(charger.values?.[field.reading ?? key]);
-        input.disabled = locked || unsupported || live; label.classList.toggle('charging-field-disabled', Boolean(unsupported || live));
+        input.disabled = locked || unsupported || live; label.hidden = unsupported; label.classList.toggle('charging-field-disabled', Boolean(unsupported || live));
       }
       settings.save.disabled = locked || ![...settings.fields].some(([key, { input }]) => settings.dirty.has(key) && !input.disabled);
-      device.toggle.disabled = locked || !supported;
+      device.toggle.disabled = locked || !supported; device.toggle.parentElement.hidden = !supported;
       const view = chargerDisplay(charger);
       device.resume.hidden = !supported || !charger.settings.enabled || !view.yielded;
       device.resume.disabled = locked || device.resume.hidden;
@@ -400,30 +435,61 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     for (const charger of charging?.chargers ?? []) {
       currentIds.add(charger.id);
       const device = devices.get(charger.id) ?? createDevice(charger), view = views.find(item => item.id === charger.id);
-      device.charger = charger; device.title.textContent = charger.label; device.state.textContent = view.state;
-      device.event.textContent = view.event; device.event.dataset.state = view.risk ? 'attention' : 'normal';
+      const presentation = chargerSummary(charger, view, { now: next.now,
+        formatTime: value => chargingTime(value, charging.timezone ?? 'Europe/Helsinki', next.now) });
+      const explanation = Object.fromEntries(view.explanations);
+      device.charger = charger; device.title.textContent = charger.label;
+      device.section.dataset.state = view.state;
+      device.state.textContent = presentation.roleLabel; device.state.dataset.state = presentation.roleState;
+      device.state.title = presentation.roleDetail;
+      device.event.textContent = presentation.activity; device.event.dataset.state = view.risk ? 'attention' : 'normal';
       device.overview.hidden = !view.showMetrics;
       device.metrics.soc.value.textContent = view.soc; device.metrics.minimum.value.textContent = view.minimum;
-      device.sources.textContent = view.sources;
+      device.sources.textContent = view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
+      device.completion.textContent = presentation.completion.value;
       device.readingTime.textContent = view.readingTime; device.readingTime.hidden = !view.readingTime;
-      device.deadline.textContent = view.deadline.replace(/^Ready by /, ''); device.deadline.hidden = !view.deadline;
-      device.remaining.textContent = `${view.gridEnergy} ${view.energyLabel.toLowerCase()} · ${view.energyNote.toLowerCase()}`;
-      device.remaining.hidden = !view.showMetrics || !view.deadline;
+      device.deadline.textContent = view.deadline.replace(/^Ready by /, ''); device.deadlineGroup.hidden = !view.deadline;
+      device.readiness.textContent = view.risk ? view.readiness : '';
+      device.readiness.hidden = !view.risk; device.readiness.dataset.state = view.risk ? 'attention' : 'normal';
+      device.remaining.hidden = !view.showMetrics;
+      device.energyValue.textContent = view.gridEnergy;
+      setStatusDetail(device.energyLabel, { label: view.energyLabel, title: view.energyLabel,
+        detail: `${view.energyNote}. ${explanation['Energy estimate'] ?? ''}`, key: `${charger.id}:energy` });
+      const cost = view.rows.find(([label]) => label === 'Estimated cost to target');
+      device.costMetric.hidden = !cost; device.cost.textContent = cost?.[1] ?? '';
+      device.facts.hidden = !view.showMetrics && !cost;
+      setStatusDetail(device.costLabel, { label: 'Estimated cost', title: 'Estimated cost to target',
+        detail: 'Cost of the planned grid energy needed to reach the target. The final charging period can continue until the vehicle finishes.', key: `${charger.id}:cost` });
+      setStatusDetail(device.sourceInfo, { label: 'Charge source', title: 'Charge reading and estimate',
+        detail: [view.socSource, view.readingTime, explanation['Charging progress'], explanation['Readings & fallbacks']].filter(Boolean).join('\n\n'), key: `${charger.id}:source` });
+      setStatusDetail(device.completionInfo, { label: 'Target estimate', title: 'Estimated time to target',
+        detail: [presentation.completion.detail, view.deadline, view.readiness, 'Estimated when the displayed target will be reached, using current charge and forecast charging power. It can change as readings update. This is not a scheduled stop.'].filter(Boolean).join('\n\n'), key: `${charger.id}:completion` });
       device.priority.textContent = view.priority; device.priority.hidden = !view.priority;
       device.periodCount.textContent = view.periodCount; device.periodCount.hidden = !view.periodCount;
       device.problem.textContent = view.problem; device.problem.hidden = !view.problem;
-      list(device.periods, view.periodRows); device.periods.hidden = !view.periodRows.length;
+      const scheduleExplanation = [view.periodRows.map(([label, text]) => `${label}: ${text}`).join('\n'),
+        explanation['Price planning']].filter(Boolean).join('\n\n');
+      setStatusDetail(device.scheduleInfo, { label: 'Charging schedule', title: 'Charging periods',
+        detail: scheduleExplanation, key: `${charger.id}:schedule` });
+      device.scheduleHeading.hidden = !view.periodRows.length;
+      list(device.periods, view.periodRows.map(([label, text]) => [label, text.replace(' onwards · vehicle finishes naturally', ' onwards')]));
+      device.periods.hidden = view.periodRows.length < 2;
       list(device.explanations, view.explanations);
-      device.metrics.energy.label.textContent = view.deadline ? 'Ready by' : view.energyLabel;
-      device.metrics.energy.value.textContent = view.gridEnergy; device.metrics.energy.value.hidden = Boolean(view.deadline);
-      device.metrics.energy.hint.textContent = view.deadline ? view.readiness : view.energyNote;
-      device.metrics.energy.hint.dataset.state = view.risk ? 'attention' : 'normal';
-      list(device.readings, view.rows); device.readings.hidden = !view.rows.length;
+      const rows = view.rows.filter(([label]) => label !== 'Estimated cost to target').map(([label, text]) => {
+        if (label === 'Last reported Equalizer allowance') return ['Reported allowance', text.split(' · ')[0], `${text}. ${explanation['Current allocation'] ?? ''}`];
+        if (label === 'Forecast charging power') return ['Forecast power', text.replace(' average during planned periods', ''), `${text}. ${explanation['Current allocation'] ?? explanation['Energy estimate'] ?? ''}`];
+        if (label === 'Other scheduled charging') return ['Other charging', text.split(' · ')[0], `${text}. ${explanation['Other charging'] ?? ''}`];
+        if (label === 'Saving from pauses') return [label, text.split(' compared with ')[0], text];
+        if (label === 'Charging limit') return [label, text, 'The configured maximum current per phase. Actual current can be lower when supply is shared or the vehicle limits its draw.'];
+        return [label, text];
+      });
+      list(device.readings, rows); device.readings.hidden = !rows.length;
       device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
-      device.controlDetail.textContent = view.controlDetail;
+      setStatusDetail(device.controlDetail, { label: 'About charging control', title: presentation.roleLabel,
+        detail: `${presentation.roleDetail}\n\n${view.controlDetail}`, key: `${charger.id}:control` });
       const enabled = charger.settings.enabled === true; device.toggle.textContent = enabled ? 'ON' : 'OFF'; device.toggle.setAttribute('aria-checked', String(enabled));
       updateFields(device.settings, charger.settings, charger);
-      set(`${charger.id}-summary`, view.summary); if ($(`${charger.id}-summary`)) $(`${charger.id}-summary`).title = view.summary;
+      set(`${charger.id}-summary`, presentation.compactSummary); if ($(`${charger.id}-summary`)) $(`${charger.id}-summary`).title = presentation.compactSummary;
     }
     for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); }
     refreshControls();
