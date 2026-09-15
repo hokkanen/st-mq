@@ -51,7 +51,7 @@ test('automatic SoC takes priority over a remembered fallback, including zero pe
   assert.equal(fallback.soc, 35);
   assert.equal(fallback.assumed, true);
   assert.equal(Object.hasOwn(fallback, 'expiresAt'), false);
-  assert.equal(effectiveSoc().soc, 40);
+  assert.equal(effectiveSoc().soc, 20);
 });
 
 test('MQTT topic association separates readings and retained vehicle facts without requiring vehicle identities', () => {

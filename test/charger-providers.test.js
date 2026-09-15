@@ -234,7 +234,7 @@ test('native schedule display distinguishes a real stop from a delayed start wit
   assert.deepEqual(nextScheduleOccurrence(daily, now), {
     startAt: now + hour, endAt: now + 4 * hour, endKind: 'scheduled-stop', kind: 'daily',
   });
-  assert.equal(manualScheduleWindow(daily, now), null, 'Readable complex schedules still require manual release');
+  assert.equal(manualScheduleWindow(daily, now, now + 24 * hour).windowEndAt, now + 4 * hour, 'All periods in the readiness cycle retain manual priority until the last end');
 });
 
 test('past Tesla schedules do not roll forward into a new charging event', () => {
@@ -263,4 +263,27 @@ test('Tesla assignment separates confirmed vehicle routing from an uncertain ext
   assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'bmw' }).chargerId, 'charger2');
   assert.equal(teslamateChargerAssignment({ assignment: 'bmw' }, { identified: 'easee' }).chargerId, 'charger2',
     'An explicit assignment is the owner decision, not a hint for automatic attribution');
+});
+
+
+test('the reported Equalizer allowance stays distinct from a zero dynamic charging limit', () => {
+  const telemetry = easeeChargerTelemetry(chargingSnapshot(easeeRows({ 47: 16, 48: 0, 230: 16, 231: 16, 232: 16 }), schedule, now), { now });
+  assert.equal(telemetry.currentA.value, 0);
+  assert.equal(telemetry.availableCurrentA.value, 16);
+  assert.equal(telemetry.maxCurrentA.value, 16);
+  assert.deepEqual(telemetry.availableCurrentA.inputs.map(input => input.id), [230, 231, 232]);
+});
+
+test('a charger observation arriving during the state request is not discarded as a future reading', async () => {
+  let clock = now;
+  const adapter = createEaseeScheduleAdapter({ chargerId: 'synthetic-charger', clock: () => clock,
+    request: async url => {
+      if (url.endsWith('/schedules')) return schedule;
+      clock += 25;
+      return easeeRows().map(row => ({ ...row, timestamp: new Date(clock).toISOString() }));
+    } });
+  const reading = await adapter.read();
+  assert.equal(reading.readAt, now + 25);
+  assert.equal(reading.controlKnown, true);
+  assert.equal(reading.limits.chargerA, 32);
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chargerDisplay, chargingDisplay, chargingContext, chargingFields, chargingTime, createChargingPanel } from '../chart/charging.js';
+import { chargerDisplay, chargingDisplay, chargingContext, chargingFields, chargingTime, chargingReadingTime, createChargingPanel } from '../chart/charging.js';
 import { DEFAULT_CHARGING_SETTINGS } from '../src/charging/settings.js';
 
 const now = Date.parse('2026-09-15T18:00:00Z'), startAt = now + 2 * 3600_000, deadlineAt = now + 9 * 3600_000;
@@ -9,7 +9,7 @@ const reading = (value, source = 'teslamate', extra = {}) => ({ value, source, a
 function charger(id = 'charger1', patch = {}) {
   return { id, label: id === 'charger1' ? 'Charger 1' : 'Charger 2',
     settings: structuredClone(DEFAULT_CHARGING_SETTINGS.chargers[id]), capabilities: { scheduling: id === 'charger1', currentControl: false },
-    values: { soc: reading(40, 'manual-fallback'), minimumSoc: reading(80, 'manual-fallback'),
+    values: { soc: reading(20, 'manual-fallback'), minimumSoc: reading(80, 'manual-fallback'),
       capacityKwh: reading(id === 'charger1' ? 74 : 57, 'manual-fallback'), connected: reading(null) },
     requiredGridKwh: 32.888, ...patch };
 }
@@ -41,7 +41,7 @@ test('both chargers use the same compact model and retain useful energy informat
   const original = charger(), renamed = { ...original, id: 'another-charger', label: 'Another charger' };
   const first = view(original), second = view(renamed);
   assert.deepEqual({ ...first, id: second.id, label: second.label }, second);
-  assert.equal(first.soc, '40 %'); assert.equal(first.socSource, 'Manual fallback'); assert.equal(first.gridEnergy, '32.9 kWh');
+  assert.equal(first.soc, '20 %'); assert.equal(first.socSource, 'Manual fallback'); assert.equal(first.gridEnergy, '32.9 kWh');
   assert.equal(chargingDisplay(status().charging, now).chargers.length, 2);
   assert.equal(view(charger('charger2')).event, 'Monitoring');
   assert(!first.rows.some(([label]) => ['Current charge', 'Minimum charge', 'Grid energy to minimum'].includes(label)), 'Do not repeat overview metrics');
@@ -57,13 +57,15 @@ test('times use the application timezone with concise calendar dates across DST'
   assert.match(chargingDisplay(input, now).chargers[0].event, /20:00/);
 });
 
-test('one charge reading row distinguishes original measurements from receipt time', () => {
-  const state = charger(), measuredAt = now - 120 * 86400_000;
+test('unfolded charge reading includes original date and time, distinguishing receipt time', () => {
+  const state = active(), measuredAt = now - 120 * 86400_000;
   const measured = view({ ...state, values: { ...state.values, soc: reading(35, 'mqtt', { measuredAt, receivedAt: now }) } });
-  assert.equal(Object.fromEntries(measured.rows)['Charge reading'], `Measured ${chargingTime(measuredAt, 'Europe/Helsinki', now)}`);
+  assert.equal(measured.readingTime, `Charge measured ${chargingReadingTime(measuredAt, 'Europe/Helsinki')}`);
+  assert.match(measured.readingTime, /18 May 2026, 21:00/);
+  assert(!measured.rows.some(([label]) => label === 'Charge reading'));
   const received = view({ ...state, values: { ...state.values, soc: reading(35, 'teslamate', { measuredAt: null, receivedAt: now }) },
     telemetry: { fields: { geofence: { value: 'Not user-facing metadata' }, charge_current_request: { value: 13 } } } });
-  assert.match(Object.fromEntries(received.rows)['Charge reading'], /Received 21:00 · measurement time unknown/);
+  assert.match(received.readingTime, /Charge received 15 Sept 2026, 21:00 · measurement time unknown/);
   assert(!JSON.stringify(received).includes('Not user-facing metadata'));
 });
 
@@ -74,50 +76,52 @@ test('confirmed and proposed starts are distinguished without repeating schedule
   const revised = view({ ...state, plan: { ...state.plan, startAt: startAt + 3600_000 }, control: { phase: 'waiting', owned: { startAt } } });
   assert.equal(revised.event, 'Starts 23:00 · update awaiting confirmation');
   assert(!revised.rows.some(([label]) => /start/i.test(label)));
-  assert.equal(Object.fromEntries(revised.rows)['Ready by'], 'tomorrow 06:00');
+  assert.equal(revised.deadline, 'Ready by tomorrow 06:00');
 });
 
 test('charging shows live power and remaining completion estimate without stale planned timestamps', () => {
   const item = active(), earlierFinish = deadlineAt - 3600_000;
   const displayed = view({ ...item, values: { ...item.values, charging: reading(true), powerKw: reading(8.2),
     scheduledStartAt: reading(startAt), scheduledEndAt: reading(deadlineAt) }, control: { phase: 'released' }, forecast: { finishAt: earlierFinish } });
-  assert.equal(displayed.state, 'Charging'); assert.equal(displayed.event, '8.2 kW now · minimum estimated tomorrow 05:00');
+  assert.equal(displayed.state, 'Charging'); assert.equal(displayed.event, '8.2 kW now · target estimated tomorrow 05:00');
   assert(!displayed.rows.some(([label]) => /start|minimum reached|ready by|end|stopping|power/i.test(label)));
   assert(!JSON.stringify(displayed.rows).includes('23:00'));
   const met = view({ ...item, requiredGridKwh: 0, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
-  assert.match(met.event, /minimum reached$/);
+  assert.match(met.event, /target reached$/);
 });
 
 test('a manual window is shown once, suppressing native duplicates and inactive automatic plans', () => {
   const item = active(), control = { phase: 'yielded', manual: { kind: 'window', startsAt: startAt, resumeAt: deadlineAt, repeating: true } };
   const displayed = view({ ...item, control, values: { ...item.values, scheduledStartAt: reading(startAt), scheduledEndAt: reading(deadlineAt) },
     telemetry: { scheduledEndKind: 'scheduled-stop' } });
-  assert.equal(displayed.state, 'Manual control');
-  assert.equal(displayed.event, 'Easee window 23:00–tomorrow 06:00 · ST-MQ resumes afterwards');
+  assert.equal(displayed.state, 'Manual schedule');
+  assert.equal(displayed.event, 'Manual window 23:00–tomorrow 06:00');
   assert.equal(displayed.eventKind, 'manual');
   assert(!displayed.rows.some(([label]) => /start|ready|window|end|resume/i.test(label)));
-  assert.match(displayed.controlDetail, /recurring Easee schedule/);
+  assert.equal(displayed.priority, 'Automatic control resumes tomorrow 06:00.');
+  assert.equal(displayed.deadline, '', 'The automatic deadline is inactive during manual priority');
   const charging = view({ ...item, control, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
-  assert.equal(charging.event, '8.2 kW now · Easee window ends tomorrow 06:00 · ST-MQ resumes afterwards');
+  assert.equal(charging.event, '8.2 kW now · Manual window 23:00–tomorrow 06:00');
 });
 
 test('faults and failed confirmation show actionable control status without claiming manual takeover', () => {
   const item = active();
   for (const phase of ['unavailable', 'unconfirmed']) {
     const result = view({ ...item, control: { phase, errorCode: 'read-failed', reason: 'Easee did not respond. The last schedule is unchanged.' } });
-    assert.equal(result.state, 'Control unavailable'); assert.match(result.event, /^Easee did not respond/);
+    assert.equal(result.state, 'Control unavailable'); assert.match(result.problem, /^Easee did not respond/);
     assert.equal(result.yielded, false); assert(!result.event.includes('Proposed')); assert.equal(result.eventAt, null);
   }
   assert.equal(view({ ...charger(), control: { phase: 'off', handoverConfirmed: false } }).state, 'Handover unconfirmed');
 });
 
-test('off and disconnected cards omit stale automatic plans and manual priority', () => {
+test('disconnected cards hide vehicle metrics and plans while preserving live cycle priority', () => {
   const item = active(), manual = { kind: 'window', startsAt: startAt, resumeAt: deadlineAt };
-  for (const patch of [{ settings: { ...item.settings, enabled: false } }, { values: { ...item.values, connected: reading(false) } }]) {
-    const result = view({ ...item, control: { phase: 'yielded', manual }, ...patch });
-    assert(!result.event.includes('Proposed')); assert(!result.event.includes('resumes')); assert.equal(result.eventAt, null);
-    assert.equal(result.yielded, false); assert(!result.rows.some(([label]) => /ready|start|window/i.test(label)));
-  }
+  const off = view({ ...item, settings: { ...item.settings, enabled: false }, control: { phase: 'yielded', manual } });
+  assert.equal(off.yielded, false); assert.equal(off.deadline, ''); assert.equal(off.periodRows.length, 0);
+  const disconnected = view({ ...item, values: { ...item.values, connected: reading(false) }, control: { phase: 'yielded', manual } });
+  assert.equal(disconnected.state, 'Not connected'); assert.equal(disconnected.showMetrics, false);
+  assert.equal(disconnected.yielded, true); assert.match(disconnected.event, /Automatic control resumes/);
+  assert.equal(disconnected.eventAt, null); assert.equal(disconnected.deadline, ''); assert.equal(disconnected.periodRows.length, 0);
 });
 
 test('a read-only charger shows one verified native window while connected', () => {
@@ -141,6 +145,105 @@ test('automatic source hints replace repeated fallback assumptions in the fold',
     'Electricity prices are unavailable.',
   ] } });
   assert.deepEqual(result.notes, ['Electricity prices are unavailable.']);
+});
+
+test('confirmed periods describe the next pause or resumption and keep the final period unrestricted', () => {
+  const item = active(), periods = [{ startAt: now - 3600_000, endAt: now + 1800_000 }, { startAt, endAt: null }];
+  const current = view({ ...item, plan: { ...item.plan, periods }, control: { phase: 'active', owned: null, execution: { periods } },
+    values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
+  assert.equal(current.event, '8.2 kW now · pauses 21:30'); assert.equal(current.periodCount, '2 charging periods');
+  assert.deepEqual(current.periodRows, [['Period 1', '20:00–21:30'], ['Period 2', '23:00 onwards · vehicle finishes naturally']]);
+  const pausedPeriods = [{ startAt: now - 3600_000, endAt: now - 1800_000 }, { startAt, endAt: null }];
+  const paused = view({ ...item, plan: { ...item.plan, periods: pausedPeriods }, control: { phase: 'paused', owned: { startAt: pausedPeriods[0].startAt, periods: pausedPeriods } } });
+  assert.equal(paused.state, 'Paused between periods'); assert.equal(paused.event, 'Resumes 23:00');
+  assert.equal(paused.deadline, 'Ready by tomorrow 06:00');
+  const released = view({ ...item, control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
+  assert(!released.event.includes('pauses')); assert.equal(released.periodRows.length, 0);
+});
+
+test('a confirmed revised plan does not appear pending because execution retains completed periods', () => {
+  const item = active(), completed = { startAt: now - 2 * 3600_000, endAt: now - 3600_000 }, future = { startAt, endAt: null };
+  const result = view({ ...item, plan: { ...item.plan, id: 'accepted-revision', periods: [future], costCents: 90 },
+    control: { phase: 'paused', owned: { startAt }, execution: { planId: 'accepted-revision', periods: [completed, future] } } });
+  assert.equal(result.event, 'Resumes 23:00'); assert.equal(result.periodRows.length, 2);
+  assert.equal(Object.fromEntries(result.rows)['Estimated cost to target'], '€0.90');
+  const pending = view({ ...item, plan: { ...item.plan, id: 'new-proposal', periods: [future] },
+    control: { phase: 'paused', owned: { startAt }, execution: { planId: 'previous-plan', periods: [completed, future] } } });
+  assert.match(pending.event, /update awaiting confirmation/);
+});
+
+test('a failed proposal keeps the last confirmed periods visible beside its specific problem', () => {
+  const item = active(), confirmed = [{ startAt, endAt: startAt + 1800_000 }, { startAt: startAt + 3600_000, endAt: null }];
+  const result = view({ ...item, plan: { ...item.plan, startAt: startAt + 900_000, periods: [{ startAt: startAt + 900_000, endAt: null }] },
+    control: { phase: 'unavailable', errorCode: 'readback-failed', reason: 'Easee did not confirm the update. The last confirmed start may remain active; another reading will be requested.', owned: { startAt, periods: confirmed } } });
+  assert.equal(result.event, 'Last confirmed start 23:00'); assert.equal(result.state, 'Update unconfirmed');
+  assert.equal(result.periodRows.length, 2); assert.equal(result.periodCount, '2 charging periods');
+  assert.match(result.problem, /did not confirm.*last confirmed start.*another reading/);
+});
+
+test('a schedule acknowledgement does not claim a pause when telemetry still shows charging', () => {
+  const item = active(), result = view({ ...item, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) },
+    control: { phase: 'pause-unconfirmed', reason: 'The new start is confirmed, but charging has not paused yet. Another reading will be requested.' } });
+  assert.equal(result.state, 'Charging'); assert.equal(result.event, '8.2 kW now · pause awaiting confirmation');
+  assert.match(result.problem, /has not paused/);
+});
+
+test('a missed completed pause remains explained without replacing current instruction or connection error', () => {
+  const item = active(), control = { phase: 'unavailable', errorCode: 'read-failed', reason: 'Easee could not be read. Another reading will be requested.',
+    owned: { startAt }, lastMissedTransition: { pauseAt: now - 2 * 3600_000, resumeAt: now - 3600_000, noticedAt: now } };
+  const result = view({ ...item, control });
+  assert.equal(result.event, 'Last confirmed start 23:00'); assert.match(result.problem, /Easee could not be read/);
+  assert.deepEqual(result.notes, ['Planned pause 19:00–20:00 was not confirmed; charging may have continued.']);
+  const disconnected = view({ ...item, control, values: { ...item.values, connected: reading(false) } });
+  assert.equal(disconnected.notes.length, 0);
+  const off = view({ ...item, control, settings: { ...item.settings, enabled: false } });
+  assert.equal(off.notes.length, 0);
+});
+
+test('manual resumption shows the earlier of the window end and cycle boundary, with the noticed date in details', () => {
+  const item = active(), result = view({ ...item, control: { phase: 'yielded', manual: { kind: 'window', startsAt: startAt,
+    windowEndAt: deadlineAt + 2 * 3600_000, resumeAt: deadlineAt, cycleEndsAt: deadlineAt, detectedAt: now } } });
+  assert.equal(result.event, 'Manual window 23:00–tomorrow 08:00');
+  assert.equal(result.priority, 'Automatic control resumes tomorrow 06:00 at the ready-by boundary.');
+  assert.equal(Object.fromEntries(result.rows)['Manual change noticed'], '15 Sept 2026, 21:00');
+  assert.equal(result.periodRows.length, 0); assert.equal(result.deadline, '');
+  const expired = view({ ...item, control: { phase: 'yielded', errorCode: 'read-failed', reason: 'Easee is unavailable. Handover awaits a fresh reading.',
+    manual: { kind: 'window', startsAt: now - 7200_000, windowEndAt: now - 3600_000, resumeAt: now - 3600_000 } } });
+  assert.equal(expired.state, 'Handover pending');
+  assert.equal(expired.priority, 'Manual priority expired; automatic handover awaiting confirmation.');
+  assert.match(expired.problem, /Handover awaits/);
+});
+
+test('delivered energy reduces grid remaining without inventing a newer SoC', () => {
+  const item = active(), measuredAt = now - 86400_000;
+  const result = view({ ...item, values: { ...item.values, soc: reading(20, 'mqtt', { measuredAt }) },
+    progress: { creditedGridKwh: 12, remainingGridKwh: 20.888, basis: 'measured-power' } });
+  assert.equal(result.soc, '20 %'); assert.equal(result.gridEnergy, '20.9 kWh'); assert.equal(result.energyLabel, 'Grid remaining');
+  assert.match(result.readingTime, /14 Sept 2026/);
+  assert.equal(Object.fromEntries(result.rows)['Delivered since charge reading'], '12 kWh · estimated from measured charging power');
+});
+
+test('live allowance is distinct from the configured ceiling and measured draw, including valid zero', () => {
+  const item = active(), result = view({ ...item, capabilities: { ...item.capabilities, externalLoadBalancing: true }, values: { ...item.values,
+    currentA: reading(0), maximumCurrentA: reading(16), availableCurrentA: reading(16, 'easee-equalizer', { measuredAt: now - 5 * 60_000 }), actualCurrentA: reading(0) } });
+  assert.equal(Object.fromEntries(result.rows)['Charging limit'], '16 A per phase');
+  assert.equal(Object.fromEntries(result.rows)['Last reported Equalizer allowance'], '16 A per phase · 20:55');
+  assert(!result.rows.some(([label]) => label === 'Drawing now'));
+  const zero = view({ ...item, capabilities: { ...item.capabilities, externalLoadBalancing: true }, values: { ...item.values, maximumCurrentA: reading(16), availableCurrentA: reading(0) } });
+  assert.match(Object.fromEntries(zero.rows)['Last reported Equalizer allowance'], /^0 A per phase/);
+});
+
+test('the explanation fold discloses operational assumptions without exposing irrelevant integration data', () => {
+  const item = active(), result = view({ ...item, configuration: { efficiency: .9 }, capabilities: { ...item.capabilities, externalLoadBalancing: true } });
+  const explanations = Object.fromEntries(result.explanations);
+  assert.match(explanations['Energy estimate'], /Three-phase.*90 %/);
+  assert.match(explanations['Household consumption'], /zero other household load/);
+  assert.match(explanations['Current allocation'], /Equalizer controls/);
+  assert.match(explanations['Period transitions'], /service and the Easee cloud/);
+  assert.match(explanations['Price planning'], /final period leaves charging enabled/);
+  assert.match(explanations['Manual priority'], /whichever comes first/);
+  assert(!JSON.stringify(result).includes('ST-MQ'));
+  assert(!Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
 });
 
 class Node {
@@ -172,11 +275,11 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   assert.equal($('charger2-setting-minimumSoc').value, 85); assert($('charger2-setting-minimumSoc').disabled);
   assert.equal($('charger2-setting-manualSoc').value, 62); assert($('charger2-setting-manualSoc').disabled);
   assert.match($('charger2-setting-minimumSoc-help').textContent, /Saved fallback: 80%/);
-  assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 40%/);
+  assert.match($('charger2-setting-manualSoc-help').textContent, /Saved fallback: 20%/);
   assert(!$('charger2-setting-capacityKwh').disabled); assert($('charger2-enabled').disabled);
-  assert.equal($('charger1-setting-manualSoc').value, 40);
+  assert.equal($('charger1-setting-manualSoc').value, 20);
   const original = $('charger2-device'); panel.update(status()); assert.equal($('charger2-device'), original);
-  assert.equal($('charger2-setting-manualSoc').value, 40); assert(!$('charger2-setting-manualSoc').disabled);
+  assert.equal($('charger2-setting-manualSoc').value, 20); assert(!$('charger2-setting-manualSoc').disabled);
   panel.update({ ...status(), role: 'replica' }); assert($('charger1-enabled').disabled); assert($('charger2-setting-manualSoc').disabled);
   assert(![...document.nodes.keys()].some(id => /installation|mqtt|efficiency|soc-form|soc-automatic/.test(id)));
   panel.close(); assert(!$('charger1-enabled').listeners.has('click'));
@@ -202,7 +305,7 @@ test('each charger saves its own SoC fallback and capacity through the same sett
     const field = $(`charger2-setting-${key}`); field.value = value; field.listeners.get('input')();
   }
   await submit($('charger2-settings-form'));
-  assert.equal($('charger1-enabled').textContent, 'OFF'); assert.equal($('charger1-setting-manualSoc').value, 40);
+  assert.equal($('charger1-enabled').textContent, 'OFF'); assert.equal($('charger1-setting-manualSoc').value, 20);
   assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { manualSoc: 42, capacityKwh: 59 }]]);
   panel.close();
 });
@@ -236,5 +339,21 @@ test('automatic SoC takes priority while preserving a draft to use when automati
   assert.equal(field.value, 85); assert(field.disabled);
   await submit($('charger2-settings-form')); assert.deepEqual(calls, []);
   panel.update(status()); assert.equal(field.value, '75'); assert(!field.disabled); assert(!$('charger2-settings-save').disabled);
+  panel.close();
+});
+
+
+test('the rendered overview hides disconnected percentages, retains settings, and keeps critical times unfolded', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
+  panel.update(status()); assert($('charger1-overview').hidden); assert($('charger1-reading-time').hidden);
+  assert.equal($('charger1-enabled-label').textContent, 'Automatic charging');
+  assert.equal($('charger1-resume').textContent, 'Resume automatic charging');
+  const item = active(); item.values.soc = reading(20, 'mqtt', { measuredAt: now - 86400_000 });
+  panel.update(status(item)); assert(!$('charger1-overview').hidden);
+  assert.equal($('charger1-soc').textContent, '20 %'); assert.equal($('charger1-minimum').textContent, '80 %');
+  assert.match($('charger1-reading-time').textContent, /14 Sept 2026, 21:00/);
+  assert.equal($('charger1-deadline').textContent, 'Ready by tomorrow 06:00');
+  assert.equal($('charger1-reading-time').parentElement.id, 'charger1-device');
+  assert.equal($('charger1-explanation-details').parentElement.id, 'charger1-settings-details');
   panel.close();
 });

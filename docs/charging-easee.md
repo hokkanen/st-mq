@@ -1,14 +1,18 @@
 # Charger 1 native Easee control
 
-ST-MQ installs one native delayed start and leaves charging enabled afterward.
-The readiness estimate and deadline never become an automatic stop command.
-The native delay can be installed before the vehicle arrives. Replanning uses
-the freshly read connection state before any write. A new connection starts a
-new readiness episode; an overdue, unoccupied preview can prepare the next day.
-An overdue plan while the vehicle stays connected retains its concrete deadline.
-The existing Easee authentication, token persistence, rate budget and controller
-authority checks also protect these requests. The HTTP transport separately
-opts in to narrowly validated scheduling writes.
+The controller installs native one-off starts. For a split plan, it installs the
+next delayed start at each intermediate period's end, pausing until that start.
+The final period stays enabled until the vehicle finishes; no final stop is
+installed. These transitions require a running application and working Easee
+connection. A missed pause may cost more, but cannot leave an automatic final
+stop waiting on the charger. The Easee app shows the current native instruction;
+the dashboard shows the complete proposed periods and their confirmation state.
+
+New vehicle planning waits for a confirmed connection. Disconnect relinquishes
+an owned future delay, while readiness-cycle manual priority survives. Replanning
+uses fresh connection state before any write. The existing Easee authentication,
+token persistence, rate budget and controller authority checks protect requests.
+The HTTP transport separately opts in to narrowly validated scheduling writes.
 
 ## API contract checked on 2026-09-15
 
@@ -24,7 +28,9 @@ The official public OpenAPI definitions were read for these endpoints:
   integer `maximumAmps`. **`startTime` is a local clock time, not an absolute
   date-time.** ST-MQ stores the absolute planned start and verifies that the next
   local occurrence represents it. Starts beyond that occurrence and ambiguous
-  autumn clock times are rejected visibly instead of being misrepresented.
+  autumn clock times are rejected with their specific cause. Plans use whole
+  seconds; a start that arrives during an API read triggers a fresh immediate
+  decision instead of attempting to represent 'now' as tomorrow's local time.
 - [Disable delayed schedule](https://developer.easee.com/reference/postchargersschedulesdelayeddisable),
   [disable daily schedule](https://developer.easee.com/reference/postchargersschedulesdailydisable),
   [disable weekly schedule](https://developer.easee.com/reference/postchargersschedulesweeklydisable):
@@ -35,18 +41,18 @@ The official public OpenAPI definitions were read for these endpoints:
   Easee documents one active schedule type and a one-off delayed start that
   continues charging until the vehicle is finished.
 
-An app schedule change observed after plug-in gives the current/next occurrence
-of a single daily or weekly window temporary priority while ST-MQ is enabled. Its absolute end is persisted; a restart or poll
-does not turn yesterday's end into tomorrow's. Changes replace that occurrence.
-Disconnect clears the session override; the schedule already present on the next
-plug-in becomes its baseline. Ambiguous
-daylight-saving window endpoints require explicit resumption.
-Multiple periods and tariff/off-peak instructions changed after plug-in require
-explicit resumption; they are not guessed into a bounded handback window. A
-pre-existing schedule can be replaced when installing an ST-MQ delayed start.
-Releasing a complex tariff/off-peak restriction is unsupported by this adapter
-and asks for release in Easee rather than inventing a command. A user who
-wants ongoing app scheduling turns ST-MQ charging control off.
+The [daily](https://developer.easee.com/reference/postchargersschedulesdaily) and
+[weekly](https://developer.easee.com/reference/postchargersschedulesweekly) APIs
+support bounded repeating periods. Nullable request fields do not establish a
+documented open-ended final period. The implementation therefore chains delayed
+starts instead of installing a recurrence with a final stop that would need
+later removal. This application/cloud dependency is intentional and disclosed.
+
+An accepted schedule readback does not itself confirm that an already charging
+vehicle paused. A planned pause is confirmed only when the charger reports a
+noncharging state and no-current reason **54**, pending scheduled charging. Until
+then the card says the pause is unconfirmed. Other zero-power causes, such as
+Equalizer limiting, do not establish that the requested schedule took effect.
 
 ## Ownership and manual controls
 
@@ -63,30 +69,48 @@ preserved. Failed communication leaves an explicit unconfirmed-handover status.
 Process shutdown revokes new writes and drains outstanding work before storage
 can close; it does not invent a charger handover during authority transfer.
 
-The connected-session baseline is persisted and refreshed even while ST-MQ is
-OFF. Enabling ST-MQ takes scheduling precedence over an instruction already
-present at plug-in. Schedule and start/stop/on-off changes observed afterward
-have priority. OFF/ON and process restart preserve that evidence; a genuine
-disconnect resets it. Inactive schedule caches, normal delayed expiry and
-ST-MQ's own confirmed/recovered writes are not app actions.
+The observed instruction baseline persists and is refreshed even while control
+is off or no vehicle is connected. The first observation alone is not evidence
+of a manual change. Later external schedule changes have priority until the
+**earlier of the final known manual window end and the recorded next ready-by**.
+A multiple-period window includes the intervening gaps; an unknown or ambiguous
+end uses the ready-by cap. Unplugging, restarting, OFF/ON and editing ready-by do
+not erase or move this recorded expiry. Own confirmed/recovered writes, inactive
+schedule caches and normal one-off expiry are excluded from manual detection.
+
+The resume action acknowledges the currently observed manual fingerprint. A
+newer edit discovered during its fresh read wins again. Expiry also requires a
+fresh read before handback; loss of communication keeps handover visibly pending.
+The controller records why handback occurred so the runtime can advance to the
+next readiness cycle when the ready-by boundary, rather than an early window
+end, ended manual priority. Ongoing automatic charging is not itself evidence of
+a manual action or of final release: intermediate periods remain schedulable.
 
 [Override Charging Schedule](https://developer.easee.com/reference/charger_overrideschedule)
 is a documented current-session release, but the public schedule response has
-no dedicated manual-override flag. ST-MQ observes
+no dedicated manual-override flag. The controller observes
 [mode, enabled state and no-current reason](https://developer.easee.com/docs/enumerations)
-alongside schedules. Early charging preserves the start-only release without
-claiming it proves an app action. Zero power, Equalizer pauses and normal
-operating-mode transitions do not create manual priority or reset release.
-A pre-existing disabled charger, authorization request or fault is unavailable,
-not an inferred post-plug manual action. ST-MQ sends no enable, authorization,
-start/stop or current commands.
+alongside schedules. An observed schedule removal or enable action has temporary
+priority. Zero power, Equalizer pauses and ordinary operating-mode changes do
+not create manual priority. A disabled charger, authorization request or fault
+remains unavailable; no enable, authorization, start/stop or current command is
+issued. Final release remains open even after its estimated completion/deadline.
 
 Polling detects observed state changes, not app taps that leave the same state
-or changes completed between observations. An app action made before ST-MQ has
-first observed that connected session cannot reliably be distinguished from an
-existing instruction. Transport/readback failures retain durable intent and
-show operation-specific status; they do not invent a manual action. A pre-write
-state race gets one fresh-read retry before reporting an unavailable check.
+or changes completed between observations. A charge-now override that leaves
+scheduling state unchanged may therefore be unidentifiable. Easee documentation
+does not explicitly guarantee mid-session pause behavior for every overridden
+session; failed pause confirmation stays visible instead of being inferred.
+
+Transport/readback failures retain durable intent and distinguish the prior
+confirmed instruction from the latest unconfirmed command. Invalid proposed
+starts expose the actual limit/time/DST cause and next action. A pre-write race
+gets one bounded fresh-read retry; clock time is refreshed after asynchronous
+reads and planning. Persisted execution periods survive loss of native one-off
+state, so intermediate release is not mistaken for the final unrestricted one.
+A confirmed-pause watermark prevents false missed-pause notices after restart.
+The most recent entirely unconfirmed gap is retained as a compact session notice;
+no late stop is issued to make up for it, and disconnect clears the notice.
 
 The REST API does not document conditional writes or a server-side compare and
 swap. Rereading narrows the race with concurrent app edits, but an app write
@@ -99,7 +123,9 @@ commands or hardware verification were performed for this implementation.
 
 The adapter projects documented [charger observations](https://developer.easee.com/docs/charger-observation-ids):
 circuit maxima 22–24, charger maximum 47, cable rating 104, dynamic charger and
-circuit caps 48/111–113, and instantaneous Equalizer availability 230–232. Original
+circuit caps 48/111–113, and instantaneous Equalizer availability 230–232. These
+quantities remain separate: a mixed minimum or a schedule-related zero must not
+be displayed as Equalizer allowance. Original
 timestamps remain available. It reads the Equalizer
 [configuration](https://developer.easee.com/reference/equalizer_geequalizerconfig)
 at most hourly to obtain `maxAllocatedCurrent`, an overall charging allocation.
@@ -120,6 +146,7 @@ cannot inflate recovered headroom.
 
 `test/charging-easee-control.test.js` covers the documented wire format,
 normalization, delayed release, replanning, restarts, in-flight OFF races,
-manual windows and edits, Charge now, stops, uncertain handovers, and the
-transport's restricted write allowlist. Fixtures use invented device names and
+readiness-cycle expiry and acknowledgement races, disconnected observation,
+mid-session pauses, final release, latency, Charge now, stops, uncertain
+handovers, and the transport's restricted write allowlist. Fixtures use invented device names and
 synthetic tokens; these checks require no Easee account or hardware.

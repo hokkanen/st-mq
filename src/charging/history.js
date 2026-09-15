@@ -41,12 +41,11 @@ export function householdProfile(rows, { timezone = TIME_ZONE, voltageV } = {}) 
   return samples.map(group => {
     const duration = group.reduce((sum, x) => sum + x.duration, 0);
     if (duration < 15 * 60_000) return null;
-    const phaseCurrentA = [0, 1, 2].map(phase => {
-      const ordered = [...group].sort((a, b) => a.phaseCurrentA[phase] - b.phaseCurrentA[phase]);
-      let covered = 0;
-      return ordered.find(item => (covered += item.duration) >= duration * 0.8).phaseCurrentA[phase];
-    });
-    return { phaseCurrentA, coverageMs: duration };
+    // Expected demand, weighted by actual coverage duration. Uneven sampling
+    // must not turn a brief high reading into a hidden planning reserve.
+    const phaseCurrentA = [0, 1, 2].map(phase => group.reduce((sum, item) =>
+      sum + item.phaseCurrentA[phase] * item.duration, 0) / duration);
+    return { phaseCurrentA, coverageMs: duration, method: 'duration-weighted-mean' };
   });
 }
 
@@ -66,7 +65,7 @@ export function forecastHousehold(store, { now, deadlineAt, input, voltageV, tim
   for (let start = now; start < deadlineAt;) {
     const end = Math.min(deadlineAt, Math.floor(start / HOUR) * HOUR + HOUR), value = profile[moment.tz(start, timezone).hour()];
     if (value) result.push({ start, end, phaseCurrentA: value.phaseCurrentA,
-      basis: 'history-both-three-phase-chargers-removed', coverageMs: value.coverageMs });
+      basis: 'history-duration-weighted-mean', coverageMs: value.coverageMs });
     start = end;
   }
   return result;

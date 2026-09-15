@@ -33,6 +33,10 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
       automaticSoc: first ? automaticSoc : null, plan: first ? plan : null,
       forecast: null, mqtt: { connected: true, subscribed: true, reason: null }, error: null };
   }), coordination: null, error: null };
+  view.chargers[0].referenceGridKwh = view.chargers[0].requiredGridKwh;
+  view.chargers[0].requiredGridKwh -= 2;
+  view.chargers[0].progress = { creditedGridKwh: 2, remainingGridKwh: view.chargers[0].requiredGridKwh,
+    basis: { source: 'integrated-measured-power', lastMeasuredAt: snapshotAt - 10_000 } };
   store.setState('charging:mqtt', { version: 2, settings, chargers: {
     charger1: { automaticSoc, plan }, charger2: { automaticSoc: null, plan: null },
   }, view });
@@ -66,6 +70,8 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   assert.equal(charger1.values.soc.source, 'mqtt', 'SoC source is resolved at the source snapshot boundary');
   assert.equal(charger1.values.soc.value, 32);
   assert.equal(charger1.configuration.efficiency, .85);
+  assert.equal(charger1.requiredGridKwh, view.chargers[0].requiredGridKwh);
+  assert.deepEqual(charger1.progress, view.chargers[0].progress, 'Measured energy credit stays frozen at publication');
   assert.deepEqual(charger1.automaticSoc, automaticSoc);
   assert.equal(charger2.plan, null);
   assert.equal(charger2.values.soc.value, 67, 'The common charger view retains actual recorded provider telemetry');

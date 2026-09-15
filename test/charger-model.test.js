@@ -12,7 +12,7 @@ const make = (index = 0, extra = {}) => buildCharger({ definition: CHARGER_DEFIN
 test('identical preference structures retain first-use values independently and deep-merge patches', () => {
   assert.deepEqual(Object.keys(config.chargers.charger1), Object.keys(config.chargers.charger2));
   assert.deepEqual(Object.values(config.chargers).map(item => [item.enabled, item.minimumSoc, item.readyBy, item.manualSoc, item.capacityKwh]),
-    [[false, 80, '06:00', 40, 74], [false, 80, '06:00', 40, 57]]);
+    [[false, 80, '06:00', 20, 74], [false, 80, '06:00', 20, 57]]);
   const saved = mergeChargingSettings(config, { chargers: { charger2: { capacityKwh: 60, manualSoc: 35 } } });
   assert.equal(saved.chargers.charger1.capacityKwh, 74);
   assert.equal(saved.chargers.charger2.manualSoc, 35);
@@ -57,7 +57,7 @@ test('each charger uses valid automatic capacity and target before identical man
     const fallback = make(index, { telemetry: { capacityKwh: -1, minimumSoc: 101, soc: null } });
     assert.equal(fallback.values.capacityKwh.value, config.chargers[fallback.id].capacityKwh);
     assert.equal(fallback.values.minimumSoc.value, 80);
-    assert.equal(fallback.values.soc.value, 40);
+    assert.equal(fallback.values.soc.value, 20);
     assert.equal(fallback.values.soc.source, 'manual-fallback');
     assert.equal(fallback.values.soc.assumed, true);
     assert.equal(fallback.values.connected.available, false);

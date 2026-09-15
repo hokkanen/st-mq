@@ -33,6 +33,7 @@ function fakeAdapter(clock) {
   const snapshot = () => ({ schedule: structuredClone(schedule), fingerprint: scheduleFingerprint(schedule),
     controlFingerprint: 'unchanged-control', controlKnown: true, ...observed, reason: schedule.enabled === 'none' ? 0 : 54,
     readAt: clock(), limits: structuredClone(limits),
+    observations: observed.powerMeasuredAt === undefined ? {} : { 120: { at: observed.powerMeasuredAt } },
     supply: { availableCurrentA: [...limits.equalizerAvailableA], propertyCurrentA: [0, 0, 0],
       chargerCurrentA: [0, 0, 0], voltageV: [230, 230, 230], observedAt: clock() } });
   return {
@@ -239,7 +240,7 @@ test('manual window handback replans from newer SoC before issuing a release bas
   adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '00:15', stopTime: '02:00', maximumAmps: 16 }] } });
   f.setNow(initialNow + HOUR / 2); await runtime.reconcile();
   adapter.setObservation({ mode: 3 }); await runtime.reconcile();
-  assert.equal(chargerView(runtime).control.released, true);
+  assert.equal(chargerView(runtime).control.phase, 'yielded');
   runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(85, f.clock(), 'manual-window-result'));
   assert.equal(runtime.chargers.charger1.plan.startAt, originalStart, 'The active manual session keeps its original plan context');
   f.setNow(initialNow + 2 * HOUR); adapter.setObservation({ mode: 2 });
@@ -287,14 +288,15 @@ test('runtime close drains an outstanding adapter replacement without creating a
   await Promise.resolve(); assert.equal(f.writes.length, count);
 });
 
-test('a later replug refreshes an overdue parked preview before installing the new deadline plan', async t => {
+test('a disconnected charger has no schedule and a later plug-in uses the new readiness deadline', async t => {
   const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ pluggedIn: false, mode: 1 });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   runtime.tick({ prices }); await runtime.reconcile();
   const parked = structuredClone(runtime.chargers.charger1.plan);
-  assert.equal(chargerView(runtime).control.phase, 'waiting');
+  assert.equal(chargerView(runtime).control.phase, 'disconnected');
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
   f.setNow(initialNow + 48 * HOUR);
   const nextPrices = prices.map(row => ({ ...row, start: row.start + 48 * HOUR, end: row.end + 48 * HOUR }));
   runtime.tick({ prices: nextPrices });
@@ -386,6 +388,7 @@ test('first adapter attachment uses freshly read fixed limits when prices are al
   const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setLimits({ chargerA: 14, cableA: 20, equalizerAvailableA: [6, 8, 7] });
+  await runtime.setChargerSettings('charger1', { manualSoc: 40 });
   runtime.tick({ prices });
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'waiting');
@@ -507,4 +510,146 @@ test('inactive Easee schedule caches cannot move the owned delayed occurrence to
   assert.equal(view.control.phase, 'released'); assert.equal(view.control.manual, null);
   assert.equal(view.values.scheduledStartAt.value, owned.startAt);
   assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+});
+
+test('new installations use 20% while saved SoC fallbacks remain intact', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  assert.deepEqual(runtime.status().chargers.map(charger => charger.values.soc.value), [20, 20]);
+  await runtime.setChargerSettings('charger1', { manualSoc: 40 });
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.deepEqual(restarted.status().chargers.map(charger => charger.values.soc.value), [40, 20]);
+});
+
+test('measured energy lowers the remaining requirement once and survives restart without crediting the outage', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  adapter.setObservation({ powerKw: 6, powerMeasuredAt: initialNow, mode: 3 });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  const raw = chargerView(runtime).requiredGridKwh;
+  f.setNow(initialNow + 60_000); adapter.setObservation({ powerMeasuredAt: f.clock() });
+  await runtime.reconcile();
+  const progress = chargerView(runtime).progress;
+  assert.ok(Math.abs(progress.creditedGridKwh - .1) < 1e-9);
+  assert.ok(Math.abs(chargerView(runtime).requiredGridKwh - (raw - .1)) < 1e-9);
+  assert.equal(chargerView(runtime).values.soc.value, 20);
+  runtime.updatePlan(); runtime.updatePlan();
+  assert.deepEqual(chargerView(runtime).progress, progress, 'Repeated status and planning reads cannot double-credit a sample');
+  await runtime.close();
+  f.setNow(initialNow + 3 * HOUR); adapter.setObservation({ powerMeasuredAt: f.clock() });
+  const restarted = f.create(); t.after(() => restarted.close());
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).progress.creditedGridKwh, progress.creditedGridKwh);
+  adapter.setObservation({ pluggedIn: false, mode: 1, powerKw: 0 }); await restarted.reconcile();
+  assert.equal(chargerView(restarted).progress.creditedGridKwh, 0);
+});
+
+test('native periods pause at their boundary, preserve the active period through a ready-by edit and leave the final release open', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  const outlook = [1, 50, 2, 50, 50].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price }));
+  runtime.tick({ prices: outlook }); await runtime.reconcile();
+  const original = structuredClone(chargerView(runtime).control.execution);
+  assert.equal(original.periods.length, 2);
+  assert.equal(chargerView(runtime).control.phase, 'active');
+  assert.equal(chargerView(runtime).control.released, false);
+  assert.equal(runtime.boundaryAt, original.periods[0].endAt);
+  f.setNow(initialNow + HOUR / 2);
+  adapter.setObservation({ mode: 3 }); await runtime.reconcile();
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(45, f.clock(), 'first-period-progress'));
+  await runtime.setChargerSettings('charger1', { readyBy: '07:00' });
+  assert.deepEqual(chargerView(runtime).control.execution.periods, original.periods);
+  assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 4 * HOUR);
+  f.setNow(original.periods[0].endAt); adapter.setObservation({ mode: 2 });
+  await runtime.reconcile();
+  const paused = chargerView(runtime);
+  assert.equal(paused.control.phase, 'paused');
+  assert.equal(paused.control.released, false);
+  assert.equal(paused.plan.deadlineAt, initialNow + 5 * HOUR);
+  assert.notEqual(paused.control.execution.planId, original.planId);
+  assert.equal(paused.control.owned.startAt, initialNow + 2 * HOUR);
+  assert.equal(runtime.boundaryAt, paused.control.owned.startAt);
+  f.setNow(initialNow + 2 * HOUR); adapter.setObservation({ mode: 3 });
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'released');
+  const writes = adapter.calls.filter(call => call.kind !== 'read').length;
+  f.setNow(initialNow + 7 * HOUR); adapter.setObservation({ mode: 2 });
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.released, true);
+  assert.equal(adapter.calls.filter(call => call.kind !== 'read').length, writes);
+});
+
+test('manual handback crossing ready-by during the read starts the next cycle and does not roll ordinary overdue plans', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices: [...prices, ...prices.map(row => ({ ...row, start: row.start + 24 * HOUR, end: row.end + 24 * HOUR }))] });
+  await runtime.reconcile();
+  adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '01:00', stopTime: '04:00', maximumAmps: 16 }] } });
+  f.setNow(initialNow + HOUR / 2); await runtime.reconcile();
+  const manual = chargerView(runtime).control.manual;
+  assert.equal(manual.resumeAt, initialNow + 4 * HOUR);
+  assert.equal(manual.windowEndAt, manual.cycleEndsAt, 'An exact window/deadline tie also ends the cycle');
+  f.setNow(manual.resumeAt - 10);
+  const read = adapter.read;
+  adapter.read = async () => { f.setNow(f.clock() + 25); return read(); };
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.manual, null);
+  assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 28 * HOUR);
+  const newDeadline = chargerView(runtime).plan.deadlineAt;
+  runtime.updatePlan();
+  assert.equal(chargerView(runtime).plan.deadlineAt, newDeadline, 'The consumed handback marker cannot roll the deadline twice');
+});
+
+test('a connection first seen after restart replaces the saved disconnected deadline', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  adapter.setObservation({ pluggedIn: false, mode: 1 });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.close();
+  f.setNow(initialNow + 48 * HOUR); adapter.setObservation({ pluggedIn: true, mode: 2 });
+  const restarted = f.create(); t.after(() => restarted.close());
+  restarted.tick({ prices: prices.map(row => ({ ...row, start: row.start + 48 * HOUR, end: row.end + 48 * HOUR })) });
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).plan.deadlineAt, initialNow + 52 * HOUR);
+  assert.equal(chargerView(restarted).control.phase, 'waiting');
+});
+
+test('a fully observed zero-power period replans remaining energy once at the gap', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  adapter.setObservation({ powerKw: 0, powerMeasuredAt: initialNow });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices: [1, 50, 2, 50].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price })) });
+  await runtime.reconcile();
+  const original = structuredClone(chargerView(runtime).plan);
+  assert.equal(original.periods[0].endAt, initialNow + HOUR);
+  for (let minute = 1; minute <= 60; minute++) {
+    f.setNow(initialNow + minute * 60_000); adapter.setObservation({ powerMeasuredAt: f.clock() });
+    await runtime.reconcile();
+  }
+  const revised = chargerView(runtime).plan;
+  assert.equal(chargerView(runtime).progress.creditedGridKwh, 0);
+  assert.equal(chargerView(runtime).progress.basis.continuousSince, initialNow);
+  assert.notEqual(revised.id, original.id);
+  assert.equal(revised.replannedGapAt, initialNow + HOUR);
+  assert.ok(revised.requiredGridKwh > 13, 'The observed lack of delivery leaves the full requirement to schedule');
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).plan.id, revised.id, 'Repeated gap polls do not keep replacing the same plan');
+});
+
+test('the next wakeup includes an earlier proposed start while its native update is pending', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile();
+  const confirmed = chargerView(runtime).control.owned.startAt;
+  const proposed = initialNow + 20_000;
+  runtime.chargers.charger1.plan = { ...runtime.chargers.charger1.plan,
+    startAt: proposed, periods: [{ startAt: proposed, endAt: null }] };
+  runtime.scheduleWakeup();
+  assert.equal(runtime.boundaryAt, proposed);
+  assert.ok(runtime.boundaryAt < confirmed);
 });

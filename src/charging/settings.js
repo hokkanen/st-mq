@@ -2,7 +2,7 @@ import moment from 'moment-timezone';
 import { TIME_ZONE } from '../domain/prices.js';
 
 const chargerDefaults = capacityKwh => Object.freeze({
-  enabled: false, readyBy: '06:00', capacityKwh, minimumSoc: 80, manualSoc: 40,
+  enabled: false, readyBy: '06:00', capacityKwh, minimumSoc: 80, manualSoc: 20,
 });
 
 /** Durable user preferences only. Connections and conversion assumptions belong

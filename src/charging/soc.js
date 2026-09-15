@@ -60,10 +60,10 @@ export function acceptSocReading(previous, payload, {
 }
 
 /** Automatic battery telemetry always wins over the remembered manual fallback. */
-export function effectiveSoc({ automatic = null, fallbackSoc = 40 } = {}) {
+export function effectiveSoc({ automatic = null, fallbackSoc = 20 } = {}) {
   if (validSoc(automatic?.soc)) return { soc: automatic.soc, source: automatic.source ?? 'mqtt', assumed: false,
     measuredAt: automatic.measuredAt ?? null, receivedAt: automatic.receivedAt ?? null,
     readingId: automatic.readingId };
-  return { soc: validSoc(fallbackSoc) ? fallbackSoc : 40, source: 'manual-fallback', assumed: true,
+  return { soc: validSoc(fallbackSoc) ? fallbackSoc : 20, source: 'manual-fallback', assumed: true,
     measuredAt: null, receivedAt: null };
 }

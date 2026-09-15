@@ -8,11 +8,19 @@ import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateChargerTelemetry, teslamateChargerAssignment } from './teslamate.js';
 import { forecastHousehold } from './history.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 
 const MINUTE = 60_000;
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
+const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const planBasis = (view, prices) => digest({ deadlineAt: view.deadlineAt, efficiency: view.configuration.efficiency,
+  readings: ['soc', 'minimumSoc', 'capacityKwh'].map(key => { const value = view.values[key];
+    return [value.value, value.source, value.measuredAt, value.measuredAt === null ? value.receivedAt : null, value.readingId]; }),
+  prices: prices.map(row => [row.start, row.end, row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price]) });
 const initialMqtt = () => ({ connected: false, subscribed: false, reason: 'awaiting-mqtt' });
+const activePeriod = (control, now) => control?.execution?.periods?.some(period => period.startAt <= now
+  && (period.endAt === null || period.endAt > now));
 const scheduleCeiling = snapshot => {
   const limits = [snapshot?.limits?.chargerA, snapshot?.limits?.cableA].filter(value => Number.isFinite(value) && value > 0);
   return limits.length ? Math.floor(Math.min(...limits)) : undefined;
@@ -32,6 +40,8 @@ export class ChargingRuntime {
       const association = this.configuration.chargers[definition.id].mqttTopic;
       const automaticSoc = association && previous.automaticSoc?.association === association ? previous.automaticSoc : null;
       return [definition.id, { definition, automaticSoc, plan: previous.plan ?? null,
+        progress: restoreChargingProgress(previous.progress),
+        wasPluggedIn: previous.progress?.connected,
         mqtt: initialMqtt(), lastReconcileAt: null }];
     }));
     this.prices = []; this.pricesInitialized = false;
@@ -49,7 +59,7 @@ export class ChargingRuntime {
   }
   persist() {
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, plan: item.plan }]));
+      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress }]));
     this.store.setState(this.key, { version: 3, settings: this.settings, chargers, view: this.status() });
   }
   mqttRoutes() {
@@ -160,9 +170,14 @@ export class ChargingRuntime {
     return Object.entries(this.chargers).map(([id, item]) => {
       const settings = this.settings.chargers[id], control = this.controlStatus(id);
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
-      return { ...buildCharger({ definition, settings, telemetry: telemetry[id], timezone: TIME_ZONE,
+      const charger = buildCharger({ definition, settings, telemetry: telemetry[id], timezone: TIME_ZONE,
         automaticSoc: item.automaticSoc, configuration: this.configuration.chargers[id], now, control,
-        deadlineAt: item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) }),
+        deadlineAt: item.plan?.replanReadyBy && !activePeriod(control, now)
+          ? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE)
+          : item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
+      const progress = updateChargingProgress(item.progress, charger, now);
+      return { ...charger, referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
+        progress: { creditedGridKwh: progress.state.creditKwh, remainingGridKwh: progress.remainingGridKwh, basis: progress.basis },
         automaticSoc: item.automaticSoc, plan: item.plan,
         forecast: item.forecast ?? null, mqtt: item.mqtt, error: item.error ?? null };
     });
@@ -174,6 +189,13 @@ export class ChargingRuntime {
       item.newEpisode = pluggedIn === false && (item.wasPluggedIn !== false || item.plan?.deadlineAt <= now)
         || pluggedIn === true && item.wasPluggedIn === false;
       if (item.newEpisode) item.plan = null;
+      const manual = view.control?.manual;
+      if (manual?.cycleEndsAt <= now && manual.resumeAt <= now && item.plan?.deadlineAt <= manual.cycleEndsAt) item.plan = null;
+      const resumed = view.control?.lastManualResume;
+      if (resumed && resumed.reason !== 'explicit' && resumed.at >= resumed.deadlineAt
+        && item.plan?.deadlineAt <= resumed.deadlineAt) item.plan = null;
+      const raw = { ...view, requiredGridKwh: view.referenceGridKwh };
+      item.progress = updateChargingProgress(item.progress, raw, now).state;
       if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
     }
     views = this.views(now);
@@ -189,24 +211,59 @@ export class ChargingRuntime {
       currentLimitsAreProposals: true, warnings: result.warnings, assumptions: result.assumptions };
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
+      const previousForecast = item.forecast;
       item.forecast = result.forecasts?.[view.id] ?? null;
       if (!this.pricesInitialized) continue;
-      const handbackDue = control?.manual?.kind === 'window' && Number.isSafeInteger(control.manual.resumeAt) && now >= control.manual.resumeAt;
+      const handbackDue = Number.isSafeInteger(control?.manual?.resumeAt) && now >= control.manual.resumeAt;
       // A manual native instruction is separate from the automatic plan. Keep
       // the last automatic context until the controller verifies handback.
       if (control?.manual && !handbackDue && item.plan && !item.newEpisode) continue;
       if ((control?.released || control?.phase === 'released') && !handbackDue && !item.newEpisode) continue;
+      const execution = control?.execution;
+      const started = execution?.periods?.some(period => period.startAt <= now);
+      const active = activePeriod(control, now);
+      const basis = planBasis(view, this.prices);
+      const credit = view.progress.creditedGridKwh;
+      const precedingPeriod = execution?.periods?.filter(period => Number.isSafeInteger(period.endAt) && period.endAt <= now).at(-1);
+      const coverage = view.progress.basis;
+      const observedGap = precedingPeriod && Number.isSafeInteger(coverage.continuousSince)
+        && coverage.continuousSince <= precedingPeriod.startAt && coverage.lastMeasuredAt >= precedingPeriod.endAt
+        ? precedingPeriod.endAt : null;
+      // A running period keeps its confirmed end. In a planned gap, new SoC or
+      // attributable delivered energy may revise the remaining periods.
+      if (started && !handbackDue && !item.newEpisode && item.plan
+        && (active || item.plan.basis === basis && item.plan.creditedGridKwh === credit
+          && (!observedGap || item.plan.replannedGapAt === observedGap))) {
+        item.forecast = previousForecast;
+        continue;
+      }
       const next = result.plans?.[view.id];
-      if (next) item.plan = { ...next, id: item.plan?.id ?? randomUUID() };
+      if (next) item.plan = { ...next, basis, creditedGridKwh: credit, replannedGapAt: observedGap,
+        id: started && !active ? randomUUID() : item.plan?.id ?? randomUUID() };
     }
-    this.persist();
+    this.persist(); this.scheduleWakeup(now);
   }
-  tick({ now = this.clock(), prices } = {}) {
+  scheduleWakeup(now = this.clock()) {
+    if (this.closed) return;
+    const boundaries = Object.values(this.chargers).flatMap(item => {
+      const control = item.controller?.status();
+      return [control?.manual?.resumeAt, control?.owned?.startAt,
+        ...[...(control?.execution?.periods ?? []), ...(item.plan?.periods ?? [])].flatMap(period => [period.startAt, period.endAt])];
+    }).filter(at => Number.isSafeInteger(at) && at > now);
+    const next = boundaries.length ? Math.min(...boundaries) : null;
+    if (next === this.boundaryAt) return;
+    clearTimeout(this.boundaryTimer); this.boundaryAt = next;
+    if (next !== null) {
+      this.boundaryTimer = setTimeout(() => { this.boundaryAt = null; this.tick({ force: true }); }, Math.max(1, next - now));
+      this.boundaryTimer.unref?.();
+    }
+  }
+  tick({ now = this.clock(), prices, force = false } = {}) {
     if (this.closed) return;
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     try {
       this.updatePlan(now);
-      for (const [id, item] of Object.entries(this.chargers)) if (item.controller && (item.lastReconcileAt === null || now - item.lastReconcileAt >= MINUTE))
+      for (const [id, item] of Object.entries(this.chargers)) if (item.controller && (force || item.lastReconcileAt === null || now - item.lastReconcileAt >= MINUTE))
         void this.reconcile(id).catch(() => { item.error = 'charging-reconciliation-unavailable'; });
       this.error = null;
     } catch { this.error = 'charging-planning-unavailable'; }
@@ -222,7 +279,7 @@ export class ChargingRuntime {
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: TIME_ZONE, maximumAmps, resume });
+      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume });
     if (this.closed || controller !== item.controller) return;
     item.error = null;
     try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
@@ -230,13 +287,17 @@ export class ChargingRuntime {
   async setSettings(input) {
     const previous = this.settings, next = mergeChargingSettings(previous, input);
     for (const view of this.views()) if (next.chargers[view.id].enabled && !view.capabilities.scheduling)
-      throw new Error(`${view.label} does not support ST-MQ scheduling`);
+      throw new Error(`${view.label} does not support automatic scheduling`);
     const oldRecords = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, plan: item.plan }]));
+      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress }]));
     this.settings = next;
     for (const [id, item] of Object.entries(this.chargers)) {
       const before = previous.chargers[id], after = next.chargers[id];
-      if ((before.readyBy !== after.readyBy) && !item.controller?.status()?.released) item.plan = null;
+      const control = item.controller?.status();
+      if (before.readyBy !== after.readyBy && !control?.released) {
+        if (item.plan && activePeriod(control, this.clock())) item.plan = { ...item.plan, replanReadyBy: after.readyBy };
+        else item.plan = null;
+      }
     }
     try { this.persist(); } catch (error) {
       this.settings = previous;
@@ -258,15 +319,15 @@ export class ChargingRuntime {
     this.charger(id);
     if (!object(input) || Object.keys(input).length) throw new Error('Resume automatic charging with an empty object');
     const view = this.views().find(item => item.id === id);
-    if (!view.capabilities.scheduling) throw new Error(`${view.label} does not support ST-MQ scheduling`);
-    if (!view.settings.enabled) throw new Error('Enable ST-MQ charging control before resuming');
+    if (!view.capabilities.scheduling) throw new Error(`${view.label} does not support automatic scheduling`);
+    if (!view.settings.enabled) throw new Error('Enable automatic charging before resuming');
     this.updatePlan(); await this.reconcile(id, { resume: true });
   }
   status(now = this.clock()) {
     return { timezone: TIME_ZONE, settings: this.settings, chargers: this.views(now), coordination: this.coordination, error: this.error ?? null };
   }
   async close() {
-    this.closed = true; clearInterval(this.timer);
+    this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer);
     await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }
 }

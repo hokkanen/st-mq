@@ -62,9 +62,13 @@ function chargingSnapshot(snapshot) {
     const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
       enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
       reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` };
-    return { ...buildCharger({ definition, settings: settings.chargers[id], timezone: TIME_ZONE,
+    const charger = buildCharger({ definition, settings: settings.chargers[id], timezone: TIME_ZONE,
       telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc, configuration: recorded?.configuration,
-      now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control }),
+      now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control });
+    return { ...charger,
+      referenceGridKwh: recorded?.referenceGridKwh ?? charger.requiredGridKwh,
+      requiredGridKwh: recorded?.requiredGridKwh ?? charger.requiredGridKwh,
+      progress: recorded?.progress ?? null,
       readOnly: true, recorded: true, snapshotAt, control,
       automaticSoc: record.automaticSoc ?? null,
       plan: record.plan ?? null, forecast: recorded?.forecast ?? null,

@@ -11,13 +11,13 @@ not gain a manual switch.
 | Vehicle SoC | Unavailable | `battery_level` |
 | Vehicle charge target | Unavailable | `charge_limit_soc` |
 | Connected vehicle | Pilot and operating mode | `plugged_in`, with household location and charger assignment |
-| Charging current estimate | Charger/cable/circuit limits, including Equalizer allowance | Requested current capped by vehicle maximum |
+| Charging current estimate | Charger ceiling and separately identified Equalizer allowance | Requested current capped by vehicle maximum |
 | AC voltage | Equalizer phase-to-neutral property voltage | `charger_voltage` |
 | Charging phases | Three-phase installation assumption | Three-phase installation assumption |
 | Measured charging power | Total power | `charger_power` |
 | Native start | Delayed, daily or weekly schedule | `scheduled_charging_start_time` |
 | Native stop | Daily or weekly stop | Unavailable |
-| ST-MQ schedule control | Supported | Unavailable |
+| Automatic schedule control | Native one-off starts, chained for split periods | Unavailable |
 
 Easee's observations contain electrical limits and charger state; they do not
 provide vehicle battery capacity, percentage or charge target. A timestamped
@@ -34,7 +34,20 @@ the [TeslaMate MQTT contract](https://docs.teslamate.org/docs/integrations/mqtt/
 Native schedule stops and estimated completion times remain distinct. Easee's
 delayed schedule has only a start. ST-MQ's owned occurrence takes precedence over
 a newly interpreted local clock time. Reading a complex native recurrence for
-display alone does not establish a post-plug manual action. Pre-existing
-schedules can be taken over; observed changes after plug-in follow the
-manual-action handover rules. See [Easee scheduling state](https://developer.easee.com/reference/getchargersschedules)
+display alone does not establish a manual action. The first observation is a
+baseline; later observed changes follow the readiness-cycle handover rules even
+when disconnected. Native delayed schedules are installed one at a time: later
+planned pauses require a working application/cloud connection, and the final
+release has no stop. Accepted schedule state and confirmed physical pause are
+reported separately. See [Easee scheduling state](https://developer.easee.com/reference/getchargersschedules)
 and [delayed schedule](https://developer.easee.com/reference/postchargersschedulesdelayed).
+
+Neither integration supplies a guaranteed overnight available-power forecast.
+Equalizer remains Charger 1's external limiter; its live allowance is distinct
+from the configured charger ceiling and actual draw. Three phases are assumed,
+with automatic voltage required. See [planning and assumptions](charging.md#planning-and-equalizer).
+
+Measured-power credit updates the remaining energy estimate only from fresh,
+attributable measurement intervals; receipt-only TeslaMate scalar power does
+not become a measured-energy counter. Neither this credit nor an estimated
+completion time replaces the vehicle's SoC reading or charge target.

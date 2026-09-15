@@ -75,3 +75,18 @@ test('overlapping source intervals and negative residuals cannot create headroom
   rows.push(energy('property_energy_l1', 1));
   assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
 });
+
+test('household demand is a duration-weighted expectation without an implicit high-load reserve', () => {
+  const quarter = HOUR / 4;
+  const rows = [1, 2, 3].flatMap(phase => [
+    energy(`property_energy_l${phase}`, 3, start, start + quarter),
+    energy(`property_energy_l${phase}`, 0.75, start + quarter, start + HOUR),
+    energy(`ev1_energy_l${phase}`, 0),
+  ]);
+  rows.push(energy('ev2_energy', 0));
+  const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
+  assert.equal(profile[12].coverageMs, HOUR);
+  assert.equal(profile[12].method, 'duration-weighted-mean');
+  assert.ok(profile[12].phaseCurrentA.every(current => Math.abs(current - 3750 / 230) < 1e-9),
+    '15 minutes at 12 kW and 45 minutes at 1 kW average 3.75 kW per phase, not the upper reading');
+});

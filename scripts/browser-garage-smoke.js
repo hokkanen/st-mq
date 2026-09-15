@@ -112,23 +112,36 @@ try {
         } };
       }
       if (globalThis.chargingSmokeValues) {
-        const manual = globalThis.chargingSmokeValues === 'manual';
-        const charger = status.charging.chargers.find(item => item.id === (manual ? 'charger1' : 'charger2'));
+        const state = globalThis.chargingSmokeValues, manual = state === 'manual', controlled = ['manual', 'periods', 'paused', 'problem'].includes(state);
+        const charger = status.charging.chargers.find(item => item.id === (controlled ? 'charger1' : 'charger2'));
         const observation = value => ({ value, source: 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
-        charger.values.soc = observation(62);
+        charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
         charger.values.minimumSoc = observation(85);
-        charger.values.connected = observation(true);
+        charger.values.connected = observation(state !== 'disconnected');
         charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
         charger.values.charging = observation(globalThis.chargingSmokeValues === 'charging');
         charger.values.powerKw = observation(8.2);
-        charger.requiredGridKwh = 15;
+        charger.requiredGridKwh = 15; charger.progress = null;
         if (manual) {
           charger.settings.enabled = true;
           charger.control = { phase: 'yielded', manual: { kind: 'window', startsAt: status.now + 2 * 3600_000,
-            resumeAt: status.now + 4 * 3600_000, repeating: true } };
-          charger.values.scheduledEndAt = observation(status.now + 4 * 3600_000);
+            resumeAt: status.now + 15 * 3600_000, windowEndAt: status.now + 17 * 3600_000, detectedAt: status.now - 3600_000, repeating: true } };
+          charger.values.scheduledEndAt = observation(status.now + 17 * 3600_000);
           charger.telemetry = { scheduledEndKind: 'scheduled-stop' };
           charger.plan = { startAt: status.now + 3 * 3600_000, deadlineAt: status.now + 15 * 3600_000 };
+        } else if (controlled) {
+          charger.settings.enabled = true;
+          charger.values.maximumCurrentA = observation(16); charger.values.availableCurrentA = observation(16);
+          const periods = [{ startAt: status.now + (state === 'paused' ? -2 : 2) * 3600_000,
+            endAt: status.now + (state === 'paused' ? -1 : 3) * 3600_000 }, { startAt: status.now + 5 * 3600_000, endAt: null }];
+          charger.plan = { startAt: periods[0].startAt, periods, deadlineAt: status.now + 15 * 3600_000, costCents: 125 };
+          charger.control = { phase: state === 'paused' ? 'paused' : 'waiting', owned: { startAt: state === 'paused' ? periods[1].startAt : periods[0].startAt },
+            execution: { periods, deadlineAt: charger.plan.deadlineAt } };
+          if (state === 'problem') {
+            charger.control.phase = 'unavailable'; charger.control.errorCode = 'readback-failed';
+            charger.control.reason = 'Easee did not confirm the update. The last confirmed schedule may still be active; another reading will be requested.';
+            charger.plan = { ...charger.plan, startAt: status.now + 3 * 3600_000, periods: [{ startAt: status.now + 3 * 3600_000, endAt: null }] };
+          }
         }
       }
       return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
@@ -142,7 +155,7 @@ try {
   assert.deepEqual(await evaluate("['home-heat-pump-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#charging-devices > .equipment-device')].map(node=>node.id)"), ['charger1-device', 'charger2-device']);
   assert.deepEqual(await evaluate("['charger1-setting-minimumSoc','charger1-setting-readyBy','charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['80', '06:00', '74', '57']);
-  assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '40');
+  assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '20');
   assert.equal(await evaluate("document.getElementById('charger1-enabled').getAttribute('aria-checked')"), 'false');
   assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').disabled"), false);
   assert.equal(await evaluate("document.getElementById('charger2-setting-readyBy').disabled"), true);
@@ -164,7 +177,8 @@ try {
   assert.deepEqual(await evaluate("['charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['76', '59']);
   assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '43');
   assert.equal(await evaluate("document.getElementById('charger1-soc').textContent"), '43 %');
-  assert.equal(await evaluate("document.querySelector('#charger1-soc + small').textContent"), 'Manual fallback');
+  assert.equal(await evaluate("document.getElementById('charger1-sources').textContent"), 'Both: Manual fallback');
+  assert.equal(await evaluate("document.getElementById('charger1-overview').hidden"), true);
   await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charger1-settings-details').open=true");
   const secondChargerNode = await evaluate("window.originalChargingSmokeNode=document.getElementById('charger2-device'); true");
   assert(secondChargerNode);
@@ -180,13 +194,30 @@ try {
   await until("document.getElementById('charger2-state').textContent==='Charging'");
   assert.match(await evaluate("document.getElementById('charger2-event').textContent"), /^8.2 kW now/);
   await evaluate("globalThis.chargingSmokeValues='manual'; globalThis.refreshLearningSmokeStatus()");
-  await until("document.getElementById('charger1-state').textContent==='Manual control'");
-  assert.match(await evaluate("document.getElementById('charger1-event').textContent"), /^Easee window .*ST-MQ resumes afterwards$/);
+  await until("document.getElementById('charger1-state').textContent==='Manual schedule'");
+  assert.match(await evaluate("document.getElementById('charger1-event').textContent"), /^Manual window /);
   assert.doesNotMatch(await evaluate("document.getElementById('charger1-readings').textContent"), /Ready by|start|window|resumes|stopping/i);
   assert.equal(await evaluate("document.getElementById('charger1-resume').hidden"), false);
+  assert.match(await evaluate("document.getElementById('charger1-priority').textContent"), /Automatic control resumes .*ready-by boundary/);
+  assert.equal(await evaluate("document.getElementById('charger1-deadline').hidden"), true);
+  for (const [state, expected] of [['periods', 'Scheduled'], ['paused', 'Paused between periods'], ['problem', 'Update unconfirmed']]) {
+    await evaluate(`globalThis.chargingSmokeValues='${state}'; globalThis.refreshLearningSmokeStatus()`);
+    await until(`document.getElementById('charger1-state').textContent==='${expected}'`);
+    assert.equal(await evaluate("document.getElementById('charger1-periods').children.length"), 4);
+    assert.equal(await evaluate("document.getElementById('charger1-period-count').textContent"), '2 charging periods');
+    assert.equal(await evaluate("document.getElementById('charger1-reading-time').hidden"), false);
+    assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /Last reported Equalizer allowance16 A/);
+    assert.match(await evaluate("document.getElementById('charger1-explanations').textContent"), /service and the Easee cloud/);
+  }
+  assert.match(await evaluate("document.getElementById('charger1-event').textContent"), /^Last confirmed start/);
+  assert.match(await evaluate("document.getElementById('charger1-problem').textContent"), /did not confirm.*last confirmed schedule.*another reading/);
+  await evaluate("globalThis.chargingSmokeValues='disconnected'; globalThis.refreshLearningSmokeStatus()");
+  await until("document.getElementById('charger2-state').textContent==='Not connected'");
+  assert.equal(await evaluate("document.getElementById('charger2-overview').hidden"), true);
+  assert.equal(await evaluate("document.getElementById('charger2-reading-time').hidden"), true);
   await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger2-setting-minimumSoc').disabled===false");
-  assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '40');
+  assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '20');
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), false);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
     ['home-control', 'providers-controls', 'house-model'],
@@ -461,13 +492,18 @@ try {
           document.getElementById('charger1-device').scrollIntoView({block:'start'})`);
         await capture(`chargers-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
       }
-      for (const state of ['manual', 'charging']) {
-        const id = state === 'manual' ? 'charger1' : 'charger2';
+      for (const state of ['manual', 'periods', 'paused', 'problem', 'charging']) {
+        const id = state === 'charging' ? 'charger2' : 'charger1';
         await evaluate(`globalThis.chargingSmokeValues='${state}'; globalThis.refreshLearningSmokeStatus()`);
-        await until(`document.getElementById('${id}-state').textContent==='${state === 'manual' ? 'Manual control' : 'Charging'}'`);
+        await until(`document.getElementById('${id}-state').textContent==='${({ manual: 'Manual schedule', periods: 'Scheduled', paused: 'Paused between periods', problem: 'Update unconfirmed', charging: 'Charging' })[state]}'`);
         await evaluate(`document.getElementById('${id}-settings-details').open=true;
           document.getElementById('${id}-device').scrollIntoView({block:'start'})`);
         await capture(`charger-${state}-${width}-${theme}`);
+        if (state === 'periods') {
+          await evaluate("document.getElementById('charger1-explanation-details').open=true; document.getElementById('charger1-explanation-details').scrollIntoView({block:'start'})");
+          await capture(`charger-explanations-${width}-${theme}`);
+          await evaluate("document.getElementById('charger1-explanation-details').open=false");
+        }
       }
       await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
       await until("document.getElementById('charger2-setting-manualSoc').disabled===false");
@@ -490,7 +526,7 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
-      'shared charger cards, automatic SoC priority, persisted per-charger fallbacks, no installation setup, compact charging and manual-window summaries',
+      'shared charger cards, automatic SoC with original date/time, initial 20% fallback, connected-only metrics, confirmed periods retained through errors, manual expiry cap, nested operational explanations',
       'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',

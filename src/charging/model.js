@@ -94,6 +94,7 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
     minimumSoc: withFallback(automatic.minimumSoc, settings.minimumSoc),
     connected: automaticValue(telemetry, ['connected', 'pluggedIn'], source, value => typeof value === 'boolean'),
     currentA: automaticValue(telemetry, ['currentA', 'requestedCurrentA'], source, value => finite(value) && value >= 0 && value <= 200),
+    availableCurrentA: automaticValue(telemetry, ['availableCurrentA'], source, value => finite(value) && value >= 0 && value <= 1000),
     actualCurrentA: automaticValue(telemetry, ['actualCurrentA'], source, value => finite(value) && value >= 0 && value <= 200),
     maximumCurrentA: maximumCurrent(telemetry, source),
     phases: chargerValue(3, { source: 'installation-assumption', assumed: true }),

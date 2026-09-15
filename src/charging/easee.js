@@ -90,38 +90,47 @@ export function nextLocalOccurrence(localTime, timezone, now) {
 }
 
 export function delayedScheduleFor({ startAt, timezone, maximumAmps }, now) {
-  if (!Number.isSafeInteger(startAt) || !zone(timezone) || !Number.isInteger(maximumAmps) || maximumAmps < 6 || maximumAmps > 80)
-    throw new Error('A valid start, timezone and charger current limit are required');
+  const invalid = (detailCode, message) => Object.assign(failure('invalid-plan', message), { detailCode, publicReason: message });
+  if (!Number.isSafeInteger(startAt) || !zone(timezone))
+    throw invalid('invalid-start', 'The plan has an invalid start time or timezone. A new plan is needed.');
+  if (!Number.isInteger(maximumAmps) || maximumAmps < 6 || maximumAmps > 80)
+    throw invalid('missing-current-limit', Number.isFinite(maximumAmps)
+      ? `The reported charging limit is ${maximumAmps} A; a native delayed start requires 6–80 whole amperes.`
+      : 'The charger has not supplied a usable charging-current limit for the native schedule.');
+  if (startAt <= now) throw Object.assign(failure('state-changed', 'The planned start has arrived while checking the charger.'), { detailCode: 'start-passed' });
+  if (startAt % 1000 !== 0)
+    throw invalid('sub-second-start', 'The plan contains a sub-second start, but the native schedule uses whole seconds.');
   const startTime = moment.tz(startAt, timezone).format('HH:mm:ss');
   const next = nextLocalOccurrence(startTime, timezone, now);
-  if (next === null || next !== startAt) throw new Error('Easee delayed start cannot represent this absolute start time');
-  // Easee does not specify which occurrence of an autumn repeated clock time
-  // it chooses. Do not install a plan whose release could differ by an hour.
+  if (next === null || next !== startAt)
+    throw invalid('start-out-of-range', `The proposed start is ${moment.tz(startAt, timezone).format('D MMM HH:mm:ss')}, but Easee would use the next occurrence of ${startTime}.`);
   if (ambiguousWallTime(startAt, timezone))
-    throw new Error('Easee delayed start is ambiguous during the daylight-saving transition');
+    throw invalid('ambiguous-start', `The proposed local start ${startTime} occurs twice during the daylight-saving change; the charger cannot confirm which occurrence it will use.`);
   return { timezone, startTime, maximumAmps };
 }
 
-/** A simple app recurrence is yielded for its current/next concrete occurrence. */
-export function manualScheduleWindow(state, now) {
+/** Known manual periods in this readiness cycle. Gaps between multiple periods
+ * remain under manual control; only their final end permits early handback. */
+export function manualScheduleWindow(state, now, cycleEndsAt) {
   const kind = state.enabled, schedule = state[kind];
-  if (!['daily', 'weekly'].includes(kind) || schedule?.periods?.length !== 1) return null;
-  const period = schedule.periods[0], local = moment.tz(now, schedule.timezone).startOf('day');
-  const candidates = [];
-  for (let offset = -7; offset <= 7; offset++) {
+  if (!['daily', 'weekly'].includes(kind) || !schedule?.periods?.length) return null;
+  const local = moment.tz(now, schedule.timezone).startOf('day'), candidates = [];
+  for (const period of schedule.periods) for (let offset = -7; offset <= 7; offset++) {
     const day = local.clone().add(offset, 'days');
     if (kind === 'weekly' && DAYS[day.day()] !== period.startDay) continue;
     const start = wallTime(day.format('YYYY-MM-DD'), period.startTime, schedule.timezone);
     let days = kind === 'weekly' ? (DAYS.indexOf(period.stopDay) - DAYS.indexOf(period.startDay) + 7) % 7 : 0;
     if (days === 0 && period.stopTime <= period.startTime) days = kind === 'weekly' ? 7 : 1;
     const end = wallTime(day.clone().add(days, 'days').format('YYYY-MM-DD'), period.stopTime, schedule.timezone);
-    if (start !== null && end !== null && end > now && end > start) candidates.push({ startsAt: start, resumeAt: end,
+    if (start !== null && end !== null && end > now && end > start
+      && (!Number.isFinite(cycleEndsAt) || start < cycleEndsAt)) candidates.push({ startsAt: start, windowEndAt: end,
       ambiguous: ambiguousWallTime(start, schedule.timezone) || ambiguousWallTime(end, schedule.timezone) });
   }
   candidates.sort((a, b) => a.startsAt - b.startsAt);
-  if (!candidates.length || candidates[0].ambiguous) return null;
-  const { startsAt, resumeAt } = candidates[0];
-  return { kind: 'window', repeating: true, startsAt, resumeAt };
+  const selected = Number.isFinite(cycleEndsAt) ? candidates : candidates.slice(0, 1);
+  if (!selected.length || selected.some(row => row.ambiguous)) return null;
+  const windowEndAt = Math.max(...selected.map(row => row.windowEndAt));
+  return { kind: 'window', repeating: true, startsAt: selected[0].startsAt, windowEndAt, resumeAt: windowEndAt };
 }
 
 /** Read-only schedule display. Complex recurrences remain under their owner's
@@ -238,6 +247,7 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     connected: signal(snapshot.pluggedIn, [100, 109]),
     currentA: signal(currentA, currentIds, externalLoadBalancing ? 'easee-equalizer' : 'easee'),
     maxCurrentA: signal(maxCurrentA, [47, 104]),
+    availableCurrentA: signal(equalizerKnown ? Math.min(...limits.equalizerAvailableA) : null, [230, 231, 232], 'easee-equalizer'),
     actualCurrentA: signal(snapshot.supply?.chargerCurrentA?.reduce((sum, value) => sum + value, 0) / 3, [183, 184, 185]),
     phases: { value: 3, available: true, source: 'installation-assumption', assumed: true },
     voltageV: { ...signal(voltageV, [], 'easee-equalizer'), timeBasis: 'derived-observations',
@@ -257,7 +267,7 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
     normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options }); },
     async read({ signal } = {}) {
       if (!chargerId) throw new Error('Charger 1 Easee connection is not configured');
-      const now = clock();
+      let now = clock();
       let scheduling, observations, property;
       try {
         [scheduling, observations, property] = await Promise.all([
@@ -271,6 +281,7 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
         try { allocationA = amps((await request(`https://api.easee.com/api/equalizers/${encodeURIComponent(equalizerId)}/config`, { method: 'GET', signal }))?.maxAllocatedCurrent); }
         catch { allocationA = null; }
       }
+      now = clock();
       try {
         const snapshot = chargingSnapshot(observations, scheduling, now, allocationA, { externalLoadBalancing: Boolean(equalizerId) });
         const rows = Array.isArray(property) ? property : property?.observations ?? [];
@@ -297,17 +308,15 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
         return snapshot;
       } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },
-    async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true } = {}) {
+    async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true, allowChargingPause = false } = {}) {
       const before = await adapter.read({ signal });
       if (before.fingerprint !== expectedFingerprint || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
         throw failure('state-changed', 'Easee changed before the schedule write.');
-      if (before.mode === 3) throw failure('state-changed', 'Charging began before the schedule write.');
+      if (before.mode === 3 && !allowChargingPause) throw failure('state-changed', 'Charging began before the schedule write.');
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
       if (!before.controlKnown || before.manualStop || before.authorizationBlocked || before.faulted)
         throw failure('access-denied', 'The charger is not available for an automatic schedule.');
-      let delayed;
-      try { delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock()); }
-      catch { throw failure('invalid-plan', 'The proposed start cannot be represented by the native schedule.'); }
+      const delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock());
       try {
         await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: canMutate }, true);

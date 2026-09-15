@@ -19,7 +19,7 @@ const make = (id = 'first', extra = {}) => {
 };
 const run = (chargers, extra = {}) => planChargers({ now, supply, chargers, prices: prices([30, 20, 5, 5, 20, 30]), ...extra });
 
-test('a common charger selects a cheapest feasible continuous start and never emits a stop', () => {
+test('adjacent cheap hours remain one unrestricted charging period', () => {
   const result = run([make()]), plan = result.plans.first;
   assert.equal(plan.requiredGridKwh, 16);
   assert.equal(plan.state, 'waiting');
@@ -28,6 +28,7 @@ test('a common charger selects a cheapest feasible continuous start and never em
   assert.ok(plan.finishAt < now + 4 * HOUR);
   assert.equal(plan.continueAfterMinimum, true);
   assert.equal(Object.hasOwn(plan, 'stopAt'), false);
+  assert.deepEqual(plan.periods, [{ startAt: now + 2 * HOUR, endAt: null }]);
   assert.deepEqual(result.currentLimits, []);
 });
 
@@ -189,14 +190,78 @@ test('non-adjustable chargers keep selected currents and use separate starts whe
   }
 });
 
-test('known unplugged chargers receive a future native preview while unknown connection grants no release', () => {
+test('disconnected and unknown connections receive no vehicle-specific automatic schedule', () => {
   const preview = run([make('first', { telemetry: { connected: false } })]);
-  assert.equal(preview.plans.first.state, 'waiting');
-  assert.equal(preview.forecasts.first.state, 'preview');
-  assert.ok(preview.plans.first.warnings.some(warning => warning.includes('assumes the vehicle is connected')));
+  assert.equal(preview.plans.first.state, 'disconnected');
+  assert.equal(preview.plans.first.startAt, null);
+  assert.deepEqual(preview.plans.first.periods, []);
+  assert.equal(preview.forecasts.first.state, 'none');
   const unknown = run([make('first', { telemetry: { connected: null } })]);
   assert.equal(unknown.plans.first.state, 'unavailable');
   assert.equal(unknown.plans.first.startAt, null);
+  assert.deepEqual(unknown.plans.first.periods, []);
+});
+
+test('separated cheap hours pause between sessions and leave only the final session unrestricted', () => {
+  const result = run([make('first', { preferences: { capacityKwh: 25 }, deadlineAt: now + 4 * HOUR })],
+    { prices: prices([1, 20, 2, 30]) });
+  const plan = result.plans.first;
+  assert.equal(plan.reason, 'cheapest-feasible-periods');
+  assert.deepEqual(plan.periods, [
+    { startAt: now, endAt: now + HOUR }, { startAt: now + 2 * HOUR, endAt: null },
+  ]);
+  assert.equal(plan.finalStartAt, now + 2 * HOUR);
+  assert.ok(Math.abs(plan.costCents - (11.04 + 8.96 * 2)) < 1e-7);
+  assert.ok(plan.savingsCents > 0);
+  assert.equal(plan.continueAfterMinimum, true);
+  assert.ok(plan.finishAt > plan.finalStartAt && plan.finishAt < now + 3 * HOUR);
+  assert.ok(plan.accounting.every(row => row.end <= now + HOUR || row.start >= now + 2 * HOUR));
+  assert.deepEqual(result.currentLimits, [], 'Equalizer handles current through both periods');
+});
+
+test('split planning values energy price rather than preferring a higher-power expensive hour', () => {
+  const result = run([make('first', { preferences: { capacityKwh: 12.5 }, deadlineAt: now + 4 * HOUR })], {
+    prices: prices([1, 20, 2, 30]),
+    household: [{ start: now, end: now + HOUR, phaseCurrentA: [19, 19, 19] }],
+  });
+  const plan = result.plans.first;
+  assert.equal(plan.feasible, true);
+  assert.equal(plan.periods.length, 2);
+  assert.ok(Math.abs(plan.costCents - (4.14 + 5.86 * 2)) < 1e-7);
+  assert.equal(plan.periods[0].endAt, now + HOUR);
+  assert.equal(plan.periods[1].endAt, null);
+});
+
+test('equal-cost choices avoid extra pauses and a native period limit keeps a feasible schedule', () => {
+  const single = make('first', { preferences: { capacityKwh: 25 }, deadlineAt: now + 4 * HOUR });
+  const equal = run([single], { prices: prices([1, 1, 1, 1]) }).plans.first;
+  assert.equal(equal.periods.length, 1);
+  assert.equal(equal.startAt, now);
+  const limited = run([make('first', { capabilities: { maxSchedulePeriods: 1 },
+    preferences: { capacityKwh: 25 }, deadlineAt: now + 4 * HOUR })], { prices: prices([1, 20, 2, 30]) }).plans.first;
+  assert.equal(limited.feasible, true);
+  assert.equal(limited.periods.length, 1);
+  assert.equal(limited.periods[0].endAt, null);
+  const fragmented = run([make('first', { preferences: { capacityKwh: 41.4 } })],
+    { prices: prices([1, 20, 1, 20, 1, 1]) }).plans.first;
+  assert.equal(fragmented.periods.length, 2, 'The two adjacent cheap hours replace a scattered equal-price hour');
+  assert.deepEqual(fragmented.periods, [{ startAt: now, endAt: now + HOUR }, { startAt: now + 4 * HOUR, endAt: null }]);
+});
+
+test('an intermediate charging period can be replanned but an explicit final release cannot', () => {
+  const options = { prices: prices([1, 20, 2, 30]) };
+  const active = make('first', { telemetry: { charging: true }, preferences: { capacityKwh: 25 }, deadlineAt: now + 4 * HOUR });
+  assert.equal(run([active], options).plans.first.periods.length, 2);
+  const final = make('first', { telemetry: { charging: true }, control: { released: true } });
+  assert.equal(run([final], options).plans.first.state, 'released');
+  assert.deepEqual(run([final], options).plans.first.periods, []);
+});
+
+test('the readiness cap expires manual priority even without an identifiable native window', () => {
+  const charger = make('first', { control: { manual: { kind: 'unbounded', resumeAt: now } } });
+  const plan = run([charger]).plans.first;
+  assert.equal(plan.state, 'waiting');
+  assert.equal(plan.feasible, true);
 });
 
 test('the Equalizer allowance replaces fuse settings and is adjusted against observed household demand once', () => {
