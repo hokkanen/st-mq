@@ -67,7 +67,7 @@ test('policy-change restart recovers only after subscription with the same signe
   first.publish('synthetic/upstairs', 21); f.at(start + MINUTE); await first.capture.close();
   f.at(start + 20 * MINUTE); const resumed = await f.connect({ deferred: true }); resumed.ready();
   assert.equal(resumed.room().value, null); assert.equal(resumed.equipment().available, false);
-  resumed.pending[0].done();
+  resumed.pending.find(row => row.topic === 'synthetic/upstairs').done();
   assert.equal(resumed.room().value, 21); assert.equal(resumed.equipment().readings.indoor_temperature.observedAt, start);
   f.at(start + 75 * MINUTE); assert.equal(resumed.room().value, null);
 });
@@ -112,10 +112,10 @@ test('invalid payload exclusions survive transport recovery and no garage, door 
 test('manual reconnect subscriptions require broker acknowledgement and rejection cannot recover cached room state', async t => {
   const f = fixture(t), live = await f.connect({ deferred: true }); live.ready();
   assert.equal(live.connectOptions.resubscribe, false, 'MQTT.js must not acknowledge manual subscriptions from its automatic resubscribe cache');
-  live.pending[0].done(); live.publish('synthetic/upstairs', 20);
+  live.pending.find(row => row.topic === 'synthetic/upstairs').done(); live.publish('synthetic/upstairs', 20);
   f.at(start + MINUTE); live.client.emit('offline'); f.at(start + 2 * MINUTE); live.ready();
   assert.equal(live.room().value, null); assert.equal(live.equipment().available, false);
-  live.pending[1].done(new Error('Private denial details'));
+  live.pending.filter(row => row.topic === 'synthetic/upstairs')[1].done(new Error('Private denial details'));
   assert.equal(live.room().value, null); assert.equal(live.equipment().available, false);
   assert.equal(JSON.stringify(f.store.events()).includes('Private denial'), false);
 });
@@ -167,13 +167,13 @@ test('subscription setup buffers are bounded and discarded on broker disconnect'
   live.pending.find(entry => entry.topic === 'synthetic/upstairs').done();
   live.publish('synthetic/upstairs', 20);
   live.client.emit('offline'); f.at(start + MINUTE); live.ready();
-  for (const entry of live.pending.slice(2)) entry.done();
+  for (const entry of live.pending.slice(3)) entry.done();
   assert.equal(live.room().value, null); assert.equal(live.equipment().available, false, 'Old-connection packets cannot be replayed on reconnect');
   live.publish('synthetic/upstairs', 21);
   live.client.emit('offline'); f.at(start + 2 * MINUTE); live.ready();
-  live.pending[4].done();
+  live.pending.filter(row => row.topic === 'synthetic/upstairs').at(-1).done();
   for (let index = 0; index < 257; index++) live.publish('synthetic/upstairs', 22);
-  live.pending[5].done();
+  live.pending.filter(row => row.topic === 'synthetic/door').at(-1).done();
   assert.equal(live.room().value, null); assert.equal(live.equipment().available, false, 'Overflow cannot silently erase a later invalidation and restore old state');
 });
 
@@ -191,10 +191,10 @@ test('recovery storage failures remain sanitized and do not populate the equipme
 test('stale subscription acknowledgements cannot recover rooms on a newer connection generation', async t => {
   const f = fixture(t), first = await f.connect(); first.ready(); first.publish('synthetic/upstairs', 20);
   f.at(start + MINUTE); await first.capture.close(); f.at(start + 2 * MINUTE);
-  const resumed = await f.connect({ deferred: true }); resumed.ready(); const stale = resumed.pending[0];
+  const resumed = await f.connect({ deferred: true }); resumed.ready(); const stale = resumed.pending.find(row => row.topic === 'synthetic/upstairs');
   resumed.client.emit('offline'); resumed.ready(); stale.done();
   assert.equal(resumed.equipment().available, false); assert.equal(resumed.room().value, null);
-  resumed.pending[1].done(); assert.equal(resumed.equipment().available, true); assert.equal(resumed.room().value, 20);
+  resumed.pending.filter(row => row.topic === 'synthetic/upstairs')[1].done(); assert.equal(resumed.equipment().available, true); assert.equal(resumed.room().value, 20);
 });
 
 test('room route signatures exclude presentation and include broker credentials identity and decoding paths', () => {

@@ -1,5 +1,5 @@
-// Observation boundary, with a separately opted-in, one-minute charger
-// identification control. No circuit or permanent writes exist.
+// Observation boundary, with separately opted-in native charging schedules and
+// one-minute charger identification. Installer/circuit settings are read-only.
 // Protocol sources checked 2026-09-06:
 // https://developer.easee.com/reference/getobservations
 // https://developer.easee.com/reference/account_refreshtoken
@@ -11,6 +11,7 @@
 // https://developer.easee.com/docs/load-balancing
 // https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
+import { createEaseeScheduleAdapter } from '../charging/easee.js';
 
 const CURRENT_DEVICES = [
   ['charger_id', [183, 184, 185], 'ev1_current'],
@@ -300,12 +301,14 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     catch (error) { throw sanitized(error, provider); }
   }
   async function easeeTransport(url, options, responseText = false) {
-    // The only text response is the opted-in physical command. Check every
+    // Text responses are opted-in control writes. Check every
     // dispatch, including a retry after asynchronous authentication or storage.
     if (responseText && !canControl()) throw new Error('Controller authority was revoked');
+    if (responseText && options.controlGuard && !options.controlGuard()) throw new Error('Charging schedule authority was revoked');
     if (options.signal?.aborted) throw new Error('Provider request was aborted');
     admitRequest();
-    try { return await request(url, options, 'Easee', responseText); }
+    const { controlGuard, ...transportOptions } = options;
+    try { return await request(url, transportOptions, 'Easee', responseText); }
     catch (error) {
       if (httpStatus(error) === 429) blockedUntil = Math.max(blockedUntil, clock() + (error.retryAfterMs ?? 300_000));
       throw error;
@@ -430,9 +433,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       }
     },
   };
+  const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated,
+    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl });
 
   return {
     chargerIdentificationControl() { return identificationControl; },
+    chargerScheduleControl() { return scheduleControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);
       const jobs = [['charger_id', 'ev1'], ['equalizer_id', 'property']].filter(([key]) => supplied(easee[key]));

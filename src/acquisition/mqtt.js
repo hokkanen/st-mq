@@ -9,6 +9,7 @@ import { createTeslaMateCapture } from './teslamate.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createGarageAdapter } from '../garage/adapter.js';
+import { createChargingTeslaCapture } from '../charging/teslamate.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
 
@@ -47,9 +48,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     });
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: config.connections.teslamate }) : null;
+  const chargingTesla = teslamate && engine.charging ? createChargingTeslaCapture({ settings: config.connections.teslamate,
+    clock: () => engine.clock() }) : null;
+  if (chargingTesla) engine.charging.teslaCapture = chargingTesla;
   const hasEquipmentHeating = (equipmentSettings?.devices ?? config.connections.shelly?.devices ?? [])
     .some(device => device.enabled !== false && device.controlsHeat);
   const topicGroups = [
+    ...(engine.charging ? [{ id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT', topics: [
+      { role: 'Timestamped state of charge', topic: engine.charging.settings.mqttTopic, direction: 'subscribe' },
+    ] }] : []),
     { id: 'dhwr', label: 'Hot-water circulation commands', source: 'MQTT', topics: [
       { role: 'Timed ON/OFF command', topic: config.connections.mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch', direction: 'publish' },
     ] },
@@ -205,11 +212,29 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     await publish(`${deviceId}/HP/CMD`, 'GETALL', { qos: 0, retain: false });
   };
   const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings }) : null;
+  const subscribeChargingSoc = () => {
+    if (!engine.charging || !connected || stopped || stopping) return;
+    const generation = connectionGeneration, topic = engine.charging.settings.mqttTopic;
+    engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription' });
+    client.subscribe(topic, { qos: 1 }, (error, granted) => {
+      if (!connected || stopped || stopping || generation !== connectionGeneration || topic !== engine.charging.settings.mqttTopic) return;
+      const rejected = subscriptionRejected(topic, error, granted);
+      engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null });
+    });
+  };
+  if (engine.charging) engine.charging.onMqttTopicChange = (topic, previous) => {
+    // Old deliveries cannot match the new selected route, even before UNSUBACK.
+    if (connected) client.unsubscribe?.(previous, () => {});
+    const group = topicGroups.find(group => group.id === 'charger1-vehicle');
+    if (group) group.topics[0].topic = topic;
+    subscribeChargingSoc();
+  };
   const connectedHandler = () => {
     if (connected || stopped || stopping) return;
     const generation = ++connectionGeneration;
     const currentSubscription = () => connected && !stopped && !stopping && generation === connectionGeneration;
     connected = true; disconnectedRecorded = false; h66?.setConnected(true);
+    subscribeChargingSoc();
     garage?.setConnected(true);
     store.event('mqtt-connected', { source, writesEnabled: Boolean(h66 && settings.writeEnabled === true) }, engine.clock());
     if (h66) client.subscribe(`${deviceId}/HP/#`, { qos: 0 }, error => {
@@ -253,8 +278,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     }
     if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, error => {
       if (!currentSubscription()) return;
-      if (error) { teslamate.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
-      else teslamate.setConnected(true);
+      if (error) { teslamate.setConnected(false); chargingTesla?.setConnected(false); report('mqtt-teslamate-subscribe-error'); }
+      else { teslamate.setConnected(true); chargingTesla?.setConnected(true); }
     });
     for (const topic of garage?.topics ?? []) client.subscribe(topic, { qos: 1 }, (error, granted) => {
       if (!currentSubscription()) return;
@@ -267,6 +292,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (stopped) return;
     connected = false; connectionGeneration++; equipmentSubscriptionBuffer = null; h66?.setConnected(false);
     teslamate?.setConnected(false);
+    chargingTesla?.setConnected(false);
+    engine.charging?.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
     shelly?.setConnected(false);
     garage?.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
@@ -282,6 +309,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('message', (topic, payload, packet = {}) => {
     if (!connected || stopped) return;
     try {
+      if (engine.charging?.receiveSoc(topic, payload, packet, engine.clock())) return;
+      chargingTesla?.receive(topic, payload, packet, engine.clock());
       if (garage?.receive(topic, payload, packet, engine.clock())) return;
       if (equipmentSubscriptionBuffer) {
         const matched = shelly.topics.filter(subscription => subscription.endsWith('/#')
@@ -361,6 +390,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       shelly?.close();
       if (engine.shelly === shelly) engine.shelly = null;
       teslamate?.close();
+      chargingTesla?.setConnected(false);
+      if (engine.charging) {
+        engine.charging.onMqttTopicChange = null;
+        engine.charging.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
+      }
       if (engine.teslamate === teslamate) engine.teslamate = null;
       if (restore && canControl() && h66 && connected && settings.writeEnabled === true) {
         try { await h66.restore({ now: engine.clock(), reason: 'application-shutdown' }); }

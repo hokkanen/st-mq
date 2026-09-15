@@ -1,5 +1,6 @@
 import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
+import { createChargingPanel, chargingContext } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues } from './home-controls.js';
@@ -103,6 +104,9 @@ const garageControls = createGarageControls({ document, request: api,
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
   afterRequest: () => refresh(),
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy });
+const chargingPanel = createChargingPanel({ document, request: api,
+  beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
+  afterRequest: () => refresh() });
 function renderContract(s) {
   const current = activeRates(s);
   const period = current ?? s.configuredPrices;
@@ -411,7 +415,7 @@ function renderH66(s) {
       detail.append(document.createElement('span'), document.createElement('strong')); root.append(detail);
     }
     const [title, value] = detail.children;
-    title.textContent = 'Operating mode';
+    title.textContent = 'Heating mode';
     value.classList.toggle('muted', !row.available);
     setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
       title: title.textContent, detail: row.detail });
@@ -428,11 +432,6 @@ function renderH66(s) {
     if (!notice) { notice = document.createElement('p'); notice.className = 'equipment-alarm'; root.append(notice); }
     notice.textContent = 'Heat-pump alarm active';
   } else notice?.remove();
-  const tariff = summary.find(row => row.key === 'tariff');
-  setStatusDetail($('home-tariff-status'), { key: 'home-tariff',
-    label: tariff.value.startsWith('Unknown') ? 'Unknown' : tariff.value,
-    title: 'Tariff control', detail: `${tariff.value}. ${tariff.detail}` });
-  $('home-tariff-status').dataset.h66Summary = 'tariff';
   const connectionDetail = (h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
     : 'Waiting for a live H66 connection and fresh values from the heat pump.')).trim().replace(/^./, value => value.toUpperCase());
@@ -484,6 +483,7 @@ function renderH66(s) {
 function render(s) {
   lastStatus = s;
   garageControls.update(s);
+  chargingPanel.update(s);
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
   const replica = renderReplicaStatus(document, s, { formatTime: time });
@@ -497,6 +497,8 @@ function render(s) {
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
       : s.liveWrites ? 'Learning from the house and controlling heating through preheating, reduction and recovery.'
         : 'Observing the house and planning heating. This operating mode sends no automatic commands.';
+  const upcomingCharging = chargingContext(s.charging, s.now);
+  if (upcomingCharging) $('context').textContent += ` ${upcomingCharging}`;
   for (const key of ['indoor', 'outdoor']) {
     const obs = s.observations[key] ?? {};
     const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });

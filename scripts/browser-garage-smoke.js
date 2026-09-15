@@ -104,6 +104,28 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
+  await until("document.getElementById('charging-enabled')?.disabled === false");
+  assert.deepEqual(await evaluate("['home-heat-pump-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#garage-equipment-section > .equipment-device')].slice(0,2).map(node=>node.id)"), ['charger1-device', 'charger2-device']);
+  assert.deepEqual(await evaluate("['minimumSoc','readyBy','capacity1Kwh','capacity2Kwh'].map(key=>document.getElementById('charging-setting-'+key).value)"), ['80', '06:00', '74', '57']);
+  assert.equal(await evaluate("document.getElementById('charging-manual-soc').value"), '40');
+  assert.equal(await evaluate("document.getElementById('charging-enabled').getAttribute('aria-checked')"), 'false');
+  assert.equal(await evaluate("document.getElementById('charging-setting-readyBy').disabled"), true);
+  await evaluate("document.getElementById('garage-equipment-details').open=true; true");
+  for (const [charger, key, value] of [[1, 'capacity1Kwh', '76'], [2, 'capacity2Kwh', '59']]) {
+    await evaluate(`(() => { const input=document.getElementById('charging-setting-${key}'); input.value='${value}';
+      input.dispatchEvent(new Event('input')); document.getElementById('charger${charger}-settings-form').requestSubmit(); })()`);
+    await until(`document.getElementById('charger${charger}-settings-message').textContent === 'Settings saved.'`);
+  }
+  await evaluate("document.getElementById('charging-manual-soc').value='43'; document.getElementById('charging-soc-form').requestSubmit()");
+  await until("document.getElementById('charger1-readings').textContent.includes('43 % · manual')");
+  await send('Page.reload');
+  await until("document.getElementById('charging-enabled')?.disabled === false");
+  assert.deepEqual(await evaluate("['capacity1Kwh','capacity2Kwh'].map(key=>document.getElementById('charging-setting-'+key).value)"), ['76', '59']);
+  assert.equal(await evaluate("document.getElementById('charging-manual-soc').value"), '43');
+  assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /43 % · manual.*Manual value expires/);
+  await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charging-soc-automatic').click()");
+  await until("document.getElementById('charger1-readings').textContent.includes('Unknown · planning assumes 0%')");
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
     ['home-control', 'providers-controls', 'house-model'],
     'The existing dashboard cards are preserved');
@@ -262,7 +284,7 @@ try {
       }
     }
     // Preserve the equipment and savings layout checks from this smoke test.
-    for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment']]) {
+    for (const [id, name] of [['timing-details', 'savings'], ['garage-controller-details', 'equipment'], ['charger1-device', 'charging']]) {
       await evaluate(`(() => { const element = document.getElementById('${id}'); element.open = true;
         for (let parent = element.parentElement; parent; parent = parent.parentElement)
           if (parent.tagName === 'DETAILS') parent.open = true;
@@ -279,6 +301,7 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
+      'charging first-use defaults, OFF readiness fields, persisted capacities and manual percentage, return to MQTT',
       'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',

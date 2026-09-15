@@ -93,7 +93,7 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
 test('provider and MQTT runtime share the opted-in control while heat-pump control remains in shadow mode', async t => {
   const f = await fixture(t);
   assert.equal(f.factoryCalls, 1);
-  assert.deepEqual(f.mock.subscriptions, ['teslamate/cars/1/#']);
+  assert.deepEqual(f.mock.subscriptions, ['stmq/garage/charger1/vehicle', 'teslamate/cars/1/#']);
   assert.equal(f.engine.settings.mode, 'shadow');
   await f.baseline();
   assert.deepEqual(f.commands, [{ amps: 10, minutes: 1 }]);

@@ -163,12 +163,14 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const connections = config.connections ?? {};
   const identifyCharger = connections.teslamate?.enabled === true
     && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
-  http ??= createHttp({ allowChargerIdentification: identifyCharger, canControl });
+  http ??= createHttp({ allowChargerIdentification: identifyCharger, allowChargerScheduling: true, canControl });
   const location = configuredLocation(connections);
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // selects a usable H66 reading before either weather source.
   devices ??= createDeviceProviders({ connections, http, clock, canControl,
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
+  if (connections.easee?.charger_id && devices.chargerScheduleControl)
+    engine.charging?.setAdapter(devices.chargerScheduleControl());
   const identificationControl = identifyCharger && engine.teslamate && devices.chargerIdentificationControl
     ? devices.chargerIdentificationControl() : null;
   const identification = identificationControl ? createChargerIdentification({ clock, control: {
@@ -183,6 +185,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const runIdentification = async () => {
     if (!identification) return;
     if (!canControl()) { identification.stop(); return; }
+    // A diagnostic current restriction must not become a second controller for
+    // a native charging schedule or defeat a manual app override.
+    if (engine.charging?.settings.enabled || engine.charging?.status()?.control?.owned) return;
     try {
       await identification.tick({ tesla: engine.teslamate?.identificationSnapshot(),
         charger: engine.electricitySnapshot?.charger }, clock());

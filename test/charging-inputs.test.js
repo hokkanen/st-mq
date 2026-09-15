@@ -1,0 +1,69 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createChargingTeslaCapture, decodeChargingTeslaField } from '../src/charging/teslamate.js';
+import { householdProfile } from '../src/charging/history.js';
+
+test('advance telemetry uses requested current at zero measured power and retains separate receipt clocks', () => {
+  const capture = createChargingTeslaCapture({ settings: { carId: '7', homeGeofence: 'Home', chargerAssignment: 'bmw' } });
+  capture.setConnected(true);
+  const send = (field, value, at, packet) => capture.receive(`teslamate/cars/7/${field}`, String(value), packet, at);
+  send('battery_level', 40, 1000); send('charger_power', 0, 1100);
+  send('charge_current_request', 13, 1200); send('charge_current_request_max', 16, 1300);
+  send('geofence', 'Home', 1400); send('plugged_in', true, 1500);
+  send('scheduled_charging_start_time', '2026-09-15T23:00:00Z', 2000);
+  let snapshot = capture.snapshot();
+  assert.equal(snapshot.actualPowerKw, 0);
+  assert.equal(snapshot.requestedCurrentA, 13);
+  assert.equal(snapshot.maxCurrentA, 16);
+  assert.equal(snapshot.fields.battery_level.receivedAt, 1000);
+  assert.equal(snapshot.fields.battery_level.measuredAt, null);
+  assert.equal(snapshot.atHome, true);
+  send('charge_current_request', 6, 2100, { retain: true });
+  assert.equal(capture.snapshot().requestedCurrentA, 13);
+  send('charge_current_request', 'bad', 2200);
+  assert.equal(capture.snapshot().requestedCurrentA, null, 'Invalid current cannot retain an apparently valid forecast');
+  capture.setConnected(false);
+  snapshot = capture.snapshot();
+  assert.equal(snapshot.connected, false);
+  assert.equal(snapshot.atHome, undefined);
+  assert.equal(snapshot.batteryLevel, undefined);
+  capture.setConnected(true);
+  send('battery_level', 42, 3000, { dup: true });
+  assert.equal(capture.snapshot().batteryLevel, 42, 'DUP is not proof this subscriber previously consumed a reading');
+  send('geofence', 'x'.repeat(201), 3100);
+  assert.equal(capture.snapshot().atHome, undefined, 'Invalid location is not known-away evidence');
+});
+
+test('Tesla charging decoder rejects malformed numbers and timezone-free schedules', () => {
+  assert.equal(decodeChargingTeslaField('battery_level', 101), null);
+  assert.equal(decodeChargingTeslaField('charge_current_request', '13A'), null);
+  assert.equal(decodeChargingTeslaField('scheduled_charging_start_time', '2026-09-15T06:00:00'), null);
+  assert.equal(decodeChargingTeslaField('scheduled_charging_start_time', 'null'), null);
+  assert.equal(decodeChargingTeslaField('plugged_in', 'yes'), null);
+  assert.equal(decodeChargingTeslaField('latitude', '1'), undefined);
+});
+
+const HOUR = 3_600_000, start = Date.parse('2026-09-14T12:00:00Z');
+function energy(signal, value, from = start, to = start + HOUR) {
+  return { signal, value, unit: 'kWh', raw: { intervalStart: from, intervalEnd: to }, quality: [] };
+}
+test('household forecast intersects clocks and subtracts both chargers before conservative phase allocation', () => {
+  const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 3), energy(`ev1_energy_l${p}`, 1)]);
+  rows.push(energy('ev2_energy', 2, start + HOUR / 2, start + HOUR));
+  const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
+  assert.equal(profile[12].coverageMs, HOUR / 2);
+  assert.ok(Math.abs(profile[12].currentA - 2000 / 230) < 1e-9,
+    '9 kW property minus 3 kW Charger 1 minus 4 kW Charger 2 leaves 2 kW household');
+  assert.equal(profile[13], null);
+  assert.equal(householdProfile(rows.slice(0, -1), { timezone: 'UTC', voltageV: 230 })[12], null,
+    'Missing Charger 2 coverage cannot silently mean zero');
+});
+
+test('overlapping source intervals and negative residuals cannot create headroom', () => {
+  const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 1), energy(`ev1_energy_l${p}`, 1)]);
+  rows.push(energy('ev2_energy', 2));
+  assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
+  rows.at(-1).value = 0;
+  rows.push(energy('property_energy_l1', 1));
+  assert.equal(householdProfile(rows, { timezone: 'UTC', voltageV: 230 })[12], null);
+});

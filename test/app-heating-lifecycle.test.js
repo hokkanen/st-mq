@@ -21,6 +21,14 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const clients = [], packets = [], published = new EventEmitter();
   const connect = (address, options) => {
     if (identityConnection(options)) return idleIdentityClient();
+    if (options.resubscribe === false) {
+      // The shared telemetry connection now listens for Charger 1 SoC even
+      // without H66. Keep the command publisher lifecycle assertions separate.
+      const subscriber = new EventEmitter(); subscriber.connected = true;
+      subscriber.subscribe = (topic, _options, done) => { assert.equal(topic, 'stmq/garage/charger1/vehicle'); done(); };
+      subscriber.end = (_force, _options, done) => done();
+      return subscriber;
+    }
     assert.equal(address, connection.address);
     assert.equal(options.username, connection.user);
     assert.equal(options.password, connection.pw);

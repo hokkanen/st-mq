@@ -89,6 +89,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     restore = restore && canControl();
     clearTimeout(timer);
     clearInterval(garageSafetyTimer);
+    await engine?.charging?.close();
     await engine?.garage?.close({ restore });
     if (engine) engine.onTemporaryChange = null;
     // Restore timed device tests while their original acquisition route still
@@ -136,7 +137,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     engine = new Engine({ store, config, clock, commandTransport, canControl });
     // Load durable native-setting obligations before the first active dispatch.
     // MQTT connection and device publications remain asynchronous.
-    const hasMqttObservations = config.h66?.deviceId || config.deviceId
+    const hasMqttObservations = Boolean(engine.charging?.settings.mqttTopic) || config.h66?.deviceId || config.deviceId
       || Object.keys(config.connections.mqtt?.temperatureTopics ?? {}).length > 0
       || config.connections.teslamate?.enabled === true
       || Boolean(config.garage?.adapter?.stateTopic || config.garage?.adapter?.telemetryTopic)

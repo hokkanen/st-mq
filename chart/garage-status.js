@@ -408,7 +408,7 @@ export function renderGarage(document, status) {
   else if (adapter.connected === false || adapter.health?.deviceOnline === false) heating = 'Offline';
   else if (!adapter.liveControlSupported && !adapter.simulation) heating = 'Monitoring only';
   else if (power.fresh) heating = power.value === 'off' ? 'Heating off' : power.value === 'on' ? 'Normal mode' : heating;
-  detail('garage-heating-summary', heating, 'Garage heating',
+  detail('garage-heating-summary', heating, 'Garage heating mode',
     `${display.reason}. ${adapter.phase === 'paused' ? 'An automatic savings episode is pausing heating.'
       : adapter.restorePending ? 'Restoration has been requested; heating confirmation is pending.'
         : 'Native power and mode reports are available inside the garage section. Power enabled does not confirm compressor activity.'}`);
@@ -436,6 +436,7 @@ export function renderGarage(document, status) {
     root.replaceChildren(fragment);
   };
   set('garage-controller-state', display.status); set('garage-controller-reason', display.reason);
+  set('garage-freezing-protection', display.settingRows.find(([label]) => label === 'Freezing protection')?.[1] ?? 'Unavailable');
   list('garage-controller-readings', display.rows); list('garage-settings-values', display.settingRows);
   renderLearningRows(document.getElementById('garage-learning-outcomes'), display.outcomeDetails, { document });
   renderLearningRows(document.getElementById('garage-learning-evidence'), display.evidenceDetails, { document });

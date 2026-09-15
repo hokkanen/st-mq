@@ -26,6 +26,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
 import { GarageRuntime } from '../garage/runtime.js';
+import { ChargingRuntime } from '../charging/runtime.js';
 import { isGarageDoorSignal, confirmedGarageDoor, garageDoorContinuity } from '../garage/door-state.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
@@ -422,6 +423,7 @@ export class Engine {
       store.setState(`applied:${config.input}`, this.applied);
     }
     this.garage = new GarageRuntime({ engine: this, store, config, clock, canControl });
+    this.charging = new ChargingRuntime({ engine: this, store, config, clock, canControl });
   }
   ingest(observation) {
     if (observation?.signal === 'indoor_temperature' && observation.source?.startsWith('husdata'))
@@ -858,6 +860,7 @@ export class Engine {
     this.temperatureObservations(observations, now);
     try { this.garage.tick({ now, prices: outlook.prices, forecast: outlook.forecast }); }
     catch { this.garage.fail('garage-runtime-unavailable'); }
+    this.charging.tick({ now, prices: outlook.prices });
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
     const manualPause = priorExecutor?.manualPause;
@@ -1158,7 +1161,7 @@ export class Engine {
       providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},
       equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),equipmentControls:this.equipmentControlStatus(),dhwr:this.dhwrStatus(),
       contract:this.contract(),configuredPrices:this.config.priceSettings??null,
-      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),garage:this.garage.status(now),
+      recording:this.recorder.status(),fireplace:this.fireplaceStatus(),sensorChanges:this.sensorChangesStatus(),garage:this.garage.status(now),charging:this.charging.status(now),
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
         controlHold,outcomes:this.cycles.outcomes(),
@@ -1184,6 +1187,7 @@ export class Engine {
     result.fireplace = this.fireplaceStatus();
     result.sensorChanges = this.sensorChangesStatus();
     result.garage = this.garage.status(now);
+    result.charging = this.charging.status(now);
     if (this.h66Status) result.h66 = this.h66Status();
     const executor = this.executor.status(), native = result.h66 ?? {}, override = result.override;
     const manual = executor.manualRequested;

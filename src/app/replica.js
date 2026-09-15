@@ -13,6 +13,8 @@ import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAt
   temperatureBoundaryStatus } from './temperature-status.js';
 import { garageModelSummary, GARAGE_ALGORITHM_VERSION } from '../garage/model.js';
 import { LEARNING_ALGORITHM } from './committed-learning.js';
+import { chargingSettings } from '../charging/settings.js';
+import { effectiveSoc } from '../charging/soc.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This replica is read-only. Make changes on the primary instance.';
@@ -40,6 +42,25 @@ function homeLearningSnapshot(snapshot, checkpoint, now) {
     metrics: null, readiness: null, outcomes: null, episode: null,
     message: available ? 'Recorded primary model. Live control readiness and completed-cycle assessments are unavailable in this snapshot.'
       : 'No compatible saved Home model is available at this snapshot boundary.' };
+}
+
+/** Show the primary's saved charging decision at the publication boundary.
+ * Neither the viewer clock nor copied ownership can schedule charger actions. */
+function chargingSnapshot(snapshot) {
+  if (!snapshot) return null;
+  const saved = snapshot.store.getState(`charging:${snapshot.input}`);
+  if (!saved) return null;
+  const snapshotAt = snapshot.publication.sourceAt;
+  const ownership = snapshot.store.getState(`charging:${snapshot.input}:ownership`);
+  const settings = chargingSettings(saved.settings ?? {});
+  const automaticSoc = saved.automaticSoc ?? null, manualSoc = saved.manualSoc ?? null;
+  return { readOnly: true, recorded: true, snapshotAt, settings,
+    automaticSoc, manualSoc, soc: effectiveSoc({ automatic: automaticSoc, manual: manualSoc, now: snapshotAt }),
+    plan: saved.plan ?? null,
+    control: { ...(ownership ?? { phase: 'unavailable', released: false }), enabled: settings.enabled,
+      readOnly: true, snapshotAt, snapshot: null,
+      reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` },
+    charger2: null, mqtt: { connected: null, subscribed: null, reason: 'read-only-snapshot' }, error: null };
 }
 
 function recordedInput(store) {
@@ -165,6 +186,7 @@ export async function startReplica({ config, clock = Date.now,
         bytes: publication?.bytes ?? null, staleAfterMs, ...(lastError ? { error: lastError } : {}) },
       observations,
       learning: homeLearningSnapshot(snapshot, checkpoint, now),
+      charging: chargingSnapshot(snapshot),
       garage: { status: 'monitoring', reason: 'Read-only replica; recorded primary evidence',
         settings: snapshot?.store.getState(`garage:configuration:${snapshot.input}`) ?? {},
         observations: { rear: observations.garage, front: observations.garageFront, outdoor: observations.outdoor },

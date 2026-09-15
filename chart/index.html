@@ -109,15 +109,14 @@
           <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
           <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="home-heat-pump-title">
             <summary class="zone-summary equipment-overview">
-            <div class="equipment-heading"><h3 id="home-heat-pump-title">Home heating</h3><span id="h66-status" class="muted">Not connected</span></div>
+            <div class="equipment-heading"><h3 id="home-heat-pump-title">Home</h3><span id="h66-status" class="muted">Not connected</span></div>
             <div id="home-h66-summary" class="home-h66-summary">
-              <div class="equipment-value" data-h66-summary="mode"><span>Operating mode</span><strong>Unavailable</strong></div>
+              <div class="equipment-value" data-h66-summary="mode"><span>Heating mode</span><strong>Unavailable</strong></div>
               <div class="equipment-value"><span>Comfort reference</span><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></div>
               <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
             </div>
             <div class="equipment-notes">
               <p><span>Recirculation</span><span id="dhwr">—</span></p>
-              <p><span>Tariff control</span><span id="home-tariff-status">—</span></p>
             </div>
               <span class="zone-expand" aria-hidden="true"></span>
             </summary>
@@ -217,14 +216,16 @@
           </details>
           <details id="garage-equipment-details" class="dashboard-disclosure heating-zone garage-zone" aria-labelledby="garage-title">
             <summary class="zone-summary">
-              <div class="equipment-heading"><h3 id="garage-title">Garage heating</h3><span id="garage-connection-status" class="muted">Not connected</span></div>
+              <div class="equipment-heading"><h3 id="garage-title">Garage</h3><span id="garage-connection-status" class="muted">Not connected</span></div>
               <div class="garage-overview">
-                <div class="equipment-value"><span>Operating mode</span><strong id="garage-heating-summary">Monitoring</strong></div>
+                <div class="equipment-value"><span>Heating mode</span><strong id="garage-heating-summary">Monitoring</strong></div>
                 <div class="equipment-value"><span>Garage doors</span><strong id="garage-door-summary">Unknown</strong></div>
                 <div class="equipment-value"><span>Caravan power</span><strong id="garage-caravan-power">Unavailable</strong></div>
               </div>
-              <div class="equipment-notes garage-budget-notes">
-                <p><span>Cold budget</span><span class="garage-budget-values"><span id="garage-budget-rear">Rear —</span><span aria-hidden="true">·</span><span id="garage-budget-front">Front —</span></span></p>
+              <div class="equipment-notes garage-charging-notes">
+                <p class="garage-protection-note"><span>Freezing protection</span><span id="garage-freezing-protection">Unavailable</span></p>
+                <p><span>Charger 1</span><span id="charger1-summary" class="charger-summary">Control OFF</span></p>
+                <p><span>Charger 2</span><span id="charger2-summary" class="charger-summary">Forecast unavailable</span></p>
               </div>
               <span class="zone-expand" aria-hidden="true"></span>
             </summary>
@@ -246,6 +247,44 @@
               </section>
               <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
                 <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
+                <section id="charger1-device" class="equipment-device charging-device" aria-labelledby="charger1-title">
+                  <div class="equipment-device-heading"><h4 id="charger1-title">Charger 1</h4><span id="charger1-control-state" class="equipment-device-status">Control OFF</span></div>
+                  <div class="charging-master"><span id="charging-enabled-label">ST-MQ charging control</span><button id="charging-enabled" type="button" role="switch" aria-checked="false" aria-labelledby="charging-enabled-label" disabled>OFF</button></div>
+                  <p id="charging-control-detail" class="muted">Automatic charging control starts OFF.</p>
+                  <dl id="charger1-readings" class="equipment-readings"></dl>
+                  <details id="charger1-notes-details" class="equipment-fold" hidden><summary>Planning notes &amp; assumptions</summary><ul id="charger1-notes" class="charging-notes"></ul></details>
+                  <form id="charging-soc-form" class="charging-soc-form">
+                    <label for="charging-manual-soc">Temporary current charge · %<input id="charging-manual-soc" type="number" min="0" max="100" step="0.1" value="40" required disabled></label>
+                    <button id="charging-soc-apply" class="secondary-button" type="submit" disabled>Use until next ready-by time</button>
+                    <button id="charging-soc-automatic" class="secondary-button" type="button" disabled>Return to MQTT</button>
+                    <p class="muted charging-form-help">Reapplying sets a new expiration at the next readiness deadline. MQTT readings continue to arrive underneath a manual value.</p>
+                  </form>
+                  <p id="charging-soc-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  <form id="charger1-settings-form" class="charging-settings-form">
+                    <div id="charger1-readiness-fields" class="charging-fields"></div>
+                    <p class="muted charging-form-help">The minimum is a readiness target. Charging may continue beyond it and after the deadline toward the vehicle's own limit.</p>
+                    <details id="charging-installation-details" class="equipment-fold">
+                      <summary>Connections &amp; planning assumptions</summary>
+                      <p class="muted">Standard three-phase charging. These limits constrain the forecast; Equalizer continues to balance actual charging. Enter the actual household main-fuse rating. Blank circuit and charging-allocation limits use verified Easee settings where available.</p>
+                      <div id="charger1-planning-fields" class="charging-fields"></div>
+                    </details>
+                    <button id="charger1-settings-save" class="secondary-button" type="submit" disabled>Save Charger 1 settings</button>
+                  </form>
+                  <p id="charger1-settings-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  <button id="charging-resume" class="secondary-button" type="button" disabled hidden>Resume automatic charging control</button>
+                  <p id="charging-control-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </section>
+                <section id="charger2-device" class="equipment-device charging-device" aria-labelledby="charger2-title">
+                  <div class="equipment-device-heading"><h4 id="charger2-title">Charger 2</h4><span class="equipment-device-status">Read-only · TeslaMate</span></div>
+                  <dl id="charger2-readings" class="equipment-readings"></dl>
+                  <details id="charger2-notes-details" class="equipment-fold" hidden><summary>Forecast notes &amp; assumptions</summary><ul id="charger2-notes" class="charging-notes"></ul></details>
+                  <p class="muted">The forecast uses the vehicle's selected current, including while it waits to charge. ST-MQ does not control Charger 2.</p>
+                  <form id="charger2-settings-form" class="charging-settings-form">
+                    <div id="charger2-settings-fields" class="charging-fields"></div>
+                    <button id="charger2-settings-save" class="secondary-button" type="submit" disabled>Save Charger 2 settings</button>
+                  </form>
+                  <p id="charger2-settings-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </section>
                 <section id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
                   <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></div>
                   <div class="garage-native-overview pump-native-overview">

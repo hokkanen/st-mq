@@ -113,7 +113,7 @@ test('provider MQTT acquisition loads the default DHWR topic and exposes live fe
   engine.equipment = capture.equipment;
   t.after(async () => { await capture.close(); await engine.closeFireplace(); await engine.executor.close({ restore: false }); store.close(); });
   client.emit('connect');
-  assert.deepEqual(subscriptions, [TOPIC]);
+  assert.deepEqual(subscriptions, ['stmq/garage/charger1/vehicle', TOPIC]);
   client.emit('message', TOPIC, Buffer.from('24.5'), { retain: false, qos: 1 });
   const status = engine.status();
   assert.equal(status.dhwr.feedback.power.value, 24.5);

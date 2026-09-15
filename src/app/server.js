@@ -177,6 +177,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(200, status());
           });
         }
+        if (req.method === 'POST' && url.pathname === '/api/charging/settings')
+          return await mutate(async (current, input) => { await current.charging.setSettings(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/charging/soc')
+          return await mutate(async (current, input) => { await current.charging.setSoc(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/charging/resume')
+          return await mutate(async (current, input) => { await current.charging.resume(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/garage/release')
           return await mutate(async (current, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)

@@ -19,7 +19,7 @@ function retryDelay(value) {
 /** Finite requests with sanitized errors: URLs, authorization and response bodies
  * are deliberately excluded because providers sometimes echo credentials. */
 export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, maxBytes = 2 * 1024 * 1024,
-  allowChargerIdentification = false, canControl = () => true } = {}) {
+  allowChargerIdentification = false, allowChargerScheduling = false, canControl = () => true } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error('Invalid provider timeout');
   if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) throw new Error('Invalid provider response limit');
   const pending = new Set();
@@ -31,7 +31,7 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     const method = options.method ?? 'GET';
     const authentication = url.hostname === 'api.easee.com' && ['/api/accounts/login', '/api/accounts/refresh_token'].includes(url.pathname);
     // Deliberate, opt-in exception for one bounded identification perturbation.
-    // Circuit limits, permanent settings, start/resume and unbounded TTLs remain
+    // Circuit limits, installer settings, start/resume and unbounded TTLs remain
     // inaccessible even to the opted-in transport.
     let identification = false;
     if (allowChargerIdentification === true && method === 'POST' && url.hostname === 'api.easee.com'
@@ -42,7 +42,21 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
         && Object.keys(body).length === 2 && body.minutes === 1 && Number.isInteger(body.amps)
         && (body.amps === 0 || body.amps >= 6 && body.amps <= 32);
     }
-    if (method !== 'GET' && !(method === 'POST' && (authentication || identification))) throw new ProviderError('device-writes-not-allowed');
+    let scheduling = false;
+    if (allowChargerScheduling === true && method === 'POST' && url.hostname === 'api.easee.com' && !url.search && !url.hash) {
+      if (/^\/api\/chargers\/[^/]+\/schedules\/(?:delayed|daily|weekly)\/disable$/.test(url.pathname))
+        scheduling = options.body === undefined;
+      else if (/^\/api\/chargers\/[^/]+\/schedules\/delayed$/.test(url.pathname)) {
+        let body;
+        try { body = typeof options.body === 'string' && options.body.length <= 512 ? JSON.parse(options.body) : null; } catch { body = null; }
+        scheduling = body !== null && typeof body === 'object' && !Array.isArray(body)
+          && Object.keys(body).sort().join(',') === 'enabled,maximumAmps,startTime,timezone'
+          && body.enabled === true && Number.isInteger(body.maximumAmps) && body.maximumAmps >= 6 && body.maximumAmps <= 80
+          && typeof body.timezone === 'string' && body.timezone.length > 0 && body.timezone.length <= 100
+          && typeof body.startTime === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(body.startTime);
+      }
+    }
+    if (method !== 'GET' && !(method === 'POST' && (authentication || identification || scheduling))) throw new ProviderError('device-writes-not-allowed');
     if (closed) throw new ProviderError('provider-client-closed');
     const controller = new AbortController();
     pending.add(controller);
@@ -50,7 +64,7 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
     let reader, response;
     try {
-      if (identification && !canControl()) throw new ProviderError('controller-authority-revoked');
+      if ((identification || scheduling) && !canControl()) throw new ProviderError('controller-authority-revoked');
       if (signal.aborted) throw new ProviderError('provider-request-aborted');
       response = await fetchImpl(url.href, { ...options, method, redirect: 'error', signal });
       if (!response.ok) throw new ProviderError('provider-http-error', response.status,
@@ -58,7 +72,7 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
       const declared = Number(response.headers.get('content-length'));
       if (Number.isFinite(declared) && declared > maxBytes) throw new ProviderError('provider-response-too-large');
       if (!response.body) {
-        if (identification) return '';
+        if (identification || scheduling) return '';
         throw new ProviderError('empty-provider-response');
       }
       reader = response.body.getReader();
