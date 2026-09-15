@@ -1,4 +1,6 @@
-import { DEFAULT_CHARGING_SETTINGS, resolveChargingDeadline } from './settings.js';
+import { resolveChargingDeadline } from './settings.js';
+import { TIME_ZONE } from '../domain/prices.js';
+import { DEFAULT_CHARGING_CONFIGURATION } from './config.js';
 import { effectiveSoc } from './soc.js';
 
 const automaticCapabilities = Object.freeze({ capacityKwh: false, soc: true, minimumSoc: false,
@@ -51,11 +53,11 @@ function withFallback(automatic, fallback) {
     { source: 'manual-fallback', assumed: true, automaticAvailable: false });
 }
 function maximumCurrent(telemetry, source) {
+  if (telemetry.providerConnected === false) return chargerValue(null, { source, reason: 'provider-unavailable' });
   const supplied = automaticValue(telemetry, ['maximumCurrentA', 'maxCurrentA'], source, value => finite(value) && value >= 0 && value <= 200);
-  const observedPhases = unwrap(telemetry.phases), mask = Array.isArray(observedPhases) ? observedPhases : [1, 1, 1];
   const limits = ['chargerA', 'cableA', 'circuitA'].flatMap(key => {
     const limit = unwrap(telemetry.limits?.[key]);
-    return Array.isArray(limit) && limit.length === 3 ? limit.filter((_, index) => mask[index]) : [limit];
+    return Array.isArray(limit) && limit.length === 3 ? limit : [limit];
   }).filter(value => finite(value) && value >= 0 && value <= 200);
   if (supplied.available) limits.push(supplied.value);
   if (!limits.length) return chargerValue(null);
@@ -63,9 +65,10 @@ function maximumCurrent(telemetry, source) {
     receivedAt: supplied.receivedAt ?? time(telemetry.readAt) });
 }
 
-export function buildCharger({ definition, settings, telemetry = {}, automaticSoc = null, manualSoc = null,
-  now = Date.now(), control = null, deadlineAt, timezone = DEFAULT_CHARGING_SETTINGS.timezone } = {}) {
+export function buildCharger({ definition, settings, telemetry = {}, automaticSoc = null, configuration,
+  now = Date.now(), control = null, deadlineAt, timezone = TIME_ZONE } = {}) {
   if (!definition?.id || !settings) throw new Error('A charger definition and its settings are required');
+  configuration ??= DEFAULT_CHARGING_CONFIGURATION.chargers[definition.id] ?? { efficiency: .9 };
   const source = telemetry.source ?? definition.provider ?? 'charger';
   const capabilities = { ...definition.capabilities, ...telemetry.capabilities,
     automatic: { ...definition.capabilities?.automatic, ...telemetry.capabilities?.automatic } };
@@ -84,7 +87,7 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
   }
   for (const [key, field] of Object.entries(automatic)) if (field.available) capabilities.automatic[key] = true;
   const selectedSoc = effectiveSoc({ automatic: automatic.soc.available
-    ? { ...automatic.soc, soc: automatic.soc.value } : null, manual: manualSoc, fallbackSoc: settings.manualSoc, now });
+    ? { ...automatic.soc, soc: automatic.soc.value } : null, fallbackSoc: settings.manualSoc });
   const values = {
     capacityKwh: withFallback(automatic.capacityKwh, settings.capacityKwh),
     soc: chargerValue(selectedSoc.soc, { ...selectedSoc, automaticAvailable: automatic.soc.available }),
@@ -93,8 +96,7 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
     currentA: automaticValue(telemetry, ['currentA', 'requestedCurrentA'], source, value => finite(value) && value >= 0 && value <= 200),
     actualCurrentA: automaticValue(telemetry, ['actualCurrentA'], source, value => finite(value) && value >= 0 && value <= 200),
     maximumCurrentA: maximumCurrent(telemetry, source),
-    phases: automaticValue(telemetry, ['phases'], source, value => [1, 2, 3].includes(value)
-      || Array.isArray(value) && value.length === 3 && value.every(item => item === 0 || item === 1) && value.some(Boolean)),
+    phases: chargerValue(3, { source: 'installation-assumption', assumed: true }),
     voltageV: automaticValue(telemetry, ['voltageV'], source, value => finite(value) && value >= 200 && value <= 250),
     scheduledStartAt: automaticValue(telemetry, ['scheduledStartAt'], source, value => time(value) !== null),
     scheduledEndAt: automaticValue(telemetry, ['scheduledEndAt'], source, value => time(value) !== null),
@@ -107,9 +109,9 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
     measuredAt: telemetry.fields?.atHome?.sourceTime, receivedAt: telemetry.fields?.atHome?.receivedAt });
   else if (Object.hasOwn(telemetry, 'atHome') && unwrap(telemetry.atHome) !== true && values.connected.value === true)
     values.connected = chargerValue(null, { reason: 'property-location-unknown' });
-  const requiredGridKwh = values.capacityKwh.value * Math.max(0, values.minimumSoc.value - values.soc.value) / 100 / settings.efficiency;
+  const requiredGridKwh = values.capacityKwh.value * Math.max(0, values.minimumSoc.value - values.soc.value) / 100 / configuration.efficiency;
   return { id: definition.id, label: definition.label ?? definition.id, provider: definition.provider ?? source,
-    capabilities, settings: structuredClone(settings), values, automatic, requiredGridKwh,
+    capabilities, settings: structuredClone(settings), configuration: { efficiency: configuration.efficiency }, values, automatic, requiredGridKwh,
     deadlineAt: finite(deadlineAt) ? deadlineAt : resolveChargingDeadline(now, settings.readyBy, timezone),
     control, telemetry };
 }

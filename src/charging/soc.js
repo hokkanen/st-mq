@@ -1,5 +1,4 @@
 import moment from 'moment-timezone';
-import { DEFAULT_CHARGING_SETTINGS, resolveChargingDeadline } from './settings.js';
 
 const validSoc = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
@@ -16,8 +15,7 @@ export function socMeasurementTime(value) {
 
 /** Pure duplicate-safe MQTT ingestion. Caller persists reading only if accepted. */
 export function acceptSocReading(previous, payload, {
-  now = Date.now(), vehicleId = DEFAULT_CHARGING_SETTINGS.chargers.charger1.mqtt.vehicleId,
-  sourceId = DEFAULT_CHARGING_SETTINGS.chargers.charger1.mqtt.sourceId,
+  now = Date.now(), association = 'vehicle-mqtt', vehicleId, sourceId,
 } = {}) {
   const reject = reason => ({ accepted: false, reading: previous ?? null, reason });
   let value;
@@ -28,13 +26,14 @@ export function acceptSocReading(previous, payload, {
   if (value.usableCapacityKwh !== undefined && (!Number.isFinite(value.usableCapacityKwh)
     || value.usableCapacityKwh < 1 || value.usableCapacityKwh > 300)) return reject('invalid-capacity');
   if (value.chargeLimitSoc !== undefined && !validSoc(value.chargeLimitSoc)) return reject('invalid-charge-limit');
-  if (value.vehicleId !== vehicleId || value.sourceId !== sourceId) return reject('identity-mismatch');
+  if (vehicleId !== undefined && value.vehicleId !== vehicleId || sourceId !== undefined && value.sourceId !== sourceId) return reject('identity-mismatch');
   if (!identity(value.readingId)) return reject('missing-reading-id');
   const measuredAt = socMeasurementTime(value.measuredAt);
   if (Number.isNaN(measuredAt) || measuredAt > now + 5 * 60_000) return reject('invalid-measurement-time');
   const sequence = value.sequence == null ? null : value.sequence;
   if (sequence !== null && (!Number.isSafeInteger(sequence) || sequence < 0)) return reject('invalid-sequence');
-  const sameIdentity = previous?.vehicleId === vehicleId && previous?.sourceId === sourceId;
+  const sameIdentity = previous?.association === association
+    && (vehicleId === undefined || previous?.vehicleId === vehicleId) && (sourceId === undefined || previous?.sourceId === sourceId);
   if (sameIdentity) {
     if (previous.readingId === value.readingId) return reject('duplicate-reading');
     if (Number.isFinite(previous.measuredAt) && Number.isFinite(measuredAt)) {
@@ -55,26 +54,16 @@ export function acceptSocReading(previous, payload, {
         ?? { measuredAt: previous.measuredAt ?? null, receivedAt: previous.receivedAt ?? null, readingId: previous.readingId };
     }
   }
-  return { accepted: true, reason: null, reading: { vehicleId, sourceId, readingId: value.readingId,
+  return { accepted: true, reason: null, reading: { association, ...(vehicleId !== undefined ? { vehicleId } : {}), ...(sourceId !== undefined ? { sourceId } : {}), readingId: value.readingId,
     soc: value.soc, measuredAt, receivedAt: now, sequence, ...optional,
     ...(Object.keys(fields).length ? { fields } : {}) } };
 }
 
-export function createManualSoc(soc, { now = Date.now(), readyBy, timezone } = {}) {
-  if (!validSoc(soc)) throw new Error('Manual state of charge must be between 0 and 100%');
-  return { soc, enteredAt: now, expiresAt: resolveChargingDeadline(now, readyBy, timezone) };
-}
-
-/** Source selection never alters a charger command or the stored observations. */
-export function effectiveSoc({ automatic = null, manual = null, fallbackSoc = null, now = Date.now() } = {}) {
-  if (validSoc(manual?.soc) && Number.isFinite(manual.enteredAt) && Number.isFinite(manual.expiresAt) && manual.enteredAt <= now && now < manual.expiresAt) {
-    return { soc: manual.soc, source: 'manual', assumed: false, measuredAt: null,
-      enteredAt: manual.enteredAt, expiresAt: manual.expiresAt };
-  }
+/** Automatic battery telemetry always wins over the remembered manual fallback. */
+export function effectiveSoc({ automatic = null, fallbackSoc = 40 } = {}) {
   if (validSoc(automatic?.soc)) return { soc: automatic.soc, source: automatic.source ?? 'mqtt', assumed: false,
-    measuredAt: automatic.measuredAt ?? null, receivedAt: automatic.receivedAt ?? null, enteredAt: null, expiresAt: null,
-    readingId: automatic.readingId, vehicleId: automatic.vehicleId, sourceId: automatic.sourceId };
-  if (validSoc(fallbackSoc)) return { soc: fallbackSoc, source: 'manual-fallback', assumed: true,
-    measuredAt: null, receivedAt: null, enteredAt: null, expiresAt: null };
-  return { soc: 0, source: 'assumed', assumed: true, measuredAt: null, receivedAt: null, enteredAt: null, expiresAt: null };
+    measuredAt: automatic.measuredAt ?? null, receivedAt: automatic.receivedAt ?? null,
+    readingId: automatic.readingId };
+  return { soc: validSoc(fallbackSoc) ? fallbackSoc : 40, source: 'manual-fallback', assumed: true,
+    measuredAt: null, receivedAt: null };
 }

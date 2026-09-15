@@ -17,7 +17,8 @@ The official public OpenAPI definitions were read for these endpoints:
 - [Scheduling state](https://developer.easee.com/reference/getchargersschedules):
   `GET /api/chargers/{chargerId}/schedules` returns `enabled` (the active schedule
   type or `none`) and stored `delayed`, `daily`, `weekly`, `offPeak` and `tariff`
-  schedules. Inactive schedules are preserved and included in ownership checks.
+  schedules. Only the active instruction determines session/manual ownership;
+  the complete state is compared immediately before a write to detect races.
 - [Create delayed schedule](https://developer.easee.com/reference/postchargersschedulesdelayed):
   `POST .../schedules/delayed` takes `enabled`, IANA `timezone`, `startTime` and
   integer `maximumAmps`. **`startTime` is a local clock time, not an absolute
@@ -34,13 +35,17 @@ The official public OpenAPI definitions were read for these endpoints:
   Easee documents one active schedule type and a one-off delayed start that
   continues charging until the vehicle is finished.
 
-The current/next occurrence of a single daily or weekly app window has temporary
-priority while ST-MQ is enabled. Its absolute end is persisted; a restart or poll
+An app schedule change observed after plug-in gives the current/next occurrence
+of a single daily or weekly window temporary priority while ST-MQ is enabled. Its absolute end is persisted; a restart or poll
 does not turn yesterday's end into tomorrow's. Changes replace that occurrence.
-The saved window survives unplugging and returning after its end. Ambiguous
+Disconnect clears the session override; the schedule already present on the next
+plug-in becomes its baseline. Ambiguous
 daylight-saving window endpoints require explicit resumption.
-Multiple periods and tariff/off-peak schedules require explicit manual release;
-their more complex instructions are not discarded automatically. A user who
+Multiple periods and tariff/off-peak instructions changed after plug-in require
+explicit resumption; they are not guessed into a bounded handback window. A
+pre-existing schedule can be replaced when installing an ST-MQ delayed start.
+Releasing a complex tariff/off-peak restriction is unsupported by this adapter
+and asks for release in Easee rather than inventing a command. A user who
 wants ongoing app scheduling turns ST-MQ charging control off.
 
 ## Ownership and manual controls
@@ -58,16 +63,30 @@ preserved. Failed communication leaves an explicit unconfirmed-handover status.
 Process shutdown revokes new writes and drains outstanding work before storage
 can close; it does not invent a charger handover during authority transfer.
 
+The connected-session baseline is persisted and refreshed even while ST-MQ is
+OFF. Enabling ST-MQ takes scheduling precedence over an instruction already
+present at plug-in. Schedule and start/stop/on-off changes observed afterward
+have priority. OFF/ON and process restart preserve that evidence; a genuine
+disconnect resets it. Inactive schedule caches, normal delayed expiry and
+ST-MQ's own confirmed/recovered writes are not app actions.
+
 [Override Charging Schedule](https://developer.easee.com/reference/charger_overrideschedule)
-is documented as a current-session release when the schedule is the blocking
-mechanism. The public schedule response does **not** contain a dedicated manual
-override flag. ST-MQ therefore observes
-[charger mode, enabled state and no-current reason](https://developer.easee.com/docs/enumerations)
-as well as the schedule. Charging before ST-MQ's start yields the whole connected
-session. An unexplained change away from the reported schedule restriction also
-yields; it does not install another block. Zero power and Equalizer pauses do
-not reset the released-session latch. Stop/disable/authorization restrictions
-remain manual; users must enable or authorize charging in Easee first.
+is a documented current-session release, but the public schedule response has
+no dedicated manual-override flag. ST-MQ observes
+[mode, enabled state and no-current reason](https://developer.easee.com/docs/enumerations)
+alongside schedules. Early charging preserves the start-only release without
+claiming it proves an app action. Zero power, Equalizer pauses and normal
+operating-mode transitions do not create manual priority or reset release.
+A pre-existing disabled charger, authorization request or fault is unavailable,
+not an inferred post-plug manual action. ST-MQ sends no enable, authorization,
+start/stop or current commands.
+
+Polling detects observed state changes, not app taps that leave the same state
+or changes completed between observations. An app action made before ST-MQ has
+first observed that connected session cannot reliably be distinguished from an
+existing instruction. Transport/readback failures retain durable intent and
+show operation-specific status; they do not invent a manual action. A pre-write
+state race gets one fresh-read retry before reporting an unavailable check.
 
 The REST API does not document conditional writes or a server-side compare and
 swap. Rereading narrows the race with concurrent app edits, but an app write
@@ -84,9 +103,20 @@ circuit caps 48/111–113, and instantaneous Equalizer availability 230–232. O
 timestamps remain available. It reads the Equalizer
 [configuration](https://developer.easee.com/reference/equalizer_geequalizerconfig)
 at most hourly to obtain `maxAllocatedCurrent`, an overall charging allocation.
-That value and instantaneous availability are not the household main-fuse
-rating. The adapter leaves `mainFuseA` unknown; the installation must be
-represented by validated UI settings. No installer limits are changed.
+That allocation caps only the Equalizer-controlled charger. There is no
+main-fuse prerequisite or UI limit/reserve. Equalizer remains responsible for
+actual load balancing; no installer limits are changed.
+
+Three-phase charging is assumed, independent of active output-phase observation.
+The adapter also reads [Equalizer observations](https://developer.easee.com/docs/equalizer-observations)
+31–33 for property currents and 34–36 for phase-to-neutral voltage. Charger
+observations 183–185 provide its phase currents. Recent property samples permit
+replacement of present household demand with historical/zero forecast demand;
+otherwise planning uses live net Equalizer allowance. Charger-current events may
+be old because unchanged values need not be republished. All original clocks
+are retained separately from the successful read time. Missing voltage never
+becomes an invented 230 V value. Missing or conflicting property/current data
+cannot inflate recovered headroom.
 
 `test/charging-easee-control.test.js` covers the documented wire format,
 normalization, delayed release, replanning, restarts, in-flight OFF races,

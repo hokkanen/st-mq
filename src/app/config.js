@@ -7,6 +7,7 @@ import { configurationPaths, createConfigurationSource, readConfigurationOptions
 import { pairingEnabled, pairingConfiguration } from '../pairing/config.js';
 import { garageSettings } from '../garage/settings.js';
 import { garageAdapterSettings } from '../garage/contract.js';
+import { chargingConfiguration } from '../charging/config.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
@@ -259,7 +260,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       'temperature_report_interval_minutes') * 60_000);
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 300, 0, 900,
       'temperature_report_grace_seconds') * 1000);
-    const { replication: _replication, pairing: _pairing, ...providerOptions } = options;
+    const { replication: _replication, pairing: _pairing, charging: _charging, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
       shelly: shellyConfiguration(options.shelly), equipment };
     if (connections.shelly.devices.length && equipment.devices.some(device => device.enabled))
@@ -287,6 +288,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     legacyDbPath: resolve(dataDir, databaseName),
     host, port, token, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
+    charging: chargingConfiguration(options.charging),
     garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => key !== 'adapter'))),
       adapter: garageAdapterSettings(options.garage?.adapter) },
     replication: replicationConfiguration(options.replication, env, { role, dataDir, databaseDir }),

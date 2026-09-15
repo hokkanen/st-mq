@@ -130,12 +130,12 @@ test('restart reconciles a successful cloud write whose readback was lost', asyn
   const result = await h.update(); assert.equal(result.phase, 'waiting'); assert.equal(h.writes.length, 1);
 });
 
-test('Charge now with unchanged schedule yields for the entire connected session, including Equalizer pauses', async () => {
+test('early charging preserves release for the session without inventing a manual action', async () => {
   const h = harness(); await h.update(); h.mode = 3; h.reason = 0;
-  let result = await h.update(); assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'charge-now');
+  let result = await h.update(); assert.equal(result.phase, 'released'); assert.equal(result.manual, null);
   h.mode = 2; h.reason = 10; h.restart();
   result = await h.update({ plan: { id: 'later', startAt: NOW + 6 * 3600_000 } });
-  assert.equal(result.phase, 'yielded'); assert.equal(result.released, true); assert.equal(h.writes.length, 1);
+  assert.equal(result.phase, 'released'); assert.equal(result.released, true); assert.equal(h.writes.length, 1);
 });
 
 test('manual stop persists through replanning and explicit resume does not authorize or enable the charger', async () => {
@@ -157,7 +157,7 @@ test('a bounded manual daily window resumes at its stored end while still plugge
 });
 
 test('manual window edits replace the saved handback and ambiguous multiple periods remain yielded', async () => {
-  const h = harness();
+  const h = harness(); await h.update({ enabled: false });
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   await h.update(); h.now += 2 * 3600_000;
   h.schedules.daily.periods[0].stopTime = '22:00:00';
@@ -183,7 +183,7 @@ test('a new manual schedule has priority after a fully released session with no 
 });
 
 test('a manual stop at the handback boundary prevents consumption of the window', async () => {
-  const h = harness();
+  const h = harness(); await h.update({ enabled: false });
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   await h.update(); h.now += 2 * 3600_000; h.enabled = false; h.reason = 53;
   const result = await h.update(); assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop');
@@ -191,7 +191,7 @@ test('a manual stop at the handback boundary prevents consumption of the window'
 });
 
 test('explicit resume removes a known manual window without stopping ongoing charging', async () => {
-  const h = harness(); h.mode = 3; h.reason = 0;
+  const h = harness(); h.mode = 3; h.reason = 0; await h.update({ enabled: false });
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '17:00', stopTime: '20:00', maximumAmps: 16 }] } });
   assert.equal((await h.update()).phase, 'yielded');
   const result = await h.update({ resume: true });
@@ -200,19 +200,19 @@ test('explicit resume removes a known manual window without stopping ongoing cha
 });
 
 test('removing a manual window in Easee releases that connected session without waiting for its former end', async () => {
-  const h = harness();
+  const h = harness(); await h.update({ enabled: false });
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   await h.update(); h.schedules.enabled = 'none';
   const result = await h.update(); assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'charge-now');
   assert.equal(result.released, true); assert.equal(h.writes.length, 0);
 });
 
-test('a manual window retains its handback when the vehicle leaves and returns after its end', async () => {
-  const h = harness();
+test('disconnect ends a manual window so a new connected session returns to ST-MQ', async () => {
+  const h = harness(); await h.update({ enabled: false });
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   await h.update(); h.mode = 1; await h.update();
-  assert.equal(h.controller.status().manual.resumeAt, NOW + 2 * 3600_000);
-  h.now += 2 * 3600_000; h.restart(); h.mode = 2;
+  assert.equal(h.controller.status().manual, null);
+  h.now += 30 * 60_000; h.restart(); h.mode = 2;
   assert.equal((await h.update()).phase, 'waiting'); assert.equal(h.writes.length, 1);
 });
 
@@ -243,7 +243,7 @@ test('ambiguous autumn manual window endpoints require explicit resumption', () 
 });
 
 test('delayed cloud charging state at the manual window end does not roll the window to tomorrow', async () => {
-  const h = harness();
+  const h = harness(); await h.update({ enabled: false });
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   await h.update(); h.now += 2 * 3600_000; h.mode = 3; h.reason = 0;
   const result = await h.update(); assert.equal(result.phase, 'yielded'); assert.equal(result.manual.resumeAt, h.now);
@@ -267,7 +267,7 @@ test('a newer external edit between read and write is never replaced', async () 
   h.readHook = async url => { if (url.endsWith('/schedules') && ++scheduleReads === 2) {
     h.schedules = normalizeScheduleState({ enabled: 'delayed', delayed: { timezone: 'UTC', startTime: '22:00', maximumAmps: 13 } });
   } };
-  assert.equal((await h.update()).phase, 'unconfirmed'); assert.equal(h.writes.length, 0);
+  assert.equal((await h.update()).phase, 'yielded'); assert.equal(h.writes.length, 0);
   h.readHook = null; assert.equal((await h.update()).phase, 'yielded'); assert.equal(h.writes.length, 0);
 });
 
@@ -297,6 +297,180 @@ test('provider enforces charging cancellation after asynchronous authentication'
     }, text: async () => { writes++; throw Object.assign(new Error('expired'), { status: 401 }); } } });
   const adapter = devices.chargerScheduleControl(); const snapshot = await adapter.read();
   await assert.rejects(adapter.installDelayed({ startAt: NOW + 3 * 3600_000, timezone: 'UTC', maximumAmps: 16,
-    expectedFingerprint: snapshot.fingerprint, canMutate: () => allowed }), /authority was revoked/);
+    expectedFingerprint: snapshot.fingerprint, canMutate: () => allowed }), { code: 'control-revoked' });
   assert.equal(writes, 1);
+});
+
+const appWindow = () => normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
+  periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
+
+test('a pre-existing native schedule is a baseline and ST-MQ takes over when enabled', async () => {
+  const h = harness(); h.schedules = appWindow();
+  const result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null);
+  assert.equal(result.version, 2); assert.equal(result.session.connected, true);
+  assert.equal(h.schedules.enabled, 'delayed'); assert.equal(h.writes.length, 1);
+});
+
+test('post-plug app edits are observed while off and survive toggles and restart', async () => {
+  const h = harness(); await h.update({ enabled: false });
+  h.schedules = appWindow(); await h.update({ enabled: false });
+  assert.equal(h.controller.status().manual.kind, 'window');
+  h.restart(); let result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.resumeAt, NOW + 2 * 3600_000);
+  await h.update({ enabled: false }); result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(h.writes.length, 0);
+});
+
+test('a post-plug edit made while ST-MQ was stopped is recognized after restart', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.restart();
+  h.schedules = appWindow();
+  const result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
+});
+
+test('an app schedule set before arrival is not a connected-session override', async () => {
+  const h = harness(); h.mode = 1; await h.update({ enabled: false });
+  h.schedules = appWindow(); await h.update({ enabled: false });
+  h.mode = 2;
+  const result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 1);
+});
+
+test('inactive cached schedule edits neither create manual priority nor lose confirmed ownership', async () => {
+  const h = harness(); await h.update();
+  h.schedules.daily = appWindow().daily;
+  let result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.ok(result.owned);
+  assert.equal(h.writes.length, 1);
+  result = await h.update({ enabled: false });
+  assert.equal(result.handoverConfirmed, true); assert.equal(h.writes.length, 2);
+  assert.equal(h.schedules.enabled, 'none'); assert.deepEqual(h.schedules.daily, appWindow().daily);
+});
+
+test('normal delayed expiry and changing inactive caches are not manual actions', async () => {
+  const h = harness(); await h.update(); h.now += 3 * 3600_000;
+  h.schedules.enabled = 'none'; h.schedules.delayed = null; h.schedules.daily = appWindow().daily;
+  const result = await h.update();
+  assert.equal(result.phase, 'released'); assert.equal(result.manual, null); assert.equal(h.writes.length, 1);
+});
+
+test('native expiry while off does not create an app edit on re-enabling ST-MQ', async () => {
+  const h = harness();
+  h.schedules = normalizeScheduleState({ enabled: 'delayed', delayed: { timezone: 'UTC', startTime: '19:00', maximumAmps: 16 } });
+  await h.update({ enabled: false }); h.now += 3600_000; h.schedules.enabled = 'none';
+  const result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 1);
+});
+
+test('already charging with a pre-existing stopping schedule is released without an automatic stop', async () => {
+  const h = harness(); h.mode = 3; h.schedules = appWindow();
+  const result = await h.update();
+  assert.equal(result.phase, 'released'); assert.equal(result.manual, null); assert.equal(h.mode, 3);
+  assert.equal(h.schedules.enabled, 'none'); assert.equal(h.writes.length, 1);
+  assert.ok(h.writes[0].url.endsWith('/daily/disable'));
+});
+
+test('a pre-existing disabled state is unavailable, but a later stop is manual priority', async () => {
+  const h = harness(); h.enabled = false; h.reason = 53;
+  let result = await h.update();
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'charger-stopped'); assert.equal(result.manual, null);
+  h.mode = 1; await h.update(); h.enabled = true; h.reason = 54; h.mode = 2; await h.update();
+  h.enabled = false; h.reason = 53;
+  result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop');
+  await h.update({ enabled: false }); h.restart(); result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop');
+});
+
+test('fault, authorization and Equalizer pauses do not masquerade as manual stops', async () => {
+  const h = harness(); await h.update();
+  h.mode = 5; h.reason = 56;
+  let result = await h.update();
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'charger-fault'); assert.equal(result.manual, null);
+  h.mode = 7; h.reason = 55;
+  result = await h.update();
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'charging-authorization'); assert.equal(result.manual, null);
+  h.mode = 2; h.reason = 52;
+  result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 1);
+});
+
+test('offline observations cannot erase a persisted connected-session override', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.schedules = appWindow(); await h.update();
+  h.online = false; h.mode = 1;
+  let result = await h.update();
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'offline'); assert.equal(result.manual.kind, 'window');
+  h.online = true; h.mode = 2; h.restart(); result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window');
+});
+
+test('a harmless pre-write state change is refreshed once without inventing manual priority', async () => {
+  const h = harness(), install = h.adapter.installDelayed;
+  let attempts = 0;
+  h.adapter.installDelayed = async options => {
+    if (++attempts === 1) { h.reason = 10; throw Object.assign(new Error('synthetic state movement'), { code: 'state-changed' }); }
+    return install(options);
+  };
+  const result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(result.errorCode, null);
+  assert.equal(attempts, 2); assert.equal(h.writes.length, 1);
+});
+
+test('read and confirmation failures expose actionable sanitized diagnostic codes', async () => {
+  const h = harness(); h.readHook = async () => { throw new Error('private transport details'); };
+  let result = await h.update();
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'read-failed'); assert.equal(result.manual, null);
+  assert.match(result.reason, /could not be read/); assert.equal(JSON.stringify(result).includes('private transport'), false);
+  h.readHook = null;
+  h.adapter.installDelayed = async () => { throw Object.assign(new Error('private response details'), { code: 'readback-failed' }); };
+  result = await h.update();
+  assert.equal(result.phase, 'unconfirmed'); assert.equal(result.errorCode, 'readback-failed'); assert.match(result.reason, /confirmation could not be read/);
+  assert.equal(JSON.stringify(result).includes('private response'), false);
+});
+
+test('a harmless inactive schedule edit during the pre-write read is refreshed and planning continues', async () => {
+  const h = harness(); let reads = 0;
+  h.readHook = async url => { if (url.endsWith('/schedules') && ++reads === 2) h.schedules.daily = appWindow().daily; };
+  const result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 1);
+});
+
+test('an on/off app action received during our schedule write remains a session override', async () => {
+  const h = harness();
+  h.writeHook = async () => { h.enabled = false; h.reason = 53; };
+  let result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop'); assert.ok(result.owned);
+  h.writeHook = null; h.restart(); result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop'); assert.equal(h.writes.length, 1);
+});
+
+test('OFF cancels a pending explicit resume rather than carrying it into the next enable', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.schedules = appWindow(); await h.update();
+  let unblock, started;
+  const begun = new Promise(resolve => { started = resolve; });
+  h.readHook = async url => { if (url.endsWith('/schedules')) {
+    started(); await new Promise(resolve => { unblock = resolve; }); h.readHook = null;
+  } };
+  const resume = h.update({ resume: true }); await begun;
+  const off = h.update({ enabled: false }); unblock(); await resume; await off;
+  const result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
+});
+
+test('manual re-enabling relinquishes only our delay and does not claim charging has begun', async () => {
+  const h = harness(); await h.update(); h.enabled = false; h.reason = 53; await h.update();
+  h.enabled = true; h.reason = 54;
+  let result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'enable');
+  assert.equal(result.owned, null); assert.equal(result.released, true); assert.equal(h.schedules.enabled, 'none');
+  assert.equal(h.mode, 2); assert.equal(h.enabled, true); assert.equal(h.writes.length, 2);
+  assert.match(result.reason, /Easee app has control/); assert.doesNotMatch(result.reason, /charging (?:has begun|now)/);
+  h.restart(); result = await h.update(); assert.equal(result.phase, 'yielded'); assert.equal(h.writes.length, 2);
+
+  const external = harness(); await external.update(); external.enabled = false; external.reason = 53; await external.update();
+  external.enabled = true; external.reason = 54; external.schedules = appWindow();
+  result = await external.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window');
+  assert.equal(external.schedules.enabled, 'daily'); assert.equal(external.writes.length, 1);
 });

@@ -5,7 +5,7 @@ import moment from 'moment-timezone';
 // a LOCAL TIME, not a date-time. The controller retains the absolute occurrence.
 const TYPES = ['delayed', 'daily', 'weekly', 'offPeak', 'tariff'];
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-export const CHARGING_OBSERVATION_IDS = [22, 23, 24, 31, 47, 48, 96, 100, 104, 109, 110, 111, 112, 113, 120, 230, 231, 232, 250];
+export const CHARGING_OBSERVATION_IDS = [22, 23, 24, 31, 47, 48, 96, 100, 104, 109, 110, 111, 112, 113, 120, 183, 184, 185, 230, 231, 232, 250];
 const clone = value => structuredClone(value);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const numeric = value => typeof value === 'number' && Number.isFinite(value) ? value
@@ -57,6 +57,15 @@ export function normalizeScheduleState(payload) {
 }
 
 export function scheduleFingerprint(state) { return hash(normalizeScheduleState(state)); }
+
+/** Only the active instruction can override the current charging session. */
+export function effectiveScheduleFingerprint(state) {
+  const normalized = normalizeScheduleState(state);
+  return scheduleFingerprint({ enabled: normalized.enabled,
+    ...(normalized.enabled !== 'none' ? { [normalized.enabled]: normalized[normalized.enabled] } : {}) });
+}
+
+const failure = (code, message) => Object.assign(new Error(message), { code });
 
 function wallTime(date, localTime, timezone) {
   const result = moment.tz(`${date} ${localTime}`, 'YYYY-MM-DD HH:mm:ss', true, timezone);
@@ -159,7 +168,7 @@ export function nextScheduleOccurrence(state, now) {
   return { startAt, endAt, endKind: 'scheduled-stop', kind };
 }
 
-export function chargingSnapshot(observations, scheduling, now, allocationA = null, { externalLoadBalancing = true } = {}) {
+export function chargingSnapshot(observations, scheduling, now, allocationA = null, { externalLoadBalancing = true, supply = null } = {}) {
   const list = Array.isArray(observations) ? observations : observations?.observations;
   if (!Array.isArray(list) || list.length > 1000) throw new Error('Easee charger state is not understood');
   const pick = id => {
@@ -174,17 +183,22 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
   const pluggedIn = mode === 1 || pilot === 'A' ? false : [2, 3, 4, 6, 7, 8].includes(mode) || ['B', 'C', 'D'].includes(pilot) ? true : null;
   const result = { schedule: scheduleState, fingerprint: scheduleFingerprint(scheduleState), readAt: now,
     online, enabled, pluggedIn, mode, reason, powerKw: numeric(pick(120).value),
-    externalLoadBalancing, outputPhase: numeric(pick(110).value),
+    externalLoadBalancing, supply, outputPhase: numeric(pick(110).value),
     observations: Object.fromEntries(CHARGING_OBSERVATION_IDS.map(id => [id, pick(id)])),
     modeAt: pick(109).at, reasonAt: pick(96).at, powerAt: pick(120).at,
     limits: { circuitA: [22, 23, 24].map(id => amps(pick(id).value)), chargerA: amps(pick(47).value),
-      cableA: amps(pick(104).value), dynamicChargerA: amps(pick(48).value),
+      cableA: amps(pick(104).value) > 0 ? amps(pick(104).value) : null, dynamicChargerA: amps(pick(48).value),
       dynamicCircuitA: [111, 112, 113].map(id => amps(pick(id).value)),
       equalizerAvailableA: [230, 231, 232].map(id => amps(pick(id).value)),
-      mainFuseA: null, allocationA, equalizerAvailableAt: [230, 231, 232].map(id => pick(id).at) } };
-  result.controlFingerprint = hash([enabled, mode, reason, pluggedIn, result.limits.dynamicChargerA]);
-  result.manualStop = enabled === false || [53, 55].includes(reason) || [7, 8].includes(mode)
-    || result.limits.dynamicChargerA === 0 && reason === 52;
+      allocationA, equalizerAvailableAt: [230, 231, 232].map(id => pick(id).at) } };
+  result.stopped = enabled === false || reason === 53;
+  result.authorizationBlocked = [7, 8].includes(mode) || reason === 55;
+  result.faulted = mode === 5 || reason === 56;
+  result.manualStop = result.stopped;
+  // Mode, current allowance and no-current reason may change automatically.
+  // Compare command-relevant availability without mistaking load balancing for
+  // a user instruction. Charging that begins during a write gets a fresh read.
+  result.controlFingerprint = hash([enabled, pluggedIn, result.stopped, result.authorizationBlocked, result.faulted]);
   result.controlKnown = online === true && enabled !== null && mode !== null && reason !== null && pluggedIn !== null;
   return result;
 }
@@ -197,8 +211,8 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     && snapshot.readAt <= now && now - snapshot.readAt <= 5 * 60_000;
   const signal = (value, ids = [], source = 'easee') => {
     const inputs = ids.map(id => ({ id, measuredAt: snapshot.observations?.[id]?.at ?? null }));
-    return { value: available && value !== undefined ? value : null, source,
-      available: available && value !== undefined && value !== null,
+    return { value: available && value !== undefined && !(typeof value === 'number' && !Number.isFinite(value)) ? value : null, source,
+      available: available && value !== undefined && value !== null && !(typeof value === 'number' && !Number.isFinite(value)),
       measuredAt: inputs.length === 1 ? inputs[0].measuredAt : null,
       receivedAt: snapshot.readAt ?? null, timeBasis: inputs.length > 1 ? 'derived-observations' : 'observation',
       ...(inputs.length > 1 ? { inputs } : {}) };
@@ -213,8 +227,9 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
   const fixedCeilings = [limits.chargerA, limits.cableA].filter(value => amps(value) !== null);
   const maxCurrentA = fixedCeilings.length ? Math.min(...fixedCeilings) : null;
   const currentIds = [22, 23, 24, 47, 48, 104, 111, 112, 113, ...(externalLoadBalancing ? [230, 231, 232] : [])];
-  const phases = [10, 11, 12, 13, 14, 15].includes(snapshot.outputPhase) ? 1
-    : [20, 21, 22].includes(snapshot.outputPhase) ? 2 : snapshot.outputPhase === 30 ? 3 : null;
+  const voltage = snapshot.supply?.voltageV;
+  const voltageV = Array.isArray(voltage) && voltage.length === 3 && voltage.every(value => Number.isFinite(value) && value >= 200 && value <= 250)
+    ? voltage.reduce((sum, value) => sum + value, 0) / 3 : null;
   const schedule = nextScheduleOccurrence(snapshot.schedule, now);
   return { ...snapshot, provider: 'easee', providerConnected: available,
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing,
@@ -223,7 +238,10 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     connected: signal(snapshot.pluggedIn, [100, 109]),
     currentA: signal(currentA, currentIds, externalLoadBalancing ? 'easee-equalizer' : 'easee'),
     maxCurrentA: signal(maxCurrentA, [47, 104]),
-    actualCurrentA: signal(null), phases: signal(phases, [110]), voltageV: signal(null),
+    actualCurrentA: signal(snapshot.supply?.chargerCurrentA?.reduce((sum, value) => sum + value, 0) / 3, [183, 184, 185]),
+    phases: { value: 3, available: true, source: 'installation-assumption', assumed: true },
+    voltageV: { ...signal(voltageV, [], 'easee-equalizer'), timeBasis: 'derived-observations',
+      inputs: [34, 35, 36].map((id, index) => ({ id, measuredAt: snapshot.supply?.observationTimes?.voltage?.[index] ?? null })) },
     charging: signal(snapshot.mode === null || snapshot.mode === undefined ? null : snapshot.mode === 3, [109]),
     powerKw: signal(snapshot.powerKw, [120]),
     scheduledStartAt: signal(schedule.startAt, [], 'easee-schedule'),
@@ -240,37 +258,82 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
     async read({ signal } = {}) {
       if (!chargerId) throw new Error('Charger 1 Easee connection is not configured');
       const now = clock();
-      const [scheduling, observations] = await Promise.all([
-        request(base, { method: 'GET', signal }),
-        request(`https://api.easee.com/state/${encodeURIComponent(chargerId)}/observations?ids=${CHARGING_OBSERVATION_IDS.join(',')}`, { method: 'GET', signal }),
-      ]);
+      let scheduling, observations, property;
+      try {
+        [scheduling, observations, property] = await Promise.all([
+          request(base, { method: 'GET', signal }),
+          request(`https://api.easee.com/state/${encodeURIComponent(chargerId)}/observations?ids=${CHARGING_OBSERVATION_IDS.join(',')}`, { method: 'GET', signal }),
+          equalizerId ? request(`https://api.easee.com/state/${encodeURIComponent(equalizerId)}/observations?ids=31,32,33,34,35,36`, { method: 'GET', signal }).catch(() => null) : null,
+        ]);
+      } catch { throw failure('read-failed', 'Easee state could not be read.'); }
       if (equalizerId && now - allocationReadAt >= 3600_000) {
         allocationReadAt = now;
         try { allocationA = amps((await request(`https://api.easee.com/api/equalizers/${encodeURIComponent(equalizerId)}/config`, { method: 'GET', signal }))?.maxAllocatedCurrent); }
         catch { allocationA = null; }
       }
-      return chargingSnapshot(observations, scheduling, now, allocationA, { externalLoadBalancing: Boolean(equalizerId) });
+      try {
+        const snapshot = chargingSnapshot(observations, scheduling, now, allocationA, { externalLoadBalancing: Boolean(equalizerId) });
+        const rows = Array.isArray(property) ? property : property?.observations ?? [];
+        const pick = id => {
+          const entries = rows.filter(row => Number(row?.id) === id && instant(row.timestamp) !== null && instant(row.timestamp) <= now)
+            .sort((a, b) => instant(b.timestamp) - instant(a.timestamp));
+          const first = entries[0];
+          return first && !entries.some(row => row.timestamp === first.timestamp && String(row.value) !== String(first.value)) ? first : null;
+        };
+        const vector = (ids, min = 0, max = 1000) => {
+          const values = ids.map(id => numeric(pick(id)?.value));
+          return values.every(value => value !== null && value >= min && value <= max) ? values : null;
+        };
+        const currents = [183, 184, 185].map(id => amps(snapshot.observations[id]?.value));
+        // Charger currents are change events; an unchanged zero remains valid.
+        // Recovering future headroom additionally requires recent meter samples.
+        const recentProperty = [31, 32, 33].every(id => pick(id) && now - instant(pick(id).timestamp) <= 5 * 60_000);
+        snapshot.supply = { availableCurrentA: snapshot.limits.equalizerAvailableA,
+          propertyCurrentA: recentProperty ? vector([31, 32, 33]) : null,
+          chargerCurrentA: currents.every(value => value !== null) ? currents : null,
+          voltageV: vector([34, 35, 36], 200, 250), allocationA, observedAt: now,
+          observationTimes: { allowance: snapshot.limits.equalizerAvailableAt,
+            property: [31, 32, 33].map(id => instant(pick(id)?.timestamp)), voltage: [34, 35, 36].map(id => instant(pick(id)?.timestamp)) } };
+        return snapshot;
+      } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },
     async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true } = {}) {
       const before = await adapter.read({ signal });
       if (before.fingerprint !== expectedFingerprint || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
-        throw new Error('Easee state changed before the schedule write');
-      if (!before.controlKnown || before.manualStop || before.mode === 3 || !canControl() || !canMutate())
-        throw new Error('Easee schedule write is no longer authorized');
-      const delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock());
-      await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: canMutate }, true);
-      return adapter.read({ signal });
+        throw failure('state-changed', 'Easee changed before the schedule write.');
+      if (before.mode === 3) throw failure('state-changed', 'Charging began before the schedule write.');
+      if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
+      if (!before.controlKnown || before.manualStop || before.authorizationBlocked || before.faulted)
+        throw failure('access-denied', 'The charger is not available for an automatic schedule.');
+      let delayed;
+      try { delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock()); }
+      catch { throw failure('invalid-plan', 'The proposed start cannot be represented by the native schedule.'); }
+      try {
+        await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: canMutate }, true);
+      } catch (error) {
+        if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
+        if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
+        throw failure('command-failed', 'Easee did not confirm accepting the schedule command.');
+      }
+      try { return await adapter.read({ signal }); }
+      catch { throw failure('readback-failed', 'The new Easee schedule could not be read back.'); }
     },
     async clear({ kind = 'delayed', expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true } = {}) {
       if (!['delayed', 'daily', 'weekly'].includes(kind)) throw new Error('This Easee schedule requires manual release in the Easee app');
       const before = await adapter.read({ signal });
       if (before.fingerprint !== expectedFingerprint || before.schedule.enabled !== kind
         || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
-        throw new Error('Easee state changed before the schedule handover');
-      if (!canControl() || !canMutate()) throw new Error('Easee schedule handover is no longer authorized');
-      await request(`${base}/${kind}/disable`, { method: 'POST', signal, controlGuard: canMutate }, true);
-      return adapter.read({ signal });
+        throw failure('state-changed', 'Easee changed before schedule handover.');
+      if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
+      try { await request(`${base}/${kind}/disable`, { method: 'POST', signal, controlGuard: canMutate }, true); }
+      catch (error) {
+        if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
+        if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
+        throw failure('command-failed', 'Easee did not confirm accepting schedule handover.');
+      }
+      try { return await adapter.read({ signal }); }
+      catch { throw failure('readback-failed', 'Easee schedule handover could not be read back.'); }
     },
   };
   return adapter;

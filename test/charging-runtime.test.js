@@ -5,7 +5,7 @@ import { chargingSettings } from '../src/charging/settings.js';
 import { normalizeScheduleState, scheduleFingerprint, delayedScheduleFor } from '../src/charging/easee.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
-function fixture(saved = {}) {
+function fixture(saved = {}, charging = {}) {
   let now = initialNow;
   const values = new Map(Object.entries(saved)), writes = [];
   const store = {
@@ -16,23 +16,25 @@ function fixture(saved = {}) {
     },
   };
   const engine = {};
-  const options = { engine, store, config: { input: 'mqtt' }, clock: () => now, canControl: () => true };
+  const options = { engine, store, config: { input: 'mqtt', charging }, clock: () => now, canControl: () => true };
   const create = () => {
     const runtime = new ChargingRuntime(options);
     runtime.teslaCapture = { snapshot: () => ({ connected: true, pluggedIn: false, assignment: 'bmw' }) };
     return runtime;
   };
-  return { store, values, writes, engine, create, setNow: value => { now = value; }, clock: () => now };
+  return { store, values, writes, engine, config: options.config, create, setNow: value => { now = value; }, clock: () => now };
 }
 function fakeAdapter(clock) {
   let schedule = normalizeScheduleState({ enabled: 'none' });
   const observed = { online: true, enabled: true, mode: 2, pluggedIn: true, manualStop: false, outputPhase: 30, powerKw: 0 };
-  const limits = { mainFuseA: 25, circuitA: [16, 16, 16], chargerA: 16, cableA: 32,
+  const limits = { circuitA: [16, 16, 16], chargerA: 16, cableA: 32,
     dynamicChargerA: 16, equalizerAvailableA: [16, 16, 16] };
   const calls = [];
   const snapshot = () => ({ schedule: structuredClone(schedule), fingerprint: scheduleFingerprint(schedule),
     controlFingerprint: 'unchanged-control', controlKnown: true, ...observed, reason: schedule.enabled === 'none' ? 0 : 54,
-    readAt: clock(), limits: structuredClone(limits) });
+    readAt: clock(), limits: structuredClone(limits),
+    supply: { availableCurrentA: [...limits.equalizerAvailableA], propertyCurrentA: [0, 0, 0],
+      chargerCurrentA: [0, 0, 0], voltageV: [230, 230, 230], observedAt: clock() } });
   return {
     calls,
     setSchedule(value) { schedule = normalizeScheduleState(value); },
@@ -55,97 +57,95 @@ function fakeAdapter(clock) {
     },
   };
 }
-const preferences = chargingSettings({ chargers: { charger1: { enabled: true, capacityKwh: 20 } }, readinessMarginMinutes: 0,
-  installation: { mainFuseA: 25, reserveA: 0, otherLoadA: 0 } });
+const preferences = chargingSettings({ chargers: { charger1: { enabled: true, capacityKwh: 20 } } });
 const prices = [20, 1, 1, 20].map((price, index) => ({ start: initialNow + index * HOUR, end: initialNow + (index + 1) * HOUR, price }));
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
-const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ vehicleId: 'charger1-vehicle', sourceId: 'vehicle-telemetry', soc, measuredAt: at, readingId, ...extra });
+const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ soc, measuredAt: at, readingId, ...extra });
 
-test('runtime preferences and separate automatic/manual SoC survive a new runtime', async () => {
+test('runtime preferences, automatic readings and saved SoC fallbacks survive restart', async () => {
   const f = fixture(), runtime = f.create();
-  await runtime.setSettings({ chargers: { charger1: { capacityKwh: 62, readyBy: '08:00' }, charger2: { capacityKwh: 51 } }, installation: { mainFuseA: 35 } });
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(30, initialNow - HOUR));
-  await runtime.setSoc('charger1', { soc: 46 });
+  await runtime.setSettings({ chargers: { charger1: { capacityKwh: 62, readyBy: '08:00' }, charger2: { capacityKwh: 51 } } });
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(30, initialNow - HOUR));
+  await runtime.setChargerSettings('charger1', { manualSoc: 46 });
   const restarted = f.create();
   assert.equal(restarted.settings.chargers.charger1.capacityKwh, 62);
   assert.equal(restarted.settings.chargers.charger2.capacityKwh, 51);
-  assert.equal(restarted.settings.installation.mainFuseA, 35);
   assert.equal(restarted.settings.chargers.charger1.manualSoc, 46);
-  assert.equal(chargerView(restarted).values.soc.source, 'manual');
-  assert.equal(restarted.chargers.charger1.automaticSoc.soc, 30);
+  assert.equal(chargerView(restarted).values.soc.source, 'mqtt');
+  assert.equal(chargerView(restarted).values.soc.value, 30);
   assert.equal(restarted.chargers.charger1.automaticSoc.measuredAt, initialNow - HOUR);
-  assert.equal(restarted.chargers.charger1.manualSoc.expiresAt, initialNow + 6 * HOUR);
+  assert.equal(restarted.chargers.charger1.manualSoc, undefined);
+  assert.equal(restarted.settings.timezone, undefined);
+  assert.equal(restarted.status().timezone, 'Europe/Helsinki');
   await runtime.close(); await restarted.close();
 });
 
 test('MQTT replay does not rewrite state and unknown-clock observations recover to known measurement times', async () => {
   const f = fixture(), runtime = f.create();
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(30, null));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(30, null));
   const before = f.writes.length;
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(30, null));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(30, null));
   assert.equal(f.writes.length, before);
   f.setNow(initialNow + HOUR);
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(45, initialNow, 'reading-2'));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(45, initialNow, 'reading-2'));
   assert.equal(runtime.chargers.charger1.automaticSoc.soc, 45);
   assert.equal(runtime.chargers.charger1.automaticSoc.measuredAt, initialNow);
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(90, initialNow - 1, 'reading-old'));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(90, initialNow - 1, 'reading-old'));
   assert.equal(runtime.chargers.charger1.automaticSoc.soc, 45);
   await runtime.close();
-  assert.equal(runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(80, initialNow + HOUR, 'reading-after-close')), false);
+  assert.equal(runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(80, initialNow + HOUR, 'reading-after-close')), false);
 });
 
-test('manual expiration is absolute despite a ready-by edit, and newer MQTT restores at expiration', async () => {
+test('automatic SoC takes priority immediately and saved fallback has no deadline or expiry', async () => {
   const f = fixture(), runtime = f.create();
-  await runtime.setSoc('charger1', { soc: 40 });
-  const expiry = runtime.chargers.charger1.manualSoc.expiresAt;
-  await runtime.setChargerSettings('charger1', { readyBy: '08:00' });
-  assert.equal(runtime.chargers.charger1.manualSoc.expiresAt, expiry);
-  f.setNow(initialNow + HOUR);
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(65, initialNow + HOUR));
-  assert.equal(chargerView(runtime).values.soc.value, 40);
-  f.setNow(expiry);
-  runtime.tick();
+  await runtime.setChargerSettings('charger1', { manualSoc: 47 });
+  assert.equal(chargerView(runtime).values.soc.value, 47);
+  assert.equal(chargerView(runtime).values.soc.source, 'manual-fallback');
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(65, initialNow));
+  assert.equal(chargerView(runtime).values.soc.value, 65);
+  await runtime.setChargerSettings('charger1', { readyBy: '08:00', manualSoc: 55 });
+  f.setNow(initialNow + 24 * HOUR); runtime.tick();
   assert.equal(chargerView(runtime).values.soc.value, 65);
   assert.equal(chargerView(runtime).values.soc.source, 'mqtt');
-  assert.equal(f.values.get('charging:mqtt').chargers.charger1.manualSoc, null);
-  assert.equal(runtime.settings.chargers.charger1.manualSoc, 40);
+  assert.equal(runtime.settings.chargers.charger1.manualSoc, 55);
+  assert.equal(chargerView(runtime).values.soc.expiresAt, undefined);
   await runtime.close();
 });
 
-test('returning to MQTT keeps the last manual number; vehicle association clears prior vehicle readings', async () => {
+test('configuration topic changes invalidate persisted readings and route only their configured charger', async () => {
   const f = fixture(), runtime = f.create();
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(31, initialNow));
-  await runtime.setSoc('charger1', { soc: 49 });
-  await runtime.setSoc('charger1', { action: 'automatic' });
-  assert.equal(runtime.settings.chargers.charger1.manualSoc, 49);
-  assert.equal(chargerView(runtime).values.soc.value, 31);
-  await runtime.setSoc('charger1', { soc: 52 });
-  await runtime.setChargerSettings('charger1', { mqtt: { vehicleId: 'replacement-vehicle' } });
-  assert.equal(runtime.chargers.charger1.manualSoc, null);
-  assert.equal(runtime.chargers.charger1.automaticSoc, null);
-  assert.equal(chargerView(runtime).values.soc.assumed, true);
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(95, initialNow, 'wrong-vehicle'));
-  assert.equal(runtime.chargers.charger1.automaticSoc, null);
+  const oldTopic = runtime.configuration.chargers.charger1.mqttTopic;
+  runtime.receiveSoc(oldTopic, packet(31, initialNow));
+  await runtime.setChargerSettings('charger1', { manualSoc: 49 });
   await runtime.close();
+  f.config.charging = { chargers: { charger1: { mqttTopic: 'stmq/test/replacement-vehicle', efficiency: .85 } } };
+  const restarted = f.create();
+  assert.equal(restarted.chargers.charger1.automaticSoc, null);
+  assert.equal(chargerView(restarted).values.soc.value, 49);
+  assert.equal(chargerView(restarted).values.soc.source, 'manual-fallback');
+  assert.equal(restarted.receiveSoc(oldTopic, packet(95, initialNow)), false);
+  assert.equal(restarted.receiveSoc(restarted.configuration.chargers.charger1.mqttTopic, packet(54, initialNow)), true);
+  assert.equal(chargerView(restarted).values.soc.value, 54);
+  assert.equal(chargerView(restarted).configuration.efficiency, .85);
+  assert.deepEqual(restarted.mqttRoutes().map(route => route.topic), ['stmq/test/replacement-vehicle']);
+  await restarted.close();
 });
 
-test('failed persistence rolls settings/SoC back and does not lose an expired override in memory', async () => {
+test('failed persistence rolls saved fallbacks, preferences and automatic readings back', async () => {
   const f = fixture(), runtime = f.create();
-  await runtime.setSoc('charger1', { soc: 43 });
-  const original = structuredClone(runtime.chargers.charger1.manualSoc);
+  await runtime.setChargerSettings('charger1', { manualSoc: 43 });
+  const topic = runtime.configuration.chargers.charger1.mqttTopic;
+  runtime.receiveSoc(topic, packet(31, initialNow));
+  const original = structuredClone(runtime.chargers.charger1.automaticSoc);
   f.store.fail = true;
-  await assert.rejects(runtime.setSoc('charger1', { soc: 60 }), /locked/);
-  assert.deepEqual(runtime.chargers.charger1.manualSoc, original);
+  await assert.rejects(runtime.setChargerSettings('charger1', { manualSoc: 60 }), /locked/);
   assert.equal(runtime.settings.chargers.charger1.manualSoc, 43);
   await assert.rejects(runtime.setChargerSettings('charger1', { capacityKwh: 63 }), /locked/);
   assert.equal(runtime.settings.chargers.charger1.capacityKwh, 74);
-  f.setNow(original.expiresAt);
-  runtime.tick();
-  assert.deepEqual(runtime.chargers.charger1.manualSoc, original);
-  assert.equal(chargerView(runtime).values.soc.source, 'manual-fallback', 'Expired record is unusable even when cleanup persistence fails');
+  assert.throws(() => runtime.receiveSoc(topic, packet(45, initialNow + 1, 'reading-new')), /locked/);
+  assert.deepEqual(runtime.chargers.charger1.automaticSoc, original);
+  assert.equal(chargerView(runtime).values.soc.value, 31);
   f.store.fail = false;
-  runtime.tick();
-  assert.equal(runtime.chargers.charger1.manualSoc, null);
   await runtime.close();
 });
 
@@ -195,7 +195,7 @@ test('a released connected session retains its actual plan through new SoC, dead
   assert.equal(chargerView(runtime).control.released, true);
   assert.equal(chargerView(runtime).values.scheduledStartAt.value, installed.startAt,
     'The owned delayed occurrence cannot roll forward to tomorrow after its release');
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(90, installed.startAt, 'reading-now'));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(90, installed.startAt, 'reading-now'));
   await runtime.setChargerSettings('charger1', { readyBy: '08:00' });
   assert.deepEqual(runtime.chargers.charger1.plan, installed);
   assert.equal(chargerView(runtime).values.soc.value, 90);
@@ -218,7 +218,7 @@ test('plan identity survives pending replans and runtime restart, and changes af
   runtime.tick({ prices }); await runtime.reconcile();
   const id = runtime.chargers.charger1.plan.id;
   assert.match(id, /^[0-9a-f-]{36}$/); assert.equal(chargerView(runtime).control.owned.planId, id);
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(20, initialNow, 'new-soc'));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(20, initialNow, 'new-soc'));
   await runtime.reconcile(); assert.equal(runtime.chargers.charger1.plan.id, id);
   const restarted = f.create();
   assert.equal(restarted.chargers.charger1.plan.id, id); await restarted.close();
@@ -240,7 +240,7 @@ test('manual window handback replans from newer SoC before issuing a release bas
   f.setNow(initialNow + HOUR / 2); await runtime.reconcile();
   adapter.setObservation({ mode: 3 }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.released, true);
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(85, f.clock(), 'manual-window-result'));
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(85, f.clock(), 'manual-window-result'));
   assert.equal(runtime.chargers.charger1.plan.startAt, originalStart, 'The active manual session keeps its original plan context');
   f.setNow(initialNow + 2 * HOUR); adapter.setObservation({ mode: 2 });
   runtime.tick(); await runtime.reconcile();
@@ -315,56 +315,50 @@ test('OFF with unavailable Easee and saved ownership reports unconfirmed handove
   await runtime.close();
 });
 
-test('an MQTT subscription callback failure cannot prevent a combined OFF setting from relinquishing control', async t => {
+test('machine connections and efficiency cannot be edited through charging preferences', async t => {
   const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); runtime.tick({ prices }); await runtime.reconcile();
-  runtime.onMqttTopicChange = () => { throw new Error('connection closed'); };
-  await runtime.setChargerSettings('charger1', { enabled: false, mqtt: { topic: 'stmq/test/replacement-topic' } });
+  for (const patch of [{ mqtt: { topic: 'stmq/test/replacement-topic' } }, { mqttTopic: 'stmq/test/replacement-topic' }, { efficiency: .8 }])
+    await assert.rejects(runtime.setChargerSettings('charger1', patch), /Unknown charging charger1 setting/);
+  await assert.rejects(runtime.setSettings({ installation: { mainFuseA: 25 } }), /Unknown charging setting/);
+  await assert.rejects(runtime.setSettings({ readinessMarginMinutes: 15 }), /Unknown charging setting/);
+  await assert.rejects(runtime.setSettings({ timezone: 'UTC' }), /Unknown charging setting/);
+  runtime.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
+  await runtime.setChargerSettings('charger1', { enabled: false });
   assert.equal(chargerView(runtime).control.phase, 'off'); assert.equal(chargerView(runtime).control.handoverConfirmed, true);
-  assert.equal(chargerView(runtime).mqtt.reason, 'mqtt-subscription-unavailable');
   assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, 1);
 });
 
-test('both chargers retain independent MQTT readings, manual overrides and preferences across restart', async t => {
-  const f = fixture(), runtime = f.create();
+test('both chargers retain independent automatic readings and remembered fallback preferences', async t => {
+  const f = fixture({}, { chargers: { charger2: { mqttTopic: 'stmq/garage/charger2/vehicle' } } }), runtime = f.create();
   t.after(() => runtime.close());
-  await runtime.setChargerSettings('charger2', { readyBy: '09:00', capacityKwh: 59, minimumSoc: 75,
-    mqtt: { topic: 'stmq/garage/charger2/vehicle' } });
-  runtime.receiveSoc(runtime.settings.chargers.charger1.mqtt.topic, packet(61, initialNow));
-  runtime.receiveSoc(runtime.settings.chargers.charger2.mqtt.topic,
-    packet(32, initialNow, 'second-reading', { vehicleId: 'charger2-vehicle' }));
-  await runtime.setSoc('charger1', { soc: 46 });
-  await runtime.setSoc('charger2', { soc: 54 });
-  const firstExpiry = runtime.chargers.charger1.manualSoc.expiresAt;
-  const secondExpiry = runtime.chargers.charger2.manualSoc.expiresAt;
-  assert.ok(secondExpiry > firstExpiry);
-  assert.equal(chargerView(runtime, 'charger1').values.soc.value, 46);
-  assert.equal(chargerView(runtime, 'charger2').values.soc.value, 54);
-  f.setNow(firstExpiry); runtime.tick();
+  await runtime.setChargerSettings('charger2', { readyBy: '09:00', capacityKwh: 59, minimumSoc: 75, manualSoc: 54 });
+  await runtime.setChargerSettings('charger1', { manualSoc: 46 });
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(61, initialNow));
+  runtime.receiveSoc(runtime.configuration.chargers.charger2.mqttTopic, packet(32, initialNow, 'second-reading'));
   assert.equal(chargerView(runtime, 'charger1').values.soc.value, 61);
-  assert.equal(chargerView(runtime, 'charger2').values.soc.value, 54);
+  assert.equal(chargerView(runtime, 'charger2').values.soc.value, 32);
+  f.setNow(initialNow + 48 * HOUR); runtime.tick();
   const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(chargerView(restarted, 'charger1').values.soc.value, 61);
+  assert.equal(chargerView(restarted, 'charger2').values.soc.value, 32);
   assert.equal(restarted.settings.chargers.charger2.capacityKwh, 59);
   assert.equal(restarted.settings.chargers.charger2.minimumSoc, 75);
-  assert.equal(restarted.settings.chargers.charger2.manualSoc, 54);
-  assert.equal(restarted.chargers.charger2.manualSoc.expiresAt, secondExpiry);
-  f.setNow(secondExpiry); restarted.tick();
-  assert.equal(chargerView(restarted, 'charger2').values.soc.value, 32);
   assert.equal(restarted.settings.chargers.charger1.manualSoc, 46);
-  assert.equal(f.values.get('charging:mqtt').version, 2);
+  assert.equal(restarted.settings.chargers.charger2.manualSoc, 54);
+  assert.equal(f.values.get('charging:mqtt').version, 3);
+  assert.deepEqual(runtime.mqttRoutes().map(route => route.id), ['charger1', 'charger2']);
 });
 
 test('unsupported scheduling and invalid charger identifiers reject without affecting another charger', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   await assert.rejects(runtime.setChargerSettings('charger2', { enabled: true }), /does not support/);
   await assert.rejects(runtime.resume('charger2', {}), /does not support/);
-  await assert.rejects(runtime.setSoc('missing', { soc: 80 }), /Unknown charger/);
+  await assert.rejects(runtime.setChargerSettings('missing', { manualSoc: 80 }), /Unknown charger/);
   assert.equal(runtime.settings.chargers.charger1.enabled, false);
   assert.equal(runtime.settings.chargers.charger2.enabled, false);
-  await assert.rejects(runtime.setChargerSettings('charger2', {
-    mqtt: { topic: runtime.settings.chargers.charger1.mqtt.topic },
-  }), /separate vehicle MQTT topic/);
+  assert.throws(() => fixture({}, { chargers: { charger2: { mqttTopic: runtime.configuration.chargers.charger1.mqttTopic } } }).create(), /different vehicle MQTT topic/);
 });
 
 test('vehicle association routes battery values once and preserves Equalizer electrical authority', async t => {
@@ -385,7 +379,7 @@ test('vehicle association routes battery values once and preserves Equalizer ele
   assert.equal(chargerView(runtime, 'charger2').automatic.soc.available, false,
     'Uncertain attribution cannot attach the Tesla battery to an unidentified charger');
   assert.equal(chargerView(runtime, 'charger2').values.connected.available, false);
-  assert.notEqual(chargerView(runtime, 'charger2').forecast.state, 'none', 'Possible external load stays reserved');
+  assert.notEqual(chargerView(runtime, 'charger2').forecast.state, 'none', 'An actual reported future schedule remains a possible competing load');
 });
 
 test('first adapter attachment uses freshly read fixed limits when prices are already available', async t => {
@@ -445,8 +439,7 @@ test('a future second controller has independent plans and ownership while Equal
   await runtime.setAdapter('charger1', firstAdapter);
   await runtime.setAdapter('charger2', secondAdapter);
   await runtime.reconcile();
-  await runtime.setSettings({ readinessMarginMinutes: 0, installation: { mainFuseA: 25, reserveA: 0, otherLoadA: 0 },
-    chargers: { charger1: { enabled: true, capacityKwh: 20, readyBy: '06:00' },
+  await runtime.setSettings({ chargers: { charger1: { enabled: true, capacityKwh: 20, readyBy: '06:00' },
       charger2: { enabled: true, capacityKwh: 10, readyBy: '05:00' } } });
   runtime.tick({ prices }); await runtime.reconcile();
   const first = chargerView(runtime), second = chargerView(runtime, 'charger2');
@@ -455,7 +448,7 @@ test('a future second controller has independent plans and ownership while Equal
   assert.notEqual(first.plan.id, second.plan.id);
   assert.ok(second.plan.deadlineAt < first.plan.deadlineAt);
   assert.equal(second.values.currentA.value, 14, 'Tesla requested current cannot replace a real charger adapter allowance');
-  assert.deepEqual(second.values.phases.value, [1, 1, 1]);
+  assert.equal(second.values.phases.value, 3);
   assert.equal(f.values.get('charging:mqtt:charger1:ownership').owned.planId, first.plan.id);
   assert.equal(f.values.get('charging:mqtt:charger2:ownership').owned.planId, second.plan.id);
   assert(secondDecisions.some(decision => decision.enabled && decision.planId === second.plan.id));
@@ -470,4 +463,48 @@ test('a future second controller has independent plans and ownership while Equal
   assert.equal(runtime.settings.chargers.charger1.enabled, true);
   assert.equal(chargerView(runtime).control.phase, 'waiting');
   assert.equal(chargerView(runtime, 'charger2').control.phase, 'off');
+});
+
+test('an uncertain second connection with no reported schedule creates no competing reservation', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  runtime.teslaCapture = { snapshot: () => ({ connected: true, assignment: 'auto', pluggedIn: null, atHome: true }) };
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile();
+  const first = chargerView(runtime), second = chargerView(runtime, 'charger2');
+  assert.equal(second.values.connected.available, false);
+  assert.equal(second.values.currentA.available, false);
+  assert.equal(second.forecast.state, 'none');
+  assert.equal(first.plan.state, 'waiting'); assert.equal(first.control.phase, 'waiting');
+  assert.equal(first.plan.startAt, initialNow + HOUR);
+});
+
+test('disabling a configured MQTT source restores the saved fallback without retaining old vehicle data', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  await runtime.setChargerSettings('charger1', { manualSoc: 53 });
+  const oldTopic = runtime.configuration.chargers.charger1.mqttTopic;
+  runtime.receiveSoc(oldTopic, packet(76, initialNow, 'automatic-value', { usableCapacityKwh: 66, chargeLimitSoc: 90 }));
+  assert.equal(chargerView(runtime).values.soc.value, 76);
+  f.config.charging = { chargers: { charger1: { mqttTopic: null } } };
+  const restarted = f.create(); t.after(() => restarted.close());
+  const view = chargerView(restarted);
+  assert.equal(view.values.soc.value, 53); assert.equal(view.values.soc.source, 'manual-fallback');
+  assert.equal(view.values.capacityKwh.value, 74); assert.equal(view.values.minimumSoc.value, 80);
+  assert.equal(restarted.chargers.charger1.automaticSoc, null);
+  assert.deepEqual(restarted.mqttRoutes(), []); assert.equal(restarted.receiveSoc(oldTopic, packet(91, initialNow)), false);
+});
+
+test('inactive Easee schedule caches cannot move the owned delayed occurrence to tomorrow', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); runtime.tick({ prices }); await runtime.reconcile();
+  const owned = structuredClone(chargerView(runtime).control.owned);
+  f.setNow(owned.startAt);
+  adapter.setSchedule({ ...owned.schedule, daily: { timezone: 'UTC',
+    periods: [{ startTime: '03:00', stopTime: '04:00', maximumAmps: 16 }] } });
+  await runtime.reconcile();
+  const view = chargerView(runtime);
+  assert.equal(view.control.phase, 'released'); assert.equal(view.control.manual, null);
+  assert.equal(view.values.scheduledStartAt.value, owned.startAt);
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
 });

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargingSettings, mergeChargingSettings, migrateChargingSettings } from '../src/charging/settings.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../src/charging/model.js';
-import { acceptSocReading, createManualSoc } from '../src/charging/soc.js';
+import { acceptSocReading } from '../src/charging/soc.js';
 
 const now = Date.parse('2026-01-15T00:00:00Z');
 const config = chargingSettings();
@@ -13,14 +13,15 @@ test('identical preference structures retain first-use values independently and 
   assert.deepEqual(Object.keys(config.chargers.charger1), Object.keys(config.chargers.charger2));
   assert.deepEqual(Object.values(config.chargers).map(item => [item.enabled, item.minimumSoc, item.readyBy, item.manualSoc, item.capacityKwh]),
     [[false, 80, '06:00', 40, 74], [false, 80, '06:00', 40, 57]]);
-  const saved = mergeChargingSettings(config, { chargers: { charger2: { capacityKwh: 60, mqtt: { topic: 'garage/second' } } } });
+  const saved = mergeChargingSettings(config, { chargers: { charger2: { capacityKwh: 60, manualSoc: 35 } } });
   assert.equal(saved.chargers.charger1.capacityKwh, 74);
-  assert.equal(saved.chargers.charger2.mqtt.vehicleId, 'charger2-vehicle');
+  assert.equal(saved.chargers.charger2.manualSoc, 35);
   assert.deepEqual(chargingSettings(JSON.parse(JSON.stringify(saved))), saved);
   assert.throws(() => chargingSettings({ installation: { charger1MaxA: 32 } }), /Unknown/);
   assert.throws(() => mergeChargingSettings(config, { chargers: { charger1: { currentA: 32 } } }), /Unknown/);
-  assert.throws(() => mergeChargingSettings(config, { chargers: { charger1: { mqtt: { topic: 'bad/#' } } } }), /wildcards/);
-  assert.throws(() => mergeChargingSettings(config, { chargers: { charger2: { mqtt: { topic: config.chargers.charger1.mqtt.topic } } } }), /separate/);
+  for (const patch of [{ timezone: 'UTC' }, { readinessMarginMinutes: 10 },
+    { chargers: { charger1: { mqttTopic: 'garage/vehicle' } } }, { chargers: { charger2: { efficiency: .8 } } }])
+    assert.throws(() => mergeChargingSettings(config, patch), /Unknown/);
 });
 
 test('legacy persisted preferences migrate without restoring guessed electrical limits', () => {
@@ -33,9 +34,16 @@ test('legacy persisted preferences migrate without restoring guessed electrical 
   assert.equal(migrated.chargers.charger1.capacityKwh, 62);
   assert.equal(migrated.chargers.charger2.capacityKwh, 55);
   assert.equal(migrated.chargers.charger2.enabled, false);
-  assert.equal(migrated.installation.mainFuseA, 35);
-  assert.equal(Object.hasOwn(migrated.installation, 'circuitA'), false);
+  assert.equal(Object.hasOwn(migrated, 'installation'), false);
+  assert.equal(Object.hasOwn(migrated.chargers.charger1, 'efficiency'), false);
+  assert.equal(Object.hasOwn(migrated.chargers.charger1, 'mqtt'), false);
   assert.deepEqual(migrateChargingSettings(migrated), migrated);
+  const former = { ...config, timezone: 'UTC', readinessMarginMinutes: 15, installation: { mainFuseA: 35 },
+    chargers: { ...config.chargers, charger1: { ...config.chargers.charger1, manualSoc: 33, efficiency: .8, mqtt: { topic: 'old/vehicle' } } } };
+  const refreshed = migrateChargingSettings(former);
+  assert.equal(refreshed.chargers.charger1.manualSoc, 33);
+  assert.deepEqual(Object.keys(refreshed), ['chargers']);
+  assert.deepEqual(Object.keys(refreshed.chargers.charger1), Object.keys(config.chargers.charger1));
 });
 
 test('each charger uses valid automatic capacity and target before identical manual fallbacks', () => {
@@ -57,20 +65,28 @@ test('each charger uses valid automatic capacity and target before identical man
   }
 });
 
-test('manual override expires at its saved deadline and the latest automatic value stays underneath', () => {
-  const manualSoc = createManualSoc(35, { now, readyBy: '06:00', timezone: 'Europe/Helsinki' });
+test('automatic SoC always wins and the remembered fallback remains available without an expiry', () => {
+  const settings = { ...config.chargers.charger2, manualSoc: 35 };
   const automaticSoc = { soc: 61, measuredAt: now + 60_000, receivedAt: now + 120_000 };
-  const overriding = make(1, { now: now + 180_000, manualSoc, automaticSoc });
-  assert.equal(overriding.values.soc.value, 35);
-  assert.equal(overriding.values.soc.source, 'manual');
-  assert.equal(overriding.values.soc.expiresAt, manualSoc.expiresAt);
-  assert.equal(overriding.automatic.soc.value, 61);
-  const expired = make(1, { now: manualSoc.expiresAt, manualSoc, automaticSoc });
-  assert.equal(expired.values.soc.value, 61);
-  assert.equal(expired.values.soc.source, 'mqtt');
-  assert.equal(expired.values.soc.measuredAt, now + 60_000);
-  assert.equal(expired.values.soc.receivedAt, now + 120_000);
-  assert.equal(make(1, { now: manualSoc.expiresAt, manualSoc }).values.soc.source, 'manual-fallback');
+  const automatic = make(1, { now: now + 180_000, settings, automaticSoc });
+  assert.equal(automatic.values.soc.value, 61);
+  assert.equal(automatic.values.soc.source, 'mqtt');
+  assert.equal(automatic.values.soc.measuredAt, now + 60_000);
+  assert.equal(automatic.values.soc.receivedAt, now + 120_000);
+  assert.equal(automatic.settings.manualSoc, 35);
+  assert.equal(Object.hasOwn(automatic.values.soc, 'expiresAt'), false);
+  const fallback = make(1, { now: now + 48 * 3_600_000, settings: JSON.parse(JSON.stringify(settings)) });
+  assert.equal(fallback.values.soc.value, 35);
+  assert.equal(fallback.values.soc.source, 'manual-fallback');
+});
+
+test('grid energy uses charger configuration efficiency and keeps it out of editable preferences', () => {
+  const charger = make(0, { configuration: { efficiency: .8, mqttTopic: 'garage/vehicle' },
+    telemetry: { capacityKwh: 60, soc: 40, minimumSoc: 80 } });
+  assert.equal(charger.requiredGridKwh, 30);
+  assert.equal(charger.configuration.efficiency, .8);
+  assert.equal(Object.hasOwn(charger.settings, 'efficiency'), false);
+  assert.equal(Object.hasOwn(charger.settings, 'mqttTopic'), false);
 });
 
 test('automatic connection has no manual substitute and an away vehicle contributes no house load', () => {
@@ -87,9 +103,8 @@ test('Equalizer allowance and hardware ceiling remain distinct, with every repor
   assert.equal(charger.capabilities.externalLoadBalancing, true);
 });
 
-test('vehicle MQTT can carry explicit usable capacity and target with its existing trusted identity', () => {
-  const payload = { soc: 46, usableCapacityKwh: 70, chargeLimitSoc: 88, vehicleId: 'charger1-vehicle',
-    sourceId: 'vehicle-telemetry', readingId: 'first', measuredAt: now };
+test('vehicle MQTT can carry explicit usable capacity and target through its configured topic association', () => {
+  const payload = { soc: 46, usableCapacityKwh: 70, chargeLimitSoc: 88, readingId: 'first', measuredAt: now };
   const accepted = acceptSocReading(null, payload, { now });
   assert.equal(accepted.accepted, true);
   const charger = make(0, { automaticSoc: JSON.parse(JSON.stringify(accepted.reading)) });
@@ -97,8 +112,7 @@ test('vehicle MQTT can carry explicit usable capacity and target with its existi
   assert.equal(charger.values.minimumSoc.value, 88);
   assert.equal(charger.values.minimumSoc.source, 'mqtt');
   assert.equal(charger.values.minimumSoc.measuredAt, now);
-  const update = acceptSocReading(accepted.reading, { soc: 47, vehicleId: payload.vehicleId, sourceId: payload.sourceId,
-    readingId: 'second', measuredAt: now + 60_000 }, { now: now + 90_000 });
+  const update = acceptSocReading(accepted.reading, { soc: 47, readingId: 'second', measuredAt: now + 60_000 }, { now: now + 90_000 });
   const refreshed = make(0, { automaticSoc: update.reading });
   assert.equal(refreshed.values.soc.measuredAt, now + 60_000);
   assert.equal(refreshed.values.capacityKwh.value, 70);
@@ -125,8 +139,20 @@ test('an unavailable canonical adapter field cannot be revived by stale raw alia
   assert.equal(supplied.capabilities.automatic.minimumSoc, true);
 });
 
-test('per-phase circuit ceilings only use confirmed active phases', () => {
+test('offline provider limits cannot revive a current ceiling from the raw stored snapshot', () => {
+  const charger = make(0, { telemetry: { providerConnected: false,
+    currentA: { value: null, available: false }, maxCurrentA: { value: null, available: false },
+    limits: { chargerA: 32, cableA: 20, circuitA: [16, 16, 16] }, readAt: now - 10 * 60_000 } });
+  assert.equal(charger.values.currentA.available, false);
+  assert.equal(charger.values.maximumCurrentA.available, false);
+  assert.equal(charger.values.maximumCurrentA.value, null);
+});
+
+test('three-phase assumption uses all circuit ceilings even when an old active phase mask differs', () => {
   const charger = make(0, { telemetry: { phases: [0, 1, 0], maxCurrentA: 32,
-    limits: { circuitA: [0, 13, 0], cableA: 20 } } });
-  assert.equal(charger.values.maximumCurrentA.value, 13);
+    limits: { circuitA: [10, 13, 16], cableA: 20 } } });
+  assert.equal(charger.values.maximumCurrentA.value, 10);
+  assert.equal(charger.values.phases.value, 3);
+  assert.equal(charger.values.phases.assumed, true);
+  assert.equal(make(0, { telemetry: { phases: null } }).values.phases.value, 3);
 });

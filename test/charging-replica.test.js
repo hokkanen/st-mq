@@ -16,10 +16,9 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   const snapshotAt = Date.parse('2026-01-15T00:00:00Z'), dbPath = join(directory, 'snapshot.sqlite');
   const settings = chargingSettings({ chargers: { charger1: { enabled: true, capacityKwh: 62, manualSoc: 45 }, charger2: { capacityKwh: 51 } } });
   const automaticSoc = { soc: 32, measuredAt: snapshotAt - 86400_000, receivedAt: snapshotAt - 60_000,
-    vehicleId: settings.chargers.charger1.mqtt.vehicleId, sourceId: settings.chargers.charger1.mqtt.sourceId, readingId: 'snapshot-reading' };
-  const manualSoc = { soc: 45, enteredAt: snapshotAt - 30_000, expiresAt: snapshotAt + 4 * 3600_000 };
+    association: 'stmq/garage/charger1/vehicle', readingId: 'snapshot-reading' };
   const plan = { state: 'waiting', reason: 'cheapest-feasible-start', startAt: snapshotAt + 3600_000,
-    deadlineAt: manualSoc.expiresAt, finishAt: snapshotAt + 3 * 3600_000, requiredGridKwh: 24, feasible: true };
+    deadlineAt: snapshotAt + 4 * 3600_000, finishAt: snapshotAt + 3 * 3600_000, requiredGridKwh: 24, feasible: true };
   const owned = { planId: 'snapshot-plan', startAt: plan.startAt, confirmedAt: snapshotAt - 10_000, fingerprint: 'invented-fingerprint' };
   const store = new Store(dbPath);
   store.event('decision', { input: 'mqtt', mode: 'monitoring' }, snapshotAt);
@@ -28,14 +27,14 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   const view = { settings, chargers: CHARGER_DEFINITIONS.map(definition => {
     const first = definition.id === 'charger1';
     return { ...buildCharger({ definition, settings: settings.chargers[definition.id], now: snapshotAt,
-      timezone: settings.timezone, automaticSoc: first ? automaticSoc : null,
-      manualSoc: first ? manualSoc : null, control: first ? ownership : { phase: 'off', released: false },
+      timezone: 'Europe/Helsinki', automaticSoc: first ? automaticSoc : null,
+      configuration: { efficiency: first ? .85 : .9 }, control: first ? ownership : { phase: 'off', released: false },
       telemetry: first ? {} : { soc: { value: 67, source: 'teslamate', measuredAt: null, receivedAt: snapshotAt - 5000 } } }),
-      automaticSoc: first ? automaticSoc : null, manualSoc: first ? manualSoc : null, plan: first ? plan : null,
+      automaticSoc: first ? automaticSoc : null, plan: first ? plan : null,
       forecast: null, mqtt: { connected: true, subscribed: true, reason: null }, error: null };
   }), coordination: null, error: null };
   store.setState('charging:mqtt', { version: 2, settings, chargers: {
-    charger1: { automaticSoc, manualSoc, plan }, charger2: { automaticSoc: null, manualSoc: null, plan: null },
+    charger1: { automaticSoc, plan }, charger2: { automaticSoc: null, plan: null },
   }, view });
   store.setState('charging:mqtt:charger1:ownership', ownership);
   store.close();
@@ -64,8 +63,9 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   assert.equal(charger1.control.phase, 'waiting');
   assert.equal(charger1.control.snapshot, null);
   assert.equal(charger1.control.released, false, 'Elapsed viewer time never releases a saved charging plan');
-  assert.equal(charger1.values.soc.source, 'manual', 'SoC source is resolved at the source snapshot boundary');
-  assert.equal(charger1.values.soc.expiresAt, manualSoc.expiresAt);
+  assert.equal(charger1.values.soc.source, 'mqtt', 'SoC source is resolved at the source snapshot boundary');
+  assert.equal(charger1.values.soc.value, 32);
+  assert.equal(charger1.configuration.efficiency, .85);
   assert.deepEqual(charger1.automaticSoc, automaticSoc);
   assert.equal(charger2.plan, null);
   assert.equal(charger2.values.soc.value, 67, 'The common charger view retains actual recorded provider telemetry');

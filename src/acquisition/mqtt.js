@@ -225,18 +225,6 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       });
     }
   };
-  if (engine.charging) engine.charging.onMqttTopicChange = (topic, previous, id) => {
-    // Old deliveries cannot match the new selected route, even before UNSUBACK.
-    if (connected && previous) client.unsubscribe?.(previous, () => {});
-    const index = topicGroups.findIndex(group => group.id === `${id}-vehicle`);
-    if (index >= 0) topicGroups.splice(index, 1);
-    const route = engine.charging.mqttRoutes().find(route => route.id === id);
-    if (route) topicGroups.unshift({ id: `${id}-vehicle`, label: `${route.label} vehicle`, source: 'MQTT', topics: [
-      { role: 'Timestamped vehicle readings', topic, direction: 'subscribe' },
-    ] });
-    engine.charging.setMqttStatus({ connected, subscribed: false, reason: topic ? 'awaiting-subscription' : 'not-configured' }, id);
-    subscribeChargingSoc(id);
-  };
   const connectedHandler = () => {
     if (connected || stopped || stopping) return;
     const generation = ++connectionGeneration;
@@ -400,7 +388,6 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       teslamate?.close();
       chargingTesla?.setConnected(false);
       if (engine.charging) {
-        engine.charging.onMqttTopicChange = null;
         engine.charging.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
       }
       if (engine.teslamate === teslamate) engine.teslamate = null;

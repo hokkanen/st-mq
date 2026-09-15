@@ -12,6 +12,8 @@ not gain a manual switch.
 | Vehicle charge target | Unavailable | `charge_limit_soc` |
 | Connected vehicle | Pilot and operating mode | `plugged_in`, with household location and charger assignment |
 | Charging current estimate | Charger/cable/circuit limits, including Equalizer allowance | Requested current capped by vehicle maximum |
+| AC voltage | Equalizer phase-to-neutral property voltage | `charger_voltage` |
+| Charging phases | Three-phase installation assumption | Three-phase installation assumption |
 | Measured charging power | Total power | `charger_power` |
 | Native start | Delayed, daily or weekly schedule | `scheduled_charging_start_time` |
 | Native stop | Daily or weekly stop | Unavailable |
@@ -32,6 +34,7 @@ the [TeslaMate MQTT contract](https://docs.teslamate.org/docs/integrations/mqtt/
 Native schedule stops and estimated completion times remain distinct. Easee's
 delayed schedule has only a start. ST-MQ's owned occurrence takes precedence over
 a newly interpreted local clock time. Reading a complex native recurrence for
-display does not grant permission to replace it; existing manual-action
-handover rules still apply. See [Easee scheduling state](https://developer.easee.com/reference/getchargersschedules)
+display alone does not establish a post-plug manual action. Pre-existing
+schedules can be taken over; observed changes after plug-in follow the
+manual-action handover rules. See [Easee scheduling state](https://developer.easee.com/reference/getchargersschedules)
 and [delayed schedule](https://developer.easee.com/reference/postchargersschedulesdelayed).

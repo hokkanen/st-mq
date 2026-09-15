@@ -1,3 +1,4 @@
+import { TIME_ZONE } from '../domain/prices.js';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../storage/store.js';
@@ -61,15 +62,15 @@ function chargingSnapshot(snapshot) {
     const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
       enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
       reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` };
-    return { ...buildCharger({ definition, settings: settings.chargers[id], timezone: settings.timezone,
-      telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc, manualSoc: record.manualSoc,
+    return { ...buildCharger({ definition, settings: settings.chargers[id], timezone: TIME_ZONE,
+      telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc, configuration: recorded?.configuration,
       now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control }),
       readOnly: true, recorded: true, snapshotAt, control,
-      automaticSoc: record.automaticSoc ?? null, manualSoc: record.manualSoc ?? null,
+      automaticSoc: record.automaticSoc ?? null,
       plan: record.plan ?? null, forecast: recorded?.forecast ?? null,
       mqtt: { connected: null, subscribed: null, reason: 'read-only-snapshot' }, error: null };
   });
-  return { readOnly: true, recorded: true, snapshotAt, settings, chargers,
+  return { readOnly: true, recorded: true, snapshotAt, timezone: TIME_ZONE, settings, chargers,
     coordination: saved.view?.coordination ?? null, error: null };
 }
 

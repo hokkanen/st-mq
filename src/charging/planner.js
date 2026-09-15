@@ -1,5 +1,3 @@
-import { chargingSettings } from './settings.js';
-
 const HOUR = 3_600_000, EPS = 1e-7, MIN_CURRENT_A = 6;
 const finite = Number.isFinite;
 const unique = values => [...new Set(values)];
@@ -14,41 +12,30 @@ const released = charger => charger.control?.released === true || charger.contro
 const shouldPlan = (charger, now) => charger.settings.enabled && charger.capabilities.scheduling
   && !manualActive(charger, now) && !released(charger) && value(charger, 'charging') !== true;
 
-function phaseInfo(charger) {
-  const phases = value(charger, 'phases');
-  if (Array.isArray(phases) && phases.length === 3 && phases.every(item => item === 0 || item === 1) && phases.some(Boolean))
-    return { mask: phases, count: phases.reduce((sum, item) => sum + item, 0), known: true };
-  // A count does not identify the live phase. Reserving on all three phases is
-  // conservative; power still uses the actual count, never invented 3-phase kW.
-  if ([1, 2, 3].includes(phases)) return { mask: [1, 1, 1], count: phases, known: phases === 3 };
-  return null;
-}
-function electrical(charger, installation) {
-  const phases = phaseInfo(charger);
+function electrical(charger, supply = {}) {
+  // Both supported installations use three-phase charging, including while the
+  // vehicle is unplugged and Easee has no active output phase observation.
+  const phases = { mask: [1, 1, 1], count: 3, known: true };
   const ceiling = value(charger, 'maximumCurrentA');
   const selected = value(charger, 'currentA');
   // Equalizer's momentary allowance is not tomorrow's available current. Its
   // fixed hardware ceiling and the property forecast define future headroom.
   const current = charger.capabilities.externalLoadBalancing ? ceiling : selected;
-  const currentA = finite(current) ? Math.min(current, finite(ceiling) ? ceiling : Infinity) : null;
-  const voltageV = value(charger, 'voltageV') ?? installation.voltageV;
-  return { phases, currentA, voltageV, available: Boolean(phases) && finite(currentA) && currentA >= 0,
-    powerKw: phases && finite(currentA) ? phases.count * voltageV * currentA / 1000 : null };
-}
-function warningsFor(charger) {
-  const warnings = [];
-  if (charger.values.soc.assumed) warnings.push(`${charger.label}: the remembered manual battery percentage is used until vehicle telemetry is available.`);
-  if (charger.values.capacityKwh.assumed) warnings.push(`${charger.label}: usable battery capacity uses the manual fallback.`);
-  if (charger.values.minimumSoc.assumed) warnings.push(`${charger.label}: the manual minimum is used; charging may continue beyond this minimum.`);
-  return warnings;
+  const allocation = charger.capabilities.externalLoadBalancing ? asPhases(supply.allocationA) : null;
+  const currentA = finite(current) ? Math.min(current, finite(ceiling) ? ceiling : Infinity,
+    allocation ? Math.min(...allocation) : Infinity) : null;
+  const observedVoltage = value(charger, 'voltageV') ?? supply.voltageV;
+  const voltageV = three(observedVoltage) ? observedVoltage.reduce((sum, item) => sum + item, 0) / 3 : observedVoltage;
+  const available = finite(currentA) && currentA >= 0 && finite(voltageV) && voltageV >= 200 && voltageV <= 250;
+  return { phases, currentA, voltageV, available, powerKw: available ? 3 * voltageV * currentA / 1000 : null };
 }
 
 /** Forecast a charger's automatic/native activity. A minimum finish is an
  * accounting estimate; only a known vehicle target or native stop bounds load. */
-export function forecastCharger({ now, deadlineAt, charger, settings = {} } = {}) {
+export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) {
   if (!finite(now) || !charger) throw new Error('A charger and numeric UTC forecast time are required');
-  const config = chargingSettings(settings), horizon = finite(deadlineAt) ? Math.max(now, deadlineAt) : now + 24 * HOUR;
-  const warnings = warningsFor(charger), electric = electrical(charger, config.installation);
+  const horizon = finite(deadlineAt) ? Math.max(now, deadlineAt) : now + 24 * HOUR;
+  const warnings = [], electric = electrical(charger, supply);
   const base = { state: 'none', reason: null, known: true, startAt: null, endAt: null, finishAt: null,
     currentA: 0, phaseCurrentA: [0, 0, 0], phases: electric.phases?.count ?? null, voltageV: electric.voltageV,
     powerKw: 0, gridEnergyKwh: charger.requiredGridKwh, requiredGridKwh: charger.requiredGridKwh,
@@ -58,47 +45,55 @@ export function forecastCharger({ now, deadlineAt, charger, settings = {} } = {}
     return { ...base, reason: 'manual-stop' };
   if (charger.requiredGridKwh <= EPS && targetKnown(charger) && value(charger, 'charging') !== true)
     return { ...base, reason: 'vehicle-target-already-reached' };
-  if (!electric.available) return { ...base, state: 'unavailable', known: false, reason: 'electrical-telemetry-unavailable',
-    powerKw: null, currentA: null, phaseCurrentA: null,
-    warnings: [...warnings, `${charger.label}: automatic current or phase information is unavailable.`] };
-  const connected = value(charger, 'connected') === true;
   const charging = value(charger, 'charging') === true || released(charger);
   const schedule = value(charger, 'scheduledStartAt');
-  const scheduled = finite(schedule) && schedule >= now;
-  const startAt = connected && (charging || scheduled) ? charging ? now : schedule : now;
   const nativeEnd = value(charger, 'scheduledEndAt');
+  const scheduled = finite(schedule) && (schedule >= now || finite(nativeEnd) && nativeEnd > now || charging);
+  // An unknown connection/start is not evidence of a future competing load.
+  // Current consumption already appears in the property/Equalizer observations.
+  if (!scheduled && !charging) return { ...base, reason: 'no-upcoming-schedule' };
+  if (!electric.available) return { ...base, state: 'unavailable', known: false, reason: 'electrical-telemetry-unavailable',
+    powerKw: null, currentA: null, phaseCurrentA: null, scheduled, charging,
+    warnings: [...warnings, `${charger.label}: ${scheduled ? 'its scheduled load' : 'charging power'} cannot be estimated until current and voltage are available.`] };
+  const startAt = charging ? now : Math.max(now, schedule);
   const stopKnown = finite(nativeEnd) && nativeEnd > startAt && charger.telemetry?.scheduledEndKind === 'scheduled-stop';
-  const intervalKnown = connected && (charging || scheduled);
-  const finishAt = intervalKnown && electric.powerKw > 0 ? startAt + charger.requiredGridKwh / electric.powerKw * HOUR : null;
-  let endAt = intervalKnown && targetKnown(charger) && charger.requiredGridKwh > EPS && finite(finishAt) ? finishAt : horizon;
-  if (stopKnown && connected) endAt = Math.min(endAt, nativeEnd);
-  if (!connected) warnings.push(`${charger.label}: connection at this property is unknown; its possible load is reserved.`);
-  if (!charging && !scheduled) warnings.push(`${charger.label}: no verified upcoming start; its possible load is reserved throughout the horizon.`);
-  if (electric.phases && !electric.phases.known) warnings.push(`${charger.label}: the phase count is known but its wiring is not; every phase reserves that current.`);
-  const uncertain = !intervalKnown || !targetKnown(charger) || !electric.phases.known;
+  const finishAt = electric.powerKw > 0 ? startAt + charger.requiredGridKwh / electric.powerKw * HOUR : null;
+  let endAt = targetKnown(charger) && charger.requiredGridKwh > EPS && finite(finishAt) ? Math.min(finishAt, horizon) : horizon;
+  if (stopKnown) endAt = Math.min(endAt, nativeEnd);
+  const uncertain = !targetKnown(charger);
+  const actual = value(charger, 'actualCurrentA');
+  const actualPower = value(charger, 'powerKw');
+  const actualCurrentA = finite(actual) ? actual : finite(actualPower) && electric.voltageV > 0 ? actualPower * 1000 / (3 * electric.voltageV) : null;
   return { ...base, state: uncertain ? 'uncertain' : 'forecast', known: !uncertain,
-    reason: uncertain ? 'conservative-load-reservation' : 'automatic-current-forecast', startAt, endAt, finishAt,
+    reason: uncertain ? 'vehicle-stop-unknown' : 'automatic-current-forecast', startAt, endAt, finishAt,
+    scheduled, charging, actualCurrentA,
     currentA: electric.currentA, phaseCurrentA: electric.phases.mask.map(item => item * electric.currentA), powerKw: electric.powerKw };
 }
 
-function constraint(installation, limits, key) {
-  const candidates = [asPhases(installation[key]), asPhases(limits?.[key])].filter(Boolean);
-  return candidates.length ? [0, 1, 2].map(index => Math.min(...candidates.map(item => item[index]))) : null;
-}
-function resources(at, config, limits, household, fixed) {
-  const mainFuse = constraint(config.installation, limits, 'mainFuseA');
-  if (!mainFuse) return null;
+function resources(at, supply, household, fixed) {
+  const allowance = asPhases(supply.availableCurrentA);
+  if (!allowance) return null;
   const row = household.find(item => item.start <= at && item.end > at && three(item.phaseCurrentA));
-  const other = row?.phaseCurrentA ?? asPhases(config.installation.otherLoadA);
-  const allocation = constraint(config.installation, limits, 'chargingAllocationA');
+  const other = row?.phaseCurrentA ?? [0, 0, 0];
+  const property = asPhases(supply.propertyCurrentA), charger = asPhases(supply.chargerCurrentA);
+  // Equalizer's allowance already accounts for current household consumption.
+  // Recover an effective available budget only when those simultaneous currents
+  // are known, then replace current load with future household/scheduled load.
+  // This is a forecast, not an inferred physical fuse rating or a protection rule.
+  const canAdjust = Boolean(property && charger);
+  const budget = allowance.map((current, index) => current + (canAdjust ? Math.max(0, property[index] - charger[index]) : 0));
   const reserved = [0, 0, 0];
   for (const forecast of fixed) if (forecast.startAt <= at && forecast.endAt > at && three(forecast.phaseCurrentA))
-    forecast.phaseCurrentA.forEach((current, index) => { reserved[index] += current; });
-  const phaseHeadroomA = [0, 1, 2].map(index => Math.max(0, Math.min(
-    mainFuse[index] - other[index] - reserved[index] - config.installation.reserveA,
-    allocation ? allocation[index] - reserved[index] : Infinity,
-  )));
-  return { phaseHeadroomA, otherPhaseCurrentA: other, fixedPhaseCurrentA: reserved, history: Boolean(row), basis: row?.basis ?? null };
+    forecast.phaseCurrentA.forEach((current, index) => {
+      // Without synchronized property measurements the allowance is already
+      // net of a currently charging peer. Subtract only its additional demand.
+      const alreadyIncluded = !canAdjust && forecast.charging ? forecast.actualCurrentA ?? current : 0;
+      reserved[index] += Math.max(0, current - alreadyIncluded);
+    });
+  const phaseHeadroomA = [0, 1, 2].map(index => Math.max(0,
+    budget[index] - (canAdjust ? other[index] : 0) - reserved[index]));
+  return { phaseHeadroomA, otherPhaseCurrentA: other, fixedPhaseCurrentA: reserved, history: Boolean(row),
+    basis: row?.basis ?? 'no-history-zero-household-load', supplyBasis: canAdjust ? 'equalizer-adjusted' : 'equalizer-live' };
 }
 const headroomFor = (headroom, mask) => Math.min(...headroom.filter((_, index) => mask[index]));
 function draw(headroom, mask, current) { mask.forEach((item, index) => { headroom[index] = Math.max(0, headroom[index] - item * current); }); }
@@ -229,22 +224,22 @@ function compare(a, b, jobs) {
 /** Joint start-only planning over interchangeable charger objects. Schedule
  * releases remain enabled after minimum/deadline. Allocated current limits are
  * proposals for a future capable adapter, never commands or stop instructions. */
-export function planChargers({ now, settings = {}, chargers = [], prices = [], household = [], limits = {} } = {}) {
+export function planChargers({ now, chargers = [], prices = [], household = [], supply } = {}) {
   if (!finite(now)) throw new Error('Charging planner requires numeric UTC time');
   if (!Array.isArray(chargers) || new Set(chargers.map(charger => charger.id)).size !== chargers.length)
     throw new Error('Charging planner requires unique charger objects');
-  const config = chargingSettings(settings), plans = {}, forecasts = {}, warnings = [];
-  // Installation facts reported by any adapter constrain the common resource.
-  // The smallest known limit wins when configured and reported values differ.
-  limits = { ...limits };
-  for (const [key, alias] of [['mainFuseA', 'mainFuseA'], ['chargingAllocationA', 'allocationA']]) {
-    const observed = [asPhases(limits[key]), ...chargers.map(charger => asPhases(charger.telemetry?.limits?.[alias]))].filter(Boolean);
-    if (observed.length) limits[key] = [0, 1, 2].map(index => Math.min(...observed.map(item => item[index])));
+  const plans = {}, forecasts = {}, warnings = [];
+  if (supply === undefined) {
+    const external = chargers.find(charger => charger.capabilities.externalLoadBalancing)?.telemetry;
+    supply = external?.providerConnected === false ? null : external?.supply;
   }
-  const horizon = Math.max(now, ...chargers.map(charger => charger.deadlineAt - config.readinessMarginMinutes * 60_000));
+  // A caller may deliberately withdraw a stale/offline provider snapshot.
+  // Only an omitted argument permits inference; explicit null must stay absent.
+  supply ??= {};
+  const horizon = Math.max(now, ...chargers.map(charger => charger.deadlineAt));
   for (const charger of chargers) {
-    forecasts[charger.id] = forecastCharger({ now, deadlineAt: horizon, charger, settings: config });
-    const targetAt = charger.deadlineAt - config.readinessMarginMinutes * 60_000;
+    forecasts[charger.id] = forecastCharger({ now, deadlineAt: horizon, charger, supply });
+    const targetAt = charger.deadlineAt;
     const state = !charger.capabilities.scheduling ? 'observing' : !charger.settings.enabled ? 'disabled'
       : manualActive(charger, now) ? 'manual' : released(charger) || value(charger, 'charging') === true ? 'released'
         : value(charger, 'connected') === false ? 'disconnected' : 'unavailable';
@@ -252,13 +247,15 @@ export function planChargers({ now, settings = {}, chargers = [], prices = [], h
       startAt: state === 'released' ? now : null, finishAt: forecasts[charger.id].finishAt,
       deadlineAt: charger.deadlineAt, targetAt, minimumSoc: value(charger, 'minimumSoc'),
       requiredGridKwh: charger.requiredGridKwh, costCents: null, feasible: null, soc: charger.values.soc,
-      warnings: warningsFor(charger), accounting: [], intervals: [], continueAfterMinimum: true };
+      warnings: [], accounting: [], intervals: [], continueAfterMinimum: true };
   }
   const jobs = chargers.filter(charger => shouldPlan(charger, now))
-    .map(charger => ({ charger, electric: electrical(charger, config.installation), targetAt: plans[charger.id].targetAt }))
+    .map(charger => ({ charger, electric: electrical(charger, supply), targetAt: plans[charger.id].targetAt }))
     .sort((a, b) => a.targetAt - b.targetAt || b.charger.requiredGridKwh - a.charger.requiredGridKwh || a.charger.id.localeCompare(b.charger.id));
   const result = { at: now, plans, forecasts, allocations: [], currentLimits: [],
-    currentLimitsAreProposals: true, warnings, feasible: null };
+    currentLimitsAreProposals: true, warnings, feasible: null,
+    assumptions: { phases: 3, household: 'zero', supply: asPhases(supply.availableCurrentA)
+      ? asPhases(supply.propertyCurrentA) && asPhases(supply.chargerCurrentA) ? 'equalizer-adjusted' : 'equalizer-live' : 'unavailable' } };
   if (!jobs.length) return result;
   const fallback = (reason, warning, release = true) => {
     warnings.push(warning);
@@ -269,15 +266,16 @@ export function planChargers({ now, settings = {}, chargers = [], prices = [], h
   if (chargers.filter(charger => charger.capabilities.externalLoadBalancing).length > 1)
     return fallback('multiple-external-load-balancers', 'Only one externally balanced charger can be included in a shared allocation.');
   const plannedIds = new Set(jobs.map(job => job.charger.id));
-  const fixed = chargers.filter(charger => !plannedIds.has(charger.id)).map(charger => forecasts[charger.id]);
+  const observed = chargers.filter(charger => !plannedIds.has(charger.id)).map(charger => forecasts[charger.id]);
+  const fixed = observed.filter(forecast => forecast.scheduled || forecast.controlled);
   if (jobs.some(job => value(job.charger, 'connected') === null))
     return fallback('connection-unavailable', 'Automatic connection information is required before changing a charger schedule.', false);
-  if (jobs.some(job => !job.electric.available) || fixed.some(forecast => forecast.state === 'unavailable'))
-    return fallback('electrical-telemetry-unavailable', 'Automatic current and phase information for each possible charging load is required before delaying charging.');
-  if (!constraint(config.installation, limits, 'mainFuseA'))
-    return fallback('installation-limits-unavailable', 'The property main-fuse limit is unknown; automatic delay is relinquished.');
+  const unavailable = jobs.find(job => !job.electric.available);
+  if (unavailable) return fallback('electrical-telemetry-unavailable', `${unavailable.charger.label}: charging current or AC voltage is unavailable; charging is allowed now.`);
+  if (!asPhases(supply.availableCurrentA))
+    return fallback('equalizer-allowance-unavailable', 'Equalizer available current is unavailable; charging is allowed now.');
   if (jobs.some(job => job.targetAt <= now))
-    return fallback('insufficient-time', 'A readiness deadline or its planning margin has passed; release charging now.');
+    return fallback('insufficient-time', 'A readiness deadline has passed; charging is allowed now.');
   const end = Math.max(...jobs.map(job => job.targetAt));
   const validPrices = prices.filter(row => finite(row.start) && finite(row.end) && row.end > row.start && finite(priceValue(row)))
     .sort((a, b) => a.start - b.start);
@@ -289,16 +287,16 @@ export function planChargers({ now, settings = {}, chargers = [], prices = [], h
     const start = boundaries[index], stop = boundaries[index + 1];
     const price = validPrices.find(row => row.start <= start && row.end >= stop);
     if (!price) return fallback('price-coverage-unavailable', 'Electricity prices do not cover the complete remaining readiness horizon.');
-    intervals.push({ start, end: stop, priceCtPerKwh: priceValue(price), ...resources(start, config, limits, household, fixed) });
+    intervals.push({ start, end: stop, priceCtPerKwh: priceValue(price), ...resources(start, supply, household, fixed) });
   }
-  if (intervals.some(row => !row.history)) warnings.push('Other-property demand uses the shared per-phase allowance where charger-free history is unavailable.');
+  result.assumptions.household = intervals.every(row => row.history) ? 'history' : intervals.some(row => row.history) ? 'mixed' : 'zero';
   warnings.push(...fixed.flatMap(forecast => forecast.warnings));
   for (const job of jobs) if (value(job.charger, 'connected') === false)
     plans[job.charger.id].warnings.push('This preview assumes the vehicle is connected by the planned start.');
   const combinedEnergy = jobs.reduce((sum, job) => sum + job.charger.requiredGridKwh, 0);
   const sharedStarts = backwardStarts(intervals.map(row => ({ ...row,
     powerKw: Math.min(Math.min(...row.phaseHeadroomA), jobs.reduce((sum, job) => sum + job.electric.currentA, 0))
-      * config.installation.voltageV * 3 / 1000 })), combinedEnergy);
+      * Math.min(...jobs.map(job => job.electric.voltageV)) * 3 / 1000 })), combinedEnergy);
   const candidateSets = jobs.map(job => {
     const solo = intervals.filter(row => row.start < job.targetAt).map(row => {
       const currentA = Math.min(job.electric.currentA, headroomFor(row.phaseHeadroomA, job.electric.phases.mask));
@@ -346,7 +344,7 @@ export function planChargers({ now, settings = {}, chargers = [], prices = [], h
     Object.assign(plan, { state: startAt <= now ? 'release' : 'waiting', startAt, finishAt: item.finishAt,
       reason, feasible, costCents: item.costCents, deliveredGridKwh: item.deliveredGridKwh,
       accounting: item.accounting, warnings: unique([...plan.warnings, ...warnings,
-        ...(!feasible ? ['Predicted shared capacity cannot deliver this minimum before its readiness margin.'] : [])]),
+        ...(!feasible ? ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'] : [])]),
       intervals: intervals.filter(row => row.start < item.targetAt).map(row => ({ ...row,
         powerKw: Math.max(0, ...best.allocations.filter(allocation => allocation.start < row.end && allocation.end > row.start)
           .map(allocation => allocation.chargers[id]?.powerKw ?? 0)) })) });

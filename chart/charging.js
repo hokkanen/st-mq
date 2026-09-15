@@ -4,22 +4,25 @@ const finite = Number.isFinite;
 const number = (value, unit = '') => finite(value) ? `${Number(value.toFixed(1))}${unit ? ` ${unit}` : ''}` : 'Unknown';
 const human = value => String(value ?? '').replaceAll(/[_-]/g, ' ');
 const validTime = value => value != null && value !== '' && finite(new Date(value).getTime());
-export function chargingTime(value, timezone = 'Europe/Helsinki') {
+const dateKey = (value, timezone) => new Intl.DateTimeFormat('en-CA', { timeZone: timezone,
+  year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+export function chargingTime(value, timezone = 'Europe/Helsinki', now = Date.now()) {
   if (!validTime(value)) return 'Time unknown';
   try {
-    return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, weekday: 'short', year: 'numeric', month: 'short',
-      day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(new Date(value));
+    const clock = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+    const day = dateKey(value, timezone), today = dateKey(now, timezone);
+    if (day === today) return clock;
+    // Compare local calendar dates rather than adding 24 hours across DST.
+    const nextDate = new Date(`${today}T12:00:00Z`); nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+    if (day === nextDate.toISOString().slice(0, 10)) return `tomorrow ${clock}`;
+    const date = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, day: 'numeric', month: 'short',
+      ...(day.slice(0, 4) !== today.slice(0, 4) ? { year: 'numeric' } : {}) }).format(new Date(value));
+    return `${date} ${clock}`;
   } catch { return new Date(value).toISOString(); }
 }
-const shortTime = (value, timezone) => {
-  if (!validTime(value)) return 'time unknown';
-  try { return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(value)); }
-  catch { return new Date(value).toISOString(); }
-};
 const automatic = field => field?.available === true && !['manual', 'manual-fallback', 'assumed'].includes(field.source);
 const sourceLabel = field => {
-  if (field?.source === 'manual') return 'Temporary manual value';
-  if (field?.source === 'manual-fallback') return 'Manual fallback';
+  if (['manual', 'manual-fallback'].includes(field?.source)) return 'Manual fallback';
   if (field?.assumed || field?.source === 'assumed') return 'Assumes 0% for planning';
   if (field?.available !== true) return 'Awaiting a reading';
   return ({ mqtt: 'Vehicle MQTT', teslamate: 'TeslaMate', easee: 'Easee' })[field.source] ?? 'Automatic';
@@ -36,129 +39,123 @@ function assign(object, path, value) {
 // One field definition and one renderer serve every charger. The server supplies
 // first-use defaults and capabilities, including for chargers added later.
 export const chargingFields = [
+  { key: 'manualSoc', reading: 'soc', label: 'Current charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
+    help: 'Used until an automatic charge reading is available.' },
   { key: 'minimumSoc', label: 'Minimum charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
     help: 'The vehicle charge target takes priority when available.' },
   { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
     help: 'ST-MQ plans to reach the minimum by this time. Charging may continue afterwards.' },
   { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.1, automatic: true,
     help: 'Manual fallback when the vehicle does not report usable capacity.' },
-  { key: 'efficiency', label: 'Charging efficiency', type: 'number', min: 0.5, max: 1, step: 0.01, advanced: true,
-    help: 'Fraction reaching the battery: 0.90 means 90%.' },
-  { key: 'mqtt.topic', label: 'Vehicle MQTT topic', nullable: true, advanced: true,
-    help: 'Optional additional vehicle telemetry. Leave blank to use the existing integration.' },
-  { key: 'mqtt.vehicleId', label: 'Vehicle identity', advanced: true },
-  { key: 'mqtt.sourceId', label: 'Telemetry source identity', advanced: true,
-    help: 'Identities must match incoming vehicle MQTT readings.' },
-].map(field => ({ type: 'text', ...field }));
-export const sharedChargingFields = [
-  { key: 'timezone', label: 'Local timezone', help: 'For both chargers, for example Europe/Helsinki.' },
-  { key: 'readinessMarginMinutes', label: 'Readiness margin · minutes', type: 'number', min: 0, max: 180, step: 1 },
-  { key: 'installation.mainFuseA', label: 'Main fuse per phase · A', type: 'number', min: 6, max: 200, step: 0.1, nullable: true,
-    help: 'The household fuse rating is needed for reliable planning.' },
-  { key: 'installation.chargingAllocationA', label: 'Overall charging allocation per phase · A', type: 'number', min: 6, max: 200, step: 0.1, nullable: true,
-    help: 'Optional shared installation limit. Verified provider limits also apply.' },
-  { key: 'installation.reserveA', label: 'Planning reserve per phase · A', type: 'number', min: 0, max: 50, step: 0.1 },
-  { key: 'installation.otherLoadA', label: 'Fallback household load per phase · A', type: 'number', min: 0, max: 100, step: 0.1,
-    help: 'Used when suitable non-charging consumption history is missing.' },
-  { key: 'installation.voltageV', label: 'Fallback phase voltage · V', type: 'number', min: 200, max: 250, step: 1 },
 ].map(field => ({ type: 'text', ...field }));
 
-export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/Helsinki' } = {}) {
+export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/Helsinki', assumptions = {} } = {}) {
   const values = charger.values ?? {}, settings = charger.settings ?? {}, control = charger.control ?? {};
-  const plan = charger.plan ?? {}, forecast = charger.forecast ?? {}, soc = values.soc ?? {}, manual = control.manual ?? control.manualOverride;
-  const time = value => chargingTime(value, timezone), compact = value => shortTime(value, timezone);
+  const plan = charger.plan ?? {}, forecast = charger.forecast ?? {}, soc = values.soc ?? {};
+  const time = value => chargingTime(value, timezone, now);
   const connected = values.connected?.value, charging = connected === true && values.charging?.value === true;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && settings.enabled === true;
-  const phase = control.phase ?? '', yielded = ['yielded', 'manual', 'uncertain', 'ownership-uncertain'].includes(phase) || Boolean(manual);
-  const uncertain = ['uncertain', 'ownership-uncertain'].includes(phase) || manual?.kind === 'unknown';
-  const handoverUnconfirmed = control.handoverConfirmed === false;
-  const released = phase === 'released' || phase === 'charging';
-  const finishAt = charging || released ? forecast.finishAt : plan.finishAt ?? forecast.finishAt;
-  const ownedStart = ['scheduled', 'waiting', 'confirmed'].includes(phase) && control.confirmed !== false && validTime(control.owned?.startAt)
-    ? control.owned.startAt : null;
-  const revisionPending = validTime(ownedStart) && validTime(plan.startAt) && new Date(ownedStart).getTime() !== new Date(plan.startAt).getTime();
-  const resumeAt = manual?.resumeAt ?? control.resumeAt;
+  const phase = control.phase ?? '', manual = enabled && connected === true ? control.manual ?? control.manualOverride : null;
+  const uncertain = enabled && (['uncertain', 'ownership-uncertain', 'unavailable'].includes(phase) || Boolean(control.errorCode));
+  const yielded = enabled && connected === true && (['yielded', 'manual'].includes(phase) || Boolean(manual));
+  const activeManual = yielded && !uncertain && manual?.kind !== 'unknown';
+  const handoverUnconfirmed = !enabled && control.handoverConfirmed === false;
+  const released = enabled && ['released', 'charging'].includes(phase);
+  const ownedStart = enabled && !yielded && !uncertain && ['scheduled', 'waiting', 'confirmed'].includes(phase)
+    && control.confirmed !== false && validTime(control.owned?.startAt) ? control.owned.startAt : null;
+  const revisionPending = ownedStart != null && validTime(plan.startAt) && Number(ownedStart) !== Number(plan.startAt);
   const nativeStart = values.scheduledStartAt?.value, nativeEnd = values.scheduledEndAt?.value;
   const endKind = charger.scheduledEndKind ?? charger.telemetry?.scheduledEndKind ?? values.scheduledEndAt?.kind;
+  const nativeStops = ['enforced', 'scheduled-stop'].includes(endKind);
   const requiredGridKwh = charger.requiredGridKwh ?? plan.requiredGridKwh ?? forecast.requiredGridKwh ?? forecast.gridEnergyKwh;
-  const minimum = values.minimumSoc?.value, capacity = values.capacityKwh?.value;
+  const minimum = values.minimumSoc?.value;
   const socKnown = finite(soc.value) && (soc.available || soc.source === 'manual-fallback');
+  const finishAt = charging || released ? forecast.finishAt : plan.finishAt ?? forecast.finishAt;
+  const manualStart = manual?.startsAt ?? manual?.startAt ?? nativeStart;
+  const resumeAt = manual?.resumeAt ?? manual?.endAt ?? (nativeStops ? nativeEnd : null);
+  const hasManualWindow = activeManual && manual?.kind === 'window' && validTime(resumeAt);
   let state = connected === false ? 'Not connected' : connected === true ? 'Connected' : 'Connection unknown';
   let event = '', eventAt = null, eventKind = null;
+  const window = (start, end) => {
+    if (!validTime(start) || Number(start) <= now) return `until ${time(end)}`;
+    const endTime = dateKey(start, timezone) === dateKey(end, timezone) ? time(end).match(/\d{2}:\d{2}$/)?.[0] : time(end);
+    return `${time(start)}–${endTime}`;
+  };
+
   if (charging) {
     state = 'Charging';
     event = finite(values.powerKw?.value) ? `${number(values.powerKw.value, 'kW')} now` : 'Charging now';
-    if (validTime(finishAt)) event += ` · minimum estimated ${compact(finishAt)}`;
-  } else if (enabled && yielded) {
-    state = uncertain ? 'Ownership uncertain' : 'Manual control';
-    event = validTime(resumeAt) ? `ST-MQ resumes ${compact(resumeAt)}` : 'Resume ST-MQ when you are ready';
-    eventAt = validTime(resumeAt) ? resumeAt : null; eventKind = 'resume';
-  } else if (!enabled && handoverUnconfirmed) {
-    state = 'Handover unconfirmed'; event = 'Control is OFF; the previous charger restriction has not been confirmed cleared.';
-  } else if (enabled && released) {
-    event = 'Charging released · may continue';
-  } else if (enabled && validTime(ownedStart ?? plan.startAt)) {
-    eventAt = ownedStart ?? plan.startAt; eventKind = ownedStart ? 'confirmed' : 'proposed';
-    event = `${ownedStart ? 'Starts' : 'Proposed start'} ${compact(eventAt)}${revisionPending ? ' · revision pending' : ''}`;
-  } else if ((connected === true || supported) && validTime(nativeStart) && new Date(nativeStart).getTime() > now) {
-    eventAt = nativeStart; eventKind = 'vehicle'; event = `Scheduled ${compact(nativeStart)}`;
-  } else if (forecast.state === 'forecast' && validTime(forecast.startAt) && forecast.startAt > now) {
-    eventAt = forecast.startAt; eventKind = 'forecast'; event = `Expected ${compact(eventAt)}`;
-  } else if (enabled) event = plan.reason === 'installation-limits-unavailable' ? 'Complete the shared charging setup to plan a start' : 'Waiting for a charging plan';
-  else event = supported ? 'ST-MQ control OFF' : 'Monitoring · scheduling unavailable';
-  const risk = enabled && plan.feasible === false && !yielded;
+    if (hasManualWindow) event += ` · Easee window ends ${time(resumeAt)} · ST-MQ resumes afterwards`;
+    else if (!enabled && nativeStops && validTime(nativeEnd) && Number(nativeEnd) > now) event += ` · scheduled until ${time(nativeEnd)}`;
+    else if (finite(requiredGridKwh) && requiredGridKwh <= 0) event += ' · minimum reached';
+    else if (validTime(finishAt)) event += ` · minimum estimated ${time(finishAt)}`;
+  } else if (handoverUnconfirmed) {
+    state = 'Handover unconfirmed'; event = control.reason || 'Charger handover is not confirmed. Check the Easee schedule.';
+  } else if (uncertain || enabled && manual?.kind === 'unknown') {
+    state = 'Control unavailable'; event = control.reason || 'Waiting for a confirmed charger state.';
+  } else if (activeManual) {
+    state = 'Manual control';
+    if (hasManualWindow) {
+      event = `Easee window ${window(manualStart, resumeAt)} · ST-MQ resumes afterwards`;
+      eventAt = Number(manualStart) > now ? manualStart : resumeAt; eventKind = 'manual';
+    } else event = control.reason || manual?.reason || 'Manual charger control is active.';
+  } else if (connected !== true) {
+    event = enabled ? connected === false ? 'ST-MQ is ready for the next connection' : 'Waiting for charger readings'
+      : supported ? 'ST-MQ control OFF' : 'Monitoring';
+  } else if (released) {
+    event = 'Charging is allowed';
+    if (validTime(finishAt) && Number(finishAt) > now && requiredGridKwh > 0) event += ` · minimum estimated ${time(finishAt)}`;
+  } else if (enabled && validTime(ownedStart ?? plan.startAt) && Number(ownedStart ?? plan.startAt) > now) {
+    eventAt = ownedStart ?? plan.startAt; eventKind = ownedStart != null ? 'confirmed' : 'proposed';
+    event = `${ownedStart != null ? 'Starts' : 'Proposed start'} ${time(eventAt)}${revisionPending ? ' · update awaiting confirmation' : ''}`;
+  } else if (!enabled && validTime(nativeStart) && Number(nativeStart) > now) {
+    eventAt = nativeStart; eventKind = 'vehicle';
+    event = nativeStops && validTime(nativeEnd) ? `Scheduled ${window(nativeStart, nativeEnd)}` : `Scheduled start ${time(nativeStart)}`;
+  } else if (enabled) event = control.reason || 'Waiting for a charging plan';
+  else event = supported ? 'ST-MQ control OFF' : 'Monitoring';
+
+  const risk = enabled && connected === true && plan.feasible === false && plan.reason === 'insufficient-time' && !yielded && !uncertain;
   if (risk) event += ' · minimum at risk';
-  const rows = [
-    ['Vehicle connected', connected === true ? 'Yes' : connected === false ? 'No' : 'Unknown'],
-    ['Current charge', `${socKnown ? number(soc.value, '%') : 'Unknown'} · ${sourceLabel(soc)}`],
-    ['Minimum charge', `${number(minimum, '%')} · ${sourceLabel(values.minimumSoc)}`],
-    ['Usable battery capacity', `${number(capacity, 'kWh')} · ${sourceLabel(values.capacityKwh)}`],
-    ['Grid energy to minimum', `${number(requiredGridKwh, 'kWh')}${soc.source === 'manual-fallback' ? ' · estimated from manual charge' : soc.assumed ? ' · estimated from assumed charge' : ''}`],
-  ];
-  if (soc.source === 'manual') {
-    rows.push(['Manual value expires', time(soc.expiresAt)]);
-    const underlying = charger.automatic?.soc;
-    if (underlying?.available) rows.push(['Automatic charge underneath', `${number(underlying.value, '%')} · ${sourceLabel(underlying)} · ${validTime(underlying.measuredAt)
-      ? `measured ${time(underlying.measuredAt)}` : `received ${time(underlying.receivedAt)} · measurement time unknown`}`]);
-  }
+  const rows = [];
+  if (charging && uncertain && control.reason) rows.push(['Control status', control.reason]);
   if (automatic(soc)) {
-    if (validTime(soc.measuredAt)) rows.push(['Charge measured', time(soc.measuredAt)]);
-    else if (validTime(soc.receivedAt)) rows.push(['Charge received', `${time(soc.receivedAt)} · measurement time unknown`]);
-    else rows.push(['Charge measured', 'Time unknown']);
+    if (validTime(soc.measuredAt)) rows.push(['Charge reading', `Measured ${time(soc.measuredAt)}`]);
+    else if (validTime(soc.receivedAt)) rows.push(['Charge reading', `Received ${time(soc.receivedAt)} · measurement time unknown`]);
   }
-  if (finite(values.currentA?.value)) rows.push(['Available current estimate', `${number(values.currentA.value, 'A per phase')}${charger.capabilities?.externalLoadBalancing ? ' · externally balanced' : ''}`]);
-  if (connected !== false && finite(values.actualCurrentA?.value)) rows.push(['Measured charging current', number(values.actualCurrentA.value, 'A per phase')]);
-  if (connected !== false && finite(values.powerKw?.value)) rows.push(['Measured charging power', number(values.powerKw.value, 'kW')]);
-  if (enabled) rows.push(['Ready by', validTime(plan.deadlineAt ?? charger.deadlineAt) ? time(plan.deadlineAt ?? charger.deadlineAt) : `${settings.readyBy} · ${timezone}`]);
-  if (ownedStart) rows.push(['Confirmed start', time(ownedStart)]);
-  if (enabled && validTime(plan.startAt) && (!ownedStart || revisionPending)) rows.push([released ? 'Plan start' : 'Proposed start', `${time(plan.startAt)}${revisionPending ? ' · awaiting confirmation' : ''}`]);
-  if (validTime(finishAt)) rows.push([revisionPending ? 'Proposed minimum estimate' : 'Estimated minimum reached', `${time(finishAt)} · charging may continue`]);
-  if (finite(plan.costCents)) rows.push(['Estimated cost to minimum', `€${(plan.costCents / 100).toFixed(2)} · excludes later charging`]);
-  if (validTime(nativeStart)) rows.push(['Charger / vehicle scheduled start', time(nativeStart)]);
-  if (validTime(nativeEnd)) rows.push([['enforced', 'scheduled-stop'].includes(endKind) ? 'Scheduled stopping time' : 'Estimated charging end', `${time(nativeEnd)}${['enforced', 'scheduled-stop'].includes(endKind) ? '' : ' · estimate only'}`]);
-  if (validTime(manual?.startsAt ?? manual?.startAt)) rows.push(['Manual window begins', time(manual.startsAt ?? manual.startAt)]);
-  if (manual?.kind === 'window' && validTime(manual.endAt ?? resumeAt)) rows.push(['Manual stopping time', time(manual.endAt ?? resumeAt)]);
-  if (validTime(resumeAt)) rows.push(['Automatic control resumes', `${time(resumeAt)} · after checking the current charger instruction`]);
-  if (manual?.repeating) rows.push(['Repeating charger schedule', 'This occurrence is a temporary override. Turn ST-MQ control OFF to keep recurring app control.']);
-  if (control.reason && (yielded || phase === 'unavailable' || handoverUnconfirmed)) rows.push(['Control status', human(control.reason)]);
-  const notes = [...notices(plan.warnings), ...notices(forecast.warnings)];
-  if (soc.source === 'assumed') notes.unshift('No charge reading is available. Planning assumes 0%.');
+  if (connected === true && finite(values.currentA?.value)) {
+    const equalizer = charger.capabilities?.externalLoadBalancing;
+    rows.push([equalizer ? 'Equalizer allowance' : 'Charging current estimate',
+      `${number(values.currentA.value, 'A per phase')}${equalizer && assumptions.supply === 'equalizer-live' ? ' · used for the forecast' : ''}`]);
+  }
+  const automaticPlan = enabled && connected === true && !yielded && !uncertain && !released && !charging;
+  if (automaticPlan && validTime(plan.deadlineAt ?? charger.deadlineAt)) rows.push(['Ready by', time(plan.deadlineAt ?? charger.deadlineAt)]);
+  if (automaticPlan && finite(plan.costCents)) rows.push(['Estimated cost to minimum', `€${(plan.costCents / 100).toFixed(2)}`]);
+  if (automaticPlan && assumptions.supply === 'equalizer-adjusted') rows.push(['Forecast',
+    assumptions.household === 'history' ? 'Three phases · household consumption history'
+      : assumptions.household === 'mixed' ? 'Three phases · history where available; no other load otherwise'
+        : 'Three phases · no other household load assumed']);
+  // Fallback sources are already visible alongside their values. Repeat neither
+  // those assumptions nor inactive plans in the details fold.
+  const fallbackNotice = /manual (?:fallback|battery percentage|minimum)|remembered manual|assumes? 0%|phase count is known|preview assumes the vehicle/i;
+  const notes = enabled && connected === true && !yielded && !uncertain
+    ? [...notices(plan.warnings), ...notices(forecast.warnings)].filter(note => !fallbackNotice.test(note)) : [];
   if (charger.error) notes.push(({ 'charging-adapter-unavailable': 'The charger connection is unavailable.',
     'charging-reconciliation-unavailable': 'The charger schedule could not be confirmed.',
     'charging-planning-unavailable': 'The charging forecast could not be updated.' })[charger.error] ?? human(charger.error));
-  if (charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription'].includes(charger.mqtt.reason)) notes.push(`Vehicle MQTT: ${human(charger.mqtt.reason)}.`);
-  const controlDetail = !supported ? 'This integration supplies readings. Scheduling is not supported.'
-    : enabled ? 'ST-MQ chooses a start to meet the minimum. Manual charger actions take temporary priority; charging can continue beyond the minimum.'
-      : 'Enable ST-MQ to plan starts around prices, household demand and both chargers.';
+  if (charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription'].includes(charger.mqtt.reason)) notes.push(`Vehicle reading unavailable: ${human(charger.mqtt.reason)}.`);
+  const controlDetail = !supported ? 'This integration supports monitoring only.'
+    : activeManual && manual?.repeating ? 'Turn control off to keep the recurring Easee schedule.'
+      : 'ST-MQ chooses the start. Charging may continue beyond the minimum.';
   return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk,
     soc: socKnown ? number(soc.value, '%') : 'Unknown', socSource: sourceLabel(soc), minimum: number(minimum, '%'),
     minimumSource: sourceLabel(values.minimumSoc), gridEnergy: number(requiredGridKwh, 'kWh'),
-    energyNote: requiredGridKwh === 0 ? 'Minimum already met' : soc.source === 'manual-fallback' ? 'Based on manual charge' : soc.assumed ? 'Based on assumed charge' : 'Includes charging losses',
-    rows, notes: [...new Set(notes)], yielded, supported, controlDetail };
+    energyNote: requiredGridKwh === 0 ? 'Minimum already met' : 'Includes losses',
+    rows, notes: [...new Set(notes)].filter(note => note !== event), yielded: activeManual, supported, controlDetail };
 }
 
 export function chargingDisplay(charging, now = Date.now()) {
-  return { chargers: (charging?.chargers ?? []).map(charger => chargerDisplay(charger, { now, timezone: charging.settings?.timezone ?? 'Europe/Helsinki' })) };
+  return { chargers: (charging?.chargers ?? []).map(charger => chargerDisplay(charger, { now,
+    timezone: charging.timezone ?? 'Europe/Helsinki', assumptions: charging.coordination?.assumptions })) };
 }
 export function chargingContext(charging, now = Date.now()) {
   return chargingDisplay(charging, now).chargers.filter(view => view.state === 'Charging' || view.eventAt != null)
@@ -204,8 +201,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     });
     return result;
   }
-  const shared = $('charging-installation-fields') ? group('charging', sharedChargingFields, () => $('charging-installation-fields'),
-    $('charging-installation-form'), $('charging-installation-save'), $('charging-installation-message'), '/api/charging/settings') : null;
   function createDevice(charger) {
     const { id } = charger, prefix = `/api/charging/chargers/${encodeURIComponent(id)}`;
     const section = make('section', '', 'equipment-device charging-device', `${id}-device`);
@@ -230,30 +225,14 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const controlMessage = make('p', '', 'temporary-status', `${id}-control-message`); controlMessage.setAttribute('role', 'status');
     fold.append(master, controlDetail, resume, controlMessage);
     const form = make('form', '', 'charging-settings-form', `${id}-settings-form`), primaryFields = make('div', '', 'charging-fields');
-    const advanced = make('details', '', 'equipment-fold charging-secondary'); advanced.append(make('summary', 'Vehicle connection & assumptions'));
-    const advancedFields = make('div', '', 'charging-fields'); advanced.append(advancedFields);
     const save = make('button', 'Save settings', 'secondary-button', `${id}-settings-save`); save.type = 'submit';
     const message = make('p', '', 'temporary-status', `${id}-settings-message`); message.setAttribute('role', 'status');
-    form.append(primaryFields, advanced, save); fold.append(form, message);
-    const settings = group(id, chargingFields, field => field.advanced ? advancedFields : primaryFields, form, save, message, `${prefix}/settings`);
-    const socForm = make('form', '', 'charging-soc-form', `${id}-soc-form`), socLabel = make('label', 'Current charge · manual %');
-    const socInput = make('input', '', '', `${id}-manual-soc`); socInput.type = 'number'; socInput.min = 0; socInput.max = 100; socInput.step = 0.1; socInput.required = true;
-    socLabel.htmlFor = socInput.id; socLabel.append(socInput);
-    const apply = make('button', 'Use manual charge', 'secondary-button', `${id}-soc-apply`); apply.type = 'submit';
-    const restore = make('button', 'Use automatic charge', 'secondary-button', `${id}-soc-automatic`); restore.type = 'button';
-    const socHelp = make('p', '', 'muted charging-form-help', `${id}-soc-help`); socInput.setAttribute('aria-describedby', socHelp.id);
-    socForm.append(socLabel, apply, restore, socHelp);
-    const socMessage = make('p', '', 'temporary-status', `${id}-soc-message`); socMessage.setAttribute('role', 'status'); fold.append(socForm, socMessage);
+    form.append(primaryFields, save); fold.append(form, message);
+    const settings = group(id, chargingFields, () => primaryFields, form, save, message, `${prefix}/settings`);
     section.append(fold); $('charging-devices')?.append(section);
-    const device = { id, section, title, state, event, metrics, readings, notes, settings, toggle, resume, controlDetail, socInput, apply, restore, socHelp, manualDirty: false, charger };
+    const device = { id, section, title, state, event, metrics, readings, notes, settings, toggle, resume, controlDetail, charger };
     bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
     bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
-    bind(socInput, 'input', () => { device.manualDirty = true; });
-    bind(socForm, 'submit', event => {
-      event.preventDefault(); if (socForm.reportValidity && !socForm.reportValidity()) return;
-      return mutate(`${prefix}/soc`, { soc: Number(socInput.value) }, socMessage, 'Manual charge saved.', () => { device.manualDirty = false; });
-    });
-    bind(restore, 'click', () => mutate(`${prefix}/soc`, { action: 'automatic' }, socMessage, 'Automatic charge selected.', () => { device.manualDirty = false; }));
     devices.set(id, device); return device;
   }
   async function mutate(path, payload, message, success, saved = () => {}) {
@@ -266,9 +245,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   }
   function updateFields(group, settings, charger) {
     for (const [key, { field, input, help }] of group.fields) {
-      const reading = charger?.values?.[key], live = field.automatic && automatic(reading);
+      const reading = charger?.values?.[field.reading ?? key], live = field.automatic && automatic(reading);
       input.value = (live ? reading.value : group.dirty.has(key) ? group.drafts.get(key) : get(settings, key)) ?? '';
-      help.textContent = live ? `${sourceLabel(reading)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'minimumSoc' ? '%' : ' kWh'}.`
+      help.textContent = live ? `${sourceLabel(reading)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}.`
         : field.scheduling && !charger?.capabilities?.scheduling ? 'Scheduling is unavailable with this integration.' : field.help ?? '';
       help.hidden = !help.textContent;
     }
@@ -278,30 +257,22 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     for (const device of devices.values()) {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
-        const unsupported = field.scheduling && !supported, live = field.automatic && automatic(charger.values?.[key]);
+        const unsupported = field.scheduling && !supported, live = field.automatic && automatic(charger.values?.[field.reading ?? key]);
         input.disabled = locked || unsupported || live; label.classList.toggle('charging-field-disabled', Boolean(unsupported || live));
       }
       settings.save.disabled = locked || ![...settings.fields].some(([key, { input }]) => settings.dirty.has(key) && !input.disabled);
       device.toggle.disabled = locked || !supported;
-      device.socInput.disabled = device.apply.disabled = locked;
-      device.restore.disabled = locked || charger.values?.soc?.source !== 'manual';
-      device.restore.textContent = charger.automatic?.soc?.available ? 'Use automatic charge' : 'End temporary override';
       const view = chargerDisplay(charger);
       device.resume.hidden = !supported || !charger.settings.enabled || !view.yielded;
       device.resume.disabled = locked || device.resume.hidden;
-    }
-    if (shared) {
-      for (const { input } of shared.fields.values()) input.disabled = locked;
-      shared.save.disabled = locked || !shared.dirty.size;
     }
   }
   function update(next) {
     status = next;
     const charging = next?.charging;
-    const globalError = ({ 'charging-planning-unavailable': 'The shared charging plan could not be updated. The last charger instructions remain in effect.',
+    const globalError = ({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
       'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' })[charging?.error] ?? (charging?.error ? human(charging.error) : '');
     set('charging-status', globalError); if ($('charging-status')) $('charging-status').hidden = !globalError;
-    if (shared) updateFields(shared, charging?.settings ?? {});
     const views = chargingDisplay(charging, next?.now).chargers;
     const currentIds = new Set();
     for (const charger of charging?.chargers ?? []) {
@@ -312,14 +283,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.metrics.soc.value.textContent = view.soc; device.metrics.soc.hint.textContent = view.socSource;
       device.metrics.minimum.value.textContent = view.minimum; device.metrics.minimum.hint.textContent = view.minimumSource;
       device.metrics.energy.value.textContent = view.gridEnergy; device.metrics.energy.hint.textContent = view.energyNote;
-      list(device.readings, view.rows); device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
+      list(device.readings, view.rows); device.readings.hidden = !view.rows.length;
+      device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
       device.controlDetail.textContent = view.controlDetail;
       const enabled = charger.settings.enabled === true; device.toggle.textContent = enabled ? 'ON' : 'OFF'; device.toggle.setAttribute('aria-checked', String(enabled));
       updateFields(device.settings, charger.settings, charger);
-      if (!device.manualDirty) device.socInput.value = charger.settings.manualSoc ?? 40;
-      device.socHelp.textContent = charger.values?.soc?.source === 'manual'
-        ? `Manual charge is active until ${chargingTime(charger.values.soc.expiresAt, charging.settings.timezone)}. New automatic readings continue underneath it.`
-        : `A manual value overrides automatic readings until the next ${charger.settings.readyBy} ready-by time. When automatic charge is unavailable, a saved manual fallback is used.`;
       set(`${charger.id}-summary`, view.summary); if ($(`${charger.id}-summary`)) $(`${charger.id}-summary`).title = view.summary;
     }
     for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); }

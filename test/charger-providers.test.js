@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargingSnapshot, easeeChargerTelemetry, manualScheduleWindow, nextScheduleOccurrence,
+import { chargingSnapshot, createEaseeScheduleAdapter, easeeChargerTelemetry, manualScheduleWindow, nextScheduleOccurrence,
   normalizeScheduleState } from '../src/charging/easee.js';
 import { createChargingTeslaCapture, decodeChargingTeslaField, teslamateChargerTelemetry,
   teslamateChargerAssignment } from '../src/charging/teslamate.js';
@@ -63,6 +63,84 @@ test('Easee preserves observation provenance and withdraws stale or offline stat
   assert.ok(telemetry.currentA.inputs.every(row => row.measuredAt === now - 1000));
   assert.equal(easeeChargerTelemetry(snapshot, { now: now + 6 * 60_000 }).connected.available, false);
   assert.equal(easeeChargerTelemetry({ ...snapshot, online: false }, { now }).connected.value, null);
+});
+
+test('Easee uses property AC voltage and assumes three phases before a vehicle is connected', () => {
+  const snapshot = chargingSnapshot(easeeRows({ 100: 'A', 109: 1, 110: null }), schedule, now, null,
+    { supply: { voltageV: [228, 230, 232], chargerCurrentA: [0, 0, 0] } });
+  const telemetry = easeeChargerTelemetry(snapshot, { now });
+  assert.equal(telemetry.connected.value, false);
+  assert.equal(telemetry.phases.value, 3);
+  assert.equal(telemetry.phases.assumed, true);
+  assert.equal(telemetry.currentA.value, 13);
+  assert.equal(telemetry.voltageV.value, 230);
+  assert.equal(telemetry.voltageV.source, 'easee-equalizer');
+  assert.equal(telemetry.actualCurrentA.value, 0);
+  assert.equal(easeeChargerTelemetry({ ...snapshot, supply: { voltageV: [228, null, 232] } }, { now }).voltageV.available, false);
+});
+
+test('Easee adapter reads aligned Equalizer voltage and property/charger currents without a main-fuse setting', async () => {
+  const requests = [];
+  const property = Object.entries({ 31: 8, 32: 9, 33: 10, 34: 228, 35: 230, 36: 232 })
+    .map(([id, value]) => ({ id: Number(id), value, timestamp: new Date(now - 1000).toISOString() }));
+  let propertyUnavailable = false;
+  const adapter = createEaseeScheduleAdapter({ chargerId: 'synthetic-charger', equalizerId: 'synthetic-equalizer', clock: () => now,
+    request: async (url, options) => {
+      requests.push({ url, method: options.method });
+      if (url.includes('/api/equalizers/')) return { maxAllocatedCurrent: 20 };
+      if (url.endsWith('/schedules')) return schedule;
+      if (url.includes('/state/synthetic-charger/')) return easeeRows({ 183: 2, 184: 3, 185: 4 });
+      if (url.includes('/state/synthetic-equalizer/')) {
+        if (propertyUnavailable) throw new Error('Synthetic property read failure');
+        return property;
+      }
+      throw new Error('Unexpected synthetic endpoint');
+    } });
+  const snapshot = await adapter.read();
+  assert.deepEqual(snapshot.supply.availableCurrentA, [16, 13, 15]);
+  assert.deepEqual(snapshot.supply.propertyCurrentA, [8, 9, 10]);
+  assert.deepEqual(snapshot.supply.chargerCurrentA, [2, 3, 4]);
+  assert.deepEqual(snapshot.supply.voltageV, [228, 230, 232]);
+  assert.equal(snapshot.supply.allocationA, 20);
+  assert.equal(adapter.normalize(snapshot).voltageV.value, 230);
+  assert.ok(requests.every(request => request.method === 'GET'));
+  propertyUnavailable = true;
+  const partial = await adapter.read();
+  assert.deepEqual(partial.supply.availableCurrentA, [16, 13, 15]);
+  assert.equal(partial.supply.propertyCurrentA, null);
+  assert.equal(partial.supply.voltageV, null);
+  assert.equal(adapter.normalize(partial).connected.value, true);
+});
+
+test('stale household currents cannot inflate headroom but unchanged charger event readings remain usable', async () => {
+  let current = 0;
+  const property = Object.entries({ 31: 8, 32: 9, 33: 10, 34: 228, 35: 230, 36: 232 })
+    .map(([id, value]) => ({ id: Number(id), value, timestamp: new Date(now - 10 * 60_000).toISOString() }));
+  const adapter = createEaseeScheduleAdapter({ chargerId: 'synthetic-charger', equalizerId: 'synthetic-equalizer', clock: () => now,
+    request: async url => {
+      if (url.includes('/api/equalizers/')) return { maxAllocatedCurrent: 20 };
+      if (url.endsWith('/schedules')) return schedule;
+      if (url.includes('/state/synthetic-equalizer/')) return property;
+      if (url.includes('/state/synthetic-charger/')) return easeeRows({ 183: current, 184: 0, 185: 0 })
+        .map(row => [183, 184, 185].includes(row.id) ? { ...row, timestamp: new Date(now - 24 * hour).toISOString() } : row);
+      throw new Error('Unexpected synthetic endpoint');
+    } });
+  let snapshot = await adapter.read();
+  assert.equal(snapshot.supply.propertyCurrentA, null);
+  assert.deepEqual(snapshot.supply.availableCurrentA, [16, 13, 15]);
+  assert.deepEqual(snapshot.supply.chargerCurrentA, [0, 0, 0]);
+  assert.deepEqual(snapshot.supply.voltageV, [228, 230, 232]);
+  assert.deepEqual(snapshot.supply.observationTimes.voltage, [1, 2, 3].map(() => now - 10 * 60_000));
+  for (current of [-1, 'invalid']) {
+    snapshot = await adapter.read();
+    assert.equal(snapshot.supply.chargerCurrentA, null);
+    assert.equal(adapter.normalize(snapshot).actualCurrentA.available, false);
+  }
+  current = 0;
+  for (const row of property) row.timestamp = new Date(now - 1000).toISOString();
+  property.push({ ...property[0], value: 30 });
+  snapshot = await adapter.read();
+  assert.equal(snapshot.supply.propertyCurrentA, null, 'Conflicting same-time meter values cannot become a planning budget');
 });
 
 test('TeslaMate keeps requested and measured current separate, with individual receipt times', () => {

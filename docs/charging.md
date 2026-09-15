@@ -1,80 +1,84 @@
 # Charging
 
-Both chargers use the same charger model, settings, planner and dashboard card.
-Capabilities describe what each connected integration can do. Charger 1 uses
-Easee's native delayed-start schedule; Charger 2 receives vehicle observations
-from TeslaMate and currently has no command adapter. Its scheduling controls are
-visible but disabled. Heating mode and charging permission are independent.
+Both chargers use the same model, planner and dashboard card. Charger 1 uses
+Easee's native delayed-start schedule; Charger 2 observes TeslaMate and currently
+has no command adapter. Its scheduling controls are visible but disabled.
+Heating mode and charging permission are independent.
 
-## Garage dashboard and preferences
+## Dashboard and saved preferences
 
-The first equipment cards in **Garage → Equipment & temperatures** show connection,
-current charge, minimum charge, grid energy to the minimum and the next relevant
-event. While charging, the event shows measured power and estimated progress;
-while waiting, it distinguishes a confirmed native start from a proposed start.
-Settings, source information and manual override details are inside each card's
-**Settings & details** fold. Shared installation assumptions have their own fold.
+The first equipment cards in **Garage → Equipment & temperatures** show
+connection, charge level, minimum and grid energy to the minimum. One event
+summarizes the relevant state: a confirmed/proposed start, an app window, or
+measured charging power and estimated progress. Times use short local labels.
+An active manual instruction replaces the automatic-plan summary. Settings and
+brief source/forecast notes live under **Settings & details**.
 
-Preferences are saved in the application database, independently for each
-charger, and survive restart/configuration reload. They are not new deployment
-configuration entries. First-use values are:
+Preferences persist independently for each charger in the application database:
 
-| Preference | Charger 1 | Charger 2 |
+| First-use preference | Charger 1 | Charger 2 |
 | --- | --- | --- |
 | ST-MQ scheduling | OFF | Unavailable |
 | Manual minimum fallback | 80% | 80% |
-| Local ready-by preference | 06:00 | 06:00, scheduling disabled |
+| Ready by | 06:00 | 06:00, scheduling disabled |
 | Manual usable-capacity fallback | 74 kWh | 57 kWh |
-| Manual SoC fallback / initial entry | 40% | 40% |
-| Charging efficiency | 90% | 90% |
+| Manual SoC fallback | 40% | 40% |
 
-Ready-by is always an ST-MQ preference, never inferred from a vehicle schedule.
-The shared timezone initially is Europe/Helsinki. Battery capacity is kWh;
-charging power is kW; current is A per phase. The grid-energy estimate includes
-charging losses: `capacity × max(0, target − SoC) / 100 / efficiency`.
+Ready-by is an ST-MQ preference, using the same timezone as the rest of ST-MQ
+(`TIME_ZONE`, currently Europe/Helsinki). The chosen time is the deadline;
+there is no additional readiness margin.
 
-## Automatic readings and fallbacks
+Valid automatic capacity, SoC and vehicle charge target each take precedence
+over their saved manual fallback. Automatic SoC has no temporary manual override.
+The fallback number remains saved while automatic readings are in use and is
+shown again if they become unavailable. Source labels identify fallback values.
+Neither current provider supplies usable capacity; it is never guessed from
+range or charging-session energy. See the [provider matrix](charging-provider-capabilities.md).
 
-A valid automatic usable capacity or vehicle charge target takes precedence over
-its saved manual fallback. Neither current provider reports usable battery
-capacity. TeslaMate supplies SoC and the vehicle charge target; Easee supplies
-neither. The additional vehicle MQTT feed can supply these missing properties.
-No capacity is guessed from vehicle range, session energy or model name. See the
-[verified provider capability matrix](charging-provider-capabilities.md).
+Grid energy includes charging losses:
+`capacity × max(0, minimum − SoC) / 100 / efficiency`.
+Reaching the minimum or deadline never sends a stop command.
 
-SoC normally uses available vehicle telemetry. **Use manual charge** selects a
-temporary override until the next concrete ready-by deadline and remembers the
-number as this charger's fallback. Its absolute expiry survives restart and does
-not move when ready-by is edited later. Automatic readings continue to update
-underneath the override. Returning to automatic readings ends the override
-immediately. If automatic SoC is unavailable, the remembered manual fallback is
-used and explicitly labeled; first use is 40%. This follows the shared-charger
-requirements rather than the original handout's missing-SoC assumption of zero.
+Connection, current, voltage and native schedules are automatic only. A vehicle
+away from Home is not assigned to a household charger. Existing explicit
+TeslaMate charger assignment takes precedence over inferred attribution.
+Uncertain attribution never attaches another vehicle's SoC or target. Active
+identification probes are suppressed while ST-MQ scheduling or pending handover
+needs the charger.
 
-Connection at this property, charging current and native schedules are automatic
-only. A plugged-in vehicle away from Home is not this property's charging load.
-Uncertain automatic charger attribution reserves possible load without attaching
-an unconfirmed vehicle's SoC or target to another charger. Existing explicit
-charger assignment takes precedence over automatic attribution. Attribution's
-active current perturbation is suppressed while ST-MQ scheduling is enabled or
-an owned restriction still needs handover.
+## Deployment configuration and vehicle MQTT
 
-Easee provides current charger/Equalizer allowance and separate fixed electrical
-ceilings. TeslaMate provides selected current separately from actual charging
-current/power. Zero measured power while waiting does not remove future demand.
-A TeslaMate scheduled start is available; a scheduled stop is not. Estimated
-minimum completion is never displayed or executed as a scheduled stop.
-
-## Additional vehicle MQTT
-
-The default Charger 1 subscription is `stmq/garage/charger1/vehicle`, QoS 1.
-Either charger can use an optional distinct topic with its own expected identities.
-A future publisher should send retained JSON, for example:
+MQTT topics and charging efficiency are deployment configuration, outside the
+charger settings UI. In the existing configuration file:
 
 ```json
 {
-  "vehicleId": "charger1-vehicle",
-  "sourceId": "vehicle-telemetry",
+  "charging": {
+    "chargers": {
+      "charger1": {
+        "mqttTopic": "stmq/garage/charger1/vehicle",
+        "efficiency": 0.9
+      },
+      "charger2": {
+        "mqttTopic": null,
+        "efficiency": 0.9
+      }
+    }
+  }
+}
+```
+
+These are also the defaults when omitted. Each configured topic must be distinct
+and concrete, without MQTT wildcards. Set it to `null` to disable the extra feed.
+Configuration reload recreates the acquisition/runtime; changing a topic
+invalidates the stored automatic reading associated with the previous topic.
+Saved UI preferences are independent of deployment configuration.
+
+The dedicated topic identifies its charger; no vehicle/source identity fields
+are required. A future publisher should send retained JSON at QoS 1:
+
+```json
+{
   "readingId": "example-reading-42",
   "soc": 63,
   "usableCapacityKwh": 74,
@@ -85,101 +89,89 @@ A future publisher should send retained JSON, for example:
 ```
 
 Capacity and charge limit are optional. `measuredAt` is the original measurement
-time: an ISO timestamp with offset, UTC milliseconds, or `null` for an unknown
-clock. Receipt time never substitutes for it. Optional `sequence` must increase
-across publisher restarts if used for ordering. `readingId` identifies a
-measurement, not a transmission. Invalid values, mismatched identities, duplicate
-IDs and provably older measurements are rejected. Retained replay cannot renew
-an accepted measurement's original timestamp. Old valid vehicle MQTT readings
-remain usable with their dates preserved.
+clock: an offset ISO timestamp, UTC milliseconds, or `null` if unknown. Optional
+`sequence` must increase across publisher restarts when used. `readingId`
+identifies a measurement, not a transmission. Invalid values, duplicate IDs and
+provably older readings are rejected; retained replay cannot refresh an original
+timestamp. Sparse updates preserve optional fields with their original clocks.
+Old valid MQTT readings remain usable with their source timestamps preserved.
+TeslaMate scalar topics preserve receipt clocks separately because they carry no
+measurement timestamps. WiCAN firmware and hardware setup remain for later.
 
-Changing a topic or source clears that route's prior automatic reading. Changing
-the vehicle identity also clears its temporary manual override. TeslaMate scalar
-topics have separate receipt clocks and no source timestamps; their metadata is
-kept separate. WiCAN firmware, broker persistence and device setup remain for the
-later hardware installation.
+## Planning and Equalizer
 
-## Shared planning and external load balancing
+ST-MQ assumes **three-phase charging** for both chargers, including while
+unplugged. Easee current limits do not depend on an active output-phase reading.
+Voltage comes from Equalizer/property readings for Easee and vehicle telemetry
+for TeslaMate; no nominal-voltage fallback is invented.
 
-ST-MQ searches continuous start-only charging scenarios using actual price
-intervals, each charger's required energy/readiness time, charging efficiency,
-forecast household demand and per-phase installation limits. It can choose a start
-before a cheap period if competing load makes that period too constrained.
-Schedules are not repeatedly paused to chase prices. Reaching the minimum or
-ready-by never causes an automatic stop.
+The planner uses native current limits and Equalizer's reported per-phase
+charging allowance. With recent property currents and the charger's actual
+currents, it replaces present non-charger demand with forecast household demand
+and scheduled competing charging. This is an effective power estimate, not a
+physical fuse rating. If those meter currents are unavailable it uses the live
+net Equalizer allowance without subtracting household demand again. Equalizer's
+configured allocation caps its own charger, not a separate Tesla charger.
+Equalizer continues to manage actual current and protect the installation.
+There are no manual fuse/allocation fields or planning reserves.
 
-The property main-fuse value starts unset. Enter the real installation limit in
-the shared settings. Verified provider limits also constrain planning. Equalizer's
-instantaneous available current is not a fuse rating or an overnight prediction.
-The planner uses fixed charger/cable/circuit ceilings and forecast property demand
-for future headroom, while Equalizer continues managing real-time current.
+Household history uses intersected electricity intervals with recorded charger
+consumption removed. Matching local hours inform each phase's forecast; without
+usable history the forecast household load is zero. Only evidence of a scheduled
+Charger 2 event reserves future competing load. An unknown connection or missing
+unscheduled Charger 2 readings cannot block Charger 1. Current property
+consumption is already reflected in live Equalizer readings. Missing electrical
+information for a scheduled peer produces a short unavailable-estimate note,
+not a global planning block.
 
-Recorded electricity intervals are intersected before both chargers are removed
-from household demand. Recent matching local hours inform the forecast. Where
-charger-free history is unavailable, the shared non-charging allowance is used.
-A phase count without phase identity conservatively reserves current on each
-possible phase without inventing three-phase power. Missing electrical telemetry
-produces a visible unavailable forecast and relinquishes automatic delay.
+ST-MQ searches continuous start-only scenarios across actual price intervals.
+Earlier ready-by times and remaining energy guide joint planning. Charging is
+not repeatedly paused to chase prices. Once released, the connected session is
+not delayed again for a new SoC reading, zero-power pause or passed deadline.
+An overdue connected deadline does not silently advance to tomorrow.
 
-The planner accepts an array of interchangeable chargers and plans their starts
-jointly. Earlier deadlines and larger remaining requirements take priority when
-shared capacity cannot meet every target. Read-only/manual/released chargers are
-accounted for as external demand. A manual minimum alone is not evidence that a
-vehicle will stop there, so competing-load reservations continue beyond it.
+Future command adapters can declare scheduling and current-control capabilities.
+The planner can propose simultaneous current allocations by remaining energy and
+time. At most one charger uses an external limiter; it gets the remaining power
+and never receives a current-limit proposal. These proposals need a future
+executor; today's integrations issue only confirmed native Easee schedules.
 
-Future adapters may declare scheduling and current-control capabilities. The pure
-planner can propose coordinated current allocations according to remaining energy
-and time, only for controllable chargers without an external limiter. At most one
-charger can use an external limiter; it receives the remaining capacity and never
-a current-limit proposal. Current proposals are forecasts for a future executor;
-the present Easee/TeslaMate integrations do not dispatch them. Native schedule
-ownership and command confirmation must be supplied by a future command adapter.
+## Manual priority
 
-## Manual charger priority and ownership
+When enabled, ST-MQ takes over pre-existing schedules. A schedule change or
+start/stop/on-off action **observed after the current plug-in** takes temporary
+priority. The session baseline is observed even while ST-MQ is OFF, persists
+across restart, and resets on disconnect. OFF/ON does not erase an observed
+manual instruction. Native expiry, inactive saved schedules, Equalizer pauses
+and ST-MQ's own writes do not count as app actions.
 
-Easee schedules are reread before replacement and confirmed afterward. A simple
-manual app window temporarily yields control until its current/next concrete end,
-then requires another read before handback. It can resume without unplugging.
-Repeating windows are temporary for one occurrence while ST-MQ is enabled; turn
-ST-MQ OFF for permanent recurring app control. Multiple periods, ambiguous ends,
-and unbounded manual stop/disable instructions remain yielded until explicit
-resumption. Immediate charging has priority for the connected session.
+A simple daily/weekly manual window yields until its persisted absolute end,
+then requires a fresh read before automatic handback. The UI shows this window
+once. Recurrence is temporary for one occurrence while ST-MQ is enabled; turn
+ST-MQ OFF for ongoing app control. Complex/unbounded instructions require
+explicit resumption. An actual disabled or unauthorized charger must first be
+enabled/authorized in Easee; ST-MQ does not issue those commands.
 
-Manual charger actions and manual SoC are independent. Changing one does not
-cancel the other. Once released, ST-MQ does not delay that session again because
-of a brief zero-power reading, updated SoC or passed deadline. An overdue deadline
-does not silently move to tomorrow. Turning OFF relinquishes only a confirmed
-ST-MQ restriction; an unconfirmed handover stays visible.
-
-Easee delayed starts use local clock times. ST-MQ retains the absolute occurrence
-and validates its representability; ambiguous daylight-saving times yield instead
-of installing a different start. Details are in [Easee adapter notes](charging-easee.md).
-Tests use synthetic providers and time. Native behavior on the installed charger
-and WiCAN hardware remain equipment checks for the later setup.
+Turning OFF removes only a confirmed ST-MQ restriction. Failed communication
+keeps handover visibly unconfirmed. The card distinguishes unavailable readings,
+command acceptance and readback confirmation failures. See
+[Easee adapter notes](charging-easee.md) for ownership and polling limits.
 
 ## Internal model and API
 
-`charging.settings` holds shared installation/time preferences and a `chargers`
-map. `charging.chargers` is an array of common objects, each with capabilities,
-settings, normalized `values`, source metadata, grid-energy requirement, plan,
-forecast and independent control state. Adding a command integration does not
-require a second dashboard or charger-specific planner branch. Runtime adapters
-attach by charger ID and can supply normalization and their native controller.
+`charging.settings.chargers` contains durable UI preferences; `charging.timezone`
+is read-only. `charging.chargers` is an array of common capability-driven objects
+with values/source metadata, energy requirements, plan, forecast and control
+state. Adding an adapter does not require another dashboard implementation.
 
-Authenticated mutations use the existing primary-controller authority gate:
+Authenticated POST endpoints retain the primary-controller authority gate:
 
-| POST endpoint | JSON body |
+| Endpoint | Body |
 | --- | --- |
-| `/api/charging/settings` | Partial shared settings; nested `installation` and `chargers` patches merge |
-| `/api/charging/chargers/:id/settings` | Partial preferences for that charger |
-| `/api/charging/chargers/:id/soc` | `{ "soc": 40 }` or `{ "action": "automatic" }` |
+| `/api/charging/settings` | Partial `{ "chargers": { ... } }` patch |
+| `/api/charging/chargers/:id/settings` | Partial `enabled`, `readyBy`, `capacityKwh`, `minimumSoc`, `manualSoc` preferences |
 | `/api/charging/chargers/:id/resume` | `{}` |
 
-Mutations return full application status. Unknown IDs/fields and invalid values
-are rejected. Enabling scheduling on an unsupported integration is rejected by
-the server as well as disabled in the UI. Both chargers support saved fallbacks
-and independent manual SoC overrides.
-
-Read-only replicas show the saved primary decision and readings at the original
-publication boundary, using the same card structure. They do not replan or issue
-commands, and copied ownership is not presented as a live connection.
+Unknown IDs/fields and invalid values are rejected. Unsupported scheduling is
+both disabled in the UI and rejected by the server. Read-only replicas render
+the saved primary state at its publication time, without replanning or commands.

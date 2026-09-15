@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargingSettings, resolveChargingDeadline } from '../src/charging/settings.js';
-import { acceptSocReading, createManualSoc, effectiveSoc } from '../src/charging/soc.js';
+import { resolveChargingDeadline } from '../src/charging/settings.js';
+import { acceptSocReading, effectiveSoc } from '../src/charging/soc.js';
 
 const HOUR = 3_600_000;
 const now = Date.parse('2026-01-15T00:00:00Z');
@@ -13,10 +13,10 @@ test('deadline resolves local dates, spring gaps and autumn ambiguity consistent
 });
 
 function payload(soc, measuredAt, readingId, sequence) {
-  return { vehicleId: 'charger1-vehicle', sourceId: 'vehicle-telemetry', soc, measuredAt, readingId, sequence };
+  return { soc, measuredAt, readingId, sequence };
 }
 
-test('MQTT keeps original old measurement times and rejects duplicates, older and mismatched readings', () => {
+test('MQTT keeps original old measurement times and rejects duplicates, older and invalid readings', () => {
   const originalAt = now - 120 * 24 * HOUR;
   const first = acceptSocReading(null, JSON.stringify(payload(31, originalAt, 'reading-1')), { now });
   assert.equal(first.accepted, true);
@@ -24,7 +24,6 @@ test('MQTT keeps original old measurement times and rejects duplicates, older an
   assert.equal(effectiveSoc({ automatic: first.reading, now }).soc, 31);
   assert.equal(acceptSocReading(first.reading, payload(31, originalAt, 'reading-1'), { now: now + HOUR }).reason, 'duplicate-reading');
   assert.equal(acceptSocReading(first.reading, payload(90, originalAt - 1, 'reading-older'), { now }).reason, 'older-reading');
-  assert.equal(acceptSocReading(first.reading, { ...payload(90, now, 'reading-2'), vehicleId: 'other-vehicle' }, { now }).reason, 'identity-mismatch');
   assert.equal(acceptSocReading(first.reading, payload(101, now, 'reading-2'), { now }).reason, 'invalid-soc');
   assert.equal(acceptSocReading(first.reading, payload(90, '2026-01-15 00:00', 'reading-2'), { now }).reason, 'invalid-measurement-time');
   assert.equal(acceptSocReading(first.reading, payload(90, '2025-02-31T00:00:00Z', 'reading-2'), { now }).reason, 'invalid-measurement-time');
@@ -40,16 +39,30 @@ test('unknown measurement clocks remain unknown and sequence orders cached obser
   assert.equal(effectiveSoc({ automatic: next.reading, now }).measuredAt, null);
 });
 
-test('manual override survives restart, stores fixed expiry and keeps MQTT updates underneath', () => {
-  const manual = createManualSoc(40, { now, readyBy: '06:00', timezone: 'Europe/Helsinki' });
-  assert.equal(manual.expiresAt, now + 4 * HOUR);
-  const saved = JSON.parse(JSON.stringify(manual));
+test('automatic SoC takes priority over a remembered fallback, including zero percent', () => {
+  const fallbackSoc = 40;
   const automatic = acceptSocReading(null, payload(65, now + HOUR, 'reading-1'), { now: now + HOUR }).reading;
-  assert.equal(effectiveSoc({ manual: saved, automatic, now: now + 3 * HOUR }).soc, 40);
-  chargingSettings({ chargers: { charger1: { readyBy: '08:00' } } });
-  assert.equal(saved.expiresAt, now + 4 * HOUR);
-  const expired = effectiveSoc({ manual: saved, automatic, now: manual.expiresAt });
-  assert.equal(expired.source, 'mqtt');
-  assert.equal(expired.soc, 65);
-  assert.equal(effectiveSoc({ manual: saved, now: manual.expiresAt }).assumed, true);
+  assert.equal(effectiveSoc({ fallbackSoc, automatic }).soc, 65);
+  const zero = effectiveSoc({ fallbackSoc, automatic: { ...automatic, soc: 0 } });
+  assert.equal(zero.soc, 0);
+  assert.equal(zero.source, 'mqtt');
+  assert.equal(zero.assumed, false);
+  const fallback = effectiveSoc({ fallbackSoc: 35, automatic: { soc: 101 } });
+  assert.equal(fallback.soc, 35);
+  assert.equal(fallback.assumed, true);
+  assert.equal(Object.hasOwn(fallback, 'expiresAt'), false);
+  assert.equal(effectiveSoc().soc, 40);
+});
+
+test('MQTT topic association separates readings and retained vehicle facts without requiring vehicle identities', () => {
+  const first = acceptSocReading(null, { ...payload(30, now, 'first'), usableCapacityKwh: 70 }, { now, association: 'charger-a/topic' });
+  assert.equal(first.accepted, true);
+  assert.equal(Object.hasOwn(first.reading, 'vehicleId'), false);
+  assert.equal(Object.hasOwn(first.reading, 'sourceId'), false);
+  const same = acceptSocReading(first.reading, payload(20, now - HOUR, 'second'), { now, association: 'charger-a/topic' });
+  assert.equal(same.reason, 'older-reading');
+  const changed = acceptSocReading(first.reading, payload(20, now - HOUR, 'second'), { now, association: 'charger-b/topic' });
+  assert.equal(changed.accepted, true);
+  assert.equal(changed.reading.association, 'charger-b/topic');
+  assert.equal(Object.hasOwn(changed.reading, 'usableCapacityKwh'), false);
 });

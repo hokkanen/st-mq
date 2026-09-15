@@ -1,9 +1,11 @@
 import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
-import { acceptSocReading, createManualSoc } from './soc.js';
+import { acceptSocReading } from './soc.js';
+import { chargingConfiguration } from './config.js';
+import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
 import { planChargers } from './planner.js';
 import { createChargingController } from './controller.js';
-import { easeeChargerTelemetry } from './easee.js';
+import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateChargerTelemetry, teslamateChargerAssignment } from './teslamate.js';
 import { forecastHousehold } from './history.js';
 import { randomUUID } from 'node:crypto';
@@ -24,10 +26,12 @@ export class ChargingRuntime {
     this.key = `charging:${config.input}`;
     const saved = store.getState(this.key) ?? {};
     this.settings = migrateChargingSettings(saved.settings ?? {});
+    this.configuration = chargingConfiguration(config.charging);
     this.chargers = Object.fromEntries(definitions.map(definition => {
       const previous = saved.chargers?.[definition.id] ?? (definition.id === 'charger1' ? saved : {});
-      return [definition.id, { definition, automaticSoc: previous.automaticSoc ?? null,
-        manualSoc: previous.manualSoc ?? null, plan: previous.plan ?? null,
+      const association = this.configuration.chargers[definition.id].mqttTopic;
+      const automaticSoc = association && previous.automaticSoc?.association === association ? previous.automaticSoc : null;
+      return [definition.id, { definition, automaticSoc, plan: previous.plan ?? null,
         mqtt: initialMqtt(), lastReconcileAt: null }];
     }));
     this.prices = []; this.pricesInitialized = false;
@@ -45,12 +49,12 @@ export class ChargingRuntime {
   }
   persist() {
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, plan: item.plan }]));
-    this.store.setState(this.key, { version: 2, settings: this.settings, chargers, view: this.status() });
+      { automaticSoc: item.automaticSoc, plan: item.plan }]));
+    this.store.setState(this.key, { version: 3, settings: this.settings, chargers, view: this.status() });
   }
   mqttRoutes() {
-    return Object.entries(this.settings.chargers).filter(([, item]) => item.mqtt.topic)
-      .map(([id, item]) => ({ id, label: this.chargers[id].definition.label, ...item.mqtt }));
+    return Object.entries(this.configuration.chargers).filter(([, item]) => item.mqttTopic)
+      .map(([id, item]) => ({ id, label: this.chargers[id].definition.label, topic: item.mqttTopic }));
   }
   hasAutomaticControl() {
     return Object.entries(this.chargers).some(([id, item]) => this.settings.chargers[id].enabled
@@ -89,7 +93,7 @@ export class ChargingRuntime {
     if (!route) return false;
     const item = this.charger(route.id);
     if (Buffer.byteLength(payload) > 4096) { item.mqtt.reason = 'invalid-payload'; return true; }
-    const result = acceptSocReading(item.automaticSoc, payload, { now, vehicleId: route.vehicleId, sourceId: route.sourceId });
+    const result = acceptSocReading(item.automaticSoc, payload, { now, association: route.topic });
     if (result.accepted) {
       const previous = item.automaticSoc; item.automaticSoc = result.reading;
       try { this.persist(); } catch (error) { item.automaticSoc = previous; throw error; }
@@ -105,7 +109,9 @@ export class ChargingRuntime {
       result[id] = normalize ? normalize(snapshot ?? {}, { now }) : {};
       if (item.adapter?.capabilities) result[id].capabilities = { ...result[id].capabilities, ...item.adapter.capabilities };
       if (result[id].scheduledStartAt?.available && Number.isSafeInteger(control?.owned?.startAt)
-        && control.owned.fingerprint === snapshot?.fingerprint) {
+        && (control.owned.activeFingerprint && snapshot?.schedule
+          ? control.owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)
+          : control.owned.fingerprint === snapshot?.fingerprint)) {
         // A native local clock cannot roll our confirmed one-off occurrence to
         // tomorrow just because the release time has passed.
         result[id].scheduledStartAt = { ...result[id].scheduledStartAt, value: control.owned.startAt };
@@ -154,18 +160,14 @@ export class ChargingRuntime {
     return Object.entries(this.chargers).map(([id, item]) => {
       const settings = this.settings.chargers[id], control = this.controlStatus(id);
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
-      return { ...buildCharger({ definition, settings, telemetry: telemetry[id], timezone: this.settings.timezone,
-        automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, now, control,
-        deadlineAt: item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, this.settings.timezone) }),
-        automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, plan: item.plan,
+      return { ...buildCharger({ definition, settings, telemetry: telemetry[id], timezone: TIME_ZONE,
+        automaticSoc: item.automaticSoc, configuration: this.configuration.chargers[id], now, control,
+        deadlineAt: item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) }),
+        automaticSoc: item.automaticSoc, plan: item.plan,
         forecast: item.forecast ?? null, mqtt: item.mqtt, error: item.error ?? null };
     });
   }
   updatePlan(now = this.clock()) {
-    for (const item of Object.values(this.chargers)) if (item.manualSoc && item.manualSoc.expiresAt <= now) {
-      const previous = item.manualSoc; item.manualSoc = null;
-      try { this.persist(); } catch (error) { item.manualSoc = previous; throw error; }
-    }
     let views = this.views(now);
     for (const view of views) {
       const item = this.charger(view.id), pluggedIn = view.values.connected.value;
@@ -176,13 +178,15 @@ export class ChargingRuntime {
     }
     views = this.views(now);
     const deadlineAt = Math.max(...views.map(view => view.deadlineAt));
+    const external = views.find(view => view.capabilities.externalLoadBalancing);
+    const supply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
     if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || deadlineAt > this.historyDeadline) {
-      this.household = forecastHousehold(this.store, { now, deadlineAt, settings: this.settings, input: this.config.input });
+      this.household = forecastHousehold(this.store, { now, deadlineAt, input: this.config.input, voltageV: supply?.voltageV, timezone: TIME_ZONE });
       this.historyAt = now; this.historyDeadline = deadlineAt;
     }
-    const result = planChargers({ now, settings: this.settings, chargers: views, prices: this.prices, household: this.household });
+    const result = planChargers({ now, chargers: views, prices: this.prices, household: this.household, supply });
     this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
-      currentLimitsAreProposals: true, warnings: result.warnings };
+      currentLimitsAreProposals: true, warnings: result.warnings, assumptions: result.assumptions };
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
       item.forecast = result.forecasts?.[view.id] ?? null;
@@ -218,7 +222,7 @@ export class ChargingRuntime {
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: this.settings.timezone, maximumAmps, resume });
+      timezone: TIME_ZONE, maximumAmps, resume });
     if (this.closed || controller !== item.controller) return;
     item.error = null;
     try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
@@ -228,13 +232,11 @@ export class ChargingRuntime {
     for (const view of this.views()) if (next.chargers[view.id].enabled && !view.capabilities.scheduling)
       throw new Error(`${view.label} does not support ST-MQ scheduling`);
     const oldRecords = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, manualSoc: item.manualSoc, plan: item.plan }]));
+      { automaticSoc: item.automaticSoc, plan: item.plan }]));
     this.settings = next;
     for (const [id, item] of Object.entries(this.chargers)) {
       const before = previous.chargers[id], after = next.chargers[id];
-      if (JSON.stringify(before.mqtt) !== JSON.stringify(after.mqtt)) item.automaticSoc = null;
-      if (before.mqtt.vehicleId !== after.mqtt.vehicleId) item.manualSoc = null;
-      if ((before.readyBy !== after.readyBy || next.timezone !== previous.timezone) && !item.controller?.status()?.released) item.plan = null;
+      if ((before.readyBy !== after.readyBy) && !item.controller?.status()?.released) item.plan = null;
     }
     try { this.persist(); } catch (error) {
       this.settings = previous;
@@ -242,10 +244,6 @@ export class ChargingRuntime {
       throw error;
     }
     this.historyAt = null;
-    for (const [id, after] of Object.entries(next.chargers)) if (after.mqtt.topic !== previous.chargers[id].mqtt.topic) {
-      try { this.onMqttTopicChange?.(after.mqtt.topic, previous.chargers[id].mqtt.topic, id); }
-      catch { this.chargers[id].mqtt.reason = 'mqtt-subscription-unavailable'; }
-    }
     // Revoke OFF before optional history/forecast work can fail.
     for (const id of Object.keys(this.chargers)) if (!next.chargers[id].enabled) await this.reconcile(id);
     try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
@@ -256,18 +254,6 @@ export class ChargingRuntime {
     if (!object(input)) throw new Error('Charger settings must be an object');
     await this.setSettings({ chargers: { [id]: input } });
   }
-  async setSoc(id, input) {
-    const item = this.charger(id), settings = this.settings.chargers[id];
-    if (!object(input)) throw new Error('Choose a manual SoC or return to automatic readings');
-    const clear = input.action === 'automatic';
-    if (clear ? Object.keys(input).some(key => key !== 'action') : Object.keys(input).some(key => key !== 'soc'))
-      throw new Error('Choose a manual SoC or return to automatic readings');
-    const previous = { manualSoc: item.manualSoc, settings: this.settings };
-    item.manualSoc = clear ? null : createManualSoc(input.soc, { now: this.clock(), readyBy: settings.readyBy, timezone: this.settings.timezone });
-    if (!clear) this.settings = mergeChargingSettings(this.settings, { chargers: { [id]: { manualSoc: input.soc } } });
-    try { this.persist(); } catch (error) { item.manualSoc = previous.manualSoc; this.settings = previous.settings; throw error; }
-    this.updatePlan(); await this.reconcile();
-  }
   async resume(id, input) {
     this.charger(id);
     if (!object(input) || Object.keys(input).length) throw new Error('Resume automatic charging with an empty object');
@@ -277,10 +263,10 @@ export class ChargingRuntime {
     this.updatePlan(); await this.reconcile(id, { resume: true });
   }
   status(now = this.clock()) {
-    return { settings: this.settings, chargers: this.views(now), coordination: this.coordination, error: this.error ?? null };
+    return { timezone: TIME_ZONE, settings: this.settings, chargers: this.views(now), coordination: this.coordination, error: this.error ?? null };
   }
   async close() {
-    this.closed = true; clearInterval(this.timer); this.onMqttTopicChange = null;
+    this.closed = true; clearInterval(this.timer);
     await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }
 }

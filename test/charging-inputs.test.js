@@ -47,16 +47,24 @@ const HOUR = 3_600_000, start = Date.parse('2026-09-14T12:00:00Z');
 function energy(signal, value, from = start, to = start + HOUR) {
   return { signal, value, unit: 'kWh', raw: { intervalStart: from, intervalEnd: to }, quality: [] };
 }
-test('household forecast intersects clocks and subtracts both chargers before conservative phase allocation', () => {
+test('household forecast intersects clocks and subtracts both three-phase chargers on each phase', () => {
   const rows = [1, 2, 3].flatMap(p => [energy(`property_energy_l${p}`, 3), energy(`ev1_energy_l${p}`, 1)]);
   rows.push(energy('ev2_energy', 2, start + HOUR / 2, start + HOUR));
   const profile = householdProfile(rows, { timezone: 'UTC', voltageV: 230 });
   assert.equal(profile[12].coverageMs, HOUR / 2);
-  assert.ok(Math.abs(profile[12].currentA - 2000 / 230) < 1e-9,
-    '9 kW property minus 3 kW Charger 1 minus 4 kW Charger 2 leaves 2 kW household');
+  assert.ok(profile[12].phaseCurrentA.every(current => Math.abs(current - 2000 / 3 / 230) < 1e-9),
+    '9 kW property minus 3 kW Charger 1 minus 4 kW Charger 2 leaves 2 kW household across three phases');
   assert.equal(profile[13], null);
   assert.equal(householdProfile(rows.slice(0, -1), { timezone: 'UTC', voltageV: 230 })[12], null,
     'Missing Charger 2 coverage cannot silently mean zero');
+});
+
+test('household forecast preserves phase imbalance and requires automatic voltage', () => {
+  const rows = [1, 2, 3].flatMap(phase => [energy(`property_energy_l${phase}`, phase + 1), energy(`ev1_energy_l${phase}`, 1)]);
+  rows.push(energy('ev2_energy', 3));
+  const profile = householdProfile(rows, { timezone: 'UTC', voltageV: [220, 230, 240] });
+  assert.deepEqual(profile[12].phaseCurrentA, [0, 1000 / 230, 2000 / 240]);
+  assert.equal(householdProfile(rows, { timezone: 'UTC' })[12], null);
 });
 
 test('overlapping source intervals and negative residuals cannot create headroom', () => {
