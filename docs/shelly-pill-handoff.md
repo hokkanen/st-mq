@@ -15,8 +15,14 @@ These are integration findings to carry into its own repository later.
   evidence. Reboot or manual ON must invalidate previous OFF intent. A root host
   thermal episode can contain multiple separately identified native pauses.
 - Provide actual accepted renewal, expiry, native minimum ON and worst-case
-  restoration-delay bounds. ST-MQ plans against their sum and both independent
-  front/rear exposure histories, then renews only from its planner tick.
+  useful-heating restoration-delay bounds. ST-MQ tracks independent front/rear
+  thermal reserves and renews only from its one-minute planner tick. The consumer
+  now requests no more than three minutes of permission from the older supporting
+  temperature report, with a shorter deadline when reserve requires it. The
+  protocol must accept earlier deadlines and expose accepted expiry. A request
+  awaiting acknowledgement may already be active and counts as outstanding
+  permission. Document real timing rather than treating these fixture tests as
+  evidence of installed firmware behaviour.
 - Publish driver progress separately from device MQTT presence and fresh pump
   communication. Local network-loss recovery depends on a healthy powered Pill
   and usable serial path. Preserve restoration obligations before any possible
@@ -31,7 +37,7 @@ These are integration findings to carry into its own repository later.
   semantics. ST-MQ selects counter deltas **or** integrated power, never both.
   Coarse/uncertain totals cannot establish fine-grained electricity timing.
 - ST-MQ's existing two garage probes, two EV histories and vehicle-door identities
-  remain host inputs. Do not move optimization, exposure policy or EV scheduling
+  remain host inputs. Do not move optimization, thermal-reserve policy or EV scheduling
   into the Pill. Both vehicle doors are at the front; door2 is not a rear door.
 
 The installed Mitsubishi baseline is special low-heat/i-save context, not proof

@@ -1,3 +1,4 @@
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGarageModel, garageModelSummary } from '../src/garage/model.js';
@@ -34,7 +35,7 @@ function offRuns(plan) {
 
 test('initial economic learning trial remains bounded within a long price outlook', () => {
   const value = model(); value.validation.episodes = [];
-  const plan = planGarage({ now, model: value, observation, settings, ...outlook([100, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]) });
+  const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }), model: value, observation, settings, ...outlook([100, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]) });
   assert.equal(plan.learningTrial, true);
   assert.ok(['pause', 'available'].includes(plan.nextAction));
   assert.equal(offRuns(plan).length, 1);
@@ -105,10 +106,22 @@ test('electricity uncertainty has kWh units and includes full recovery energy er
 
 test('a running trial uses its original start and endpoint when renewed', () => {
   const value = model(); value.validation.episodes = [];
-  const plan = planGarage({ now, model: value, observation: { ...observation, available: false }, settings,
+  const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }), model: value, observation: { ...observation, available: false }, settings,
     activeEpisode: { state: 'paused', pauseStartedAt: now - HOUR / 4, authorizedEndAt: now + HOUR / 4 },
     ...outlook([100, 100, 5, 5, 5, 5]) });
   assert.equal(plan.nextAction, 'renew');
   assert.ok(plan.pauseUntil <= now + HOUR / 4);
   assert.ok(offRuns(plan)[0] <= .25);
+});
+
+test('restoration lookahead accounts for continued cooling despite warm air at the planned endpoint', () => {
+  const input = { now, model: model(), settings, exposure: knownGarageReserve(settings, { at: now }),
+    observation: { ...observation, outdoorC: -25 }, ...outlook([100, 5, 5, 5, 5, 5]) };
+  input.forecast = [{ start: now, end: now + 6 * HOUR, outdoorC: -25, issuedAt: now }];
+  assert.ok(offRuns(planGarage({ ...input, restorationDelayMs: 0 })).length > 0);
+  // An intentionally slow synthetic response exposes the difference between
+  // holding the endpoint air constant and forecasting continued OFF cooling.
+  const delayed = planGarage({ ...input, restorationDelayMs: 12 * HOUR });
+  assert.equal(delayed.protection.safeToPause, true, 'current warm readings alone do not detect future cooling');
+  assert.equal(offRuns(delayed).length, 0);
 });

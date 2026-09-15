@@ -336,13 +336,11 @@
       "stepMinutes": 15,
       "protection": {
         "approved": false,
-        "version": "garage-exposure-v2",
-        "floorC": 2,
-        "hardMinimumC": -1,
-        "budgetDegreeMinutes": 90,
-        "recoveryAboveC": 4,
-        "recoveryDegreeMinutesPerMinute": 1,
-        "recoveryDwellMinutes": 20
+        "version": "garage-thermal-reserve-v1",
+        "marginC": 1,
+        "pipeOutsideDiameterMm": 21,
+        "pipeWallMm": 1,
+        "heatTransferWPerM2K": 20
       },
       "adapter": {
         "stateTopic": "",
@@ -582,13 +580,11 @@
       "stepMinutes": "float(5,30)",
       "protection": {
         "approved": "bool",
-        "version": "list(garage-exposure-v1|garage-exposure-v2)",
-        "floorC": "float(0,12)",
-        "hardMinimumC": "float(-2,10)",
-        "budgetDegreeMinutes": "float(1,10000)",
-        "recoveryAboveC": "float(1,16)",
-        "recoveryDegreeMinutesPerMinute": "float(0.001,5)",
-        "recoveryDwellMinutes": "float(1,240)"
+        "version": "list(garage-thermal-reserve-v1)",
+        "marginC": "float(0.1,5)",
+        "pipeOutsideDiameterMm": "float(6,100)",
+        "pipeWallMm": "float(0.3,10)",
+        "heatTransferWPerM2K": "float(1,100)"
       },
       "adapter": {
         "stateTopic": "str?",

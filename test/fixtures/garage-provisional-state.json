@@ -30,8 +30,8 @@
     "preserveNativeBaseline": true
   },
   "leaseLimits": {
-    "maximumMs": 600000,
-    "renewAfterMs": 300000,
+    "maximumMs": 180000,
+    "renewAfterMs": 60000,
     "minimumOnMs": 0,
     "restorationDelayMs": 120000
   },

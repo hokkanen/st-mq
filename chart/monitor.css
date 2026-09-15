@@ -1141,15 +1141,9 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .garage-budget-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 16px 0; }
 .garage-budget-location { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
 .garage-budget-location > span { color: var(--muted); font-size: 11px; }
-.garage-budget-location > strong { font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.garage-budget-location > strong { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .garage-budget-location > small { color: var(--muted); font-size: 10px; line-height: 1.6; }
 .garage-budget-location > [data-state="attention"] { color: var(--stale); }
-.garage-budget-location meter { appearance: none; width: 100%; height: 5px; margin: 3px 0; border: 0; border-radius: 8px; background: var(--border); }
-.garage-budget-location meter::-webkit-meter-bar { border: 0; border-radius: 8px; background: var(--border); }
-.garage-budget-location meter::-webkit-meter-optimum-value { background: var(--accent); }
-.garage-budget-location meter::-moz-meter-bar { background: var(--accent); }
-.garage-budget-location meter[data-state="attention"]::-webkit-meter-optimum-value { background: var(--stale); }
-.garage-budget-location meter[data-state="attention"]::-moz-meter-bar { background: var(--stale); }
 .charging-device-list { display: contents; }
 .charging-device-list > .charging-device:first-child { border-top: 0; }
 .charging-overview { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }

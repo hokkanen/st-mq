@@ -102,13 +102,13 @@ try {
       }
       if (globalThis.garageBudgetSmokeState) {
         const state = globalThis.garageBudgetSmokeState, approved = state !== 'unapproved';
-        status.garage.settings.protection = { ...status.garage.settings.protection, approved, budgetDegreeMinutes: 90 };
-        status.garage.protection = { ...status.garage.protection, approved, locations: {
-          rear: { degreeMinutes: 18, remainingDegreeMinutes: 72, fresh: true, uncertain: false, reason: null },
-          front: { degreeMinutes: state === 'exhausted' ? 90 : 63,
-            remainingDegreeMinutes: state === 'exhausted' ? 0 : 27,
+        status.garage.settings.protection = { ...status.garage.settings.protection, approved };
+        status.garage.protection = { ...status.garage.protection, approved, safeToPause: true, reasons: [], limitingLocation: 'front', locations: {
+          rear: { remainingKjPerM: 6.3, estimatedC: 5.5, fresh: true, uncertain: false, reason: null },
+          front: { estimatedC: state === 'exhausted' ? 1 : 2.5,
+            remainingKjPerM: state === 'exhausted' ? 0 : 2.1,
             fresh: state !== 'stale', uncertain: state === 'uncertain',
-            reason: state === 'exhausted' ? 'exposure-exhausted' : null },
+            reason: state === 'exhausted' ? 'reserve-exhausted' : null },
         } };
       }
       if (globalThis.chargingSmokeValues) {
@@ -366,15 +366,17 @@ try {
     'Recovery explanations close with Space');
   await evaluate("globalThis.garageBudgetSmokeState = 'available'; globalThis.refreshLearningSmokeStatus()");
   assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-budget-' + location).textContent)"),
-    ['Rear 80%', 'Front 30%'], 'Overview shows independent live remaining budgets');
+    ['Rear 6.3 kJ/m', 'Front 2.1 kJ/m'], 'Overview shows independent live thermal reserves');
   assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-settings-budget-' + location).textContent)"),
-    ['80%', '30%'], 'Settings show the same remaining percentages as the overview');
-  assert.match(await evaluate("document.getElementById('garage-settings-budget-rear-remaining').textContent"), /72\b.*°C·min/);
-  assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /27\b.*°C·min/);
-  assert.deepEqual(await evaluate("['rear','front'].map(location => document.getElementById('garage-settings-budget-' + location + '-meter').hidden)"),
-    [false, false], 'Available live budgets show their meters');
+    ['6.3 kJ/m', '2.1 kJ/m'], 'Settings show the same energy reserve as the overview');
+  assert.match(await evaluate("document.getElementById('garage-settings-budget-rear-remaining').textContent"), /Reference estimate 5\.5 °C/);
+  assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /Reference estimate 2\.5 °C/);
+  assert.equal(await evaluate("document.querySelector('#garage-live-budgets meter') === null"), true,
+    'Thermal reserves have no invented full-budget meter');
   const configuredValues = await evaluate("[...document.querySelectorAll('#garage-settings-details .garage-setting > dd')].map(node => node.textContent)");
-  assert(configuredValues.includes('90 °C·min'), 'The configured allowance stays a degree-minute value');
+  for (const value of ['1 °C', '21 mm', '1 mm', '20 W/m²K', '2×'])
+    assert(configuredValues.includes(value), 'The reference assumptions and fixed safety factor are visible');
+  assert(!configuredValues.some(value => value.includes('°C·min')), 'The former fixed allowance is absent');
   await evaluate(`(() => {
     globalThis.garageBudgetSmokeTriggers = ['rear','front'].map(location =>
       document.querySelector('#garage-settings-budget-' + location + ' .status-detail-trigger'));
@@ -386,20 +388,18 @@ try {
   const unavailableReasons = { stale: /fresh|report|reading/i, uncertain: /history|uncertain|recover/i, unapproved: /approv/i };
   for (const state of ['stale', 'uncertain', 'unapproved', 'exhausted', 'available']) {
     await evaluate(`globalThis.garageBudgetSmokeState = '${state}'; globalThis.refreshLearningSmokeStatus()`);
-    const unavailable = Object.hasOwn(unavailableReasons, state), frontValue = unavailable ? '—' : state === 'exhausted' ? '0%' : '30%';
+    const unavailable = Object.hasOwn(unavailableReasons, state), frontValue = unavailable ? '—' : state === 'exhausted' ? '0 kJ/m' : '2.1 kJ/m';
     assert.equal(await evaluate("document.getElementById('garage-settings-budget-front').textContent"), frontValue,
       `${state} live evidence is reflected in settings`);
     assert.equal(await evaluate("document.getElementById('garage-budget-front').textContent"), `Front ${frontValue}`,
       `${state} live evidence agrees with the overview`);
-    assert.equal(await evaluate("document.getElementById('garage-settings-budget-front-meter').hidden"), unavailable,
-      `${state} never renders an unavailable budget as an exhausted meter`);
     if (unavailable) assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"),
       unavailableReasons[state], `${state} explains why the current budget is unavailable`);
     if (state === 'exhausted') {
-      assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /0\b.*°C·min/);
+      assert.match(await evaluate("document.getElementById('garage-settings-budget-front-remaining').textContent"), /Allowance exhausted/);
       assert.equal(await evaluate("document.getElementById('garage-budget-front').dataset.state"), 'attention');
     }
-    assert.equal(await evaluate("document.getElementById('garage-settings-budget-rear').textContent"), state === 'unapproved' ? '—' : '80%',
+    assert.equal(await evaluate("document.getElementById('garage-settings-budget-rear').textContent"), state === 'unapproved' ? '—' : '6.3 kJ/m',
       `${state} keeps the rear assessment independent`);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#garage-settings-details .garage-setting > dd')].map(node => node.textContent)"),
       configuredValues, `${state} changes live budgets without changing configured values`);

@@ -207,7 +207,7 @@ worker reconstruction. Memory publication follows successful durable checkpoint
 publication; a failed write retains the previous checkpoint. A Garage failure
 revokes its pause permission while Home control continues independently.
 
-Garage's frozen episode reference and each protection location's exposure are
+Garage's frozen episode reference and each protection location's thermal reserve are
 separate from replaceable model checkpoints. A corrected reconstruction never
 rewrites observed behavior, resurrects an old pause or clears physical recovery
 debt. Imported rear-only history remains a separate, explicitly incomplete
@@ -229,12 +229,12 @@ v2 prediction on its v1 model. Its original observations, frozen state and costs
 remain archived; both measured locations must recover before the obligation ends.
 If changed weather makes the former absolute temperatures unattainable, eight
 continuous hours of verified normal native availability with both locations above
-the configured warm-recovery threshold and local exposure repaid may close it as
+the then-configured warm-recovery threshold and local exposure repaid could close it as
 incomplete. That measured restoration rule grants no comparable-service or savings
 claim and never evaluates old dynamics as the new model.
-Operational exposure separately upgrades to `garage-exposure-v2`, retaining at
+Operational exposure separately upgraded to `garage-exposure-v2`, retaining at
 least the previous debt and a full uncertain budget until measured warm recovery.
-An explicit v1 configuration value is accepted and normalized without editing
+An explicit v1 configuration value was accepted and normalized without editing
 private configuration or overriding custom numeric limits/approval. These are
 recorded forward transitions, not reinterpretations of the old learning journal.
 
@@ -250,9 +250,10 @@ Each resolved sample saves the door source timestamp separately from live
 confirmation and the start of uninterrupted closed evidence. An opening, outage
 or restart ends that closed interval. Even if the door recovers before the next
 temperature sample, the interrupted interval cannot teach thermal coefficients,
-baseline warmth or clean validation evidence. Configured unknown or open doors
-block economic pauses; measured temperature protection and explicit manual
-controls retain their own rules. Frozen episode accounting preserves observed
+baseline warmth or clean validation evidence. That learning exclusion remains
+unchanged under the current protection policy. The original v3 planner also
+blocked economic pauses for configured unknown or open doors; the thermal-reserve
+policy removes that control veto. Frozen episode accounting preserves observed
 costs and restoration debt while withholding savings qualification after a door
 disturbance or gap. Historical inputs without configured contact
 evidence retain their explicitly incomplete interpretation. These are compact
@@ -263,3 +264,35 @@ are never replayed with v3 semantics. The first v3 entry saves its explicit init
 seed and begins a new learning epoch; exposure and outstanding physical recovery
 obligations remain intact. Home learning, CSV formats and imported source clocks
 are unchanged.
+
+### Thermal-reserve protection policy
+
+`garage-thermal-reserve-v1` replaces the operational degree-minute exposure index
+with one continuously integrated reference temperature per protection location.
+The estimated heat above the configured margin is expressed in kJ per metre of
+the reference water-filled copper pipe. Cooling and warming depend on the
+air/reference temperature difference and elapsed time. There is no hard air
+limit, full assigned allowance, recovery dwell or fixed repayment rate.
+
+This is a **protection and planning policy version**, not a new garage learning
+algorithm. `committed-garage-v3-event-doors` retains its equations, coefficients,
+door-disturbance eligibility, original ordered inputs and live/rebuild update
+function. The operational transition preserves learned state and the old
+journal's saved configuration and digests; it does not relabel old records as a
+new algorithm. Home learning and imported CSV interpretation are unchanged.
+
+Old `garage-exposure-v1`/`garage-exposure-v2` configuration remains readable, but
+its numeric allowance and approval cannot authorize the new model. The effective
+thermal policy starts unapproved with the new defaults. Old operational debt is
+not converted numerically into joules. An unsupported or absent protection state
+starts conservatively and requires measured recovery; the policy boundary never
+grants a freshly warm reference from one air reading or forgives a persisted
+restoration obligation. Old protection records remain archival under their own
+arithmetic, and no private configuration file is silently rewritten.
+
+Episode recovery checks now use the reference heat reserve, while retaining the
+independent checks for measured local warmth and slow building memory. A positive
+freeze-protection reserve cannot alone finish a building-recovery episode or
+qualify savings. Historical frozen assessments retain their matching algorithm
+and evidence; an incompatible protection baseline cannot create a comparable
+recovery claim. See [protection details](garage-protection-defaults.md).

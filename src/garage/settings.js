@@ -1,16 +1,18 @@
-/** Owner policy and versioned engineering choices. Defaults are illustrative,
- * unapproved air-sensor limits, not a certification of pipe protection. */
-export const GARAGE_POLICY_VERSION = 'garage-exposure-v2';
+/** Owner policy and versioned engineering choices. The air-driven pipe model
+ * is an operational approximation, not a certified first-ice prediction. */
+export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
+export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
 export const GARAGE_PREFERENCE_VERSION = 'garage-warmth-cost-v1';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
   enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false,
   maxSensorAgeMs: 120_000, minOnMs: 30 * 60_000, minOffMs: 10 * 60_000,
   maxHorizonHours: 48, stepMinutes: 15,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
-    floorC: 2, hardMinimumC: -1, budgetDegreeMinutes: 90,
-    recoveryAboveC: 4, recoveryDegreeMinutesPerMinute: 1, recoveryDwellMinutes: 20 }),
+    marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 }),
 });
 const finite = Number.isFinite;
+const legacyPolicyKeys = ['floorC', 'hardMinimumC', 'budgetDegreeMinutes',
+  'recoveryAboveC', 'recoveryDegreeMinutesPerMinute', 'recoveryDwellMinutes'];
 function number(input, key, min, max) {
   if (!finite(input[key]) || input[key] < min || input[key] > max) throw new Error(`Garage ${key} must be between ${min} and ${max}`);
 }
@@ -18,8 +20,17 @@ export function garageSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Garage settings must be an object');
   for (const key of Object.keys(input)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS, key)) throw new Error(`Unknown garage setting: ${key}`);
   if (input.protection != null && (typeof input.protection !== 'object' || Array.isArray(input.protection))) throw new Error('Garage protection must be an object');
-  for (const key of Object.keys(input.protection ?? {})) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS.protection, key)) throw new Error(`Unknown garage protection setting: ${key}`);
-  const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection: { ...DEFAULT_GARAGE_SETTINGS.protection, ...input.protection } };
+  const supplied = input.protection ?? {};
+  const legacy = ['garage-exposure-v1', 'garage-exposure-v2'].includes(supplied.version)
+    || supplied.version == null && legacyPolicyKeys.some(key => Object.hasOwn(supplied, key));
+  for (const key of Object.keys(supplied)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS.protection, key)
+    && !(legacy && legacyPolicyKeys.includes(key))) throw new Error(`Unknown garage protection setting: ${key}`);
+  // Old configuration remains readable by the unchanged Garage learner. Its
+  // degree-minute approval never authorizes the new thermal reserve policy.
+  const protection = { ...DEFAULT_GARAGE_SETTINGS.protection };
+  for (const key of Object.keys(protection)) if (Object.hasOwn(supplied, key)) protection[key] = supplied[key];
+  if (legacy) { protection.version = GARAGE_POLICY_VERSION; protection.approved = false; }
+  const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
   for (const key of ['enabled', 'frontRequired']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   number(output, 'aggressiveness', 0, 100); number(output, 'baselineC', 8, 16);
   number(output, 'maxSensorAgeMs', 30_000, 4 * 3_600_000);
@@ -27,15 +38,11 @@ export function garageSettings(input = {}) {
   number(output, 'maxHorizonHours', 2, 48); number(output, 'stepMinutes', 5, 30);
   const policy = output.protection;
   if (typeof policy.approved !== 'boolean') throw new Error('Garage protection approval must be boolean');
-  // Accept the previous configuration spelling without reinterpreting saved
-  // exposure: upgradeGarageExposure separately carries its uncertain debt.
-  if (policy.version === 'garage-exposure-v1') policy.version = GARAGE_POLICY_VERSION;
   if (policy.version !== GARAGE_POLICY_VERSION) throw new Error('Unsupported garage protection policy version');
-  number(policy, 'floorC', 0, 12); number(policy, 'hardMinimumC', -2, 10);
-  number(policy, 'budgetDegreeMinutes', 1, 10_000); number(policy, 'recoveryAboveC', 1, 16);
-  number(policy, 'recoveryDegreeMinutesPerMinute', 0.001, 5); number(policy, 'recoveryDwellMinutes', 1, 240);
-  if (policy.hardMinimumC >= policy.floorC || policy.recoveryAboveC <= policy.floorC)
-    throw new Error('Garage protection requires hardMinimumC < floorC < recoveryAboveC');
+  number(policy, 'marginC', 0.1, 5); number(policy, 'pipeOutsideDiameterMm', 6, 100);
+  number(policy, 'pipeWallMm', 0.3, 10); number(policy, 'heatTransferWPerM2K', 1, 100);
+  if (policy.pipeWallMm * 2 >= policy.pipeOutsideDiameterMm)
+    throw new Error('Garage pipe wall must leave a positive water diameter');
   return output;
 }
 /** Stable mapping: higher aggressiveness lowers warmth cost. Never price-normalized. */

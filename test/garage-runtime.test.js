@@ -1,3 +1,4 @@
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -22,7 +23,8 @@ function setup(t, { disk = false, settings = {}, owner = true } = {}) {
   const config = { input: 'mqtt', garage: garageSettings(settings) };
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'active' } };
   const runtime = new GarageRuntime({ store, engine, config, clock: () => now, canControl: () => authority });
-  const calls = [], status = { automaticControl: false, phase: 'monitoring', native: {}, health: {} };
+  const calls = [], status = { automaticControl: false, phase: 'monitoring', native: {}, health: {},
+    limits: { maxLeaseMs: 180_000, restorationDelayMs: 120_000 } };
   runtime.setAdapter({ status: () => status,
     plannerTick: async args => { calls.push(['planner', args]); return { status: 'blocked' }; },
     safetyTick: async args => { calls.push(['safety', args]); }, release: async args => { calls.push(['release', args]); } });
@@ -49,6 +51,7 @@ test('fresh equal front/rear reports create journal evidence; status and repeate
 
 test('a retained front and fresh native indoor reading cannot replace front protection', t => {
   const f = setup(t, { settings: { enabled: true, protection: { approved: true } } });
+  f.runtime.exposure = knownGarageReserve(f.runtime.settings, { at: START });
   f.temperatures(); f.runtime.safetyTick(); assert.equal(f.runtime.protection.safeToPause, true);
   f.report('garage_temperature_2', 10, START, { raw: { retained: true } });
   f.status.telemetry = { indoorTemperature: { value: 12, sourceTime: START, usable: true } };
@@ -73,16 +76,19 @@ test('cached temperatures stay last-known and forecast quality cannot hide inval
   assert.equal(f.runtime.read().outdoorC, null);
 });
 
-test('exposure survives restart and missing time consumes each location independently', async t => {
-  const f = setup(t, { settings: { protection: { approved: true, floorC: 4, recoveryAboveC: 6 } } });
-  f.temperatures(5, 3); f.runtime.safetyTick();
-  f.at(START + MINUTE); f.temperatures(5, 3); f.runtime.safetyTick();
-  const old = f.runtime.exposure.locations.front.degreeMinutes;
-  assert.equal(old, 1); assert.equal(f.runtime.exposure.locations.rear.degreeMinutes, 0);
+test('thermal reserve survives restart and missing time consumes each location independently', async t => {
+  const f = setup(t, { settings: { protection: { approved: true } } });
+  f.runtime.exposure = knownGarageReserve(f.runtime.settings, { at: START, rearC: 5, frontC: 3 });
+  f.temperatures(5, 0); f.runtime.safetyTick();
+  f.at(START + MINUTE); f.temperatures(5, 0); f.runtime.safetyTick();
+  const old = structuredClone(f.runtime.exposure);
+  assert.ok(old.locations.front.estimatedC < 3);
+  assert.equal(old.locations.rear.estimatedC, 5);
   await f.runtime.close({ restore: false }); f.at(START + 10 * MINUTE);
   const restarted = new GarageRuntime({ store: f.store, engine: f.engine, config: f.config, clock: () => START + 10 * MINUTE });
+  assert.deepEqual(restarted.exposure, old, 'restart alone must not erase the thermal state');
   restarted.safetyTick();
-  assert.ok(restarted.exposure.locations.front.degreeMinutes > old);
+  assert.ok(restarted.exposure.locations.front.energyJPerM < old.locations.front.energyJPerM);
   assert.ok(restarted.exposure.locations.rear.uncertain);
   assert.equal(restarted.protection.safeToPause, false);
   await restarted.close({ restore: false });

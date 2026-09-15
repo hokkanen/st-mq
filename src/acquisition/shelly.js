@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature } from './equipment-config.js';
+import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../garage/permission.js';
 
 const LABELS = { garage: 'Garage Shelly relay', heat_savings: 'Heat savings Shelly', caravan: 'Caravan Shelly Plug' };
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
@@ -19,19 +20,24 @@ const definitions = device => [
   ...device.customReadings,
 ];
 const property = (object, path) => path?.split('.').reduce((value, key) => value && typeof value === 'object' && Object.hasOwn(value, key) ? value[key] : undefined, object);
+const protectsGarage = device => definitions(device).some(row => ['garage_temperature', 'garage_temperature_2'].includes(row.signal));
 
 /** Native protocol is selected by configuration; no host detection or fallback.
  * Modern command readbacks retain the exact command identity through both RPCs. */
 export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null, topicGroups = [] }) {
   const devices = settings.devices.filter(config => config.enabled !== false).map(config => ({ ...config,
     id: config.id ?? config.role, role: config.role ?? config.id, customReadings: config.readings ?? [], connected: false,
-    available: false, lastAt: null, readings: {}, state: null, identity: null, identityPending: null, waiters: new Set(), checks: new Set(), check: null }));
+    available: false, lastAt: null, lastPollAt: -Infinity, readings: {}, state: null, identity: null, identityPending: null, waiters: new Set(), checks: new Set(), check: null }));
   const source = `stmq-shelly-${randomUUID()}`, replyTopic = `${source}/rpc`, requests = new Map();
-  let sequence = 0, commandSequence = 0, connected = false, closed = false, lastPollAt = -Infinity, heatingBusy = false;
+  let sequence = 0, commandSequence = 0, connected = false, closed = false, heatingBusy = false;
   const energies = new Map(devices.filter(metered).map(device => [device.id, createCaravanEnergy({ store,
     device: device.prefix, maxGapMs: device.maxAgeMs ?? settings.maxAgeMs, signal: `${device.role}_energy`, recordDevice: device.role,
     ...(device.role === 'caravan' ? {} : { stateKey: `shelly:equipment-energy:v1:${device.id}` }) })]));
-  const maxAge = device => device.maxAgeMs ?? settings.maxAgeMs;
+  const pollInterval = device => protectsGarage(device) ? GARAGE_TEMPERATURE_POLL_MS : settings.pollIntervalMs;
+  const maxAge = device => {
+    const configured = device.maxAgeMs ?? settings.maxAgeMs;
+    return protectsGarage(device) ? Math.min(configured || GARAGE_TEMPERATURE_MAX_AGE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS) : configured;
+  };
   const topicDetails = device => {
     const subscribe = (role, suffix) => ({ role, topic: `${device.prefix}/${suffix}`, direction: 'subscribe' });
     const publishTopic = (role, suffix) => ({ role, topic: `${device.prefix}/${suffix}`, direction: 'publish' });
@@ -56,8 +62,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     const observation = { source: 'shelly-mqtt', device: device.role, signal, value, unit,
       sourceTime: at, receivedAt: engine.clock(), quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
-        ...((unit === 'degC' || unit === '°C') ? { reportIntervalMs: settings.pollIntervalMs,
-          reportGraceMs: Math.max(0, maxAge(device) - settings.pollIntervalMs) } : {}), ...raw } };
+        ...((unit === 'degC' || unit === '°C') ? { reportIntervalMs: pollInterval(device),
+          reportGraceMs: Math.max(0, maxAge(device) - pollInterval(device)) } : {}), ...raw } };
     if (device.role === 'caravan' || ['heat_savings_active', 'garage_relay_active'].includes(signal))
       engine.rememberObservation?.(observation, engine.clock());
     else engine.ingest(observation);
@@ -203,7 +209,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     setConnected(value) {
       connected = value;
       for (const device of devices) { device.connected = false; clearIdentity(device); if (!value) unavailable(device, 'mqtt-disconnected'); }
-      if (value) { for (const device of devices) identify(device); lastPollAt = -Infinity; api.tick(engine.clock()); }
+      if (value) { for (const device of devices) { identify(device); device.lastPollAt = -Infinity; } api.tick(engine.clock()); }
       else { for (const request of requests.values()) request.complete?.('unavailable'); requests.clear(); }
     },
     subscriptionFailed(topic) { for (const device of devices) if (topic === replyTopic || topic === `${device.prefix}/#`) unavailable(device, 'mqtt-subscription-failed'); },
@@ -279,7 +285,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       for (const energy of energies.values()) energy.tick(now);
       for (const [id, request] of requests) if (now - request.at > readbackTimeoutMs) { requests.delete(id); request.complete?.('timeout'); }
       for (const device of devices) if (device.available && maxAge(device) > 0 && now - device.lastAt >= maxAge(device)) unavailable(device, 'missing-report');
-      if (connected && now - lastPollAt >= settings.pollIntervalMs) { lastPollAt = now; for (const device of devices) { identify(device); requestStatus(device).catch(() => {}); } }
+      if (connected) for (const device of devices) if (now - device.lastPollAt >= pollInterval(device)) {
+        device.lastPollAt = now; identify(device); requestStatus(device).catch(() => {});
+      }
     },
     async recheck({ deviceId } = {}) {
       const selected = devices.filter(device => !deviceId || device.id === deviceId);

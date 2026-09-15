@@ -56,10 +56,16 @@ by their combined elapsed time; it does not imply that the same hours were
 observed in both systems. Missing periods are never scaled up.
 
 The equipment area adds a closed Mitsubishi heating fold with separate front/rear
-readings, remaining exposure, limiting location, native readbacks, health,
+readings, remaining heat reserve in kJ/m, limiting location, native readbacks, health,
 accepted lease and unresolved restoration. Its nested settings fold shows the
 three owner preferences using the application's existing configuration-and-reload
-workflow. An End garage pause action releases only an owned restoration obligation;
+workflow. Freezing protection shows the 1°C protection margin, 21 mm reference
+pipe diameter, assumed 1 mm wall, 20 W/m²·K heat-transfer estimate and fixed 2×
+safety factor. It briefly explains the pipe reference for protecting pipes and
+stored liquids, independent local allowances and continuous temperature-dependent
+recovery. No percentage suggests a fixed full allowance, and the old air hard
+limit, degree-minute allowance, recovery temperature, warm-up duration and fixed
+repayment controls are removed. An End garage pause action releases only an owned restoration obligation;
 it stays disabled on replicas, without compatible actuation capability, or when no
 managed pause needs restoration. The Learning models card has separate, closed
 Home learning and Garage learning folds. Each uses matching outcome, input and

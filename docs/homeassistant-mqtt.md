@@ -86,7 +86,8 @@ original source timestamp while starting a new availability span. A query timeou
 also invalidates the source; it cannot keep silently disconnected contacts usable.
 Openings and outages break closed-door continuity even when both happen between
 temperature reports. The model records that compact evidence and excludes affected
-learning/validation intervals and new economic pauses. The explicit garage
+learning/validation intervals. They do not directly block or revoke garage
+heating pauses; independent temperature protection decides those. The explicit garage
 algorithm epoch is described in [reconstruction and versioning](reconstruction-and-versioning.md).
 
 ## Door commands

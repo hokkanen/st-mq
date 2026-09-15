@@ -1,3 +1,4 @@
+import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -41,6 +42,7 @@ function setup(t) {
     onEnergy: value => runtime.ingestEnergy(value),
     simulationTransport: createGarageSimulationTransport(async command => { commands.push(command); }) });
   runtime.setAdapter(adapter);
+  runtime.exposure = knownGarageReserve(runtime.settings, { at: BASE });
   function temperatures(rear = 7, front = 6.7) {
     for (const [signal, value] of [['garage_temperature', rear], ['garage_temperature_2', front], ['outdoor_temperature', 0]])
       engine.latest[signal] = { signal, value, unit: 'degC', sourceTime: now, receivedAt: now, quality: [],
@@ -81,9 +83,9 @@ test('runtime planner starts and renews the real fixture consumer with one froze
   assert.equal(f.runtime.episode.pauseId, id);
   assert.equal(f.store.getState(f.runtime.keys.adapter).restorePending, true);
   for (let minute = 1; minute <= 5; minute++) {
-    f.at(BASE + minute * MINUTE); f.temperatures(); f.accepted(f.commands[0]); await f.tick();
+    f.at(BASE + minute * MINUTE); f.temperatures(); f.accepted(f.commands.at(-1)); await f.tick();
   }
-  assert.equal(f.commands.length, 2);
+  assert.equal(f.commands.length, 6);
   assert.equal(f.commands[1].action, 'renew');
   assert.equal(f.commands[1].episodeId, id);
   assert.equal(f.commands[1].endpointAt, endpoint);
@@ -115,6 +117,7 @@ test('exact external sensor expiry releases an active lease; native ON and healt
 
 test('runtime persistence failure requests release through the real consumer and retains the saved obligation', async t => {
   const f = setup(t); await f.tick(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+  f.at(f.now() + 1000); f.temperatures(); f.accepted(); await flush();
   const original = f.store.setState;
   f.store.setState = () => { throw new Error('runtime fixture persistence failure'); };
   try {
@@ -132,13 +135,14 @@ test('runtime authority loss and duplicate close cannot send competing ON or res
   f.owner(false); f.runtime.safetyTick(); await flush();
   await f.runtime.close({ restore: true }); await f.adapter.close({ restore: true });
   await f.runtime.close({ restore: true }); await f.adapter.close({ restore: true });
-  assert.equal(f.commands.length, 1);
+  assert.equal(f.commands.length, 2);
   assert.equal(f.store.getState(f.runtime.keys.adapter).restorePending, true);
   assert.equal(f.adapter.status().phase, 'restoring');
 });
 
 test('runtime and acquisition graceful close request release once and keep accounting recovery separate', async t => {
   const f = setup(t); await f.tick(); f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+  f.at(f.now() + 1000); f.temperatures(); f.accepted(); await flush();
   await f.runtime.close({ restore: true }); await f.adapter.close({ restore: true });
   assert.equal(f.commands.filter(command => command.action === 'release').length, 1);
   assert.equal(f.runtime.episode.phase, 'recovery');

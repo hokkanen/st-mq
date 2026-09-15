@@ -7,6 +7,14 @@ and predicts the simulated garage accurately with much less fitted complexity.
 These are reproducible software experiments, not measurements of the installed
 garage, verification of native metering, or evidence that a water pipe is safe.
 
+The numerical planner results below record the original audit under the earlier
+exposure policy. The current `garage-thermal-reserve-v1` policy changes pause
+admission and restoration checks while preserving the learned garage equations.
+Current runs can therefore choose different pauses; these historical totals are
+not asserted as fresh results for the new protection model. The separate
+[protection notes](garage-protection-defaults.md) describe its parameters and
+validation requirements.
+
 ## Independent experiment
 
 `test/helpers/garage-plant.js` does not import the garage predictor. Its physical
@@ -117,7 +125,7 @@ small opportunities that the midpoint accepts. These experiments support keeping
 the default aggressiveness at 50 and the existing 0.012 warmth-cost scale; they
 do not establish the handout's suggested 80% benefit target for actual household
 history. Protection settings are assessed separately in the
-[pipe/exposure audit](garage-protection-defaults.md).
+[reference heat-reserve and pipe audit](garage-protection-defaults.md).
 
 The final midpoint results were:
 
@@ -143,6 +151,21 @@ episodes or recovery outcomes are inserted manually.
 This mode exercises the planner and learner; it does not emulate adapter
 acknowledgements, permission leases or the complete runtime restoration loop.
 
+Under the thermal-reserve policy, the bootstrap supplies a protection report
+every minute while keeping its original five-minute learning cadence. Extra
+reports use an independent noise generator; learning reports and the planner's
+causal input at those boundaries retain the original random sequence. Protection
+starts with unknown thermal history and earns reserve through the first 40 hours
+of observed normal heating. A five-minute learning interval is not relabelled as
+continuous two-minute sensor coverage.
+
+The frozen-plan comparison instead declares already-warm synthetic reference
+objects, separate from installation initialization. Both modes explicitly supply
+a **10-minute simulated useful-heating response allowance**, preserving the
+earlier comparison's assumed delay. The report records that allowance and the
+protection version. It is not a material-property calculation or an installed
+restoration bound, and it can be changed through the script's function options.
+
 This additional experiment exposed two control defects beyond model fitting:
 an electrical uncertainty penalty could suppress every initial activity-only
 trial, and a planner with a short validated duration could repeatedly split a
@@ -154,7 +177,7 @@ In the final metered run, the planner starts with 30-minute trials, increases to
 45 minutes and then 1.25–2 hours, reaches two hours of validated economic support
 around day 27, and subsequently tries 3–4 hours. By day 39 it supports three-hour
 economic pauses. The run totals 39 OFF hours over 42 days. Larger trials still
-require the independent temperature/exposure checks; a hard two-hour trial ceiling
+require the independent temperature/protection checks; a hard two-hour trial ceiling
 would otherwise have prevented further learning permanently.
 
 Boolean activity reaches one hour of thermal support by day 39. It has zero
