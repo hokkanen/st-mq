@@ -133,88 +133,92 @@ try {
         } };
       }
       if (globalThis.chargingSmokeValues) {
-        const state = globalThis.chargingSmokeValues, manual = ['manual', 'manual-stop', 'handover-pending'].includes(state),
-          controlled = manual || ['single', 'periods', 'paused', 'problem', 'progress', 'full', 'risk', 'waiting', 'provisional',
-            'released', 'handover', 'unknown-controlled', 'disconnected-controlled'].includes(state);
-        const charger = status.charging.chargers.find(item => item.id === (controlled ? 'charger1' : 'charger2'));
-        const observation = value => ({ value, source: 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
-        charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
-        charger.values.minimumSoc = observation(85);
-        charger.values.connected = observation(state.startsWith('unknown') ? null : !state.startsWith('disconnected'));
-        charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
-        charger.values.charging = observation(globalThis.chargingSmokeValues === 'charging');
-        charger.values.powerKw = observation(8.2);
-        charger.requiredGridKwh = 15; charger.progress = null;
-        charger.forecast = { state: 'forecast', feasible: true, startAt: status.now + 2 * 3600_000, finishAt: status.now + 3.5 * 3600_000,
-          powerKw: 10, shortfallGridKwh: 0 };
-        status.prices = [{ start: status.now, end: status.now + 24 * 3600_000, allInCentsPerKWh: 20 }];
-        if (state === 'unavailable') charger.forecast = { state: 'unavailable', finishAt: null,
-          reason: 'electrical-telemetry-unavailable', feasible: null };
-        status.providers.teslamate = { enabled: true, status: 'idle', recording: false, reception: {
-          brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: status.now, lastLiveAt: status.now } };
-        status.equipment.topicGroups = [...(status.equipment.topicGroups ?? []).filter(group => !['teslamate', 'charger1-vehicle'].includes(group.id)),
-          { id: 'teslamate', label: 'TeslaMate', topics: [{ role: 'Vehicle subscription', topic: 'teslamate/cars/7/#', direction: 'subscribe' }] },
-          { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
-            topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] }];
-        status.charging.coordination.assumptions.householdReference = { nights: 8, minimumNights: 6, limited: false,
-          temperatureRangeC: [-5, 2], oldestAt: status.now - 220 * 86400_000, legacy: true };
-        if (manual) {
-          charger.settings.enabled = true;
-          charger.control = { phase: 'yielded', manual: { kind: 'window', startsAt: status.now + 2 * 3600_000,
-            resumeAt: status.now + 15 * 3600_000, windowEndAt: status.now + 17 * 3600_000, detectedAt: status.now - 3600_000, repeating: true } };
-          charger.values.scheduledEndAt = observation(status.now + 17 * 3600_000);
-          charger.telemetry = { scheduledEndKind: 'scheduled-stop' };
-          charger.plan = { startAt: status.now + 3 * 3600_000, deadlineAt: status.now + 15 * 3600_000 };
-          if (state === 'manual-stop') {
-            charger.control.manual = { kind: 'stop', resumeAt: status.now + 15 * 3600_000,
-              detectedAt: status.now - 3600_000, reason: 'Charging stopped from the charger app.' };
-            charger.values.scheduledStartAt = observation(null);
-          }
-          if (state === 'handover-pending') charger.control.manual.resumeAt = status.now - 60_000;
-        } else if (controlled) {
-          charger.settings.enabled = true;
-          charger.values.maximumCurrentA = observation(16); charger.values.availableCurrentA = observation(16);
-          const periods = state === 'single' ? [{ startAt: status.now + 2 * 3600_000, endAt: null }]
-            : [{ startAt: status.now + (state === 'paused' ? -2 : 2) * 3600_000,
-              endAt: status.now + (state === 'paused' ? -1 : 3) * 3600_000 }, { startAt: status.now + 5 * 3600_000, endAt: null }];
-          charger.plan = { startAt: periods[0].startAt, periods, finishAt: status.now + 10 * 3600_000,
-            deadlineAt: status.now + 15 * 3600_000, costCents: 125, feasible: true };
-          charger.forecast = { state: 'planned', feasible: true, finishAt: charger.plan.finishAt,
-            powerKw: 10.7, shortfallGridKwh: 0 };
-          charger.control = { phase: state === 'paused' ? 'paused' : 'waiting', owned: { startAt: state === 'paused' ? periods[1].startAt : periods[0].startAt },
-            execution: { periods, deadlineAt: charger.plan.deadlineAt } };
-          if (['progress', 'full'].includes(state)) {
-            charger.values.soc = { ...observation(40), source: 'manual-fallback' };
-            charger.values.charging = observation(true); charger.values.actualCurrentA = observation(16);
-            charger.progress = { estimatedSoc: 52, estimatedSocSource: 'starting-charge', hasEnergyEstimate: true,
-              deliveredGridKwh: 10, remainingGridKwh: 27 };
-            charger.forecast = { feasible: true, finishAt: status.now + 10 * 3600_000 };
-            charger.control = { phase: 'active', execution: { periods: [
-              { startAt: status.now - 3600_000, endAt: status.now + 3600_000 }, periods[1] ] } };
-            if (state === 'full') {
-              charger.values.minimumSoc = observation(100);
-              charger.progress = { ...charger.progress, estimatedSoc: 100, remainingGridKwh: 0 };
+        const states = typeof globalThis.chargingSmokeValues === 'string'
+          ? [[null, globalThis.chargingSmokeValues]] : Object.entries(globalThis.chargingSmokeValues);
+        for (const [chargerId, state] of states) {
+          const manual = ['manual', 'manual-stop', 'handover-pending'].includes(state),
+            controlled = manual || ['single', 'periods', 'paused', 'problem', 'progress', 'full', 'risk', 'waiting', 'provisional',
+              'released', 'handover', 'unknown-controlled', 'disconnected-controlled'].includes(state);
+          const charger = status.charging.chargers.find(item => item.id === (chargerId ?? (controlled ? 'charger1' : 'charger2')));
+          const observation = value => ({ value, source: 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
+          charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
+          charger.values.minimumSoc = observation(85);
+          charger.values.connected = observation(state.startsWith('unknown') ? null : !state.startsWith('disconnected'));
+          charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
+          charger.values.charging = observation(state === 'charging');
+          charger.values.powerKw = observation(8.2);
+          charger.requiredGridKwh = 15; charger.progress = null;
+          charger.forecast = { state: 'forecast', feasible: true, startAt: status.now + 2 * 3600_000, finishAt: status.now + 3.5 * 3600_000,
+            powerKw: 10, shortfallGridKwh: 0 };
+          status.prices = [{ start: status.now, end: status.now + 24 * 3600_000, allInCentsPerKWh: 20 }];
+          if (state === 'unavailable') charger.forecast = { state: 'unavailable', finishAt: null,
+            reason: 'electrical-telemetry-unavailable', feasible: null };
+          status.providers.teslamate = { enabled: true, status: 'idle', recording: false, reception: {
+            brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: status.now, lastLiveAt: status.now } };
+          status.equipment.topicGroups = [...(status.equipment.topicGroups ?? []).filter(group => !['teslamate', 'charger1-vehicle'].includes(group.id)),
+            { id: 'teslamate', label: 'TeslaMate', topics: [{ role: 'Vehicle subscription', topic: 'teslamate/cars/7/#', direction: 'subscribe' }] },
+            { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
+              topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] }];
+          status.charging.coordination.assumptions.householdReference = { nights: 8, minimumNights: 6, limited: false,
+            temperatureRangeC: [-5, 2], oldestAt: status.now - 220 * 86400_000, legacy: true };
+          if (manual) {
+            charger.settings.enabled = true;
+            charger.control = { phase: 'yielded', manual: { kind: 'window', startsAt: status.now + 2 * 3600_000,
+              resumeAt: status.now + 15 * 3600_000, windowEndAt: status.now + 17 * 3600_000, detectedAt: status.now - 3600_000, repeating: true } };
+            charger.values.scheduledEndAt = observation(status.now + 17 * 3600_000);
+            charger.telemetry = { scheduledEndKind: 'scheduled-stop' };
+            charger.plan = { startAt: status.now + 3 * 3600_000, deadlineAt: status.now + 15 * 3600_000 };
+            if (state === 'manual-stop') {
+              charger.control.manual = { kind: 'stop', resumeAt: status.now + 15 * 3600_000,
+                detectedAt: status.now - 3600_000, reason: 'Charging stopped from the charger app.' };
+              charger.values.scheduledStartAt = observation(null);
             }
-          }
-          if (state === 'problem') {
-            charger.control.phase = 'unavailable'; charger.control.errorCode = 'readback-failed';
-            charger.control.reason = 'Easee did not confirm the update. The last confirmed schedule may still be active; another reading will be requested.';
-            charger.plan = { ...charger.plan, startAt: status.now + 3 * 3600_000, periods: [{ startAt: status.now + 3 * 3600_000, endAt: null }] };
-          }
-          if (state === 'risk') {
-            charger.forecast = { ...charger.forecast, feasible: false, reason: 'insufficient-time',
-              finishAt: status.now + 18 * 3600_000, shortfallGridKwh: 8.5 };
-          }
-          if (['waiting', 'provisional', 'released', 'handover'].includes(state)) {
-            charger.control = { phase: state === 'waiting' ? 'planning' : state };
-            charger.plan = { deadlineAt: status.now + 15 * 3600_000, periods: [] };
-            charger.forecast = { state: 'unavailable', finishAt: null, feasible: null };
-            charger.values.scheduledStartAt = observation(null);
-          }
-          if (state === 'handover') {
-            charger.settings.enabled = false;
-            charger.control = { phase: 'disabled', handoverConfirmed: false,
-              reason: 'Automatic charging is off. The charger has not confirmed the handover; the last instruction may remain active.' };
+            if (state === 'handover-pending') charger.control.manual.resumeAt = status.now - 60_000;
+          } else if (controlled) {
+            charger.settings.enabled = true;
+            charger.values.maximumCurrentA = observation(16); charger.values.availableCurrentA = observation(16);
+            const periods = state === 'single' ? [{ startAt: status.now + 2 * 3600_000, endAt: null }]
+              : [{ startAt: status.now + (state === 'paused' ? -2 : 2) * 3600_000,
+                endAt: status.now + (state === 'paused' ? -1 : 3) * 3600_000 }, { startAt: status.now + 5 * 3600_000, endAt: null }];
+            charger.plan = { startAt: periods[0].startAt, periods, finishAt: status.now + 10 * 3600_000,
+              deadlineAt: status.now + 15 * 3600_000, costCents: 125, feasible: true };
+            charger.forecast = { state: 'planned', feasible: true, finishAt: charger.plan.finishAt,
+              powerKw: 10.7, shortfallGridKwh: 0 };
+            charger.control = { phase: state === 'paused' ? 'paused' : 'waiting', owned: { startAt: state === 'paused' ? periods[1].startAt : periods[0].startAt },
+              execution: { periods, deadlineAt: charger.plan.deadlineAt } };
+            if (['progress', 'full'].includes(state)) {
+              charger.values.soc = { ...observation(40), source: 'manual-fallback' };
+              charger.values.charging = observation(true); charger.values.actualCurrentA = observation(16);
+              charger.progress = { estimatedSoc: 52, estimatedSocSource: 'starting-charge', hasEnergyEstimate: true,
+                deliveredGridKwh: 10, remainingGridKwh: 27 };
+              charger.forecast = { feasible: true, finishAt: status.now + 10 * 3600_000 };
+              charger.control = { phase: 'active', execution: { periods: [
+                { startAt: status.now - 3600_000, endAt: status.now + 3600_000 }, periods[1] ] } };
+              if (state === 'full') {
+                charger.values.minimumSoc = observation(100);
+                charger.progress = { ...charger.progress, estimatedSoc: 100, remainingGridKwh: 0 };
+              }
+            }
+            if (state === 'problem') {
+              charger.control.phase = 'unavailable'; charger.control.errorCode = 'readback-failed';
+              charger.control.reason = 'Easee did not confirm the update. The last confirmed schedule may still be active; another reading will be requested.';
+              charger.plan = { ...charger.plan, startAt: status.now + 3 * 3600_000, periods: [{ startAt: status.now + 3 * 3600_000, endAt: null }] };
+            }
+            if (state === 'risk') {
+              charger.forecast = { ...charger.forecast, feasible: false, reason: 'insufficient-time',
+                finishAt: status.now + 18 * 3600_000, shortfallGridKwh: 8.5 };
+            }
+            if (['waiting', 'provisional', 'released', 'handover'].includes(state)) {
+              charger.control = { phase: state === 'waiting' ? 'planning' : state };
+              charger.plan = { deadlineAt: status.now + 15 * 3600_000, periods: [] };
+              charger.forecast = { state: 'unavailable', finishAt: null, feasible: null };
+              charger.values.scheduledStartAt = observation(null);
+            }
+            if (state === 'handover') {
+              charger.settings.enabled = false;
+              charger.control = { phase: 'disabled', handoverConfirmed: false,
+                reason: 'Automatic charging is off. The charger has not confirmed the handover; the last instruction may remain active.' };
+            }
           }
         }
       }
@@ -716,9 +720,47 @@ try {
     assert.ok(Math.abs(summaries[0].height - summaries[1].height) <= 1,
       `${name} gives both charging roles the same summary height`);
   };
-  const capture = async name => {
+  const checkChargerPlacement = async (name, sideBySide) => {
+    const layout = await evaluate(`(() => {
+      const devices = [...document.querySelectorAll('#charging-devices > details')];
+      return devices.map(device => {
+        const box = device.getBoundingClientRect(), summary = device.querySelector(':scope > summary').getBoundingClientRect();
+        return { id: device.id, open: device.open, left: box.left, top: box.top,
+          right: box.right, bottom: box.bottom, width: box.width, height: box.height, summaryHeight: summary.height };
+      });
+    })()`);
+    assert.equal(layout.length, 2);
+    assert.ok(Math.abs(layout[0].width - layout[1].width) <= 1, `${name} gives both chargers equal width`);
+    if (sideBySide) {
+      assert.ok(Math.abs(layout[0].top - layout[1].top) <= 1 && layout[0].right < layout[1].left,
+        `${name} places Charger 1 and Charger 2 alongside each other`);
+    } else {
+      assert.ok(Math.abs(layout[0].left - layout[1].left) <= 1 && layout[0].bottom < layout[1].top,
+        `${name} stacks Charger 2 below Charger 1`);
+    }
+    return layout;
+  };
+  const checkIndependentChargerFolds = async (name, sideBySide) => {
+    await evaluate("document.querySelectorAll('#charging-devices > details').forEach(device => device.open = false)");
+    const baseline = await checkChargerPlacement(`${name}-closed`, sideBySide);
+    for (const openedIndex of [0, 1]) {
+      await evaluate(`document.querySelectorAll('#charging-devices > details').forEach((device, index) => device.open = index === ${openedIndex})`);
+      const layout = await checkChargerPlacement(`${name}-charger${openedIndex + 1}-open`, sideBySide);
+      const siblingIndex = 1 - openedIndex;
+      assert.equal(layout[siblingIndex].open, false, `${name} opens each charger independently`);
+      assert.ok(layout[openedIndex].height > baseline[openedIndex].height,
+        `${name} reveals the selected charger's details`);
+      assert.ok(Math.abs(layout[siblingIndex].height - baseline[siblingIndex].height) <= 1,
+        `${name} keeps the closed sibling card from stretching`);
+      await checkChargerSummaries(`${name}-charger${openedIndex + 1}-open`);
+    }
+    await evaluate("document.querySelectorAll('#charging-devices > details').forEach(device => device.open = false)");
+  };
+  const capture = async (name, { fullPage = false } = {}) => {
     await pause(60);
-    const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+    const size = fullPage ? (await send('Page.getLayoutMetrics')).cssContentSize : null;
+    const screenshot = await send('Page.captureScreenshot', { format: 'png',
+      ...(size ? { captureBeyondViewport: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale: 1 } } : {}) });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(screenshot.data, 'base64'));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${name} fits the viewport`);
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.learning-entry > summary')).filter(node => node.checkVisibility())
@@ -774,7 +816,7 @@ try {
         const target = textBox(document.getElementById(id + '-minimum'));
         const expectedArrowCenter = (charge.left + charge.right + target.left + target.right) / 4;
         const midpointDifference = Math.abs((arrow.left + arrow.right) / 2 - expectedArrowCenter);
-        const narrowColumns = device.parentElement.getBoundingClientRect().width <= 360;
+        const narrowColumns = device.clientWidth <= 360;
         if (midpointDifference > (narrowColumns ? 6 : 1)) errors.push({ arrowMidpointDifference: midpointDifference });
         return errors.length ? [{ id, errors }] : [];
       })`), [], `${name} aligns daily charger facts with the overview and centers the charge arrow`);
@@ -810,6 +852,15 @@ try {
         document.getElementById('home-control').scrollIntoView({block: 'start'})`);
       await checkDashboardLayout({ evaluate, width });
       await capture(`dashboard-${width}-${theme}`);
+      await checkIndependentChargerFolds(`${width}-${theme}`, width === 1440);
+      await evaluate("globalThis.chargingSmokeValues={charger1:'progress',charger2:'charging'}; globalThis.nativePumpSmokeValues=true; globalThis.refreshLearningSmokeStatus()");
+      await until("['charger1','charger2'].every(id=>document.getElementById(id+'-device').dataset.state==='Charging')");
+      await evaluate("document.querySelectorAll('details').forEach(fold=>fold.open=false); document.activeElement?.blur(); window.scrollTo(0,0)");
+      await capture(`dashboard-active-${width}-${theme}`, { fullPage: true });
+      await capture(`dashboard-active-overview-${width}-${theme}`);
+      await checkIndependentChargerFolds(`active-${width}-${theme}`, width === 1440);
+      await evaluate("globalThis.chargingSmokeValues=null; globalThis.nativePumpSmokeValues=false; globalThis.refreshLearningSmokeStatus()");
+      await until("document.getElementById('charger2-setting-manualSoc').disabled===false");
       await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
         document.querySelectorAll('.learning-model-details, .learning-model-details details').forEach(fold => fold.open = false);
         document.getElementById('home-heat-pump-details').open = true;
@@ -912,11 +963,32 @@ try {
       await capture(`${name}-${width}`);
     }
   }
-  // Intermediate desktop columns can be tighter than mobile at the same font size.
-  for (const width of [900, 1024]) {
+  // Responsive reflow and status polling must keep an in-progress edit intact.
+  await evaluate(`(() => {
+    const device = document.getElementById('charger1-device'); device.open = true;
+    globalThis.chargingSmokeEdit = document.getElementById('charger1-setting-capacityKwh');
+    globalThis.chargingSmokeSavedCapacity = globalThis.chargingSmokeEdit.value;
+    globalThis.chargingSmokeEdit.value = '78.5'; globalThis.chargingSmokeEdit.dispatchEvent(new Event('input'));
+    globalThis.chargingSmokeEdit.focus();
+  })()`);
+  for (const width of [1440, 390]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
+    await evaluate('globalThis.refreshLearningSmokeStatus()');
+    assert.equal(await evaluate(`document.getElementById('charger1-setting-capacityKwh') === globalThis.chargingSmokeEdit
+      && globalThis.chargingSmokeEdit.value === '78.5' && document.activeElement === globalThis.chargingSmokeEdit
+      && document.getElementById('charger1-device').open`), true,
+      `An unsaved charger setting, focus and open fold survive polling at ${width}px`);
+  }
+  await evaluate(`globalThis.chargingSmokeEdit.value = globalThis.chargingSmokeSavedCapacity;
+    globalThis.chargingSmokeEdit.dispatchEvent(new Event('input')); document.getElementById('charger1-settings-form').requestSubmit()`);
+  await until("document.getElementById('charger1-settings-message').textContent==='Settings saved.'");
+  // Cover the single-column tablet layout, narrow desktop columns, and both sides of pairing.
+  for (const width of [624, 625, 626, 640, 768, 900, 1024, 1200, 1266, 1267, 1268, 1280, 1366, 1920]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     for (const theme of ['dark', 'light']) {
       await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`);
+      const sideBySide = await evaluate("document.querySelector('.garage-chargers').getBoundingClientRect().width >= 540");
+      await checkIndependentChargerFolds(`${width}-${theme}`, sideBySide);
       for (const state of ['full', 'progress']) {
         await evaluate(`globalThis.chargingSmokeValues='${state}'; globalThis.refreshLearningSmokeStatus()`);
         await until(`document.getElementById('charger1-soc').textContent==='${state === 'full' ? '≈100 %' : '≈52 %'}'`);
@@ -942,11 +1014,13 @@ try {
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
     chargerSummaryHeights: Object.fromEntries(chargerSummaryHeights), chargingStates: chargingCases.length,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
-      'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
+      'disabled release without an owned episode', 'closed Garage disclosures', '320–1920px layouts including tablet and charger-pair boundaries',
       'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
       'Controlled and Observed roles with shared charge, target, completion, delivered energy, remaining energy and cost in the always-visible summary',
       'fixed matching charger summary heights across both themes, all viewports, connection, charging, planning, manual priority, risk and handover states, and open or closed folds',
+      'equal desktop charger columns, narrow mobile stacking, independent folds without stretching the closed sibling, and active full-dashboard screenshots',
+      'unsaved charger settings and focus survive status polling and reflow between desktop and mobile',
       'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
       'separate Home and Garage cards, independent keyboard disclosures, and both chart shortcuts preserve fold state and focus',

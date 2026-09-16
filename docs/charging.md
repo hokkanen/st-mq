@@ -9,6 +9,11 @@ Heating mode and charging permission are independent.
 
 The two openable charger cards directly below **Garage**'s heating summary keep
 their always-visible summaries at a fixed height within each responsive layout.
+When the Garage section has at least 540 px of usable width, the cards sit side
+by side. Narrower layouts stack Charger 1 above Charger 2. Desktop and paired
+cards use a compact 292 px summary; narrow stacked mobile cards keep the 332 px
+layout. Each card sizes its contents to its own width, and opening one card does
+not stretch the other card or change either summary's height.
 Connection and activity stay separate from whether charging is controlled,
 observed or under manual priority. Connected summaries show charge → target,
 the estimated target time, and the next start, pause or resumption alongside the
