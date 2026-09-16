@@ -80,6 +80,7 @@
                   <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
                 </div>
                 <div class="equipment-notes">
+                  <p><span>Tariff control</span><span id="tariff-control-state">—</span></p>
                   <p><span>Recirculation</span><span id="dhwr">—</span></p>
                 </div>
                 <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
@@ -403,30 +404,6 @@
               </div>
               <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
-              <details id="garage-settings-details" class="equipment-fold garage-settings"><summary>Garage settings<small>Preferences &amp; protection</small></summary>
-                <p class="muted garage-settings-intro">Current configuration. To change these values, edit Configuration, then select Apply configuration.</p>
-                <section class="garage-settings-group" aria-labelledby="garage-preferences-title">
-                  <h5 id="garage-preferences-title">Heating preferences</h5>
-                  <dl id="garage-heating-settings" class="garage-setting-list"></dl>
-                </section>
-                <section class="garage-settings-group" aria-labelledby="garage-protection-title">
-                  <div class="garage-settings-heading"><h5 id="garage-protection-title">Freezing protection</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
-                  <p class="garage-settings-help">Protects pipes and stored liquids using local temperature history, with a water-filled copper pipe as the reference. Rear and front are assessed independently.</p>
-                  <dl id="garage-protection-settings" class="garage-setting-list"></dl>
-                  <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Allowance &amp; recovery<small>Continuous</small></summary>
-                    <p class="muted">The allowance follows stored warmth through cooling and recovery. Each location keeps its own history.</p>
-                    <dl id="garage-recovery-settings" class="garage-setting-list"></dl>
-                  </details>
-                </section>
-                <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
-                  <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold allowance remaining</h5><span class="garage-live-label">Live estimate</span></div>
-                  <div class="garage-budget-grid">
-                    <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
-                    <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
-                  </div>
-                  <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
-                </section>
-              </details>
               <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
                 <summary>
                   <div class="learning-model-overview" aria-labelledby="garage-learning-label">
@@ -452,6 +429,30 @@
                   <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
                   <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
                 </details>
+              </details>
+              <details id="garage-settings-details" class="equipment-fold garage-settings"><summary>Garage settings<small>Preferences &amp; protection</small></summary>
+                <p class="muted garage-settings-intro">Current configuration. To change these values, edit Configuration, then select Apply configuration.</p>
+                <section class="garage-settings-group" aria-labelledby="garage-preferences-title">
+                  <h5 id="garage-preferences-title">Heating preferences</h5>
+                  <dl id="garage-heating-settings" class="garage-setting-list"></dl>
+                </section>
+                <section class="garage-settings-group" aria-labelledby="garage-protection-title">
+                  <div class="garage-settings-heading"><h5 id="garage-protection-title">Freezing protection</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
+                  <p class="garage-settings-help">Protects pipes and stored liquids using local temperature history, with a water-filled copper pipe as the reference. Rear and front are assessed independently.</p>
+                  <dl id="garage-protection-settings" class="garage-setting-list"></dl>
+                  <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Allowance &amp; recovery<small>Continuous</small></summary>
+                    <p class="muted">The allowance follows stored warmth through cooling and recovery. Each location keeps its own history.</p>
+                    <dl id="garage-recovery-settings" class="garage-setting-list"></dl>
+                  </details>
+                </section>
+                <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
+                  <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold allowance remaining</h5><span class="garage-live-label">Live estimate</span></div>
+                  <div class="garage-budget-grid">
+                    <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
+                    <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
+                  </div>
+                  <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
+                </section>
               </details>
               <details id="garage-pause-details" class="equipment-fold temporary-panel">
                 <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>

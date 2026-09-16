@@ -401,6 +401,9 @@ function showH66Test(result) {
 }
 function renderH66(s) {
   const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
+  const tariff = summary.find(row => row.key === 'tariff');
+  setStatusDetail($('tariff-control-state'), { key: 'home-tariff-control', label: tariff.value,
+    title: tariff.title, detail: tariff.detail });
   for (const key of ['mode']) {
     const row = summary.find(row => row.key === key);
     let detail = root.querySelector(`[data-h66-summary=${key}]`);
