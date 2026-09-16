@@ -186,13 +186,13 @@ export async function checkProviderLayout({ evaluate, width }) {
     const state = heading.querySelector('.provider-category-state').getBoundingClientRect();
     const source = heading.querySelector('.provider-category-meta').getBoundingClientRect();
     return { title: heading.querySelector('.provider-category-title').textContent,
-      aligned: state.top >= title.bottom - 1 && source.top >= title.bottom - 1
-        && state.right <= source.left + 1 && state.top < source.bottom && source.top < state.bottom,
+      aligned: state.top >= title.bottom - 1 && source.top >= state.bottom - 1
+        && source.left >= state.left && source.left < state.right,
       contained: title.left >= bounds.left - 1 && source.right <= bounds.right + 1
         && state.left >= bounds.left - 1 && state.right <= bounds.right + 1 };
   }))()`);
   for (const heading of headings) {
     assert.equal(heading.aligned && heading.contained, true,
-      `${heading.title} keeps availability left and sources right beneath its title at ${width}px`);
+      `${heading.title} keeps source names beneath availability at ${width}px`);
   }
 }
