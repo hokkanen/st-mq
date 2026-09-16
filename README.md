@@ -52,7 +52,7 @@ remain separate; ST-MQ never guesses a protocol or switches sources automaticall
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
 comfort learning after adjustments to floor circulation thermostats. Record rare
-sensor maintenance under **House model → Explore learning → Model inputs →
+sensor maintenance under **Learning models → Home → Model inputs →
 Average indoor → Sensor changes**, or **Outdoor temperature → Sensor changes**
 for the outdoor sensor. Recording requires confirmation; **Reason** describes the
 history and does not change the model's response. **Revert and relearn** undoes a
@@ -121,11 +121,12 @@ and can be cancelled independently.
 Live active mode applies the plan; monitoring and shadow show it without automatic
 equipment commands.
 
-Under **Home & heating → Home heating**, **Heating configuration** contains
-the manual heating buttons. Home and Garage share the same expanded layout:
-heating controls, equipment and temperatures, then Away/Pause. Each heat pump has
+Open the **Home** or **Garage** upper summary to find **Heating configuration**
+with manual heating buttons and Away/Pause controls. Equipment is in separate
+**Sensors & Equipment** (Home) and **Sensors & More equipment** (Garage) folds.
+Garage's two chargers sit directly below its heating summary. Each heat pump has
 an overview followed by its detailed readings; the ground-source heat pump also
-contains **Adjust heat-pump parameters**. **Garage settings** ends Garage's heating
+contains **Adjust heat-pump parameters**. **Garage settings** is inside Garage's heating
 configuration, and connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
 sensors, native heat-pump temperatures, tariff relays and legacy Shelly devices.
@@ -264,18 +265,21 @@ prices, forecasts and equipment-state shading keep their recorded time bounds.
 Auxiliary output has a five-minute freshness bound. Learning histories keep the
 estimate assessed at the time and never rewrite old points using a later model.
 
-Below the chart, **Home & heating** shows the heating decision, price control,
-comfort reference, occupied drop limit and recirculation request, together with
-the heat-pump mode and DHW target range. **Away & pause** contains temporary
-controls inside **Home heating**, alongside H66 readings, parameters and manual
-heating controls. **Garage heating** opens garage readings and controls.
+Above the chart, separate **Home** and **Garage** cards show **Heat control**
+status and a chart button. Home's upper summary shows the indoor average and
+requested and actual heating; Garage's shows its rear temperature, doors and
+heating request. Each upper summary opens **Heating configuration**, including
+manual heating and temporary Away/Pause controls. Home's middle row shows outdoor
+temperature, all-in electricity price and the expandable **Fireplace**.
+**Sensors & Equipment** contains Home's readings and equipment controls.
+Garage's two expandable chargers sit above **Sensors & More equipment**.
 Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.
 
-**House model** gives a short learning status and the reported counts of usable
-observations and accepted model updates. Missing counts remain unknown.
-**Explore learning** opens separate sections for the **four calculated outcomes**,
-**model inputs** and **current model coefficients**. Coefficients show values,
+**Learning models** gives Home and Garage learning summaries. Home reports counts
+of usable observations and accepted model updates. Missing counts remain unknown.
+Each **Home** or **Garage** summary opens its **calculated outcomes**,
+**model inputs** and **current model coefficients** sections. Coefficients show values,
 units and fitted/fixed provenance from the existing learning state, without
 additional storage or reconstructed historical coefficient traces. See the detailed
 [learning and control explanation](docs/learning-and-control.md).
@@ -286,9 +290,9 @@ and **Configuration**. **Electricity consumption · Easee, Teslamate** groups
 property import, Charger 1 and Charger 2 in both the source overview and the
 connection details. Easee and TeslaMate keep separate acquisition diagnostics;
 Charger 2 lists total power, estimated interval energy and its session check.
-On wide screens, the home card sits beside the stacked
-model and data cards, with both columns aligned when closed. The three cards stack
-on narrow screens; the event log follows them.
+On wide screens, Home and **Data & settings** occupy the left column, with Garage
+and **Learning models** on the right. On narrow screens, the cards appear in this
+order: Home, Garage, Data & settings, Learning models. The event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,
 freshness and storage growth independently of model importance. **Meter accuracy
 checks** shows the latest property-meter comparison and Charger 1 / Charger 2 session

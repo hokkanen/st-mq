@@ -59,8 +59,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   })()`);
   try {
     await refresh();
-    await evaluate("document.getElementById('home-heat-pump-details').open=true;document.getElementById('garage-equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
-    assert.equal(await evaluate("document.getElementById('home-equipment-section').closest('.home-control-body') !== null"), true);
+    await evaluate("document.getElementById('home-equipment-details').open=true;document.getElementById('garage-equipment-details').open=true;document.getElementById('connections-details').open=true;document.getElementById('mqtt-devices-details').open=true;true");
+    assert.equal(await evaluate("document.getElementById('home-equipment-section').closest('#home-equipment-details') !== null"), true);
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-section input[type=number]').length"), 1, 'Only the H66 setting is numeric; manual controls have no duration inputs');
     assert.equal(await evaluate("document.querySelector('#garage-equipment-readings [data-device-id=door1] .status-detail-label').textContent"), 'Closed');
     assert.equal(await evaluate("document.getElementById('garage-equipment-readings').textContent.includes('By the back wall')"), true);
@@ -69,7 +69,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate(`document.querySelector('${caravan}').tagName`), 'DETAILS');
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), false, 'Equipment starts as a compact summary');
     assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-device-body').checkVisibility()`), false);
-    assert.equal(await evaluate("document.querySelectorAll('.equipment-device > summary button, .equipment-device > summary input, .equipment-device > summary a').length"), 0, 'A device summary has one native disclosure action');
+    assert.equal(await evaluate("document.querySelectorAll('.zone-equipment-fold .equipment-device > summary button, .zone-equipment-fold .equipment-device > summary input, .zone-equipment-fold .equipment-device > summary a').length"), 0, 'An equipment device summary has one native disclosure action');
     assert.match(await evaluate(`document.querySelector('${caravan} > summary').textContent`), /Caravan.*Shelly.*Switch: On.*Available/);
     await evaluate(`document.querySelector('${caravan} > summary h4').click();document.querySelector('${caravan} > summary').focus();true`);
     await settle();
@@ -92,7 +92,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Charger 1 vehicle');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Charger 2 vehicle');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'other');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
     await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");

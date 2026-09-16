@@ -19,14 +19,16 @@ const view = item => chargerDisplay(item, { now });
 const active = () => { const item = charger(); return { ...item, settings: { ...item.settings, enabled: true },
   values: { ...item.values, connected: reading(true) }, plan: { startAt, finishAt: deadlineAt, deadlineAt } }; };
 
-test('garage keeps cold budgets in settings and renders shared charger cards without installation settings', () => {
+test('garage keeps cold budgets in settings and renders shared charger cards above more equipment', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  assert.match(html, /id="home-heat-pump-title">Home<\/h3>/);
-  assert.match(html, /id="garage-title">Garage<\/h3>/);
-  assert.equal((html.match(/<span>Heating mode<\/span>/g) ?? []).length, 2);
+  assert.match(html, /id="home-heat-pump-title">Heat pump<\/h3>/);
+  assert.match(html, /id="garage-title">Garage<\/h2>/);
+  assert.equal((html.match(/<span>Heating mode<\/span>/g) ?? []).length, 1);
   assert(!html.includes('home-tariff-status'));
   assert(!html.includes('id="garage-budget-front"')); assert(html.includes('id="garage-settings-budget-front"'));
-  assert(html.indexOf('id="charging-devices"') < html.indexOf('id="garage-controller-details"'));
+  assert(html.indexOf('id="garage-control"') < html.indexOf('id="charging-devices"'));
+  assert(html.indexOf('id="charging-devices"') < html.indexOf('id="garage-equipment-details"'));
+  assert.equal(html.split('id="charging-devices"').length - 1, 1, 'Chargers are mounted once in the Garage card');
   assert(!html.includes('id="charger1-settings-form"'), 'Per-charger forms come from the same renderer');
   assert(!html.includes('charging-installation'));
 });
@@ -577,8 +579,9 @@ test('controlled and observed equipment use the same charge, target and completi
   assert.match($('charger1-reading-time').textContent, /14 Sept 2026, 21:00/);
   assert.equal($('charger1-deadline').textContent, 'tomorrow 06:00');
   assert.equal($('charger1-sources').textContent, 'Vehicle MQTT');
-  assert.equal($('charger1-state').textContent, 'Controlled'); assert.match($('charger1-summary').textContent, /^Controlled · Starts/);
-  assert.equal($('charger2-state').textContent, 'Observed'); assert.match($('charger2-summary').textContent, /^Observed · Scheduled start/);
+  assert.equal($('charger1-state').textContent, 'Controlled');
+  assert.equal($('charger2-state').textContent, 'Observed');
+  assert.equal($('charger1-summary'), null); assert.equal($('charger2-summary'), null);
   assert.equal($('charger1-completion').textContent, 'tomorrow 06:00'); assert.equal($('charger2-completion').textContent, 'tomorrow 04:00');
   assert.equal($('charger1-energy').textContent, '32.9 kWh'); assert.equal($('charger1-cost').textContent, '€2.07');
   assert.equal($('charger1-periods').hidden, false, 'The only charging period remains visible in details');

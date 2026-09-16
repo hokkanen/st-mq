@@ -12,6 +12,22 @@ import { garageSettings } from '../src/garage/settings.js';
 
 const range = { from: Date.parse('2026-09-08T00:00:00+03:00'), to: Date.parse('2026-09-09T00:00:00+03:00') }, now = range.to;
 
+test('Garage Heat control badge follows its own pause and configuration', () => {
+  const badge = { textContent: '', parentElement: { dataset: {} } };
+  const document = { getElementById: id => id === 'garage-control-price' ? badge : null };
+  for (const [garage, expected, state] of [
+    [undefined, '—', 'muted'],
+    [{ settings: { enabled: false } }, 'Disabled', 'muted'],
+    [{ settings: { enabled: true } }, 'Active', 'active'],
+    [{ settings: { enabled: true }, temporary: { pauseActive: true } }, 'Paused', 'paused'],
+    [{ settings: { enabled: true }, temporary: { pauseActive: false } }, 'Active', 'active'],
+  ]) {
+    renderGarage(document, { now, garage, override: { expiresAt: now + 60_000 } });
+    assert.equal(badge.textContent, expected);
+    assert.equal(badge.parentElement.dataset.state, state);
+  }
+});
+
 test('Home remains default and preserves existing model/timing values without mutating payload', () => {
   const payload = { range, now, heatingBenefit: { status: 'estimated', valueEuro: 4.5, counts: { assessed: 3 } },
     timingBenefit: { heatPump: { value: -0.25, coverage: 0.1 } } };
@@ -61,9 +77,9 @@ test('Garage monitoring shows independent budgets and actual adapter readbacks, 
   assert(!JSON.stringify(display).includes('hidden-example')); assert(!JSON.stringify(display).includes('%'));
 });
 
-test('Garage equipment and learning are closed disclosures inside the existing interface', () => {
+test('Garage heating, equipment and learning have independent closed disclosures', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  for (const id of ['garage-equipment-details', 'garage-controller-details', 'garage-settings-details', 'garage-learning-details']) {
+  for (const id of ['garage-heating-details', 'garage-equipment-details', 'garage-controller-details', 'garage-settings-details', 'garage-learning-details']) {
     const tag = html.match(new RegExp(`<details[^>]+id="${id}"[^>]*>`))[0];
     assert(!/\sopen(?:\s|>|=)/.test(tag));
   }
@@ -104,7 +120,8 @@ test('Away and Pause use the same disclosure style as Garage settings inside hea
     assert(html.indexOf(`id="${id}"`) < html.indexOf(`id="${equipment}"`));
   }
   assert(!html.includes('zone-availability-fold'));
-  const overview = html.slice(html.indexOf('<details id="garage-equipment-details"'), html.indexOf('id="garage-manual-controls"'));
+  const overview = html.slice(html.indexOf('<details id="garage-heating-details"'), html.indexOf('id="garage-manual-controls"'));
+  assert(overview.includes('id="garage-door-summary"'));
   assert(!overview.includes('Cold allowance'));
   assert(!html.includes('id="garage-budget-rear"') && !html.includes('id="garage-budget-front"'));
   for (const location of ['rear', 'front']) assert(html.includes(`id="garage-settings-budget-${location}"`));

@@ -53,9 +53,10 @@ from each other. See [protection parameters and assumptions](garage-protection-d
 
 ## Everyday controls
 
-**Home & heating → Garage heating** follows the Home layout: heating controls,
-equipment and temperatures, technical details, then **Pause savings**. The
-inventory includes both protection probes, the pump's own temperatures, doors
+The **Garage** card's upper summary shows the rear temperature, doors and heating
+request, and opens **Heating configuration** with heating controls and
+**Pause savings**. The two charger cards follow the summary. **Sensors & More
+equipment** contains both protection probes, the pump's own temperatures, doors
 and Caravan. A selected mode has an inline check; requested state remains
 distinct from confirmed native power.
 

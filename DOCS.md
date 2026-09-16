@@ -38,9 +38,9 @@ for the algorithm, native-setting restoration and equipment testing limits.
 7. Follow [H66 MQTT setup](docs/h66-mqtt.md) to connect the gateway and set
    `controller.h66_device` to its exact MQTT prefix. Verify C60 telemetry, native
    settings and restoration before enabling automatic H66 control.
-   **Home & heating → Home heating** summarizes current settings; **Ground-source
-   heat pump** contains parameter controls and all readbacks. **House model →
-   Explore learning** contains model evidence.
+   **Home** opens **Heating configuration** with current settings;
+   **Home → Sensors & Equipment → Ground-source heat pump** contains parameter
+   controls and all readbacks. **Learning models → Home** contains model evidence.
 
    Existing coordinates and market country enable FMI, Open-Meteo and Elering
    without new keys. ENTSO-E is primary for prices and Elering is the backup.
@@ -137,8 +137,8 @@ and Downstairs when all three are configured with defaults. Missing contributing
 readings remain gaps; imported learning keeps its original Upstairs measurement.
 **All home temperatures** in the left drawer adds the three individual room
 readings with synchronized air-temperature scales. Garage remains available on
-the right axis. For rare sensor replacements, moves or calibrations, open **House
-model → Explore learning → Model inputs → Average indoor → Sensor changes**. Its
+the right axis. For rare sensor replacements, moves or calibrations, open **Learning
+models → Home → Model inputs → Average indoor → Sensor changes**. Its
 **Reason** field describes the saved history; it does not alter the learning effect.
 Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
@@ -200,14 +200,15 @@ earlier learning chart samples.
 
 An empty direct-access token keeps port 1234 disabled; Home Assistant ingress
 remains available through HA login. Home Assistant options own permanent settings.
-Beneath the chart, **Home &
-heating** summarizes the current decision and equipment settings, with **Away &
-pause** and **Equipment** for temporary controls, readbacks and manual
-tests. **House model** summarizes learning evidence; **Explore learning** separates
-the four learning outcomes, model inputs and current coefficients. Coefficients
-come from existing learning state; the UI adds no coefficient storage and does
-not reconstruct historical values. **Data & settings** summarizes provider health;
-its **Connections & settings** fold contains provider series/details, configuration
+Above the chart, **Home** and **Garage** each open **Heating configuration**
+from their upper summary. **Sensors & Equipment** in Home and **Sensors & More
+equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
+directly below its heating summary. **Learning models** has expandable **Home**
+and **Garage** summaries for learning outcomes, model inputs and current
+coefficients. Coefficients come from existing learning state; the UI adds no
+coefficient storage and does not reconstruct historical values.
+**Data & settings** summarizes provider health;
+its **Connections & configuration** fold contains provider series/details, configuration
 reload and electricity rates. The **Away until** and **Pause until** controls use
 Finnish time even when the remote browser is in another timezone. Apply changes
 saves them together; **Home now** and **Resume now** cancel

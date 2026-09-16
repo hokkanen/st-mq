@@ -22,8 +22,9 @@ stored kWh. Effective heating response is not measured capacity or COP.
 The dashboard's **Learning models** card summarizes Home and Garage learning. Home reports
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
-inferred. **Home learning** and **Garage learning** each separate **Learning outcomes · Calculated**,
-**Model inputs · Recorded & modeled** and **Model coefficients · Current values** into closed sections.
+inferred. The **Home** and **Garage** upper summaries each open learning details,
+with separate closed sections for **Learning outcomes · Calculated**,
+**Model inputs · Recorded & modeled** and **Model coefficients · Current values**.
 Both use the same expandable rows: the name, value or unit, and provenance stay visible;
 explanations and supporting evidence open underneath. Inputs and coefficients are grouped by
 their role. **Validation & evidence** keeps detailed checks alongside the outcomes without
@@ -187,9 +188,8 @@ intervals, preserve nulls and transitions, and do not rerun today's model on his
 
 ## H66 readbacks and commands
 
-In the dashboard, **Home & heating → Home heating** summarizes native settings.
-Its expanded fold starts with **Heating configuration**. Under equipment and
-temperatures, the **Ground-source heat pump** overview contains
+In the dashboard, the **Home** upper summary opens **Heating configuration**.
+Under **Sensors & Equipment**, the **Ground-source heat pump** overview contains
 **Adjust heat-pump parameters** and **All heat-pump readings**.
 Starting a price-control pause selects Normal heating;
 subsequent manual heating and parameter changes are held

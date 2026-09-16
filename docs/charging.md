@@ -7,7 +7,7 @@ Heating mode and charging permission are independent.
 
 ## Dashboard and saved preferences
 
-The first equipment cards in **Garage → Equipment & temperatures** show
+The two charger cards directly below **Garage**'s heating summary show
 connection and, while connected, charge → target, ready-by and the next
 proposed/confirmed action. Remaining grid energy is secondary. During charging
 or a planned pause, the event shows power, the next pause or resumption, or the

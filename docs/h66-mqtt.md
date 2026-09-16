@@ -59,7 +59,7 @@ Changing from `simulated` or `offline` to a live input requires a restart. See
 
 ## Verify live readings
 
-Open **Home & heating → Home heating** and **Equipment & temperatures →
+Open **Home → Sensors & Equipment →
 Ground-source heat pump**. In **All heat-pump readings**, check:
 
 - Fresh temperatures, including outdoor register `0007`, against the gateway.

@@ -738,8 +738,8 @@ three-room average. Saved learning-input tooltip rows use a short marker without
 repeating their journal source and interval beside each value. New saved-average
 tooltips additionally identify held rooms, actual observation times and whether
 the window was excluded from learning.
-Sensor replacements, moves and calibrations are recorded under **House model →
-Explore learning → Model inputs → Average indoor → Sensor changes**. See
+Sensor replacements, moves and calibrations are recorded under **Learning models →
+Home → Model inputs → Average indoor → Sensor changes**. See
 [sensor changes](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)
 for their learning boundary and descriptive reason field.
 The left drawer lists historical axes in temperature, heating, hot-water,

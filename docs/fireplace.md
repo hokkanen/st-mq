@@ -58,8 +58,8 @@ or certify the original model's control forecasts.
 
 ## Visibility and estimated savings
 
-**Explore learning** explains manual kilograms, calculated delayed release and the
-effective fireplace response in degrees C/kg, including its evidence status. The
+**Learning models → Home** explains manual kilograms, calculated delayed release
+and the effective fireplace response in degrees C/kg, including its evidence status. The
 left-axis drawer adds **Manually recorded firewood additions**, **Fireplace release input**,
 **Fireplace response**, and daily **Firewood electricity cost avoided** and
 **Firewood electricity avoided**.

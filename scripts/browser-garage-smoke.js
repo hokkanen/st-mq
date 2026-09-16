@@ -10,6 +10,7 @@ import { Store } from '../src/storage/store.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { appendGarageEntry } from '../src/garage/learning.js';
 import { garageSettings } from '../src/garage/settings.js';
+import { checkDashboardDisclosures, checkDashboardLayout } from './lib/dashboard-browser-checks.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-garage-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-garage-screenshots-'));
@@ -202,7 +203,8 @@ try {
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
   await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
-  assert.deepEqual(await evaluate("['home-heat-pump-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
+  assert.deepEqual(await evaluate("['control-title','garage-title'].map(id=>document.getElementById(id).textContent)"), ['Home', 'Garage']);
+  await checkDashboardDisclosures({ evaluate, keyPress, until });
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#charging-devices > .equipment-device')].map(node=>node.id)"), ['charger1-device', 'charger2-device']);
   assert.deepEqual(await evaluate("['charger1-setting-minimumSoc','charger1-setting-readyBy','charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['80', '06:00', '74', '57']);
   assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '20');
@@ -246,8 +248,8 @@ try {
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '62');
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), true);
   assert.equal(await evaluate("document.getElementById('charger2-state').textContent"), 'Observed');
-  assert.match(await evaluate("document.getElementById('charger2-summary').textContent"), /^Observed · Scheduled /,
-    'The compact Garage charger summary uses the same observed role');
+  assert.equal(await evaluate("document.getElementById('charger2-summary')"), null,
+    'The Garage overview does not duplicate the visible charger card');
   assert.equal(await evaluate("document.getElementById('charger2-event-label').textContent"), 'Starts');
   assert.equal(await evaluate("document.getElementById('charger2-event-value').textContent"), '17:00');
   assert.equal(await evaluate("document.getElementById('charger2-completion').textContent"), '18:30');
@@ -333,8 +335,8 @@ try {
   assert.equal(await evaluate("document.getElementById('charger1-event-label').textContent"), 'Starts');
   assert.equal(await evaluate("document.getElementById('charger1-event-value').textContent"), '17:00');
   assert.equal(await evaluate("document.getElementById('charger1-cost').textContent"), '€1.25');
-  assert.match(await evaluate("document.getElementById('charger1-summary').textContent"), /^Controlled · Starts /,
-    'The compact Garage charger summary uses the same controlled role');
+  assert.equal(await evaluate("document.getElementById('charger1-summary')"), null,
+    'The Garage overview does not duplicate the controlled charger card');
   await evaluate(`(() => {
     const trigger = document.querySelector('#charger1-schedule-info .status-detail-trigger');
     globalThis.assertChargingSmokeTrigger = trigger; trigger.focus();
@@ -360,8 +362,8 @@ try {
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '20');
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), false);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
-    ['home-control', 'providers-controls', 'house-model'],
-    'The existing dashboard cards are preserved');
+    ['home-control', 'providers-controls', 'garage-control', 'house-model'],
+    'Home and Garage have separate dashboard cards beside Data & settings and Learning models');
   assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4,
     'The existing Home outcome entries are preserved');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#learning-panel-details > details > summary')].map(row => row.textContent.trim())"),
@@ -427,7 +429,12 @@ try {
   for (const id of ['temporary-details', 'garage-pause-details']) {
     assert.equal(await evaluate(`document.getElementById('${id}').classList.contains('equipment-fold')`), true,
       `${id} uses the shared equipment disclosure style`);
-    await evaluate(`document.getElementById('${id}').open=false; document.querySelector('#${id} > summary').focus()`);
+    await evaluate(`(() => {
+      const fold = document.getElementById('${id}'); fold.open=false;
+      for (let parent = fold.parentElement; parent; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') parent.open=true;
+      fold.querySelector(':scope > summary').focus();
+    })()`);
     await keyPress('Enter');
     assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
     await keyPress(' ');
@@ -709,6 +716,11 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
     for (const theme of ['dark', 'light']) {
       await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
+        document.querySelectorAll('.controller-panels details').forEach(fold => fold.open = false);
+        document.getElementById('home-control').scrollIntoView({block: 'start'})`);
+      await checkDashboardLayout({ evaluate, width });
+      await capture(`dashboard-${width}-${theme}`);
+      await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
         document.querySelectorAll('#house-model details').forEach(fold => fold.open = false);
         document.getElementById('house-model').scrollIntoView({block: 'start'})`);
       await capture(`learning-overview-${width}-${theme}`);
@@ -745,7 +757,7 @@ try {
       await until("document.getElementById('home-pump-state').textContent==='Running'");
       assert.equal(await evaluate("document.getElementById('home-pump-state-age').textContent"), 'for at least 1 h 15 min');
       for (const [area, zone, device] of [
-        ['home', 'home-heat-pump-details', 'home-pump-device'],
+        ['home', 'home-equipment-details', 'home-pump-device'],
         ['garage', 'garage-equipment-details', 'garage-controller-details'],
       ]) {
         for (const expanded of [false, true]) {
@@ -820,7 +832,9 @@ try {
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
       'Controlled and Observed roles with shared charge, target and completion metrics, separate start and ready-by timing, grid energy and cost inside the equipment body',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
-      'unchanged dashboard cards', 'matching Home and Garage learning headings', 'episode-based Garage progress',
+      'separate Home and Garage cards, independent keyboard disclosures, and both chart shortcuts preserve fold state and focus',
+      'desktop column grouping and mobile Home, Garage, Data, Learning order',
+      'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',
       'sensor maintenance stays inside its input explanation', 'zero values remain distinct from missing evidence',

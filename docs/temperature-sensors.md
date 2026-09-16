@@ -95,7 +95,7 @@ reading from the new measurement period.
 ### Availability messages and clocks
 
 The indoor-average summary shows only a small issue indicator. Detailed room
-reasons and timestamps are inside **Equipment & tests → Home** and source details.
+reasons and timestamps are inside **Home → Sensors & Equipment** and source details.
 An expired reading shows its elapsed age and
 the applicable limit. A missed periodic report shows the last genuine report time
 when known, interval plus grace, deadline and overdue duration. This is separate
@@ -153,7 +153,7 @@ continues using only the historical upstairs measurement.
 
 ## Replacing, moving or adjusting a sensor
 
-Open **House model → Explore learning → Model inputs → Average indoor → Sensor
+Open **Learning models → Home → Model inputs → Average indoor → Sensor
 changes** for indoor sensors, or **Outdoor temperature → Sensor changes** for
 the outdoor sensor, after completing a replacement, move or calibration. Select
 **Sensor** and **Reason**, then choose **Record change now…**. Review the

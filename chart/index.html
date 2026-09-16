@@ -35,479 +35,489 @@
       <button>Connect</button><p>Kept in this browser tab only.</p>
     </form>
     <p id="error" role="alert" hidden></p>
-    <section class="controller-panels" aria-label="Home controller" data-snapshot-content>
+    <section class="controller-panels" aria-label="Home and garage controller" data-snapshot-content>
       <div class="controller-column">
       <article id="home-control" class="panel home-control" aria-labelledby="control-title">
-          <div class="dashboard-heading">
-            <h2 id="control-title">Home &amp; heating</h2>
-            <div class="home-heading-actions">
-              <span class="control-badge" data-controller-only><span>Price control</span><strong id="control-price">—</strong></span>
-              <button id="chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
-                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
-              </button>
-            </div>
-          </div>
-          <div class="home-overview" aria-label="Latest home conditions">
-            <div class="overview-zones">
-              <section class="overview-home" aria-label="Home">
-                <div class="overview-zone-label"><h3>Home</h3><p>Indoor average</p></div>
-                <div class="overview-reading">
-                  <strong id="indoor" class="overview-temperature">—</strong>
-                  <small id="indoor-age" class="overview-note">Waiting for readings</small>
-                </div>
-                <div class="overview-request">
-                  <p id="requested-label" class="overview-label">Heating request</p>
-                  <strong id="requested" role="status">—</strong>
-                  <small id="actual" class="overview-note">Actual state unknown</small>
-                </div>
-              </section>
-              <section class="overview-garage" aria-label="Garage" data-controller-only>
-                <div class="overview-zone-label"><h3>Garage</h3><p>Rear sensor</p></div>
-                <div class="overview-reading">
-                  <strong id="garage-temperature" class="overview-temperature">—</strong>
-                  <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
-                </div>
-                <div class="overview-request">
-                  <p id="garage-requested-label" class="overview-label">Heating request</p>
-                  <strong id="garage-requested">—</strong>
-                  <small id="garage-actual" class="overview-note">Actual state unknown</small>
-                </div>
-              </section>
-            </div>
-            <div class="overview-conditions">
-              <div class="overview-outdoor">
-                <p class="overview-label">Outdoor</p>
-                <strong id="outdoor">—</strong>
-                <small id="outdoor-age" class="overview-note">Waiting for readings</small>
+        <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="control-title">
+          <summary class="zone-summary">
+            <div class="dashboard-heading">
+              <h2 id="control-title">Home</h2>
+              <div class="home-heading-actions">
+                <span class="control-badge" data-controller-only><span>Heat control</span><strong id="control-price">—</strong></span>
+                <button id="chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
+                </button>
               </div>
-              <div class="overview-price">
-                <p id="price-label" class="overview-label">All-in price</p>
-                <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
+            </div>
+            <div class="home-overview overview-zone overview-home" aria-label="Latest home conditions">
+              <div class="overview-reading">
+                <strong id="indoor" class="overview-temperature">—</strong>
+                <small class="overview-note">Indoor average</small>
+                <small id="indoor-age" class="overview-note">Waiting for readings</small>
               </div>
-            <details id="fireplace-details" class="dashboard-disclosure fireplace-details" data-controller-only>
-              <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
-              <div id="fireplace-content" class="fireplace-content">
-                <form id="fireplace-form">
-                  <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
-                  <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
-                  <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
-                  <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
-                  <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
+              <div class="overview-placeholder" aria-hidden="true"></div>
+              <div class="overview-request">
+                <p id="requested-label" class="overview-label">Heating request</p>
+                <strong id="requested" role="status">—</strong>
+                <small id="actual" class="overview-note">Actual state unknown</small>
+              </div>
+            </div>
+            <span class="zone-expand" aria-hidden="true"></span>
+          </summary>
+          <div class="zone-content equipment-area" data-controller-only>
+            <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
+              <div id="heating-test-details">
+                <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating configuration</h4></div>
+                <div class="equipment-heading"><h3 id="home-heat-pump-title">Heat pump</h3><span id="h66-status" class="muted">Not connected</span></div>
+                <div id="home-h66-summary" class="home-h66-summary">
+                  <div class="equipment-value" data-h66-summary="mode"><span>Heating mode</span><strong>Unavailable</strong></div>
+                  <div class="equipment-value"><span>Comfort reference</span><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></div>
+                  <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
+                </div>
+                <div class="equipment-notes">
+                  <p><span>Recirculation</span><span id="dhwr">—</span></p>
+                </div>
+                <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
+                <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
+                  <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Max preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                </div>
+                <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
+                <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
+                <p id="heating-test-status" class="muted"></p>
+                <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+              </div>
+              <details id="temporary-details" class="equipment-fold temporary-panel">
+                <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
+                <form id="temporary-form" class="temporary-form">
+                  <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                  <div class="temporary-field">
+                    <label for="away-until">Away until</label>
+                    <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                    <p id="away-status" class="temporary-status">At home.</p>
+                    <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+                  </div>
+                  <div class="temporary-field">
+                    <label for="pause-until">Pause until</label>
+                    <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                    <p id="override-status" class="temporary-status">Price control is not paused.</p>
+                    <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
+                  </div>
+                  <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+                  <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
                 </form>
-                <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
-                <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
-                <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
-                <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
-                <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
-                <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
-                <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
-                <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
-              </div>
-            </details>
-            </div>
+              </details>
+            </section>
           </div>
-          <div class="home-control-body" data-controller-only>
-          <p id="heating-held-summary" class="heating-hold-warning" role="status" hidden></p>
-          <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="home-heat-pump-title">
-            <summary class="zone-summary equipment-overview">
-            <div class="equipment-heading"><h3 id="home-heat-pump-title">Home</h3><span id="h66-status" class="muted">Not connected</span></div>
-            <div id="home-h66-summary" class="home-h66-summary">
-              <div class="equipment-value" data-h66-summary="mode"><span>Heating mode</span><strong>Unavailable</strong></div>
-              <div class="equipment-value"><span>Comfort reference</span><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></div>
-              <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
-            </div>
-            <div class="equipment-notes">
-              <p><span>Recirculation</span><span id="dhwr">—</span></p>
-            </div>
-              <span class="zone-expand" aria-hidden="true"></span>
-            </summary>
-            <div class="zone-content equipment-area">
-              <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
-                <div id="heating-test-details">
-                  <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating configuration</h4></div>
-                  <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
-                  <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
-                    <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                    <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Max preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                    <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+        </details>
+        <p id="heating-held-summary" class="heating-hold-warning" role="status" data-controller-only hidden></p>
+        <div class="overview-conditions">
+          <div class="overview-outdoor">
+            <p class="overview-label">Outdoor</p>
+            <strong id="outdoor">—</strong>
+            <small id="outdoor-age" class="overview-note">Waiting for readings</small>
+          </div>
+          <div class="overview-price">
+            <p id="price-label" class="overview-label">All-in price</p>
+            <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
+          </div>
+        <details id="fireplace-details" class="dashboard-disclosure fireplace-details" data-controller-only>
+          <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
+          <div id="fireplace-content" class="fireplace-content">
+            <form id="fireplace-form">
+              <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
+              <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
+              <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
+              <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
+              <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
+            </form>
+            <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
+            <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+            <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
+            <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
+            <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
+            <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
+            <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
+            <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
+          </div>
+        </details>
+        </div>
+        <details id="home-equipment-details" class="dashboard-disclosure zone-equipment-fold" data-controller-only>
+          <summary><span id="home-equipment-title">Sensors &amp; Equipment</span><small id="home-equipment-status" class="equipment-device-status"></small></summary>
+          <div class="zone-content equipment-area">
+            <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
+              <details id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
+                <summary class="equipment-device-summary">
+                  <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><small class="equipment-device-meta">Heat pump · H66</small></div>
+                  <span class="equipment-device-health"><span id="home-pump-health" class="equipment-device-status">Not connected</span></span>
+                  <div class="pump-native-overview">
+                    <div class="equipment-value"><span>Current state</span><strong id="home-pump-state" class="muted">—</strong><small id="home-pump-state-age" hidden></small></div>
+                    <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw" class="muted">—</strong></div>
+                    <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room" class="muted">—</strong></div>
                   </div>
-                  <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
-                  <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
-                  <p id="heating-test-status" class="muted"></p>
-                  <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-                </div>
-                <details id="temporary-details" class="equipment-fold temporary-panel">
-                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-                  <form id="temporary-form" class="temporary-form">
-                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                    <div class="temporary-field">
-                      <label for="away-until">Away until</label>
-                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-                      <p id="away-status" class="temporary-status">At home.</p>
-                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
-                    </div>
-                    <div class="temporary-field">
-                      <label for="pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
-                    </div>
-                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-                  </form>
-                </details>
-              </section>
-              <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
-                <div class="zone-section-heading"><h4 id="home-equipment-title">Equipment &amp; temperatures</h4><span id="home-equipment-status" class="equipment-device-status"></span></div>
-                <details id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
-                  <summary class="equipment-device-summary">
-                    <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><small class="equipment-device-meta">Heat pump · H66</small></div>
-                    <span class="equipment-device-health"><span id="home-pump-health" class="equipment-device-status">Not connected</span></span>
-                    <div class="pump-native-overview">
-                      <div class="equipment-value"><span>Current state</span><strong id="home-pump-state" class="muted">—</strong><small id="home-pump-state-age" hidden></small></div>
-                      <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw" class="muted">—</strong></div>
-                      <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room" class="muted">—</strong></div>
-                    </div>
-                  </summary>
-                  <div class="equipment-device-body">
-                    <p id="home-pump-reading-info" class="pump-reading-info"></p>
-                    <details id="h66-test-details" class="equipment-fold">
-                      <summary>Adjust heat-pump parameters</summary>
-                      <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
-                        <label>Setting<select id="h66-test-register">
-                          <option value="0203">Room setting</option><option value="0212">Hot water start</option>
-                          <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
-                        </select></label>
-                        <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-                        <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
-                        <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
-                        <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
-                      </form>
-                      <p id="h66-test-status" class="muted">H66 is not connected.</p>
-                      <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                </summary>
+                <div class="equipment-device-body">
+                  <p id="home-pump-reading-info" class="pump-reading-info"></p>
+                  <details id="h66-test-details" class="equipment-fold">
+                    <summary>Adjust heat-pump parameters</summary>
+                    <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
+                      <label>Setting<select id="h66-test-register">
+                        <option value="0203">Room setting</option><option value="0212">Hot water start</option>
+                        <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
+                      </select></label>
+                      <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                      <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                      <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
+                      <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                    </form>
+                    <p id="h66-test-status" class="muted">H66 is not connected.</p>
+                    <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  </details>
+                  <section id="h66-readings-details" class="equipment-reading-section">
+                    <h5 class="equipment-body-title">All heat-pump readings</h5>
+                    <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
+                    <p id="h66-context" class="muted"></p>
+                    <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
+                    <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
+                    <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
+                      <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
+                      <div id="h66-series"></div>
                     </details>
-                    <section id="h66-readings-details" class="equipment-reading-section">
-                      <h5 class="equipment-body-title">All heat-pump readings</h5>
-                      <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
-                      <p id="h66-context" class="muted"></p>
-                      <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
-                      <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
-                      <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
-                        <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
-                        <div id="h66-series"></div>
+                  </section>
+                </div>
+              </details>
+              <div id="home-equipment-readings" class="equipment-device-list"></div>
+              <details id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
+                <summary class="equipment-device-summary">
+                  <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small class="equipment-device-meta">Circulation pump · MQTT</small></div>
+                  <p id="dhwr-preview" class="equipment-device-preview">Waiting for readings</p>
+                  <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></span>
+                </summary>
+                <div class="equipment-device-body">
+                  <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
+                  <div id="dhwr-controls" class="equipment-inline-controls">
+                    <p id="dhwr-request-state" class="muted"></p>
+                    <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
+                      <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
+                      <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+                    </div>
+                    <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
+                    <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
+                  </div>
+                </div>
+              </details>
+              <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
+              <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+              <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+            </section>
+          </div>
+        </details>
+      </article>
+      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title" data-controller-only>
+                <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
+                <div id="provider-overview" class="provider-overview">
+                  <ul id="providers" class="provider-list"></ul>
+                  <p id="provider-context" class="muted" hidden></p>
+                  <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
+                </div>
+                <details id="connections-details" class="dashboard-disclosure">
+                  <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
+                  <details id="mqtt-devices-details" class="section-fold controller-fold">
+                    <summary><span>MQTT</span><small> · Devices &amp; topics</small></summary>
+                    <div class="section-fold-body">
+                      <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
+                      <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
+                      <div id="equipment-connections"></div>
+                      <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
+                      <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
+                        <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
+                        <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
+                        <details class="equipment-fold"><summary>Shelly MQTT options</summary>
+                          <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
+                        </details>
+                        <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
                       </details>
-                    </section>
-                  </div>
-                </details>
-                <div id="home-equipment-readings" class="equipment-device-list"></div>
-                <details id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
-                  <summary class="equipment-device-summary">
-                    <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small class="equipment-device-meta">Circulation pump · MQTT</small></div>
-                    <p id="dhwr-preview" class="equipment-device-preview">Waiting for readings</p>
-                    <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></span>
-                  </summary>
-                  <div class="equipment-device-body">
-                    <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
-                    <div id="dhwr-controls" class="equipment-inline-controls">
-                      <p id="dhwr-request-state" class="muted"></p>
-                      <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
-                        <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
-                        <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+                    </div>
+                  </details>
+                  <details id="electricity-details" class="section-fold controller-fold electricity-panel">
+                    <summary><span>Electricity rates</span><small> · Contracts &amp; prices</small></summary>
+                    <div class="section-fold-body">
+                      <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
+                      <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
+                      <p class="muted">Rates are set in the configuration.</p>
+                    </div>
+                  </details>
+                  <details id="controls-details" class="section-fold controller-fold">
+                    <summary><span>Configuration</span><small> · File &amp; settings</small></summary>
+                    <div class="section-fold-body">
+                      <section class="configuration-location" aria-labelledby="settings-location-title">
+                        <h3 id="settings-location-title">Configuration file location</h3>
+                        <dl id="settings-location"></dl>
+                        <p id="settings-location-message" role="status">Loading configuration paths…</p>
+                      </section>
+                      <ol id="settings-configuration-steps" class="muted"></ol>
+                      <details id="settings-format-example" class="configuration-example">
+                        <summary>JSON file example</summary>
+                        <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
+                        <pre><code>{
+        "easee": {
+          "user": "your-easee-username",
+          "pw": "your-easee-password"
+        },
+        "controller": {
+          "web_token": "replace-with-your-private-token"
+        }
+      }</code></pre>
+                      </details>
+                      <p id="settings-access" class="muted" role="status"></p>
+                      <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
+                      <div id="settings-reload-scope" class="reload-scope"></div>
+                      <p id="settings-reload-help" class="muted"></p>
+                      <div class="settings-actions">
+                        <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
+                        <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
                       </div>
-                      <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
-                      <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
                     </div>
-                  </div>
+                  </details>
                 </details>
-                <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
-                <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-                <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
-              </section>
-            </div>
-          </details>
-          <details id="garage-equipment-details" class="dashboard-disclosure heating-zone garage-zone" aria-labelledby="garage-title">
-            <summary class="zone-summary">
-              <div class="equipment-heading"><h3 id="garage-title">Garage</h3><span id="garage-connection-status" class="muted">Not connected</span></div>
-              <div class="garage-overview">
-                <div class="equipment-value"><span>Heating mode</span><strong id="garage-heating-summary">Monitoring</strong></div>
-                <div class="equipment-value"><span>Garage doors</span><strong id="garage-door-summary">Unknown</strong></div>
-                <div class="equipment-value"><span>Caravan power</span><strong id="garage-caravan-power">Unavailable</strong></div>
-              </div>
-              <div class="equipment-notes garage-charging-notes">
-                <p><span>Charger 1</span><span id="charger1-summary" class="charger-summary">Automatic charging OFF</span></p>
-                <p><span>Charger 2</span><span id="charger2-summary" class="charger-summary">Monitoring</span></p>
-              </div>
-              <span class="zone-expand" aria-hidden="true"></span>
-            </summary>
-            <div class="zone-content equipment-area">
-              <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
-                <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating configuration</h4></div>
-                <p id="garage-heating-help" class="muted zone-control-help">Choose Normal heating or turn heating off temporarily. Without a savings pause, the controller resumes on its next update. During a pause, your selection stays until the pause ends or you select Resume now.</p>
-                <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-heating-configuration-title" aria-describedby="garage-heating-help garage-hold-warning">
-                  <button id="garage-mode-normal" class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                  <button id="garage-mode-off" class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                </div>
-                <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
-                <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
-                <details id="garage-settings-details" class="equipment-fold garage-settings"><summary>Garage settings<small>Preferences &amp; protection</small></summary>
-                  <p class="muted garage-settings-intro">Current configuration. To change these values, edit Configuration, then select Apply configuration.</p>
-                  <section class="garage-settings-group" aria-labelledby="garage-preferences-title">
-                    <h5 id="garage-preferences-title">Heating preferences</h5>
-                    <dl id="garage-heating-settings" class="garage-setting-list"></dl>
-                  </section>
-                  <section class="garage-settings-group" aria-labelledby="garage-protection-title">
-                    <div class="garage-settings-heading"><h5 id="garage-protection-title">Freezing protection</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
-                    <p class="garage-settings-help">Protects pipes and stored liquids using local temperature history, with a water-filled copper pipe as the reference. Rear and front are assessed independently.</p>
-                    <dl id="garage-protection-settings" class="garage-setting-list"></dl>
-                    <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Allowance &amp; recovery<small>Continuous</small></summary>
-                      <p class="muted">The allowance follows stored warmth through cooling and recovery. Each location keeps its own history.</p>
-                      <dl id="garage-recovery-settings" class="garage-setting-list"></dl>
-                    </details>
-                  </section>
-                  <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
-                    <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold allowance remaining</h5><span class="garage-live-label">Live estimate</span></div>
-                    <div class="garage-budget-grid">
-                      <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
-                      <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
-                    </div>
-                    <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
-                  </section>
-                </details>
-                <details id="garage-pause-details" class="equipment-fold temporary-panel">
-                  <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
-                  <form id="garage-pause-form" class="temporary-form">
-                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                    <div class="temporary-field">
-                      <label for="garage-pause-until">Pause until</label>
-                      <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                      <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
-                      <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
-                    </div>
-                    <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
-                  </form>
-                </details>
-              </section>
-              <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
-                <div class="zone-section-heading"><h4 id="garage-equipment-title">Equipment &amp; temperatures</h4></div>
-                <p id="charging-status" class="charging-event" role="status" hidden></p>
-                <div id="charging-devices" class="charging-device-list"></div>
-                <details id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
-                  <summary class="equipment-device-summary">
-                    <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><small class="equipment-device-meta">Heat pump · Mitsubishi</small></div>
-                    <span class="equipment-device-health"><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></span>
-                    <div class="garage-native-overview pump-native-overview">
-                      <div class="equipment-value"><span>Power</span><strong id="garage-native-power" class="muted">—</strong></div>
-                      <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode" class="muted">—</strong></div>
-                      <div class="equipment-value"><span>Target</span><strong id="garage-native-target" class="muted">—</strong></div>
-                    </div>
-                  </summary>
-                  <div class="equipment-device-body">
-                    <p id="garage-pump-reading-info" class="pump-reading-info"></p>
-                    <section id="garage-readings-details" class="equipment-reading-section garage-secondary">
-                      <h5 class="equipment-body-title">More Mitsubishi readings</h5>
-                      <p id="garage-controller-reason" class="muted"></p>
-                      <dl id="garage-controller-readings" class="equipment-readings"></dl>
-                      <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
-                      <div class="equipment-inline-controls">
-                        <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
-                        <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
-                        <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
-                      </div>
-                    </section>
-                  </div>
-                </details>
-                <div id="garage-equipment-readings" class="equipment-device-list"></div>
-                <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
-                <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-                <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
-              </section>
-            </div>
-          </details>
-          </div>
-        </article>
+              </article>
       </div>
       <div class="controller-column" data-controller-only>
-      <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title">
-          <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>
-          <div id="provider-overview" class="provider-overview">
-            <ul id="providers" class="provider-list"></ul>
-            <p id="provider-context" class="muted" hidden></p>
-            <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
-          </div>
-          <details id="connections-details" class="dashboard-disclosure">
-            <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
-            <details id="mqtt-devices-details" class="section-fold controller-fold">
-              <summary><span>MQTT</span><small> · Devices &amp; topics</small></summary>
-              <div class="section-fold-body">
-                <p class="muted mqtt-connections-intro">Live reports and MQTT topics, grouped by location.</p>
-                <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
-                <div id="equipment-connections"></div>
-                <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
-                <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
-                  <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
-                  <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
-                  <details class="equipment-fold"><summary>Shelly MQTT options</summary>
-                    <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>
-                  </details>
-                  <p class="muted"><a href="#controls-details" data-open-configuration>Open Configuration and Apply configuration →</a></p>
-                </details>
+      <article id="garage-control" class="panel garage-control" aria-labelledby="garage-title">
+        <details id="garage-heating-details" class="dashboard-disclosure heating-zone" aria-labelledby="garage-title">
+          <summary class="zone-summary">
+            <div class="dashboard-heading">
+              <h2 id="garage-title">Garage</h2>
+              <div class="home-heading-actions">
+                <span class="control-badge" data-controller-only><span>Heat control</span><strong id="garage-control-price">—</strong></span>
+                <button id="garage-chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16M7 14l4-5 4 3 5-7"/></svg>
+                </button>
               </div>
-            </details>
-            <details id="electricity-details" class="section-fold controller-fold electricity-panel">
-              <summary><span>Electricity rates</span><small> · Contracts &amp; prices</small></summary>
-              <div class="section-fold-body">
-                <p id="contract-context" class="muted">Loading the rates used by this installation…</p>
-                <div id="contract-periods"><p class="muted">No configured rates available.</p></div>
-                <p class="muted">Rates are set in the configuration.</p>
+            </div>
+            <div class="home-overview overview-zone overview-garage" aria-label="Latest garage conditions">
+              <div class="overview-reading">
+                <strong id="garage-temperature" class="overview-temperature">—</strong>
+                <small class="overview-note">Rear sensor</small>
+                <small id="garage-temperature-age" class="overview-note">Waiting for readings</small>
               </div>
-            </details>
-            <details id="controls-details" class="section-fold controller-fold">
-              <summary><span>Configuration</span><small> · File &amp; settings</small></summary>
-              <div class="section-fold-body">
-                <section class="configuration-location" aria-labelledby="settings-location-title">
-                  <h3 id="settings-location-title">Configuration file location</h3>
-                  <dl id="settings-location"></dl>
-                  <p id="settings-location-message" role="status">Loading configuration paths…</p>
+              <div class="overview-doors"><p class="overview-label">Doors</p><strong id="garage-door-summary">Unknown</strong></div>
+              <div class="overview-request">
+                <p id="garage-requested-label" class="overview-label">Heating request</p>
+                <strong id="garage-requested" role="status">—</strong>
+                <small id="garage-actual" class="overview-note">Actual state unknown</small>
+              </div>
+            </div>
+            <span class="zone-expand" aria-hidden="true"></span>
+          </summary>
+          <div class="zone-content equipment-area">
+            <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
+              <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating configuration</h4></div>
+              <p id="garage-heating-help" class="muted zone-control-help">Choose Normal heating or turn heating off temporarily. Without a savings pause, the controller resumes on its next update. During a pause, your selection stays until the pause ends or you select Resume now.</p>
+              <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-heating-configuration-title" aria-describedby="garage-heating-help garage-hold-warning">
+                <button id="garage-mode-normal" class="secondary-button" type="button" data-garage-heating-mode="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                <button id="garage-mode-off" class="secondary-button" type="button" data-garage-heating-mode="off" aria-pressed="false" disabled><span>Heating off</span><span class="heating-button-state" aria-hidden="true"></span></button>
+              </div>
+              <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
+              <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
+              <details id="garage-settings-details" class="equipment-fold garage-settings"><summary>Garage settings<small>Preferences &amp; protection</small></summary>
+                <p class="muted garage-settings-intro">Current configuration. To change these values, edit Configuration, then select Apply configuration.</p>
+                <section class="garage-settings-group" aria-labelledby="garage-preferences-title">
+                  <h5 id="garage-preferences-title">Heating preferences</h5>
+                  <dl id="garage-heating-settings" class="garage-setting-list"></dl>
                 </section>
-                <ol id="settings-configuration-steps" class="muted"></ol>
-                <details id="settings-format-example" class="configuration-example">
-                  <summary>JSON file example</summary>
-                  <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. A private <code>web_token</code> needs at least 24 characters.</p>
-                  <pre><code>{
-  "easee": {
-    "user": "your-easee-username",
-    "pw": "your-easee-password"
-  },
-  "controller": {
-    "web_token": "replace-with-your-private-token"
-  }
-}</code></pre>
-                </details>
-                <p id="settings-access" class="muted" role="status"></p>
-                <p id="settings-import-warning" class="form-error" role="alert" hidden></p>
-                <div id="settings-reload-scope" class="reload-scope"></div>
-                <p id="settings-reload-help" class="muted"></p>
-                <div class="settings-actions">
-                  <button id="settings-reload" class="secondary-button" type="button" disabled>Apply configuration</button>
-                  <p id="settings-reload-message" class="muted" role="status" aria-live="polite"></p>
+                <section class="garage-settings-group" aria-labelledby="garage-protection-title">
+                  <div class="garage-settings-heading"><h5 id="garage-protection-title">Freezing protection</h5><span id="garage-protection-approval" class="garage-policy-status">Approval unknown</span></div>
+                  <p class="garage-settings-help">Protects pipes and stored liquids using local temperature history, with a water-filled copper pipe as the reference. Rear and front are assessed independently.</p>
+                  <dl id="garage-protection-settings" class="garage-setting-list"></dl>
+                  <details id="garage-recovery-details" class="equipment-fold garage-recovery"><summary>Allowance &amp; recovery<small>Continuous</small></summary>
+                    <p class="muted">The allowance follows stored warmth through cooling and recovery. Each location keeps its own history.</p>
+                    <dl id="garage-recovery-settings" class="garage-setting-list"></dl>
+                  </details>
+                </section>
+                <section id="garage-live-budgets" class="garage-live-budgets" aria-labelledby="garage-live-budgets-title">
+                  <div class="garage-settings-heading"><h5 id="garage-live-budgets-title">Cold allowance remaining</h5><span class="garage-live-label">Live estimate</span></div>
+                  <div class="garage-budget-grid">
+                    <div class="garage-budget-location"><span>Rear · near pipe</span><strong id="garage-settings-budget-rear">—</strong><small id="garage-settings-budget-rear-remaining">Assessment unavailable</small></div>
+                    <div class="garage-budget-location"><span>Front · near door</span><strong id="garage-settings-budget-front">—</strong><small id="garage-settings-budget-front-remaining">Assessment unavailable</small></div>
+                  </div>
+                  <p class="garage-settings-help">Estimated warmth per metre of the reference pipe. Heating resumes with enough reserve to restore useful heat; select a value for details.</p>
+                </section>
+              </details>
+              <details id="garage-pause-details" class="equipment-fold temporary-panel">
+                <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
+                <form id="garage-pause-form" class="temporary-form">
+                  <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                  <div class="temporary-field">
+                    <label for="garage-pause-until">Pause until</label>
+                    <div class="temporary-input-row"><input id="garage-pause-until" type="datetime-local" step="60" aria-describedby="garage-pause-status garage-pause-help"><button id="garage-resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                    <p id="garage-pause-status" class="temporary-status">Savings are not paused.</p>
+                    <p id="garage-pause-help" class="muted">Starting a pause requests Normal heating. Any heating selection made afterwards stays until the pause ends or you select Resume now.</p>
+                  </div>
+                  <div class="temporary-actions"><button id="garage-pause-submit" type="submit" disabled>Apply changes</button><p id="garage-pause-message" class="muted" role="status" aria-live="polite"></p></div>
+                </form>
+              </details>
+            </section>
+          </div>
+        </details>
+        <div class="garage-chargers zone-content equipment-area" aria-label="Chargers">
+          <p id="charging-status" class="charging-event" role="status" hidden></p>
+          <div id="charging-devices" class="charging-device-list"></div>
+        </div>
+        <details id="garage-equipment-details" class="dashboard-disclosure zone-equipment-fold">
+          <summary><span id="garage-equipment-title">Sensors &amp; More equipment</span></summary>
+          <div class="zone-content equipment-area">
+            <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
+
+
+              <details id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
+                <summary class="equipment-device-summary">
+                  <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><small class="equipment-device-meta">Heat pump · Mitsubishi</small></div>
+                  <span class="equipment-device-health"><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></span>
+                  <div class="garage-native-overview pump-native-overview">
+                    <div class="equipment-value"><span>Power</span><strong id="garage-native-power" class="muted">—</strong></div>
+                    <div class="equipment-value"><span>Mode</span><strong id="garage-native-mode" class="muted">—</strong></div>
+                    <div class="equipment-value"><span>Target</span><strong id="garage-native-target" class="muted">—</strong></div>
+                  </div>
+                </summary>
+                <div class="equipment-device-body">
+                  <p id="garage-pump-reading-info" class="pump-reading-info"></p>
+                  <section id="garage-readings-details" class="equipment-reading-section garage-secondary">
+                    <h5 class="equipment-body-title">More Mitsubishi readings</h5>
+                    <p id="garage-controller-reason" class="muted"></p>
+                    <dl id="garage-controller-readings" class="equipment-readings"></dl>
+                    <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
+                    <div class="equipment-inline-controls">
+                      <button id="garage-release" class="secondary-button" type="button" aria-describedby="garage-release-help" disabled>End automatic savings episode</button>
+                      <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
+                      <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
+                    </div>
+                  </section>
                 </div>
-              </div>
-            </details>
-          </details>
-        </article>
+              </details>
+              <div id="garage-equipment-readings" class="equipment-device-list"></div>
+              <div id="garage-test-notice" class="equipment-test-notice" hidden><p id="garage-active-test" role="status" hidden></p></div>
+              <p id="garage-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+              <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+            </section>
+          </div>
+        </details>
+      </article>
       <article id="house-model" class="panel house-model learning-models" aria-labelledby="model-title">
-          <div class="dashboard-heading"><h2 id="model-title">Learning models</h2></div>
-          <div class="learning-model-overviews">
-            <section class="learning-model-overview" aria-labelledby="home-learning-label">
+        <div class="dashboard-heading"><h2 id="model-title">Learning models</h2></div>
+
+        <details id="learning-panel-details" class="dashboard-disclosure learning-groups learning-model-details">
+          <summary>
+            <div class="learning-model-overview" aria-labelledby="home-learning-label">
               <h3 id="home-learning-label" class="learning-model-label">Home</h3>
               <p id="learning-title" class="model-headline">Collecting observations</p>
               <p id="learning-overview" class="muted"></p>
               <div id="learning-progress" class="learning-progress"></div>
-            </section>
-            <section class="learning-model-overview" aria-labelledby="garage-learning-label">
+            </div>
+          </summary>
+          <details id="learning-details" class="learning-section section-fold">
+            <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
+            <div class="learning-section-body">
+              <p id="learning-detail" class="learning-intro"></p>
+              <div id="learning-metrics"></div>
+              <details id="learning-validation-details" class="learning-support">
+                <summary>Validation &amp; evidence</summary>
+                <p id="learning-process" class="learning-intro"></p>
+                <div id="learning-evidence"></div>
+                <p id="learning-history" class="learning-note"></p>
+                <p id="savings" class="learning-note"></p>
+              </details>
+            </div>
+          </details>
+          <details id="model-inputs-details" class="learning-section section-fold">
+            <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
+            <div class="learning-section-body">
+              <p class="learning-intro">The temperatures, heating inputs and control context saved for learning. Expand an input for its source and meaning.</p>
+              <div id="model-inputs-content"></div>
+              <details id="sensor-change-details" class="sensor-change-details" hidden>
+                <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
+                <div id="sensor-change-content">
+                  <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
+                  <form id="sensor-change-form" class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
+                    <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
+                    <label for="sensor-change-reason">Reason<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
+                    <button id="sensor-change-submit" type="submit" disabled>Record change now…</button>
+                  </form>
+                  <p id="sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
+                  <p id="sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+                  <p id="sensor-change-availability" class="muted sensor-change-status" role="status"></p>
+                  <p id="sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
+                  <div class="sensor-change-history-heading"><h3>Change history</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
+                  <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
+                  <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Indoor sensor changes"></ul>
+                  <p id="sensor-change-empty" class="muted">No sensor changes recorded.</p>
+                  <button id="sensor-change-more" class="secondary-button" type="button" hidden>Show older changes</button>
+                </div>
+              </details>
+              <details id="outdoor-sensor-change-details" class="sensor-change-details" hidden>
+                <summary><span>Sensor changes</span><small id="outdoor-sensor-change-overview">Replacement, move or calibration</small></summary>
+                <div id="outdoor-sensor-change-content">
+                  <p id="outdoor-sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
+                  <form id="outdoor-sensor-change-form" class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
+                    <label for="outdoor-sensor-change-signal">Sensor<select id="outdoor-sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
+                    <label for="outdoor-sensor-change-reason">Reason<select id="outdoor-sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
+                    <button id="outdoor-sensor-change-submit" type="submit" disabled>Record change now…</button>
+                  </form>
+                  <p id="outdoor-sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
+                  <p id="outdoor-sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="outdoor-sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+                  <p id="outdoor-sensor-change-availability" class="muted sensor-change-status" role="status"></p>
+                  <p id="outdoor-sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
+                  <button id="outdoor-sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
+                  <div class="sensor-change-history-heading"><h3>Change history</h3><button id="outdoor-sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
+                  <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
+                  <ul id="outdoor-sensor-change-entries" class="sensor-change-entries" aria-label="Outdoor sensor changes"></ul>
+                  <p id="outdoor-sensor-change-empty" class="muted">No sensor changes recorded.</p>
+                  <button id="outdoor-sensor-change-more" class="secondary-button" type="button" hidden>Show older changes</button>
+                </div>
+              </details>
+              <details class="learning-support"><summary>How input history is shown</summary><p class="learning-note">Select Model inputs on the chart to explore recorded intervals and manual additions. Temperature inputs preserve the averages originally supplied, including sensor-change settling gaps. Corrected learning can use preserved readings behind those gaps; Model coefficients shows that reconstruction. Fireplace release follows corrected firewood history. Unknown and rejected intervals remain gaps.</p></details>
+            </div>
+          </details>
+          <details id="model-coefficients-details" class="learning-section section-fold">
+            <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
+            <div class="learning-section-body">
+              <p class="learning-intro">Current thermal responses and fixed building assumptions. Each value shows how it was established; fitting alone does not establish readiness.</p>
+              <div id="model-coefficients-content"></div>
+              <details class="learning-support"><summary>Model basis &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
+            </div>
+          </details>
+        </details>
+        <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
+          <summary>
+            <div class="learning-model-overview" aria-labelledby="garage-learning-label">
               <h3 id="garage-learning-label" class="learning-model-label">Garage</h3>
               <p id="garage-learning-title" class="model-headline">Collecting observations</p>
               <p id="garage-learning-overview" class="muted"></p>
               <div id="garage-learning-progress" class="learning-progress"></div>
-            </section>
-          </div>
-          <details id="learning-panel-details" class="dashboard-disclosure learning-groups learning-model-details">
-            <summary><span>Home learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
-            <details id="learning-details" class="learning-section section-fold">
-              <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
-              <div class="learning-section-body">
-                <p id="learning-detail" class="learning-intro"></p>
-                <div id="learning-metrics"></div>
-                <details id="learning-validation-details" class="learning-support">
-                  <summary>Validation &amp; evidence</summary>
-                  <p id="learning-process" class="learning-intro"></p>
-                  <div id="learning-evidence"></div>
-                  <p id="learning-history" class="learning-note"></p>
-                  <p id="savings" class="learning-note"></p>
-                </details>
-              </div>
-            </details>
-            <details id="model-inputs-details" class="learning-section section-fold">
-              <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
-              <div class="learning-section-body">
-                <p class="learning-intro">The temperatures, heating inputs and control context saved for learning. Expand an input for its source and meaning.</p>
-                <div id="model-inputs-content"></div>
-                <details id="sensor-change-details" class="sensor-change-details" hidden>
-                  <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
-                  <div id="sensor-change-content">
-                    <p id="sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
-                    <form id="sensor-change-form" class="sensor-change-form" aria-describedby="sensor-change-help sensor-change-reason-help">
-                      <label for="sensor-change-signal">Sensor<select id="sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
-                      <label for="sensor-change-reason">Reason<select id="sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
-                      <button id="sensor-change-submit" type="submit" disabled>Record change now…</button>
-                    </form>
-                    <p id="sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
-                    <p id="sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
-                    <button id="sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
-                    <p id="sensor-change-availability" class="muted sensor-change-status" role="status"></p>
-                    <p id="sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
-                    <button id="sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
-                    <div class="sensor-change-history-heading"><h3>Change history</h3><button id="sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
-                    <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
-                    <ul id="sensor-change-entries" class="sensor-change-entries" aria-label="Indoor sensor changes"></ul>
-                    <p id="sensor-change-empty" class="muted">No sensor changes recorded.</p>
-                    <button id="sensor-change-more" class="secondary-button" type="button" hidden>Show older changes</button>
-                  </div>
-                </details>
-                <details id="outdoor-sensor-change-details" class="sensor-change-details" hidden>
-                  <summary><span>Sensor changes</span><small id="outdoor-sensor-change-overview">Replacement, move or calibration</small></summary>
-                  <div id="outdoor-sensor-change-content">
-                    <p id="outdoor-sensor-change-help" class="muted">Record a replacement, new location or calibration when it happens. You will review its effect on learning before saving. Revert a mistaken entry to relearn from recorded history.</p>
-                    <form id="outdoor-sensor-change-form" class="sensor-change-form" aria-describedby="outdoor-sensor-change-help outdoor-sensor-change-reason-help">
-                      <label for="outdoor-sensor-change-signal">Sensor<select id="outdoor-sensor-change-signal" required disabled><option value="">Loading sensors…</option></select></label>
-                      <label for="outdoor-sensor-change-reason">Reason<select id="outdoor-sensor-change-reason" disabled><option value="replacement">Replacement</option><option value="moved">New location</option><option value="calibration">Calibration</option><option value="other">Other</option></select></label>
-                      <button id="outdoor-sensor-change-submit" type="submit" disabled>Record change now…</button>
-                    </form>
-                    <p id="outdoor-sensor-change-reason-help" class="muted">The reason is kept in history. All reasons have the same effect on learning.</p>
-                    <p id="outdoor-sensor-change-message" class="temporary-status sensor-change-status" role="status" aria-live="polite"></p>
-                    <button id="outdoor-sensor-change-retry" class="secondary-button" type="button" hidden>Retry saving</button>
-                    <p id="outdoor-sensor-change-availability" class="muted sensor-change-status" role="status"></p>
-                    <p id="outdoor-sensor-change-rebuild" class="muted sensor-change-status" role="status" aria-live="polite"></p>
-                    <button id="outdoor-sensor-change-retry-rebuild" class="secondary-button" type="button" hidden>Retry relearning</button>
-                    <div class="sensor-change-history-heading"><h3>Change history</h3><button id="outdoor-sensor-change-refresh" class="secondary-button" type="button">Refresh</button></div>
-                    <p class="muted form-timezone">Finnish local time · Europe/Helsinki</p>
-                    <ul id="outdoor-sensor-change-entries" class="sensor-change-entries" aria-label="Outdoor sensor changes"></ul>
-                    <p id="outdoor-sensor-change-empty" class="muted">No sensor changes recorded.</p>
-                    <button id="outdoor-sensor-change-more" class="secondary-button" type="button" hidden>Show older changes</button>
-                  </div>
-                </details>
-                <details class="learning-support"><summary>How input history is shown</summary><p class="learning-note">Select Model inputs on the chart to explore recorded intervals and manual additions. Temperature inputs preserve the averages originally supplied, including sensor-change settling gaps. Corrected learning can use preserved readings behind those gaps; Model coefficients shows that reconstruction. Fireplace release follows corrected firewood history. Unknown and rejected intervals remain gaps.</p></details>
-              </div>
-            </details>
-            <details id="model-coefficients-details" class="learning-section section-fold">
-              <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
-              <div class="learning-section-body">
-                <p class="learning-intro">Current thermal responses and fixed building assumptions. Each value shows how it was established; fitting alone does not establish readiness.</p>
-                <div id="model-coefficients-content"></div>
-                <details class="learning-support"><summary>Model basis &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
-              </div>
-            </details>
+            </div>
+          </summary>
+          <details id="garage-outcomes-details" class="learning-section section-fold">
+            <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
+            <div class="learning-section-body">
+              <p id="garage-learning-context" class="learning-intro"></p>
+              <div id="garage-learning-outcomes"></div>
+              <details id="garage-validation-details" class="learning-support"><summary>Validation &amp; evidence</summary><div id="garage-learning-evidence"></div><p id="garage-learning-limitations" class="learning-note"></p></details>
+            </div>
           </details>
-          <details id="garage-learning-details" class="dashboard-disclosure learning-groups learning-model-details">
-            <summary><span>Garage learning</span><small>Outcomes, inputs &amp; coefficients</small></summary>
-            <details id="garage-outcomes-details" class="learning-section section-fold">
-              <summary><span class="learning-section-title">Learning outcomes</span><small class="learning-section-kind"> · Calculated</small></summary>
-              <div class="learning-section-body">
-                <p id="garage-learning-context" class="learning-intro"></p>
-                <div id="garage-learning-outcomes"></div>
-                <details id="garage-validation-details" class="learning-support"><summary>Validation &amp; evidence</summary><div id="garage-learning-evidence"></div><p id="garage-learning-limitations" class="learning-note"></p></details>
-              </div>
-            </details>
-            <details id="garage-inputs-details" class="learning-section section-fold">
-              <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
-              <div class="learning-section-body"><p id="garage-input-context" class="learning-intro"></p><div id="garage-learning-inputs"></div></div>
-            </details>
-            <details id="garage-coefficients-details" class="learning-section section-fold">
-              <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
-              <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
-            </details>
+          <details id="garage-inputs-details" class="learning-section section-fold">
+            <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
+            <div class="learning-section-body"><p id="garage-input-context" class="learning-intro"></p><div id="garage-learning-inputs"></div></div>
           </details>
-        </article>
+          <details id="garage-coefficients-details" class="learning-section section-fold">
+            <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
+            <div class="learning-section-body"><p id="garage-coefficient-context" class="learning-intro"></p><div id="garage-learning-coefficients"></div></div>
+          </details>
+        </details>
+      </article>
       </div>
     </section>
 

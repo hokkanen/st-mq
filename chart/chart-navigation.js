@@ -8,6 +8,7 @@ const tickClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki'
  * after movement settles, independently of network refinement. */
 export function createChartNavigation({ canvas, getChart, onSettle }) {
   const $ = id => document.getElementById(id), panel = canvas.closest('.history-panel');
+  const shortcuts = ['chart-shortcut', 'garage-chart-shortcut'].map($).filter(Boolean);
   const pointers = new Map(), listeners = [], inertNodes = [];
   let bounds, view, zoom = 1, fullscreen = false, closed = false, timer, frame, moving = false;
   let snapshot, preview, originalView, tracks = [], gesture, savedFocus, oldOverflow, oldRole, oldModal, fullscreenView, nativeEntered = false, suppressClick = false;
@@ -137,7 +138,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     if (oldRole === null) panel.removeAttribute('role'); else panel.setAttribute('role', oldRole);
     if (oldModal === null) panel.removeAttribute('aria-modal'); else panel.setAttribute('aria-modal', oldModal);
     $('chart-fullscreen').textContent = 'Fullscreen'; $('chart-fullscreen').setAttribute('aria-expanded', 'false');
-    $('chart-shortcut')?.setAttribute('aria-expanded', 'false');
+    for (const shortcut of shortcuts) shortcut.setAttribute('aria-expanded', 'false');
     if (document.fullscreenElement === panel) document.exitFullscreen?.().catch(() => {});
     nativeEntered = false; resize(); savedFocus?.focus({ preventScroll: true });
   }
@@ -153,7 +154,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
       for (const sibling of node.parentElement.children) if (sibling !== node) { inertNodes.push([sibling, sibling.inert]); sibling.inert = true; }
     }
     $('chart-fullscreen').textContent = 'Exit fullscreen'; $('chart-fullscreen').setAttribute('aria-expanded', 'true');
-    $('chart-shortcut')?.setAttribute('aria-expanded', 'true');
+    for (const shortcut of shortcuts) shortcut.setAttribute('aria-expanded', 'true');
     $('chart-fullscreen').focus({ preventScroll: true }); resize();
     // CSS fullscreen remains usable in embedded views and on phones without
     // the native API. A denied browser request does not close that layout.
@@ -167,7 +168,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
       distance: points.length > 1 ? Math.max(10, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)) : 0, moved: false };
   }
   listen($('chart-fullscreen'), 'click', enter);
-  if ($('chart-shortcut')) listen($('chart-shortcut'), 'click', enter);
+  for (const shortcut of shortcuts) listen(shortcut, 'click', enter);
   listen($('chart-zoom-in'), 'click', () => zoomBy(2)); listen($('chart-zoom-out'), 'click', () => zoomBy(0.5));
   listen($('chart-zoom-reset'), 'click', reset);
   listen($('chart-pan-back'), 'click', () => view && move(panView(view, bounds, -0.65)));

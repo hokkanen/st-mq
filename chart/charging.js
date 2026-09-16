@@ -521,7 +521,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         detail: `${presentation.roleDetail}\n\n${view.controlDetail}`, key: `${charger.id}:control` });
       const enabled = charger.settings.enabled === true; device.toggle.textContent = enabled ? 'ON' : 'OFF'; device.toggle.setAttribute('aria-checked', String(enabled));
       updateFields(device.settings, charger.settings, charger);
-      set(`${charger.id}-summary`, presentation.compactSummary); if ($(`${charger.id}-summary`)) $(`${charger.id}-summary`).title = presentation.compactSummary;
     }
     for (const [id, device] of devices) if (!currentIds.has(id)) { device.section.remove(); devices.delete(id); }
     refreshControls();
