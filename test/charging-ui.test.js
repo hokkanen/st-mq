@@ -8,6 +8,7 @@ const now = Date.parse('2026-09-15T18:00:00Z'), startAt = now + 2 * 3600_000, de
 const reading = (value, source = 'teslamate', extra = {}) => ({ value, source, available: value != null, ...extra });
 function charger(id = 'charger1', patch = {}) {
   return { id, label: id === 'charger1' ? 'Charger 1' : 'Charger 2',
+    provider: id === 'charger1' ? 'easee' : 'teslamate',
     settings: structuredClone(DEFAULT_CHARGING_SETTINGS.chargers[id]), capabilities: { scheduling: id === 'charger1', currentControl: false },
     values: { soc: reading(20, 'manual-fallback'), minimumSoc: reading(80, 'manual-fallback'),
       capacityKwh: reading(id === 'charger1' ? 74 : 57, 'manual-fallback'), connected: reading(null) },
@@ -352,6 +353,30 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert(!Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
 });
 
+test('monitoring explanations describe vehicle controls without unsupported scheduling or Equalizer instructions', () => {
+  const observed = Object.fromEntries(view(charger('charger2')).explanations);
+  for (const heading of ['Price planning', 'Manual priority', 'Ready-by time', 'Household forecast', 'Current allocation', 'Turning automatic charging off'])
+    assert.equal(observed[heading], undefined, heading);
+  assert.match(observed.Monitoring, /cannot start, pause or schedule/);
+  assert.match(observed['Native schedule'], /does not supply a scheduled stop/);
+  assert.match(observed['Connection & readings'], /plugged in at this property/);
+  assert.match(observed['Charging current'], /does not change charging current/);
+  assert.match(observed['Target & completion'], /does not change the vehicle’s own charge limit/);
+  const unavailable = view(charger('charger2', { error: 'charging-adapter-unavailable' }));
+  assert.match(unavailable.problem, /Waiting for fresh charging readings/);
+  assert.doesNotMatch(unavailable.problem, /Automatic control/);
+  const generic = Object.fromEntries(view(charger('charger1', { provider: 'example-provider' })).explanations);
+  assert.doesNotMatch(generic['Period transitions'], /Easee/);
+});
+
+test('known charger limits stay available in details while the vehicle is disconnected', () => {
+  const item = charger(), disconnected = view({ ...item, capabilities: { ...item.capabilities, externalLoadBalancing: true },
+    values: { ...item.values, connected: reading(false), maximumCurrentA: reading(16, 'easee'), availableCurrentA: reading(0, 'easee') } });
+  assert.equal(disconnected.showMetrics, false);
+  assert.equal(Object.fromEntries(disconnected.rows)['Charging limit'], '16 A per phase');
+  assert.equal(Object.fromEntries(disconnected.rows)['Last reported Equalizer allowance'], '0 A per phase');
+});
+
 class Events {
   constructor() { this.listeners = new Map(); this.handlers = new Map(); }
   addEventListener(key, listener) {
@@ -524,6 +549,21 @@ test('a planning error stays visible and clears on recovery', () => {
   panel.close();
 });
 
+test('a compact summary warning retains the full cause and updates its open explanation on recovery', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = active(), reason = 'The charger did not confirm the new schedule. The previous start remains active; another reading will be requested.';
+  panel.update(status({ ...item, control: { phase: 'unavailable', reason, owned: { startAt } } }));
+  const notice = $('charger1-notice'), popup = openDetail(notice), trigger = notice.querySelector('button');
+  assert.equal(notice.textContent, 'Charger needs attention'); assert.match(popup.textContent, /previous start remains active/);
+  assert.equal($('charger1-problem').textContent, reason); assert(!$('charger1-device').open);
+  panel.update(status({ ...item, control: { phase: 'waiting', owned: { startAt } }, plan: { ...item.plan, feasible: true } }));
+  document.flushFrames();
+  assert.equal(notice.querySelector('button'), trigger); assert.equal(popup.hidden, false);
+  assert.match(notice.textContent, /Expected on time/); assert.doesNotMatch(popup.textContent, /did not confirm/);
+  assert($('charger1-problem').hidden); panel.close();
+});
+
 test('automatic SoC takes priority while preserving a draft to use when automatic readings are unavailable', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
   const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(); } });
@@ -564,9 +604,10 @@ test('charge summary explanations update without disturbing form drafts, fold st
 });
 
 
-test('controlled and observed equipment use the same charge, target and completion header with details inside the fold', () => {
+test('both chargers keep daily charge, timing, energy and cost in the summary and preferences in the fold', () => {
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
-  panel.update(status()); assert($('charger1-overview').hidden); assert($('charger1-reading-time').hidden);
+  panel.update(status()); assert(!$('charger1-overview').hidden); assert($('charger1-reading-time').hidden);
+  assert.equal($('charger1-soc').textContent, '—'); assert.equal($('charger1-energy').textContent, '—');
   assert.equal($('charger1-enabled-label').textContent, 'Automatic charging');
   assert.equal($('charger1-resume').textContent, 'Resume automatic charging');
   const item = active(), two = charger('charger2');
@@ -595,17 +636,17 @@ test('controlled and observed equipment use the same charge, target and completi
     assert.notEqual($(`${id}-soc`).parentElement, $(`${id}-minimum`).parentElement, 'Charge and target have separate metric columns');
     assert.equal($(`${id}-event`).parentElement, $(`${id}-deadline`).parentElement.parentElement, 'Start and ready-by share a timing row');
     assert.equal($(`${id}-event-label`).textContent, 'Starts'); assert.equal($(`${id}-event-value`).textContent, '23:00');
-    assert(body.contains($(`${id}-remaining`)) && body.contains($(`${id}-energy`)) && body.contains($(`${id}-reading-time`)));
-    assert(body.contains($(`${id}-delivered`)) && body.contains($(`${id}-cost`)), 'Both roles share all three energy and cost facts');
-    assert(!summary.textContent.includes('kWh') && !summary.textContent.includes('€'), 'Energy and cost belong to unfolded details');
-    assert.equal($(`${id}-settings-form`).parentElement, body);
+    assert(summary.contains($(`${id}-remaining`)) && summary.contains($(`${id}-energy`)) && body.contains($(`${id}-reading-time`)));
+    assert(summary.contains($(`${id}-delivered`)) && summary.contains($(`${id}-cost`)), 'Both roles expose all three daily energy and cost facts');
+    assert(summary.textContent.includes('kWh'), 'Energy is visible before expanding details');
+    assert(body.contains($(`${id}-settings-form`)));
     assert(!descendants(summary).some(node => ['INPUT', 'FORM', 'DETAILS', 'A'].includes(node.tagName)));
     const buttons = descendants(summary).filter(node => node.tagName === 'BUTTON');
-    assert.equal(buttons.length, 3);
-    assert(buttons.every(node => node.matches('.status-detail-trigger') && node.type === 'button'), 'Header controls only explain the three metrics');
-    for (const label of ['charge', 'target', 'completion']) {
+    assert(buttons.length >= 9);
+    assert(buttons.every(node => node.matches('.status-detail-trigger') && node.type === 'button'), 'Summary controls explain readings without changing charging settings');
+    for (const label of ['charge', 'target', 'completion', 'delivered', 'energy', 'cost']) {
       const root = $(`${id}-${label}-label`), popup = openDetail(root);
-      assert(overview.contains(root)); assert.equal(popup.getAttribute('role'), 'dialog');
+      assert(summary.contains(root)); assert.equal(popup.getAttribute('role'), 'dialog');
       document.dispatch('keydown', { key: 'Escape' });
       assert.equal(document.activeElement, root.querySelector('.status-detail-trigger'));
     }

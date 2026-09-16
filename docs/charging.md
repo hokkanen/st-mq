@@ -2,23 +2,35 @@
 
 Both chargers use the same model, planner and dashboard card. Charger 1 uses
 Easee's native delayed-start schedules; Charger 2 observes TeslaMate and currently
-has no command adapter. Its scheduling controls are visible but disabled.
+has no command adapter. Unsupported scheduling controls are hidden.
 Heating mode and charging permission are independent.
 
 ## Dashboard and saved preferences
 
-The two charger cards directly below **Garage**'s heating summary show
-connection and, while connected, charge → target, ready-by and the next
-proposed/confirmed action. Remaining grid energy is secondary. During charging
-or a planned pause, the event shows power, the next pause or resumption, or the
-estimated time to the stated target. Readiness and completion use the same
-current forecast of the periods actually being executed.
-Times use short local labels; automatic SoC keeps its original measurement date
-and time visible, or an explicitly labeled receipt time when that is all the
-provider supplies. Disconnected cards hide vehicle percentages and energy.
-An active manual instruction replaces the automatic-plan summary. Settings,
-period details and source notes live under **Settings & details**; the nested
-**How charging works** explains the remaining assumptions and control rules.
+The two openable charger cards directly below **Garage**'s heating summary keep
+their always-visible summaries at a fixed height within each responsive layout.
+Connection and activity stay separate from whether charging is controlled,
+observed or under manual priority. Connected summaries show charge → target,
+the estimated target time, and the next start, pause or resumption alongside the
+automatic ready-by deadline when applicable. Readiness and completion use the
+same current forecast of the periods actually being executed.
+
+The summary also shows grid energy added since the current charge reference,
+remaining grid energy and estimated remaining cost to target. Added energy is
+not a whole-session total: a new vehicle charge reading rebases the reference.
+A reserved notice area shows readiness, manual priority, unavailable readings
+or control problems without changing the summary height. Disconnected and
+unknown-connection summaries use explanatory states rather than presenting
+remembered vehicle percentages or energy as current measurements.
+
+Times use short local labels; charge source details preserve the original
+measurement date and time, or an explicitly labeled receipt time when that is
+all the provider supplies. Opening a card reveals the schedule, readings and
+source notes, settings, and **How charging works**. Explanations follow each
+charger's supported features: the observing charger explains its vehicle
+schedule and estimates, while the controllable charger also explains automatic
+planning, handover and manual priority. Electrical limits and Equalizer details
+stay in the expanded area. Unsupported controls are hidden.
 
 Preferences persist independently for each charger in the application database:
 
@@ -26,7 +38,7 @@ Preferences persist independently for each charger in the application database:
 | --- | --- | --- |
 | Automatic charging | OFF | Unavailable |
 | Requested target | 80% | 80% |
-| Ready by | 06:00 | 06:00, scheduling disabled |
+| Ready by | 06:00 | 06:00 saved default, control hidden |
 | Manual usable-capacity fallback | 74 kWh | 57 kWh |
 | Starting charge | 20% | 20% |
 

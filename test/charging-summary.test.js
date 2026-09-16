@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargerSummary, chargingCost } from '../chart/charging-summary.js';
+import { chargerSummary, chargingCost, chargingNotice } from '../chart/charging-summary.js';
 import { chargerDisplay, chargingTime } from '../chart/charging.js';
 
 const now = Date.parse('2026-09-15T18:00:00Z'), hour = 3_600_000;
@@ -15,6 +15,30 @@ function charger(patch = {}) {
 function summary(item) {
   return chargerSummary(item, chargerDisplay(item, { now }), { now, formatTime: value => chargingTime(value, 'Europe/Helsinki', now) });
 }
+const notice = item => chargingNotice(item, chargerDisplay(item, { now }), summary(item));
+
+test('a summary warning explains uncertainty without claiming a stale healthy forecast', () => {
+  const result = notice(charger({ control: { phase: 'unconfirmed', reason: 'Waiting for a fresh charger reading.' } }));
+  assert.equal(result.state, 'attention'); assert.equal(result.label, 'Charger needs attention');
+  assert.match(result.detail, /fresh charger reading/); assert.doesNotMatch(result.detail, /Expected on time/);
+});
+
+test('manual resumption remains daily information while disconnected and OFF is explicit', () => {
+  const item = charger(), disconnected = { ...item, values: { ...item.values, connected: reading(false) } };
+  const result = notice({ ...disconnected, control: { phase: 'yielded', manual: { kind: 'window',
+    startsAt: startAt, resumeAt: deadlineAt, windowEndAt: deadlineAt + hour } } });
+  assert.equal(result.label, 'Automatic resumes tomorrow 06:00');
+  assert.match(result.detail, /ready-by boundary/);
+  assert.equal(notice({ ...disconnected, settings: { enabled: false } }).label, 'Automatic charging is off');
+});
+
+test('target reached is equally visible for observed and automatically controlled charging', () => {
+  for (const scheduling of [true, false]) {
+    const result = notice(charger({ requiredGridKwh: 0, capabilities: { scheduling } }));
+    assert.match(result.label, /^Target reached/); assert.match(result.detail, /vehicle may continue/);
+  }
+  assert.equal(notice(charger({ plan: {}, forecast: null })).label, 'Automatic charging is on');
+});
 
 test('controlled and observed roles share start activity and estimated target semantics', () => {
   const controlled = summary(charger());

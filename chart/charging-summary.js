@@ -4,6 +4,31 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
   && ['automatic-current-forecast', 'vehicle-stop-unknown'].includes(forecast.reason)
   || forecast?.state === 'forecast' || forecast?.controlled === false && forecast.state !== 'planned';
 
+/** A bounded summary notice; its full explanation remains available on demand. */
+export function chargingNotice(charger, view, summary) {
+  const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
+  if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
+    detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
+  if (view.risk) return { label: 'Target may be late', detail, state: 'attention' };
+  if (view.yielded) {
+    const priority = view.priority || (!view.showMetrics ? view.event : '');
+    const resumption = priority.match(/^Automatic control resumes (.+?)(?: at the ready-by boundary)?\.$/);
+    return { label: resumption ? `Automatic resumes ${resumption[1]}` : 'Manual control has priority',
+      detail: [...new Set([priority, detail || summary.roleDetail].filter(Boolean))].join('\n\n'), state: 'manual' };
+  }
+  if (view.notes.length) return { label: 'Estimate has limitations', detail, state: 'attention' };
+  if (!view.showMetrics) return { label: view.supported && charger.settings?.enabled !== true ? 'Automatic charging is off'
+    : charger.values?.connected?.value === false ? 'Ready for the next connection' : 'Waiting for a connection reading',
+    detail: 'Charge, progress and cost will appear when a vehicle is confirmed connected. Saved settings remain available below.', state: 'quiet' };
+  if (summary.completion.value === 'Reached') return { label: 'Target reached · vehicle decides when to stop',
+    detail: 'No more energy is needed for the displayed target. The vehicle may continue to its own charge limit.', state: 'good' };
+  if (summary.completion.detail === 'Expected on time') return { label: ['Expected on time', view.periodCount].filter(Boolean).join(' · '),
+    detail: 'The current forecast reaches the target by the ready-by time. Estimates change with available power and vehicle readings.', state: 'good' };
+  if (view.deadline) return { label: 'Checking target readiness', detail: summary.completion.detail, state: 'quiet' };
+  return { label: view.supported ? charger.settings?.enabled === true ? 'Automatic charging is on' : 'Automatic charging is off' : 'Vehicle controls charging',
+    detail: `${summary.roleDetail} ${view.readingTime || ''}`.trim(), state: 'quiet' };
+}
+
 /** Price the remaining native charging forecast only when rates cover it fully. */
 export function chargingCost(charger, view, summary, { now = Date.now(), prices = [] } = {}) {
   const forecast = charger.forecast, remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh;

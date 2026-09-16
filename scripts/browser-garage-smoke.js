@@ -133,12 +133,14 @@ try {
         } };
       }
       if (globalThis.chargingSmokeValues) {
-        const state = globalThis.chargingSmokeValues, manual = state === 'manual', controlled = ['manual', 'single', 'periods', 'paused', 'problem', 'progress', 'full'].includes(state);
+        const state = globalThis.chargingSmokeValues, manual = ['manual', 'manual-stop', 'handover-pending'].includes(state),
+          controlled = manual || ['single', 'periods', 'paused', 'problem', 'progress', 'full', 'risk', 'waiting', 'provisional',
+            'released', 'handover', 'unknown-controlled', 'disconnected-controlled'].includes(state);
         const charger = status.charging.chargers.find(item => item.id === (controlled ? 'charger1' : 'charger2'));
         const observation = value => ({ value, source: 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
         charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
         charger.values.minimumSoc = observation(85);
-        charger.values.connected = observation(state !== 'disconnected');
+        charger.values.connected = observation(state.startsWith('unknown') ? null : !state.startsWith('disconnected'));
         charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
         charger.values.charging = observation(globalThis.chargingSmokeValues === 'charging');
         charger.values.powerKw = observation(8.2);
@@ -163,6 +165,12 @@ try {
           charger.values.scheduledEndAt = observation(status.now + 17 * 3600_000);
           charger.telemetry = { scheduledEndKind: 'scheduled-stop' };
           charger.plan = { startAt: status.now + 3 * 3600_000, deadlineAt: status.now + 15 * 3600_000 };
+          if (state === 'manual-stop') {
+            charger.control.manual = { kind: 'stop', resumeAt: status.now + 15 * 3600_000,
+              detectedAt: status.now - 3600_000, reason: 'Charging stopped from the charger app.' };
+            charger.values.scheduledStartAt = observation(null);
+          }
+          if (state === 'handover-pending') charger.control.manual.resumeAt = status.now - 60_000;
         } else if (controlled) {
           charger.settings.enabled = true;
           charger.values.maximumCurrentA = observation(16); charger.values.availableCurrentA = observation(16);
@@ -192,6 +200,21 @@ try {
             charger.control.phase = 'unavailable'; charger.control.errorCode = 'readback-failed';
             charger.control.reason = 'Easee did not confirm the update. The last confirmed schedule may still be active; another reading will be requested.';
             charger.plan = { ...charger.plan, startAt: status.now + 3 * 3600_000, periods: [{ startAt: status.now + 3 * 3600_000, endAt: null }] };
+          }
+          if (state === 'risk') {
+            charger.forecast = { ...charger.forecast, feasible: false, reason: 'insufficient-time',
+              finishAt: status.now + 18 * 3600_000, shortfallGridKwh: 8.5 };
+          }
+          if (['waiting', 'provisional', 'released', 'handover'].includes(state)) {
+            charger.control = { phase: state === 'waiting' ? 'planning' : state };
+            charger.plan = { deadlineAt: status.now + 15 * 3600_000, periods: [] };
+            charger.forecast = { state: 'unavailable', finishAt: null, feasible: null };
+            charger.values.scheduledStartAt = observation(null);
+          }
+          if (state === 'handover') {
+            charger.settings.enabled = false;
+            charger.control = { phase: 'disabled', handoverConfirmed: false,
+              reason: 'Automatic charging is off. The charger has not confirmed the handover; the last instruction may remain active.' };
           }
         }
       }
@@ -229,15 +252,15 @@ try {
     await until(`document.getElementById('charger${charger}-settings-message').textContent === 'Settings saved.'`);
   }
   await evaluate("(() => { const field=document.getElementById('charger1-setting-manualSoc'); field.value='43'; field.dispatchEvent(new Event('input')); document.getElementById('charger1-settings-form').requestSubmit(); })()");
-  await until("document.getElementById('charger1-soc').textContent==='43 %'");
+  await until("document.getElementById('charger1-settings-message').textContent==='Settings saved.'");
   await send('Page.reload');
   await until("document.getElementById('charger1-setting-capacityKwh')?.disabled === false");
   await until("typeof globalThis.refreshLearningSmokeStatus === 'function'");
   assert.deepEqual(await evaluate("['charger1-setting-capacityKwh','charger2-setting-capacityKwh'].map(id=>document.getElementById(id).value)"), ['76', '59']);
   assert.equal(await evaluate("document.getElementById('charger1-setting-manualSoc').value"), '43');
-  assert.equal(await evaluate("document.getElementById('charger1-soc').textContent"), '43 %');
-  assert.equal(await evaluate("document.getElementById('charger1-sources').textContent"), 'Starting charge');
-  assert.equal(await evaluate("document.getElementById('charger1-overview').hidden"), true);
+  assert.equal(await evaluate("document.getElementById('charger1-soc').textContent"), '—',
+    'The saved starting charge does not appear as a current charge before a connection is known');
+  assert.equal(await evaluate("document.getElementById('charger1-overview').hidden"), false);
   await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('charger1-device').open=true");
   const secondChargerNode = await evaluate("window.originalChargingSmokeNode=document.getElementById('charger2-device'); true");
   assert(secondChargerNode);
@@ -257,8 +280,10 @@ try {
     'Observed charging estimates remaining cost from forecast time and the supplied electricity rates');
   assert.equal(await evaluate("document.getElementById('charger2-source-info') || document.getElementById('charger2-completion-info')"), null,
     'Charger bodies omit repeated charge-source and target-estimate links');
-  assert.equal(await evaluate("document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-remaining'))"), false,
-    'Grid energy stays inside the equipment body for both charging roles');
+  assert.equal(await evaluate("document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-remaining'))"), true,
+    'Grid energy is visible in the daily charger summary');
+  assert.equal(await evaluate("['delivered', 'cost'].every(metric => document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-' + metric)))"), true,
+    'Delivered energy and remaining charging cost are visible before opening the fold');
   assert.equal(await evaluate("document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-reading-time'))"), false,
     'The original reading timestamp remains available inside the equipment body');
   assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-device-status').textContent"), 'Connected');
@@ -267,10 +292,15 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:charger1-vehicle:other\"] .equipment-connection-meta').textContent"), 'Vehicle · MQTT');
   assert.doesNotMatch(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"]').textContent"), /No live report yet/);
   assert.equal(await evaluate("document.getElementById('charger2-device')===window.originalChargingSmokeNode"), true);
-  for (const expanded of [false, true]) for (const metric of ['charge', 'target', 'completion']) {
+  const chargerMetricSelectors = {
+    charge: '#charger2-charge-label', target: '#charger2-target-label', completion: '#charger2-completion-label',
+    delivered: '#charger2-delivered-label', energy: '#charger2-energy-label', cost: '#charger2-cost-label',
+    role: '#charger2-state', activity: '#charger2-event-value', context: '#charger2-notice',
+  };
+  for (const expanded of [false, true]) for (const [metric, selector] of Object.entries(chargerMetricSelectors)) {
     await evaluate(`(() => {
       document.getElementById('charger2-device').open=${expanded};
-      const trigger = document.querySelector('#charger2-${metric}-label .status-detail-trigger');
+      const trigger = document.querySelector('${selector} .status-detail-trigger');
       globalThis.chargerMetricSmokeTrigger = trigger; trigger.focus();
     })()`);
     await pause(60);
@@ -320,7 +350,7 @@ try {
   await evaluate("globalThis.chargingSmokeValues='progress'; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger1-soc').textContent==='≈52 %'");
   assert.match(await evaluate("document.getElementById('charger1-sources').textContent"), /Estimated/);
-  assert.match(await evaluate("document.getElementById('charger1-remaining').textContent.toLowerCase()"), /grid remaining.*≈27 kwh|≈27 kwh.*grid remaining/);
+  assert.match(await evaluate("document.getElementById('charger1-remaining').textContent.toLowerCase()"), /remaining.*≈27 kwh|≈27 kwh.*remaining/);
   assert.equal(await evaluate("document.getElementById('charger1-deadline').textContent"), 'tomorrow 06:00');
   assert.equal(await evaluate("document.getElementById('charger1-completion').textContent"), 'tomorrow 01:00');
   assert.equal(await evaluate("document.getElementById('charger1-delivered').textContent"), '10 kWh');
@@ -353,9 +383,11 @@ try {
     'Escape returns focus to the current charging explanation trigger');
   await evaluate("globalThis.chargingSmokeValues='disconnected'; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger2-device').dataset.state==='Not connected'");
-  assert.equal(await evaluate("document.getElementById('charger2-overview').hidden"), true);
-  assert.equal(await evaluate("getComputedStyle(document.getElementById('charger2-overview')).display"), 'none',
-    'Disconnected charging metrics remain hidden despite the summary grid layout');
+  assert.equal(await evaluate("document.getElementById('charger2-overview').hidden"), false);
+  assert.notEqual(await evaluate("getComputedStyle(document.getElementById('charger2-overview')).display"), 'none',
+    'Disconnected charging retains the summary metric layout');
+  assert.deepEqual(await evaluate("['soc', 'minimum', 'delivered', 'energy'].map(metric => document.getElementById('charger2-' + metric).textContent)"),
+    ['—', '—', '—', '—'], 'Disconnected summaries replace stale charge and energy readings with dashes');
   assert.equal(await evaluate("document.getElementById('charger2-reading-time').hidden"), true);
   await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
   await until("document.getElementById('charger2-setting-minimumSoc').disabled===false");
@@ -626,6 +658,64 @@ try {
     await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
     section.scrollIntoView({block: 'start'});
   })()`);
+  const chargerSummaryHeights = new Map();
+  const checkChargerSummaries = async name => {
+    const summaries = await evaluate(`Array.from(document.querySelectorAll('#charging-devices > details > summary'))
+      .filter(summary => summary.checkVisibility()).map(summary => {
+        const box = summary.getBoundingClientRect(), problems = [];
+        const bands = [...summary.children].filter(band => band.checkVisibility()).map(band => ({
+          element: band, name: band.id || band.className, box: band.getBoundingClientRect(),
+        })).filter(band => band.box.width && band.box.height);
+        const inside = (outer, inner) => inner.left >= outer.left - 1 && inner.right <= outer.right + 1
+          && inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1;
+        if (summary.scrollHeight > summary.clientHeight + 1)
+          problems.push({ verticalOverflow: summary.scrollHeight - summary.clientHeight });
+        for (const [index, band] of bands.entries()) {
+          if (!inside(box, band.box)) problems.push({ band: band.name, outsideSummary: true });
+          for (const other of bands.slice(index + 1)) {
+            const overlapX = Math.min(band.box.right, other.box.right) - Math.max(band.box.left, other.box.left);
+            const overlapY = Math.min(band.box.bottom, other.box.bottom) - Math.max(band.box.top, other.box.top);
+            if (overlapX > 1 && overlapY > 1)
+              problems.push({ overlappingBands: [band.name, other.name], overlapY });
+          }
+        }
+        const fields = [...summary.querySelectorAll('h4, strong, small, p, .equipment-device-status, .status-detail-trigger')]
+          .filter(field => field.checkVisibility());
+        for (const field of fields) {
+          const bounds = field.getBoundingClientRect(), band = bands.find(band => band.element.contains(field));
+          const style = getComputedStyle(field);
+          const expandableClamp = field.classList.contains('status-detail-trigger') && style.overflowY === 'hidden'
+            && Number.parseInt(style.webkitLineClamp, 10) > 0;
+          const range = document.createRange(); range.selectNodeContents(field);
+          const percentWrap = /-(?:soc|minimum)$/.test(field.id) && /%$/.test(field.textContent)
+            && range.getBoundingClientRect().height > parseFloat(style.lineHeight) + 1;
+          if (!inside(box, bounds) || band && !inside(band.box, bounds)
+            || field.scrollWidth > field.clientWidth + 1 || !expandableClamp && field.scrollHeight > field.clientHeight + 1 || percentWrap)
+            problems.push({ field: field.id || field.className, band: band?.name, percentWrap,
+              width: field.clientWidth, scrollWidth: field.scrollWidth,
+              height: field.clientHeight, scrollHeight: field.scrollHeight,
+              bandOverflow: band ? { left: band.box.left - bounds.left, right: bounds.right - band.box.right,
+                top: band.box.top - bounds.top, bottom: bounds.bottom - band.box.bottom } : null });
+        }
+        return { id: summary.parentElement.id, viewport: innerWidth, height: box.height, problems };
+      })`);
+    assert.equal(summaries.length, 2, `${name} keeps both charger summaries visible`);
+    for (const summary of summaries.filter(summary => summary.problems.length)) {
+      await evaluate(`document.getElementById('${summary.id}').scrollIntoView({block: 'start'})`);
+      const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(join(artifacts, `${name}-overflow-${summary.id}.png`), Buffer.from(screenshot.data, 'base64'));
+    }
+    assert.deepEqual(summaries.filter(summary => summary.problems.length), [],
+      `${name} keeps summary bands separate and all charging text inside its reserved space`);
+    for (const summary of summaries) {
+      const key = `${summary.viewport}:${summary.id}`;
+      if (!chargerSummaryHeights.has(key)) chargerSummaryHeights.set(key, summary.height);
+      assert.ok(Math.abs(summary.height - chargerSummaryHeights.get(key)) <= 1,
+        `${name} keeps ${summary.id} at its fixed ${chargerSummaryHeights.get(key)}px summary height (was ${summary.height}px)`);
+    }
+    assert.ok(Math.abs(summaries[0].height - summaries[1].height) <= 1,
+      `${name} gives both charging roles the same summary height`);
+  };
   const capture = async name => {
     await pause(60);
     const screenshot = await send('Page.captureScreenshot', { format: 'png' });
@@ -655,50 +745,39 @@ try {
         return box.left >= 0 && box.right <= innerWidth + 1 && contentFits ? []
           : [{ id: node.id, left: box.left, right: box.right, contentFits }];
       })`), [], `${name} keeps garage settings and live budget content within their sections`);
-    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#charging-devices > details > summary'))
-      .filter(node => node.checkVisibility()).flatMap(node => {
-        const box = node.getBoundingClientRect();
-        const fields = [...node.querySelectorAll('h4, strong, small, p, .equipment-device-status')]
-          .filter(field => field.checkVisibility());
-        const overflow = fields.filter(field => {
-          const bounds = field.getBoundingClientRect();
-          const range = document.createRange(); range.selectNodeContents(field);
-          return bounds.left < box.left - 1 || bounds.right > box.right + 1
-            || field.scrollWidth > field.clientWidth + 1
-            || /-(?:soc|minimum)$/.test(field.id) && /%$/.test(field.textContent)
-              && range.getBoundingClientRect().height > parseFloat(getComputedStyle(field).lineHeight) + 1;
-        }).map(field => {
-          const style = getComputedStyle(field), context = document.createElement('canvas').getContext('2d');
-          context.font = style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily;
-          return { id: field.id || field.className, width: field.clientWidth, scrollWidth: field.scrollWidth,
-            height: field.getBoundingClientRect().height, lineHeight: style.lineHeight,
-            textWidth: context.measureText(field.textContent).width };
-        });
-        return overflow.length ? [{ id: node.id, overflow }] : [];
-      })`), [], `${name} keeps charger roles, metrics and timing within their summary`);
+    await checkChargerSummaries(name);
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#charging-devices > details'))
       .filter(device => device.querySelector('.charging-overview').checkVisibility()).flatMap(device => {
         const id = device.id.replace(/-device$/, ''), errors = [];
         const range = document.createRange(), textBox = element => {
           range.selectNodeContents(element); return range.getBoundingClientRect();
         };
-        if (device.open) for (const [upper, lower] of [['soc', 'delivered'], ['minimum', 'energy'], ['completion', 'cost']]) {
+        for (const [upper, lower] of [['soc', 'delivered'], ['minimum', 'energy'], ['completion', 'cost']]) {
           const first = textBox(document.getElementById(id + '-' + upper));
           const second = textBox(document.getElementById(id + '-' + lower));
           const firstAnchor = upper === 'completion' ? first.left : (first.left + first.right) / 2;
           const secondAnchor = upper === 'completion' ? second.left : (second.left + second.right) / 2;
-          if (Math.abs(firstAnchor - secondAnchor) > 1) errors.push({ upper, lower, first: firstAnchor, second: secondAnchor });
+          if (Math.abs(firstAnchor - secondAnchor) > 1) {
+            const lowerElement = document.getElementById(id + '-' + lower);
+            errors.push({ upper, lower, first: firstAnchor, second: secondAnchor,
+              upperTextWidth: first.width, lowerTextWidth: second.width,
+              valueWidth: lowerElement.getBoundingClientRect().width,
+              columnWidth: lowerElement.parentElement.getBoundingClientRect().width });
+          }
         }
-        range.selectNodeContents(device.querySelector('.charging-progress-arrow')); const arrow = range.getBoundingClientRect();
+        const arrowElement = device.querySelector('.charging-progress-arrow');
+        if (!arrowElement.checkVisibility()) return errors.length ? [{ id, errors }] : [];
+        range.selectNodeContents(arrowElement); const arrow = range.getBoundingClientRect();
         range.selectNodeContents(document.getElementById(id + '-soc')); const charge = range.getBoundingClientRect();
         const difference = Math.abs((arrow.top + arrow.bottom - charge.top - charge.bottom) / 2);
         if (difference > 4) errors.push({ arrowCenterDifference: difference });
         const target = textBox(document.getElementById(id + '-minimum'));
         const expectedArrowCenter = (charge.left + charge.right + target.left + target.right) / 4;
         const midpointDifference = Math.abs((arrow.left + arrow.right) / 2 - expectedArrowCenter);
-        if (midpointDifference > (innerWidth > 600 ? 1 : 6)) errors.push({ arrowMidpointDifference: midpointDifference });
+        const narrowColumns = device.parentElement.getBoundingClientRect().width <= 360;
+        if (midpointDifference > (narrowColumns ? 6 : 1)) errors.push({ arrowMidpointDifference: midpointDifference });
         return errors.length ? [{ id, errors }] : [];
-      })`), [], `${name} aligns charger body metrics with the overview and centers the charge arrow`);
+      })`), [], `${name} aligns daily charger facts with the overview and centers the charge arrow`);
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.native-heat-pump > summary .pump-native-overview strong'))
       .filter(value => value.checkVisibility() && value.childNodes.length === 1 && value.firstChild.nodeType === Node.TEXT_NODE)
       .flatMap(value => {
@@ -711,6 +790,18 @@ try {
         return broken.length ? [{ id: value.id, broken }] : [];
       })`), [], `${name} keeps native heat-pump values readable without breaking words`);
   };
+  const chargingCases = [
+    ['unknown', 'charger2', 'Connection unknown'], ['disconnected', 'charger2', 'Not connected'],
+    ['unknown-controlled', 'charger1', 'Connection unknown'], ['disconnected-controlled', 'charger1', 'Not connected'],
+    ['full', 'charger1', 'Charging'], ['single', 'charger1', 'Scheduled'], ['manual', 'charger1', 'Manual schedule'],
+    ['manual-stop', 'charger1', 'Manual control'], ['handover-pending', 'charger1', 'Handover pending'],
+    ['handover', 'charger1', 'Handover unconfirmed'], ['waiting', 'charger1', 'Connected'],
+    ['provisional', 'charger1', 'Connected'], ['released', 'charger1', 'Connected'],
+    ['risk', 'charger1', 'Scheduled'], ['periods', 'charger1', 'Scheduled'],
+    ['paused', 'charger1', 'Paused between periods'], ['problem', 'charger1', 'Update unconfirmed'],
+    ['scheduled', 'charger2', 'Connected'], ['unavailable', 'charger2', 'Connected'],
+    ['charging', 'charger2', 'Charging'], ['progress', 'charger1', 'Charging'],
+  ];
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
     for (const theme of ['dark', 'light']) {
@@ -775,21 +866,23 @@ try {
           document.getElementById('charger1-device').scrollIntoView({block:'start'})`);
         await capture(`chargers-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
       }
-      for (const state of ['full', 'single', 'manual', 'periods', 'paused', 'problem', 'scheduled', 'unavailable', 'charging', 'progress']) {
-        const id = ['scheduled', 'unavailable', 'charging'].includes(state) ? 'charger2' : 'charger1';
+      for (const [state, id, expected] of chargingCases) {
         await evaluate(`globalThis.chargingSmokeValues='${state}'; globalThis.refreshLearningSmokeStatus()`);
-        await until(`document.getElementById('${id}-device').dataset.state==='${({ single: 'Scheduled', manual: 'Manual schedule', periods: 'Scheduled', paused: 'Paused between periods', problem: 'Update unconfirmed', scheduled: 'Connected', unavailable: 'Connected', charging: 'Charging', progress: 'Charging', full: 'Charging' })[state]}'`);
+        await until(`document.getElementById('${id}-device').dataset.state==='${expected}'`);
         if (state === 'unavailable') await until(`document.getElementById('${id}-completion').textContent==='No estimate'`);
         if (state === 'full') await until(`document.getElementById('${id}-completion').textContent==='Reached'`);
-        await evaluate(`document.getElementById('${id}-device').open=true;
-          document.getElementById('${id}-device').scrollIntoView({block:'start'})`);
+        for (const expanded of [false, true]) {
+          await evaluate(`document.querySelectorAll('#charging-devices > details').forEach(fold => fold.open=${expanded});
+            document.getElementById('${id}-device').scrollIntoView({block:'start'})`);
+          await checkChargerSummaries(`charger-${state}-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
+        }
         await capture(`charger-${state}-${width}-${theme}`);
-        if (state === 'full' && width === 320) {
+        if (state === 'full') {
           await evaluate("document.getElementById('charger1-soc').textContent='≈99.9 %'");
           await capture(`charger-fractional-percentage-${width}-${theme}`);
           await evaluate("document.getElementById('charger1-soc').textContent='≈100 %'");
         }
-        if (state === 'single') for (const [help, target] of [['schedule', 'schedule-info'], ['metric', 'charge-label']]) {
+        if (state === 'single') for (const [help, target] of [['schedule', 'schedule-info'], ['metric', 'charge-label'], ['context', 'notice']]) {
           await evaluate(`document.querySelector('#charger1-${target} .status-detail-trigger').scrollIntoView({block:'center'})`);
           await pause(60);
           await evaluate(`document.querySelector('#charger1-${target} .status-detail-trigger').click()`);
@@ -819,6 +912,27 @@ try {
       await capture(`${name}-${width}`);
     }
   }
+  // Intermediate desktop columns can be tighter than mobile at the same font size.
+  for (const width of [900, 1024]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
+    for (const theme of ['dark', 'light']) {
+      await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`);
+      for (const state of ['full', 'progress']) {
+        await evaluate(`globalThis.chargingSmokeValues='${state}'; globalThis.refreshLearningSmokeStatus()`);
+        await until(`document.getElementById('charger1-soc').textContent==='${state === 'full' ? '≈100 %' : '≈52 %'}'`);
+        for (const expanded of [false, true]) {
+          await evaluate(`document.querySelectorAll('#charging-devices > details').forEach(fold => fold.open=${expanded});
+            document.getElementById('charger1-device').scrollIntoView({block:'start'})`);
+          await capture(`charger-${state}-${width}-${theme}-${expanded ? 'expanded' : 'collapsed'}`);
+        }
+        if (state === 'full') {
+          await evaluate("document.getElementById('charger1-soc').textContent='≈99.9 %'");
+          await capture(`charger-fractional-percentage-${width}-${theme}`);
+        }
+      }
+    }
+  }
+  await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
   for (const left of ['garage_model_front', 'garage_model_difference', 'garage_coefficient_rear_lossPerHour']) {
     await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
     await until(`document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.left==='${left}'`);
@@ -826,11 +940,14 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-browser-smoke-passed', artifacts,
+    chargerSummaryHeights: Object.fromEntries(chargerSummaryHeights), chargingStates: chargingCases.length,
     checks: ['Home default', 'separate scope and method controls', 'negative Garage and Total figures',
       'disabled release without an owned episode', 'closed Garage disclosures', '1440/390/320px layouts',
       'equipment rows open with Enter and full-summary pointer clicks and preserve focus and expansion during refresh',
       'shared charger cards, energy-based percentage with source and original vehicle timestamp, 20% starting fallback, confirmed periods, current readiness, TeslaMate reception, seasonal history explanation',
-      'Controlled and Observed roles with shared charge, target and completion metrics, separate start and ready-by timing, grid energy and cost inside the equipment body',
+      'Controlled and Observed roles with shared charge, target, completion, delivered energy, remaining energy and cost in the always-visible summary',
+      'fixed matching charger summary heights across both themes, all viewports, connection, charging, planning, manual priority, risk and handover states, and open or closed folds',
+      'summary bands remain separate without vertical overflow; disconnected and unknown readings retain the layout without stale percentages',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
       'separate Home and Garage cards, independent keyboard disclosures, and both chart shortcuts preserve fold state and focus',
       'desktop column grouping and mobile Home, Garage, Data order',
