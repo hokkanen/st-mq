@@ -18,8 +18,10 @@ import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { confirmPausedHeating, homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 import { createDashboardLayout } from './dashboard-layout.js';
+import { createPageFullscreen } from './page-fullscreen.js';
 
 const $ = id => document.getElementById(id);
+createPageFullscreen({ document, button: $('fullscreen-toggle') });
 createDashboardLayout(document.querySelector('.controller-panels'));
 for (const summary of document.querySelectorAll('.zone-summary')) {
   summary.addEventListener('click', event => {

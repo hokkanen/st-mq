@@ -36,7 +36,11 @@ These scripts start their own disposable Chrome processes:
 ```sh
 node scripts/browser-equipment-smoke.js
 node scripts/browser-garage-smoke.js
+node scripts/browser-fullscreen-smoke.js
 ```
+
+The fullscreen suite checks the page controls, chart entry/exit restoration,
+external fullscreen changes and fallback behavior with synthetic data.
 
 They default to `/opt/google/chrome/chrome`; set `STMQ_CHROME_BIN` if needed. The
 remaining Chrome checks expect a separately started browser with a disposable

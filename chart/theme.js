@@ -20,7 +20,6 @@
     if (meta) meta.content = current === 'dark' ? '#101e19' : '#f3f5f1';
     if (button) {
       const next = current === 'dark' ? 'light' : 'dark';
-      button.textContent = `${next === 'light' ? 'Light' : 'Dark'} theme`;
       button.setAttribute('aria-label', `Switch to ${next} theme`);
       button.title = `Switch to ${next} theme`;
     }

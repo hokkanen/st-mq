@@ -1,4 +1,5 @@
 import { clampView, zoomView, panView, viewportTicks } from './chart-viewport.js';
+import { enterPageFullscreen, exitPageFullscreen } from './page-fullscreen.js';
 
 const stamp = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const day = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric' });
@@ -11,7 +12,7 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
   const shortcuts = ['chart-shortcut', 'garage-chart-shortcut'].map($).filter(Boolean);
   const pointers = new Map(), listeners = [], inertNodes = [];
   let bounds, view, zoom = 1, fullscreen = false, closed = false, timer, frame, moving = false;
-  let snapshot, preview, originalView, tracks = [], gesture, savedFocus, oldOverflow, oldRole, oldModal, fullscreenView, nativeEntered = false, suppressClick = false;
+  let snapshot, preview, originalView, tracks = [], gesture, savedFocus, oldOverflow, oldRole, oldModal, fullscreenView, pageFullscreenAtEntry = false, suppressClick = false;
   const minimum = 60_000;
   function listen(node, type, fn, options) { node.addEventListener(type, fn, options); listeners.push(() => node.removeEventListener(type, fn, options)); }
   function baseSpan() {
@@ -137,13 +138,23 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     for (const [node, inert] of inertNodes.splice(0)) node.inert = inert;
     if (oldRole === null) panel.removeAttribute('role'); else panel.setAttribute('role', oldRole);
     if (oldModal === null) panel.removeAttribute('aria-modal'); else panel.setAttribute('aria-modal', oldModal);
-    $('chart-fullscreen').textContent = 'Fullscreen'; $('chart-fullscreen').setAttribute('aria-expanded', 'false');
+    reflectChartButton(false);
     for (const shortcut of shortcuts) shortcut.setAttribute('aria-expanded', 'false');
-    if (document.fullscreenElement === panel) document.exitFullscreen?.().catch(() => {});
-    nativeEntered = false; resize(); savedFocus?.focus({ preventScroll: true });
+    // Restore the original page state only while fullscreen is still active.
+    // An interruption leaves chart inspection open; re-entry uses this same rule.
+    if (!pageFullscreenAtEntry && document.fullscreenElement) exitPageFullscreen(document).catch(() => {});
+    resize(); savedFocus?.focus({ preventScroll: true });
+  }
+  function reflectChartButton(active) {
+    const button = $('chart-fullscreen');
+    button.dataset.chartView = String(active);
+    button.setAttribute('aria-expanded', String(active));
+    button.setAttribute('aria-label', active ? 'Exit chart view' : 'Open chart view');
+    button.title = active ? 'Exit chart view' : 'Open chart view';
   }
   function enter(event) {
     if (fullscreen) return leave();
+    pageFullscreenAtEntry = Boolean(document.fullscreenElement);
     savedFocus = document.activeElement; oldOverflow = document.body.style.overflow;
     oldRole = panel.getAttribute('role'); oldModal = panel.getAttribute('aria-modal');
     fullscreen = true; panel.dataset.fullscreen = 'true'; document.body.classList.add('chart-fullscreen-open'); document.body.style.overflow = 'hidden';
@@ -153,13 +164,16 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     for (let node = panel; node.parentElement && node !== document.body; node = node.parentElement) {
       for (const sibling of node.parentElement.children) if (sibling !== node) { inertNodes.push([sibling, sibling.inert]); sibling.inert = true; }
     }
-    $('chart-fullscreen').textContent = 'Exit fullscreen'; $('chart-fullscreen').setAttribute('aria-expanded', 'true');
+    reflectChartButton(true);
     for (const shortcut of shortcuts) shortcut.setAttribute('aria-expanded', 'true');
     $('chart-fullscreen').focus({ preventScroll: true }); resize();
     // CSS fullscreen remains usable in embedded views and on phones without
     // the native API. A denied browser request does not close that layout.
-    if (event?.isTrusted && document.fullscreenEnabled && panel.requestFullscreen) {
-      panel.requestFullscreen().then(() => { if (closed || !fullscreen) document.exitFullscreen?.().catch(() => {}); else nativeEntered = true; }).catch(() => {});
+    // Keep one fullscreen element for both modes, so chart Exit cannot pop a
+    // nested fullscreen stack or hide the dashboard after leaving inspection.
+    const root = document.documentElement;
+    if (!pageFullscreenAtEntry && event?.isTrusted && document.fullscreenEnabled && root.requestFullscreen) {
+      enterPageFullscreen(document, () => !closed && fullscreen).catch(() => {});
     }
   }
   function pointerBasis() {
@@ -213,10 +227,9 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
   }
   for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) listen(canvas, name, release);
   listen(canvas, 'click', event => { if (suppressClick) { event.preventDefault(); event.stopImmediatePropagation(); suppressClick = false; } }, true);
-  listen(document, 'fullscreenchange', () => { if (nativeEntered && document.fullscreenElement !== panel) leave(); });
+  listen(document, 'fullscreenchange', resize);
   listen(window, 'resize', resize);
   listen(document, 'keydown', event => {
-    if (fullscreen && event.key === 'Escape') { event.preventDefault(); leave(); return; }
     if (fullscreen && event.key === 'Tab') {
       const focusable = [...panel.querySelectorAll('button, input, select, [tabindex="0"]')].filter(node => !node.disabled && node.getClientRects().length);
       const index = focusable.indexOf(document.activeElement);

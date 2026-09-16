@@ -460,14 +460,25 @@ for learning**; inclusion/exclusion in *session averages* concerns only the
 meter comparison and is independent of learning. No learning gates or algorithm
 versions change for this presentation update.
 
-## Fullscreen chart exploration
+## Chart exploration and fullscreen
 
-The chart's **Fullscreen** button, immediately right of the left-axis selector,
+The chart icon button, immediately right of the left-axis selector,
 opens a view with zoom, pan, reset and a selected-period navigator. The normal
 chart is fixed to the entire selected period, with no zoom controls or navigator.
-**Exit fullscreen** or Escape restores that fixed chart. Reopening fullscreen
+**Exit** restores that fixed chart. Reopening chart view
 resumes its previous zoom and position while the selected dates remain the same.
-On desktop, the fullscreen heading is one compact row with zoom controls centered
+The Home and Garage chart shortcuts open the same view.
+
+Chart view requests page fullscreen when available. If the dashboard was already
+in page fullscreen, **Exit** keeps it there; otherwise **Exit** leaves page
+fullscreen. Leaving fullscreen through Escape or another browser action keeps
+chart view open. **Exit** then leaves the dashboard outside page fullscreen.
+If page fullscreen is re-entered before **Exit**, the original entry state once
+again determines whether fullscreen is kept. The header's fullscreen icon follows
+page fullscreen changes from any control. Browser-level fullscreen such as F11
+is separate and cannot be tracked or controlled consistently by the page.
+
+On desktop, the chart view heading is one compact row with zoom controls centered
 and the axis selector and exit button on the right. Narrow phones use two compact
 rows; landscape phones keep the controls in one row.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
@@ -476,9 +487,9 @@ or use the navigator to move through the selection even at baseline zoom.
 Rotation preserves magnification and the visible center where the date boundaries
 allow it. Axes and controls stay within the screen.
 
-In fullscreen, pinch or the mouse wheel zooms around the gesture position, dragging
-pans, and tapping inspects a value. With the fullscreen chart focused, +/− zoom,
-arrow keys pan, and Home resets. Outside fullscreen, wheel, keyboard and touch
+In chart view, pinch or the mouse wheel zooms around the gesture position, dragging
+pans, and tapping inspects a value. With the chart focused, +/− zoom,
+arrow keys pan, and Home resets. Outside chart view, wheel, keyboard and touch
 retain their normal page behavior and do not zoom or pan the chart. The applied
 Finnish dates are fixed until another date, preset or date-navigation action is explicitly applied,
 including across midnight. Zooming, theme/series changes, refresh and fullscreen

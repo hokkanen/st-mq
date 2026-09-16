@@ -32,13 +32,16 @@ test('theme defaults to dark before DOM readiness and remembers a toggle across 
   assert.equal(page.root.dataset.theme, 'dark');
   assert.equal(page.meta.content, '#101e19');
   page.ready();
+  assert.equal(page.button.attributes['aria-label'], 'Switch to light theme');
+  assert.equal(page.button.title, 'Switch to light theme');
   page.theme.initialize(); // Reinitializing must not attach another click handler.
   page.click();
   assert.equal(page.root.dataset.theme, 'light');
   assert.equal(page.theme.current, 'light');
   assert.equal(page.saved.get('home-energy-theme'), 'light');
-  assert.equal(page.button.textContent, 'Dark theme');
+  assert.equal(page.button.textContent, ''); // Leave the icon markup intact.
   assert.equal(page.button.attributes['aria-label'], 'Switch to dark theme');
+  assert.equal(page.button.title, 'Switch to dark theme');
   assert.equal(page.changes.length, 1);
   assert.equal(page.changes[0].type, 'themechange');
   assert.equal(page.changes[0].detail.theme, 'light');
@@ -52,8 +55,11 @@ test('saved light preference is restored before DOM readiness and explicit dark 
   assert.equal(page.saved.size, 0);
   assert.equal(page.changes.length, 0);
   page.ready();
-  assert.equal(page.button.textContent, 'Dark theme');
+  assert.equal(page.button.attributes['aria-label'], 'Switch to dark theme');
+  assert.equal(page.button.title, 'Switch to dark theme');
   page.theme.setTheme('dark');
+  assert.equal(page.button.attributes['aria-label'], 'Switch to light theme');
+  assert.equal(page.button.title, 'Switch to light theme');
   assert.equal(page.saved.get('home-energy-theme'), 'dark');
   assert.equal(browser({ preference: page.saved.get('home-energy-theme') }).theme.current, 'dark');
 });
@@ -84,10 +90,10 @@ test('storage changes in other tabs do not override the current page theme', () 
   assert.equal(page.theme.current, 'dark');
   page.click();
   assert.equal(page.theme.current, 'light');
-  assert.equal(page.button.textContent, 'Dark theme');
+  assert.equal(page.button.attributes['aria-label'], 'Switch to dark theme');
   page.storage({ key: null, newValue: null });
   assert.equal(page.theme.current, 'light');
-  assert.equal(page.button.textContent, 'Dark theme');
+  assert.equal(page.button.attributes['aria-label'], 'Switch to dark theme');
   assert.equal(page.changes.length, 1);
   assert.equal(page.saved.get('home-energy-theme'), 'light');
 });

@@ -374,6 +374,10 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   checkSameView(await state(), beforeExit, 'Reentering a magnified desktop chart');
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'chart-keyboard',
     actions: [{ type: 'keyDown', value: '\uE00C' }, { type: 'keyUp', value: '\uE00C' }] }] });
+  await settle();
+  assert.equal(await evaluate(fullscreen), true, 'Escape leaves the chart inspection view open');
+  checkSameView(await state(), beforeExit, 'Escape preserves the inspected chart interval');
+  await click('chart-fullscreen');
   await until(`!(${fullscreen})`);
   await settle();
   checkWholeSelection(await state(), 'Exiting fullscreen');

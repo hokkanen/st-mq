@@ -175,8 +175,11 @@ proxies `/api` to the backend. `npm run preview` alone does not provide the API.
 ## Using the chart
 
 The interface remembers the browser's last selected theme, with green dark as
-the initial default. The header's **Light theme / Dark theme** button changes
-and saves that choice. The chart is directly below the current readings.
+the initial default. The header's sun/moon button changes and saves that choice:
+sun switches to light, moon switches to dark. The adjacent fullscreen button
+expands the whole dashboard without changing its layout or opening chart view.
+Both buttons have tooltips and accessible labels. The chart is directly below
+the current readings.
 
 - **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
   Choose **Start date** to view a single day immediately; the greyed-out end date
