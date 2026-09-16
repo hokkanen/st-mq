@@ -163,13 +163,13 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     const door1 = '#garage-equipment-readings [data-device-id=door1]', door2 = '#garage-equipment-readings [data-device-id=door2]';
     await evaluate(`document.querySelector('${door1}').open=true;document.querySelector('${door2}').open=true;true`);
     const coverCalls = await evaluate('window.equipmentUiFixture.calls.length');
-    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${door1} [data-cover-action]')].filter(node=>!node.hidden).map(node=>node.textContent)`), ['Open', 'Close']);
+    assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('${door1} [data-cover-action]')].filter(node=>!node.hidden).map(node=>node.textContent))`)), ['Open', 'Close']);
     assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), false, 'An open contact does not establish fully open position');
     assert.equal(await evaluate(`document.querySelector('${door1} [data-cover-action=open]').getAttribute('aria-label')`), 'Open Door 1');
     await evaluate(`window.equipmentUiFixture.holdCover=true;document.querySelector('${door1} [data-cover-action=open]').click();document.querySelector('${door1} [data-cover-action=open]').click();true`);
     await until(`window.equipmentUiFixture.calls.length === ${coverCalls + 1} && Boolean(window.equipmentUiFixture.releaseCover)`);
     assert.equal(await evaluate(`document.querySelector('${door1} [data-cover-action=close]').disabled`), true, 'Buttons block duplicate requests during delivery');
-    assert.deepEqual(await evaluate(`window.equipmentUiFixture.calls[${coverCalls}]`), {path:'/api/equipment/cover',body:{deviceId:'door1',action:'open'}});
+    assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify(window.equipmentUiFixture.calls[${coverCalls}])`)), {path:'/api/equipment/cover',body:{deviceId:'door1',action:'open'}});
     await evaluate('window.equipmentUiFixture.holdCover=false;window.equipmentUiFixture.releaseCover();true');
     await until(`!document.querySelector('${door1} [data-cover-action=close]').disabled`); await settle();
     assert.equal(await evaluate(`document.querySelector('${door1} .status-detail-label').textContent`), 'Closed', 'Delivery does not invent movement or endpoint');

@@ -29,7 +29,7 @@ function fixture(t) {
       entsoe: { token: 'fixture-not-a-real-token' }, geoloc: { latitude: 60, longitude: 25 } } };
   const store = new Store(config.dbPath);
   let now = initial;
-  const clock = () => now, engine = new Engine({ store, config, clock });
+  const clock = () => now, engine = new Engine({ store, config, clock }), engines = [engine];
   const temperature = () => [{ source: 'mqtt-temperature', device: 'fixture-room', signal: 'indoor_temperature',
     value: 21.1, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const current = () => [{ source: 'easee', device: 'fixture-ev', signal: 'ev1_current_l1',
@@ -38,12 +38,20 @@ function fixture(t) {
     intervals: [{ start: now, end: now + 24 * 60 * MINUTE, spotCtPerKwh: -2, unit: 'c/kWh', vatIncluded: false }] });
   const weather = async () => ({ source: 'fixture-weather', issuedAt: null, fetchedAt: now,
     forecast: [{ start: now, end: now + 24 * 60 * MINUTE, outdoorC: 5, issuedAt: null, fetchedAt: now, issuedAtBasis: 'fetched-snapshot' }] });
-  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => {
+    // Forecast workers can still own SQLite sidecars after provider polling ends.
+    // Stop every fixture runtime before closing or removing its shared database.
+    for (const runtime of engines) {
+      await runtime.charging.close(); await runtime.garage.close({ restore: false });
+      await runtime.closeFireplace(); await runtime.executor.close({ restore: false });
+    }
+    store.close(); rmSync(dir, { recursive: true, force: true });
+  });
   const outdoor = async () => [{ source: 'fmi', device: 'fixture-weather-station', signal: 'outdoor_temperature',
     value: 10, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const options = { config, store, engine, clock, http: { json() { throw new Error('Unexpected HTTP request'); }, close() {} },
     devices: { temperatures: async () => temperature(), easee: async () => current() }, market, weather, outdoor, automatic: false };
-  return { options, store, engine, config, temperature, setTime(at) { now = at; } };
+  return { options, store, engine, engines, config, temperature, setTime(at) { now = at; } };
 }
 test('unchanged forecast downloads share content and preserve unknown-issuance age',async t=>{
   const f=fixture(t);f.config.acquisition.weatherIntervalMs=30*MINUTE;
@@ -335,6 +343,7 @@ test('weather candidates survive polling and restart while live H66 publications
     assert.equal(cached.find(row => row.source === 'openmeteo').sourceTime, now);
     const count = f.store.observations({ signal: 'outdoor_temperature' }).length;
     const restored = new Engine({ store: f.store, config: f.config, clock: () => now });
+    f.engines.push(restored);
     assert.deepEqual(Object.keys(restored.outdoorCandidates).sort(), ['fmi', 'openmeteo']);
     assert.equal(restored.status().observations.outdoor.source, 'fmi');
     assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).length, count, 'Restoring provider cache must not duplicate history');
@@ -830,6 +839,7 @@ test('location enables keyless weather jobs and fresh primary survives backup po
     assert.equal(f.engine.status().observations.outdoor.observedAt, at);
     const count = f.store.observations().filter(row => row.source !== 'controller-estimate').length;
     const restored = new Engine({ store: f.store, config: f.config, clock: () => initial + 31 * MINUTE });
+    f.engines.push(restored);
     assert.equal(restored.status().observations.outdoor.source, 'fmi');
     assert.equal(restored.status().observations.outdoor.observedAt, at);
     assert.equal(f.store.observations().filter(row => row.source !== 'controller-estimate').length, count);

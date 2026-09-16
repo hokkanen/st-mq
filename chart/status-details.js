@@ -28,13 +28,17 @@ function createDetails(document) {
   document.body.append(panel);
   let active = null;
   let activeKey = null;
+  let pageScroll = null;
   let native = typeof panel.showPopover === 'function';
+  const pagePosition = () => [window?.scrollX ?? document.documentElement.scrollLeft ?? 0,
+    window?.scrollY ?? document.documentElement.scrollTop ?? 0];
 
   function close(restoreFocus = false) {
     if (!active) return;
     const trigger = active;
     active = null;
     activeKey = null;
+    pageScroll = null;
     trigger.setAttribute('aria-expanded', 'false');
     if (native) {
       try { panel.hidePopover(); } catch { /* Already dismissed by the browser. */ }
@@ -91,6 +95,7 @@ function createDetails(document) {
     if (!entry) return;
     if (active === trigger) { close(true); return; }
     panel.hidden = false;
+    pageScroll = pagePosition();
     panel.scrollTop = 0;
     body.scrollTop = 0;
     if (native) {
@@ -116,7 +121,14 @@ function createDetails(document) {
     }
   }, true);
   document.addEventListener('scroll', event => {
-    if (active && !panel.contains(event.target)) close();
+    if (!active || panel.contains(event.target)) return;
+    // Firefox may notify document scrolling during a status rerender even when
+    // scroll anchoring leaves the page at the same position. Keep its open help.
+    if (event.target === document || event.target === document.documentElement) {
+      const current = pagePosition();
+      if (pageScroll?.every((value, index) => value === current[index])) return;
+    }
+    close();
   }, true);
   panel.addEventListener('toggle', event => {
     if (native && event.newState === 'closed' && !panel.matches(':popover-open')) close();

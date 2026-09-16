@@ -118,6 +118,40 @@ test('explicit null forecasts and past finishes cannot revive old automatic esti
   assert.equal(summary(charger({ plan: { startAt, finishAt, deadlineAt: now - 1 } })).completion.at, null);
 });
 
+test('expanded charger readiness and activity cannot revive an absent or expired completion forecast', () => {
+  const item = charger();
+  for (const forecast of [null, { finishAt: null, feasible: true }, { finishAt: now - 1, feasible: true }]) {
+    const current = { ...item, forecast, values: { ...item.values, charging: reading(true), powerKw: reading(8) } };
+    const display = chargerDisplay(current, { now });
+    assert.equal(summary(current).completion.at, null);
+    assert.equal(display.readiness, 'Readiness being checked');
+    assert.equal(display.event, '8 kW now');
+    assert.equal(display.risk, false);
+  }
+  const oldRisk = { ...item, forecast: null, plan: { ...item.plan, feasible: false, reason: 'insufficient-time',
+    warnings: ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'] } };
+  const display = chargerDisplay(oldRisk, { now });
+  assert.equal(display.risk, false);
+  assert.equal(display.readiness, 'Readiness being checked');
+  assert(!display.notes.some(note => /cannot deliver/.test(note)));
+});
+
+test('late and awaiting-confirmation forecasts cannot contradict the charger summary with healthy readiness', () => {
+  const item = charger();
+  const late = { ...item, forecast: { finishAt: deadlineAt + hour, feasible: true } };
+  assert.equal(summary(late).completion.detail, 'Target at risk');
+  assert.equal(chargerDisplay(late, { now }).risk, true);
+  assert.match(chargerDisplay(late, { now }).readiness, /at risk/);
+  assert.equal(notice(late).label, 'Target may be late');
+  for (const current of [
+    { ...item, plan: { ...item.plan, startAt: startAt + hour } },
+    { ...item, control: { ...item.control, phase: 'unavailable' } },
+  ]) {
+    assert.equal(summary(current).roleState, 'uncertain');
+    assert.equal(chargerDisplay(current, { now }).readiness, 'Readiness being checked');
+  }
+});
+
 test('native stop times are not target estimates and an early stop invalidates the forecast finish', () => {
   const item = charger({ capabilities: { scheduling: false }, plan: { state: 'observing' } });
   const values = { ...item.values, scheduledEndAt: reading(deadlineAt) };
@@ -136,6 +170,24 @@ test('zero remaining energy wins over missing forecasts and preserves live charg
   assert.equal(result.completion.value, 'Reached'); assert.equal(result.completion.at, null);
   assert.equal(result.activity, 'Charging · 8 kW now');
   assert.equal(result.compactSummary, 'Controlled · Charging · 8 kW now · Target reached');
+});
+
+test('reached target takes priority over an earlier late or infeasible forecast throughout the charger card', () => {
+  const item = charger();
+  for (const forecast of [{ finishAt: deadlineAt + hour, feasible: true },
+    { finishAt: deadlineAt + hour, feasible: false, reason: 'insufficient-time' },
+    { finishAt: null, feasible: false, reason: 'insufficient-time' }]) {
+    const warnings = ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'];
+    const current = { ...item, plan: { ...item.plan, warnings }, forecast: { ...forecast, warnings },
+      progress: { remainingGridKwh: 0 } };
+    const display = chargerDisplay(current, { now });
+    assert.equal(display.readiness, 'Target reached');
+    assert.equal(display.risk, false);
+    assert.deepEqual(display.notes, []);
+    assert.equal(summary(current).completion.value, 'Reached');
+    assert.equal(notice(current).label, 'Target reached · vehicle decides when to stop');
+    assert.equal(notice(current).state, 'good');
+  }
 });
 
 test('disconnection and missing native activity suppress old vehicle forecasts', () => {

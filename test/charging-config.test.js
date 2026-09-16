@@ -23,11 +23,13 @@ test('default vehicle topic works without vehicle identities and a topic may be 
   assert.equal(defaults.chargers.charger1.efficiency, .9);
   assert.equal(defaults.chargers.charger2.efficiency, .9);
   assert.equal(chargingConfiguration({ chargers: { charger1: { mqttTopic: null } } }).chargers.charger1.mqttTopic, null);
+  assert.equal(chargingConfiguration({ chargers: { charger1: { mqttTopic: '' } } }).chargers.charger1.mqttTopic, null);
+  assert.equal(chargingConfiguration({ chargers: { charger2: { mqttTopic: '' } } }).chargers.charger2.mqttTopic, null);
   assert.deepEqual(Object.keys(defaults.chargers.charger1), ['mqttTopic', 'efficiency']);
 });
 
 test('vehicle topics cannot overlap, contain wildcard subscriptions or target unknown chargers', () => {
-  for (const mqttTopic of ['', ' ', 'garage/#', 'garage/+/vehicle', 'garage/\u0000vehicle', 'garage/\nvehicle', 42])
+  for (const mqttTopic of [' ', 'garage/#', 'garage/+/vehicle', 'garage/\u0000vehicle', 'garage/\nvehicle', 42])
     assert.throws(() => chargingConfiguration({ chargers: { charger1: { mqttTopic } } }), /concrete topic/);
   assert.throws(() => chargingConfiguration({ chargers: {
     charger1: { mqttTopic: 'garage/vehicle' }, charger2: { mqttTopic: 'garage/vehicle' },

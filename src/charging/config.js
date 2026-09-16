@@ -18,9 +18,11 @@ export function chargingConfiguration(input = {}) {
     if (!object(value) || Object.keys(value).some(key => !['mqttTopic', 'efficiency'].includes(key)))
       throw new Error(`Invalid ${id} configuration`);
     const current = { ...defaults, ...value };
+    // Supervisor accepts optional empty strings, but cannot save null values.
+    if (current.mqttTopic === '') current.mqttTopic = null;
     if (current.mqttTopic !== null && (typeof current.mqttTopic !== 'string' || !current.mqttTopic.trim()
       || current.mqttTopic.length > 512 || /[+#\u0000-\u001f]/.test(current.mqttTopic)))
-      throw new Error(`${id} mqttTopic must be a concrete topic or null`);
+      throw new Error(`${id} mqttTopic must be a concrete topic, empty string or null`);
     if (!Number.isFinite(current.efficiency) || current.efficiency < .5 || current.efficiency > 1)
       throw new Error(`${id} charging efficiency must be between 0.5 and 1`);
     chargers[id] = current;

@@ -60,7 +60,7 @@ for the algorithm, native-setting restoration and equipment testing limits.
    selected. All four amounts and the tariff are configurable.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
-   change them in options, then use **Data & settings → Connections & settings →
+   change them in options, then use **Data & settings → Connections & configuration →
    Configuration → Apply configuration**.
    Old browser-saved values cannot override
    these settings. `temp_to_hours` is no longer used; remove it from saved add-on
@@ -137,22 +137,27 @@ and Downstairs when all three are configured with defaults. Missing contributing
 readings remain gaps; imported learning keeps its original Upstairs measurement.
 **All home temperatures** in the left drawer adds the three individual room
 readings with synchronized air-temperature scales. Garage remains available on
-the right axis. For rare sensor replacements, moves or calibrations, open **Learning
-models → Home → Model inputs → Average indoor → Sensor changes**. Its
+the right axis. For rare sensor replacements, moves or calibrations, open **Home →
+Heating configuration → Home learning → Model inputs → Average indoor → Sensor changes**. Its
 **Reason** field describes the saved history; it does not alter the learning effect.
 Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
 currents assume 230 V and unity power factor; older current-only history uses
 the nominal 230 V power estimate. H66 AUX power is a red fill derived from the
-configured rated power (9 kW by default), with EV fill drawn above it. Compressor
-space heating is yellow, hot-water heating blue, DHWR brown and heat-off requests
-use a light crossed hatch. Every series is initially visible except DHWR; saved
-legend choices persist. A separate strip shows observed native operating mode.
+configured rated power (9 kW by default), with Charger 1 and Charger 2 stacked
+above it. Compressor space heating is yellow, hot-water heating blue, and heat-off
+requests use a light crossed hatch. Red DHWR requests occupy their own strip
+below the chart; saved legend choices persist. A separate strip
+shows observed native operating mode.
 
-The chart's daily HP and EV price-timing comparisons hold the included daily
+The chart's **Energy cost comparisons** fold contains **Heating**, **Charging**
+and **Firewood**. Daily heating and charging price-timing comparisons hold the included daily
 energy fixed and compare its cost with each day's duration-weighted average
-all-in price. Heat pump appears on the left and charger on the right, with a
-shared explanation below; narrow screens stack the results. Underlined labels
+all-in price. Heating, Charging and Firewood appear side by side, with a shared
+explanation below; narrow screens stack the results. Heating can switch between
+timing cost saving and model-estimated saving, and between Home, Garage and Total.
+Firewood uses a separate model reference and is not added to either comparison.
+Underlined labels
 open explanations on hover, keyboard focus or tap. Escape or an outside tap
 closes the explanation.
 
@@ -168,8 +173,10 @@ missing inputs or dated power assumptions leave gaps, and current sensors or
 model predictions never fill them. Source details report the contributing input
 times; these are not a claim of continuous observations between those times.
 
-Time included is the fraction of selected elapsed time used in the comparison,
-including valid zero-power intervals. For today it ends at
+Time included is the fraction of selected elapsed time used in the comparison.
+Heating includes valid zero-power intervals; charging includes only recorded
+periods above 100 W with complete daily prices, keeping idle periods separate
+from missing readings. For today the elapsed selection ends at
 the calculation time, not the following midnight. The details distinguish time
 without power inputs from power inputs excluded because a full day's prices are
 missing. The result is never extrapolated to excluded time. Recorded energy
@@ -203,12 +210,21 @@ remains available through HA login. Home Assistant options own permanent setting
 Above the chart, **Home** and **Garage** each open **Heating configuration**
 from their upper summary. **Sensors & Equipment** in Home and **Sensors & More
 equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
-directly below its heating summary. Each **Heating configuration** includes a learning summary above its pause controls for learning outcomes, model inputs and current
-coefficients. Coefficients come from existing learning state; the UI adds no
-coefficient storage and does not reconstruct historical values.
-**Data & settings** summarizes provider health;
-its **Connections & configuration** fold contains provider series/details, configuration
-reload and electricity rates. The **Away until** and **Pause until** controls use
+directly below its heating summary. Home's upper summary includes indoor and
+outdoor temperatures, heating request and all-in price. **Tariff control** appears
+above **Recirculation** inside Home's heating configuration; an unverified request
+does not confirm the relay state. Each **Heating configuration** includes a learning summary above its pause controls for learning outcomes, model inputs and current
+coefficients. Current coefficients come from existing learning state; the UI
+adds no coefficient storage. Historical coefficient chart axes separately replay
+the saved journal with its matching algorithm.
+**Garage settings** follows **Garage learning**. Both charger cards open their
+schedule, readings and preferences. Charger 1's **Automatic charging** is off by
+default and separately permits native Easee schedules, including while heating
+is in monitoring or shadow mode. Charger 2 observes TeslaMate and has no command
+adapter. See [charging](docs/charging.md).
+**Data & settings** summarizes provider health; each provider row opens its series
+and source details. Its **Connections & configuration** fold contains MQTT setup,
+configuration reload and electricity rates. The **Away until** and **Pause until** controls use
 Finnish time even when the remote browser is in another timezone. Apply changes
 saves them together; **Home now** and **Resume now** cancel
 them independently. They persist in the database and expire at their deadlines,
@@ -248,6 +264,8 @@ with `npm run test:live -- --services fmi-forecast,fmi-observation`. See the
 [progress log](docs/PROGRESS.md) for actual live results. Successful API checks do
 not commission physical control or establish Raspberry Pi/Home Assistant runtime;
 the x86 container checks cover a different deployment environment.
+For the offline suite, browser checks and container prerequisites, see
+[development validation](docs/development-validation.md).
 
 The Dockerfile uses an explicit Node 22.23.2 Alpine base, a finite frontend build
 and `npm ci`. Legacy Supervisor `BUILD_FROM` injection cannot replace Node with an

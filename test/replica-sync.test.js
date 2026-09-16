@@ -73,6 +73,29 @@ test('source backup pins a consistent live WAL snapshot while the writer keeps r
   } finally { snapshot.close(); }
 });
 
+test('snapshot and verification workers accept process-only flags and inline module launchers', async t => {
+  const { directory, source } = await fixture(t);
+  for (const inline of [false, true]) {
+    const destination = join(directory, `worker-flags-${inline}.sqlite`);
+    const script = `import { createSourceSnapshot } from ${JSON.stringify(new URL('../src/replication/transport.js', import.meta.url).href)};
+      import { verifySnapshot } from ${JSON.stringify(new URL('../src/pairing/snapshots.js', import.meta.url).href)};
+      const path = ${JSON.stringify(destination)};
+      const metadata = await createSourceSnapshot({ dbPath: ${JSON.stringify(source)}, destination: path });
+      await verifySnapshot(path, metadata);`;
+    const path = join(directory, 'worker-flags.mjs');
+    await writeFile(path, script);
+    const child = spawn(process.execPath, ['--stack-trace-limit=20',
+      ...(inline ? ['--input-type=module', '--eval', script] : [path])], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stdout.resume(); child.stderr.on('data', chunk => { stderr += chunk; });
+    const [code] = await once(child, 'close');
+    assert.equal(code, 0, stderr);
+    const snapshot = new DatabaseSync(destination, { readOnly: true });
+    try { assert.equal(snapshot.prepare('SELECT COUNT(*) n FROM samples').get().n, 1); }
+    finally { snapshot.close(); }
+  }
+});
+
 test('receiver publishes only matching snapshots, preserves old readers, and bounds retained generations', async t => {
   const { directory, source, replica, db } = await fixture(t);
   const first = await transferFixture(source, replica, directory);

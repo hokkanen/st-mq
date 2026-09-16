@@ -151,7 +151,7 @@ test('a stable key transfers an open explanation to a rerendered row and Escape 
 });
 
 test('one popup serves every status and supports close, outside dismissal and internal scrolling', () => {
-  const { document, root, popup } = fixture();
+  const { document, window, root, popup } = fixture();
   const trigger = setStatusDetail(root, unavailable);
   const other = document.createElement('div');
   document.body.append(other);
@@ -171,8 +171,25 @@ test('one popup serves every status and supports close, outside dismissal and in
   assert.equal(popup().scrollTop, 0, 'a newly opened explanation starts at the beginning');
   document.dispatch('scroll', { target: popup().querySelector('.status-detail-body') });
   assert.equal(popup().hidden, false, 'the explanation itself can scroll');
+  window.scrollY = 12;
   document.dispatch('scroll');
   assert.equal(popup().hidden, true, 'page movement dismisses the explanation');
+});
+
+test('status refresh scroll notifications preserve help when page offsets have not moved', () => {
+  const { document, window, root, popup } = fixture();
+  window.scrollX = 0;
+  window.scrollY = 2799.5;
+  const trigger = setStatusDetail(root, unavailable);
+  trigger.dispatch('click');
+  setStatusDetail(root, { ...unavailable, detail: 'A refreshed source explanation.' });
+  document.dispatch('scroll');
+  document.dispatch('scroll', { target: document.documentElement });
+  assert.equal(popup().hidden, false);
+  assert.equal(trigger.getAttribute('aria-expanded'), 'true');
+  window.scrollX = 10;
+  document.dispatch('scroll');
+  assert.equal(popup().hidden, true, 'horizontal page movement still dismisses help');
 });
 
 test('small viewports constrain the popup and resizing repositions it above a low anchor', () => {

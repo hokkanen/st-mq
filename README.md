@@ -15,8 +15,11 @@ preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/con
 **Default startup uses simulated devices in shadow mode.** With live input,
 configured transport and active mode, the controller can operate heating and
 supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
-Read-only market, weather, MQTT temperature, TeslaMate and Easee providers plus dated contract
-setup are integrated. ENTSO-E has a direct Elering backup; FMI supplies temperature
+Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated contract
+setup are integrated. Charger 1 can also use opt-in native Easee schedules;
+Charger 2 remains observation-only. Heating mode and charging permission are
+independent. See [charging controls and estimates](docs/charging.md).
+ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
 the H66 sensor first, then FMI station observations, then Open-Meteo estimates. Offline
 regressions and a separate opt-in live suite verify the provider paths. See the
@@ -87,6 +90,11 @@ npm run build
 npm start
 ```
 
+`npm run check` runs the offline Node test suite and production build. Browser
+smoke checks and container checks are separate; see
+[development validation](docs/development-validation.md) for prerequisites,
+commands and the latest checked scope. Provider live checks remain opt-in.
+
 Open **http://127.0.0.1:1234**. The UI labels simulated readings and example prices.
 If the port is already in use, follow [startup troubleshooting](docs/startup.md)
 to identify the running instance and restart it cleanly.
@@ -126,8 +134,10 @@ with manual heating buttons and Away/Pause controls. Equipment is in separate
 **Sensors & Equipment** (Home) and **Sensors & More equipment** (Garage) folds.
 Garage's two chargers sit directly below its heating summary. Each heat pump has
 an overview followed by its detailed readings; the ground-source heat pump also
-contains **Adjust heat-pump parameters**. **Garage settings** is inside Garage's heating
-configuration, and connection links end each equipment section. Selection marks sit beside the
+contains **Adjust heat-pump parameters**. **Garage settings** follows **Garage learning**
+inside Garage's heating configuration. Home shows **Tariff control** directly
+above **Recirculation**, separating a request from confirmed equipment state.
+Connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
 sensors, native heat-pump temperatures, tariff relays and legacy Shelly devices.
 Held changes during Pause show an amber notice even when the sections are closed;
@@ -152,9 +162,10 @@ DNS, login or TLS problems and report that no command was sent. If a connection
 fails after publishing begins, check device state before retrying because delivery
 is unconfirmed.
 
-**Test H66 controls** offers timed ROOM (`0203`), DHW start (`0212`), DHW stop
-(`0208`) and operating-mode (`2201`) tests when the connection and fresh writable
-readbacks are ready. The current baseline is saved and restored after expiry.
+**Adjust heat-pump parameters** offers ROOM (`0203`), DHW start (`0212`), DHW stop
+(`0208`) and operating-mode (`2201`) changes when the connection and fresh writable
+readbacks are ready. The current baseline is saved and restored when the manual
+change expires under the Pause rules above.
 The UI distinguishes a sent request from device readback and a pending restore.
 These are real manual commands with live input, including in shadow mode.
 
@@ -179,11 +190,11 @@ and saves that choice. The chart is directly below the current readings.
   tomorrow as Start date.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
-- **Left axis:** **Power** shows combined property power as a line, estimated
-  auxiliary power as a red fill and charger power as a fill over it. Fills overlap
-  from zero; they are not stacked. **Phase currents** shows the three property phase lines
+- **Left axis:** **Power** shows combined property power as a line, with estimated
+  auxiliary power, Charger 1 and Charger 2 stacked in that order. **Phase currents** shows the three property phase lines
   in amperes with corresponding charger fills. **Phase energy per interval** shows
-  the three saved kWh increments per device. The drawer groups all retained H66
+  the three saved kWh increments for property import and Charger 1. Charger 2 has
+  total energy only. The drawer groups all retained H66
   parameters, control, weather and learning series.
   **All home temperatures** is the sole **Home temperatures** drawer option;
   it shows Upstairs, Bedroom and Downstairs on the left with the two air-temperature
@@ -208,10 +219,10 @@ and saves that choice. The chart is directly below the current readings.
   historical spot prices with the contract rates for that date, or the nearest
   known rates when the date is uncovered. An **Assumed rates** explanation identifies these assumptions;
   missing spot prices stay unavailable.
-- **Shading:** crosshatched **Heat Off** represents requested reduction; yellow
+- **Shading:** crosshatched **Tariff reduction requested** represents requested reduction; yellow
   **Compressor · house** and blue **Compressor · hot water** require concurrent
-  compressor/routing readbacks. Brown **DHWR** marks requested circulation runs with their recorded duration
-  and starts hidden. A separate **Pump mode** strip shows categorical H66 readback.
+  compressor/routing readbacks. Red **DHWR** marks requested circulation runs with their recorded duration
+  in its own strip below the chart. A separate **Pump mode** strip shows categorical H66 readback.
   Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
   individual auxiliary episodes.
 - **Energy cost comparisons:** open this fold below the chart. Heating and Charging compare each device's cost of
@@ -266,11 +277,12 @@ Auxiliary output has a five-minute freshness bound. Learning histories keep the
 estimate assessed at the time and never rewrite old points using a later model.
 
 Above the chart, separate **Home** and **Garage** cards show **Heat control**
-status and a chart button. Home's upper summary shows the indoor average and
-requested and actual heating; Garage's shows its rear temperature, doors and
-heating request. Each upper summary opens **Heating configuration**, including
-manual heating and temporary Away/Pause controls. Home's middle row shows outdoor
-temperature, all-in electricity price and the expandable **Fireplace**.
+status and a chart button. Home's upper summary shows the indoor average, outdoor
+temperature, heating request and all-in electricity price; Garage's shows its rear
+temperature, doors, heating request and the same price. Each upper summary opens
+**Heating configuration**, including manual heating and temporary controls.
+Home offers Away/Pause; Garage offers Pause savings. The expandable **Fireplace**
+follows Home's equipment fold.
 **Sensors & Equipment** contains Home's readings and equipment controls.
 Garage's two expandable chargers sit above **Sensors & More equipment**.
 Tariff requests remain explicitly unverified when relay readback
@@ -282,14 +294,16 @@ of usable observations and accepted model updates. Missing counts remain unknown
 Each learning summary opens its **calculated outcomes**,
 **model inputs** and **current model coefficients** sections. Coefficients show values,
 units and fitted/fixed provenance from the existing learning state, without
-additional storage or reconstructed historical coefficient traces. See the detailed
+additional coefficient storage. Historical coefficient chart axes separately
+replay the saved journal with its matching algorithm. See the detailed
 [learning and control explanation](docs/learning-and-control.md).
 
-**Data & settings** shows a compact provider-health overview. **Connections &
-settings** opens each provider's data series and details, **Electricity rates**
+**Data & settings** shows a compact provider-health overview. Each provider row
+opens its data series and **Source details**, with source names below availability.
+**Connections & configuration** contains **MQTT**, **Electricity rates**
 and **Configuration**. **Electricity consumption · Easee, Teslamate** groups
-property import, Charger 1 and Charger 2 in both the source overview and the
-connection details. Easee and TeslaMate keep separate acquisition diagnostics;
+property import, Charger 1 and Charger 2 in its provider row.
+Easee and TeslaMate keep separate acquisition diagnostics;
 Charger 2 lists total power, estimated interval energy and its session check.
 On wide screens, Home and **Data & settings** occupy the left column, with Garage
 on the right. On narrow screens, the cards appear in this
@@ -390,7 +404,7 @@ freshness basis, with the source timestamp still unknown. Retained, duplicate an
 invalid messages are handled explicitly. A documented C60 profile does not prove
 installed-device semantics. See [learning and H66 control](docs/learning-and-control.md).
 
-Start read-only collection with:
+Start live collection in the default heating shadow mode with:
 
 ```sh
 STMQ_INPUT=providers npm start
@@ -481,8 +495,11 @@ voltages remain acquisition-only. The property cumulative-import counter and the
 finalized Charger 1 / Charger 2 session references support diagnostics without
 correcting or calibrating those estimates. Charger lifetime counters are not retained.
 Charger voltage terminal mapping requires explicit verification before voltage
-weights are used. Easee authentication can refresh tokens; it does not change
-charging settings. See [recording configuration and limitations](docs/recording.md).
+weights are used. Easee acquisition can refresh authentication tokens. Separately
+enabling **Automatic charging** on Charger 1 permits native scheduling writes,
+including while heating is in monitoring or shadow mode; it is off by default.
+Charger 2 has no command adapter. See [charging](docs/charging.md) and
+[recording configuration and limitations](docs/recording.md).
 
 Optional [TeslaMate capture](docs/recording.md#teslamate-portable-charger-capture)
 uses the existing MQTT broker and the exact `Home` geofence. It records total kWh
@@ -547,7 +564,7 @@ On Ubuntu, removing a key from the permanent file restores the public default
 on the next application. Invalid values reject the change; no private values are
 included in validation errors or status responses.
 
-The button is at **Data & settings → Connections & settings → Configuration →
+The button is at **Data & settings → Connections & configuration → Configuration →
 Apply configuration**. **Applies without restart** covers price-control mode,
 comfort limits, learning settings, electricity rates, recording interval, storage
 budget, and the direct-access token. With live input it also covers provider

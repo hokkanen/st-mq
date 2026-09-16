@@ -31,8 +31,10 @@ async function chunkHashes(path) {
 
 export async function verifySnapshot(path, metadata, signal) {
   if (signal?.aborted) throw pairError('stopped');
+  // Default inheritance filters process-only flags; --input-type belongs to an
+  // inline launcher and must not be forwarded to this file-based worker.
   const worker = new Worker(new URL('./verify-worker.js', import.meta.url), { workerData: { path, metadata },
-    execArgv: process.execArgv.filter(value => !value.startsWith('--input-type')) });
+    ...(process.execArgv.some(value => value.startsWith('--input-type')) ? { execArgv: [] } : {}) });
   await new Promise((accept, reject) => {
     let done = false;
     const finish = error => {

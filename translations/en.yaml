@@ -50,7 +50,7 @@ configuration:
       can operate supported equipment. Set indoor_temperature_topic and
       garage_temperature_topic to exact MQTT topics for replacement temperature
       sensors. Providers input can use these topics without an H66 device.
-      Indoor topics expect a genuine report every 15 minutes, allowing 120 seconds
+      Indoor topics expect a genuine report every 70 minutes, allowing 300 seconds
       of delay. Change temperature_report_interval_minutes and
       temperature_report_grace_seconds to match the publisher; interval 0 disables
       the deadline for sensors that report only changes.
@@ -66,8 +66,20 @@ configuration:
     description: >-
       Provide device IDs and either user/password or access_token/refresh_token
       to collect charger and Equalizer readings. Leave device IDs empty when
-      unused. Readings are read-only; token renewals are cached privately and
-      options.json is not rewritten. Stale measurements remain marked stale. charger_voltage_ids may contain three verified phase-to-neutral observation IDs; leave empty to allocate by currents. Use [194, 195, 196] only after verifying the charger uses the documented TN terminal mapping. Cumulative kWh is diagnostic-only and never corrects or trains the model.
+      unused. Token renewals are cached privately and options.json is not rewritten.
+      Separately enabling Automatic charging on Charger 1 permits native Easee
+      schedules, independently of heating mode; it is off by default.
+      Stale measurements remain marked stale. charger_voltage_ids may contain three verified phase-to-neutral observation IDs; leave empty to allocate by currents. Use [194, 195, 196] only after verifying the charger uses the documented TN terminal mapping. Cumulative kWh is diagnostic-only and never corrects or trains the model.
+  charging:
+    name: Charger vehicle feeds and efficiency
+    description: >-
+      Each charger can use a distinct exact mqttTopic for vehicle charge readings.
+      Leave the topic empty to disable that extra feed. Defaults are
+      stmq/garage/charger1/vehicle for Charger 1 and no extra feed for Charger 2.
+      efficiency is the battery share of grid energy, from 0.5 to 1, default 0.9.
+      Apply configuration reloads these deployment settings. Automatic charging,
+      target charge, ready-by time and manual fallbacks are saved separately in
+      each dashboard charger card. Charger 2 currently has no command adapter.
   recording:
     name: Historical recording
     description: >-

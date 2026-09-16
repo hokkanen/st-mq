@@ -1,6 +1,6 @@
 # Fireplace logging
 
-Open **+ Fireplace** beside the heating status. Choose a whole number from **2 to
+Open **Home → Fireplace**, below the equipment fold. Choose a whole number from **2 to
 10 kg**, initially **8 kg**, and press **Record firewood now**. The server records
 the current time. Each deliberate press records another load, including simultaneous
 fires and extra wood. The two similar masonry fireplaces share one response model.

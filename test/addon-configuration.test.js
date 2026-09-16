@@ -117,6 +117,35 @@ test('startup import is saved before storage/runtime and removed only after succ
   assert.equal((await fetch(`${endpoint(app.server)}/api/status`, { headers: authorization(firstToken) })).status, 200);
 });
 
+test('charging deployment settings import and reload through Supervisor using empty disabled topics', async t => {
+  const f = fixture(t);
+  f.writeImport({ charging: { chargers: {
+    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 }, charger2: { mqttTopic: '' },
+  } } });
+  const app = await f.launch();
+  assert.deepEqual(app.engine.charging.configuration.chargers, {
+    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 },
+    charger2: { mqttTopic: null, efficiency: .9 },
+  });
+  assert.equal(f.saved.charging.chargers.charger2.mqttTopic, '', 'Supervisor stores an empty string, never null');
+  assert.equal(f.posts, 1);
+  assert.equal(existsSync(f.paths.importPath), false);
+  await app.engine.charging.setChargerSettings('charger1', { manualSoc: 55 });
+  f.writeImport({ charging: { chargers: {
+    charger1: { mqttTopic: '' }, charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .95 },
+  } } });
+  assert.equal((await f.reload()).status, 200);
+  assert.deepEqual(app.engine.charging.configuration.chargers, {
+    charger1: { mqttTopic: null, efficiency: .85 },
+    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .95 },
+  });
+  assert.equal(f.saved.charging.chargers.charger1.mqttTopic, '');
+  assert.equal(f.posts, 2);
+  assert.equal(existsSync(f.paths.importPath), false);
+  assert.equal(app.engine.charging.settings.chargers.charger1.manualSoc, 55);
+  assert.equal(app.engine.charging.settings.chargers.charger1.enabled, false);
+});
+
 test('ingress import saves Supervisor, applies runtime/token, then cleans up; token rotates and removes live', async t => {
   const f = fixture(t);
   const app = await f.launch();

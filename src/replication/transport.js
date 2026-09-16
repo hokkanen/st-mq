@@ -102,8 +102,11 @@ function receiverChannel(config, generation, options) {
 
 export async function createSourceSnapshot({ dbPath, destination, signal }) {
   if (signal?.aborted) throw signal.reason;
+  // Let Node inherit only worker-supported options. Explicitly replaying all
+  // process flags also forwards V8/process-only defaults in Node 24 test runs.
+  // An inline module launcher needs a clean file-worker argument list instead.
   const worker = new Worker(new URL('./snapshot-worker.js', import.meta.url), { workerData: { dbPath, destination },
-    execArgv: process.execArgv.filter(argument => !argument.startsWith('--input-type')) });
+    ...(process.execArgv.some(argument => argument.startsWith('--input-type')) ? { execArgv: [] } : {}) });
   return new Promise((accept, reject) => {
     let settled = false;
     const finish = (error, value) => {

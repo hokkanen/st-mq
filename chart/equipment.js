@@ -405,7 +405,10 @@ export function dhwrReadingSummary(status) {
   const eventOnly = feedback.power?.eventOnly === true;
   if (eventOnly) power.detail += '. Updated when power changes; there is no periodic measurement guarantee.';
   const powerOnly = !stateConfigured && powerConfigured;
-  return { state, power, powerLabel: eventOnly ? 'Last reported power' : 'Live power',
+  const reported = dhwr.actualOn === true ? 'On · device reported' : dhwr.actualOn === false ? 'Off · device reported' : '';
+  const summary = dhwr.restorationPending ? ['Stop delivery pending', reported].filter(Boolean).join(' · ')
+    : reported || (dhwr.active ? 'On requested · state unknown' : 'No request · state unknown');
+  return { state, power, summary, powerLabel: eventOnly ? 'Last reported power' : 'Live power',
     powerReportedAt: eventOnly && Number.isFinite(feedback.power.observedAt) ? `Reported ${clock.format(feedback.power.observedAt)}` : '',
     feedbackLabel: !feedback.configured ? 'Feedback not configured' : powerOnly
       ? feedback.available ? eventOnly ? 'Power reported' : 'Power available' : feedback.power ? 'Power unavailable' : 'Waiting for power'

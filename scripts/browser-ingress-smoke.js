@@ -111,7 +111,7 @@ try {
   assert.match(instructions, /freshly saved options/);
   assert.match(instructions, /Omitted fields keep saved values/);
   assert.match(instructions, /failed import keeps the file/);
-  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Home Assistant login.*Direct access is disabled/);
+  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Host dashboard access.*host login.*Direct access is disabled/);
   assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Apply configuration');
 
   writeFileSync(privatePath, '{"controller":{"max_drop_c":0.6}}', { mode: 0o600 });
@@ -150,7 +150,7 @@ try {
   assert.equal(await evaluate("document.getElementById('settings-location').children.length"), 0, 'Missing backend metadata never invents a folder');
   rejectStatus = true;
   await send('Page.reload');
-  await until("document.getElementById('error')?.textContent.includes('Reopen ST-MQ from Home Assistant')");
+  await until("document.getElementById('error')?.textContent.includes('Reopen ST-MQ from the host dashboard')");
   assert.equal(await evaluate("document.getElementById('auth').hidden"), true, 'Expired HA session never prompts for an ST-MQ token');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'ingress-browser-smoke-passed', checks: ['built theme, CSS and module assets under ingress prefix',

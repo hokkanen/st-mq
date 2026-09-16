@@ -180,6 +180,21 @@ test('circulation requested state never replaces independent switch and live pow
   assert.equal(dhwrReadingSummary(live).power.value, 'Unavailable');
 });
 
+test('compact circulation state preserves pending stop delivery alongside independent device feedback', () => {
+  for (const actualOn of [true, false, null]) {
+    const status = { dhwr: { actualOn, active: false, restorationPending: true } };
+    const summary = dhwrReadingSummary(status);
+    assert.match(summary.summary, /^Stop delivery pending/);
+    assert.equal(summary.request, 'Stop requested · delivery pending');
+    if (actualOn === null) assert.equal(summary.summary, 'Stop delivery pending');
+    else assert.match(summary.summary, new RegExp(`${actualOn ? 'On' : 'Off'} · device reported$`));
+    status.dhwr.restorationPending = false;
+    assert.equal(dhwrReadingSummary(status).summary, actualOn === null ? 'No request · state unknown'
+      : `${actualOn ? 'On' : 'Off'} · device reported`);
+  }
+  assert.equal(dhwrReadingSummary({ dhwr: { active: true } }).summary, 'On requested · state unknown');
+});
+
 test('DHWR power-only feedback displays measured zero without claiming relay state', () => {
   const status = { dhwr: { active: true, feedback: { configured: true, available: true,
     stateConfigured: false, powerConfigured: true,

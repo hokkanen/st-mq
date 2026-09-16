@@ -110,8 +110,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const hasProgress = finite(creditedGridKwh) && creditedGridKwh > 0;
   const estimatedSoc = finite(progress.estimatedSoc) && progress.hasEnergyEstimate === true;
   const requiredGridKwh = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? plan.requiredGridKwh ?? forecast.requiredGridKwh ?? forecast.gridEnergyKwh;
+  const targetReached = finite(requiredGridKwh) && requiredGridKwh <= 0;
   const minimum = values.minimumSoc?.value, socKnown = finite(soc.value) && (soc.available || soc.source === 'manual-fallback');
-  const finishAt = Object.hasOwn(forecast, 'finishAt') ? forecast.finishAt : plan.finishAt;
+  const forecastAbsent = Object.hasOwn(charger, 'forecast') && charger.forecast === null;
+  const finishAt = forecastAbsent ? null : Object.hasOwn(forecast, 'finishAt') ? forecast.finishAt : plan.finishAt;
+  const currentFinish = validTime(finishAt) && Number(finishAt) > now;
   const manualStart = manual?.startsAt ?? manual?.startAt ?? nativeStart;
   const manualEnd = manual?.windowEndAt ?? manual?.endsAt ?? manual?.endAt ?? (nativeStops ? nativeEnd : null);
   const resumeAt = manual?.resumeAt ?? manual?.expiresAt ?? manualEnd;
@@ -143,7 +146,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     else if (currentPeriod && validTime(currentPeriod.endAt) && !released) event += ` · pauses ${time(currentPeriod.endAt)}`;
     else if (!enabled && nativeStops && validTime(nativeEnd) && Number(nativeEnd) > now) event += ` · scheduled until ${time(nativeEnd)}`;
     else if (finite(requiredGridKwh) && requiredGridKwh <= 0) event += ' · target reached';
-    else if (validTime(finishAt)) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
+    else if (currentFinish) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
   } else if (ownedStart != null && nextPeriod) {
     const resuming = periods.some(period => Number(period.startAt) <= now);
     state = uncertain ? 'Update unconfirmed' : resuming ? 'Paused between periods' : 'Scheduled';
@@ -166,12 +169,16 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (handoverUnconfirmed) state = 'Handover unconfirmed';
   const showMetrics = connected === true;
   const showPlan = enabled && showMetrics && !yielded && (!uncertain || ownedStart != null);
-  const currentForecast = Object.hasOwn(forecast, 'feasible') ? forecast : plan;
-  const risk = showPlan && currentForecast.feasible === false && currentForecast.reason === 'insufficient-time';
-  const deadline = showMetrics && enabled && !yielded && validTime(plan.deadlineAt ?? charger.deadlineAt) ? `Ready by ${time(plan.deadlineAt ?? charger.deadlineAt)}` : '';
-  const readiness = !deadline ? '' : finite(requiredGridKwh) && requiredGridKwh <= 0 ? 'Target reached'
+  const currentForecast = forecastAbsent || Object.hasOwn(forecast, 'feasible') ? forecast : plan;
+  const deadlineAt = plan.deadlineAt ?? charger.deadlineAt;
+  const risk = showPlan && !targetReached
+    && (currentForecast.feasible === false && currentForecast.reason === 'insufficient-time'
+    || currentFinish && validTime(deadlineAt) && Number(finishAt) > Number(deadlineAt));
+  const deadline = showMetrics && enabled && !yielded && validTime(deadlineAt) ? `Ready by ${time(deadlineAt)}` : '';
+  const readiness = !deadline ? '' : targetReached ? 'Target reached'
     : risk ? `${number(minimum, '%')} by ready-by is at risk`
-      : currentForecast.feasible === true && validTime(finishAt) ? 'Expected on time' : 'Readiness being checked';
+      : currentForecast.feasible === true && currentFinish && !uncertain && !revisionPending
+        ? 'Expected on time' : 'Readiness being checked';
   const readingTime = showMetrics && automatic(soc) ? validTime(soc.measuredAt) ? `Charge measured ${chargingReadingTime(soc.measuredAt, timezone)}`
     : validTime(soc.receivedAt) ? `Charge received ${chargingReadingTime(soc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
   const rows = [];
@@ -207,6 +214,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const notes = enabled && showMetrics && !yielded && !uncertain
     ? [...notices(plan.warnings), ...notices(forecast.warnings)].filter(note => !fallbackNotice.test(note)
       && !(shortfallNote && /predicted charging capacity cannot deliver/i.test(note))
+      && !(targetReached && /cannot deliver|insufficient.*time|target at risk/i.test(note))
       && !(currentForecast !== plan && currentForecast.feasible !== false && /cannot deliver|insufficient.*time|target at risk/i.test(note))) : [];
   if (shortfallNote && !uncertain) notes.push(shortfallNote);
   let problem = uncertain || handoverUnconfirmed || enabled && manual?.kind === 'unknown' ? control.reason || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';

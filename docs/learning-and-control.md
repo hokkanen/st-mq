@@ -6,7 +6,7 @@ execution. Cheap electricity during reduction alone does not establish a saving;
 recovery, comfort and comparable heating service matter too. Offline and synthetic
 checks do not establish savings on the installed equipment.
 
-Firewood can be logged through the fold beside the heating status. See
+Firewood can be logged through **Home → Fireplace**, below the equipment fold. See
 [fireplace logging](fireplace.md) for corrections, delayed heat and validation gates.
 
 ## What learns
@@ -297,7 +297,7 @@ is the currently available future forecast. Neither is a solar observation.
 
 ## Timing benefit under the chart
 
-The lower corner compares recorded heat-pump and EV energy at its actual times
+The **Energy cost comparisons** fold compares recorded heat-pump and EV energy at its actual times
 with the **same recorded daily energy** spread uniformly over that entire Finnish
 calendar day. It uses duration-weighted all-in prices and actual 23/24/25-hour
 days, including clock changes. Positive means cheaper timing; negative means

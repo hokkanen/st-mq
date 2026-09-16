@@ -88,7 +88,7 @@ charger settings UI. In the existing configuration file:
         "efficiency": 0.9
       },
       "charger2": {
-        "mqttTopic": null,
+        "mqttTopic": "",
         "efficiency": 0.9
       }
     }
@@ -97,7 +97,9 @@ charger settings UI. In the existing configuration file:
 ```
 
 These are also the defaults when omitted. Each configured topic must be distinct
-and concrete, without MQTT wildcards. Set it to `null` to disable the extra feed.
+and concrete, without MQTT wildcards. Set it to an empty string to disable the
+extra feed, including in Home Assistant add-on options. Standalone configuration
+also accepts `null`; Home Assistant options require the empty-string spelling.
 Configuration reload recreates the acquisition/runtime; changing a topic
 invalidates the stored automatic reading associated with the previous topic.
 Saved UI preferences are independent of deployment configuration.

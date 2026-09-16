@@ -240,6 +240,20 @@ test('qualified electrical intervals persist once and never change property or E
   assert.equal(f.runtime.recordedEnergy(START, START + MINUTE), null);
 });
 
+test('electrical interval retries deduplicate missing provenance while keeping distinct source identities', t => {
+  const f = setup(t), observation = { source: 'garage-adapter', signal: 'garage_energy', unit: 'kWh',
+    value: .01, sourceTime: START + MINUTE, receivedAt: START + MINUTE,
+    raw: { intervalStart: START, intervalEnd: START + MINUTE } };
+  assert.equal(f.runtime.ingestEnergy(observation).saved, true);
+  assert.equal(f.runtime.ingestEnergy(observation).saved, false);
+  assert.equal(f.runtime.ingestEnergy({ ...observation, raw: { ...observation.raw, sourceId: null } }).saved, false);
+  const identified = { ...observation, raw: { ...observation.raw, sourceId: 'fixture-native-power' } };
+  assert.equal(f.runtime.ingestEnergy(identified).saved, true);
+  assert.equal(f.runtime.ingestEnergy(identified).saved, false);
+  assert.equal(f.runtime.ingestEnergy({ ...identified, source: 'fixture-independent-meter' }).saved, true);
+  assert.equal(f.store.observations({ signal: 'garage_energy' }).length, 3);
+});
+
 test('front sensor accepts negative Celsius and remains distinct from Home average and rear history', async t => {
   const store = new Store(':memory:');
   const config = { input: 'mqtt', settings: { mode: 'shadow' }, connections: {} };

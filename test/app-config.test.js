@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration } from '../src/app/config.js';
 import { requireLegacyLive } from '../src/app/legacy-gate.js';
+import { chargingConfiguration } from '../src/charging/config.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -287,6 +288,30 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.options.controller.max_drop_c, 1);
   assert.equal(addon.options.easee.charger_id, '');
   assert.equal(addon.schema.easee.charger_id, 'str?');
+});
+
+test('public charging defaults preserve runtime defaults and standalone topic changes load and reload', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'secrets.json');
+  assert.deepEqual(loadConfig({}, directory).charging, chargingConfiguration());
+  writeFileSync(path, JSON.stringify({ charging: { chargers: {
+    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 },
+    charger2: { mqttTopic: 'synthetic/second/vehicle' },
+  } } }));
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.deepEqual(config.charging.chargers, {
+    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 },
+    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .9 },
+  });
+  assert.deepEqual(config.connections, {}, 'Machine charging settings do not enable provider connections in simulation');
+  writeFileSync(path, JSON.stringify({ charging: { chargers: {
+    charger1: { mqttTopic: null }, charger2: { mqttTopic: '', efficiency: .95 },
+  } } }));
+  const next = (await configurationSource(config).prepare()).config;
+  assert.deepEqual(next.charging.chargers, {
+    charger1: { mqttTopic: null, efficiency: .9 }, charger2: { mqttTopic: null, efficiency: .95 },
+  });
 });
 
 test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {

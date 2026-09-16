@@ -11,7 +11,7 @@ const finite = Number.isFinite;
 export function garagePausePermission({ now, observation, protection, heatingDelayMs, maxLeaseMs = GARAGE_MAX_PERMISSION_MS } = {}) {
   const times = ['rear', 'front'].map(location => observation?.[`${location}At`]);
   const evidenceAt = times.every(finite) ? Math.min(...times) : null;
-  if (!finite(now) || !finite(evidenceAt) || evidenceAt > now || now - evidenceAt >= GARAGE_TEMPERATURE_MAX_AGE_MS
+  if (!finite(now) || !finite(evidenceAt) || times.some(at => at > now) || now - evidenceAt >= GARAGE_TEMPERATURE_MAX_AGE_MS
     || protection?.requiredFresh !== true || protection?.safeToPause !== true)
     return { allowed: false, reason: 'fresh-temperature-reserve-required', evidenceAt, expiresAt: null };
   if (!finite(heatingDelayMs) || heatingDelayMs < 0 || !finite(maxLeaseMs) || maxLeaseMs <= 0)

@@ -89,46 +89,30 @@ try {
   assert.equal(await evaluate("document.querySelector('#h66-provider-details > summary').textContent"), 'About these readings');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
-  assert.equal(await evaluate("document.querySelectorAll('.controller-column > article, .controller-panels > article').length"), 4);
-  assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home & heating');
-  assert.equal(await evaluate("document.getElementById('model-title').textContent"), 'Learning models');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column')].map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))"),
+    [['home-control', 'providers-controls'], ['garage-control']]);
+  assert.equal(await evaluate("document.getElementById('control-title').textContent"), 'Home');
+  assert.equal(await evaluate("document.getElementById('garage-title').textContent"), 'Garage');
   assert.equal(await evaluate("document.getElementById('providers-title').textContent"), 'Data & settings');
-  assert.equal(await evaluate("document.getElementById('equipment-title').textContent"), 'Equipment & controls');
   assert.equal(await evaluate("document.getElementById('h66-test-duration')"), null, 'Manual settings have no expiration input');
-  assert.equal(await evaluate(`(() => {
-    const equipment = document.getElementById('equipment-panel'), box = equipment.getBoundingClientRect();
-    const panels = document.querySelector('.controller-panels').getBoundingClientRect();
-    return equipment.parentElement.matches('.controller-panels') && !equipment.closest('.controller-column')
-      && Math.abs(box.left - panels.left) < 1 && Math.abs(box.right - panels.right) < 1
-      && [...document.querySelectorAll('.controller-column')].every(column => column.getBoundingClientRect().bottom <= box.top);
-  })()`), true, 'Equipment occupies its own full-width row below the home, model and data cards');
   assert.equal(await evaluate("[...document.querySelectorAll('.controller-panels details')].every(fold => !fold.open)"), true);
-  const checkClosedColumns = async () => {
-    assert.equal(await evaluate(`(() => {
-      const columns = [...document.querySelectorAll('.controller-column')];
-      const [left, right] = columns.map(column => column.getBoundingClientRect());
-      const [leftCard, rightCard] = columns.map(column => column.lastElementChild.getBoundingClientRect());
-      return Math.abs(left.top - right.top) < 1 && Math.abs(left.bottom - right.bottom) < 1
-        && Math.abs(leftCard.bottom - rightCard.bottom) < 1
-        && Math.abs(leftCard.bottom - left.bottom) < 1 && Math.abs(rightCard.bottom - right.bottom) < 1;
-    })()`), true, 'Closed desktop columns and their last cards align within one pixel');
-  };
+  const settleLayout = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const checkIndependentCards = async () => {
-    await checkClosedColumns();
-    const rightHeights = await evaluate("['house-model', 'providers-controls'].map(id => document.getElementById(id).getBoundingClientRect().height)");
+    await settleLayout();
+    const garageHeight = await evaluate("document.getElementById('garage-control').getBoundingClientRect().height");
+    await evaluate("document.getElementById('home-heat-pump-details').open = true");
+    await settleLayout();
     const homeHeight = await evaluate("document.getElementById('home-control').getBoundingClientRect().height");
     await evaluate("document.querySelector('#temporary-details > summary').click()");
-    assert.equal(await evaluate("document.getElementById('temporary-details').open"), true);
-    assert.equal(await evaluate("[...document.querySelectorAll('.controller-column > article')].every(card => getComputedStyle(card).flexGrow === '0')"), true, 'Expanded cards keep their natural content height');
+    await settleLayout();
+    assert.equal(await evaluate("document.getElementById('temporary-details').open && document.getElementById('temporary-form').checkVisibility()"), true);
     assert.ok(await evaluate("document.getElementById('home-control').getBoundingClientRect().height") > homeHeight, 'Opening temporary controls expands the home card');
-    const expandedRightHeights = await evaluate("['house-model', 'providers-controls'].map(id => document.getElementById(id).getBoundingClientRect().height)");
-    assert.ok(expandedRightHeights.every((height, index) => height <= rightHeights[index] + 0.5), 'Opening the home card does not stretch either right card');
+    assert.ok(await evaluate("document.getElementById('garage-control').getBoundingClientRect().height") <= garageHeight + 0.5,
+      'Opening Home controls does not stretch the Garage card');
     await evaluate("document.querySelector('#temporary-details > summary').click()");
-    await checkClosedColumns();
     await evaluate("document.querySelector('#learning-panel-details > summary').click(); document.querySelector('#learning-details > summary').click(); document.querySelector('#learning-panel-details > summary').click()");
     assert.equal(await evaluate("document.getElementById('learning-details').open"), true, 'Closing a parent preserves its nested disclosure state');
-    await checkClosedColumns();
-    await evaluate("document.getElementById('learning-details').open = false");
+    await evaluate("document.getElementById('learning-details').open = false; document.getElementById('home-heat-pump-details').open = false");
   };
   await checkIndependentCards();
   for (const [section, content] of [['timing-details', 'timing-benefit'], ['recording-details', 'recording-adaptive-details']]) {
@@ -145,7 +129,6 @@ try {
     assert.equal(await evaluate(marker), '"›"', `${section} keeps its arrow when open`);
     assert.notEqual(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none', `${section} rotates its open arrow`);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), true, `${section} reveals its content when open`);
-    await checkClosedColumns();
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     assert.equal(await evaluate(`document.getElementById('${section}').open`), false, `${section} closes with Space`);
@@ -156,11 +139,11 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('#model-coefficients-content > .learning-entry').length >= 6"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Thermal coefficients:')"), false);
   assert.equal(await evaluate("document.getElementById('home-h66-summary').textContent.includes('Unavailable')"), true);
-  assert.equal(await evaluate("document.getElementById('h66-status').textContent"), 'Not connected');
+  assert.equal(await evaluate("document.getElementById('home-pump-health').textContent"), 'Not connected');
   mkdirSync('var', { recursive: true });
   await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
   writeFileSync('var/home-panels-closed-desktop.png', Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-  await evaluate("document.getElementById('connections-details').open=true; document.getElementById('controls-details').open=true; document.getElementById('temporary-details').open=true; document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input'))");
+  await evaluate("document.getElementById('connections-details').open=true; document.getElementById('controls-details').open=true; document.getElementById('home-heat-pump-details').open=true; document.getElementById('temporary-details').open=true; document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input'))");
   assert.equal(actualStatus.settingsReload.configuration.environment, 'ubuntu');
   assert.equal(actualStatus.settingsReload.configuration.privatePath, join(directory, 'options.json'));
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#settings-location dt, #settings-location dd')].map(node => node.textContent)"),
@@ -184,7 +167,7 @@ try {
   assert.equal(await evaluate("document.getElementById('drop').textContent"), '0.7 °C', 'Settings reload applies options from disk');
   assert.equal(existsSync(join(directory, 'options.json')), true, 'Applying standalone configuration retains its permanent private file');
   await evaluate("document.getElementById('controls-details').open=false; document.getElementById('connections-details').open=false; document.getElementById('temporary-details').open=false");
-  await evaluate("document.getElementById('learning-panel-details').open = true; document.getElementById('learning-details').open = true; document.getElementById('model-inputs-details').open = true; document.querySelector('#model-inputs-content details').open = true");
+  await evaluate("document.getElementById('home-heat-pump-details').open = true; document.getElementById('learning-panel-details').open = true; document.getElementById('learning-details').open = true; document.getElementById('model-inputs-details').open = true; document.querySelector('#model-inputs-content details').open = true");
   assert.equal(await evaluate("document.getElementById('model-inputs-content').textContent.includes('configured sensors')"), true);
   assert.equal(await evaluate("document.getElementById('learning-evidence').textContent.includes('Action prediction:')"), true);
   for (const key of ['auxiliary_power', 'charger_power']) {
@@ -216,7 +199,8 @@ try {
   for (const width of [1440, 390]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
     await new Promise(resolve => setTimeout(resolve, 150));
-    await checkNestedFolds('#learning-details, #learning-validation-details, #model-inputs-details, #model-inputs-content > details, #model-coefficients-details');
+    await checkNestedFolds('#learning-details, #model-inputs-details, #model-coefficients-details', 0);
+    await checkNestedFolds('#learning-validation-details, #model-inputs-content > details', 12);
     for (const section of ['history-panel', 'learning-details', 'model-inputs-details', 'model-coefficients-details', 'providers-controls', 'h66-test-details']) {
       await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; for (let parent = element.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; element.scrollIntoView({block:'start'}); })()`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${section} fits ${width}px`);
@@ -233,7 +217,7 @@ try {
   }
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width < 600 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
-    await evaluate("document.getElementById('equipment-details').open=true;document.getElementById('h66-readings-details').open=true;document.getElementById('h66-readings-details').scrollIntoView({block:'start'});true");
+    await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true;document.getElementById('h66-readings-details').scrollIntoView({block:'start'});true");
     assert.equal(await evaluate(`(() => {
       const table=document.querySelector('#h66-readings table'),labels=[...table.querySelectorAll('.status-detail-label')];
       return document.documentElement.scrollWidth<=innerWidth && labels.every(label=>{
@@ -261,7 +245,7 @@ try {
   for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0]]) readback(register, value);
   app.engine.setH66(h66); app.engine.tick();
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
-  await until("document.getElementById('h66-status')?.textContent === 'H66 connected'");
+  await until("document.getElementById('home-pump-health')?.textContent === 'Connected'");
   await until("document.getElementById('h66-test-submit')?.disabled === false");
   assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=mode]').textContent.includes('Auto')"), true);
@@ -285,7 +269,7 @@ try {
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('equipment-details').open=true; document.getElementById('h66-provider-details').open=true; document.getElementById('h66-readings-details').open=true; document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-provider-details').open=true;  document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
       const summaries = [...document.querySelectorAll('#providers .provider-fold > summary')];
       return summaries.length === 4 && summaries.every(summary => summary.checkVisibility()
@@ -299,47 +283,51 @@ try {
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
     })()`), true, 'MQTT topics, rates and configuration form three aligned rows without vertical overlap');
     assert.equal(await evaluate(`(() => {
-      const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
-        'h66-test-details': 'equipment-details' };
+      const parents = { 'home-pump-device': 'home-equipment-details', 'h66-provider-details': 'home-pump-device',
+        'h66-test-details': 'home-pump-device' };
       return Object.entries(parents).every(([id,parent]) => {
         const fold=document.getElementById(id),summary=fold.querySelector(':scope > summary');
         const parentSummary=document.querySelector('#'+parent+' > summary');
         return summary.checkVisibility() && fold.parentElement.closest('details').id === parent
-          && summary.getBoundingClientRect().left >= parentSummary.getBoundingClientRect().left + 15;
-      });
-    })()`), true, 'Heat-pump settings and readings are visibly nested inside equipment');
+          && summary.getBoundingClientRect().left >= parentSummary.getBoundingClientRect().left + (id === 'home-pump-device' ? 0 : 8);
+      }) && document.getElementById('h66-readings-details').tagName === 'SECTION'
+        && document.getElementById('h66-readings-details').checkVisibility();
+    })()`), true, 'Heat-pump settings and readings are visibly nested inside the Home heat pump');
+    await evaluate("document.getElementById('home-heat-pump-details').open=true");
     assert.equal(await evaluate("document.getElementById('home-manual-controls').tagName === 'SECTION' && document.getElementById('heating-test-details').tagName === 'DIV' && document.getElementById('heating-test-buttons').checkVisibility()"), true,
       'Tariff controls are visible beside their reported state without another disclosure');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Provider series and H66 table fit ${width}px`);
     writeFileSync(`var/home-providers-expanded-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
     await evaluate("document.querySelectorAll('.controller-panels details').forEach(fold=>fold.open=false)");
   }
-  await evaluate("document.getElementById('connections-details').open=true; document.querySelector('#providers .provider-fold').open=true; document.getElementById('temporary-details').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
+  await evaluate("document.getElementById('connections-details').open=true; document.querySelector('#providers .provider-fold').open=true; document.getElementById('home-heat-pump-details').open=true; document.getElementById('temporary-details').open=true; document.querySelector('#providers summary').focus(); window.savedProviderFold=document.querySelector('#providers .provider-fold')");
   await evaluate("document.getElementById('away-until').value='2026-09-10T18:00'; document.getElementById('away-until').dispatchEvent(new Event('input')); document.getElementById('temporary-form').requestSubmit()");
   await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
-  await evaluate("document.getElementById('equipment-details').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
+  await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
   assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
-  assert.equal(h66.status().readings['0208'].baseline, null);
+  assert.equal(h66.status().readings['0208'].baseline, 55);
   assert.equal(h66.status().lastManual.previousValue, 55);
   assert.equal(h66.status().lastManual.readback, 50);
-  assert.equal(h66.status().expiresAt, null);
+  assert.equal(h66.status().expiresAt, now + 60_000);
   assert.equal(await evaluate("document.getElementById('h66-test-message').textContent.includes('previously 55')"), true);
   assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('50 °C')"), true);
-  await evaluate("document.getElementById('h66-readings-details').open=true;document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
+  await evaluate("document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Received/);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   now += 61_000; await h66.reconcile({ now }); app.engine.tick();
   await send('Page.reload');
   await until("document.getElementById('h66-test-message')?.textContent.includes('device confirmed')");
-  assert.equal(publications.length, 1, 'Controller ticks and page reload neither reverse nor replay a manual setting');
-  assert.equal(h66.status().readings['0208'].value, 50);
+  assert.deepEqual(publications.map(item => item.value), ['50', '55'], 'An unpaused manual setting restores its previous value and page reload does not replay it');
+  assert.equal(h66.status().readings['0208'].value, 55);
+  await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('55 °C')"), true);
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'aligned closed dashboard columns', 'independent expanded dashboard cards', 'full-width equipment row', 'alignment with hidden nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'persistent manual H66 API setting and live readback with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'Home and Garage card structure', 'independent expanded dashboard cards', 'Home equipment and learning nesting', 'preserved nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'temporary manual H66 API setting, readback and restoration with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

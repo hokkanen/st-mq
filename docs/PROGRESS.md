@@ -1,5 +1,10 @@
 # ST-MQ implementation progress
 
+Current development validation and reproducible commands are recorded in
+[Development validation](development-validation.md). The dated results below
+describe historical checkpoints; use [README](../README.md) and the feature
+guides for current behavior.
+
 ## Current implementation, 7 September 2026 — 0.9.0
 
 The owner authorized the full active controller and UI implementation after the
@@ -22,7 +27,7 @@ with persistent obligations. A missing gateway retains conservative relay contro
 
 
 Authoritative brief: `CODEX/ST-MQ-Codex-handoff.md` (6 September 2026).
-Baseline: `8c701d6`, v0.7.5, branch `H66`. The pre-existing change to
+Baseline: `8c701d6`, v0.7.5, branch `H66`.
 Private configuration lives outside Git in `~/.config/st-mq/secrets.json`.
 Supplied CSVs are owner data and must be preserved.
 

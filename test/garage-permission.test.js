@@ -26,6 +26,8 @@ test('thermal reserve shortens a lease and includes useful heating delay once', 
 test('unknown heating response, missing sensors and unsafe reserve cannot authorize a pause', () => {
   for (const patch of [{ heatingDelayMs: null }, { heatingDelayMs: NaN }, { observation: { rearAt: now } },
     { observation: { rearAt: now + 1, frontAt: now + 1 } },
+    { observation: { rearAt: now + 1, frontAt: now } },
+    { observation: { rearAt: now, frontAt: now + 1 } },
     { protection: { ...args.protection, requiredFresh: false } },
     { protection: { ...args.protection, safeToPause: false } }])
     assert.equal(garagePausePermission({ ...args, ...patch }).allowed, false);

@@ -12,7 +12,7 @@ import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
-import { createEquipmentPanel } from './equipment.js';
+import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
@@ -538,8 +538,7 @@ function render(s) {
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
-  $('dhwr').textContent = s.dhwr?.actualOn === true ? 'On · device reported' : s.dhwr?.actualOn === false ? 'Off · device reported'
-    : s.dhwr?.restorationPending ? 'Stop delivery pending' : s.dhwr?.active ? 'On requested · state unknown' : 'No request · state unknown';
+  $('dhwr').textContent = dhwrReadingSummary(s).summary;
   const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';

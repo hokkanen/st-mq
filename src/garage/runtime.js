@@ -559,7 +559,7 @@ export class GarageRuntime {
     const input = this.input, source = input === 'simulated' ? 'simulation' : observation.source;
     return this.store.transaction(() => {
       const previous = this.store.db.prepare(`SELECT id FROM observations WHERE signal='garage_energy' AND source=?
-        AND source_time=? AND json_extract(raw,'$.intervalStart')=? AND json_extract(raw,'$.sourceId')=? LIMIT 1`)
+        AND source_time=? AND json_extract(raw,'$.intervalStart')=? AND json_extract(raw,'$.sourceId') IS ? LIMIT 1`)
         .get(source, observation.sourceTime, observation.raw.intervalStart, observation.raw.sourceId ?? null);
       if (previous) return { saved: false, reason: 'duplicate-garage-energy' };
       const row = { ...observation, source, device: 'garage_heat_pump' };

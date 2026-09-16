@@ -66,6 +66,18 @@
       "charger_identification": true,
       "max_age_seconds": 180
     },
+    "charging": {
+      "chargers": {
+        "charger1": {
+          "mqttTopic": "stmq/garage/charger1/vehicle",
+          "efficiency": 0.9
+        },
+        "charger2": {
+          "mqttTopic": "",
+          "efficiency": 0.9
+        }
+      }
+    },
     "electricity": {
       "margin_ct_per_kwh_ex_vat": 0.33,
       "tax_ct_per_kwh_ex_vat": 2.325,
@@ -390,6 +402,18 @@
       "charger_assignment": "list(auto|bmw|easee)",
       "charger_identification": "bool",
       "max_age_seconds": "int(30,600)"
+    },
+    "charging": {
+      "chargers": {
+        "charger1": {
+          "mqttTopic": "str?",
+          "efficiency": "float(0.5,1)?"
+        },
+        "charger2": {
+          "mqttTopic": "str?",
+          "efficiency": "float(0.5,1)?"
+        }
+      }
     },
     "electricity": {
       "margin_ct_per_kwh_ex_vat": "float(-20,100)",

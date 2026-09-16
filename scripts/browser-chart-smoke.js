@@ -206,7 +206,8 @@ try {
   await evaluate("document.getElementById('recording-adaptive-details').open=true; true");
   await until("document.querySelectorAll('#recording-content tbody tr').length>35");
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/rolling target/);
-  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Garage temperature/);
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"), /Garage rear temperature/);
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"), /Garage front temperature/);
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
   assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,energy-audit-details,recording-overview-details');
   await evaluate("document.querySelector('#recording-overview-details > summary').focus(); true");
@@ -542,31 +543,31 @@ try {
     writeFileSync(`var/${name}.png`, Buffer.from(shot.data, 'base64'));
   };
   const checkEquipment = async () => {
-    await evaluate("document.querySelector('#equipment-details > summary').focus(); true");
+    await evaluate("document.querySelector('#home-equipment-details > summary').focus(); true");
     await command('input.performActions', { context, actions: [{ type: 'key', id: 'equipment-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
-    assert.equal(await evaluate("document.getElementById('equipment-details').open"), true, 'Equipment opens by keyboard');
-    const parents = { 'h66-readings-details': 'equipment-details', 'h66-provider-details': 'h66-readings-details',
-      'h66-test-details': 'equipment-details' };
+    assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), true, 'Equipment opens by keyboard');
+    const parents = { 'home-pump-device': 'home-equipment-details', 'h66-provider-details': 'home-pump-device',
+      'h66-test-details': 'home-pump-device' };
     assert.equal(await evaluate(`Object.entries(${JSON.stringify(parents)}).every(([id,parent]) => {
       const fold = document.getElementById(id);
       return !fold.open && fold.parentElement.closest('details').id === parent;
     })`), true, 'Equipment groups readings, their guide, and manual controls separately');
-    assert.equal(await evaluate("['h66-readings-details','h66-test-details'].every(id=>document.querySelector('#'+id+' > summary').checkVisibility())"), true);
-    assert.equal(await evaluate("['h66-provider-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Secondary guidance and tests stay behind their parent disclosure');
+    assert.equal(await evaluate("['home-pump-device'].every(id=>document.querySelector('#'+id+' > summary').checkVisibility())"), true);
+    assert.equal(await evaluate("['h66-provider-details','h66-test-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Secondary guidance and tests stay behind their parent disclosure');
     for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
       await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
-      await evaluate("document.getElementById('equipment-details').scrollIntoView({block:'start'}); true");
+      await evaluate("document.getElementById('home-equipment-details').scrollIntoView({block:'start'}); true");
       await capture(`home-energy-equipment-${viewport.width}`);
-      for (const id of ['h66-readings-details', 'h66-provider-details']) {
+      for (const id of ['home-pump-device', 'h66-provider-details']) {
         await evaluate(`(() => {const fold=document.getElementById('${id}');for(let parent=fold.parentElement.closest('details');parent;parent=parent.parentElement.closest('details'))parent.open=true;fold.querySelector(':scope > summary').click();fold.scrollIntoView({block:'start'});return true;})()`);
         assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
         assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded equipment content fits the viewport');
         await capture(`home-energy-${id}-${viewport.width}`);
         await evaluate(`document.querySelector('#${id} > summary').click(); true`);
       }
-      await evaluate("document.querySelectorAll('#equipment-details details').forEach(fold=>fold.open=false);document.getElementById('theme-toggle').click(); true");
+      await evaluate("document.querySelectorAll('#home-equipment-details details').forEach(fold=>fold.open=false);document.getElementById('theme-toggle').click(); true");
     }
-    await evaluate("document.getElementById('equipment-details').open = false; true");
+    await evaluate("document.getElementById('home-equipment-details').open = false; true");
     await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   };
   await evaluate("document.querySelector('.history-panel').scrollIntoView(); true");
@@ -581,7 +582,7 @@ try {
   await capture('home-energy-dashboard-closed-desktop');
   await evaluate("document.getElementById('theme-toggle').click(); true");
   await capture('home-energy-dashboard-closed-light');
-  await evaluate("document.getElementById('theme-toggle').click(); document.querySelector('#learning-panel-details > summary').focus(); true");
+  await evaluate("document.getElementById('theme-toggle').click(); document.getElementById('home-heat-pump-details').open=true; document.querySelector('#learning-panel-details > summary').focus(); true");
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'learning-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
   assert.equal(await evaluate("document.getElementById('learning-panel-details').open"), true, 'Learning overview opens by keyboard');
   await evaluate("document.querySelector('#learning-details > summary').click(); document.getElementById('learning-details').scrollIntoView(); true");
@@ -615,10 +616,10 @@ try {
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
   assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
   assert.equal(await evaluate("document.getElementById('h66-provider-details').open"), false);
-  assert.equal(await evaluate("document.getElementById('equipment-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
   assert.equal(await evaluate("document.getElementById('home-control').contains(document.getElementById('temporary-details')) && document.getElementById('providers-controls').contains(document.getElementById('electricity-details'))"), true);
-  await evaluate(`document.getElementById('temporary-details').open = true;
+  await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-09T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input'));
     document.getElementById('pause-until').value = '2026-09-07T18:00';
@@ -636,7 +637,7 @@ try {
   assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Paused until/, 'Closed controls still show active away and pause deadlines');
   assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), true);
   // Pending edits survive blur and an actual background status poll.
-  await evaluate(`document.getElementById('temporary-details').open = true;
+  await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
     window.__statusPolls = 0; const originalFetch = window.fetch;
     window.fetch = (...args) => { if (new URL(args[0], location.href).pathname === '/api/status') window.__statusPolls++; return originalFetch(...args); };
     document.getElementById('away-until').value = '2026-09-10T18:00';
@@ -675,7 +676,7 @@ try {
     await new Promise(resolve => setTimeout(resolve, 150));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Home controls fit desktop and mobile');
     await capture(`home-energy-dashboard-closed-${viewport.width}`);
-    await evaluate("document.querySelector('#temporary-details > summary').click(); true");
+    await evaluate("document.getElementById('home-heat-pump-details').open=true; document.querySelector('#temporary-details > summary').click(); true");
     assert.equal(await evaluate(`(() => {
       const a = document.getElementById('away-until').getBoundingClientRect();
       const b = document.getElementById('pause-until').getBoundingClientRect();
@@ -695,14 +696,15 @@ try {
   const testPublishes = [];
   let testConnections = 0, acknowledgeHeating;
   const connectTestBroker = (_address, options = {}) => {
-    // Identity announcements use a separate startup connection; this fixture's
+    // Identity and vehicle acquisition use separate startup connections; these
     // connection/publish assertions describe only manual heating commands.
     const identity = String(options.clientId ?? '').startsWith('stmq-identity-');
-    if (!identity) testConnections++;
+    const manual = !identity && options.reconnectPeriod === 0;
+    if (manual) testConnections++;
     const client = new EventEmitter();
     client.subscribe = (_topic, _options, callback) => callback?.();
     client.publish = (topic, payload, options, callback) => {
-      if (identity) { callback?.(); return; }
+      if (!manual) { callback?.(); return; }
       testPublishes.push({ topic, payload, options }); acknowledgeHeating = callback;
     };
     client.end = (force, options, callback) => callback?.();
@@ -840,9 +842,9 @@ try {
   assert.equal(await evaluate("document.querySelector('#provider-overview #providers > :last-child .provider-category-title').textContent"), 'Weather forecast', 'Weather forecast is last in the source overview');
   assert.equal(await evaluate("document.getElementById('weather-status').textContent.includes('FMI')"), true);
   assert.equal(testConnections, 0, 'Configured manual tests do not connect during startup or polling');
-  assert.equal(await evaluate("document.getElementById('equipment-details').open"), false);
-  await evaluate(`document.getElementById('equipment-details').open = true;
-    document.getElementById('temporary-details').open = true;
+  assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), false);
+  await evaluate(`document.getElementById('home-equipment-details').open = true;
+    document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input')); true`);
   for (const command of ['heatoff', 'heaton15', 'heaton60']) {
@@ -854,15 +856,19 @@ try {
     assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
     assert.equal(await evaluate(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('sent at')`), false);
     acknowledgeHeating();
-    const commandLabel = { heatoff: 'Tariff reduction', heaton15: 'Normal heating', heaton60: 'Circulation' }[command];
-    await until(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} sent at') && document.getElementById('test-${command}').disabled === ${command === 'heaton60'}`);
+    const commandLabel = { heatoff: 'Reduced heating', heaton15: 'Normal heating', heaton60: 'Circulation' }[command];
+    await until(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} sent at') && !document.getElementById('test-${command}').disabled`);
     assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
   }
   assert.deepEqual(testPublishes, [
     ...['heatoff', 'heaton15'].map(payload => ({ topic: 'from_stmq/heat/action', payload, options: { qos: 1, retain: false } })),
     { topic: 'stmq/home/dhwr/command/switch', payload: 'ON', options: { qos: 1, retain: false } },
   ]);
-  assert.equal(app.engine.status().observations.actual.mode, 'unknown');
+  const requestedHeating = app.engine.status().observations.actual;
+  assert.equal(requestedHeating.mode, 'normal');
+  assert.equal(requestedHeating.source, 'mqtt-request');
+  assert.equal(requestedHeating.verified, false, 'Broker acknowledgement is not relay confirmation');
+  assert.match(await evaluate("document.getElementById('tariff-control-state').textContent"), /Normal heating requested · unverified/);
   acknowledgeHeating = null;
   // Normal heat is allowed during the preceding DHWR pulse; reduction would
   // correctly fail before publishing and never exercise broker-error handling.
@@ -874,7 +880,7 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('h66-readings-details').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('home-pump-device').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));

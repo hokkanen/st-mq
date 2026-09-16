@@ -53,9 +53,10 @@ from each other. See [protection parameters and assumptions](garage-protection-d
 
 ## Everyday controls
 
-The **Garage** card's upper summary shows the rear temperature, doors and heating
-request, and opens **Heating configuration** with heating controls and
-**Pause savings**. The two charger cards follow the summary. **Sensors & More
+The **Garage** card's upper summary shows the rear temperature, doors, heating
+request and all-in electricity price, and opens **Heating configuration** with
+heating controls, **Garage learning**, **Garage settings** and **Pause savings**
+in that order. The two charger cards follow the summary. **Sensors & More
 equipment** contains both protection probes, the pump's own temperatures, doors
 and Caravan. A selected mode has an inline check; requested state remains
 distinct from confirmed native power.
