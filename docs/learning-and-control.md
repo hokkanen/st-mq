@@ -19,10 +19,10 @@ identify them. Heating enters the slow hydronic state before warming the room.
 That state is an effective temperature memory, not measured floor temperature or
 stored kWh. Effective heating response is not measured capacity or COP.
 
-The dashboard's **Learning models** card summarizes Home and Garage learning. Home reports
+Each dashboard **Heating configuration** includes its learning summary above the pause controls. Home reports
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
-inferred. The **Home** and **Garage** upper summaries each open learning details,
+inferred. The **Home learning** and **Garage learning** summaries each open learning details,
 with separate closed sections for **Learning outcomes · Calculated**,
 **Model inputs · Recorded & modeled** and **Model coefficients · Current values**.
 Both use the same expandable rows: the name, value or unit, and provenance stay visible;

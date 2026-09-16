@@ -441,8 +441,6 @@ function renderH66(s) {
   const connectionDetail = (h66.reason ?? (h66.connected
     ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
     : 'Waiting for a live H66 connection and fresh values from the heat pump.')).trim().replace(/^./, value => value.toUpperCase());
-  setStatusDetail($('h66-status'), { key: 'h66-connection', label: h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected',
-    title: 'Heat-pump connection', detail: connectionDetail });
   $('home-pump-health').textContent = h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
   $('home-pump-health').dataset.state = h66.connected ? 'available' : 'attention';
   if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));

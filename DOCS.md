@@ -40,7 +40,7 @@ for the algorithm, native-setting restoration and equipment testing limits.
    settings and restoration before enabling automatic H66 control.
    **Home** opens **Heating configuration** with current settings;
    **Home → Sensors & Equipment → Ground-source heat pump** contains parameter
-   controls and all readbacks. **Learning models → Home** contains model evidence.
+   controls and all readbacks. **Home → Heating configuration → Home learning** contains model evidence.
 
    Existing coordinates and market country enable FMI, Open-Meteo and Elering
    without new keys. ENTSO-E is primary for prices and Elering is the backup.
@@ -203,8 +203,7 @@ remains available through HA login. Home Assistant options own permanent setting
 Above the chart, **Home** and **Garage** each open **Heating configuration**
 from their upper summary. **Sensors & Equipment** in Home and **Sensors & More
 equipment** in Garage contain readbacks and manual tests; Garage's chargers sit
-directly below its heating summary. **Learning models** has expandable **Home**
-and **Garage** summaries for learning outcomes, model inputs and current
+directly below its heating summary. Each **Heating configuration** includes a learning summary above its pause controls for learning outcomes, model inputs and current
 coefficients. Coefficients come from existing learning state; the UI adds no
 coefficient storage and does not reconstruct historical values.
 **Data & settings** summarizes provider health;

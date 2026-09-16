@@ -676,8 +676,7 @@ details details { margin-inline-start: 24px; }
 .learning-model-overview .learning-progress:empty { display: none; }
 .learning-model-overview .learning-progress p { display: flex; align-items: baseline; gap: 6px; line-height: 1.5; }
 .learning-model-overview .learning-progress strong { flex: none; margin: 0; font-size: 16px; }
-.learning-models > .learning-model-details { margin-top: 20px; }
-.learning-models > .learning-model-details + .learning-model-details { margin-top: 16px; }
+.zone-configuration > .learning-model-details { margin: 20px 0 14px; }
 .learning-model-details > summary { align-items: start; flex-wrap: nowrap; border-top: 1px solid var(--border); }
 .learning-model-details > summary:hover .learning-model-label { color: var(--accent); }
 .learning-model-details > summary::after { margin-top: 2px; }
@@ -710,7 +709,6 @@ details details { margin-inline-start: 24px; }
   #home-control { order: 1; }
   #garage-control { order: 2; }
   #providers-controls { order: 3; }
-  #house-model { order: 4; }
   .panel { --panel-padding: 20px; margin-bottom: 16px; }
   .plot { height: 420px; }
   .chart-range-controls { gap: 12px; }

@@ -67,8 +67,8 @@ recovery. No percentage suggests a fixed full allowance, and the old air hard
 limit, degree-minute allowance, recovery temperature, warm-up duration and fixed
 repayment controls are removed. An End garage pause action releases only an owned restoration obligation;
 it stays disabled on replicas, without compatible actuation capability, or when no
-managed pause needs restoration. The Learning models card has separate, closed
-Home and Garage upper summaries that open their learning details. Each uses matching
+managed pause needs restoration. Home and Garage each have a closed learning summary in their heating configuration,
+above the pause controls. Each uses matching
 outcome, input and coefficient sections with values and provenance visible in expandable rows.
 Garage separates pause readiness, learned references and model records from the
 detailed episode checks under Validation & evidence. Input definitions distinguish

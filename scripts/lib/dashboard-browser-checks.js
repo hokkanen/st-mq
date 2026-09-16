@@ -5,8 +5,8 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     'home-equipment-details', 'garage-equipment-details', 'learning-panel-details', 'garage-learning-details'];
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.controller-column'))
     .map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))`),
-  [['home-control', 'providers-controls'], ['garage-control', 'house-model']],
-  'Desktop columns pair Home with Data & settings, and Garage with Learning models');
+  [['home-control', 'providers-controls'], ['garage-control']],
+  'Desktop columns pair Home with Data & settings, with Garage on the right');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('#home-control .control-badge > span, #garage-control .control-badge > span')]
     .map(node => node.textContent.trim())`), ['Heat control', 'Heat control']);
   assert.equal(await evaluate(`document.getElementById('charging-devices').closest('#garage-control') !== null
@@ -16,10 +16,13 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
   assert.deepEqual(await evaluate(`${JSON.stringify(folds)}.map(id => document.getElementById(id).open)`),
     folds.map(() => false), 'The dashboard folds start closed');
   for (const id of folds) {
+    const parent = id === 'learning-panel-details' ? 'home-heat-pump-details'
+      : id === 'garage-learning-details' ? 'garage-heating-details' : null;
+    if (parent) await evaluate(`document.getElementById('${parent}').open=true`);
     await evaluate(`document.querySelector('#${id} > summary').focus()`);
     await keyPress('Enter');
     assert.deepEqual(await evaluate(`${JSON.stringify(folds)}.map(id => document.getElementById(id).open)`),
-      folds.map(fold => fold === id), `${id} opens independently with Enter`);
+      folds.map(fold => fold === id || fold === parent), `${id} opens independently with Enter`);
     if (id === 'home-heat-pump-details' || id === 'garage-heating-details') {
       const area = id === 'home-heat-pump-details' ? 'home' : 'garage';
       assert.equal(await evaluate(`document.getElementById('${area}-manual-controls').checkVisibility()`), true,
@@ -27,6 +30,7 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     }
     await keyPress(' ');
     assert.equal(await evaluate(`document.getElementById('${id}').open`), false, `${id} closes with Space`);
+    if (parent) await evaluate(`document.getElementById('${parent}').open=false`);
   }
   for (const [id, fold] of [['chart-shortcut', 'home-heat-pump-details'], ['garage-chart-shortcut', 'garage-heating-details']]) {
     for (const expanded of [false, true]) {
@@ -51,22 +55,20 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
 export async function checkDashboardLayout({ evaluate, width }) {
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
     `Dashboard fits the ${width}px viewport`);
-  const cards = await evaluate(`['home-control', 'garage-control', 'providers-controls', 'house-model'].map(id => {
+  const cards = await evaluate(`['home-control', 'garage-control', 'providers-controls'].map(id => {
     const box = document.getElementById(id).getBoundingClientRect();
     return { id, top: box.top, bottom: box.bottom, left: box.left, right: box.right };
   })`);
-  const [home, garage, data, learning] = cards;
+  const [home, garage, data] = cards;
   if (width > 800) {
     assert.ok(Math.abs(home.top - garage.top) <= 1 && home.right < garage.left,
       'Desktop places Home at the upper left and Garage at the upper right');
     assert.ok(data.top > home.bottom && Math.abs(data.left - home.left) <= 1,
       'Desktop places Data & settings beneath Home');
-    assert.ok(learning.top > garage.bottom && Math.abs(learning.left - garage.left) <= 1,
-      'Desktop places Learning models beneath Garage');
   } else {
     assert.deepEqual(cards.slice().sort((first, second) => first.top - second.top).map(card => card.id),
-      ['home-control', 'garage-control', 'providers-controls', 'house-model'],
-      `The ${width}px mobile layout orders Home, Garage, Data & settings, Learning models`);
+      ['home-control', 'garage-control', 'providers-controls'],
+      `The ${width}px mobile layout orders Home, Garage, Data & settings`);
     assert.ok(cards.every((card, index) => index === 0 || card.top > cards[index - 1].bottom),
       'Mobile cards remain in separate rows');
   }

@@ -52,7 +52,7 @@ remain separate; ST-MQ never guesses a protocol or switches sources automaticall
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
 Upstairs, Downstairs and Bedroom average, replacements and moves, and
 comfort learning after adjustments to floor circulation thermostats. Record rare
-sensor maintenance under **Learning models → Home → Model inputs →
+sensor maintenance under **Home → Heating configuration → Home learning → Model inputs →
 Average indoor → Sensor changes**, or **Outdoor temperature → Sensor changes**
 for the outdoor sensor. Recording requires confirmation; **Reason** describes the
 history and does not change the model's response. **Revert and relearn** undoes a
@@ -276,9 +276,10 @@ Garage's two expandable chargers sit above **Sensors & More equipment**.
 Tariff requests remain explicitly unverified when relay readback
 is unavailable; stale H66 readings are not presented as current settings.
 
-**Learning models** gives Home and Garage learning summaries. Home reports counts
+**Home learning** and **Garage learning** sit in their respective **Heating configuration**,
+above the Away/Pause controls. Home reports counts
 of usable observations and accepted model updates. Missing counts remain unknown.
-Each **Home** or **Garage** summary opens its **calculated outcomes**,
+Each learning summary opens its **calculated outcomes**,
 **model inputs** and **current model coefficients** sections. Coefficients show values,
 units and fitted/fixed provenance from the existing learning state, without
 additional storage or reconstructed historical coefficient traces. See the detailed
@@ -291,8 +292,8 @@ property import, Charger 1 and Charger 2 in both the source overview and the
 connection details. Easee and TeslaMate keep separate acquisition diagnostics;
 Charger 2 lists total power, estimated interval energy and its session check.
 On wide screens, Home and **Data & settings** occupy the left column, with Garage
-and **Learning models** on the right. On narrow screens, the cards appear in this
-order: Home, Garage, Data & settings, Learning models. The event log follows them.
+on the right. On narrow screens, the cards appear in this
+order: Home, Garage, Data & settings. The event log follows them.
 **Recording details** lists achieved recording intervals, learned thresholds,
 freshness and storage growth independently of model importance. **Meter accuracy
 checks** shows the latest property-meter comparison and Charger 1 / Charger 2 session

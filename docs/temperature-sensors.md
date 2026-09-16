@@ -153,7 +153,7 @@ continues using only the historical upstairs measurement.
 
 ## Replacing, moving or adjusting a sensor
 
-Open **Learning models → Home → Model inputs → Average indoor → Sensor
+Open **Home → Heating configuration → Home learning → Model inputs → Average indoor → Sensor
 changes** for indoor sensors, or **Outdoor temperature → Sensor changes** for
 the outdoor sensor, after completing a replacement, move or calibration. Select
 **Sensor** and **Reason**, then choose **Record change now…**. Review the

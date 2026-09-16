@@ -362,8 +362,8 @@ try {
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').value"), '20');
   assert.equal(await evaluate("document.getElementById('charger2-setting-manualSoc').disabled"), false);
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
-    ['home-control', 'providers-controls', 'garage-control', 'house-model'],
-    'Home and Garage have separate dashboard cards beside Data & settings and Learning models');
+    ['home-control', 'providers-controls', 'garage-control'],
+    'Home and Garage have separate dashboard cards beside Data & settings');
   assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4,
     'The existing Home outcome entries are preserved');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#learning-panel-details > details > summary')].map(row => row.textContent.trim())"),
@@ -618,8 +618,7 @@ try {
     'Closing a budget explanation returns focus to its trigger');
 
   const prepareLearningShot = async (id, expanded) => evaluate(`(async () => {
-    const card = document.getElementById('house-model');
-    card.querySelectorAll('details').forEach(fold => fold.open = false);
+    document.querySelectorAll('.learning-model-details, .learning-model-details details').forEach(fold => fold.open = false);
     const root = document.getElementById('${id}'), section = root.closest('.learning-section');
     for (let parent = section; parent; parent = parent.parentElement)
       if (parent.tagName === 'DETAILS') parent.open = true;
@@ -721,8 +720,9 @@ try {
       await checkDashboardLayout({ evaluate, width });
       await capture(`dashboard-${width}-${theme}`);
       await evaluate(`window.homeEnergyTheme.setTheme('${theme}');
-        document.querySelectorAll('#house-model details').forEach(fold => fold.open = false);
-        document.getElementById('house-model').scrollIntoView({block: 'start'})`);
+        document.querySelectorAll('.learning-model-details, .learning-model-details details').forEach(fold => fold.open = false);
+        document.getElementById('home-heat-pump-details').open = true;
+        document.getElementById('learning-panel-details').scrollIntoView({block: 'start'})`);
       await capture(`learning-overview-${width}-${theme}`);
       for (const [id, name] of learningSections) {
         for (const expanded of [false, true]) {
@@ -833,7 +833,7 @@ try {
       'Controlled and Observed roles with shared charge, target and completion metrics, separate start and ready-by timing, grid energy and cost inside the equipment body',
       'metric explanations open without toggling equipment, preserve focus during refresh, and return on Escape; form guidance and all charging periods remain inline',
       'separate Home and Garage cards, independent keyboard disclosures, and both chart shortcuts preserve fold state and focus',
-      'desktop column grouping and mobile Home, Garage, Data, Learning order',
+      'desktop column grouping and mobile Home, Garage, Data order',
       'matching Home and Garage learning headings', 'episode-based Garage progress',
       'shared learning rows and section structure', 'Enter and Space operate each learning section and entry',
       'status refresh preserves learning row identity, open explanations and focus',
