@@ -55,11 +55,19 @@
                 <small class="overview-note">Indoor average</small>
                 <small id="indoor-age" class="overview-note">Waiting for readings</small>
               </div>
-              <div class="overview-placeholder" aria-hidden="true"></div>
+              <div class="overview-reading overview-outdoor">
+                <strong id="outdoor" class="overview-temperature">—</strong>
+                <small class="overview-note">Outdoor</small>
+                <small id="outdoor-age" class="overview-note">Waiting for readings</small>
+              </div>
               <div class="overview-request">
                 <p id="requested-label" class="overview-label">Heating request</p>
                 <strong id="requested" role="status">—</strong>
                 <small id="actual" class="overview-note">Actual state unknown</small>
+                <div class="overview-price">
+                  <p id="price-label" class="overview-label">All-in price</p>
+                  <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
+                </div>
               </div>
             </div>
             <span class="zone-expand" aria-hidden="true"></span>
@@ -195,107 +203,98 @@
           </div>
         </details>
         <p id="heating-held-summary" class="heating-hold-warning" role="status" data-controller-only hidden></p>
-        <div class="overview-conditions">
-          <div class="overview-outdoor">
-            <p class="overview-label">Outdoor</p>
-            <strong id="outdoor">—</strong>
-            <small id="outdoor-age" class="overview-note">Waiting for readings</small>
-          </div>
-          <div class="overview-price">
-            <p id="price-label" class="overview-label">All-in price</p>
-            <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
-          </div>
-        <details id="fireplace-details" class="dashboard-disclosure fireplace-details" data-controller-only>
-          <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
-          <div id="fireplace-content" class="fireplace-content">
-            <form id="fireplace-form">
-              <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
-              <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
-              <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
-              <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
-              <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
-            </form>
-            <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
-            <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
-            <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
-            <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
-            <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
-            <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
-            <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
-            <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
-          </div>
-        </details>
-        </div>
-        <details id="home-equipment-details" class="dashboard-disclosure zone-equipment-fold" data-controller-only>
-          <summary><span id="home-equipment-title">Sensors &amp; Equipment</span><small id="home-equipment-status" class="equipment-device-status"></small></summary>
-          <div class="zone-content equipment-area">
-            <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
-              <details id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
-                <summary class="equipment-device-summary">
-                  <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><small class="equipment-device-meta">Heat pump · H66</small></div>
-                  <span class="equipment-device-health"><span id="home-pump-health" class="equipment-device-status">Not connected</span></span>
-                  <div class="pump-native-overview">
-                    <div class="equipment-value"><span>Current state</span><strong id="home-pump-state" class="muted">—</strong><small id="home-pump-state-age" hidden></small></div>
-                    <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw" class="muted">—</strong></div>
-                    <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room" class="muted">—</strong></div>
-                  </div>
-                </summary>
-                <div class="equipment-device-body">
-                  <p id="home-pump-reading-info" class="pump-reading-info"></p>
-                  <details id="h66-test-details" class="equipment-fold">
-                    <summary>Adjust heat-pump parameters</summary>
-                    <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
-                      <label>Setting<select id="h66-test-register">
-                        <option value="0203">Room setting</option><option value="0212">Hot water start</option>
-                        <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
-                      </select></label>
-                      <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
-                      <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
-                      <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
-                      <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
-                    </form>
-                    <p id="h66-test-status" class="muted">H66 is not connected.</p>
-                    <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
-                  </details>
-                  <section id="h66-readings-details" class="equipment-reading-section">
-                    <h5 class="equipment-body-title">All heat-pump readings</h5>
-                    <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
-                    <p id="h66-context" class="muted"></p>
-                    <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
-                    <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
-                    <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
-                      <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
-                      <div id="h66-series"></div>
-                    </details>
-                  </section>
-                </div>
-              </details>
-              <div id="home-equipment-readings" class="equipment-device-list"></div>
-              <details id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
-                <summary class="equipment-device-summary">
-                  <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small class="equipment-device-meta">Circulation pump · MQTT</small></div>
-                  <p id="dhwr-preview" class="equipment-device-preview">Waiting for readings</p>
-                  <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></span>
-                </summary>
-                <div class="equipment-device-body">
-                  <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
-                  <div id="dhwr-controls" class="equipment-inline-controls">
-                    <p id="dhwr-request-state" class="muted"></p>
-                    <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
-                      <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
-                      <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+        <div class="home-support" data-controller-only>
+          <details id="home-equipment-details" class="dashboard-disclosure zone-equipment-fold" data-controller-only>
+            <summary><span id="home-equipment-title">Sensors &amp; Equipment</span><small id="home-equipment-status" class="equipment-device-status"></small></summary>
+            <div class="zone-content equipment-area">
+              <section id="home-equipment-section" class="zone-section zone-equipment" aria-labelledby="home-equipment-title">
+                <details id="home-pump-device" class="equipment-device equipment-heat-pump native-heat-pump" aria-labelledby="home-pump-title">
+                  <summary class="equipment-device-summary">
+                    <div class="equipment-device-heading"><h4 id="home-pump-title">Ground-source heat pump</h4><small class="equipment-device-meta">Heat pump · H66</small></div>
+                    <span class="equipment-device-health"><span id="home-pump-health" class="equipment-device-status">Not connected</span></span>
+                    <div class="pump-native-overview">
+                      <div class="equipment-value"><span>Current state</span><strong id="home-pump-state" class="muted">—</strong><small id="home-pump-state-age" hidden></small></div>
+                      <div class="equipment-value"><span>Hot water target</span><strong id="home-pump-dhw" class="muted">—</strong></div>
+                      <div class="equipment-value"><span>Room setting</span><strong id="home-pump-room" class="muted">—</strong></div>
                     </div>
-                    <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
-                    <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
+                  </summary>
+                  <div class="equipment-device-body">
+                    <p id="home-pump-reading-info" class="pump-reading-info"></p>
+                    <details id="h66-test-details" class="equipment-fold">
+                      <summary>Adjust heat-pump parameters</summary>
+                      <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
+                        <label>Setting<select id="h66-test-register">
+                          <option value="0203">Room setting</option><option value="0212">Hot water start</option>
+                          <option value="0208">Hot water stop</option><option value="2201">Operating mode</option>
+                        </select></label>
+                        <label id="h66-test-temperature-field">Temperature · °C<input id="h66-test-value" type="number" min="10" max="30" step="1" value="20" required></label>
+                        <label id="h66-test-mode-field" hidden>Operating mode<select id="h66-test-mode"><option value="1">Auto</option><option value="2">Compressor only</option><option value="4">Hot water only</option></select></label>
+                        <p class="equipment-control-state"><span>Reported now</span><strong id="h66-manual-state">Unavailable</strong></p>
+                        <button id="h66-test-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                      </form>
+                      <p id="h66-test-status" class="muted">H66 is not connected.</p>
+                      <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                    </details>
+                    <section id="h66-readings-details" class="equipment-reading-section">
+                      <h5 class="equipment-body-title">All heat-pump readings</h5>
+                      <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
+                      <p id="h66-context" class="muted"></p>
+                      <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
+                      <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
+                      <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
+                        <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
+                        <div id="h66-series"></div>
+                      </details>
+                    </section>
                   </div>
-                </div>
-              </details>
-              <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
-              <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
-              <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
-            </section>
-          </div>
-        </details>
+                </details>
+                <div id="home-equipment-readings" class="equipment-device-list"></div>
+                <details id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
+                  <summary class="equipment-device-summary">
+                    <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small class="equipment-device-meta">Circulation pump · MQTT</small></div>
+                    <p id="dhwr-preview" class="equipment-device-preview">Waiting for readings</p>
+                    <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></span>
+                  </summary>
+                  <div class="equipment-device-body">
+                    <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
+                    <div id="dhwr-controls" class="equipment-inline-controls">
+                      <p id="dhwr-request-state" class="muted"></p>
+                      <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
+                        <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
+                        <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
+                      </div>
+                      <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
+                      <p id="dhwr-control-help" class="muted">Each click starts a full run for the configured duration, whether price control is paused or not. Stop ends it immediately.</p>
+                    </div>
+                  </div>
+                </details>
+                <div id="home-test-notice" class="equipment-test-notice" hidden><p id="home-active-test" role="status" hidden></p></div>
+                <p id="home-equipment-result" class="equipment-test-result" role="status" aria-live="polite" hidden></p>
+                <div class="zone-connections"><a href="#mqtt-devices-details" data-open-mqtt-settings>Connections &amp; MQTT topics →</a></div>
+              </section>
+            </div>
+          </details>
+          <details id="fireplace-details" class="dashboard-disclosure fireplace-details" data-controller-only>
+            <summary><span>Fireplace</span><small id="fireplace-overview">Add firewood</small></summary>
+            <div id="fireplace-content" class="fireplace-content">
+              <form id="fireplace-form">
+                <div class="fireplace-amount"><label for="fireplace-kg">Dry firewood</label><output id="fireplace-amount" for="fireplace-kg">8 kg</output></div>
+                <input id="fireplace-kg" type="range" min="2" max="10" step="1" value="8" aria-describedby="fireplace-help" disabled>
+                <div class="fireplace-scale" aria-hidden="true"><span>2 kg</span><span>4</span><span>6</span><span>8</span><span>10 kg</span></div>
+                <p id="fireplace-help" class="muted">Record new wood as you light either fireplace or add another load. Its heat is released gradually.</p>
+                <button id="fireplace-submit" type="submit" disabled>Record firewood now</button>
+              </form>
+              <p id="fireplace-message" class="temporary-status" role="status" aria-live="polite"></p>
+              <button id="fireplace-retry" class="secondary-button" type="button" hidden>Retry saving</button>
+              <p id="fireplace-model-status" class="muted" role="status" aria-live="polite"></p>
+              <div class="fireplace-history-heading"><h3>Past 48 hours</h3><span id="fireplace-total" class="muted">No entries</span></div>
+              <p class="muted fireplace-timezone">Finnish local time · Europe/Helsinki</p>
+              <ul id="fireplace-entries" class="fireplace-entries" aria-label="Firewood recorded in the past 48 hours"></ul>
+              <p id="fireplace-empty" class="muted">No firewood recorded in the past 48 hours.</p>
+              <p class="muted fireplace-correction-help">Remove only mistaken entries. Saved entries and their corrections stay in history. Leave real fires recorded after they go out.</p>
+            </div>
+          </details>
+        </div>
       </article>
       <article id="providers-controls" class="panel providers-controls" aria-labelledby="providers-title" data-controller-only>
                 <div class="dashboard-heading"><h2 id="providers-title">Data &amp; settings</h2><span id="provider-overview-state" class="muted">Waiting for data</span></div>

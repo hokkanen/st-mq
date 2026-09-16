@@ -13,6 +13,12 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     && document.getElementById('charging-devices').closest('details') === null
     && document.querySelectorAll('#garage-equipment-details [id^=charger]').length === 0`), true,
   'Garage chargers remain visible outside the heating and equipment folds without duplicates');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#home-control .home-support > details')].map(node => node.id)`),
+    ['home-equipment-details', 'fireplace-details'], 'Home equipment and fireplace are sibling disclosures below the overview');
+  assert.equal(await evaluate(`['outdoor', 'outdoor-age'].every(id => document.querySelector('#home-heat-pump-details > summary .overview-zone').contains(document.getElementById(id)))
+    && ['price-label', 'price', 'price-unit'].every(id => document.querySelector('#home-heat-pump-details > summary .overview-request').contains(document.getElementById(id)))
+    && ['indoor', 'outdoor', 'outdoor-age', 'price-label', 'price', 'price-unit'].every(id => document.querySelectorAll('#' + id).length === 1)`), true,
+  'Outdoor and electricity price have one permanent location inside the Home overview');
   assert.deepEqual(await evaluate(`${JSON.stringify(folds)}.map(id => document.getElementById(id).open)`),
     folds.map(() => false), 'The dashboard folds start closed');
   for (const id of folds) {
@@ -32,6 +38,28 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
     assert.equal(await evaluate(`document.getElementById('${id}').open`), false, `${id} closes with Space`);
     if (parent) await evaluate(`document.getElementById('${parent}').open=false`);
   }
+  for (const metric of ['outdoor', 'price']) {
+    for (const expanded of [false, true]) {
+      await evaluate(`document.getElementById('home-heat-pump-details').open=${expanded};
+        document.querySelector('#${metric} .status-detail-trigger').focus()`);
+      await keyPress('Enter');
+      assert.equal(await evaluate(`document.querySelector('#${metric} .status-detail-trigger').getAttribute('aria-expanded')`), 'true',
+        `${metric} explanation opens from the compact overview with Enter`);
+      assert.equal(await evaluate("document.getElementById('home-heat-pump-details').open"), expanded,
+        `${metric} explanation leaves the Home heating disclosure unchanged`);
+      await keyPress('Escape');
+      assert.equal(await evaluate(`document.activeElement === document.querySelector('#${metric} .status-detail-trigger')`), true,
+        `${metric} receives focus when its explanation closes`);
+    }
+    await evaluate("document.getElementById('home-heat-pump-details').open=false");
+  }
+  await evaluate("document.querySelector('#home-equipment-details > summary').click(); document.querySelector('#fireplace-details > summary').click()");
+  assert.equal(await evaluate("document.getElementById('home-equipment-details').open && document.getElementById('fireplace-details').open && document.getElementById('fireplace-form').checkVisibility()"), true,
+    'Equipment and fireplace can remain open together');
+  await evaluate("document.querySelector('#home-equipment-details > summary').click()");
+  assert.equal(await evaluate("document.getElementById('fireplace-details').open && document.getElementById('fireplace-form').checkVisibility()"), true,
+    'Closing equipment leaves the fireplace and its form open');
+  await evaluate("document.querySelector('#fireplace-details > summary').click()");
   for (const [id, fold] of [['chart-shortcut', 'home-heat-pump-details'], ['garage-chart-shortcut', 'garage-heating-details']]) {
     for (const expanded of [false, true]) {
       await evaluate(`document.getElementById('${fold}').open=${expanded};
@@ -78,4 +106,36 @@ export async function checkDashboardLayout({ evaluate, width }) {
     return button.left > (card.left + card.right) / 2 && button.top >= card.top
       && button.bottom < card.top + 90 && button.right <= card.right;
   })`), true, `Both chart shortcuts remain at the top right at ${width}px`);
+  assert.equal(await evaluate(`['home', 'garage'].every(area => {
+    const overview = document.querySelector('#' + area + '-control .overview-zone');
+    const bounds = overview.getBoundingClientRect(), cells = [...overview.children].map(node => node.getBoundingClientRect());
+    return cells.length === 3 && cells.every((cell, index) => cell.left >= bounds.left - 1 && cell.right <= bounds.right + 1
+      && Math.abs(cell.top - cells[0].top) <= 1 && (index === 0 || cell.left >= cells[index - 1].right));
+  })`), true, `Home and Garage retain three aligned overview columns at ${width}px`);
+  assert.equal(await evaluate(`['indoor', 'outdoor', 'requested', 'price', 'garage-temperature', 'garage-door-summary', 'garage-requested'].every(id => {
+    const value = document.getElementById(id), cell = value.closest('.overview-zone > div').getBoundingClientRect();
+    return [...value.querySelectorAll('.status-detail-trigger, .status-detail-label')].every(trigger => {
+      const box = trigger.getBoundingClientRect();
+      return box.left >= cell.left - 1 && box.right <= cell.right + 1;
+    });
+  })`), true, `Overview values and explanation buttons stay inside their columns at ${width}px`);
+  const support = await evaluate(`(() => {
+    const root = document.querySelector('#home-control .home-support');
+    return [...root.children].map(node => {
+      const box = node.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+    });
+  })()`);
+  assert.ok(support.length === 2 && Math.abs(support[0].top - support[1].top) <= 1 && support[0].right < support[1].left,
+    `Closed Home equipment and fireplace sit side by side at ${width}px`);
+  for (const id of ['home-equipment-details', 'fireplace-details']) {
+    await evaluate(`document.querySelector('#${id} > summary').click()`);
+    assert.equal(await evaluate(`(() => {
+      const root = document.querySelector('#home-control .home-support'), bounds = root.getBoundingClientRect();
+      const open = document.getElementById('${id}'), box = open.getBoundingClientRect();
+      return open.open && Math.abs(box.left - bounds.left) <= 1 && Math.abs(box.right - bounds.right) <= 1
+        && document.documentElement.scrollWidth <= innerWidth;
+    })()`), true, `${id} expands to the full Home width without overflow at ${width}px`);
+    await evaluate(`document.querySelector('#${id} > summary').click()`);
+  }
 }

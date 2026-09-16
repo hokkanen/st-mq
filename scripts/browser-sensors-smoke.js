@@ -103,16 +103,16 @@ try {
   await send('Page.navigate', { url: base });
   await until("document.getElementById('history')?.dataset.ready === 'true' && document.getElementById('indoor')?.textContent === '21.0 °C'");
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
-  const sensorParents = '#learning-panel-details, #model-inputs-details, details[data-model-input=model_indoor_temperature]';
+  const sensorParents = '#home-heat-pump-details, #learning-panel-details, #model-inputs-details, details[data-model-input=model_indoor_temperature]';
   assert.equal(await evaluate("document.querySelectorAll('#sensor-change-details').length"), 1);
-  assert.equal(await evaluate("document.querySelector('#home-control #sensor-change-details') === null"), true,
-    'Home & heating has no sensor maintenance controls');
+  assert.equal(await evaluate("document.querySelector('#home-heat-pump-details > summary #sensor-change-details') === null"), true,
+    'The compact Home overview has no sensor maintenance controls');
   assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('[data-model-input]')?.dataset.modelInput"),
     'model_indoor_temperature', 'Sensor changes belong to the Average indoor model input');
   assert.equal(await evaluate("document.querySelectorAll('#outdoor-sensor-change-details').length"), 1);
   assert.equal(await evaluate("document.getElementById('outdoor-sensor-change-details').closest('[data-model-input]')?.dataset.modelInput"),
     'model_outdoor_temperature', 'Outdoor sensor changes have their own model input fold');
-  assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('article')?.id"), 'house-model');
+  assert.equal(await evaluate("document.getElementById('sensor-change-details').closest('article')?.id"), 'home-control');
   assert.equal(await evaluate("document.querySelector('#sensor-change-details > summary span').textContent"), 'Sensor changes');
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('${sensorParents}, #sensor-change-details'), fold => fold.open).some(Boolean)`),
     false, 'Sensor changes and the model input disclosures start collapsed');
@@ -131,8 +131,10 @@ try {
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   assert.equal(await evaluate("document.querySelector('.indoor-readings, #upstairs, #downstairs, #bedroom') === null"), true);
-  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.overview-zone-label > h3, .overview-conditions > div > .overview-label'), node => node.textContent)"),
-    ['Home', 'Garage', 'Outdoor', 'ALL-IN PRICE']);
+  assert.deepEqual(await evaluate("['control-title', 'garage-title', 'price-label'].map(id => document.getElementById(id).textContent)"),
+    ['Home', 'Garage', 'ALL-IN PRICE']);
+  assert.equal(await evaluate("document.querySelector('#home-control .overview-zone > :nth-child(2)').contains(document.getElementById('outdoor')) && document.querySelector('#home-control .overview-request').contains(document.getElementById('price'))"), true,
+    'Outdoor is beside the indoor average and the electricity price supports the heating request');
   const observations = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
   for (const [key, value] of [['upstairs', 21.2], ['downstairs', 20.2], ['bedroom', 21.6]]) {
     assert.equal(observations[key].value, value, `${key} remains available to the controller`);
@@ -148,13 +150,13 @@ try {
   assert.deepEqual(await evaluate("Array.from(document.querySelector('#left-axis optgroup[label=\"Home temperatures · Recorded\"]').children, node => node.textContent)"), ['All home temperatures']);
   assert.equal(await evaluate("document.querySelector('#left-axis option[value=\"garage_temperature\"]') === null"), true);
   assert.equal(await evaluate("document.querySelector('#left-axis optgroup[label=\"Other air temperatures · Recorded\"]') === null"), true);
-  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage rear');
   assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
   await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
   await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 5");
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]'), node => node.textContent)"),
-    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage', 'Garage probe 2']);
-  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage');
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage rear', 'Garage front']);
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage rear');
   mkdirSync('var', { recursive: true });
   for (const theme of ['dark', 'light']) {
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click()`);
