@@ -23,7 +23,7 @@ const active = () => { const item = charger(); return { ...item, settings: { ...
 test('garage keeps cold budgets in settings and renders shared charger cards above more equipment', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert(!html.includes('id="home-heat-pump-title"'));
-  assert.match(html, /id="garage-title">Garage<\/h2>/);
+  assert.match(html, /id="garage-title">Garage<span class="zone-expand" aria-hidden="true"><\/span><\/h2>/);
   assert.equal((html.match(/<span>Heating mode<\/span>/g) ?? []).length, 1);
   assert(!html.includes('home-tariff-status'));
   assert(!html.includes('id="garage-budget-front"')); assert(html.includes('id="garage-settings-budget-front"'));

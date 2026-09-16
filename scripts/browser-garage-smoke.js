@@ -108,8 +108,9 @@ try {
           readings: { '1A01': reading(1), '0203': reading(21), '0212': reading(44), '0208': reading(60), '2201': reading(1) } };
         status.garage.adapter = { ...status.garage.adapter, connected: true,
           health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true },
-          native: { power: 'on', mode: 'heat', targetC: 10,
+          native: { power: 'on', powerAt: at, mode: 'heat', targetC: 10,
             readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: at }])) } };
+        status.garage.heatingControls = { ...status.garage.heatingControls, confirmed: true, selectedMode: 'normal' };
       }
       if (globalThis.learningSmokeValues) {
         const missing = globalThis.learningSmokeValues === 'missing';

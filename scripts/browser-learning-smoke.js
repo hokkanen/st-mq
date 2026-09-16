@@ -134,20 +134,23 @@ try {
   for (const [section, content] of [['timing-details', 'timing-benefit'], ['recording-details', 'recording-adaptive-details']]) {
     const marker = `getComputedStyle(document.querySelector('#${section} > summary'), '::after').content`;
     assert.equal(await evaluate(`document.getElementById('${section}').open`), false);
-    assert.equal(await evaluate(marker), '"+"', `${section} shows a plus when closed`);
+    assert.equal(await evaluate(marker), '"›"', `${section} shows an arrow when closed`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none');
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false, `${section} hides its content when closed`);
     await evaluate(`document.querySelector('#${section} > summary').focus()`);
     assert.equal(await evaluate(`document.activeElement === document.querySelector('#${section} > summary')`), true, `${section} accepts keyboard focus`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
     assert.equal(await evaluate(`document.getElementById('${section}').open`), true, `${section} opens with Enter`);
-    assert.equal(await evaluate(marker), '"−"', `${section} shows a minus when open`);
+    assert.equal(await evaluate(marker), '"›"', `${section} keeps its arrow when open`);
+    assert.notEqual(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none', `${section} rotates its open arrow`);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), true, `${section} reveals its content when open`);
     await checkClosedColumns();
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     assert.equal(await evaluate(`document.getElementById('${section}').open`), false, `${section} closes with Space`);
-    assert.equal(await evaluate(marker), '"+"');
+    assert.equal(await evaluate(marker), '"›"');
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('#${section} > summary'), '::after').transform`), 'none');
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false);
   }
   assert.equal(await evaluate("document.querySelectorAll('#model-coefficients-content > .learning-entry').length >= 6"), true);

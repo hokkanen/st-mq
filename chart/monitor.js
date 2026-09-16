@@ -14,6 +14,8 @@ import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInsta
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
+import { priceStatuses, renderCurrentPrice } from './current-price.js';
+import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { confirmPausedHeating, homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 import { createDashboardLayout } from './dashboard-layout.js';
 
@@ -51,14 +53,6 @@ const day = value => dayFormat.format(new Date(value));
 const decimal = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 5 }).format(value) : '—';
 const label = value => String(value ?? '').replaceAll(/[_-]/g, ' ');
 const tariffNames = { 'day-night': 'Day / night', seasonal: 'Seasonal' };
-const priceStatuses = {
-  simulated: 'Synthetic example prices', configured: 'All-in outlook available for configured dates',
-  'contract-not-configured': 'Spot available · contract rates needed for all-in prices',
-  'no-contract-coverage': 'Spot available · rates do not cover these dates',
-  'missing-market-data': 'Waiting for market prices', 'stale-market-data': 'Market prices are stale',
-  'partial-contract-coverage': 'All-in prices cover part of the outlook',
-  'incomplete-market-coverage': 'Market outlook has missing intervals',
-};
 const weatherStatuses = { simulated: 'Synthetic weather', available: 'Forecast available', 'partial-forecast-coverage': 'Forecast has missing intervals', 'missing-forecast': 'Waiting for a forecast', 'stale-forecast': 'Forecast is stale' };
 const reasons = {
   'unvalidated-thermal-model': 'Learning how the house holds and recovers heat',
@@ -532,23 +526,10 @@ function render(s) {
       .trim().replace(/^./, value => value.toUpperCase())).join('. ');
   const recoveryDetail = !manualHold && s.decision.phase === 'recovery'
     ? `${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.` : '';
-  setStatusDetail($('requested'), { key: 'home-heating-request', label: requested, title: 'Home heating request',
+  setHeatingStatusDetail($('requested'), { key: 'home-heating-request', label: requested, title: 'Home heating request',
+    confirmation: homeHeatingConfirmation(s),
     detail: [controlMode, decisionTitle, decisionReasons, recoveryDetail].filter(Boolean).join('\n\n') });
-  $('actual').textContent = `Actual: ${label(s.observations.actual?.mode ?? 'unknown')}${s.input === 'simulated' ? ' · simulated' : ''}`;
-  const current = s.prices.find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.allInCentsPerKWh));
-  const spot = (s.spot ?? []).find(p => p.start <= s.now && p.end > s.now && Number.isFinite(p.spotCtPerKwh));
-  const price = current ? current.allInCentsPerKWh.toFixed(2) : spot ? spot.spotCtPerKwh.toFixed(2) : '—';
-  $('price-label').textContent = s.input === 'simulated' ? 'EXAMPLE ALL-IN PRICE' : current ? 'ALL-IN PRICE' : spot ? 'SPOT PRICE' : 'ELECTRICITY PRICE';
-  const priceDetail = s.input === 'simulated' ? 'Synthetic simulation data.' : current ? 'Import price, including variable charges.'
-    : spot ? 'Spot price only; excludes VAT and other charges.' : priceStatuses[s.priceStatus] ?? 'Waiting for price data';
-  const spotPrice = spot?.spotCtPerKwh ?? current?.spotCtPerKwh;
-  const spotDetail = current ? Number.isFinite(spotPrice)
-    ? `Spot price: ${spotPrice.toFixed(2)} c/kWh, excluding VAT and other charges.`
-    : 'Spot price is unavailable for this interval.' : '';
-  setStatusDetail($('price'), { key: 'metric-price', label: price,
-    title: s.input === 'simulated' ? 'Example all-in price' : current ? 'All-in price' : spot ? 'Spot price' : 'Electricity price',
-    detail: [`${current || spot ? `${price} c/kWh. ` : ''}${priceDetail}`, spotDetail].filter(Boolean).join('\n\n') });
-  $('price-unit').textContent = current || spot ? 'c/kWh' : '';
+  renderCurrentPrice(document, s);
   renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderGarage(document, s);
   if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);

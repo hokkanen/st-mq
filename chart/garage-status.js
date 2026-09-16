@@ -2,6 +2,8 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
+import { renderCurrentPrice } from './current-price.js';
+import { garageHeatingConfirmation, garageNativeReadingFresh, setHeatingStatusDetail } from './heating-status.js';
 import { finnishDateTime } from './home-controls.js';
 import { confirmPausedHeating, garageHeatingWarning } from './heating-warning.js';
 import { GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
@@ -297,7 +299,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   }
   rows.push(['Limiting protection location', text(protection.limitingLocation)],
     ['Configured normal Mitsubishi setting', number(settings.baselineC, '°C')],
-    ['Native power', reported.power === null || reported.power === undefined ? 'Unknown' : `${text(native(reported.power))}${!finite(reported.powerAt) ? ' · freshness unknown' : reported.powerAt > now || now - reported.powerAt >= (settings.maxSensorAgeMs ?? 120_000) || adapter.connected === false ? ' · stale' : ''}`], ['Native mode', text(native(reported.mode))],
+    ['Native power', reported.power === null || reported.power === undefined ? 'Unknown' : `${text(native(reported.power))}${!finite(reported.powerAt) ? ' · freshness unknown' : !garageNativeReadingFresh(garage, 'power', now) ? ' · current reading unavailable' : ''}`], ['Native mode', text(native(reported.mode))],
     ['Native target', number(native(reported.targetC), '°C')],
     ['Pump indoor temperature', telemetryValue('garage_native_indoor_temperature', '°C')], ['Pump outdoor temperature', telemetryValue('garage_native_outdoor_temperature', '°C')],
     ['Electrical power', telemetryValue('garage_power', 'W')], ['Native cumulative energy', telemetryValue('garage_native_energy', 'kWh')],
@@ -349,7 +351,7 @@ export function renderGarage(document, status) {
     setStatusDetail(node, { label, title, detail: description, key: id });
   };
   const garage = status?.garage ?? {}, adapter = garage.adapter ?? {}, reported = adapter.native ?? adapter.readbacks ?? {};
-  const now = status?.now ?? Date.now(), maxAge = garage.settings?.maxSensorAgeMs ?? 120_000;
+  const now = status?.now ?? Date.now();
   const control = document.getElementById('garage-control-price');
   if (control) {
     control.textContent = garage.temporary?.pauseActive ? 'Paused'
@@ -407,8 +409,7 @@ export function renderGarage(document, status) {
   const nativeReading = (field, title, format) => {
     const value = native(reported[field]), at = reported.readbacks?.[field]?.measuredAt
       ?? (field === 'power' ? reported.powerAt : null);
-    const fresh = finite(at) && at <= now && now - at < maxAge && adapter.connected !== false
-      && adapter.health?.deviceOnline !== false && adapter.health?.pumpCommunicating !== false;
+    const fresh = garageNativeReadingFresh(garage, field, now);
     const last = value === null || value === undefined ? 'Unknown' : format(value);
     const id = `garage-native-${field === 'targetC' ? 'target' : field}`;
     const available = fresh && last !== 'Unknown';
@@ -430,9 +431,11 @@ export function renderGarage(document, status) {
           : ['pause', 'renew'].includes(action) ? 'Reduction'
             : ['available', 'release'].includes(action) || garage.temporary?.pauseActive ? 'Normal' : 'No request';
   set('garage-requested-label', 'HEATING REQUEST');
-  detail('garage-requested', `${requested}${held ? ' · held' : ''}`, 'Garage heating request',
-    `${display.reason}.${held ? ` Manual heating selection is held until ${clock(controls.holdUntil)} or Resume now.` : ''} The request describes the heating plan. Pump power is reported separately and does not confirm compressor activity.`);
-  set('garage-actual', `${power.fresh && ['on', 'off'].includes(power.value) ? `Pump ${power.value}` : 'Pump state unknown'}${adapter.simulation ? ' · simulated' : ''}`);
+  setHeatingStatusDetail(document.getElementById('garage-requested'), { key: 'garage-requested',
+    label: `${requested}${held ? ' · held' : ''}`, title: 'Garage heating request',
+    confirmation: garageHeatingConfirmation(status, requested),
+    detail: `${display.reason}.${held ? ` Manual heating selection is held until ${clock(controls.holdUntil)} or Resume now.` : ''} The request describes the heating plan.` });
+  renderCurrentPrice(document, status, 'garage-');
   set('garage-pause-overview', garage.temporary?.pauseActive
     ? `Price control paused until ${clock(garage.temporary.pauseUntil)}` : 'Pause automatic price control');
   const list = (id, rows) => {

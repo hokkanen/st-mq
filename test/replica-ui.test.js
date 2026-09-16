@@ -106,7 +106,7 @@ function fixture() {
   const ids = ['primary-replication-notice', 'primary-replication-summary', 'primary-replication-detail',
     'replica-notice', 'replica-summary', 'replica-snapshot', 'replica-success', 'replica-verification',
     'connection', 'instance-role', 'context', 'recording-adaptive-details', 'indoor', 'outdoor', 'indoor-age', 'outdoor-age',
-    'requested', 'requested-label', 'actual', 'price', 'price-label', 'price-unit', 'updated'];
+    'requested', 'requested-label', 'price', 'price-label', 'price-unit', 'updated'];
   const nodes = new Map(ids.map(id => [id, new Element()]));
   const controls = new Element(); controls.controls = Array.from({ length: 8 }, () => new Element());
   const sections = [new Element(), new Element(), new Element()];
@@ -125,7 +125,11 @@ test('a replica renders without Engine status and never presents copied active f
   assert(controls.controls.every(node => node.disabled));
   assert(sections.every(node => node.hidden));
   assert.match($('connection').textContent, /WAITING FOR SNAPSHOT/);
-  assert.match($('actual').textContent, /unknown/);
+  assert.equal($('requested').dataset.state, 'muted');
+  const requestTrigger = $('requested').querySelector('.status-detail-trigger');
+  assert.match(requestTrigger.getAttribute('aria-label'), /Current home state unknown/);
+  requestTrigger.click();
+  assert.match($('status-detail-popover').textContent, /Current home state unknown/);
   const status = { ...ready(), liveWrites: true, h66: { connected: true },
     observations: { indoor: { value: 21.3, observedAt: now - 90_000, source: 'husdata-h66' } },
     lastDecision: { phase: 'reduction' }, recording: { parameters: [] } };
@@ -138,6 +142,7 @@ test('a replica renders without Engine status and never presents copied active f
   assert.match($('indoor-age').textContent, /Recorded/);
   assert.equal($('requested').textContent, 'reduction');
   assert.equal($('requested-label').textContent, 'RECORDED HEATING REQUEST');
+  assert.equal($('requested').dataset.state, 'muted');
   assert.match($('context').textContent, /primary’s current operating state is unknown/);
   assert.doesNotMatch($('connection').textContent, /LIVE CONTROL|LIVE OBSERVATION/);
   assert.equal($('recording-adaptive-details').hidden, true);

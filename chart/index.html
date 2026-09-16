@@ -41,7 +41,7 @@
         <details id="home-heat-pump-details" class="dashboard-disclosure heating-zone" aria-labelledby="control-title">
           <summary class="zone-summary">
             <div class="dashboard-heading">
-              <h2 id="control-title">Home</h2>
+              <h2 id="control-title">Home<span class="zone-expand" aria-hidden="true"></span></h2>
               <div class="home-heading-actions">
                 <span class="control-badge" data-controller-only><span>Heat control</span><strong id="control-price">—</strong></span>
                 <button id="chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
@@ -63,14 +63,12 @@
               <div class="overview-request">
                 <p id="requested-label" class="overview-label">Heating request</p>
                 <strong id="requested" role="status">—</strong>
-                <small id="actual" class="overview-note">Actual state unknown</small>
                 <div class="overview-price">
                   <p id="price-label" class="overview-label">All-in price</p>
                   <div class="overview-price-value"><strong id="price">—</strong><small id="price-unit"></small></div>
                 </div>
               </div>
             </div>
-            <span class="zone-expand" aria-hidden="true"></span>
           </summary>
           <div class="zone-content equipment-area" data-controller-only>
             <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
@@ -370,7 +368,7 @@
         <details id="garage-heating-details" class="dashboard-disclosure heating-zone" aria-labelledby="garage-title">
           <summary class="zone-summary">
             <div class="dashboard-heading">
-              <h2 id="garage-title">Garage</h2>
+              <h2 id="garage-title">Garage<span class="zone-expand" aria-hidden="true"></span></h2>
               <div class="home-heading-actions">
                 <span class="control-badge" data-controller-only><span>Heat control</span><strong id="garage-control-price">—</strong></span>
                 <button id="garage-chart-shortcut" class="chart-shortcut secondary-button" type="button" aria-label="Open history chart in fullscreen" title="Open chart in fullscreen" aria-expanded="false" aria-controls="history">
@@ -388,10 +386,12 @@
               <div class="overview-request">
                 <p id="garage-requested-label" class="overview-label">Heating request</p>
                 <strong id="garage-requested" role="status">—</strong>
-                <small id="garage-actual" class="overview-note">Actual state unknown</small>
+                <div class="overview-price">
+                  <p id="garage-price-label" class="overview-label">All-in price</p>
+                  <div class="overview-price-value"><strong id="garage-price">—</strong><small id="garage-price-unit"></small></div>
+                </div>
               </div>
             </div>
-            <span class="zone-expand" aria-hidden="true"></span>
           </summary>
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
@@ -474,7 +474,7 @@
           <div id="charging-devices" class="charging-device-list"></div>
         </div>
         <details id="garage-equipment-details" class="dashboard-disclosure zone-equipment-fold">
-          <summary><span id="garage-equipment-title">Sensors &amp; More equipment</span></summary>
+          <summary><span id="garage-equipment-title">Sensors &amp; More equipment</span><small id="garage-equipment-status" class="equipment-device-status"></small></summary>
           <div class="zone-content equipment-area">
             <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
 

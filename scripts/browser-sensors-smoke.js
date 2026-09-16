@@ -8,6 +8,7 @@ import { loadConfig } from '../src/app/config.js';
 import { providerFixture } from './lib/provider-fixture.js';
 import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
+import { checkProviderLayout } from './lib/dashboard-browser-checks.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-sensors-ui-'));
 const now = Date.parse('2026-09-10T12:00:00Z');
@@ -103,6 +104,8 @@ try {
   await send('Page.navigate', { url: base });
   await until("document.getElementById('history')?.dataset.ready === 'true' && document.getElementById('indoor')?.textContent === '21.0 °C'");
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
+  assert.equal(await evaluate("document.querySelectorAll('#providers .provider-heading').length"), 4,
+    'The provider fixture covers all four data categories');
   const sensorParents = '#home-heat-pump-details, #learning-panel-details, #model-inputs-details, details[data-model-input=model_indoor_temperature]';
   assert.equal(await evaluate("document.querySelectorAll('#sensor-change-details').length"), 1);
   assert.equal(await evaluate("document.querySelector('#home-heat-pump-details > summary #sensor-change-details') === null"), true,
@@ -116,8 +119,9 @@ try {
   assert.equal(await evaluate("document.querySelector('#sensor-change-details > summary span').textContent"), 'Sensor changes');
   assert.equal(await evaluate(`Array.from(document.querySelectorAll('${sensorParents}, #sensor-change-details'), fold => fold.open).some(Boolean)`),
     false, 'Sensor changes and the model input disclosures start collapsed');
-  for (const width of [1440, 375]) {
+  for (const width of [1440, 375, 320]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: width < 600 });
+    await checkProviderLayout({ evaluate, width });
     const heights = await evaluate(`(() => {
       const cards = ['home-control', 'providers-controls'].map(id => document.getElementById(id));
       const panel = document.getElementById('sensor-change-details'), parent = panel.parentNode, next = panel.nextSibling;

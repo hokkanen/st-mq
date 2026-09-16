@@ -203,11 +203,14 @@ export function renderReplicaStatus(document, status, { formatTime = at => new D
     $(`${key}-age`).hidden = false;
   }
   const decision = status.lastDecision?.payload ?? status.lastDecision ?? (stoppedController ? status.decision : null) ?? {};
-  setStatusDetail($('requested'), { key: 'home-heating-request',
-    label: String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' '), detail: '' });
-  $('requested-label').textContent = 'RECORDED HEATING REQUEST';
   const decisionAt = timestamp(status.lastDecision?.at ?? decision.at);
-  $('actual').textContent = `${decisionAt ? `Recorded ${formatTime(decisionAt)} · ` : ''}Current home state unknown`;
+  const recordedRequest = String(decision.phase ?? decision.action ?? 'Unknown').replaceAll(/[_-]/g, ' ');
+  const recordedDetail = `${decisionAt ? `Recorded ${formatTime(decisionAt)}. ` : 'No recorded request time. '}Current home state unknown. Recorded history does not confirm the current heating request or device state.`;
+  const requestTrigger = setStatusDetail($('requested'), { key: 'home-heating-request',
+    title: 'Recorded home heating request', label: recordedRequest, detail: recordedDetail });
+  $('requested').dataset.state = 'muted';
+  requestTrigger?.setAttribute('aria-label', `Recorded home heating request: ${recordedRequest}. Current home state unknown. Show details`);
+  $('requested-label').textContent = 'RECORDED HEATING REQUEST';
   const bytes = status.replication?.bytes;
   setStatusDetail($('price'), { key: 'metric-price',
     label: Number.isFinite(bytes) && bytes >= 0 ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(bytes / 1e6) : '—', detail: '' });
