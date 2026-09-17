@@ -24,9 +24,10 @@ The add-on images are real PNG files in the repository root, beside `config.json
 - [`logo.png`](../../logo.png): the selected 512 × 512 export for the add-on logo.
 
 Home Assistant discovers these filenames for the add-on store and detail pages;
-they do not need entries in `config.json` or copies inside the container. The
-sidebar uses the separate `panel_icon` setting. Home Assistant recommends a
-128 × 128 icon and permits a different logo size/aspect ratio; see the
+they do not need entries in `config.json`. The dashboard also uses `icon.png`
+as its browser tab icon; Vite bundles the same image, and the container build
+copies it into the build stage. The sidebar uses the separate `panel_icon`
+setting. Home Assistant recommends a 128 × 128 icon and permits a different logo size/aspect ratio; see the
 [official presentation guide](https://developers.home-assistant.io/docs/apps/presentation/#app-icon--logo).
 An existing Home Assistant installation must receive this repository revision
 and refresh its add-on repository metadata before it can show the new images.

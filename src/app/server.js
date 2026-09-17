@@ -269,7 +269,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       if (!path.startsWith(`${resolve(staticDir)}/`)) return json(404, { error: 'Not found' });
       try {
         const data = await readFile(path);
-        const type = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' }[extname(path)] ?? 'application/octet-stream';
+        const type = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' }[extname(path)] ?? 'application/octet-stream';
         res.writeHead(200, { 'content-type': type, 'cache-control': name.endsWith('.html') ? 'no-cache' : 'public, max-age=3600' });
         res.end(req.method === 'HEAD' ? undefined : data);
       } catch {

@@ -12,6 +12,14 @@ export default defineConfig({
   base: './',
   root: resolve(__dirname, 'chart'), // Absolute path to the root dir
   plugins: [{
+    name: 'addon-browser-icon',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === '/icon.png') req.url = `/@fs/${resolve(__dirname, 'icon.png')}`;
+        next();
+      });
+    },
+  }, {
     name: 'early-theme-bootstrap',
     // A classic external script runs before CSS and obeys the server's strict
     // CSP. Emit it unchanged instead of deferring it with the dashboard module.
@@ -51,6 +59,7 @@ export default defineConfig({
       allow: (() => { // Redefine accessible folders due to HASSIO symlink to outside dir
         const allow = [
           resolve(__dirname, 'chart'), // Root path (needed because this list overwrites defaults)
+          resolve(__dirname, 'icon.png'), // Reuse the selected add-on icon as the browser favicon.
           resolve(__dirname, 'src/domain'), // Shared, credential-free history catalogue.
           resolve(__dirname, 'src/garage/settings.js'), // Public protection policy and fixed safety factor.
         ];
