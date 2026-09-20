@@ -13,7 +13,7 @@ function fixture(t, { validated = false, reductionHours = 0.5 } = {}) {
   const tracker = new CycleTracker({ store, input: 'mqtt', config: { recoveryTimeoutHours: 8 } });
   const model = initialAdaptiveModel();
   if (validated) model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3,
-    parameterEvidence: { lossPerHour: { status: 'identified' }, normalHeatCPerHour: { status: 'identified' },
+    parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' },
       fireplaceCPerKg: { status: 'identified' } },
     fireplace: { accepted: true, trainingBurns: 3, validationBurns: 3 } };
   const intervals = Array.from({ length: 32 }, (_, i) => ({ start: start + i * HOUR / 4,

@@ -309,9 +309,9 @@ test('coefficient history keeps exact replay metadata and visible steps alongsid
     assert(chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: key }).includes(`left=${key}`));
   }
   assert.equal(historyValueLabel('model_coefficient_heat_loss', 0.0187, '1/h · heat loss'), '0.0187 1/h');
-  assert.equal(historyValueLabel('model_coefficient_compressor_response', 0.7503, '°C/h'), '0.750 °C/h');
+  assert.equal(historyValueLabel('model_coefficient_hydronic_response', 0.0798, '°C/kWh thermal'), '0.0798 °C/kWh thermal');
   assert.equal(historyValueLabel('model_coefficient_solar_response', 0, '°C/h per kW/m²'), '0.000 °C/h per kW/m²');
-  assert.equal(historyValueLabel('model_coefficient_auxiliary_response', 0.135, '°C/kWh'), '0.135 °C/kWh');
+  assert.equal(historyValueLabel('model_coefficient_fireplace_response', 0.135, '°C/kg'), '0.135 °C/kg');
   assert.equal(historyValueLabel('model_controller_phase', 2, 'state'), 'Tariff reduction');
   assert.equal(historyValueLabel('indoor_temperature', 21.256, '°C'), '21.26 °C');
   assert.match(coefficientStatusLabel('initial'), /Initial estimate/);

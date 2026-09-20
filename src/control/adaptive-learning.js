@@ -1,5 +1,6 @@
 /** Small empirical temperature model. Priors permit bounded operation before every
  * actuator is observed; validation never turns assumed electricity into a meter. */
+import { HEAT_PUMP_PERFORMANCE, estimateHeatPumpPerformance, estimateHydronicHeat } from '../domain/heat-pump-performance.js';
 import { inferComfortReference, goodQuality } from './learning.js';
 import { fireplaceBurnGroups, fireplaceAffectsLearning, FIREPLACE_RELEVANCE } from '../domain/fireplace.js';
 
@@ -15,19 +16,40 @@ const mean = values => values.reduce((sum, value) => sum + value, 0) / values.le
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
 const SLOW_HEAT_FRACTION = 1;
 export const THERMAL_PARAMETER_BOUNDS = Object.freeze({
-  lossPerHour: [0.001, 0.12], normalHeatCPerHour: [0.05, 3], solarCPerHourPerKwM2: [0, 2.5],
-  memoryExchangePerHour: [0.005, 0.4], reserveTimeHours: [2, 72], auxiliaryCPerKwh: [0.01, 0.6],
+  lossPerHour: [0.001, 0.12], hydronicCPerKwh: [0.005, 0.6], solarCPerHourPerKwM2: [0, 2.5],
+  memoryExchangePerHour: [0.005, 0.4], reserveTimeHours: [2, 72],
   fireplaceCPerKg: [0, 1],
 });
 const BOUNDS = THERMAL_PARAMETER_BOUNDS;
-const DEFAULTS = Object.freeze({ lossPerHour: 0.018, normalHeatCPerHour: 0.75,
+const DEFAULTS = Object.freeze({ lossPerHour: 0.018, hydronicCPerKwh: 0.75 / 9.40,
   solarCPerHourPerKwM2: 0.45,
-  memoryExchangePerHour: 0.08, reserveTimeHours: 12, auxiliaryCPerKwh: 0.15, fireplaceCPerKg: 0.15 });
+  memoryExchangePerHour: 0.08, reserveTimeHours: 12, fireplaceCPerKg: 0.15 });
 
 function positive(value, fallback, maximum = 30) {
   return finite(value) && value > 0 && value <= maximum ? value : fallback;
 }
 const optionalPower = (value, fallback) => finite(value) && value >= 0 && value <= 1 ? value : fallback;
+
+function floorPriors(input, parameters) {
+  if (!input || !(input.capacityKwhPerC > 0)) return { enabled: false,
+    basis: 'no commissioned selected-slab capacity; legacy effective reserve only' };
+  const capacityKwhPerC = clamp(input.capacityKwhPerC, 0.1, 100);
+  const inheritedCapacity = parameters.memoryExchangePerHour * parameters.reserveTimeHours / parameters.hydronicCPerKwh;
+  // Carve selected concrete out of the old effective reserve at the epoch seed.
+  // Fixed physical capacities are not enlarged each time the response gain fits.
+  const nativeCapacityKwhPerC = positive(input.nativeCapacityKwhPerC,
+    Math.max(0.5, inheritedCapacity - capacityKwhPerC), 1000);
+  return { enabled: true, capacityKwhPerC, nativeCapacityKwhPerC,
+    exchangeKwPerC: positive(input.exchangeKwPerC, capacityKwhPerC / 12, 100),
+    groundLossKwPerC: finite(input.groundLossKwPerC) ? clamp(input.groundLossKwPerC, 0, 10) : 0,
+    groundC: finite(input.groundC) ? clamp(input.groundC, -5, 25) : 10,
+    openAllocationFraction: clamp(finite(input.openAllocationFraction) ? input.openAllocationFraction : 0.4, 0, 1),
+    closedAllocationFraction: clamp(finite(input.closedAllocationFraction) ? input.closedAllocationFraction : 0.05, 0, 1),
+    groundLossIncludedInEnvelope: input.groundLossIncludedInEnvelope !== false,
+    basis: 'fixed uncertain physical priors; selected capacity subtracted from seeded native reserve',
+    capacityBudgetExceeded: capacityKwhPerC >= inheritedCapacity && !finite(input.nativeCapacityKwhPerC),
+    storageParameterFitted: false };
+}
 
 export function initialAdaptiveModel(config = {}) {
   const parameters = { ...DEFAULTS };
@@ -35,7 +57,8 @@ export function initialAdaptiveModel(config = {}) {
     const candidate = config.thermalPriors?.[name];
     if (finite(candidate)) parameters[name] = clamp(candidate, ...bounds);
   }
-  return { version: 2, parameters, uncertaintyCPerHour: 0.15, trainedAt: null,
+  return { version: 3, parameters, performance: { ...HEAT_PUMP_PERFORMANCE, modelConfirmed: config.heatPumpModelConfirmed === true },
+    floor: floorPriors(config.floorThermalPriors, parameters), uncertaintyCPerHour: 0.15, trainedAt: null,
     validation: null, uncertainty: null, equipmentResponse: { phases: {}, validation: null }, energy: {
       compressorKw: positive(config.heatPumpCompressorKw, 3),
       auxiliaryKw: positive(config.auxRatedKw, 9),
@@ -47,9 +70,9 @@ export function initialAdaptiveModel(config = {}) {
       relativeUncertainty: 0.6, recoveryMultiplier: 1.5, auxiliaryRiskScale: 1, basis: 'estimated', episodes: 0,
       measuredEpisodes: 0, recoveryHours: null, recoveryEnergyKwh: null,
       recoveryCalibrationEpisodes: 0, auxiliaryCalibrationEpisodes: 0,
-    }, provenance: { method: 'observed-input thermal response with fixed two-state heat allocation',
+    }, provenance: { method: 'observed routed hydronic energy with one shared gain and fixed thermal allocation',
       status: 'prior-estimates', reserve: 'effective temperature memory; not measured slab temperature or capacity',
-      heating: 'effective available response; not measured maximum compressor output or COP',
+      heating: 'shared C per estimated thermal kWh; compressor uses DHP-H10 B0 map, AUX approximately unity electrical-to-water conversion; neither is metered heat',
       preheat: 'requested boost affects equipment response; no unmeasured additional heat credit',
       heatAllocation: { slowFraction: SLOW_HEAT_FRACTION, basis: 'fixed structural assumption; not identified slab capacity' },
       solar: 'global-radiation forecast response; no radiation observations',
@@ -58,14 +81,14 @@ export function initialAdaptiveModel(config = {}) {
 }
 
 function validModel(model) {
-  return model?.version === 2 && Object.entries(BOUNDS).every(([key, bounds]) =>
+  return model?.version === 3 && Object.entries(BOUNDS).every(([key, bounds]) =>
     finite(model.parameters?.[key]) && model.parameters[key] >= bounds[0] && model.parameters[key] <= bounds[1])
     && finite(model.uncertaintyCPerHour) && model.uncertaintyCPerHour >= 0.02 && model.uncertaintyCPerHour <= 1;
 }
 
 export function thermalEvidenceReady(model) {
   return model?.validation?.accepted === true && model.validation.kind === 'conditional-thermal'
-    && ['lossPerHour', 'normalHeatCPerHour'].every(name => model.validation.parameterEvidence?.[name]?.status === 'identified')
+    && ['lossPerHour', 'hydronicCPerKwh'].every(name => model.validation.parameterEvidence?.[name]?.status === 'identified')
     && model.validation.samples >= 3;
 }
 
@@ -83,10 +106,11 @@ export function fireplaceGainUncertainty(model) {
   return fireplaceEvidenceReady(model) ? Math.max(0.02, gain * 0.5) : Math.max(0.15, gain);
 }
 
-export function actionEvidenceReady(model, phase, durationHours = null) {
+export function actionEvidenceReady(model, phase, durationHours = null, treatmentKey = null) {
   if (!thermalEvidenceReady(model)) return false;
   if (phase === 'normal') return true;
   const evidence = model.equipmentResponse?.validation?.phases?.[phase];
+  if (treatmentKey && evidence?.treatmentKey !== treatmentKey) return false;
   return model.equipmentResponse?.phases?.[phase]?.trainingEpisodes >= MIN_PHASE_EPISODES
     && evidence?.accepted === true && evidence.episodes >= MIN_PHASE_EPISODES
     && (!finite(durationHours) || durationHours <= evidence.maxDurationHours);
@@ -102,9 +126,10 @@ export function predictEquipmentDuty(model, state, inputs = {}, dtHours = 0.25) 
   const indoorC = finite(state?.indoorC) ? state.indoorC : targetC;
   const outdoorC = finite(inputs.outdoorC) ? inputs.outdoorC : indoorC;
   const normalDuty = clamp((p.lossPerHour * (indoorC - outdoorC)
-    + 0.25 * (targetC + boost - indoorC)) / p.normalHeatCPerHour, 0, 1);
-  const estimate = model?.equipmentResponse?.phases?.[phase];
-  const checked = actionEvidenceReady(model, phase);
+    + 0.25 * (targetC + boost - indoorC)) / (p.hydronicCPerKwh * estimateHeatPumpPerformance({ ...model?.performance, ...inputs }).heatKw), 0, 1);
+  const available = model?.equipmentResponse?.phases?.[phase];
+  const estimate = inputs.treatmentKey && available?.treatmentKey !== inputs.treatmentKey ? null : available;
+  const checked = actionEvidenceReady(model, phase, null, inputs.treatmentKey);
   if (typeof inputs.nativeCompressorDemand === 'boolean' && dtHours <= 1) return {
     compressorDuty: Number(inputs.nativeCompressorDemand), basis: 'current-native-demand; interval estimate',
     uncertaintyDuty: 1, actionEvidence: checked ? 'checked' : 'unvalidated' };
@@ -129,11 +154,16 @@ export function thermalUncertaintyC(model, hours, inputs = {}) {
     base = next ? next.errorC : last.errorC + (duration - last.hours) * Math.max(0.05, model.uncertainty.extrapolationCPerHour);
   } else base = 0.25 + 0.15 * Math.sqrt(duration);
   const phase = inputs.phase ?? 'normal';
-  const unknownAction = phase !== 'normal' && !actionEvidenceReady(model, phase) && !finite(inputs.compressorDuty);
+  const unknownAction = phase !== 'normal' && !actionEvidenceReady(model, phase, null, inputs.treatmentKey) && !finite(inputs.compressorDuty);
   const missingSolar = !finite(inputs.solarRadiationWm2);
   const fireplace = finite(inputs.fireplaceKgPerHour) ? Math.max(0, inputs.fireplaceKgPerHour) : 0;
   const fireAllowance = fireplace * duration * fireplaceGainUncertainty(model);
-  return base + (unknownAction ? 0.1 * Math.sqrt(duration) : 0) + (missingSolar ? 0.08 * Math.sqrt(duration) : 0) + fireAllowance;
+  const source = estimateHeatPumpPerformance({ ...model?.performance, ...inputs });
+  const sourceAllowance = (model?.parameters?.hydronicCPerKwh ?? DEFAULTS.hydronicCPerKwh)
+    * source.heatKw * source.relativeUncertainty * Math.sqrt(duration) * 0.25;
+  const floorAllowance = model?.floor?.enabled ? (inputs.floorOverrideMode === 'on' ? 0.15 : 0.08) * Math.sqrt(duration) : 0;
+  return base + sourceAllowance + floorAllowance + (unknownAction ? 0.1 * Math.sqrt(duration) : 0)
+    + (missingSolar ? 0.08 * Math.sqrt(duration) : 0) + fireAllowance;
 }
 
 /** reserveC is an absolute latent building-temperature proxy, initially indoorC.
@@ -149,36 +179,63 @@ export function predictThermalStep(model, state, inputs, dtHours) {
   const auxiliaryKw = finite(inputs.auxKw) ? clamp(inputs.auxKw, 0, 20) : 0;
   const fireplace = finite(inputs.fireplaceKgPerHour) ? clamp(inputs.fireplaceKgPerHour, 0, 20) * p.fireplaceCPerKg : 0;
   let indoorC = state.indoorC, reserveC = finite(state.reserveC) ? state.reserveC : indoorC;
+  const floor = model.floor?.enabled ? model.floor : null;
+  let slabC = finite(state.slabC) ? state.slabC : indoorC;
+  const initialSlabC = slabC;
   const initialReserveC = reserveC;
-  let dutyHours = 0, heatC = 0;
+  let dutyHours = 0, heatC = 0, hydronicKwh = 0, slabInputKwh = 0, groundLossKwh = 0,
+    envelopeLossKwh = 0, otherHeatKwh = 0;
   for (let remaining = dtHours; remaining > 1e-9;) {
-    const dt = Math.min(0.25, remaining);
-    const loss = p.lossPerHour * (indoorC - inputs.outdoorC);
+    const fastestRate = floor ? Math.max(p.memoryExchangePerHour,
+      p.memoryExchangePerHour / (floor.nativeCapacityKwhPerC * p.hydronicCPerKwh),
+      (floor.exchangeKwPerC + floor.groundLossKwPerC) / floor.capacityKwhPerC) : 1;
+    const dt = Math.min(0.25, floor ? 0.2 / fastestRate : 0.25, remaining);
+    let loss = p.lossPerHour * (indoorC - inputs.outdoorC);
     const duty = observedDuty ?? predictEquipmentDuty(model, { indoorC, reserveC }, inputs, dtHours).compressorDuty;
-    const heat = p.normalHeatCPerHour * duty + auxiliaryKw * p.auxiliaryCPerKwh;
+    const source = estimateHeatPumpPerformance({ ...model.performance, ...inputs });
+    const heat = p.hydronicCPerKwh * (source.heatKw * duty + auxiliaryKw);
     const exchange = p.memoryExchangePerHour * (reserveC - indoorC);
+    const allocation = floor ? (inputs.floorOverrideMode === 'on'
+      ? floor.openAllocationFraction : floor.closedAllocationFraction) : 0;
+    const slabExchangeKw = floor ? floor.exchangeKwPerC * (slabC - indoorC) : 0;
+    const slabGroundKw = floor ? floor.groundLossKwPerC * (slabC - floor.groundC) : 0;
+    // The old loss coefficient already represented baseline ground loss. Remove
+    // that baseline portion before introducing explicit extra slab-ground loss.
+    if (floor?.groundLossIncludedInEnvelope) loss -= p.hydronicCPerKwh
+      * floor.groundLossKwPerC * (indoorC - floor.groundC);
     // The capacity ratio a*tau makes exchange conserve the two-node weighted
     // temperature energy. Fixed heat allocation can charge the slow state before
     // the room warms; neither allocation nor memory constants are fitted here.
-    const nextReserve = reserveC + ((indoorC - reserveC) / p.reserveTimeHours
-      + SLOW_HEAT_FRACTION * heat / (p.memoryExchangePerHour * p.reserveTimeHours)) * dt;
+    const reserveRatio = floor ? floor.nativeCapacityKwhPerC * p.hydronicCPerKwh
+      : p.memoryExchangePerHour * p.reserveTimeHours;
+    const nextReserve = reserveC + (-exchange + SLOW_HEAT_FRACTION * heat * (1 - allocation)) / reserveRatio * dt;
+    if (floor) slabC += (allocation * heat / p.hydronicCPerKwh - slabExchangeKw - slabGroundKw)
+      / floor.capacityKwhPerC * dt;
     // The release kernel already represents warming masonry. Released fireplace
     // heat reaches the room directly; it is not routed through hydronic storage.
-    indoorC += (-loss + (1 - SLOW_HEAT_FRACTION) * heat + solar + fireplace + exchange) * dt;
+    indoorC += (-loss + (1 - SLOW_HEAT_FRACTION) * heat * (1 - allocation)
+      + solar + fireplace + exchange + slabExchangeKw * p.hydronicCPerKwh) * dt;
     reserveC = nextReserve;
     dutyHours += duty * dt;
     heatC += heat * dt;
+    hydronicKwh += heat / p.hydronicCPerKwh * dt;
+    slabInputKwh += allocation * heat / p.hydronicCPerKwh * dt;
+    groundLossKwh += slabGroundKw * dt;
+    envelopeLossKwh += loss / p.hydronicCPerKwh * dt;
+    otherHeatKwh += (solar + fireplace) / p.hydronicCPerKwh * dt;
     remaining -= dt;
   }
   const phaseCoverage = model.validation?.phaseSamples?.[phase] ?? 0;
   const checkedPhase = phase === 'normal' ? thermalEvidenceReady(model)
     : (model.validation?.phaseThermalEpisodes?.[phase] ?? 0) >= MIN_PHASE_EPISODES;
-  return { indoorC, reserveC,
+  return { indoorC, reserveC, ...(floor ? { slabC, slabChangeC: slabC - initialSlabC } : {}),
+    hydronicKwh, slabInputKwh, nativeInputKwh: hydronicKwh - slabInputKwh, groundLossKwh,
+    envelopeLossKwh, otherHeatKwh,
     uncertaintyC: thermalUncertaintyC(model, dtHours, inputs),
     compressorDuty: dutyHours / dtHours, usefulHeatCPerHour: heatC / dtHours,
     solarCPerHour: solar, fireplaceCPerHour: fireplace, reserveChangeC: reserveC - initialReserveC,
     solarKnown, phaseEvidence: checkedPhase ? 'checked' : phaseCoverage >= 12 ? 'observed-unchecked' : 'prior',
-    actionEvidence: actionEvidenceReady(model, phase) ? 'checked' : 'unvalidated' };
+    actionEvidence: actionEvidenceReady(model, phase, null, inputs.treatmentKey) ? 'checked' : 'unvalidated' };
 }
 
 function validSample(sample) {
@@ -198,14 +255,11 @@ function checkpoint(input, config) {
     version: 1, cursor: null, samples: [], model: initialAdaptiveModel(config), baselineC: null,
     health: { status: 'prior-estimates', acceptedFits: 0, rejectedFits: 0 }, sinceFit: 0,
   };
-  // A v3 seed can establish the new algorithm's initial state. Only the newly
-  // introduced coefficient is supplied; invalid existing coefficients still fail.
-  if (copied.model?.version === 2 && copied.model.parameters
-    && !Object.hasOwn(copied.model.parameters, 'fireplaceCPerKg'))
-    copied.model.parameters.fireplaceCPerKg = initialAdaptiveModel(config).parameters.fireplaceCPerKg;
   if (!validModel(copied.model)) {
     copied.model = initialAdaptiveModel(config);
     copied.state = null;
+    copied.samples = []; copied.episodeArchive = []; copied.episodeIds = []; copied.sinceFit = 0;
+    copied.cursor = null;
     copied.health = { status: 'prior-estimates', reason: 'invalid-checkpoint-model', acceptedFits: 0, rejectedFits: 0 };
   }
   const defaults = initialAdaptiveModel(config);
@@ -261,6 +315,8 @@ function sampleInputs(sample, targetC) {
   return { outdoorC: sample.outdoorC, solarRadiationWm2: sample.solarRadiationWm2,
     fireplaceKgPerHour: sample.fireplaceKgPerHour ?? 0, fireplaceActive: sample.fireplaceActive,
     fireplaceKnown: sample.fireplaceKnown,
+    supplyC: sample.supplyC ?? null, brineC: sample.brineC ?? null,
+    floorOverrideMode: sample.floorOverrideMode ?? 'off', treatmentKey: sample.treatmentKey ?? 'native',
     phase: sample.phase, roomBoostC: sample.roomBoostC, targetC: finite(sample.targetC) ? sample.targetC : targetC,
     compressorDuty: Object.hasOwn(sample, 'thermalCompressorDuty') ? sample.thermalCompressorDuty : sample.compressorDuty,
     auxKw: Object.hasOwn(sample, 'thermalAuxKw') ? sample.thermalAuxKw : sample.auxKw };
@@ -304,7 +360,7 @@ function usableInputs(segment, observedOnly) {
     && (segment.fireplaceKgPerHour === undefined || finite(segment.fireplaceKgPerHour)
       && segment.fireplaceKgPerHour >= 0 && segment.fireplaceKgPerHour <= 20)
     && (!observedOnly || finite(segment.compressorDuty) && finite(segment.auxKw)
-      && finite(segment.solarRadiationWm2));
+      && finite(segment.solarRadiationWm2) && !['partial', 'unknown'].includes(segment.floorOverrideMode));
 }
 
 function thermalInterval(model, state, segments) {
@@ -323,13 +379,51 @@ function observedBurns(rows) {
     .flatMap(row => row.fireplaceIgnitions ?? []));
 }
 
+function genuineEndpoint(previous, next) {
+  const members = Object.entries(next?.indoorSensors ?? {}).filter(([, value]) => value.weight > 0);
+  if (!members.length || !members.every(([, value]) => finite(time(value.observedAt)))) return true;
+  return members.every(([name, value]) => !finite(time(previous?.indoorSensors?.[name]?.observedAt))
+    || time(value.observedAt) > time(previous.indoorSensors[name].observedAt));
+}
+
+const thermalWarmupHours = model => Math.min(288, Math.max(48, model.parameters.reserveTimeHours * 4,
+  model.floor?.enabled ? 4 * model.floor.capacityKwhPerC / (model.floor.exchangeKwPerC + model.floor.groundLossKwPerC) : 0));
+
+/** Integrate the original heat-input windows between genuine new observations.
+ * A held room report is control context, not a new independent fitting target. */
+export function thermalObservationIntervals(samples, targetC = 21) {
+  const result = [];
+  let anchor = null, previous = null, pending = [];
+  for (const sample of samples) {
+    if (!validSample(sample)) { result.push(sample); anchor = null; previous = null; pending = []; continue; }
+    if (!anchor) { result.push(sample); anchor = sample; previous = sample; continue; }
+    const segments = intervalSegments(previous, sample, targetC);
+    if (!segments.length || (time(sample.timestamp) - time(previous.timestamp)) / HOUR > 2) {
+      result.push({ timestamp: sample.timestamp, valid: false });
+      result.push(sample); anchor = sample; previous = sample; pending = []; continue;
+    }
+    pending.push(...segments); previous = sample;
+    if (!genuineEndpoint(anchor, sample)) continue;
+    result.push({ ...sample, windowStart: time(anchor.timestamp), inputSegments: pending,
+      observationIntervalHours: (time(sample.timestamp) - time(anchor.timestamp)) / HOUR });
+    anchor = sample; pending = [];
+  }
+  if (pending.length) result.push({ ...previous, windowStart: time(anchor.timestamp), inputSegments: pending,
+    temperatureObservationFresh: false });
+  return result;
+}
+
 /** Score every observed point in chronological rollouts. A gap closes an eligible
  * fragment. Complete short episodes have their own duration; normal blocks need
  * six hours. Neither raw phase rows nor excluded fragments establish evidence. */
 export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom = 0,
-  rollout = true, observedOnly = true, completeEpisodes = [], excludeFireplace = false } = {}) {
+  rollout = true, observedOnly = true, completeEpisodes = [], excludeFireplace = false, requireWarmup = false } = {}) {
+  const scoreAt = time(samples[scoreFrom]?.timestamp);
+  samples = thermalObservationIntervals(samples, targetC);
+  scoreFrom = finite(scoreAt) ? samples.findIndex(sample => time(sample.timestamp) >= scoreAt) : 0;
   const completed = new Map(completeEpisodes.map(episode => [episode.id, episode]));
-  let state = null, block = null;
+  let state = null, block = null, warmupHours = 0;
+  const requiredWarmupHours = requireWarmup ? thermalWarmupHours(model) : 0;
   const squaredRates = [], predictions = [], blocks = [], excluded = [];
   const finish = reason => {
     if (!block) return;
@@ -337,11 +431,12 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
     // A later gap cannot erase an already complete continuous episode. An
     // interior gap splits the block, so neither fragment can cover both edges.
     const wholeEpisode = episode && block.start <= time(episode.startedAt) && block.end >= time(episode.endedAt);
-    if (block.hours >= 6 && !block.episodeId || wholeEpisode && block.hours >= 0.25) {
+    if (block.initializationSupported && (block.hours >= 6 && !block.episodeId || wholeEpisode && block.hours >= 0.25)) {
       blocks.push({ ...block, completeEpisode: Boolean(wholeEpisode),
         maeC: block.absoluteDegreeHours / block.hours,
         persistenceMaeC: block.persistenceDegreeHours / block.hours });
-    } else excluded.push({ id: block.id, hours: block.hours, reason: block.episodeId ? 'incomplete-episode' : 'short-fragment' });
+    } else excluded.push({ id: block.id, hours: block.hours, reason: !block.initializationSupported
+      ? 'insufficient-causal-thermal-warmup' : block.episodeId ? 'incomplete-episode' : 'short-fragment' });
     block = null;
   };
   for (let i = 1; i < samples.length; i++) {
@@ -350,7 +445,7 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
     if (!segments.length || dt < 1 / 12 || dt > 2 || Math.abs((b.indoorC - a.indoorC) / dt) > 2
       || excludeFireplace && (hasFireplace(a) || hasFireplace(b) || segments.some(hasFireplace))
       || !segments.every(segment => usableInputs(segment, observedOnly))) {
-      finish('gap'); state = null; continue;
+      finish('gap'); state = null; warmupHours = 0; continue;
     }
     if (!state) state = { indoorC: a.indoorC, reserveC: a.indoorC };
     const scoring = i - 1 >= scoreFrom;
@@ -361,15 +456,19 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
     if (!rollout || !scoring || !block) state.indoorC = a.indoorC;
     if (rollout && scoring && !block) block = { id: group, episodeId, start: time(a.timestamp), end: time(a.timestamp),
       hours: 0, absoluteDegreeHours: 0, persistenceDegreeHours: 0, maxErrorC: 0,
-      persistenceStartC: a.indoorC, errors: [], phaseHours: {}, initialState: { ...state } };
+      persistenceStartC: a.indoorC, errors: [], phaseHours: {}, initialState: { ...state },
+      initializationSupported: warmupHours >= requiredWarmupHours, warmupHours };
     const before = { ...state };
     state = thermalInterval(model, state, segments);
-    if (!scoring) continue;
+    warmupHours += dt;
+    if (!scoring || b.temperatureObservationFresh === false) continue;
     const errorC = Math.abs(b.indoorC - state.indoorC);
     if (!rollout) {
+      if (warmupHours < requiredWarmupHours) continue;
       squaredRates.push((errorC / dt) ** 2);
       predictions.push({ predictedC: state.indoorC, actualC: b.indoorC, dt, segments,
         indoorC: a.indoorC, reserveC: before.reserveC, episodeId, timestamp: b.timestamp,
+        initializationSupported: warmupHours >= requiredWarmupHours,
         fireplaceIgnitions: (b.windowStart === time(a.timestamp) ? b : a).fireplaceIgnitions ?? [] });
     } else {
       block.hours += dt; block.end = time(b.timestamp);
@@ -388,7 +487,8 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
     maeC: hours ? blocks.reduce((sum, block) => sum + block.absoluteDegreeHours, 0) / hours : Infinity,
     maxErrorC: blocks.length ? Math.max(...blocks.map(block => block.maxErrorC)) : Infinity,
     persistenceMaeC: hours ? blocks.reduce((sum, block) => sum + block.persistenceDegreeHours, 0) / hours : Infinity,
-    samples: blocks.length, horizons: blocks.map(block => block.hours), blocks, excluded, state };
+    samples: blocks.length, horizons: blocks.map(block => block.hours), blocks, excluded, state,
+    lastEndpointFresh: samples.at(-1)?.temperatureObservationFresh !== false };
 }
 
 const dot = (a, b) => a.reduce((sum, value, i) => sum + value * b[i], 0);
@@ -408,13 +508,12 @@ function independentVariation(vector, others) {
 }
 
 function parameterEvidence(model, samples, targetC, episodes, excludeFireplace = false) {
-  const baseline = evaluateThermalModel(model, samples, { targetC, rollout: false, excludeFireplace });
+  const baseline = evaluateThermalModel(model, samples, { targetC, rollout: false, excludeFireplace, requireWarmup: true });
   const rows = baseline.predictions;
   const days = new Set(rows.map(row => Math.floor(time(row.timestamp) / (24 * HOUR))));
   const sunlitDays = new Set(rows.filter(row => row.segments.some(segment => segment.solarRadiationWm2 > 50))
     .map(row => Math.floor(time(row.timestamp) / (24 * HOUR))));
-  const auxiliaryEpisodes = episodes.filter(episode => episode.auxiliaryObserved).length;
-  const names = ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh', 'fireplaceCPerKg'];
+  const names = ['lossPerHour', 'hydronicCPerKwh', 'solarCPerHourPerKwM2', 'fireplaceCPerKg'];
   const burns = observedBurns(rows).length;
   const fireFreeSamples = rows.filter(row => row.segments.every(segment => !hasFireplace(segment)
     && segment.fireplaceKnown === true)).length;
@@ -423,11 +522,11 @@ function parameterEvidence(model, samples, targetC, episodes, excludeFireplace =
     const perturbed = structuredClone(model), value = model.parameters[name];
     const changed = clamp(value + Math.max(name === 'fireplaceCPerKg' ? 0.05 : 0.001, value * 0.1), ...BOUNDS[name]);
     perturbed.parameters[name] = changed === value ? value * 0.9 : changed;
-    const predictions = evaluateThermalModel(perturbed, samples, { targetC, rollout: false, excludeFireplace }).predictions;
+    const predictions = evaluateThermalModel(perturbed, samples, { targetC, rollout: false, excludeFireplace, requireWarmup: true }).predictions;
     vectors[name] = predictions.map((row, i) => (row.predictedC - rows[i].predictedC) / row.dt);
     inputVectors[name] = rows.map(row => row.segments.reduce((sum, segment) => {
       const value = name === 'lossPerHour' ? row.indoorC - segment.outdoorC
-        : name === 'normalHeatCPerHour' ? segment.compressorDuty
+        : name === 'hydronicCPerKwh' ? estimateHydronicHeat(segment, model.performance).hydronicKw
           : name === 'solarCPerHourPerKwM2' ? segment.solarRadiationWm2 / 1000
             : name === 'fireplaceCPerKg' ? segment.fireplaceKgPerHour ?? 0 : segment.auxKw;
       return sum + value * (segment.end - segment.start) / HOUR;
@@ -435,7 +534,6 @@ function parameterEvidence(model, samples, targetC, episodes, excludeFireplace =
     const sensitivity = rows.length ? Math.sqrt(dot(vectors[name], vectors[name]) / rows.length) : 0;
     const reason = rows.length < 96 || days.size < 3 ? 'fewer-than-three-days-of-observed-heat-input'
       : name === 'solarCPerHourPerKwM2' && sunlitDays.size < 3 ? 'fewer-than-three-sunlit-days'
-        : name === 'auxiliaryCPerKwh' && auxiliaryEpisodes < MIN_PHASE_EPISODES ? 'fewer-than-three-observed-auxiliary-episodes'
           : name === 'fireplaceCPerKg' && (burns < 3 || !thermalEvidenceReady(model))
             ? 'fireplace-requires-validated-house-response-and-three-separated-burns'
           : sensitivity < 0.002 ? 'insensitive-to-available-inputs' : null;
@@ -449,7 +547,7 @@ function parameterEvidence(model, samples, targetC, episodes, excludeFireplace =
   for (const name of eligible) {
     // A fire cannot acquire evidence merely because a confounding solar or
     // compressor coefficient is fixed rather than currently eligible for fitting.
-    const others = (name === 'fireplaceCPerKg' ? names : eligible).filter(other => other !== name);
+    const others = names.filter(other => other !== name); // Fixed uncertain peers can still confound identification.
     const variation = Math.min(independentVariation(vectors[name], others.map(other => vectors[other])),
       independentVariation(inputVectors[name], others.map(other => inputVectors[other])));
     evidence[name].independentVariation = variation;
@@ -466,10 +564,11 @@ function responseTotals(model, rows, episodes) {
   for (const row of rows) for (const segment of row.segments) {
     const id = segment.episodeId ?? row.episodeId;
     if (!allowed.has(id)) continue;
-    const key = `${id}:${segment.phase}`, hours = (segment.end - segment.start) / HOUR;
+    const treatmentKey = segment.treatmentKey ?? 'native';
+    const key = `${id}:${segment.phase}:${treatmentKey}`, hours = (segment.end - segment.start) / HOUR;
     const nominal = predictEquipmentDuty({ ...model, equipmentResponse: null },
       { indoorC: row.indoorC, reserveC: row.reserveC }, segment, hours).compressorDuty;
-    const total = totals.get(key) ?? { id, phase: segment.phase, hours: 0, dutyHours: 0, nominalDutyHours: 0,
+    const total = totals.get(key) ?? { id, phase: segment.phase, treatmentKey, hours: 0, dutyHours: 0, nominalDutyHours: 0,
       maxRoomBoostC: 0, intervals: [] };
     total.hours += hours; total.dutyHours += segment.compressorDuty * hours; total.nominalDutyHours += nominal * hours;
     total.maxRoomBoostC = Math.max(total.maxRoomBoostC, finite(segment.roomBoostC) ? segment.roomBoostC : 0);
@@ -484,24 +583,27 @@ export function fitEquipmentResponse(model, trainingRows, holdoutRows, trainingE
   const validation = responseTotals(model, holdoutRows, holdoutEpisodes);
   const phases = {}, checked = {};
   for (const phase of PHASES.filter(phase => phase !== 'normal')) {
-    const rows = training.filter(row => row.phase === phase && row.nominalDutyHours >= 0.05 && row.hours >= MIN_ACTION_HOURS);
+    const treatmentKey = [...training, ...validation].findLast(row => row.phase === phase)?.treatmentKey;
+    const rows = training.filter(row => row.phase === phase && row.treatmentKey === treatmentKey
+      && row.nominalDutyHours >= 0.05 && row.hours >= MIN_ACTION_HOURS);
     if (!rows.length) continue;
     const ratios = rows.map(row => clamp(row.dutyHours / row.nominalDutyHours, 0, 2));
     // Three prior-equivalent episodes shrink scarce response toward unchanged
     // native demand. More quarter-hour rows cannot increase this weight.
     const ratio = (3 + ratios.reduce((sum, value) => sum + value, 0)) / (3 + ratios.length);
     const trainingDurations = rows.map(row => row.hours).sort((a, b) => b - a);
-    phases[phase] = { ratio, trainingEpisodes: rows.length, basis: 'episode-weighted ratio to normal-demand prior',
+    phases[phase] = { ratio, treatmentKey, trainingEpisodes: rows.length, basis: 'episode-weighted ratio to normal-demand prior',
       minDurationHours: Math.min(...rows.map(row => row.hours)), maxDurationHours: trainingDurations[2] ?? 0,
       maxRoomBoostC: rows.map(row => row.maxRoomBoostC).sort((a, b) => b - a)[2] ?? 0 };
-    const later = validation.filter(row => row.phase === phase && row.hours >= MIN_ACTION_HOURS && row.nominalDutyHours >= 0.05);
+    const later = validation.filter(row => row.phase === phase && row.treatmentKey === treatmentKey
+      && row.hours >= MIN_ACTION_HOURS && row.nominalDutyHours >= 0.05);
     const errors = later.map(row => (row.intervals.reduce((sum, interval) => sum
       + clamp(interval.nominalDuty * ratio, 0, 1) * interval.hours, 0) - row.dutyHours) / row.hours);
     const intervalErrors = later.map(row => row.intervals.reduce((sum, interval) => sum
       + Math.abs(clamp(interval.nominalDuty * ratio, 0, 1) - interval.observedDuty) * interval.hours, 0) / row.hours);
     const baselineErrors = later.map(row => Math.abs(row.nominalDutyHours - row.dutyHours) / row.hours);
     const maeDuty = errors.length ? mean(errors.map(Math.abs)) : null, biasDuty = errors.length ? mean(errors) : null;
-    checked[phase] = { episodes: later.length, maeDuty, biasDuty,
+    checked[phase] = { treatmentKey, episodes: later.length, maeDuty, biasDuty,
       metric: 'episode mean duty error; interval error reported separately for timing uncertainty',
       intervalMaeDuty: intervalErrors.length ? mean(intervalErrors) : null,
       accepted: rows.length >= MIN_PHASE_EPISODES && later.length >= MIN_PHASE_EPISODES
@@ -561,7 +663,7 @@ export function fitAdaptiveModel(cp, config = {}) {
   const actionEpisodes = (cp.episodeArchive ?? []).filter(episode => !finite(cp.equipmentEpochAt)
     || time(episode.startedAt) >= cp.equipmentEpochAt);
   const earlierEpisodes = actionEpisodes.filter(episode => time(episode.endedAt) <= trainingEnd);
-  const trainingScored = evaluateThermalModel(cp.model, training, { completeEpisodes: earlierEpisodes });
+  const trainingScored = evaluateThermalModel(cp.model, training, { completeEpisodes: earlierEpisodes, requireWarmup: true });
   const completeTrainingIds = new Set(trainingScored.blocks.filter(block => block.completeEpisode).map(block => block.episodeId));
   const trainingEpisodes = earlierEpisodes.filter(episode => completeTrainingIds.has(episode.id));
   const phaseEpisodes = Object.fromEntries(PHASES.map(phase => [phase,
@@ -583,7 +685,7 @@ export function fitAdaptiveModel(cp, config = {}) {
   let candidate = structuredClone(cp.model);
   const objective = (model, fireplace = false) => {
     const error = evaluateThermalModel(model, training, { targetC, rollout: false,
-      excludeFireplace: firePresent && !fireplace }).mse;
+      excludeFireplace: firePresent && !fireplace, requireWarmup: true }).mse;
     const penalty = tunable.reduce((sum, key) => sum
       + ((model.parameters[key] - prior.parameters[key]) / Math.max(0.02, prior.parameters[key])) ** 2, 0) * 0.0001;
     return error + penalty;
@@ -601,7 +703,7 @@ export function fitAdaptiveModel(cp, config = {}) {
       if (score < best) { best = score; candidate = attempt; }
     }
   }
-  const validationOptions = { targetC, scoreFrom, completeEpisodes: cp.episodeArchive,
+  const validationOptions = { targetC, scoreFrom, completeEpisodes: cp.episodeArchive, requireWarmup: true,
     excludeFireplace: firePresent && !tunable.includes('fireplaceCPerKg') && !fireplaceEvidenceReady(cp.model) };
   const validation = evaluateThermalModel(candidate, samples, validationOptions);
   if (validation.samples < 3) return { accepted: false, reason: 'collecting-later-validation', parameterEvidence: diagnostics.evidence };
@@ -612,7 +714,7 @@ export function fitAdaptiveModel(cp, config = {}) {
     return { accepted: false, reason: 'retained-better-predictions', parameterEvidence: diagnostics.evidence,
       validation: { accepted: false, kind: 'conditional-thermal', maeC: validation.maeC,
         maxErrorC: validation.maxErrorC, previousMaeC: previous.maeC, samples: validation.samples } };
-  const holdoutRows = evaluateThermalModel(candidate, samples, { targetC, scoreFrom, rollout: false }).predictions;
+  const holdoutRows = evaluateThermalModel(candidate, samples, { targetC, scoreFrom, rollout: false, requireWarmup: true }).predictions;
   const trainingBurns = observedBurns(diagnostics.rows);
   const validationBurns = observedBurns(holdoutRows).filter(burn =>
     !trainingBurns.some(previousBurn => Math.abs(burn.startedAt - previousBurn.startedAt) < 24 * HOUR));
@@ -691,9 +793,11 @@ export function fitAdaptiveModel(cp, config = {}) {
       basis: 'effective temperature response per logged kg; no delivered-energy claim' },
     limitation: 'Thermal evidence is conditional on observed space-heating inputs; action response and full-cycle economics require separate validation' };
   candidate.provenance.status = thermalEvidenceReady(candidate) ? 'checked-conditional-thermal-estimates' : 'partial-thermal-evidence';
-  const reconstructed = evaluateThermalModel(candidate, samples, { targetC, rollout: false, observedOnly: false }).state;
+  const reconstruction = evaluateThermalModel(candidate, samples, { targetC, rollout: false, observedOnly: false });
+  const reconstructed = reconstruction.state;
   return { accepted: true, model: candidate, state: reconstructed
-    ? { indoorC: samples.at(-1).indoorC, reserveC: reconstructed.reserveC, observedAt: samples.at(-1).timestamp } : null };
+    ? { indoorC: reconstruction.lastEndpointFresh ? samples.at(-1).indoorC : reconstructed.indoorC,
+      reserveC: reconstructed.reserveC, slabC: reconstructed.slabC ?? null, observedAt: samples.at(-1).timestamp } : null };
 }
 
 export function updateAdaptiveLearning(input, sample, { now = Date.now(), config = {} } = {}) {
@@ -719,6 +823,8 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
   const normalized = acceptedSample ? { timestamp: new Date(at).toISOString(), indoorC: sample.indoorC,
     outdoorC: sample.outdoorC, solarRadiationWm2: finite(sample.solarRadiationWm2)
       && sample.solarRadiationWm2 >= 0 && sample.solarRadiationWm2 <= 2000 ? sample.solarRadiationWm2 : null,
+    supplyC: sample.supplyC ?? null, brineC: sample.brineC ?? null,
+    floorOverrideMode: sample.floorOverrideMode ?? 'off', treatmentKey: sample.treatmentKey ?? 'native',
     phase: sample.phase, roomBoostC: clamp(finite(sample.roomBoostC) ? sample.roomBoostC : 0, 0, 5),
     targetC: finite(sample.targetC) ? sample.targetC : null, regime: sample.regime, quality: sample.quality ?? [],
     heating: sample.heating ?? null, compressorDuty: finite(sample.compressorDuty) ? clamp(sample.compressorDuty, 0, 1) : null,
@@ -752,7 +858,7 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
   cp.cursor = normalized.timestamp;
   for (const episode of cp.episodeArchive) {
     const lastAt = time(episode.samples.at(-1)?.timestamp);
-    if ((!finite(lastAt) || lastAt < time(episode.endedAt)) && (!finite(lastAt) || at > lastAt)) {
+    if ((!finite(lastAt) || lastAt < (episode.observationTailUntil ?? time(episode.endedAt))) && (!finite(lastAt) || at > lastAt)) {
       // Cycle completion can precede the end of its final recording window.
       // Retain that window only when committed, including an invalid endpoint
       // as a barrier. Never reconstruct it from the current controller context.
@@ -766,7 +872,10 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
     const predicted = segments.length && segments.every(segment => usableInputs(segment, false))
       ? thermalInterval(cp.model, cp.state ?? { indoorC: previous.indoorC, reserveC: previous.indoorC }, segments)
       : { reserveC: sample.indoorC };
-    cp.state = { indoorC: sample.indoorC, reserveC: predicted.reserveC, observedAt: normalized.timestamp };
+    const refreshed = genuineEndpoint(cp.lastObservedEndpoint ?? previous, normalized);
+    cp.state = { indoorC: refreshed || !finite(predicted.indoorC) ? sample.indoorC : predicted.indoorC,
+      reserveC: predicted.reserveC, slabC: predicted.slabC ?? null, observedAt: normalized.timestamp };
+    if (refreshed) cp.lastObservedEndpoint = { indoorSensors: structuredClone(normalized.indoorSensors ?? {}) };
   } else cp.state = null;
   // Reference adaptation consumes each committed sample in the same order in
   // live operation, replay and batched historical processing. A page boundary
@@ -905,14 +1014,22 @@ export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
   }
   if (!useful) return cp;
   if (finite(time(episode.startedAt)) && time(episode.startedAt) < time(episode.endedAt)) {
-    const precedingIndex = cp.samples.findLastIndex(sample => time(sample.timestamp) <= time(episode.startedAt));
-    const coveringIndex = cp.samples.findIndex(sample => time(sample.timestamp) >= time(episode.endedAt));
+    const warmupHours = thermalWarmupHours(cp.model);
+    const warmupFrom = time(episode.startedAt) - warmupHours * HOUR;
+    const precedingIndex = cp.samples.findLastIndex(sample => time(sample.timestamp) <= warmupFrom);
+    // Periodic rooms may report the first genuine endpoint after recovery has
+    // ended. Retain up to two hours of original input windows for that endpoint.
+    const hasReportClocks = cp.samples.some(sample => Object.values(sample.indoorSensors ?? {})
+      .some(sensor => sensor.weight > 0 && finite(time(sensor.observedAt))));
+    const observationTailUntil = time(episode.endedAt) + (hasReportClocks ? 2 * HOUR : 0);
+    const coveringIndex = cp.samples.findIndex(sample => time(sample.timestamp) >= observationTailUntil);
     // Preserve the full windows crossing both off-grid cycle boundaries and
     // every invalid endpoint between them. The trailing endpoint may arrive in
     // appendAdaptiveSample after this completion record has been processed.
     const rows = structuredClone(cp.samples.slice(Math.max(0, precedingIndex),
       coveringIndex < 0 ? cp.samples.length : coveringIndex + 1));
     const archive = [...(cp.episodeArchive ?? []), { id: episode.id, startedAt: time(episode.startedAt), endedAt: time(episode.endedAt),
+      warmupHours, warmupFrom, observationTailUntil, treatmentKey: episode.treatmentKey ?? 'native',
       phases: [...new Set(episode.phases ?? rows.map(sample => sample.phase))],
       auxiliaryObserved: episode.auxiliaryObserved === true && (episode.spaceHeatingAuxKwh ?? 0) > 0,
       // Keep exact input windows. Point thinning would apply a fifteen-minute

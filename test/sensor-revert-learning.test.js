@@ -137,5 +137,5 @@ test('correction retries are idempotent, source-scoped and cannot reinterpret an
   const view = sensorChangesView(store, 'mqtt', { now: start + 10 * W, config });
   assert.equal(view.events.find(row => row.id === reset.id).revertedAt, first.revertedAt);
   assert.equal(view.events.find(row => row.id === archived).canRevert, false);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v9-reversible-sensors');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v10-hydronic-floor');
 });

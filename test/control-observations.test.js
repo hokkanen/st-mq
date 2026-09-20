@@ -19,14 +19,14 @@ function sample(extra = {}) {
 test('heat-pump evidence records meter precedence, observed operation, model fallback and auxiliary assumptions', () => {
   const observed = sample({ latest: { compressor_active: reading(1), auxiliary_output: reading(33) } });
   assert.equal(observed.powerBasis, 'observed');
-  assert.equal(observed.powerKw, 6.05);
+  assert.equal(observed.powerKw, 9.4 / 4.24 + 3);
   assert.equal(observed.powerSourceTime, now - MINUTE);
   assert.equal(observed.powerReceivedAt, now);
   assert.equal(observed.auxiliaryAssumed, false);
   const assumedAux = sample({ latest: { compressor_active: reading(1) } });
   assert.equal(assumedAux.powerBasis, 'observed');
   assert.equal(assumedAux.auxiliaryAssumed, true);
-  assert(Math.abs(assumedAux.powerKw - 3.185) < 1e-12);
+  assert(Math.abs(assumedAux.powerKw - (9.4 / 4.24 + .135)) < 1e-12);
   const invalidAux = sample({ latest: { compressor_active: reading(1), auxiliary_output: reading(150) } });
   assert.equal(invalidAux.auxiliaryObserved, true);
   assert.equal(invalidAux.auxiliaryAssumed, true, 'An unusable observed output still invokes the power fallback');

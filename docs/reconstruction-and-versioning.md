@@ -174,6 +174,49 @@ Original recorded model-input charts retain the inputs used at that time;
 coefficient charts show the selected corrected model assessment.
 
 Existing experimental SQLite contents do not require a compatibility migration.
+
+`committed-house-v10-hydronic-floor` starts a new thermal epoch with model version
+3. The v9 journal remains an honest archive at Git revision `5bde1d7`; replay it
+only with its matching implementation. A v9 seed is not numerically converted:
+v10 saves an explicit compatible seed or starts from documented new priors. In
+particular, old action validation cannot qualify fixed ROOM requests or newly
+opened floor loops.
+
+The fitted hydronic response is now degrees C per estimated thermal kWh. It
+acts on routed compressor duty times the fixed DHP-H 10 B0 output map, plus
+routed AUX thermal power. The old independently fitted compressor and AUX gains
+are gone. The map uses published W35/W45 output and COP, keeps electrical input
+separate, includes the published circulation-pump boundary, and reports missing
+source temperatures, extrapolation and unconfirmed equipment as uncertainty.
+It is not a heat meter, measured COP, or an identified brine-temperature curve.
+
+Committed windows retain integrated supply/brine temperatures, source heat and
+electrical estimates, confirmed floor mode and treatment identity. Mixed and
+incomplete override intervals cannot teach successful all-open actions. Service
+circulation is independent of preheat and is recorded through its actual context.
+The optional selected slab uses private configured capacity/allocation/exchange
+priors; its state persists after the override ends. Selected capacity is removed
+from the seeded generic reserve, transfer and source allocation conserve energy,
+and baseline ground loss is not added twice. No slab coefficient is fitted yet.
+
+Fitting checks candidate coefficients against all materially present uncertain
+inputs, even when those peers remain fixed. Repeated held indoor endpoints are
+coalesced into genuine observation intervals while their original hydronic input
+windows remain integrated. Fit acceptance requires causal warmup of at least 48
+hours (four reserve time constants, capped at 288 hours); isolated fragments with
+unsupported initial reserve are excluded. The bounded episode cache retains that
+warmup prefix so weekly cycles survive eviction of the recent sample cache.
+Periodic observations can retain up to two further hours of original windows for
+the first genuine endpoint after recovery. This is a bounded checkpoint fitting
+cache, not additional source journal copies. An invented 23-hour episode with a
+48-hour prefix used 285 normalized samples / 128 kB of JSON; 21 such episodes
+would use about 2.7 MB before richer input segments. The retained episode count
+and original 1,536-sample recent cache remain bounded; actual byte size depends
+on the number of source transitions and sensor members.
+These changes use the same ordered update in live operation and reconstruction;
+original observations, legacy CSV interpretation and frozen forecasts remain
+unchanged.
+
 Changes to numerical interpretation,
 training selection, corrections, seeds or fitting rules require an explicit learning
 algorithm version change and appropriate replay tests. Configuration changes remain

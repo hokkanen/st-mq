@@ -40,7 +40,7 @@ test('complete short episodes are scored, while phase row counts alone establish
   assert.equal(result.horizons[0], 2);
   const model = initialAdaptiveModel();
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3,
-    parameterEvidence: { lossPerHour: { status: 'identified' }, normalHeatCPerHour: { status: 'identified' } },
+    parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } },
     phaseSamples: { reduction: 12 }, phaseValidationSamples: { reduction: 4 }, phaseEpisodes: { reduction: 3 } };
   assert.equal(thermalEvidenceReady(model), true);
   assert.equal(actionEvidenceReady(model, 'reduction'), false);
@@ -113,7 +113,7 @@ test('unknown heat input and collinear steady inputs cannot identify thermal coe
   const steady = fitAdaptiveModel({ samples: samples.map(sample => ({ ...sample, compressorDuty: 0.5, auxKw: 0 })),
     model: initialAdaptiveModel(), baselineC: 21, episodeArchive: [] });
   assert.equal(steady.accepted, false);
-  assert.equal(steady.parameterEvidence.normalHeatCPerHour.reason, 'confounded-with-other-heat-inputs');
+  assert.equal(steady.parameterEvidence.hydronicCPerKwh.reason, 'confounded-with-other-heat-inputs');
   assert.equal(steady.parameterEvidence.memoryExchangePerHour.status, 'fixed');
 });
 
@@ -121,7 +121,7 @@ let plantFixture;
 function observedPlant() {
   if (plantFixture) return structuredClone(plantFixture);
   const plant = new SimulatedPlant();
-  const config = { thermalPriors: { normalHeatCPerHour: 1.3, lossPerHour: 0.02,
+  const config = { thermalPriors: { hydronicCPerKwh: 1.3 / 9.4, lossPerHour: 0.02,
     memoryExchangePerHour: 1.6 / 6, reserveTimeHours: 24 / 1.6, solarCPerHourPerKwM2: 0 } };
   const samples = [], episodeArchive = [];
   let duty = 0, auxiliary = 0, outdoor = 0;
@@ -157,10 +157,10 @@ test('an independent slow-heating plant learns from application defaults without
   const result = fitAdaptiveModel({ samples, model: prior, baselineC: 21, episodeArchive });
   assert.equal(result.accepted, true, JSON.stringify(result.validation ?? result.parameterEvidence));
   assert.equal(thermalEvidenceReady(result.model), true);
-  assert.deepEqual(result.model.validation.fittedParameters.sort(), ['lossPerHour', 'normalHeatCPerHour']);
+  assert.deepEqual(result.model.validation.fittedParameters.sort(), ['hydronicCPerKwh', 'lossPerHour']);
   assert.equal(result.model.parameters.memoryExchangePerHour, prior.parameters.memoryExchangePerHour);
   assert.equal(result.model.parameters.reserveTimeHours, prior.parameters.reserveTimeHours);
-  assert.equal(Object.keys(result.model.parameters).length, 7);
+  assert.equal(Object.keys(result.model.parameters).length, 6);
   assert.ok(result.model.validation.maeC < 0.35);
   assert.ok(result.model.validation.maxErrorC < 0.75);
   assert.ok(result.model.validation.maeC < result.model.validation.previousMaeC);

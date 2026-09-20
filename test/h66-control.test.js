@@ -74,7 +74,7 @@ test('manual native settings retain the original baseline and restore within one
   await nextTurn(); await restarted.controller.reconcile();
   assert.deepEqual(restarted.sent.map(({ payload }) => payload), ['20']);
   await restarted.controller.setPhase({ phase: 'preheat', roomBoostC: 1 });
-  assert.equal(restarted.native['0203'], 21);
+  assert.equal(restarted.native['0203'], 25);
   await restarted.controller.restore();
   assert.equal(restarted.native['0203'], 20, 'Automatic cycles keep the original native setting');
 });
@@ -137,11 +137,11 @@ test('preheat and reduction restore exact original native settings, never write 
   assert.equal(before.available, true);
   assert.equal(before.controlsReady, true);
   await r.controller.setPhase({ phase: 'preheat', roomBoostC: 2, expiresAt: r.now + 60_000 });
-  assert.equal(r.native['0203'], 22);
+  assert.equal(r.native['0203'], 25);
   assert.deepEqual(r.controller.status().baseline, baselines);
   await r.controller.setPhase({ phase: 'reduction', expiresAt: r.now + 120_000 });
   assert.deepEqual(r.sent.map(item => [item.index, item.payload]), [
-    ['0203', '22'], ['0203', '20'], ['0212', '40'], ['0208', '50'], ['2201', '2'],
+    ['0203', '25'], ['0203', '20'], ['0212', '40'], ['0208', '50'], ['2201', '2'],
   ]);
   assert.equal(r.controller.status().phase, 'reduction');
   await r.controller.setPhase({ phase: 'recovery' });
@@ -155,8 +155,8 @@ test('repeated preheat uses the captured baseline and is idempotent', async t =>
   await r.controller.setPhase({ phase: 'preheat', roomBoostC: 1 });
   await r.controller.setPhase({ phase: 'preheat', roomBoostC: 1 });
   assert.equal(r.sent.length, 1);
-  await r.controller.setPhase({ phase: 'preheat', roomBoostC: 3 });
-  assert.equal(r.native['0203'], 23);
+  await r.controller.setPhase({ phase: 'preheat', roomSettingC: 26 });
+  assert.equal(r.native['0203'], 26);
   assert.equal(r.controller.status().baseline['0203'], 20);
 });
 
@@ -198,8 +198,8 @@ test('wire scale overrides are applied symmetrically', async t => {
   const r = rig({ values: { ...baselines, '0203': 200 }, settings: { mqttScaleByRegister: { '0203': 0.1 } } });
   t.after(() => r.controller.close());
   await r.controller.setPhase({ phase: 'preheat', roomBoostC: 2 });
-  assert.equal(r.sent[0].payload, '220');
-  assert.equal(r.controller.status().readings['0203'].value, 22);
+  assert.equal(r.sent[0].payload, '250');
+  assert.equal(r.controller.status().readings['0203'].value, 25);
   await r.controller.restore();
   assert.equal(r.sent.at(-1).payload, '200');
 });
@@ -268,7 +268,7 @@ test('unsupported writes and invalid bounded trials publish nothing', async t =>
   const r = rig(); t.after(() => r.controller.close());
   await assert.rejects(r.controller.writeSettings({ '8105': -990 }), { code: 'H66_SETTINGS_INVALID' });
   await assert.rejects(r.controller.test({ register: '0203', value: 22, durationSeconds: 3600 }), { code: 'H66_TEST_DURATION' });
-  await assert.rejects(r.controller.setPhase({ phase: 'preheat', roomBoostC: 6 }), { code: 'H66_BOOST_INVALID' });
+  await assert.rejects(r.controller.setPhase({ phase: 'preheat', roomSettingC: 31 }), { code: 'H66_BOOST_INVALID' });
   assert.equal(r.sent.length, 0);
 });
 
@@ -298,10 +298,24 @@ test('plain MQTT acquisition publishes GETALL, exposes receipt-time evidence, an
   assert.equal(observations[0].raw.publicationMayUseGatewayCache, true);
   await acquisition.setPhase({ phase: 'preheat', roomBoostC: 1 });
   assert.equal(connectionCount, 1);
-  assert.equal(native['0203'], 21);
+  assert.equal(native['0203'], 25);
   await acquisition.restore();
   assert.equal(native['0203'], 20);
   now += 300_001;
   assert.equal(acquisition.status().available, false);
   assert.ok(publications.some(item => item.payload === 'GETALL'));
+});
+
+
+for (const baseline of [25, 27]) test(`absolute preheat never lowers a ${baseline} °C native ROOM baseline`, async t => {
+  const r = rig({ values: { ...baselines, '0203': baseline } }); t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'preheat', roomSettingC: 25 });
+  assert.equal(r.native['0203'], baseline);
+  assert.equal(r.sent.length, 0);
+  await r.controller.restore();
+  await r.controller.setManualPreheat({ enabled: true, roomSettingC: 25 });
+  assert.equal(r.native['0203'], baseline);
+  assert.equal(r.sent.length, 0);
+  await r.controller.setManualPreheat({ enabled: false });
+  assert.equal(r.native['0203'], baseline);
 });

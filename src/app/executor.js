@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { HEATING_COMMANDS } from '../control/mqtt.js';
 
 const REFRESH_MS = 600_000;
@@ -8,12 +9,13 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 // The tariff relay and H66 are separate transports. Broker acknowledgements
 // prove delivery to MQTT, not physical relay or compressor operation.
 export class Executor {
-  constructor({ input, store, plant, commandTransport = null, h66 = null, config = {}, clock = Date.now, deliveryBoundMs = 10_000 }) {
+  constructor({ input, store, plant, commandTransport = null, h66 = null, floorOverride = null, config = {}, clock = Date.now, deliveryBoundMs = 10_000 }) {
     if (!Number.isFinite(deliveryBoundMs) || deliveryBoundMs <= 0) throw new Error('A positive command delivery bound is required');
-    Object.assign(this, { input, store, plant, commandTransport, h66, clock, deliveryBoundMs });
+    Object.assign(this, { input, store, plant, commandTransport, h66, floorOverride, clock, deliveryBoundMs });
     const minutes = config.dhwrPulseMinutes ?? 10;
     if (!Number.isFinite(minutes) || minutes < 1 || minutes > 60) throw new Error('DHWR duration must be 1–60 minutes');
     this.pulseMs = minutes * 60_000;
+    this.preheatRoomSettingC = config.preheatRoomSettingC ?? 25;
     this.key = `executor:${input}`;
     let saved;
     try { saved = store.getState(this.key); } catch { saved = null; }
@@ -180,7 +182,7 @@ export class Executor {
     const nativeOptions = { now, expiresAt: end, ...(pause ? { pauseId: pause.id } : {}) };
     if (phase === 'preheat' && typeof this.h66?.setManualPreheat !== 'function')
       throw failure('H66_UNAVAILABLE', 'Preheating requires writable native heat-pump settings.');
-    this.state.manualRequested = { phase, at: now, confirmed: false, roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? 1 : 0 };
+    this.state.manualRequested = { phase, at: now, confirmed: false, floorOwner: phase === 'preheat' ? `manual:${randomUUID()}` : null, roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? 1 : 0 };
     this.persist();
     if (phase !== 'preheat' && this.h66?.status(now).manualPreheat)
       await this.h66.setManualPreheat({ enabled: false, ...nativeOptions });
@@ -190,9 +192,19 @@ export class Executor {
     this.state.expiresAt = end;
     this.persist();
     if (phase === 'preheat') {
-      await this.publish(['circulation', 'normal'], now, { manualCirculation: true });
-      await this.h66.setManualPreheat({ enabled: true, roomBoostC: decision.roomBoostC ?? 1, ...nativeOptions });
-    } else await this.publish([phase === 'reduction' ? 'reduction' : 'normal'], now, { allowReductionWithCirculation: true });
+      try {
+        await this.publish(['normal'], now);
+        if (this.floorOverride?.status(now).enabled) await this.floorOverride.lease({ owner: this.state.manualRequested.floorOwner, until: end, now });
+        await this.h66.setManualPreheat({ enabled: true, roomSettingC: this.preheatRoomSettingC, ...nativeOptions });
+      } catch (error) {
+        await this.floorOverride?.release({ reason: 'manual-preheat-failed', now: this.clock() });
+        throw error;
+      }
+    } else {
+      const floor = await this.floorOverride?.release({ reason: 'manual-supersession', now });
+      if (floor?.restorationPending) throw failure('FLOOR_PENDING', 'Floor restoration must finish before another heating mode.');
+      await this.publish([phase === 'reduction' ? 'reduction' : 'normal'], now, { allowReductionWithCirculation: true });
+    }
     this.state.phase = phase;
     this.state.manualRequested.confirmed = true;
     this.state.legacyOutstanding = phase === 'reduction';
@@ -215,6 +227,9 @@ export class Executor {
       if (this.state.dhwrOutstanding && this.state.pulseUntil <= now) await this.stopDhwr(now);
       // A later explicit ROOM edit supersedes the preheat boost.
       this.reconcileManualPreheat(now);
+      if (this.state.manualRequested?.phase === 'preheat' && this.floorOverride?.status(now).enabled)
+        await this.floorOverride.lease({ owner: this.state.manualRequested.floorOwner, until: end, now });
+      else await this.floorOverride?.release({ reason: 'manual-preheat-ended', now });
       const refresh = this.state.manualPause && this.state.manualRequested?.confirmed
         && (this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS);
       if (refresh) await this.publish([this.state.manualRequested.phase === 'reduction' ? 'reduction' : 'normal'], now,
@@ -243,6 +258,10 @@ export class Executor {
       if (restored.restorationPending) return restored;
     }
     if (this.state.dhwrOutstanding && now >= this.state.pulseUntil) await this.stopDhwr(now);
+    if (phase !== 'preheat') {
+      const floor = await this.floorOverride?.release({ reason: phase, now });
+      if (floor?.restorationPending) return this.result('restoration-pending', false, { restorationPending: true, floor });
+    }
     if (phase === 'recovery' && decision.recoveryCompressorOnly === true
       && this.h66?.status(now).controlsReady && this.h66.status(now).writesEnabled === true) {
       const native = await this.h66.setPhase({ phase, compressorOnly: true, now, expiresAt });
@@ -265,25 +284,29 @@ export class Executor {
         const restored = await this.restoreInternal({ now, reason: 'reduction-to-preheat', preserveManualDhwr: true });
         if (restored.restorationPending) return restored;
       }
-      const needsPulse = now >= this.state.pulseUntil;
-      if (needsPulse && now + this.pulseMs > expiresAt)
-        return this.normal(now, 'normal', { reason: 'Less than the configured DHWR duration remains in the preheat window.' });
+      const needsPulse = decision.commands.includes('circulation') && now >= this.state.pulseUntil;
       this.state.legacyOutstanding = true;
-      this.state.expiresAt = Math.min(expiresAt, needsPulse ? now + this.pulseMs : this.state.pulseUntil);
+      this.state.expiresAt = expiresAt;
       this.persist();
       let sent = false;
-      if (needsPulse) {
-        await this.publish(['circulation', 'normal'], now); sent = true;
-        this.state.expiresAt = Math.min(expiresAt, this.state.pulseUntil); this.persist();
-      }
       try {
-        const native = await this.h66.setPhase({ phase, roomBoostC: decision.roomBoostC ?? 1, now:this.clock(),
-          expiresAt: this.state.expiresAt });
+        if (decision.floorOverride === true) {
+          if (!this.floorOverride?.status(now).enabled) throw failure('FLOOR_UNAVAILABLE', 'Floor preheat is unavailable.');
+          await this.floorOverride.lease({ owner: decision.owner ?? `automatic:${expiresAt}`, until: expiresAt, now });
+        } else {
+          const floor = await this.floorOverride?.release({ reason: 'room-only-preheat', now });
+          if (floor?.restorationPending) throw failure('FLOOR_PENDING', 'Floor restoration must finish before ROOM-only preheat.');
+        }
+        const refresh = needsPulse || this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
+        if (refresh) { await this.publish(needsPulse ? ['circulation', 'normal'] : ['normal'], now); sent = true; }
+        const native = await this.h66.setPhase({ phase, roomSettingC: decision.roomSettingC ?? this.preheatRoomSettingC,
+          now: this.clock(), expiresAt });
         this.state.phase = phase; this.restartRestore = false;
-        return this.result(phase, sent || native.changed?.length > 0, { native,
-          coupling: 'ROOM readback follows the DHWR request; independent transports cannot switch atomically.' });
+        return this.result(phase, sent || native.changed?.length > 0, { native, roomBoostC: decision.roomBoostC ?? 0,
+          floor: this.floorOverride?.status(this.clock()),
+          coupling: 'ROOM and floor override use the preheat deadline; circulation retains its independent pulse timer.' });
       } catch (error) {
-        try { await this.restoreInternal({ now: this.clock(), reason: 'preheat-activation-failed' }); } catch { /* Retain restoration obligation. */ }
+        try { await this.restoreInternal({ now: this.clock(), reason: 'preheat-activation-failed', preserveManualDhwr: true }); } catch { /* Retain restoration obligation. */ }
         throw error;
       }
     }
@@ -327,7 +350,9 @@ export class Executor {
   async restoreManualInternal({ now = this.clock(), reason = 'manual-ended' } = {}) {
     if (this.restartRestore && !this.manualRestorePending) return this.restoreInternal({ now, reason: 'manual-recovery' });
     const baseline = this.state.manualBaseline;
-    let native = null, nativeError = null, dhwrError = null, sent = false;
+    let native = null, nativeError = null, dhwrError = null, floor = null, sent = false;
+    try { floor = await this.floorOverride?.release({ reason, now }); }
+    catch { floor = { restorationPending: true }; }
     // Circulation keeps its independent original end. Restoring settings neither
     // cancels a current pulse nor recreates one that has already finished.
     try { if (this.state.dhwrOutstanding && this.state.pulseUntil <= now) sent = await this.stopDhwr(now); }
@@ -343,7 +368,7 @@ export class Executor {
       this.state.legacyOutstanding = originalReduction;
       this.state.expiresAt = originalReduction ? baseline.expiresAt : null;
     }
-    const restorationPending = Boolean(nativeError || native?.restorationPending || dhwrError);
+    const restorationPending = Boolean(floor?.restorationPending || nativeError || native?.restorationPending || dhwrError);
     if (!restorationPending) this.clearManual();
     // H66 may already be restoring on its own expiry timer. That overlap is a
     // pending setting restore, not a failed circulation operation.
@@ -363,8 +388,10 @@ export class Executor {
   }
   async restoreInternal({ now = this.clock(), reason = 'restore-normal', phase = 'normal', detail = {}, preserveManualDhwr = false } = {}) {
     this.manualRestorePending = false;
-    let native = null, nativeError = null, dhwrError = null, sent = false;
-    const keepCirculation = preserveManualDhwr && this.state.manualDhwrUntil > now && this.state.dhwrOutstanding;
+    let native = null, nativeError = null, dhwrError = null, floor = null, sent = false;
+    try { floor = await this.floorOverride?.release({ reason, now }); }
+    catch { floor = { restorationPending: true }; }
+    const keepCirculation = preserveManualDhwr && this.state.pulseUntil > now && this.state.dhwrOutstanding;
     try { if (this.state.dhwrOutstanding && !keepCirculation) sent = await this.stopDhwr(now); }
     catch (error) { dhwrError = error.code ?? 'DHWR_OFF_FAILED'; }
     try { if (this.h66) native = await this.h66.restore({ now, reason, phase }); }
@@ -373,7 +400,7 @@ export class Executor {
     if (this.state.legacyOutstanding || this.state.phase === 'reduction' || this.state.phase === 'preheat') {
       await this.publish(['normal'], now); sent = true; this.state.legacyOutstanding = false;
     }
-    const restorationPending = Boolean(dhwrError || this.state.dhwrOutstanding && !keepCirculation || nativeError || native?.restorationPending);
+    const restorationPending = Boolean(floor?.restorationPending || dhwrError || this.state.dhwrOutstanding && !keepCirculation || nativeError || native?.restorationPending);
     if (!restorationPending) this.clearManual();
     this.restartRestore = restorationPending;
     this.state.phase = restorationPending ? 'restoration-pending' : phase; this.state.expiresAt = null;

@@ -14,7 +14,7 @@ test('inventory combines legacy equipment once and retains the home tariff relay
   const status = { now, equipment: { devices: [{ ...relay, label: 'Current relay' }, door] },
     shelly: { devices: [{ ...relay, label: 'Legacy relay' }, { id: 'caravan', kind: 'metered_switch', available: true }] } };
   const devices = equipmentDevices(status), inventory = equipmentInventory(status);
-  assert.equal(devices.length, 3);
+  assert.equal(devices.length, 5);
   assert.equal(devices.find(device => device.id === relay.id).label, 'Current relay');
   assert.equal(inventory.find(device => device.id === relay.id).area, 'home');
   assert.equal(inventory.find(device => device.id === 'caravan').area, 'garage');

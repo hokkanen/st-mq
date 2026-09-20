@@ -8,6 +8,7 @@ import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { createTeslaMateCapture } from './teslamate.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
+import { createFloorOverride, floorOverrideConfiguration } from '../control/floor-override.js';
 import { createGarageAdapter } from '../garage/adapter.js';
 import { teslamateConfiguration } from '../app/config.js';
 import { createChargingTeslaCapture } from '../charging/teslamate.js';
@@ -183,6 +184,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         || !connected || stopping || stopped || generation !== connectionGeneration ? new Error('MQTT subscription unavailable') : null));
     } catch { finish(new Error('MQTT subscription failed')); }
   })));
+  const floorOverride = createFloorOverride({ store, publish: (topic, payload, options) => publish(topic, payload, { ...options, noReplay: true }),
+    settings: config.floorPreheat ?? floorOverrideConfiguration(), clock: () => engine.clock(), canControl, brokerIdentity: { address, username } });
+  engine.floorOverride = floorOverride;
+  if (engine.executor) engine.executor.floorOverride = floorOverride;
   const equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
     brokerIdentity: { address, username }, refreshSubscriptions, topicGroups, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
     temperatureReportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
@@ -243,6 +248,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     connected = true; disconnectedRecorded = false; h66?.setConnected(true);
     subscribeChargingSoc();
     garage?.setConnected(true);
+    let floorSubscriptions = floorOverride.topics.length, floorSubscriptionFailed = false;
+    for (const topic of floorOverride.topics) client.subscribe(topic, { qos: 1 }, (error, granted) => {
+      if (!currentSubscription()) return;
+      if (subscriptionRejected(topic, error, granted)) floorSubscriptionFailed = true;
+      if (--floorSubscriptions === 0) {
+        floorOverride.setConnected(!floorSubscriptionFailed);
+        floorOverride.tick(engine.clock()).catch(() => report('mqtt-floor-unavailable'));
+      }
+    });
     store.event('mqtt-connected', { source, writesEnabled: Boolean(h66 && settings.writeEnabled === true) }, engine.clock());
     if (h66) client.subscribe(`${deviceId}/HP/#`, { qos: 0 }, error => {
       if (!currentSubscription()) return;
@@ -313,6 +327,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     engine.charging?.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
     shelly?.setConnected(false);
     garage?.setConnected(false);
+    floorOverride.setConnected(false);
     for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
     for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT disconnected'));
     if (!disconnectedRecorded) {
@@ -344,6 +359,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       if (engine.charging?.receiveSoc(topic, payload, packet, engine.clock())) return;
       chargingTesla?.receive(topic, payload, packet, engine.clock());
+      if (floorOverride.ingest(topic, payload, packet, engine.clock())) return;
       if (garage?.receive(topic, payload, packet, engine.clock())) return;
       if (equipmentSubscriptionBuffer) {
         const matched = shelly.topics.filter(subscription => subscription.endsWith('/#')
@@ -407,17 +423,26 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     try { teslamate.tick(engine.clock()); } catch (error) { report('mqtt-teslamate-capture-failed', error); }
   }, 5000) : null;
   teslaMaintenance?.unref?.();
+  const floorMaintenance = setInterval(() => {
+    if (!stopped && !stopping) floorOverride.tick(engine.clock()).catch(() => report('mqtt-floor-unavailable'));
+  }, 30_000);
+  floorMaintenance.unref?.();
   if (client.connected) connectedHandler();
-  return { h66, shelly, garage, equipment: equipment ?? shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
+  return { h66, shelly, garage, floorOverride, equipment: equipment ?? shelly, status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
       if (stopped || stopping) return;
+      if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => report('floor-shutdown-restoration-pending'));
       stopping = true; connectionGeneration++; vehicleSubscriptions.clear(); equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null;
       for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT closed'));
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
       clearInterval(shellyMaintenance);
+      clearInterval(floorMaintenance);
+      await floorOverride.close({ restore: false });
+      if (engine.floorOverride === floorOverride) engine.floorOverride = null;
+      if (engine.executor?.floorOverride === floorOverride) engine.executor.floorOverride = null;
       await garage?.close({ restore: restore && canControl(), now: engine.clock() });
       if (garage) engine.garage?.setAdapter?.(null);
       shelly?.close();

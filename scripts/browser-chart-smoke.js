@@ -24,9 +24,9 @@ const directory = mkdtempSync(join(tmpdir(), 'stmq-browser-chart-'));
 const now = Date.parse('2026-09-07T12:00:00Z');
 const coefficientValues = {
   model_coefficient_heat_loss: { parameter: 'lossPerHour', value: 0.0273 },
-  model_coefficient_compressor_response: { parameter: 'normalHeatCPerHour', value: 0.85 },
+  model_coefficient_hydronic_response: { parameter: 'hydronicCPerKwh', value: 0.085 },
   model_coefficient_solar_response: { parameter: 'solarCPerHourPerKwM2', value: 0.32 },
-  model_coefficient_auxiliary_response: { parameter: 'auxiliaryCPerKwh', value: 0.16 },
+  model_coefficient_fireplace_response: { parameter: 'fireplaceCPerKg', value: 0.16 },
 };
 const coefficientKeys = Object.keys(coefficientValues);
 function seedChargingFixture(store, energySource='simulation') {

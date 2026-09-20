@@ -1,5 +1,5 @@
 import { MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
-import { applyLearningRecord, LEARNING_ALGORITHM } from './committed-learning.js';
+import { applyLearningRecord, LEARNING_ALGORITHM, learningVersion } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext } from './sensor-inputs.js';
 
@@ -81,12 +81,13 @@ function replay(store, input, through) {
         }
       }
       const initial = priorCheckpoint ?? entry.payload.seed;
-      const resetAuxiliary = initial?.learningConfiguration?.auxRatedKw !== undefined
-        && initial.learningConfiguration.auxRatedKw !== entry.payload.configuration.auxRatedKw;
-      const fittedAgain = next.health?.acceptedFits > (initial?.health?.acceptedFits ?? 0)
-        && validation?.accepted === true && validation.fittedParameters?.includes('auxiliaryCPerKwh');
-      if (resetAuxiliary && !entry.payload.value.historySeed?.model && !fittedAgain) {
-        learned.delete('auxiliaryCPerKwh'); fitted.delete('auxiliaryCPerKwh');
+      const structuralReset = initial?.learningConfiguration && ['auxRatedKw', 'heatPumpModelConfirmed', 'floorThermalPriors']
+        .some(key => learningVersion(initial.learningConfiguration[key] ?? null)
+          !== learningVersion(entry.payload.configuration[key] ?? null));
+      if (structuralReset && !entry.payload.value.historySeed?.model && validation?.accepted !== true) {
+        // Changed heat-source or slab assumptions invalidate the old thermal
+        // attribution, even for coefficients retained numerically as priors.
+        learned.clear(); fitted.clear();
       }
       checkpoint = next; blocked = false; result.replayedRecords++;
       const coefficients = Object.fromEntries(Object.entries(MODEL_COEFFICIENT_INFO).map(([key, info]) => {

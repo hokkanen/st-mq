@@ -99,7 +99,7 @@ test('a stale stored promise cannot bypass current evidence at dispatch',()=>{
 test('an admitted trial retains its bounded safety rule on the following engine tick',t=>{
   const store=new Store(':memory:');let clock=now;
   const engine=new Engine({store,clock:()=>clock,config:{input:'simulated',
-    settings:{mode:'active',comfort:{targetC:21,maxDropC:1}},control:{trialBudgetCentsPerDay:100,maxTrialCostCents:100}}});
+    settings:{mode:'active',comfort:{targetC:21,maxDropC:2,maxRiseC:2}},control:{trialBudgetCentsPerDay:100,maxTrialCostCents:100}}});
   t.after(()=>{clearTimeout(engine.executor.timer);engine.executor.closed=true;store.close();});
   const cp=restoreAdaptiveCheckpoint(null);cp.baselineC=21;
   cp.samples=Array.from({length:4},(_,i)=>({...sample(now-(5-i)*H/4,now-(4-i)*H/4,1.5),
@@ -125,12 +125,12 @@ test('forecast recovery never re-blocks AUX after its comfort fallback',()=>{
 });
 
 test('unfinished recovery prices the same slow-node capacity used by the thermal model',()=>{
-  const model=initialAdaptiveModel();model.equipmentResponse.phases.reduction={ratio:0};
+  const model=initialAdaptiveModel();model.equipmentResponse.phases.reduction={ratio:0,treatmentKey:'reduction-only-v1'};
   const r=evaluateCycle({model,initialState:{indoorC:21,reserveC:21},targetC:21,
     intervals:[{start:now,end:now+H,outdoorC:0,solarRadiationWm2:0,price:10}],
     schedule:{preheatStart:now,preheatEnd:now,reductionStart:now,reductionEnd:now+H,roomBoostC:0}});
   const p=model.parameters,deficit=Math.max(0,r.nativeEndState.indoorC-r.endState.indoorC)
     +p.memoryExchangePerHour*p.reserveTimeHours*Math.max(0,r.nativeEndState.reserveC-r.endState.reserveC);
   assert.ok(r.terminalKwh>0);
-  assert.ok(Math.abs(r.terminalKwh-deficit/p.normalHeatCPerHour*model.energy.compressorKw*model.energy.recoveryMultiplier)<1e-10);
+  assert.ok(Math.abs(r.terminalKwh-deficit/p.hydronicCPerKwh/4.24)<1e-10);
 });

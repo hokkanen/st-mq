@@ -119,7 +119,24 @@
       "recovery_compressor_only": true,
       "recovery_compressor_only_hours": 4,
       "recovery_comfort_margin_c": 0.5,
-      "role": "primary"
+      "role": "primary",
+      "max_rise_c": 1,
+      "savings_aggressiveness": 50,
+      "preheat_room_setting_c": 25,
+      "heat_pump_model_confirmed": false,
+      "floor_thermal_priors": {},
+      "floor_preheat": {
+        "enabled": false,
+        "commissioned": false,
+        "storage": {
+          "topic_prefix": ""
+        },
+        "living": {
+          "topic_prefix": ""
+        },
+        "renew_seconds": 300,
+        "lease_seconds": 900
+      }
     },
     "acquisition": {
       "easee_poll_seconds": 15,
@@ -460,7 +477,32 @@
       "recovery_compressor_only": "bool",
       "recovery_compressor_only_hours": "float(0.25,12)",
       "recovery_comfort_margin_c": "float(0,1)",
-      "role": "list(primary|replica)"
+      "role": "list(primary|replica)",
+      "max_rise_c": "float(0.25,2)",
+      "savings_aggressiveness": "int(0,100)",
+      "preheat_room_setting_c": "int(20,30)",
+      "heat_pump_model_confirmed": "bool",
+      "floor_thermal_priors": {
+        "capacity_kwh_per_c": "float(0.1,100)?",
+        "native_capacity_kwh_per_c": "float(0.1,100)?",
+        "exchange_kw_per_c": "float(0.001,100)?",
+        "ground_loss_kw_per_c": "float(0,10)?",
+        "ground_c": "float(-5,25)?",
+        "open_allocation_fraction": "float(0,1)?",
+        "closed_allocation_fraction": "float(0,1)?"
+      },
+      "floor_preheat": {
+        "enabled": "bool",
+        "commissioned": "bool",
+        "storage": {
+          "topic_prefix": "str?"
+        },
+        "living": {
+          "topic_prefix": "str?"
+        },
+        "renew_seconds": "int(30,450)",
+        "lease_seconds": "int(60,900)"
+      }
     },
     "acquisition": {
       "easee_poll_seconds": "float(10,3600)",

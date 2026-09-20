@@ -4,7 +4,7 @@ import { Executor } from '../src/app/executor.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 
-function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, config = {} } = {}) {
+function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, floorOverride = null, config = {} } = {}) {
   let now = Date.parse('2026-09-07T12:00Z');
   const log = [], observations = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
@@ -31,7 +31,7 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
     }
     return publishDhwr ? publishDhwr(on) : { status: 'mqtt', sent: true, actual: null };
   }, async close() {} };
-  const executor = new Executor({ input: 'mqtt', store, h66, config, commandTransport: transport, clock: () => now });
+  const executor = new Executor({ input: 'mqtt', store, h66, floorOverride, config, commandTransport: transport, clock: () => now });
   t.after(async () => { clearTimeout(executor.timer); executor.closed = true; await h66?.close(); });
   return { executor, h66, log, observations, values, saved, store, transport, get now() { return now; },
     advance(ms) { now += ms; if (h66) for (const [index, value] of Object.entries(values)) receive(index, value); },
@@ -74,48 +74,50 @@ test('compressor recovery expires back to the captured native mode',async t=>{
   assert.equal(r.values['2201'],1);assert.deepEqual(r.h66.status().obligations,{});
 });
 
-test('a coupled45-minute trial retains useful preheat exposure with acknowledgement latency',async t=>{
+test('a45-minute preheat keeps its fixed ROOM deadline through acknowledgement latency without requesting extra DHWR', async t => {
   let r;
-  r=rig(t,{publishLegacy:async()=>{r.advance(1000);return{status:'mqtt',sent:true,actual:null};}});
-  const end=r.now+45*60000;let pulses=0;
-  for(let i=0;i<5;i++) {
-    const remaining=end-r.now;
-    if(remaining<=0)break;
-    const result=await r.run('preheat',remaining);
-    if(result.phase!=='preheat')break;
-    pulses++;
-    r.advance(600000);
+  r = rig(t, { publishLegacy: async () => { r.advance(1000); return { status: 'mqtt', sent: true, actual: null }; } });
+  const end = r.now + 45 * 60_000;
+  for (let i = 0; i < 5 && r.now < end; i++) {
+    assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
+    assert.equal(r.h66.status().expiresAt, end);
+    assert.equal(r.values['0203'], 25);
+    r.advance(10 * 60_000);
   }
-  assert.ok(pulses>=3);
-  assert.ok(r.log.filter(row=>row.dhwr===true).length>=3);
+  assert.equal(r.log.some(row => row.dhwr === true), false);
 });
 
-test('coupled preheat switches ON before ROOM and acknowledges OFF before reduction', async t => {
+test('fixed ROOM preheat restores the exact native baseline before reduction without a circulation dependency', async t => {
   const r = rig(t);
   const preheat = await r.run('preheat');
-  assert.equal(preheat.phase, 'preheat'); assert.equal(r.values['0203'], 21);
-  assert.deepEqual(r.log.slice(0, 3).map(entry => entry.commands ?? entry.native ?? entry.dhwr), [true, ['normal'], '0203']);
-  assert.equal(r.h66.status().expiresAt, r.now + 600_000);
+  assert.equal(preheat.phase, 'preheat'); assert.equal(r.values['0203'], 25);
+  assert.deepEqual(r.log.slice(0, 2).map(entry => entry.commands ?? entry.native), [['normal'], '0203']);
+  assert.equal(r.h66.status().expiresAt, r.now + 1_800_000);
   assert.equal((await r.run('preheat')).sent, false);
   r.advance(60_000);
   const reduction = await r.run('reduction');
   assert.equal(reduction.phase, 'reduction'); assert.equal(r.values['0203'], 19);
-  const off = r.log.findIndex(entry => entry.dhwr === false);
+  const restore = r.log.findIndex(entry => entry.native === '0203' && entry.value === 19);
   const reduce = r.log.findIndex(entry => entry.commands?.includes('reduction'));
-  assert(off > 0 && reduce > off, 'Acknowledged OFF removes the old external ten-minute waiting period');
+  assert(restore > 0 && reduce > restore);
+  assert.equal(r.log.some(entry => typeof entry.dhwr === 'boolean'), false);
   assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
-  assert.deepEqual(r.log.at(-1).commands, ['reduction']);
   await r.run('recovery');
   assert.deepEqual(r.values, { '0203': 19, '0212': 47, '0208': 62, '2201': 1 });
 });
 
-test('a pulse renews only at ten minutes and must fit the preheat window', async t => {
+test('preheat with less than one DHWR pulse remaining still reaches its own planned end', async t => {
   const r = rig(t);
-  await r.run('preheat', 300_000);
+  const end = r.now + 5 * 60_000;
+  assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
+  r.advance(4 * 60_000);
+  assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
+  assert.equal(r.values['0203'], 25);
+  assert.equal(r.h66.status().expiresAt, end);
   assert.equal(r.log.some(entry => entry.dhwr === true), false);
-  await r.run('preheat'); r.advance(600_000); await r.run('preheat');
-  assert.equal(r.log.filter(entry => entry.dhwr === true).length, 2);
-  assert.equal(r.values['0203'], 21, 'baseline boost never accumulates');
+  r.advance(60_000);
+  await r.h66.reconcile({ now: r.now });
+  assert.equal(r.values['0203'], 19);
 });
 
 test('preheat without native settings restores normal and never requests DHWR', async t => {
@@ -198,7 +200,7 @@ test('shutdown restores owned native settings and the tariff relay', async t => 
   assert.equal(r.executor.status().legacyOutstanding, false);
 });
 
-test('the configured DHWR duration controls manual runs and required preheat exposure', async t => {
+test('the configured DHWR duration controls manual runs independently of preheat exposure', async t => {
   const r = rig(t, { config: { dhwrPulseMinutes: 3 } });
   const start = r.now;
   await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
@@ -210,7 +212,7 @@ test('the configured DHWR duration controls manual runs and required preheat exp
   await r.run('preheat', 2 * 60_000);
   assert(!r.log.slice(before).some(row => row.dhwr === true));
   await r.run('preheat', 3 * 60_000);
-  assert.equal(r.executor.status().pulseUntil, r.now + 3 * 60_000);
+  assert.equal(r.executor.status().pulseUntil, 0);
   assert.equal(r.h66.status().expiresAt, r.now + 3 * 60_000);
 });
 
@@ -254,7 +256,7 @@ test('failed DHWR OFF cannot prevent independent native and tariff restoration',
     if (!on && failStop) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await r.run('preheat');
+  await r.run('preheat', 1_800_000, { commands: ['circulation', 'normal'] });
   r.advance(600_000);
   const before = r.log.length;
   const pending = await r.executor.restore();
@@ -316,4 +318,58 @@ test('failed early DHWR stop retries without waiting for the original run deadli
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(stops, 2);
   assert.equal(r.executor.status().dhwrOutstanding, false);
+});
+
+
+test('short ROOM lease expires without ending a separately requested normal-service circulation run', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig(t);
+  const start = r.now;
+  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.run('preheat', 2 * 60_000);
+  assert.equal(r.executor.status().pulseUntil, start + 10 * 60_000);
+  assert.equal(r.h66.status().expiresAt, start + 2 * 60_000);
+  r.advance(2 * 60_000); t.mock.timers.tick(2 * 60_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.values['0203'], 19);
+  assert.equal(r.executor.status().dhwrOutstanding, true);
+  assert.deepEqual(r.log.filter(row => typeof row.dhwr === 'boolean').map(row => row.dhwr), [true]);
+  r.advance(8 * 60_000); t.mock.timers.tick(8 * 60_000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(r.executor.status().dhwrOutstanding, false);
+  assert.deepEqual(r.log.filter(row => typeof row.dhwr === 'boolean').map(row => row.dhwr), [true, false]);
+});
+
+
+test('floor override and ROOM share only the preheat deadline and release before a new heating phase', async t => {
+  const floorCalls = [];
+  const floorOverride = { status: () => ({ enabled: true }),
+    async lease(request) { floorCalls.push({ ...request, operation: 'lease' }); },
+    async release(request) { floorCalls.push({ ...request, operation: 'release' }); return { restorationPending: false }; } };
+  const r = rig(t, { floorOverride });
+  const start = r.now, end = start + 90_000;
+  await r.executor.execute({ commands: ['circulation'] }, { mode: 'shadow', manualTest: true, now: r.now });
+  await r.run('preheat', end - r.now, { floorOverride: true, owner: 'synthetic-pooled-treatment' });
+  assert.equal(floorCalls[0].operation, 'lease'); assert.equal(floorCalls[0].until, end);
+  assert.equal(r.h66.status().expiresAt, end);
+  assert.equal(r.executor.status().pulseUntil, start + 600_000);
+  r.advance(60_000);
+  assert.equal((await r.run('preheat', end - r.now, { floorOverride: true, owner: 'synthetic-pooled-treatment' })).phase, 'preheat');
+  assert.equal(floorCalls.at(-1).until, end, 'A late continuation cannot extend the promised preheat end');
+  await r.run('normal');
+  assert.equal(floorCalls.at(-1).operation, 'release');
+  assert.equal(r.values['0203'], 19);
+  assert.equal(r.executor.status().dhwrOutstanding, true, 'Separately requested DHWR keeps its own run');
+});
+
+test('an unconfirmed floor lease cannot leave a raised ROOM request active', async t => {
+  let releases = 0;
+  const floorOverride = { status: () => ({ enabled: true }),
+    async lease() { throw Object.assign(new Error('Synthetic missing device timer confirmation'), { code: 'FLOOR_UNCONFIRMED' }); },
+    async release() { releases++; return { restorationPending: false }; } };
+  const r = rig(t, { floorOverride });
+  await assert.rejects(r.run('preheat', 60_000, { floorOverride: true }), { code: 'FLOOR_UNCONFIRMED' });
+  assert.equal(r.values['0203'], 19);
+  assert.equal(r.log.some(row => row.native === '0203' && row.value > 19), false);
+  assert(releases > 0);
 });

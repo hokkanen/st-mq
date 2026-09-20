@@ -14,12 +14,14 @@ const metricDefinitions = [
   ['indoorTemperature', 'Normal indoor temperature', '°C', 'The temperature achieved during sustained, stable periods declared occupied with normal heating. Verified heating activity supports the reference; sustained cool weather can establish a provisional reference when equipment observations are missing. Preheating, recovery and logged fireplace heating do not raise it.'],
 ];
 const coefficientLabels = {
-  lossPerHour: 'Heat loss', normalHeatCPerHour: 'Compressor heating response', solarCPerHourPerKwM2: 'Solar response',
-  auxiliaryCPerKwh: 'Auxiliary heating response', fireplaceCPerKg: 'Fireplace response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
+  lossPerHour: 'Heat loss', hydronicCPerKwh: 'Combined compressor + auxiliary response', normalHeatCPerHour: 'Legacy compressor heating response', solarCPerHourPerKwM2: 'Solar response',
+  auxiliaryCPerKwh: 'Legacy auxiliary heating response', fireplaceCPerKg: 'Fireplace response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
   reducedHeatCPerHour: 'Legacy reduced-mode allowance', preheatCPerHourPerDegree: 'Legacy preheat allowance',
 };
 const coefficientInfo = {
   ...Object.fromEntries(Object.values(MODEL_COEFFICIENT_INFO).map(info => [info.parameter, info])),
+  normalHeatCPerHour: { unit: '°C/h', digits: 3, legacy: true, detail: 'Archived compressor-only temperature response. The current model replaces separate source responses with one coefficient per estimated thermal kWh.' },
+  auxiliaryCPerKwh: { unit: '°C/kWh', digits: 3, legacy: true, detail: 'Archived auxiliary-only response. It is not fitted by the current combined hydronic model.' },
   memoryExchangePerHour: { unit: '1/h', digits: 4, fixed: true, detail: 'Exchange rate between the modeled building heat reserve and indoor air. The slow reserve is unmeasured, so this remains a fixed structural assumption.' },
   reserveTimeHours: { unit: 'h', digits: 1, fixed: true, detail: 'Time scale of the modeled building heat reserve. This is temperature memory, not a measured floor temperature or storage capacity.' },
   reducedHeatCPerHour: { unit: '°C/h', digits: 3, legacy: true, detail: 'Reduced-mode heating allowance carried by a legacy model. The current observed-input model does not fit this coefficient.' },
@@ -30,6 +32,8 @@ const inputSources = {
   model_outdoor_temperature: 'H66 outdoor sensor, then FMI station, then Open-Meteo estimate when the preceding source is unavailable. Source validity is checked at each segment.',
   model_solar_radiation: 'Archived FMI radiation forecast, with Open-Meteo as backup. Radiation is modeled, not measured at the house. It is expressed in W/m²; the model converts it to kW/m².',
   model_compressor_duty: 'Recorded compressor-active and DHW-routing states are intersected in time. Space-heating activity is 1, other known activity is 0; the chart expresses duty as a percentage.',
+  model_hydronic_heat: 'Recorded space-heating compressor duty is multiplied by the fixed DHP-H 10 thermal-output estimate at the saved heating-water supply temperature, then estimated space-heating AUX kW is added. Supply fallback, routing and model assumptions remain explicit; electricity is costed separately.',
+  model_valve_override: 'The saved relay-output mode distinguishes confirmed pooled override from normal thermostat authority. Relay and timer feedback confirms the electrical override, not valve movement, water flow or delivered heat. Permanently open circuits remain background heating paths in both modes.',
   model_auxiliary_power: 'Recorded auxiliary output is converted with the saved nominal heater capacity and intersected with space-heating routing. It is an electrical estimate, not measured delivered heat.',
   model_controller_phase: 'The saved controller context supplies normal, preheat, tariff reduction or recovery. It is control context, separate from observed heat delivery.',
   model_room_boost: 'The temporary increase in the native ROOM setting saved in controller context. It describes an action; it is not a fitted direct heat source.',
@@ -44,6 +48,8 @@ export function modelInputDescriptions() {
     model_outdoor_temperature: ['Temperatures & weather', 'Recorded or modeled · source varies'],
     model_solar_radiation: ['Temperatures & weather', 'Modeled forecast'],
     model_compressor_duty: ['Observed heating', 'Calculated from recorded states'],
+    model_hydronic_heat: ['Observed heating', 'Modeled thermal power'],
+    model_valve_override: ['Control context', 'Recorded valve mode'],
     model_auxiliary_power: ['Observed heating', 'Estimated from recorded output'],
     model_controller_phase: ['Control context', 'Recorded request'],
     model_room_boost: ['Control context', 'Recorded request'],
@@ -52,7 +58,7 @@ export function modelInputDescriptions() {
     model_fireplace_release: ['Firewood', 'Modeled release'],
   };
   return Object.entries(MODEL_INPUT_INFO).map(([key, info]) => ({ key, modelInput: key, title: info.label, unit: info.unit,
-    value: info.unit, group: presentation[key][0], provenance: presentation[key][1],
+    value: info.unit, group: presentation[key]?.[0] ?? 'Model inputs', provenance: presentation[key]?.[1] ?? 'Recorded or modeled',
     detail: info.detail, sources: inputSources[key], evidence: inputSources[key] }));
 }
 
@@ -67,6 +73,7 @@ const evidenceReasons = {
   'fewer-than-three-observed-auxiliary-episodes': 'Needs at least three episodes with observed auxiliary heating',
   'fireplace-requires-validated-house-response-and-three-separated-burns': 'Needs a validated house response and three separate firing periods',
   'insensitive-to-available-inputs': 'Available observations show too little effect to estimate this response',
+  'confounded-with-fixed-uncertain-inputs': 'This response cannot be separated from another uncertain heat input, even if that input is held fixed',
   'confounded-with-other-heat-inputs': 'Available observations cannot separate this response from other heating inputs',
   'unmeasured-slow-state; fixed-structural-prior': 'The slow heat reserve is unmeasured; this is a fixed assumption',
   'insufficient-clean-intervals': 'Too few usable intervals in the current fitting window',
@@ -81,6 +88,8 @@ function coefficientState(model, key, info) {
   if (model.validation.fittedParameters?.includes(key)) return 'fitted';
   return retainedValidatedCoefficient(model.validation, key) ? 'retained' : 'unvalidated';
 }
+
+const hydronicEstimateExplanation = 'The fixed DHP-H 10 map starts from manufacturer points at 0 °C incoming brine: 9.40 kW heat / COP 4.24 at 35 °C water, and 9.24 kW / COP 3.51 at 45 °C. For supply T, heat output Q = 9.40 − 0.016 × (T − 35) kW; electrical input P = 9.40 / 4.24 + ((9.24 / 3.51 − 9.40 / 4.24) / 10) × (T − 35) kW. Between 35 and 45 °C this interpolates; only 30–35 and 45–50 °C use provisional extrapolation. Automatic preheat needs a known supply temperature and a projected supply within 30–50 °C. For degraded observation/model display, missing supply uses 35 °C; out-of-range supply retains its actual value and evaluates the nearest 30/50 °C boundary with extra uncertainty. Both published points have the same brine temperature, so they cannot identify a brine correction. Missing live brine stays unknown; it is not a measured 0 °C brine reading. No heat meter is implied. Combined space-heating power = observed compressor duty × Q + estimated AUX kW. For example, at 40 °C water, 50% duty + 3 kW AUX gives 7.66 kW thermal. The learned response multiplies this combined thermal energy. Electricity uses compressor duty × P plus AUX electricity, with circulation-pump accounting kept separate to avoid counting it twice. The initial response is 0.75 / 9.40 ≈ 0.0798 °C/kWh thermal; it is a prior, not a fitted result.';
 
 const coefficientProvenance = {
   unavailable: 'Unavailable', legacy: 'Legacy model value', fixed: 'Fixed assumption',
@@ -101,7 +110,7 @@ function coefficientEvidenceText(evidence) {
 /** Current model disclosures; chart history is reconstructed separately from the journal. */
 export function modelCoefficientDescriptions(learning = {}) {
   const adaptive = learning.adaptive ?? {}, model = adaptive.model ?? {}, validation = model.validation;
-  return Object.entries(coefficientInfo).filter(([key]) => Object.hasOwn(model.parameters ?? {}, key)).map(([key, info]) => {
+  const rows = Object.entries(coefficientInfo).filter(([key]) => Object.hasOwn(model.parameters ?? {}, key)).map(([key, info]) => {
     const rawValue = model.parameters[key], available = finite(rawValue);
     const evidence = validation?.parameterEvidence?.[key];
     const state = coefficientState(model, key, info);
@@ -110,20 +119,45 @@ export function modelCoefficientDescriptions(learning = {}) {
       group: info.fixed ? 'Building assumptions' : info.legacy ? 'Legacy values' : 'Thermal responses',
       value: available ? `${number(rawValue, info.digits)} ${info.unit}` : 'Unavailable',
       provenance: coefficientProvenance[state],
-      detail: `${info.detail}${['normalHeatCPerHour', 'auxiliaryCPerKwh'].includes(key)
-        ? ' This model places hydronic heat into the estimated slow reserve before it reaches indoor air.' : ''}`,
+      detail: `${info.detail}${key === 'hydronicCPerKwh' ? ` ${hydronicEstimateExplanation} Heat enters the estimated slow reserve before it reaches indoor air. Compressor and AUX electricity, operating state and DHW routing stay separate. The source does not need a separate room-response gain once its input is expressed as heat.` : ''}`,
       evidence: [coefficientEvidenceText(evidence), latest?.reason ? `Latest unaccepted update: ${evidenceReason(latest.reason)}` : ''].filter(Boolean).join(' · ') };
   });
+  if (finite(model.parameters?.hydronicCPerKwh)) {
+    rows.find(row => row.key === 'hydronicCPerKwh').reference = {
+      label: 'Manufacturer technical data · DHP-H 10, pages 107–108',
+      href: 'https://assets.danfoss.com/documents/latest/29671/AN000086466221en-010701.pdf',
+    };
+    rows.push({ key: 'source-model-confirmed', title: 'Installed heat-pump model', group: 'Source assumptions',
+      value: model.performance?.modelConfirmed ? 'Confirmed DHP-H 10' : 'DHP-H 10 assumed', provenance: 'Configured assumption',
+      detail: 'The source map applies to the standard DHP-H 10. An unconfirmed installed variant increases the modeled source uncertainty. A good temperature fit cannot independently verify compressor output or identify a brine-temperature correction.' });
+  }
+  if (model.floor?.enabled) {
+    const floor = model.floor;
+    for (const [key, title, unit, digits, detail] of [
+      ['capacityKwhPerC', 'Selected slab capacity', 'kWh/K', 2, 'Material sensible heat capacity at uniform temperature. Effective charge, useful tariff-period heat and electricity saved can all be smaller. Selected capacity is taken from the seeded reserve capacity rather than added twice.'],
+      ['nativeCapacityKwhPerC', 'Remaining building reserve capacity', 'kWh/K', 2, 'Fixed effective reserve capacity after allocating the selected slab. This latent state is not a measured temperature or independently identified heat capacity.'],
+      ['exchangeKwPerC', 'Slab heat exchange', 'kW/K', 3, 'Fixed transfer between the selected slab and room; the model keeps slab temperature through relay transitions. It is not currently learned from room-only readings.'],
+      ['groundLossKwPerC', 'Slab ground exchange', 'kW/K', 3, `Fixed exchange with the configured slow ground boundary. ${floor.groundLossIncludedInEnvelope ? 'The corresponding baseline is removed from the envelope loss allowance to avoid counting it twice.' : 'Ground loss is additional to the configured envelope-loss term.'}`],
+      ['groundC', 'Ground boundary temperature', '°C', 1, 'Configured slow ground temperature, separate from the outdoor-air temperature. This is a physical prior, not a ground sensor reading.'],
+      ['openAllocationFraction', 'Heat allocation with override', 'fraction', 2, 'Fraction of already supplied hydronic heat entering the selected slab with all override outputs confirmed. The remaining heat enters the building reserve; no extra heat is invented.'],
+      ['closedAllocationFraction', 'Heat allocation in normal mode', 'fraction', 2, 'Background fraction entering the selected slab with normal thermostat authority. Other permanently open circuits remain available and are not credited as newly enabled storage.'],
+    ]) if (finite(floor[key])) rows.push({ key: `floor-${key}`, title, unit, group: 'Floor assumptions',
+      value: `${number(floor[key], digits)} ${unit}`, provenance: 'Fixed assumption · not fitted', detail });
+    rows.push({ key: 'floor-state-validation', title: 'Storage-response learning', group: 'Floor assumptions',
+      value: 'Fixed priors', provenance: 'Awaiting independent storage evidence',
+      detail: `No extra storage-response coefficient is fitted. Complete override charging and recovery episodes must distinguish charging amount from release timing before one can be added. Floor capacity, allocation, ground loss and exchange cannot all be identified from sparse room readings.${floor.capacityBudgetExceeded ? ' The selected capacity exceeds the configured reserve budget; the structural assumptions need review.' : ''}` });
+  }
+  return rows;
 }
 
-export function learningDisplay(learning = {}) {
+export function learningDisplay(learning = {}, context = {}) {
   const adaptive = learning.adaptive ?? {}, model = adaptive.model ?? {}, health = adaptive.health ?? {};
   const validation = model.validation, p = model.parameters ?? {}, energy = model.energy ?? {};
   const status = health.status ?? learning.status;
   const title = status === 'prior-estimates' ? 'Learning from initial estimates'
     : status === 'retained-previous' ? 'Keeping the previous model'
       : status === 'learning' ? 'Learning from observed temperatures' : words(status || 'Collecting observations');
-  const process = 'The house model learns from completed 15-minute intervals of recorded temperatures, solar forecasts, observed space-heating input and the delayed release of logged firewood. Changes within an interval retain their own timing. Later temperature trajectories check proposed updates with observed heating input supplied. Separate checks assess compressor response to requested actions and forecasts saved before completed cycles. These checks do not measure savings against an observed alternative.';
+  const process = 'The house model integrates recorded heat and weather inputs in completed 15-minute intervals. Genuine temperature-report timing distinguishes new observations from held readings. Compressor and auxiliary inputs are converted to estimated thermal energy and share one learned heat response; logged firewood has a separate delayed response. Changes within an interval retain their own timing. Later temperature trajectories check proposed updates with observed heating input supplied. Separate checks assess compressor response to requested actions and forecasts saved before completed cycles. These checks do not measure savings against an observed alternative.';
   const evidence = [], coefficientEvidence = [], evidenceRows = [], coefficientEvidenceRows = [];
   const record = (title, value, detail) => {
     evidence.push(detail);
@@ -148,27 +182,56 @@ export function learningDisplay(learning = {}) {
   }
   if (health.evidence === 'includes-requested-modes') record('Heating observation basis', 'Includes requested modes', 'Some heating observations describe requested operation. Device readback is used where available.');
   if (finite(p.lossPerHour)) basis('Heat loss in context', `${number(p.lossPerHour * 10)} °C/h at 10 °C difference`, `Current model: with the house 10 °C warmer than outdoors, heat loss contributes about ${number(p.lossPerHour * 10)} °C/h before heating, sunshine and stored heat. This is a model estimate, not a direct cooling measurement.`);
-  if (finite(energy.compressorKw)) basis('Electricity assumptions', `${number(energy.compressorKw)} kW compressor`, `Electricity basis: compressor ${number(energy.compressorKw)} kW, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}. Solar input uses FMI radiation forecasts with Open-Meteo as backup. It is modeled radiation.`);
+  if (finite(p.hydronicCPerKwh)) basis('Thermal source estimate', 'DHP-H 10 · fixed performance map', 'Compressor heat and electricity are separate estimates from the 0 °C-brine manufacturer map; the combined hydronic parameter fold explains the equations and reference points. Source uncertainty and changed hydraulic operation still need later-cycle validation. Resistance-heater electrical input is treated as heat into the shared water circuit. DHW-routed heat is excluded from the house input.');
+  if (finite(energy.compressorKw)) basis('Electricity assumptions', finite(p.hydronicCPerKwh) ? 'Performance map + AUX rating' : `${number(energy.compressorKw)} kW compressor`, `Electricity basis: ${finite(p.hydronicCPerKwh) ? `compressor input follows the fixed source map; the saved ${number(energy.compressorKw)} kW nominal/calibration statistic does not replace that map` : `compressor ${number(energy.compressorKw)} kW`}, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}. Solar input uses FMI radiation forecasts with Open-Meteo as backup. It is modeled radiation.`);
+  if (finite(energy.recoveryMultiplier)) basis('Recovery diagnostic calibration', `${number(energy.recoveryMultiplier)} ×`, `This retained recovery electricity multiplier summarizes observed recovery cost beyond the earlier basic trajectory; the current planner uses the source performance map and does not apply this multiplier. ${energy.recoveryCalibrationEpisodes ?? 0} attributable completed episodes support this estimate${energy.recoveryCalibrationBasis ? `; ${words(energy.recoveryCalibrationBasis)}` : ''}. It is a reporting diagnostic, not another building heat-response coefficient or a measured COP.`);
+  if (finite(energy.auxiliaryRiskScale)) basis('Auxiliary exposure calibration', `${number(energy.auxiliaryRiskScale)} ×`, `The separate auxiliary exposure scale is adjusted from observed output and routing against predicted space-heating AUX energy. ${energy.auxiliaryCalibrationEpisodes ?? 0} qualifying episodes; nominal heater power remains an estimate. This changes predicted risk and cost, not the shared response per thermal kWh.`);
   if (finite(energy.relativeUncertainty)) basis('Electricity uncertainty allowance', `${number(energy.relativeUncertainty * 100, 0)}%`, `Electricity uncertainty allowance: ${number(energy.relativeUncertainty * 100, 0)}%. It describes the model's uncertainty budget, not a meter's accuracy or a statistical confidence interval.`);
+  const policy = context.settings ?? {};
+  if (finite(policy.savingsAggressiveness)) basis('Savings aggressiveness', `${number(policy.savingsAggressiveness, 0)} / 100`, `Single configured savings preference: ${number(policy.savingsAggressiveness, 0)} out of 100. Higher values favor savings over bounded temperature variation and cycle duration; 0 keeps normal heating available. This preference is not a percentage of annual savings and carries no annual savings guarantee. This preference never relaxes hard room-temperature limits. Change it in configuration, then Apply configuration.`);
+  if (finite(policy.savingsAggressiveness)) {
+    const a = Math.max(0, Math.min(1, policy.savingsAggressiveness / 100));
+    basis('Worthwhile cycle threshold', `${number(50 - 40 * a, 0)} ct before comfort and duration costs`, `The current preference requires conservative benefit above ${number(50 - 40 * a, 0)} cents to start, plus ${number(30 - 25 * a, 1)} cents per weighted hot/cold °C²-hour, 2 cents per extra active hour and a 2-cent start cost. Ongoing-cycle checks omit the already committed start hurdle. Among qualified plans, the mildest retaining at least ${number((0.6 + 0.4 * a) * 100, 0)}% of the best conservative benefit is preferred. Zero preference disables automatic tariff cycles.`);
+    basis('Shared economic stress checks', 'Same scenarios for action and reference', 'Selection, dispatch and continuation compare paired physical scenarios: heat response ±15%, heat loss ±15%, initial reserve/slab ±0.5 °C, compressor duty ±0.08, source electricity within its operating-point allowance and AUX exposure ±50%. A residual 5-cent uncertainty floor remains. These are engineering stress cases, not probability bounds or measured savings. The bounded search examines a nominal shortlist independently of savings preference; no exhaustive optimum is claimed.');
+  }
+  if (Object.keys(policy).length) basis('Preheat and comfort policy', 'Configured control limits', `Preheating requests an absolute ROOM setting${finite(policy.preheatRoomSettingC) ? ` of ${number(policy.preheatRoomSettingC, 1)} °C` : ''}; this is a heat-pump demand setting, not the desired room-air temperature. Configured floor outputs form one pooled override. Normal hot-water recirculation remains independently scheduled. Savings preference changes the economic hurdle and discomfort cost; occupied-room upper and lower limits remain hard constraints. Warming one room does not establish storage available to another room. Automatic forecasts assume supply rises 3 °C per degree of ROOM increase; that fixed planning prior is not a learned heating curve or an H66 forecast. An existing warmer ROOM baseline is never lowered.`);
+  if (finite(p.hydronicCPerKwh)) record('Learning epoch and treatment', 'Combined hydronic model', 'The current epoch uses a fixed compressor heat estimate and a shared compressor/AUX response. Source/rating or floor-assumption changes clear thermal and action validation. An automatic cycle retains its original treatment identity through reduction and recovery even after the override closes. Current valve mode is recorded separately; older ROOM-only evidence cannot qualify newly opened circuits. Archived episodes retain causal thermal warmup, and unsupported initial storage cannot establish fit acceptance.');
+  if (finite(p.hydronicCPerKwh)) {
+    record('Room comfort projection', 'Conservative room-offset proxy', 'There is no separately identified thermal model for each room. Forecasts preserve each participating room’s current offset from the indoor average and project its recent trend for at most one hour. Upper and lower bounds include the common temperature allowance; individual live readings also protect control. A warm downstairs cannot establish how much useful heat reaches a bedroom later.');
+    record('Forward uncertainty', 'Conditional errors + engineering allowances', 'Conditional temperature validation supplies observed heating input. Forward forecasts additionally carry engineering allowances for source estimates, unvalidated actions, missing solar, fireplace response and optional floor storage, plus paired economic stress cases. Learning trials additionally test full compressor and permitted rated AUX heat during preheat, followed by native demand until the delayed room peak is covered; insufficient coverage or excessive room warmth blocks the trial. The calculated equipment-duty error is disclosed separately; these bounds are not calibrated probabilities. Frozen forecasts saved before cycles require their own later-outcome validation.');
+    record('Domestic hot-water boundary', 'Space-heating savings only', 'Normal recirculation retains its independent schedule. Final DHW refill is not implemented and is not enabled as an automatic treatment. Tank demand, delivered hot-water service and tank recovery are not matched in the counterfactual, so reported cycle benefit cannot establish whole-house savings.');
+  }
+  if (model.floor) basis('Floor storage assumptions', model.floor.enabled ? 'Configured physical priors' : 'Floor model disabled', 'Selected-slab capacity, heat allocation, release timing and ground exchange are fixed configured priors, not measured or automatically identified values. The same concrete exists before and after the override: opening valves changes heat allocation, not material capacity. Permanently open circuits remain available in both modes. Slab state is retained when valves close; thermal kWh stored are not electricity saved. The public default leaves the explicit slab disabled. Automatic floor preheating needs configured capacity within the reserve budget; commissioned manual control does not imply thermal validation. See the physical assumption rows for configured values.');
+  if (context.preheatValves) {
+    const valves = context.preheatValves;
+    const duration = finite(valves.leaseSeconds) ? valves.leaseSeconds / 60 : 15;
+    const renewal = finite(valves.renewSeconds) ? valves.renewSeconds / 60 : 5;
+    basis('Valve override lease', valves.enabled === false ? 'Disabled in configuration'
+      : valves.active === true ? 'All outputs confirmed active' : valves.restorationPending ? 'Release pending'
+        : valves.available === true ? 'Ready · no active override' : 'Device confirmation required', `Preheat valve outputs use device-local timed ON commands: normally a ${number(duration, Number.isInteger(duration) ? 0 : 1)}-minute expiry renewed every ${number(renewal, Number.isInteger(renewal) ? 0 : 1)} minutes, capped at the planned preheat end. The application renews only while preheating remains authorized. A missed renewal lets the local timer turn the valve override off even during a controller or network outage. This device-local expiry releases only the valve overrides; H66 ROOM has no device-side lease and relies on durable application restoration and retries. OFF restores normal thermostat authority where commissioned wiring provides that behavior; it does not remove stored slab heat. Commissioning, device feedback and local timer behavior must be established before control is enabled.`);
+  }
   const coefficientStates = Object.entries(coefficientInfo).filter(([key]) => Object.hasOwn(p, key))
     .map(([key, info]) => coefficientState(model, key, info));
   if (coefficientStates.length) {
     const count = (...states) => coefficientStates.filter(state => states.includes(state)).length;
-    basis('Coefficient evidence', `${count('fitted')} fitted · ${count('retained')} retained`, `Thermal coefficients: ${count('fitted')} fitted in current model; ${count('retained')} retained from an earlier validated fit; ${count('fixed')} fixed assumptions; ${count('initial', 'unvalidated')} estimates without independent validation${count('legacy') ? `; ${count('legacy')} legacy values` : ''}${count('unavailable') ? `; ${count('unavailable')} unavailable` : ''}. A fitted value alone does not establish overall model readiness.`);
+    basis('Coefficient evidence', `${count('fitted')} fitted · ${count('retained')} retained`, `Thermal coefficients: ${count('fitted')} fitted in current model; ${count('retained')} retained from an earlier validated fit; ${count('fixed')} fixed assumptions; ${count('initial', 'unvalidated')} estimates without independent validation${count('legacy') ? `; ${count('legacy')} legacy values` : ''}${count('unavailable') ? `; ${count('unavailable')} unavailable` : ''}. Source and optional slab assumptions are additional fixed quantities listed separately from this coefficient count. A fitted value alone does not establish overall model readiness.`);
+  }
+  for (const [phase, estimate] of Object.entries(model.equipmentResponse?.phases ?? {})) {
+    if (finite(estimate.ratio)) basis(`${words(phase)} duty response`, `${number(estimate.ratio)} × normal demand`, `Episode-weighted compressor-duty response from ${estimate.trainingEpisodes ?? 0} training episodes. It starts near unchanged native demand and can change with informative observations. Ratios apply only to the supported hydraulic treatment; requested modes and a good thermal fit cannot independently validate equipment timing.`);
   }
   const actionChecks = model.equipmentResponse?.validation?.phases;
   if (actionChecks) for (const [phase, result] of Object.entries(actionChecks)) {
     record(`${words(phase)} equipment response`, result.accepted ? 'Validated' : 'Awaiting evidence', `${words(phase)} equipment-response check: ${result.accepted ? result.fitStatus === 'retained-unchanged' ? 'retained earlier validation' : 'passed' : 'not established'} over ${result.episodes ?? 0} held-out completed episodes${finite(result.maeDuty) ? `; error in mean episode compressor duty ${number(result.maeDuty * 100, 1)} percentage points` : ''}${result.accepted && finite(result.maxDurationHours) ? `; supported phase duration up to ${number(result.maxDurationHours, 1)} hours` : ''}. This check uses recorded indoor and outdoor temperatures and requested control context; it does not check a forecast made before the cycle.`);
   }
   const advance = model.forecastValidation;
-  if (advance) record('Forecast saved before the cycle', advance.accepted ? 'Validated' : 'Awaiting evidence', `Frozen advance forecast: ${advance.accepted ? 'passed' : 'not established'} over ${advance.episodes ?? 0} completed episodes${finite(advance.temperatureMaeC) ? `; temperature error ${number(advance.temperatureMaeC)} °C` : ''}${finite(advance.energyRelativeError) ? `; energy error ${number(advance.energyRelativeError * 100, 1)}%` : ''}${finite(advance.costRelativeError) ? `; space-heating cost error ${number(advance.costRelativeError * 100, 1)}%` : ''}${advance.accepted && finite(advance.maxReductionHours) ? `; supported reduction duration up to ${number(advance.maxReductionHours, 1)} hours` : ''}. This compares the forecast saved before an action with its later outcome. Electricity can still use nominal-power estimates unless the episode was metered; this is not measured savings.`);
+  if (advance) record('Forecast saved before the cycle', advance.accepted ? 'Validated' : 'Awaiting evidence', `Frozen advance forecast: ${advance.accepted ? 'passed' : 'not established'} over ${advance.episodes ?? 0} completed episodes${finite(advance.temperatureMaeC) ? `; temperature error ${number(advance.temperatureMaeC)} °C` : ''}${finite(advance.energyRelativeError) ? `; energy error ${number(advance.energyRelativeError * 100, 1)}%` : ''}${finite(advance.costRelativeError) ? `; space-heating cost error ${number(advance.costRelativeError * 100, 1)}%` : ''}${advance.accepted && finite(advance.maxReductionHours) ? `; supported reduction duration up to ${number(advance.maxReductionHours, 1)} hours` : ''}. This compares the forecast saved before an action with its later outcome. Electricity can still use source-map and nominal AUX estimates unless the episode was metered; this is not measured savings.`);
   const readiness = learning.readiness;
   if (readiness) {
     record('Action readiness', readiness.actionValidated ? 'Validation requirements met' : 'Awaiting episode evidence', `Temperature prediction: ${readiness.thermalValidated ? 'validated with observed heat input' : 'awaiting validation'}.${typeof readiness.responseValidated === 'boolean' ? ` Equipment response: ${readiness.responseValidated ? 'validated on later episodes' : 'awaiting independent episode evidence'}.` : ''}${typeof readiness.advanceValidated === 'boolean' ? ` Frozen advance forecast: ${readiness.advanceValidated ? 'validated against later outcomes' : 'awaiting independent outcome evidence'}.` : ''} Action prediction: ${readiness.actionValidated ? 'validation requirements met within demonstrated durations' : 'awaiting independent episode evidence'}. Learning trial: ${readiness.trialReady ? 'basic evidence and budget requirements met' : 'not ready'}. Current comfort, authority, price and duration checks still determine whether an action can run.`);
     if (readiness.reasons?.length) record('Readiness conditions', 'Current assessment', `Readiness: ${readiness.reasons.map(words).join('; ')}.`);
   }
   const outcomes = learning.outcomes;
-  if (outcomes) record('Attempted cycles', `${outcomes.completed ?? 0} completed / ${outcomes.attempted ?? 0} attempted`, `Recent attempted cycles (latest 100): ${outcomes.attempted ?? 0}; completed ${outcomes.completed ?? 0}, incomplete ${outcomes.incomplete ?? 0}${finite(outcomes.aborted) ? `, aborted ${outcomes.aborted}` : ''}, in progress ${outcomes.inProgress ?? 0}. ${outcomes.assessed ?? 0} have a comparable space-heating assessment.${finite(outcomes.observedCostCents) ? ` Covered cycle electricity cost estimate: €${number(outcomes.observedCostCents / 100)}; nominal power is used unless metered.` : ''}${finite(outcomes.missingHours) && outcomes.missingHours > 0 ? ` ${number(outcomes.missingHours, 1)} hours without cost coverage are excluded.` : ''} Completed-subset benefits exclude unfinished attempts; hot-water service changes prevent a whole-cycle savings claim.`);
+  if (outcomes) record('Attempted cycles', `${outcomes.completed ?? 0} completed / ${outcomes.attempted ?? 0} attempted`, `Recent attempted cycles (latest 100): ${outcomes.attempted ?? 0}; completed ${outcomes.completed ?? 0}, incomplete ${outcomes.incomplete ?? 0}${finite(outcomes.aborted) ? `, aborted ${outcomes.aborted}` : ''}, in progress ${outcomes.inProgress ?? 0}. ${outcomes.assessed ?? 0} have a comparable space-heating assessment.${finite(outcomes.observedCostCents) ? ` Covered cycle electricity cost estimate: €${number(outcomes.observedCostCents / 100)}; source-map or nominal-power estimates are used unless metered.` : ''}${finite(outcomes.missingHours) && outcomes.missingHours > 0 ? ` ${number(outcomes.missingHours, 1)} hours without cost coverage are excluded.` : ''} Completed-subset benefits exclude unfinished attempts; hot-water service changes prevent a whole-cycle savings claim.`);
   const configured = learning.parameters;
   if (finite(learning.controlHold?.until)) record('Automatic cycle hold', 'Waiting after an incomplete attempt', `Automatic cycles wait until ${new Date(learning.controlHold.until).toLocaleString('en-GB', { dateStyle:'medium',timeStyle:'short',timeZone:'Europe/Helsinki' })} Finnish time after an incomplete attempt (${words(learning.controlHold.reason)}). Recording and passive learning continue.`);
   if (configured) basis('Native-control assumptions', 'From configuration', `Configured native-control assumptions: auxiliary integral A2 ${number(configured.auxIntegralA2, 0)} °min (${configured.a2Basis === 'offset' ? 'relative to A1' : 'absolute'}); auxiliary hysteresis ${number(configured.auxHysteresisC, 0)} °C. Compressor A1 ${finite(configured.compressorIntegralA1) ? `${number(configured.compressorIntegralA1, 0)} °min` : 'unknown'}; compressor hysteresis ${finite(configured.compressorHysteresisC) ? `${number(configured.compressorHysteresisC, 0)} °C` : 'unknown'}. These come from configuration; the current integral reading does not expose those settings.`);
@@ -203,7 +266,7 @@ export function learningDisplay(learning = {}) {
     : validation?.accepted ? 'An accepted parameter update is in use. Identified heat loss and heating response are both required for temperature readiness; action evidence is checked separately.'
       : 'Initial estimates remain in use while independent evidence is collected.'),
     process, metrics, evidence, evidenceRows, coefficientEvidenceRows, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
-    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the five coefficients eligible for fitting, reconstructed from the learning journal and applicable firewood and sensor-change history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. Fixed building assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
+    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the four coefficients eligible for fitting, reconstructed from the learning journal and applicable firewood and sensor-change history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. The combined hydronic response belongs to the new learning epoch; separate source gains from older algorithms are archival gaps, not converted fitted values. Fixed building and source assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
     history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
 }
 

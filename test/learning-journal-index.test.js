@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
+import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { appendLearningRecord, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 
 function assertIndexedAlgorithmLookup(store) {
@@ -48,7 +49,7 @@ test('schema 11 upgrade indexes a large algorithm archive without changing journ
     .get(archivedPayload).count, archivedCount, 'Archived payloads remain unchanged');
   assert.deepEqual(store.getState('synthetic-checkpoint'), { cursor: archivedCount });
 
-  const seed = { syntheticSeed: true };
+  const seed = { syntheticSeed: true, model: initialAdaptiveModel() };
   const firstId = appendLearningRecord(store, 'history', 'sample', { timestamp: archivedCount }, { seed });
   const nextId = appendLearningRecord(store, 'history', 'sample', { timestamp: archivedCount + 1 }, { seed });
   for (let i = 0; i < 256; i++) {

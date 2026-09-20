@@ -1,4 +1,5 @@
 import { predictThermalStep } from '../control/adaptive-learning.js';
+import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 
 const HOUR = 3600000;
@@ -27,6 +28,9 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     h66Available: h.controlsReady === true && h.writesEnabled === true,
     preheatAvailable: h.controlsReady === true && h.writesEnabled === true,
     nativeAuxAllowed: nativeMode === 2 ? false : nativeMode === 1 ? true : null,
+    roomSettingC: h.baseline?.['0203'] ?? h.readings?.['0203']?.value ?? null,
+    supplyC: supply, normalSupplyC: finite(supply) ? supply - (phase === 'preheat' ? 3 * roomBoostC : 0) : null,
+    observedRoomBoostC: phase === 'preheat' ? roomBoostC : 0, brineC: value('brine_in_temperature'),
     integral, supplyShortfallC: finite(supply) && finite(targetSupply) ? targetSupply - supply : null,
     compressorOn: compressor, dhwRouting: route, alarmActive: connected && value('alarm_active') === 1,
     operatingMode: connected ? value('operating_mode') : null };
@@ -36,8 +40,8 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   });
   let predicted = null;
   if (finite(indoorC) && finite(outdoorC)) predicted = predictThermalStep(checkpoint.model,
-    { indoorC, reserveC: checkpoint.state?.reserveC ?? indoorC }, { outdoorC, solarRadiationWm2: radiation,
-      targetC: checkpoint.baselineC ?? indoorC, phase, roomBoostC }, 1 / 60);
+    { indoorC, reserveC: checkpoint.state?.reserveC ?? indoorC, slabC: checkpoint.state?.slabC }, { outdoorC, solarRadiationWm2: radiation,
+      targetC: checkpoint.baselineC ?? indoorC, phase, roomBoostC, supplyC: supply, brineC: equipment.brineC }, 1 / 60);
   const compressorDuty = observations.actual?.source === 'simulation' ? observations.actual.compressorDuty
     : compressor ?? predicted?.compressorDuty ?? null;
   const auxiliaryObserved = output !== null || observations.actual?.source === 'simulation';
@@ -49,12 +53,13 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const powerBasis = simulation ? 'simulated' : meter ? 'measured' : compressor !== null ? 'observed'
     : finite(compressorDuty) ? 'modelled' : 'unknown';
   const powerInput = meter ?? (powerBasis === 'observed' ? fresh('compressor_active') : null);
-  const powerKw = meter ? meter.value : finite(compressorDuty) ? compressorDuty * checkpoint.model.energy.compressorKw
+  const source = estimateHeatPumpPerformance({ supplyC: supply, brineC: equipment.brineC, modelConfirmed: config.heatPumpModelConfirmed });
+  const powerKw = meter ? meter.value : finite(compressorDuty) ? compressorDuty * source.electricalKw
     + (auxKw ?? (currentMode === 2 ? 0 : (phase === 'recovery' ? 0.03 : 0.015) * config.auxRatedKw * (checkpoint.model.energy.auxiliaryRiskScale ?? 1)))
-    + config.circulationKw * compressorDuty + (phase === 'preheat' ? config.dhwrKw : 0) : null;
+    + (source.pumpsIncluded ? 0 : config.circulationKw * compressorDuty) : null;
   const priceRow = outlook.prices.find(row => row.start <= now && row.end > now);
   const price = priceRow?.allInCentsPerKWh ?? null;
-  const sample = { timestamp: now, indoorC, outdoorC, solarRadiationWm2: radiation, phase, roomBoostC,
+  const sample = { timestamp: now, indoorC, outdoorC, supplyC: supply, brineC: equipment.brineC, solarRadiationWm2: radiation, phase, roomBoostC,
     targetC: checkpoint.baselineC, quality: finite(indoorC) && finite(outdoorC) ? [] : ['missing'],
     powerKw: observations.actual?.source === 'simulation' ? observations.actual.powerKw : powerKw,
     powerBasis, powerSourceTime: simulation || powerBasis === 'modelled' ? now
@@ -62,7 +67,7 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     powerReceivedAt: simulation || powerBasis === 'modelled' ? now
       : powerInput?.receivedAt ?? null,
     auxiliaryAssumed: !simulation && !meter && auxKw === null,
-    compressorPowerKw: checkpoint.model.energy.compressorKw, compressorDuty,
+    compressorPowerKw: source.electricalKw, compressorDuty,
     thermalCompressorDuty: compressor !== null && route !== null ? (route === 0 ? compressor : 0) : null,
     thermalAuxKw: auxKw !== null && route !== null ? (route === 0 ? auxKw : 0) : null,
     auxKw, auxRoute: observations.actual?.source === 'simulation' ? observations.actual.auxRoute : route === 1 ? 'dhw' : route === 0 ? 'space' : 'unknown',

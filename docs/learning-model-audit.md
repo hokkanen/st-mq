@@ -10,6 +10,9 @@ they do not prove optimal settings or savings for the actual house.
 
 | Failure found | Implemented correction |
 | --- | --- |
+| Separate compressor/AUX responses could be indistinguishable during correlated operation. | Convert source input to estimated thermal kWh and fit one downstream hydronic response; preserve source uncertainty and independent electricity accounting. |
+| Previously restricted valves made ROOM-only evidence a poor guide to new slab charging. | Record actual override mode and treatment identity in a new learning epoch; fixed slab states preserve stored heat through relay changes. |
+| A controller crash could leave a remote override active. | Renew device-local timed ON commands; an expired lease releases the override without a server OFF command. |
 | A 15-minute window could inherit the controller's current phase even when a transition happened near its end. | Persist causal control-context events and split input windows at their actual boundaries. Never backfill unknown history from current settings. |
 | Separately averaging compressor and reversing-valve state discarded mixed heating/DHW windows. | Intersect timelines first, then integrate total and destination-specific compressor/AUX activity. |
 | Extending a coverage span could change the earlier sample reconstructed from it; delayed receipt could retrospectively fill an outage. | Read stable span prefixes and require continuity of source validity and receipt availability. Keep real communication gaps. |
@@ -17,11 +20,11 @@ they do not prove optimal settings or savings for the actual house.
 | Sample counts could qualify coefficients whose effect was absent or confounded. | Test observed-input sensitivity and independent variation before fitting. Keep unsupported coefficients fixed. |
 | Reduction imposed an artificial compressor-capacity ceiling. Preheat received extra heat merely because it was requested. | Separate observed thermal input from estimated equipment response. A reduction can run the compressor fully. No direct preheat heat credit. |
 | The slow state could not charge before the room warmed. | Put hydronic heat into a slow node with conservation-weighted exchange; keep the unobserved topology/memory constants explicit priors. |
-| A thermal fit could authorize a long economic action without tested control response. | Require separate conditional thermal, equipment-response and frozen advance-cycle checks; limit durations and boosts to repeated evidence. |
-| Sparse weekly cycles could never fit three held-out episodes into a short rolling tail. | Preserve complete episode samples and reserve the latest three episodes chronologically once enough exist, with an embargo. |
+| A thermal fit could authorize a long economic action without tested control response. | Require separate conditional thermal, equipment-response and frozen advance-cycle checks; limit action durations to repeated treatment-specific evidence; preheat uses one fixed absolute ROOM target. |
+| Sparse weekly cycles could never fit three held-out episodes into a short rolling tail. | Preserve complete episode samples with causal thermal warmup, and reserve the latest three episodes chronologically once enough exist, with an embargo. |
 | A queued plan could start using stale benefit calculations. | Re-evaluate the promised schedule against current evidence, settings, prices and weather before dispatch. |
 | Multiplying every reduction by every preheat duration/boost could block the control loop for seconds. | Evaluate the reduction grid first, then expand a bounded set of promising preheat choices while retaining trial opportunities. This remains an approximate search. |
-| Trial admission and continuation used different safety criteria; coupled pulses and acknowledgement latency could prevent useful trial exposure. | Reuse the bounded trial stress check while active; account for pulse slack and actual observed exposure when growing support. |
+| Trial admission and continuation used different safety criteria; coupled pulses and acknowledgement latency could prevent useful trial exposure. | Reuse the bounded trial stress check while active; keep fixed ROOM/floor deadlines independent of normal DHWR, and use actual observed exposure when growing support. |
 | Completed interval power was charged into the following interval and price. | Integrate the current completed sample, split on price/action/input boundaries, and start the cycle at acknowledged execution time. |
 | DHW compressor/AUX costs contaminated space-heating calibration and profit. | Keep attributed space-heating energy and recovery AUX separate; show covered total costs independently. Whole-cycle profit remains unavailable without a DHW service model. |
 | A newer model's reserve could make an older cycle appear recovered. | Maintain an observer with the frozen cycle model. Missing thermal input invalidates its reserve claim. |
@@ -31,19 +34,27 @@ they do not prove optimal settings or savings for the actual house.
 
 ## Inputs and fitted complexity
 
-The current thermal model has **six coefficients**, with **zero to four fitted**
-according to evidence. The usual first eligible pair is heat loss and compressor
-response. Solar and auxiliary gains require independent observations. Exchange
-rate and reserve time remain fixed structural priors. Compressor and auxiliary
-effects are separate throughout.
+The current model has **four learnable thermal responses**: heat loss, combined
+hydronic heat response, solar response and fireplace response. The usual first
+eligible pair is heat loss and hydronic response. Exchange and memory are fixed
+structural priors. Optional slab capacity, allocation, exchange and ground boundary
+are also explicit fixed priors. There is no automatically fitted storage parameter.
 
-Four quantities physically drive thermal prediction: outdoor temperature, archived
-solar radiation, observed space-heating compressor duty and observed space-heating
-auxiliary electrical power. Indoor temperature is the measured state/output; the
-second temperature is latent. Requested phase, ROOM boost and comfort target are
-three additional equipment/control-context values. Thus the drawer has **eight
-model-input charts**, including the measured indoor endpoint. Neither eight charts
-nor all recorded channels imply eight freely fitted coefficients.
+The fixed DHP-H 10 performance map converts observed routed compressor duty to
+estimated thermal kW; estimated space-heating AUX kW is then added. One
+`hydronicCPerKwh` coefficient acts on that sum. Electrical costing remains separate.
+The two manufacturer B0/W35 and B0/W45 points support water-temperature
+interpolation, not a brine correction or a metered-heat claim. Extrapolation,
+missing operating temperatures and an unconfirmed installed model add uncertainty.
+The default is `0.75/9.4`, not a carryover of old fitted compressor/AUX evidence.
+[Equations and limitations](learning-and-control.md#what-learns) also appear in the
+combined parameter's UI fold.
+
+Indoor temperature remains the observed output. Outdoor and solar inputs, original
+compressor/AUX inputs, derived hydronic heat, valve mode, requested phase, ROOM
+boost and comfort target are retained as distinct chart views. Firewood additions
+and modeled delayed release remain separate. The number of chart choices is not
+the number of fitted parameters. A sent valve command is not confirmed open flow.
 
 Requested-mode compressor-response ratios are separate estimates, shrunk towards
 unchanged normal demand using episode counts rather than quarter-hour row counts.
@@ -82,7 +93,7 @@ learning journal records causal input segments, configuration snapshots, archive
 forecast identity, context, episodes and an explicit seed where needed. The current
 algorithm replays the same ordered operations after a restart or corrupt checkpoint.
 The original recordings and context also remain available for future re-training.
-Version `committed-house-v3` distinguishes the new interpretation; older journal
+Version `committed-house-v10-hydronic-floor` distinguishes the new interpretation; older journal
 versions remain archival and are not silently interpreted as identical new-model
 history. Imported CSV formats, timestamps, units, duplicate handling and provenance
 remain unchanged.
@@ -105,7 +116,7 @@ the present range of states and actuators. Its smaller search space was an advan
 under sparse data, but it lacked important mechanisms and could not establish
 equipment response from requested tariff states. Later versions added eight thermal
 terms; reducing unsupported freedom restores some of that discipline while keeping
-separate compressor/AUX input and slow thermal memory. The user's reconstruction,
+separate compressor/AUX observations, a shared thermal response and explicit slow memory. The user's reconstruction,
 scarcity and separation constraints are sound. Their earlier implementation caused
 specific defects; there is no evidence that removing the constraints would improve
 actual out-of-sample performance.
@@ -113,9 +124,17 @@ actual out-of-sample performance.
 ## Remaining practical limits
 
 The slow-state topology and constants still need house-specific validation.
+Individual-room checks retain current offsets and at most one hour of recent
+trend around the aggregate forecast; they are conservative proxies, not fitted
+zonal heat-transfer models. Automatic preheat requires observed and projected
+source-map supply inside the provisional 30–50 °C range; B0 reference data do not
+make a missing live brine reading known. The fixed future-supply assumption is
+3 °C per degree of ROOM increase. Savings aggressiveness is a preference over
+admitted cycle choices, not an annual savings percentage or guarantee. Final DHW
+refill is unimplemented; whole-home savings and matched tank service are unproven.
 Internal gains, open windows, changing emitter behavior, DHW demand, defrost and
-weather forecast error can cause residual errors. Nominal electrical input is not
-heat metering or COP. Correlated observations and repeated holdout use mean empirical
+weather forecast error can cause residual errors. Manufacturer source estimates and nominal electrical input are not
+heat metering or observed COP. Correlated observations and repeated holdout use mean empirical
 error envelopes are not statistical confidence probabilities. Frozen advance
 checks help, but observational counterfactual references cannot prove causal savings.
 
@@ -125,8 +144,7 @@ electrical/thermal calibration, and a DHW service model. It should first beat th
 current simpler model on independent completed episodes, including bad outcomes,
 before gaining control authority.
 
-The independent 14-day simulator regression starts with the application's default
-memory priors and supplies no hidden plant state. Fitting heat-loss and compressor
-gains achieved about 0.079°C held-out trajectory MAE, compared with 1.165°C from the
-unchanged prior and 0.438°C from persistence. This is one software benchmark, not
-an accuracy guarantee for the installed house or evidence of economic savings.
+The regression suite checks trajectory fitting, evidence gates, configuration
+resets and deterministic replay using synthetic plants. These establish software
+behavior; no synthetic error score establishes accuracy or economic savings for
+the installed house after its hydraulic configuration changes.

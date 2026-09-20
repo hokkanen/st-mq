@@ -5,7 +5,7 @@ import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Shelly Pro 2 v0' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
   : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData'].includes(device.source) ? device.source : 'MQTT';
@@ -21,6 +21,40 @@ export function equipmentDevices(status = {}) {
     if (!device?.id) continue;
     devices.set(device.id, { ...device, area: device.area ?? (device.controls?.tariff || device.controlsHeat
       || device.role === 'heat_savings' ? 'home' : 'garage') });
+  }
+  const floor = status.preheatValves ?? { enabled: false, commissioned: false, devices: [] };
+  for (const group of ['storage', 'living']) {
+    const reported = floor.devices?.find(device => device.group === group);
+    const enabled = floor.enabled === true, commissioned = floor.commissioned === true;
+    const available = reported?.available === true;
+    const label = group === 'storage' ? 'Storage floor valves' : 'Living floor valves';
+    const leaseMinutes = (floor.leaseSeconds ?? 900) / 60;
+    const renewMinutes = (floor.renewSeconds ?? 300) / 60;
+    devices.set(`floor-override:${group}`, { id: `floor-override:${group}`, label,
+      group, area: 'home', kind: 'floor_override', source: 'Shelly', model: 'Shelly Pro 2 v0',
+      enabled, commissioned, available, topics: [], controls: { switch: false, tariff: false },
+      lastReportAt: reported?.at,
+      connectionState: !enabled ? { label: 'Not enabled', state: 'pending' }
+        : !commissioned ? { label: 'Needs commissioning', state: 'pending' }
+          : floor.restorationPending ? { label: 'Release pending', state: 'attention' }
+            : !available ? { label: 'Awaiting local-script readback', state: 'attention' }
+              : { label: floor.active ? 'Preheating' : 'Ready', state: 'available' },
+      recent: !reported ? 'Device mapping not configured' : 'Waiting for a live script report',
+      connectionDetail: `${label}: outputs 0 and 1 share the pooled four-output preheat treatment. `
+        + (!enabled ? 'Disabled until device mapping and commissioning are complete. '
+          : !commissioned ? 'Local expiry and native thermostat failback need commissioning. ' : '')
+        + `Renew every ${renewMinutes} minutes; release locally after at most ${leaseMinutes} minutes without renewal, or at the planned end. `
+        + 'OFF restores thermostat control. Relay readback does not prove valve movement or water flow. Local expiry does not restore the heat-pump ROOM setting. '
+        + [0, 1].map(id => {
+          const output = available ? reported?.channels?.find(channel => channel.id === id)?.output : null;
+          return `Output ${id}: ${output === true ? 'override on' : output === false ? 'thermostat control' : 'unknown'}`;
+        }).join('; ') + '.',
+      readings: Object.fromEntries([0, 1].map(id => {
+        const output = reported?.channels?.find(channel => channel.id === id)?.output;
+        return [`floor_${group}_${id}_active`, { label: `Output ${id}`, unit: 'state',
+          value: typeof output === 'boolean' ? Number(output) : null, stale: !available, observedAt: reported?.at }];
+      })),
+    });
   }
   return [...devices.values()];
 }
@@ -91,6 +125,7 @@ const stateNumber = value => value === true || value === 'open' || value === 'on
   : value === false || value === 'closed' || value === 'off' ? 0 : value;
 function valueText(signal, reading, device) {
   const value = stateNumber(reading.value);
+  if (isState(signal, reading) && device.kind === 'floor_override') return value === 1 ? 'Override on' : value === 0 ? 'Thermostat control' : 'Unknown';
   if (isState(signal, reading)) return value === 1 ? device.kind === 'door' || signal.endsWith('_open') ? 'Open' : 'On'
     : value === 0 ? device.kind === 'door' || signal.endsWith('_open') ? 'Closed' : 'Off' : 'Unknown';
   if (Number.isFinite(reading.value)) {
@@ -398,7 +433,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     }
   }
   // Stable sorting keeps room temperatures in their configured order.
-  const order = row => row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
+  const order = row => row.kind === 'floor_override' ? 6 : row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
     : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2
       : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 3 : 4;
   return rows.sort((a, b) => order(a) - order(b));

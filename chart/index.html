@@ -89,6 +89,12 @@
                   <div class="equipment-value"><span>Comfort reference</span><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></div>
                   <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
                 </div>
+                <div class="equipment-notes" aria-label="Configured home policy">
+                  <p><span>Savings aggressiveness</span><span id="home-aggressiveness">—</span></p>
+                  <p><span>Fixed preheat setting</span><span id="home-preheat-setting">—</span></p>
+                  <p><span>Maximum occupied rise</span><span id="home-maximum-rise">—</span></p>
+                </div>
+                <p class="muted zone-control-help">Higher savings aggressiveness accepts more temperature variation within the hard room limits. Change permanent preferences in configuration, then use Apply configuration. ROOM is a heat-pump demand setting; preheating does not target that air temperature.</p>
                 <div class="equipment-notes">
                   <p><span>Tariff control</span><span id="tariff-control-state">—</span></p>
                   <p><span>Recirculation</span><span id="dhwr">—</span></p>
@@ -96,7 +102,7 @@
                 <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
                 <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
                   <button id="test-normal" class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                  <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Max preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheat</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   <button id="test-reduction" class="secondary-button" type="button" data-heating-command="reduction" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                 </div>
                 <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>

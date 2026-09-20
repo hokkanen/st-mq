@@ -3,7 +3,7 @@
 const h66 = [
   ['return_temperature', 'Heating return', '°C', 'Heating', 'Equipment context'],
   ['supply_temperature', 'Heating supply', '°C', 'Heating', 'Equipment context'],
-  ['brine_in_temperature', 'Brine in', '°C', 'Ground loop', 'History only'],
+  ['brine_in_temperature', 'Brine in', '°C', 'Ground loop', 'Equipment context'],
   ['brine_out_temperature', 'Brine out', '°C', 'Ground loop', 'History only'],
   ['outdoor_temperature', 'Outdoor temperature', '°C', 'Home temperatures', 'House input'],
   ['dhw_temperature', 'Hot-water temperature', '°C', 'Hot water', 'Equipment context'],
@@ -64,6 +64,8 @@ export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_outdoor_temperature', 'Outdoor temperature input', '°C', 'outdoor', 'Recorded outdoor values used within the completed interval, split at source and value changes. Older learning records retain their saved interval mean.'],
   ['model_solar_radiation', 'Solar radiation input', 'W/m²', 'solar', 'Radiation from the forecast available before the interval began. Missing forecasts remain unknown; later forecast updates do not rewrite this input.'],
   ['model_compressor_duty', 'Space-heating compressor duty', '%', 'auxiliary', 'The fraction of the interval with observed compressor activity routed to space heating. Hot-water operation contributes zero; unavailable attribution remains unknown.'],
+  ['model_hydronic_heat', 'Combined hydronic heat estimate', 'kW thermal', 'compressorSpace', 'Estimated compressor heat plus resistance-heater heat attributed to space heating. The saved manufacturer performance map supplies compressor output; this is not heat metering. Unknown routing remains unknown.'],
+  ['model_valve_override', 'Floor valve override input', 'state', 'learning', 'Pooled relay-output mode saved with the learning interval. Feedback confirms the electrical override, not valve movement or flow. Opening circuits changes heat allocation; it does not create heat or reset stored energy. Unknown confirmation remains unknown.'],
   ['model_auxiliary_power', 'Space-heating auxiliary input', 'kW', 'auxiliary', 'Auxiliary electrical input attributed to space heating within the interval, estimated from recorded output and the rated capacity in effect. Changes retain their own segment boundaries.'],
   ['model_controller_phase', 'Requested control phase input', 'state', 'learning', 'The controller phase saved with the interval: normal, preheat, tariff reduction or recovery. A reduction request does not prove that the compressor stopped.'],
   ['model_room_boost', 'ROOM boost input', '°C', 'integral', 'The temporary room-setting increase saved with the learning interval. It describes requested control, not measured indoor warming.'],
@@ -75,9 +77,8 @@ export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
 // Reconstructed from the learning journal in memory, never recorder channels.
 export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   ['model_coefficient_heat_loss', 'Heat loss', '1/h', 'outdoor', 'lossPerHour', 4, 'Heat loss per degree of indoor–outdoor temperature difference. Multiply by that difference to get the modeled cooling contribution in °C/h.'],
-  ['model_coefficient_compressor_response', 'Compressor heating response', '°C/h', 'compressorSpace', 'normalHeatCPerHour', 3, 'Effective heating contribution at full observed space-heating compressor duty. Building heat storage delays the room response; this is not measured compressor output or COP.'],
+  ['model_coefficient_hydronic_response', 'Combined compressor + auxiliary response', '°C/kWh thermal', 'compressorSpace', 'hydronicCPerKwh', 4, 'One effective temperature response per estimated thermal kWh supplied to space-heating water by the compressor and resistance heater. The fixed compressor-output estimate converts duty to heat before this coefficient is applied. Stored heat delays room warming; this is not COP or measured heat capacity.'],
   ['model_coefficient_solar_response', 'Solar response', '°C/h per kW/m²', 'solar', 'solarCPerHourPerKwM2', 3, 'Temperature response to forecast solar radiation. Radiation forecasts enter in W/m² and are converted to kW/m²; no house radiation sensor is implied.'],
-  ['model_coefficient_auxiliary_response', 'Auxiliary heating response', '°C/kWh', 'auxiliary', 'auxiliaryCPerKwh', 3, 'Effective heating contribution per estimated auxiliary electricity input during space heating. Stored heat affects when the indoor temperature responds.'],
   ['model_coefficient_fireplace_response', 'Fireplace response', '°C/kg', 'firewood', 'fireplaceCPerKg', 3, 'Effective temperature contribution per logged kilogram after the delayed masonry release. This is a house-model coefficient, not measured fireplace efficiency or delivered kWh.'],
 ].map(([signal, label, unit, color, parameter, digits, detail]) => [signal,
   { label, unit, color, parameter, digits, detail, kind: 'Calculated', group: 'Model coefficients' }])));

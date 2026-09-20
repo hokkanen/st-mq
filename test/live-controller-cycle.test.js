@@ -12,7 +12,7 @@ import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/teleme
 const HOUR = 3_600_000;
 function setup(t, { mode = 'active', delayed = false, store = new Store(':memory:') } = {}) {
   let now = Date.parse('2026-09-07T21:00Z'), acknowledge;
-  const commands = [], config = { input:'mqtt', settings:validateSettings({mode,comfort:{targetC:21}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
+  const commands = [], config = { input:'mqtt', settings:validateSettings({mode,comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
   const transport = { publish: batch => {
     commands.push([...batch]);
     if (delayed) return new Promise(resolve => { acknowledge = () => resolve({status:'mqtt',sent:true,actual:null}); });
@@ -20,7 +20,7 @@ function setup(t, { mode = 'active', delayed = false, store = new Store(':memory
   } };
   const engine = new Engine({store,config,clock:()=>now,commandTransport:transport});
   const ingest = (signal,value) => engine.ingest({source:signal==='outdoor_temperature'?'fmi':'synthetic',device:'fixture',signal,value,unit:'degC',sourceTime:now,receivedAt:now,quality:[],raw:null});
-  const intervals = Array.from({length:24},(_,i)=>({start:now+i*900000,end:now+(i+1)*900000,outdoorC:10,price:i===0?200:1,solarRadiationWm2:0}));
+  const intervals = Array.from({length:24},(_,i)=>({start:now+i*900000,end:now+(i+1)*900000,outdoorC:10,price:i===0?2000:1,solarRadiationWm2:0}));
   store.setState('provider:market',{fetchedAt:now,intervals:intervals.map(row=>({...row,spotCtPerKwh:row.price,unit:'c/kWh',vatIncluded:false}))});
   store.setState('provider:weather',{issuedAt:now,fetchedAt:now,forecast:[{start:now,end:now+6*HOUR,outdoorC:10,solarRadiationWm2:0,issuedAt:now,fetchedAt:now,source:'fixture'}]});
   store.setState('contract:mqtt',{mode:'billing',periods:[{from:0,to:null,marginCtPerKwh:0,taxCtPerKwh:0,vatRate:0,tariff:'day-night',transferRates:{vatIncluded:false,dayCtPerKwh:0,nightCtPerKwh:0,winterDayCtPerKwh:0,otherCtPerKwh:0}}]});
@@ -29,12 +29,13 @@ function setup(t, { mode = 'active', delayed = false, store = new Store(':memory
   return {engine,store,config,transport,commands,intervals,ingest,get now(){return now;},
     advance(ms){now+=ms;ingest('indoor_temperature',21.2);ingest('outdoor_temperature',10);},
     acknowledge(){acknowledge();},async settle(){await engine.dispatchPending;},
-    plan(){ const model=initialAdaptiveModel(), schedule={preheatStart:now,preheatEnd:now,reductionStart:now,reductionEnd:now+900000,roomBoostC:0};
+    plan(){ const model=initialAdaptiveModel(), schedule={preheatStart:now,preheatEnd:now,reductionStart:now,reductionEnd:now+900000,roomBoostC:0,treatmentKey:'reduction-only-v1'};
       // Synthetic accepted evidence isolates delivery/restoration from model fitting.
       model.validation={accepted:true,kind:'conditional-thermal',samples:3,
-        parameterEvidence:{lossPerHour:{status:'identified'},normalHeatCPerHour:{status:'identified'}}};
-      model.equipmentResponse={phases:{reduction:{ratio:.1,trainingEpisodes:3}},
-        validation:{phases:{reduction:{accepted:true,episodes:3,maeDuty:.05,maxDurationHours:.5}}}};
+        parameterEvidence:{lossPerHour:{status:'identified'},hydronicCPerKwh:{status:'identified'}}};
+      model.equipmentResponse={phases:{reduction:{ratio:.1,trainingEpisodes:3,treatmentKey:'reduction-only-v1'}},
+        validation:{phases:{reduction:{accepted:true,episodes:3,maeDuty:.05,maxDurationHours:.5,treatmentKey:'reduction-only-v1'}}}};
+      model.uncertainty={points:[{hours:24,errorC:.1}],extrapolationCPerHour:.05};
       model.forecastValidation={accepted:true,episodes:3,maxReductionHours:.5};
       engine.checkpoint=restoreAdaptiveCheckpoint(null);engine.checkpoint.model=model;
       const args={intervals,model,initialState:{indoorC:21.2,reserveC:21.2},targetC:21,config:CONTROL_DEFAULTS};
@@ -53,10 +54,10 @@ test('a due base cycle remains intent until broker acknowledgement, then pause r
   const r=setup(t,{delayed:true});r.plan();
   const status=r.engine.tick(); assert.equal(status.decision.phase,'reduction',JSON.stringify({reasons:status.decision.reasons,prices:status.priceStatus,weather:status.weatherStatus}));assert.equal(status.h66.available,false);assert.equal(status.execution.status,'pending');
   assert.equal(r.engine.cycles.active(),null);assert.equal(r.store.getState('applied:mqtt'),null);
-  await Promise.resolve();r.acknowledge();await r.settle();
+  await new Promise(resolve=>setImmediate(resolve));r.acknowledge();await r.settle();
   assert.equal(r.engine.applied.phase,'reduction');assert.ok(r.engine.cycles.active());
   assert.deepEqual(r.commands,[['reduction']]);
-  r.engine.setOverride(15);await Promise.resolve();r.acknowledge();await r.settle();
+  r.engine.setOverride(15);await new Promise(resolve=>setImmediate(resolve));r.acknowledge();await r.settle();
   assert.equal(r.engine.applied.phase,'normal');assert.deepEqual(r.commands.at(-1),['normal']);
   const request=r.store.latestObservation('controller_phase');assert.equal(request.raw.expiresAt,r.now+1_800_000);assert.equal(request.raw.verified,false);
 });

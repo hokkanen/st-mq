@@ -3,7 +3,7 @@ import { renderGarage, createGarageControls } from './garage-status.js';
 import { createChargingPanel } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
-import { activeRates, rateRows, temporaryValues } from './home-controls.js';
+import { activeRates, rateRows, temporaryValues, homePolicyValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
@@ -46,7 +46,7 @@ let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
-const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 'Normal heating', preheat: 'Max preheating', circulation: 'Circulation' })[command] ?? 'Heating request';
+const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 'Normal heating', preheat: 'Preheat', circulation: 'Circulation' })[command] ?? 'Heating request';
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
@@ -195,7 +195,7 @@ function renderHeatingTests(s) {
   const current = actual?.requestedPhase || actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
   const selected = current ? ({ normal: 'test-normal', recovery: 'test-normal',
     preheat: 'test-preheat', reduction: 'test-reduction' })[phase] : null;
-  for (const [id, name] of [['test-normal', 'Normal heating'], ['test-preheat', 'Max preheating'], ['test-reduction', 'Reduced heating']]) {
+  for (const [id, name] of [['test-normal', 'Normal heating'], ['test-preheat', 'Preheat'], ['test-reduction', 'Reduced heating']]) {
     const button = $(id), state = id === selected ? actual.stale !== true && actual.verified === true && (actual.phase ?? actual.mode) === phase ? 'Active' : 'Requested' : '';
     button.setAttribute('aria-pressed', String(id === selected));
     button.setAttribute('aria-label', `${name}${state ? ` · ${state}${state === 'Requested' ? ', awaiting device confirmation' : ''}` : ''}`);
@@ -207,9 +207,9 @@ function renderHeatingTests(s) {
     + 'During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.';
   $('heating-preheat-help').hidden = true;
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
-    : capability?.preheatReason || 'Max preheating needs a connected heat pump, a fresh writable ROOM setting and circulation control.';
+    : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable ROOM setting and qualified floor-valve control when configured.';
   $('test-preheat').title = capability?.preheatAvailable === true
-    ? `Raise ROOM to ${decimal(capability.preheatTargetC)} °C using the maximum allowed boost of ${decimal(capability.preheatRoomBoostC)} °C.`
+    ? `Request ROOM ${decimal(capability.preheatTargetC)} °C${s.preheatValves?.enabled ? ' and the pooled floor override' : ''}. The configured preheat setting never lowers a warmer native baseline. Normal recirculation keeps its own schedule.`
     : $('heating-preheat-help').textContent;
   const warning = homeHeatingWarning(s, time);
   $('home-hold-warning').hidden = !warning;
@@ -335,7 +335,7 @@ function renderProviders(s) {
   note.hidden = !note.textContent;
 }
 function renderLearning(s) {
-  const display = learningDisplay(s.learning);
+  const display = learningDisplay(s.learning, { settings: s.settings, preheatValves: s.preheatValves });
   const overview = learningOverview(s.learning);
   const garageOverview = garageLearningOverview(s.garage?.learning);
   for (const [prefix, model, metrics] of [
@@ -524,7 +524,7 @@ function render(s) {
   const decisionTitle = manualHold
     ? manualHold.parameters ? 'Manual heating settings held' : 'Manual heating selection held'
     : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
-  const heldMode = ({ normal: 'Normal heating', preheat: 'Max preheating', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
+  const heldMode = ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
   const decisionReasons = manualHold
     ? `Price control is paused. ${heldMode}${manualHold.parameters ? ' and manual parameter settings are' : ' is'} held until ${time(manualHold.until)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
     : (s.decision.reasons ?? []).map(r => (reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code))
@@ -548,6 +548,10 @@ function render(s) {
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
   $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
   $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : Number.isFinite(reference) ? `${referenceSource === 'learned' ? 'Learned' : 'Configured'} normal temperature` : 'Normal temperature not established';
+  const homePolicy = homePolicyValues(s);
+  $('home-aggressiveness').textContent = homePolicy.aggressiveness;
+  $('home-preheat-setting').textContent = homePolicy.preheat;
+  $('home-maximum-rise').textContent = homePolicy.maximumRise;
   $('drop').textContent = `${s.settings.comfort.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   renderLearning(s);

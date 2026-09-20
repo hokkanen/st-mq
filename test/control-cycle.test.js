@@ -35,7 +35,7 @@ function finish(tracker, changes = {}) {
   return result;
 }
 
-test('recovery premium stops once the room and reserve regain comparable normal operation', () => {
+test('recovery accounting stops once the room and reserve regain comparable normal operation', () => {
   const short = evaluateCycle(common({ schedule, intervals: intervals(4) }));
   const long = evaluateCycle(common({ schedule, intervals: intervals(48) }));
   assert.ok(short.completeRecoveryPredicted);
@@ -45,7 +45,7 @@ test('recovery premium stops once the room and reserve regain comparable normal 
   assert.ok(long.trajectory.filter(x => x.at > long.recoveredAt).every(x => x.phase === 'normal'));
   const model = initialAdaptiveModel(); model.energy.recoveryMultiplier = 3;
   const expensive = evaluateCycle(common({ schedule, model, intervals: intervals(4) }));
-  assert.ok(expensive.recoveryCostCents > short.recoveryCostCents);
+  assert.equal(expensive.recoveryCostCents, short.recoveryCostCents, 'Legacy recovery multiplier cannot override physical source-map electricity');
   assert.equal(expensive.recoveredAt, short.recoveredAt, 'Electrical inefficiency is not extra delivered heat');
 });
 
@@ -84,7 +84,7 @@ test('missing solar over a 48-hour horizon still permits a bounded startup trial
     forecast: rows.map(x => ({ ...x, issuedAt: start })),
     checkpoint: { model: initialAdaptiveModel(), baselineC: 21,health:{usableSamples:4} },
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
-    equipment:{compressorOn:1,dhwRouting:0},trialBudgetRemainingCents: 100 });
+    thermalState: { reserveC: 25.725 }, equipment:{compressorOn:1,dhwRouting:0},trialBudgetRemainingCents: 100 });
   assert.equal(decision.phase, 'reduction');
   assert.equal(decision.plan.trial, true);
   assert.ok(decision.plan.schedule.reductionEnd - decision.plan.schedule.reductionStart <= HOUR / 2);
@@ -100,7 +100,7 @@ test('cycle selection and revalidation accept old indoor values without renewing
     forecast: rows.map(row => ({ ...row, issuedAt: start })),
     checkpoint: { model: initialAdaptiveModel(), baselineC: 21, health: { usableSamples: 4 } },
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
-    equipment: { compressorOn: 1, dhwRouting: 0 }, trialBudgetRemainingCents: 100 };
+    thermalState: { reserveC: 25.725 }, equipment: { compressorOn: 1, dhwRouting: 0 }, trialBudgetRemainingCents: 100 };
   const decision = chooseCycle(args);
   assert.equal(decision.phase, 'reduction');
   assert.equal(revalidatePlan({ ...args, plan: decision.plan }).valid, true);

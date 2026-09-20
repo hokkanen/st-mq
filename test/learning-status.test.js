@@ -68,10 +68,10 @@ test('learning status separates conditional temperature skill from action eviden
   const display = learningDisplay({ readiness: { thermalValidated: true, responseValidated: true, advanceValidated: false, actionValidated: false, trialReady: false,
     reasons: ['collecting-independent-equipment-episodes'] },
     outcomes: { attempted: 5, completed: 2, incomplete: 2, inProgress: 1, assessed: 1, observedCostCents: 345, basis: 'estimated' },
-    adaptive: { model: { parameters: { lossPerHour: 0.02, normalHeatCPerHour: 0.7, reserveTimeHours: 12 },
+    adaptive: { model: { parameters: { lossPerHour: 0.02, hydronicCPerKwh: 0.7, reserveTimeHours: 12 },
       validation: { accepted: true, kind: 'conditional-thermal', maeC: 0.25, maxErrorC: 0.8,
         persistenceMaeC: 0.6, samples: 4, horizonHours: 6, maximumHorizonHours: 12,
-        fittedParameters: ['lossPerHour', 'normalHeatCPerHour'] },
+        fittedParameters: ['lossPerHour', 'hydronicCPerKwh'] },
       equipmentResponse: { validation: { phases: { reduction: { episodes: 1, accepted: false, maeDuty: 0.2 } } } },
       forecastValidation: { accepted: false, episodes: 2, temperatureMaeC: 0.35, energyRelativeError: 0.25, costRelativeError: 0.15 } } } });
   const text = display.evidence.join(' ');
@@ -87,50 +87,50 @@ test('learning status separates conditional temperature skill from action eviden
   assert.match(text, /Recent attempted cycles \(latest 100\): 5; completed 2, incomplete 2, in progress 1/);
   assert.match(text, /€3.45/);
   assert.match(text, /20.0 percentage points/);
-  assert.equal(display.inputs.length, 10);
+  assert.equal(display.inputs.length, 12);
   assert(display.inputs.every(row => row.sources && row.detail));
 });
 
 test('current coefficient values retain units and separate fitted values from fixed assumptions', () => {
   const learning = { adaptive: { health: { status: 'retained-previous', parameterEvidence: {
     lossPerHour: { status: 'fixed', reason: 'confounded-with-other-heat-inputs' } } },
-  model: { parameters: { lossPerHour: 0.018, normalHeatCPerHour: 0.75, solarCPerHourPerKwM2: 0,
-    auxiliaryCPerKwh: 0.15, memoryExchangePerHour: 0.08, reserveTimeHours: 12 },
-  validation: { accepted: true, fittedParameters: ['lossPerHour', 'normalHeatCPerHour'], parameterEvidence: {
+  model: { parameters: { lossPerHour: 0.018, hydronicCPerKwh: 0.75, solarCPerHourPerKwM2: 0,
+    fireplaceCPerKg: 0.15, memoryExchangePerHour: 0.08, reserveTimeHours: 12 },
+  validation: { accepted: true, fittedParameters: ['lossPerHour', 'hydronicCPerKwh'], parameterEvidence: {
     lossPerHour: { status: 'identified' }, solarCPerHourPerKwM2: { status: 'fixed', reason: 'fewer-than-three-sunlit-days' } } } } } };
   const rows = Object.fromEntries(modelCoefficientDescriptions(learning).map(row => [row.key, row]));
   assert.equal(rows.lossPerHour.value, '0.0180 1/h');
   assert.equal(rows.lossPerHour.provenance, 'Fitted in current model');
   assert.match(rows.lossPerHour.evidence, /Independent input evidence established/);
   assert.match(rows.lossPerHour.evidence, /Latest unaccepted update: Available observations cannot separate this response/);
-  assert.equal(rows.normalHeatCPerHour.value, '0.750 °C/h');
+  assert.equal(rows.hydronicCPerKwh.value, '0.7500 °C/kWh thermal');
   assert.equal(rows.solarCPerHourPerKwM2.value, '0.000 °C/h per kW/m²');
   assert.equal(rows.solarCPerHourPerKwM2.provenance, 'Estimate — not independently identified');
   assert.match(rows.solarCPerHourPerKwM2.evidence, /Needs at least three sunlit days/);
-  assert.equal(rows.auxiliaryCPerKwh.unit, '°C/kWh');
+  assert.equal(rows.hydronicCPerKwh.unit, '°C/kWh thermal');
   assert.equal(rows.memoryExchangePerHour.provenance, 'Fixed assumption');
   assert.equal(rows.reserveTimeHours.value, '12.0 h');
   const display = learningDisplay(learning);
   assert.equal(display.metrics.length, 4);
-  assert.equal(display.inputs.length, 10);
-  assert.equal(display.coefficients.length, 6);
+  assert.equal(display.inputs.length, 12);
+  assert.equal(display.coefficients.length, 7);
   assert.match(display.coefficientHistory, /today’s values are not applied to earlier intervals/);
-  assert.match(display.coefficientHistory, /five coefficients eligible for fitting, reconstructed from the learning journal/);
+  assert.match(display.coefficientHistory, /four coefficients eligible for fitting, reconstructed from the learning journal/);
   assert.match(display.coefficientHistory, /creates no additional stored history/);
 });
 
 test('a fireplace-only fit preserves the visible validation of unchanged identified house coefficients', () => {
-  const learning = { adaptive: { model: { parameters: { lossPerHour: 0.02, normalHeatCPerHour: 0.7,
+  const learning = { adaptive: { model: { parameters: { lossPerHour: 0.02, hydronicCPerKwh: 0.7,
     fireplaceCPerKg: 0.12, reserveTimeHours: 12 }, validation: { accepted: true,
     fittedParameters: ['fireplaceCPerKg'], parameterEvidence: {
       lossPerHour: { status: 'identified', fitStatus: 'retained-unchanged',
         currentWindowEvidence: { status: 'fixed', reason: 'insufficient-clean-intervals' } },
-      normalHeatCPerHour: { status: 'identified', fitStatus: 'retained-unchanged' },
+      hydronicCPerKwh: { status: 'identified', fitStatus: 'retained-unchanged' },
       fireplaceCPerKg: { status: 'identified' } } } } } };
   const display = learningDisplay(learning);
   const rows = Object.fromEntries(display.coefficients.map(row => [row.key, row]));
   assert.equal(rows.lossPerHour.provenance, 'Retained from an earlier validated fit');
-  assert.equal(rows.normalHeatCPerHour.provenance, 'Retained from an earlier validated fit');
+  assert.equal(rows.hydronicCPerKwh.provenance, 'Retained from an earlier validated fit');
   assert.match(rows.lossPerHour.evidence, /Independent input evidence established · Current fitting window: Too few usable intervals/);
   assert.equal(rows.fireplaceCPerKg.provenance, 'Fitted in current model');
   assert.equal(rows.reserveTimeHours.provenance, 'Fixed assumption');
@@ -142,9 +142,9 @@ test('a fireplace-only fit preserves the visible validation of unchanged identif
 test('unavailable and rejected coefficients are never presented as learned values', () => {
   assert.deepEqual(modelCoefficientDescriptions({}), []);
   const rows = modelCoefficientDescriptions({ adaptive: { model: { parameters: { lossPerHour: null,
-    normalHeatCPerHour: 0.7, reducedHeatCPerHour: 0.2, unrelatedValue: 1 },
-  validation: { accepted: false, fittedParameters: ['lossPerHour', 'normalHeatCPerHour'] } } } });
-  assert.equal(rows.length, 3);
+    hydronicCPerKwh: 0.7, reducedHeatCPerHour: 0.2, unrelatedValue: 1 },
+  validation: { accepted: false, fittedParameters: ['lossPerHour', 'hydronicCPerKwh'] } } } });
+  assert.equal(rows.length, 4);
   assert.equal(rows[0].available, false);
   assert.equal(rows[0].value, 'Unavailable');
   assert.equal(rows[1].provenance, 'Initial estimate — not validated');
@@ -154,17 +154,17 @@ test('unavailable and rejected coefficients are never presented as learned value
 test('initial and partially fitted models do not claim overall temperature readiness', () => {
   const model = initialAdaptiveModel({});
   const prior = learningDisplay({ adaptive: { model } });
-  assert.equal(prior.coefficients.filter(row => row.provenance === 'Initial estimate — not validated').length, 5);
+  assert.equal(prior.coefficients.filter(row => row.provenance === 'Initial estimate — not validated').length, 4);
   assert.equal(prior.coefficients.filter(row => row.provenance === 'Fixed assumption').length, 2);
-  assert.match(prior.coefficientEvidence.join(' '), /0 fitted in current model.*2 fixed assumptions; 5 estimates without independent validation/);
+  assert.match(prior.coefficientEvidence.join(' '), /0 fitted in current model.*2 fixed assumptions; 4 estimates without independent validation/);
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 4, maeC: 0.2,
     fittedParameters: ['solarCPerHourPerKwM2'], parameterEvidence: {
-      solarCPerHourPerKwM2: { status: 'identified' }, lossPerHour: { status: 'fixed' }, normalHeatCPerHour: { status: 'fixed' } } };
+      solarCPerHourPerKwM2: { status: 'identified' }, lossPerHour: { status: 'fixed' }, hydronicCPerKwh: { status: 'fixed' } } };
   assert.equal(thermalEvidenceReady(model), false);
   const partial = learningDisplay({ adaptive: { model } });
   assert.match(partial.message, /Identified heat loss and heating response are both required/);
   assert.doesNotMatch(partial.message, /Temperature prediction has passed/);
-  assert.match(partial.coefficients.find(row => row.key === 'normalHeatCPerHour').detail, /slow reserve before it reaches indoor air/);
+  assert.match(partial.coefficients.find(row => row.key === 'hydronicCPerKwh').detail, /slow reserve before it reaches indoor air/);
 });
 
 test('Home explains retained intervals, held sensor readings and provisional normal temperature', () => {
@@ -193,7 +193,7 @@ test('cycle costs use bounded assessment windows and disclose uncovered periods'
   assert.match(display.metrics[0].evidence, /not a statistical confidence interval/);
   const text = display.evidence.join(' ');
   assert.match(text, /Recent attempted cycles \(latest 100\): 100/);
-  assert.match(text, /Covered cycle electricity cost estimate: €1.00; nominal power is used unless metered/);
+  assert.match(text, /Covered cycle electricity cost estimate: €1.00; source-map or nominal-power estimates are used unless metered/);
   assert.match(text, /2.5 hours without cost coverage are excluded/);
   assert.match(text, /2 Jan 2026, 14:00 Finnish time/);
   assert.match(display.coefficientEvidence.join(' '), /A2 600 °min \(relative to A1\).*A1 -60 °min/);
@@ -210,7 +210,7 @@ test('equipment and frozen forecast checks disclose different inputs and support
   assert.match(text, /error in mean episode compressor duty 5.0 percentage points; supported phase duration up to 4.0 hours/);
   assert.match(text, /uses recorded indoor and outdoor temperatures and requested control context/);
   assert.match(text, /supported reduction duration up to 2.0 hours/);
-  assert.match(text, /Electricity can still use nominal-power estimates unless the episode was metered/);
+  assert.match(text, /Electricity can still use source-map and nominal AUX estimates unless the episode was metered/);
   assert.match(text, /validation requirements met within demonstrated durations/);
   assert.match(text, /basic evidence and budget requirements met/);
   assert.match(text, /Current comfort, authority, price and duration checks still determine whether an action can run/);
@@ -314,4 +314,36 @@ test('missing, stale and invalid H66 summary readings remain unknown', () => {
   }
   assert.equal(rows.tariff.value, 'Unknown · no device readback');
   assert.equal(h66HomeSummary({}).find(row => row.key === 'tariff').value, 'Unknown · no device readback');
+});
+
+test('combined hydronic parameter explains the source conversion and separates fixed slab assumptions from learned evidence', () => {
+  const model = initialAdaptiveModel({ floorThermalPriors: { enabled: true, capacityKwhPerC: 2.4,
+    exchangeKwPerC: 0.2, groundLossKwPerC: 0.01, groundC: 9, openAllocationFraction: 0.3,
+    closedAllocationFraction: 0.04 } });
+  const display = learningDisplay({ adaptive: { model } }, { settings: {
+    savingsAggressiveness: 50, preheatRoomSettingC: 25, comfort: { maxRiseC: 1 } }, preheatValves: {} });
+  const combined = display.coefficients.find(row => row.key === 'hydronicCPerKwh');
+  assert.equal(combined.value, '0.0798 °C/kWh thermal');
+  assert.match(combined.detail, /9\.40 kW heat \/ COP 4\.24 at 35 °C/);
+  assert.match(combined.detail, /9\.24 kW \/ COP 3\.51 at 45 °C/);
+  assert.match(combined.detail, /7\.66 kW thermal/);
+  assert.match(combined.detail, /cannot identify a brine correction/);
+  assert.match(combined.detail, /30–50 °C/);
+  assert.match(combined.detail, /Missing live brine stays unknown/);
+  assert.match(display.evidence.join(' '), /no separately identified thermal model for each room/);
+  assert.match(display.evidence.join(' '), /Final DHW refill is not implemented/);
+  assert.match(display.evidence.join(' '), /original treatment identity through reduction and recovery/);
+  assert.match(display.coefficientEvidence.join(' '), /no annual savings guarantee/);
+  assert.match(combined.detail, /Electricity uses compressor duty/);
+  assert.match(combined.reference.href, /^https:\/\/assets\.danfoss\.com\//);
+  assert.equal(display.coefficients.filter(row => row.group === 'Thermal responses').length, 4);
+  const capacity = display.coefficients.find(row => row.key === 'floor-capacityKwhPerC');
+  assert.equal(capacity.value, '2.40 kWh/K');
+  assert.match(capacity.provenance, /Fixed assumption/);
+  assert.match(capacity.detail, /rather than added twice/);
+  assert.match(display.coefficients.find(row => row.key === 'floor-state-validation').detail, /No extra storage-response coefficient is fitted/);
+  assert.match(display.coefficientEvidence.join(' '), /15-minute expiry renewed every 5 minutes/);
+  assert.match(display.coefficientEvidence.join(' '), /H66 ROOM has no device-side lease/);
+  assert.match(display.coefficientEvidence.join(' '), /absolute ROOM setting of 25\.0 °C/);
+  assert.match(display.coefficientHistory, /older algorithms are archival gaps/);
 });

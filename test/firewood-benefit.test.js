@@ -126,7 +126,7 @@ test('temperature/fireplace validation alone cannot certify electrical displacem
   const model = initialAdaptiveModel();
   model.trainedAt = new Date(start - HOUR).toISOString();
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 100,
-    parameterEvidence: Object.fromEntries(['lossPerHour', 'normalHeatCPerHour', 'fireplaceCPerKg'].map(key => [key, { status: 'identified' }])),
+    parameterEvidence: Object.fromEntries(['lossPerHour', 'hydronicCPerKwh', 'fireplaceCPerKg'].map(key => [key, { status: 'identified' }])),
     fireplace: { accepted: true, trainingBurns: 3, validationBurns: 3 } };
   const { args, store } = fixture(t, { seed: { version: 1, samples: [], model, baselineC: 21 }, hours: 30 });
   const checkpoint = replayLearningJournal(store, 'mqtt');
@@ -140,13 +140,13 @@ test('temperature/fireplace validation alone cannot certify electrical displacem
 });
 
 test('legitimate boundary parameters and malformed model seeds cannot break the chart estimate', t => {
-  for (const [lossPerHour, normalHeatCPerHour] of [[0.001, 3], [0.12, 0.05]]) {
+  for (const [lossPerHour, hydronicCPerKwh] of [[0.001, 0.6], [0.12, 0.005]]) {
     const model = initialAdaptiveModel();
-    Object.assign(model.parameters, { lossPerHour, normalHeatCPerHour });
+    Object.assign(model.parameters, { lossPerHour, hydronicCPerKwh });
     for (const scenario of firewoodScenarios(model, { indoorC: 21, reserveC: 21 })) assert.doesNotThrow(() => advanceFirewoodPair(scenario,
       { start, end: start + WINDOW, outdoorC: 0, solarRadiationWm2: 0, price: 10, targetC: 21, fireplaceEvents: [] }));
   }
-  const { args } = fixture(t, { hours: 8, seed: { version: 1, samples: [], model: { version: 2, parameters: {} } } });
+  const { args } = fixture(t, { hours: 8, seed: { version: 1, samples: [], model: { version: 3, parameters: {} } } });
   const result = getFirewoodBenefit(args);
   assert.equal(result.summary.status, 'provisional');
   assert.ok(result.summary.assumptions.some(value => /Malformed/.test(value)));
@@ -154,7 +154,7 @@ test('legitimate boundary parameters and malformed model seeds cannot break the 
   assert.doesNotThrow(() => getFirewoodBenefit(args));
 });
 
-test('dated nominal compressor power changes electricity, while the paired thermal experiment stays the same', () => {
+test('retired nominal compressor watts cannot override the fixed source performance map', () => {
   const run = power => {
     const scenario = firewoodScenarios(initialAdaptiveModel(), { indoorC: 21, reserveC: 21 })[0];
     let kwh = 0;
@@ -164,7 +164,7 @@ test('dated nominal compressor power changes electricity, while the paired therm
     return kwh;
   };
   assert.ok(run(1) > 0);
-  assert.ok(Math.abs(run(3) - 3 * run(1)) < 1e-9);
+  assert.ok(Math.abs(run(3) - run(1)) < 1e-9);
 });
 
 test('DHW compressor operation cannot masquerade as observed space-heating backoff', t => {

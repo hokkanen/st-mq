@@ -31,7 +31,7 @@ function publishedCheckpointAt(snapshot, input, cursor, algorithm, now) {
  * control budget or cycle evaluator with which to establish live readiness. */
 function homeLearningSnapshot(snapshot, checkpoint, now) {
   const recordedAt = publishedCheckpointAt(snapshot, snapshot?.input, checkpoint?.journalCursor, LEARNING_ALGORITHM, now);
-  const available = checkpoint?.algorithmVersion === LEARNING_ALGORITHM && checkpoint.model?.version === 2
+  const available = checkpoint?.algorithmVersion === LEARNING_ALGORITHM && checkpoint.model?.version === 3
     && checkpoint.model.parameters && recordedAt !== null;
   return { status: available ? checkpoint.health?.status ?? 'unavailable' : 'unavailable',
     reconstruction: 'snapshot', readOnly: true, snapshotAt: snapshot?.publication.sourceAt ?? null,

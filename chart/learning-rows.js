@@ -45,6 +45,15 @@ export function renderLearningRows(root, rows = [], { document = root?.ownerDocu
     });
     for (const field of ['title', 'value', 'provenance', 'summary', 'detail', 'evidence'])
       set(node.querySelector(`.learning-entry-${field}`), row[field]);
+    let reference = node.querySelector('.learning-entry-reference');
+    if (row.reference?.href?.startsWith('https://')) {
+      if (!reference) {
+        reference = document.createElement('a'); reference.className = 'learning-entry-reference';
+        reference.target = '_blank'; reference.rel = 'noopener noreferrer';
+        node.querySelector('.learning-entry-body').append(reference);
+      }
+      reference.href = row.reference.href; set(reference, row.reference.label);
+    } else reference?.remove();
     node.classList.toggle('learning-entry-unavailable', row.available === false);
     if (row.modelInput) node.dataset.modelInput = row.modelInput;
   }

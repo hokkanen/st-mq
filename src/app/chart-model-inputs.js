@@ -10,6 +10,7 @@ const sources = { simulated: 'Simulation', history: 'Imported history', mqtt: 'R
 const fields = {
   model_outdoor_temperature: 'outdoorC', model_solar_radiation: 'solarRadiationWm2',
   model_compressor_duty: 'thermalCompressorDuty', model_auxiliary_power: 'thermalAuxKw',
+  model_hydronic_heat: 'hydronicHeatKw', model_valve_override: 'floorOverrideMode',
   model_room_boost: 'roomBoostC', model_target_temperature: 'targetC',
 };
 
@@ -77,7 +78,7 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
       // These algorithms record indoor availability independently of the other
       // learning inputs. A missing outdoor segment must not erase a known
       // indoor average. Older algorithms retain their original chart gates.
-      const currentIndoor = ['committed-house-v7-held-indoor','committed-house-v8-report-coverage','committed-house-v9-reversible-sensors'].includes(row.algorithm_version);
+      const currentIndoor = ['committed-house-v7-held-indoor','committed-house-v8-report-coverage','committed-house-v9-reversible-sensors','committed-house-v10-hydronic-floor'].includes(row.algorithm_version);
       project('model_indoor_temperature', start, end, (currentIndoor || usable) && finite(sample.indoorC) ? sample.indoorC : null,
         currentIndoor ? { ...common, ...indoorEndpointMetadata(sample, usable) } : common, true);
     }
@@ -99,6 +100,7 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
         if (key === 'model_indoor_temperature') continue;
         let value = key === 'model_controller_phase' ? PHASES.indexOf(segment.phase) : segment[fields[key]];
         if (key === 'model_controller_phase' && value < 0) value = null;
+        if (key === 'model_valve_override') value = ({ off: 0, on: 1, partial: 2, unknown: 3 })[value] ?? null;
         if (key === 'model_compressor_duty' && finite(value)) value *= 100;
         project(key, a, b, valid && finite(value) ? value : null, metadata);
       }

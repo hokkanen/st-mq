@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { dhwrEligible } from '../control/index.js';
 import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../control/adaptive-learning.js';
-import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope } from '../control/planner.js';
+import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
@@ -370,6 +370,7 @@ export class Engine {
     // from persisted UI state. Old browser settings must not override a restart.
     this.settings = validateSettings({ ...config.settings, ...(occupancy ? { occupancy } : {}) });
     this.control = { ...CONTROL_DEFAULTS, ...config.control };
+    this.settings.preheatRoomSettingC = this.control.preheatRoomSettingC;
     this.cycles = new CycleTracker({ store, input: config.input, config: this.control });
     this.cycles.learningSeed = () => this.checkpoint ?? null;
     if (config.priceSettings) {
@@ -541,17 +542,31 @@ export class Engine {
     const available = ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
     const native = this.h66?.status(this.clock()), room = native?.manualPreheat?.baseValue ?? native?.readings?.['0203']?.value;
     const roomMaximum = Math.min(35, native?.controls?.['0203']?.max ?? 35);
-    const roomBoostC = Math.min(5, this.control.maxRoomBoostC, roomMaximum - room);
+    const roomBoostC = Math.max(0, Math.min(roomMaximum, this.control.preheatRoomSettingC) - room);
     const preheatAvailable = available && native?.controls?.['0203']?.available === true
-      && Number.isFinite(room) && Number.isFinite(roomBoostC) && roomBoostC >= 1
-      && typeof this.executor.commandTransport.publishDhwr === 'function';
+      && this.control.preheatRoomSettingC <= roomMaximum
+      && Number.isFinite(room) && Number.isFinite(roomBoostC)
+      && (roomBoostC > 0 || this.floorOverride?.status(this.clock()).available === true);
     return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',
     preheatAvailable, preheatRoomBoostC: preheatAvailable ? roomBoostC : null,
-    preheatTargetC: preheatAvailable ? room + roomBoostC : null, preheatReason: preheatAvailable ? null
-      : 'Max preheating needs a fresh writable ROOM setting with room for at least a 1 °C boost, and connected heating and circulation controls.',
+    preheatTargetC: preheatAvailable ? Math.max(room, this.control.preheatRoomSettingC) : null, preheatReason: preheatAvailable ? null
+      : 'Preheating needs a fresh writable ROOM setting below the configured target, or commissioned floor overrides.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`) };
+  }
+  preheatValveStatus(now = this.clock()) {
+    return this.floorOverride?.status(now) ?? { enabled: this.config.floorPreheat?.enabled === true,
+      commissioned: false, connected: false, available: false, active: false, devices: [],
+      renewSeconds: 300, leaseSeconds: 900, restorationPending: false };
+  }
+  floorOverrideMode(now = this.clock()) {
+    const status = this.preheatValveStatus(now);
+    if (status.active) return 'on';
+    if (!status.enabled && !status.restorationPending && !status.devices.length) return 'off';
+    if (!status.devices.every(device => device.available) || status.restorationPending) return 'unknown';
+    const values = status.devices.flatMap(device => device.channels ?? []).map(channel => channel.output);
+    return values.length === 4 && values.every(value => value === false) ? 'off' : 'partial';
   }
   equipmentStatus() {
     return this.equipment?.status(this.clock()) ?? { configured: false, connected: false, devices: [] };
@@ -641,7 +656,8 @@ export class Engine {
   recordManualHeating(phase, now, roomBoostC = 0) {
     this.applied = { phase, at: now, roomBoostC, verified: false };
     this.store.setState(`applied:${this.config.input}`, this.applied);
-    recordLearningContext(this.store, this.config.input, { phase, roomBoostC,
+    recordLearningContext(this.store, this.config.input, { phase, roomBoostC, floorOverrideMode: this.floorOverrideMode(now), dhwrActive: this.executor.status().pulseUntil > now,
+      treatmentKey: phase === 'preheat' ? (this.floorOverrideMode(now) === 'on' ? 'fixed-room-floor-v1' : 'fixed-room-v1') : phase === 'reduction' ? 'reduction-only-v1' : 'normal',
       targetC: this.settings.comfort.targetC ?? this.checkpoint?.baselineC ?? null,
       regime: this.settings.occupancy.mode === 'occupied' ? 'occupied' : 'away', episodeId: null }, now,
     { config: this.control, seed: this.checkpoint });
@@ -665,12 +681,12 @@ export class Engine {
       // any later manual choice until that pause ends. MQTT acknowledgement is
       // still not a physical readback.
       const execution = await this.executor.execute(command === 'preheat'
-        ? { phase: 'preheat', commands: ['normal', 'circulation'], roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
+        ? { phase: 'preheat', commands: ['normal'], roomSettingC: this.control.preheatRoomSettingC, roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
       { mode: this.settings.mode, now, manualTest: true, pause });
       const result = { command, ...execution, at: this.clock() };
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
-      if (command === 'circulation' || command === 'preheat') this.recordDhwr(this.executor.status().pulseUntil, result.at);
+      if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
       if (command !== 'circulation') {
         this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'reduction' ? 'reduction' : 'normal',
           result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
@@ -758,7 +774,10 @@ export class Engine {
       await this.h66.setSetting({ register: input.register, value: input.value, now,
         ...(override ? { expiresAt: override.expiresAt, pauseId: pauseIdentity(override) }
           : { expiresAt: this.executor.status().manualTemporary?.expiresAt ?? now + 60_000 }) });
-      if (this.executor.reconcileManualPreheat(this.clock())) this.recordManualHeating('normal', this.clock());
+      if (this.executor.reconcileManualPreheat(this.clock())) {
+        await this.floorOverride?.release({ reason: 'manual-room-supersession', now: this.clock() });
+        this.recordManualHeating('normal', this.clock());
+      }
     } finally { this.heatingTestBusy = false; }
     return this.status();
   }
@@ -930,6 +949,17 @@ export class Engine {
       : manual?.confirmed && manual.at > (this.applied.at ?? 0) ? manual.phase : this.applied.phase;
     const { sample, equipment, radiation, weather } = controlObservations({ latest: this.latest, now, observations, outlook,
       checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
+    const floorStatus = this.preheatValveStatus(now);
+    equipment.floorOverrideAvailable = floorStatus.available;
+    equipment.floorOverrideMode = this.floorOverrideMode(now);
+    equipment.preheatAvailable &&= (!floorStatus.enabled || floorStatus.available)
+      && (Number.isFinite(equipment.roomSettingC) && equipment.roomSettingC < this.control.preheatRoomSettingC || floorStatus.available);
+    equipment.rooms = Object.keys(indoorWeights(this.control)).map(signal => {
+      const reading = observations[{ indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom' }[signal]];
+      return { id: signal, value: reading?.value, stale: !reading || reading.stale,
+        targetC: checkpoint.sensorComfortReferences?.[signal]?.targetC ?? this.settings.comfort.targetC ?? checkpoint.baselineC,
+        weight: indoorWeights(this.control)[signal] };
+    });
     const fireplaceContext = fireplaceLearningContext(this.store, input);
     equipment.fireplaceEvents = fireplaceContext.fireplaceEvents.filter(event => event.at <= now && event.at + FIREPLACE_HORIZON_MS > now);
     equipment.fireplaceActive = fireplaceActive(equipment.fireplaceEvents, now);
@@ -950,6 +980,9 @@ export class Engine {
     }
     sample.integral = equipment.integral; sample.supplyShortfallC = equipment.supplyShortfallC;
     const context = { phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0,
+      floorOverrideMode: this.floorOverrideMode(now), dhwrActive: this.executor.status().pulseUntil > now,
+      treatmentKey: this.cycles.active()?.plan.schedule.treatmentKey ?? (currentPhase === 'preheat'
+        ? (this.floorOverrideMode(now) === 'on' ? 'fixed-room-floor-v1' : 'fixed-room-v1') : currentPhase === 'reduction' ? 'reduction-only-v1' : 'normal'),
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
     recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
     checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
@@ -1004,7 +1037,8 @@ export class Engine {
     const roomComfortLimited = this.settings.occupancy.mode === 'occupied' && Object.keys(indoorWeights(this.control)).some(signal => {
       const reference = checkpoint.sensorComfortReferences?.[signal]?.targetC;
       const reading = observations[{ indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom' }[signal]];
-      return Number.isFinite(reference) && !reading?.stale && reading.value <= reference - this.settings.comfort.maxDropC;
+      return Number.isFinite(reference) && !reading?.stale && (reading.value <= reference - this.settings.comfort.maxDropC
+        || reading.value >= reference + this.settings.comfort.maxRiseC);
     });
     const controlHold=!cycle?this.cycles.controlHold(now):null;
     const forceNormal = override ? 'temporary-normal-override' : controlHold?'recent-cycle-incomplete'
@@ -1027,8 +1061,8 @@ export class Engine {
       if (phase === 'reduction' || phase === 'preheat') {
         const intervals = forecastIntervals(outlook.prices, outlook.forecast, now);
         const args = { intervals, model: checkpoint.model, initialState: { indoorC: sample.indoorC,
-          reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral },
-          targetC, config: this.control, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC };
+          reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral },
+          targetC, config: this.control, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC };
         if (!intervals.length || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > this.control.maxUnobservedReductionHours*3600000) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
         } else {
@@ -1037,9 +1071,11 @@ export class Engine {
             reductionStart: Math.min(schedule.reductionStart,now), reductionEnd: now } });
           const stress=cycle.plan.trial?trialEnvelope({...args,schedule:{...schedule,
             preheatStart:Math.max(now,schedule.preheatStart),reductionStart:Math.max(now,schedule.reductionStart)}}):null;
-          const unsafe=stress?!stress.comfortSafe:continued.severe;
-          const uneconomic=stress?stress.costExposureCents>cycle.plan.trialAllowanceCents
-            :continued.score>restored.score+Math.max(5,Math.abs(continued.costCents-restored.costCents)*0.5);
+          const unsafe=continued.severe || Boolean(stress && !stress.comfortSafe);
+          const economics = stress ? null : economicAdmission({ prediction: continued, referencePrediction: restored, args, schedule,
+            reference: { ...schedule, preheatEnd: Math.min(schedule.preheatEnd, now), reductionStart: Math.min(schedule.reductionStart, now), reductionEnd: now },
+            settings, continuing: true });
+          const uneconomic=stress?stress.costExposureCents>cycle.plan.trialAllowanceCents:!economics.admitted;
           if (unsafe || uneconomic) {
             const reason=unsafe?'predicted-comfort-limit':stress?'trial-exposure-now-exceeds-allowance':'recovery-cost-now-favours-ending';
             this.cycles.shorten(now,reason);
@@ -1080,13 +1116,16 @@ export class Engine {
         this.cycles.save(active);
       }
     }
+    decision.roomSettingC = this.control.preheatRoomSettingC;
+    decision.floorOverride = decision.phase === 'preheat' && decision.plan?.schedule.floorOverride === true;
+    decision.owner = `plan:${decision.plan?.generatedAt ?? now}`;
     decision.roomBoostC = decision.phase === 'preheat' ? decision.plan.schedule.roomBoostC : 0;
     decision.expiresAt = decision.phase === 'preheat' ? cycleSchedule.preheatEnd
       : decision.phase === 'reduction' ? cycleSchedule.reductionEnd : now+1800000;
     const lastPulseAt = this.store.getState(`dhwr:${input}`)?.lastPulseAt;
-    const pulse = !override && decision.phase === 'normal' && dhwrEligible(now,lastPulseAt,'normal');
-    decision.commands = decision.phase === 'reduction' ? ['reduction'] : decision.phase === 'preheat' || pulse ? ['circulation','normal'] : ['normal'];
-    decision.dhwr = { requested: pulse || decision.phase === 'preheat', durationMinutes: this.control.dhwrPulseMinutes, lastPulseAt: lastPulseAt ?? null,
+    const pulse = !override && ['normal', 'preheat'].includes(decision.phase) && dhwrEligible(now,lastPulseAt,'normal');
+    decision.commands = decision.phase === 'reduction' ? ['reduction'] : pulse ? ['circulation','normal'] : ['normal'];
+    decision.dhwr = { requested: pulse, durationMinutes: this.control.dhwrPulseMinutes, lastPulseAt: lastPulseAt ?? null,
       basis: 'ST-MQ requests MQTT ON/OFF; measured positive power verifies on and zero verifies off.' };
     decision.nextState = { phase: decision.phase };
     if (holdManualSettings) decision.manualHold = { until: override.expiresAt,
@@ -1119,12 +1158,15 @@ export class Engine {
           && (this.checkpoint?.measurementEpochAt ?? null) === (checkpoint.measurementEpochAt ?? null)) {
           const effectiveAt=this.clock();
           const plan = structuredClone(decision.plan);
-          plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, integral: equipment.integral };
+          plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral };
           plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,effectiveAt);
           plan.executionStartedAt=effectiveAt;plan.initialObservationAt=now;plan.equipment=equipment;
           this.cycles.start(plan,{...cycleSample,timestamp:effectiveAt,windowStart:effectiveAt,windowEnd:effectiveAt,phase},effectiveAt,{executed:!this.plant});
         }
-        recordLearningContext(this.store,input,{phase,roomBoostC:this.applied.roomBoostC,
+        recordLearningContext(this.store,input,{phase,roomBoostC:this.applied.roomBoostC, floorOverrideMode: this.floorOverrideMode(this.clock()),
+          dhwrActive: this.executor.status().pulseUntil > this.clock(),
+          treatmentKey: this.cycles.active()?.plan.schedule.treatmentKey ?? (phase === 'preheat'
+            ? (this.floorOverrideMode(this.clock()) === 'on' ? 'fixed-room-floor-v1' : 'fixed-room-v1') : phase === 'reduction' ? 'reduction-only-v1' : 'normal'),
           targetC:this.settings.comfort.targetC??this.checkpoint?.baselineC??null,
           regime:this.settings.occupancy.mode==='occupied'?'occupied':'away',
           episodeId:this.cycles.active()?.id ?? null},this.clock(),{config:this.control,seed:checkpoint});
@@ -1173,7 +1215,7 @@ export class Engine {
       actual:visibleCycle.actual,stableSince:visibleCycle.stableSince,referenceLabel:visibleCycle.plan.referenceLabel,adjustments:visibleCycle.adjustments} : null;
     this.latestStatus = { now,input,mode:this.settings.mode,liveWrites:this.settings.mode==='active'&&input!=='simulated'&&Boolean(this.executor.commandTransport),
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
-      heatingTests:this.heatingTests(),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
+      heatingTests:this.heatingTests(),preheatValves:this.preheatValveStatus(now),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.providerStatus(),shelly:this.shelly?.status(now)??{configured:false,connected:false,devices:[]},
       equipment:this.equipmentStatus(),equipmentTests:this.equipmentTestStatus(),equipmentControls:this.equipmentControlStatus(),dhwr:this.dhwrStatus(),
@@ -1195,6 +1237,7 @@ export class Engine {
     const now = this.clock();
     result.now = now;
     result.heatingTests = this.heatingTests();
+    result.preheatValves = this.preheatValveStatus();
     result.shelly = this.shelly?.status(now) ?? { configured: false, connected: false, devices: [] };
     result.equipment = this.equipmentStatus();
     result.equipmentTests = this.equipmentTestStatus();

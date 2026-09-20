@@ -19,7 +19,7 @@ test('home connections show pump, temperatures in configured order, circulation 
     topics: [topic('State', 'fixture/tariff/state')] }, circulation, ...temperatures], topicGroups: groups },
     shelly: { topicGroups: groups }, dhwr: { feedback: { deviceId: circulation.id }, commandTopic: 'fixture/circulation/set' },
     h66: { available: true, brokerConnected: true, lastPublicationAt: NOW } });
-  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', ...temperatures.map(device => device.id), circulation.id, 'fixture-tariff']);
+  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', ...temperatures.map(device => device.id), circulation.id, 'fixture-tariff', 'floor-override:storage', 'floor-override:living']);
   const device = rows.find(row => row.id === circulation.id);
   const deviceTopics = equipmentTopicGroups(device.topics).flatMap(group => group.topics);
   assert.deepEqual(deviceTopics.map(row => row.topic), ['fixture/circulation/state', 'fixture/circulation/set']);
@@ -39,9 +39,9 @@ test('shared groups do not repeat owned feeds and separate Home and Garage legac
     { ...topic('Bedroom', 'fixture/bedroom'), signal: 'bedroom_temperature' },
     { ...topic('Garage front', 'fixture/garage-front'), signal: 'garage_temperature_2' },
   ] }] } });
-  assert.equal(rows.length, 3);
+  assert.equal(rows.length, 5);
   assert.deepEqual(rows.map(row => [row.area, equipmentTopicGroups(row.topics).flatMap(group => group.topics.map(row => row.topic))]), [
-    ['home', ['fixture/upstairs']], ['home', ['fixture/bedroom']], ['garage', ['fixture/garage-front']],
+    ['home', ['fixture/upstairs']], ['home', ['fixture/bedroom']], ['garage', ['fixture/garage-front']], ['home', []], ['home', []],
   ]);
 });
 
@@ -53,7 +53,7 @@ test('connection health distinguishes quiet healthy devices, retained values and
   assert.equal(equipmentConnectionSummary(retained).label, 'Live state unconfirmed');
   assert.equal(equipmentConnectionSummary(retained).state, 'attention');
   const commands = equipmentConnections({ now: NOW, dhwr: { commandTopic: 'fixture/circulation/set' } });
-  assert.equal(commands.length, 1);
+  assert.equal(commands.length, 3);
   assert.equal(equipmentConnectionSummary(commands[0]).label, 'Commands configured');
   assert.equal(equipmentConnectionSummary(commands[0]).state, 'pending');
 });
@@ -155,4 +155,26 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
   const separate = equipmentConnections(other)[0];
   assert.equal(equipmentSource(separate), 'BMW CarData');
   assert.equal(equipmentConnectionSummary(separate).label, 'Disconnected', 'a separate Tesla subscription cannot confirm the BMW feed');
+});
+
+test('both floor Shellys are visible before device IDs are supplied and have no bypass controls', () => {
+  const floor = equipmentConnections({}).filter(device => device.kind === 'floor_override');
+  assert.deepEqual(floor.map(device => device.id), ['floor-override:storage', 'floor-override:living']);
+  assert(floor.every(device => device.area === 'home' && equipmentSource(device) === 'Shelly'));
+  assert(floor.every(device => device.enabled === false && device.controls.switch === false && device.topics.length === 0));
+  assert(floor.every(device => equipmentConnectionSummary(device).label === 'Not enabled'));
+  assert.match(floor[0].connectionDetail, /5 minutes.*15 minutes/);
+  assert.match(floor[0].connectionDetail, /OFF restores thermostat control/);
+});
+
+test('floor MQTT cards distinguish commissioning, confirmed preheating, missing readback and pending release', () => {
+  const view = extra => equipmentConnections({ now: NOW, preheatValves: { enabled: true, commissioned: true,
+    devices: [{ group: 'storage', available: true, at: NOW, channels: [{ id: 0, output: true }, { id: 1, output: true }] }], ...extra } })
+    .filter(device => device.kind === 'floor_override');
+  assert.equal(equipmentConnectionSummary(view({ commissioned: false })[0]).label, 'Needs commissioning');
+  const active = view({ active: true });
+  assert.equal(equipmentConnectionSummary(active[0]).label, 'Preheating');
+  assert.match(active[0].connectionDetail, /Output 0: override on; Output 1: override on/);
+  assert.equal(equipmentConnectionSummary(active[1]).label, 'Awaiting local-script readback');
+  assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).label, 'Release pending');
 });

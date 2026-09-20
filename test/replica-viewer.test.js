@@ -68,7 +68,7 @@ async function viewer(t, directory, readPublication, extra = {}) {
   return { app, request };
 }
 
-function recordLearningModels(publication, { recordedAt = publication.sourceAt, matching = true } = {}) {
+function recordLearningModels(publication, { recordedAt = publication.sourceAt, matching = true, homeModelVersion = 3 } = {}) {
   const store = new Store(publication.dbPath), seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = .031;
   seed.baselineC = 21.4;
@@ -78,6 +78,7 @@ function recordLearningModels(publication, { recordedAt = publication.sourceAt, 
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: recordedAt }, { seed });
   const checkpoint = applyLearningRecord(null, store.learningJournal({ input: 'mqtt' })[0]);
   checkpoint.privateFixture = 'invented-checkpoint-marker-not-for-browser';
+  checkpoint.model.version = homeModelVersion;
   if (!matching) checkpoint.algorithmVersion = 'invented-unsupported-home-algorithm';
   store.setState('adaptive:mqtt', checkpoint);
   const garageSeed = createGarageModel({ seedAt: recordedAt });
@@ -98,6 +99,9 @@ test('replica exposes both saved models without sample histories, live readiness
   const { app, request } = await viewer(t, directory, async () => publication, { clock: () => now });
   const status = (await request('/api/status')).body;
   assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
+  assert.equal(status.learning.adaptive.model.version, 3);
+  assert(Number.isFinite(status.learning.adaptive.model.parameters.hydronicCPerKwh));
+  assert.equal(status.learning.adaptive.model.performance.version, 'dhp-h10-b0-v1');
   assert.equal(status.learning.adaptive.baselineC, 21.4);
   assert.equal(status.learning.adaptive.comfortReference.confidence, 'observed-heating-baseline');
   assert.equal(status.learning.adaptive.algorithmVersion, LEARNING_ALGORITHM);
@@ -156,6 +160,7 @@ test('replica does not substitute priors for missing, unsupported or post-public
   assert.equal(missing.garage.learning.status, 'unavailable');
   for (const [generation, options] of [
     ['unsupported-models', { matching: false }], ['future-models', { recordedAt: at + 60_000 }],
+    ['archived-home-shape', { homeModelVersion: 2 }],
   ]) {
     publication = snapshot(directory, generation);
     recordLearningModels(publication, options);
@@ -163,9 +168,13 @@ test('replica does not substitute priors for missing, unsupported or post-public
     assert.equal(status.learning.status, 'unavailable');
     assert.equal(status.learning.adaptive, null);
     assert.equal(status.learning.recordedAt, null);
-    assert.equal(status.garage.learning.status, 'unavailable');
-    assert.equal(status.garage.learning.coefficients, undefined);
-    assert.equal(status.garage.learning.recordedAt, null);
+    if (options.homeModelVersion === 2) {
+      assert.equal(status.garage.learning.recordedAt, at, 'An unsupported Home shape does not conceal a compatible Garage model');
+    } else {
+      assert.equal(status.garage.learning.status, 'unavailable');
+      assert.equal(status.garage.learning.coefficients, undefined);
+      assert.equal(status.garage.learning.recordedAt, null);
+    }
     assert.equal(digest(publication.dbPath), publication.digest);
   }
 });

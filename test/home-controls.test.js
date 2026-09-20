@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeRates, finnishDateTime, rateRows, temporaryValues } from '../chart/home-controls.js';
+import { activeRates, finnishDateTime, homePolicyValues, rateRows, temporaryValues } from '../chart/home-controls.js';
 
 test('date controls display Finnish wall time across winter, summer and midnight', () => {
   const original = process.env.TZ;
@@ -48,4 +48,11 @@ test('rate table applies VAT once to new ex-VAT and legacy VAT-inclusive transfe
   assert.ok(Math.abs(legacy[2].excludingVat * 1.255 - 3.34) < 1e-10);
   const seasonal = rateRows({ ...common, tariff: 'seasonal', transferRates: { vatIncluded: false, winterDayCtPerKwh: 4, otherCtPerKwh: 2 } });
   assert.deepEqual(seasonal.slice(2).map(row => row.name), ['Winter day transfer', 'Other times transfer']);
+});
+
+
+test('Home policy displays saved fixed settings without creating defaults for missing snapshots', () => {
+  assert.deepEqual(homePolicyValues({ settings: { savingsAggressiveness: 0, preheatRoomSettingC: 25,
+    comfort: { maxRiseC: 1 } } }), { aggressiveness: '0 / 100', preheat: '25 °C ROOM', maximumRise: '1 °C' });
+  assert.deepEqual(homePolicyValues({}), { aggressiveness: 'Unavailable', preheat: 'Unavailable', maximumRise: 'Unavailable' });
 });

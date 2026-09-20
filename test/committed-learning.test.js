@@ -48,7 +48,7 @@ test('causal windows use committed H66 heat inputs and frozen forecasts, never r
   const at = start + 15 * MINUTE;
   const before = committedLearningSample({ store, input: 'mqtt', at, config });
   assert.deepEqual(before.quality, []);
-  assert.equal(before.powerKw, 3.08);
+  assert.equal(before.powerKw, 9.4 / 4.24);
   assert.equal(before.thermalCompressorDuty, 1);
   assert.equal(before.provenance.forecastVersion.id, forecastId);
   assert.equal(before.solarRadiationWm2, 120);
@@ -59,7 +59,7 @@ test('causal windows use committed H66 heat inputs and frozen forecasts, never r
   assert.deepEqual(committedLearningSample({ store, input: 'mqtt', at, config }), before);
   record(store, 'heat_pump_power', 99, at, { source: 'controller-estimate', unit: 'kW' });
   record(store, 'heat_pump_meter_power', 99, at, { source: 'easee', unit: 'kW', raw: { auditOnly: true } });
-  assert.equal(committedLearningSample({ store, input: 'mqtt', at, config }).powerKw, 3.08);
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at, config }).powerKw, 9.4 / 4.24);
 });
 
 test('fast unsaved polls stay live while the house learner receives only recorded values', t => {
@@ -249,7 +249,7 @@ test('recorded context splits a transition window instead of labelling it with t
   assert.equal(sample.regime, 'mixed');
   assert.deepEqual(sample.inputSegments.map(row => [row.phase, row.regime, row.durationHours]),
     [['normal', 'occupied', 1 / 6], ['reduction', 'away', 1 / 12]]);
-  assert.ok(Math.abs(sample.energyKwh - 3.08 / 4) < 1e-12);
+  assert.ok(Math.abs(sample.energyKwh - (9.4 / 4.24) / 4) < 1e-12);
 });
 
 test('current context never fills an unrecorded past, including a change exactly at window end', t => {
@@ -278,7 +278,7 @@ test('joint routing and activity preserve space/DHW heat and energy across chang
   assert.deepEqual(sample.inputSegments.map(row => row.auxRoute), ['space', 'dhw']);
   assert.equal(sample.inputSegments.reduce((sum, row) => sum + row.spaceHeatingAuxKwh, 0), 0.5);
   assert.equal(sample.inputSegments.reduce((sum, row) => sum + row.dhwAuxKwh, 0), 0.25);
-  assert.ok(Math.abs(sample.energyKwh - 6.08 / 4) < 1e-12);
+  assert.ok(Math.abs(sample.energyKwh - (9.4 / 4.24 + 3) / 4) < 1e-12);
 });
 
 test('later unchanged polls cannot alter earlier resolved inputs with long recording intervals', t => {
@@ -351,8 +351,8 @@ test('configuration epochs update nominal prediction power and replay identicall
   assert.equal(checkpoint.model.energy.compressorKw, 6);
   equipmentWindow(store);
   const sample = committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config });
-  assert.deepEqual(sample.inputSegments.map(row => row.compressorPowerKw), [3, 6]);
-  assert.ok(Math.abs(sample.energyKwh - (3.08 / 6 + 6.08 / 12)) < 1e-12);
+  assert.deepEqual(sample.inputSegments.map(row => row.compressorPowerKw), [9.4 / 4.24, 9.4 / 4.24]);
+  assert.ok(Math.abs(sample.energyKwh - (9.4 / 4.24) / 4) < 1e-12);
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true }), checkpoint);
 });
 
@@ -367,16 +367,16 @@ test('new algorithm starts its own journal while older entries remain explicitly
   assert.equal(replayLearningJournal(store, 'mqtt').algorithmVersion, LEARNING_ALGORITHM);
 });
 
-test('reversible sensor learning establishes a v9 seed without reinterpreting the v8 archive', t => {
+test('hydronic learning establishes a v10 seed without reinterpreting the v9 archive', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   store.appendLearningJournal('mqtt', { kind: 'context', at: start - HOUR,
-    algorithmVersion: 'committed-house-v8-report-coverage', key: 'invented-v8-archive',
+    algorithmVersion: 'committed-house-v9-reversible-sensors', key: 'invented-v9-archive',
     payload: { value: { timestamp: start - HOUR }, configuration: {}, seed: null } });
-  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v8-report-coverage'").get();
+  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v9-reversible-sensors'").get();
   const model = initialAdaptiveModel(); model.parameters.fireplaceCPerKg = 0.23;
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start }, { config, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v9-reversible-sensors');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v10-hydronic-floor');
   assert.equal(entry.payload.seed.model.parameters.fireplaceCPerKg, 0.23);
   const checkpoint = replayLearningJournal(store, 'mqtt');
   assert.equal(checkpoint.model.parameters.fireplaceCPerKg, 0.23);

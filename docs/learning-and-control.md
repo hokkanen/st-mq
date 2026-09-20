@@ -11,13 +11,52 @@ Firewood can be logged through **Home → Fireplace**, below the equipment fold.
 
 ## What learns
 
-The model has seven thermal coefficients: heat loss, compressor response, solar
-response, auxiliary response, fireplace response, heat exchange and building memory time. Compressor
-and auxiliary gains remain separate. At most five coefficients are fitted; the two
-memory constants remain structural priors until independent state evidence can
-identify them. Heating enters the slow hydronic state before warming the room.
-That state is an effective temperature memory, not measured floor temperature or
-stored kWh. Effective heating response is not measured capacity or COP.
+The current model has **four learnable thermal responses**: heat loss, combined
+compressor/AUX hydronic response, solar response and fireplace response. Heat loss
+and hydronic response normally qualify first; solar and fireplace remain priors
+until independently supported. Heat exchange and building memory time remain fixed
+structural assumptions. Configured source performance and optional slab geometry,
+heat allocation and ground exchange are additional **fixed assumptions**, not
+hidden fitted coefficients. No automatic storage-response coefficient is fitted.
+
+The combined response is `hydronicCPerKwh`, in °C per estimated **thermal** kWh.
+Recorded compressor and reversing-valve timelines first determine space-heating
+duty. A fixed manufacturer map converts that duty to heat, and space-heating AUX
+heat is added. One learned response then acts on their sum through the slow
+building/slab states. Electricity consumption, AUX state and DHW routing remain
+separate. This avoids trying to identify two downstream effects of heat entering
+the same water circuit when the sources often operate together.
+
+For the standard **DHP-H 10**, the manufacturer gives 9.40 kW thermal and COP 4.24
+at B0/W35, and 9.24 kW thermal and COP 3.51 at B0/W45 (0 °C incoming brine;
+35/45 °C heating-water outlet). The fixed map is:
+
+```text
+Q(T) = 9.40 − 0.016 × (T − 35) kW thermal
+P(T) = 9.40/4.24 + ((9.24/3.51 − 9.40/4.24)/10) × (T − 35) kW electrical
+Space-heating input = routed compressor duty × Q(T) + routed AUX kW
+```
+
+At 40 °C water, 50% compressor duty and 3 kW average AUX give about **7.66 kW
+thermal**. Initial `hydronicCPerKwh` is `0.75/9.40 ≈ 0.0798`; this is a prior,
+not a measurement or a converted validation of the old separate gains. A shared
+coefficient is conditional on this source estimate: a wrong compressor-output map
+can bias predictions during AUX operation.
+
+35–45 °C is interpolation; only 30–35 and 45–50 °C use provisional extrapolation.
+Automatic preheating requires a known supply temperature and a projected supply
+inside 30–50 °C. For degraded observation/model display, missing supply uses the
+35 °C reference; out-of-range supply retains its actual value and evaluates the
+nearest 30/50 °C boundary with extra uncertainty. The two points
+cannot identify a brine correction, so no fitted brine slope is invented. An
+unconfirmed installed model, missing brine and departure from the reference increase
+uncertainty. Missing live brine remains unknown; B0 is a manufacturer reference,
+not an assumed measurement of the installed ground loop. The published electrical boundary includes circulation pumps: the model
+must not add the same pumping load twice. Separate DHWR remains separately accounted.
+These are performance estimates, not heat/electricity metering. See the
+[manufacturer technical data, pages 107–108](https://assets.danfoss.com/documents/latest/29671/AN000086466221en-010701.pdf).
+The combined parameter's expandable row includes these equations, example, source
+link, limitations and distinction between thermal input and electricity cost.
 
 Each dashboard **Heating configuration** includes its learning summary above the pause controls. Home reports
 counts of usable observations and accepted model updates. These counts describe
@@ -34,9 +73,9 @@ keyboard focus and the sensor-change forms within Home's temperature inputs.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
 or fixed building assumption. The current-value display uses the existing learning
-state. Five **Model coefficients · Calculated** chart choices show historical heat
-loss, compressor response, solar response, auxiliary response and fireplace response. The two fixed
-building assumptions remain informational values only.
+state. Four **Model coefficients · Calculated** chart choices show historical heat
+loss, combined hydronic response, solar response and fireplace response. Fixed
+building, source and slab assumptions have separate informational rows.
 
 Coefficient charts replay the immutable learning journal in memory with the matching
 algorithm, saved configuration, initial seed and current corrected fireplace revision. Replay preserves journal order,
@@ -45,7 +84,10 @@ selected range's start. Each coefficient is a stepped line with initial, fitted 
 retained status in its tooltip. Unsupported or incomplete replay prefixes leave
 gaps; an explicit saved seed can establish a new supported start. The selected live
 learner and imported history are replayed separately, and simulation stays separate.
-Earlier chart intervals never receive today's coefficient values.
+Earlier chart intervals never receive today's coefficient values. Algorithm
+`committed-house-v10-hydronic-floor` starts an explicit epoch for the combined heat
+input and new hydraulic treatment. Older algorithms remain archival gaps in current
+coefficient replay; old separate-source fits cannot qualify the new override.
 
 Chart requests use a read-only database connection and never save replay checkpoints,
 coefficient rows or new snapshots. A bounded memory cache reuses derived timelines
@@ -58,7 +100,8 @@ Saved model-input temperatures remain selectable because they describe the input
 used for learning.
 
 Observed thermal drivers are outdoor temperature, archived solar radiation,
-space-heating compressor duty and space-heating auxiliary power. The configured
+the estimated combined hydronic heat, derived from space-heating compressor duty
+and space-heating auxiliary power. The original source inputs remain visible. The configured
 average of Upstairs, Bedroom and Downstairs is the live indoor state and prediction
 target, with fixed membership and equal weights by default. Missing contributing
 readings leave gaps; imported CSV learning retains its original Upstairs input.
@@ -67,9 +110,11 @@ each room before permitting occupied heating reduction. See
 [indoor temperatures](temperature-sensors.md) for averaging, room limits and sensor
 changes, recorded inside the **Average indoor** model-input details.
 Requested phase, ROOM boost and comfort target describe control context; they do
-not create a direct heat credit. The eight
-**Model inputs · Calculated** axes include the indoor endpoint and these seven
-input/context values exactly as saved in the learning journal.
+not create a direct heat credit. The **Model inputs · Calculated** axes retain the
+indoor endpoint, original source inputs and control context exactly as saved in the
+learning journal. Combined hydronic heat and actual pooled floor-valve mode have
+separate views; unknown and partial valve confirmation remain distinct. These new
+inputs are not retroactively filled into older records.
 **Manually recorded firewood additions** markers and calculated **Fireplace release input** provide
 two additional input views from the corrected source-event history. Fireplace
 response evidence appears alongside the coefficient. Daily estimated firewood cost
@@ -84,7 +129,9 @@ The forecast available at the start of a completed interval supplies its solar
 input. Missing radiation remains unknown and adds uncertainty. No wind, cloud or
 sun-angle pseudo-observations are invented.
 
-Fitting scores every temperature along later trajectories, separated from training
+Held readings are not independent new sensor observations. Genuine report lineage
+limits which temperature changes supply new fitting evidence, while integrated
+heat inputs retain their complete elapsed time. Fitting scores temperatures along later trajectories, separated from training
 by a 12-hour embargo. It compares the candidate with the previous model and holding
 the initial temperature. Missing intervals close and score preceding usable
 fragments; complete short cycles receive their own checks. A dip followed by a
@@ -129,7 +176,7 @@ Passive summer warmth and ongoing cooling cannot establish a new reference.
 
 Each candidate prices preheat, reduction, recovery and remaining heat debt under
 the same price/weather outlook. Electricity price belongs in this objective, not
-in the thermal coefficients. Nominal compressor/runtime and auxiliary estimates
+in the thermal coefficients. The fixed compressor performance map and nominal auxiliary estimates
 remain estimates; property consumption minus charging is never heat-pump metering.
 DHW is separately attributed where routing is known. Its demand and tank recovery
 are not counterfactually modeled, so the space-heating comparison cannot claim
@@ -142,10 +189,81 @@ observed phase and a short projection. Unknown tariff response starts from uncha
 normal demand with explicit uncertainty. Episode evidence can subsequently change
 that response. A stored pending schedule is re-evaluated before it starts.
 
+Preheating uses one configured **absolute ROOM request**, default **25 °C**, and
+one pooled override across configured floor channels. A warmer existing ROOM
+baseline is never lowered. ROOM is a native demand
+setting, not a 25 °C room-air target. Previously thermostat-limited loops need
+fresh override evidence; baseline and permanently open paths do not establish
+successful charging of newly opened circuits. Normal DHWR continues on its own
+schedule. An optional final DHW refill is not implemented; hot-water service and
+whole-house savings remain outside the space-heating benefit claim. The future
+supply estimate adds 3 °C per degree of ROOM increase to the current supply. This
+is a fixed planning assumption, not a learned heating curve or a native forecast;
+projected temperatures outside the provisional source-map range reject preheat.
+An automatic cycle keeps its original treatment identity through reduction and
+recovery, separately from actual valve mode after the override closes.
+
+The selected slab exists in both valve modes. Its modeled temperature persists
+when relays turn off, and heat allocation changes without inventing new heat or
+capacity. Initial selected capacity is carved out of the effective reserve budget.
+Ground exchange uses a separate configured slow boundary and avoids duplicating
+the baseline ground loss already present in the envelope prior when configured.
+Material kWh/K describes sensible capacity at uniform temperature, not how much
+can be charged during a short period or how much electricity a cycle saves.
+Room-only observations cannot identify all these fixed quantities at once. Public
+defaults leave the explicit slab disabled until its physical priors are configured.
+Automatic floor-preheat candidates require a configured slab within the reserve
+capacity budget; a deliberate manual override uses commissioned device authority
+without pretending its thermal behavior is already validated.
+
+Home **Savings aggressiveness** is a configured 0–100 preference. It changes the
+economic hurdle and continuous comfort cost, including duration within an allowed
+band. It does not relax hard occupied-room upper/lower bounds. The planner checks
+each participating room conservatively; a warm floor downstairs does not prove
+that an occupied bedroom can coast safely. This is a conservative room-offset
+proxy, not an identified zonal model: each room follows the projected change in
+the house average while retaining its current offset, plus its recent trend for
+at most the first hour. The common temperature allowance applies to each room,
+and individual live readings also guard active control. Configuration changes use the existing
+**Apply configuration** workflow; the displayed preference is not a live slider.
+It does not mean a percentage of annual savings or guarantee any annual saving.
+
+For preference fraction `a = aggressiveness/100`, a new cycle needs conservative
+benefit greater than `50 − 40a` cents, plus `30 − 25a` cents per weighted hot/cold
+°C²-hour, 2 cents per extra active hour and 2 cents to start. Continuation excludes
+the already committed start hurdle. Among admitted choices, the mildest retaining
+at least `0.6 + 0.4a` of the best positive conservative benefit is selected. At zero,
+automatic tariff cycles are disabled while normal heating and learning continue.
+
+Selection, dispatch and continuation share paired stress scenarios for action and
+reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor
+duty ±0.08, source electrical input within its operating-point allowance, and AUX
+exposure ±50%. A residual 5-cent uncertainty floor remains. These cases are not
+statistical confidence bounds. Forward temperature bounds begin with conditional
+trajectory error and add engineering allowances for the source estimate, unknown
+action, missing solar, fireplace response and optional slab. The separately
+calculated duty-response error does not make those bounds calibrated probabilities;
+frozen forecasts still need independent later-outcome checks. The bounded search checks the best 16 nominal
+candidates independently of the preference; it does not establish a global optimum.
+Equipment duty ratios and AUX exposure calibration remain separate adaptive
+quantities. Saved nominal compressor kW and recovery multipliers remain reporting
+diagnostics; they do not replace the fixed source electrical-input map.
+
+Each floor ON command carries a **device-local 15-minute lease**, normally renewed
+every **5 minutes** while preheat remains authorized; each lease is capped at the planned end. A controller crash or lost
+network therefore lets the Shelly turn its override off without a later server
+command. Commissioned OFF wiring returns authority to the room thermostats; stored
+heat still releases afterward. Device readback and lease/timer verification remain
+separate from MQTT acknowledgement. Relay readback does not measure valve movement,
+water flow or delivered heat. Local expiry releases only the valve overrides:
+H66 ROOM has no device-side lease and relies on durable application restoration
+and retries after communication returns. The two groups are one treatment for learning,
+not two independently fitted thermal stores.
+
 With little evidence, automatic action requires enabled learning trials, usable
 recorded temperature/equipment evidence and remaining allowance. Initial trials
 last at most half an hour. A no-heat cooling scenario and rated-power recovery
-scenario must fit comfort and cost allowances. These are stress estimates, not
+scenario must fit comfort and cost allowances. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Individual warm-room limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
 guarantees that fallback costs cannot exceed the allowance. Disabled trials cannot
 be bypassed by an unvalidated economic action. Trials pause for six hours after
 completion or 24 hours after an incomplete attempt; new automatic cycles also wait
@@ -162,7 +280,7 @@ the captured native mode. The fallback remains in effect for the rest of the cyc
 obligations survive interruption and expire independently of planner ticks; separate
 transports do not guarantee atomic compressor switching.
 
-Completion requires comparable room temperature and the reserve reconstructed
+Completion requires comparable room temperature, native reserve and selected slab state when configured, reconstructed
 under the **frozen cycle model**, held for one hour. A newly fitted warmer reserve
 cannot make an older cycle complete. Missing thermal evidence prevents a reserve
 claim. Gaps/timeouts produce incomplete attempts, which remain visible with their
@@ -197,10 +315,9 @@ until the pause ends or the owner selects Resume now. Previous settings are then
 restored and the automatic schedule resumes if enabled. Outside Pause, these
 manual changes revert on the next controller update, normally within one minute,
 with a one-minute restoration deadline. Repeated edits preserve the original
-baseline. **Max preheating** raises the selected ROOM setting by the configured
-maximum boost, capped at the writable ROOM upper limit, requests normal tariff
-operation and starts a configured circulation run. Repeated clicks use the same
-unboosted ROOM setting, so the boost does not accumulate.
+baseline. **Preheat** requests the configured absolute ROOM setting and the pooled
+floor-valve override, with normal tariff operation. It does not stack temperature
+boosts or start continuous DHWR.
 A tariff request is verified from fresh configured relay readback received after
 the request. Native Shelly control uses Switch.Set followed by Switch.GetStatus;
 the command acknowledgement alone is insufficient. Missing, stale or mismatching
@@ -261,10 +378,10 @@ heating or native parameters does not end that independent circulation run.
 Internal/API actions are `circulation`, `normal` and `reduction`; obsolete timed
 button commands are rejected. Tariff control uses the configured relay directly. Pending OFF is saved before ON is sent and
 reconciled on restart, shutdown and restoration. See [device setup](dhwr-mqtt.md).
-The planner includes a nominal pulse-electricity allowance, but the thermal
-model does not invent extra delivered heat for the request. The coupled action
-cannot identify independent ROOM and DHWR effects. Tank service remains outside
-the space-heating benefit assessment.
+Normal DHWR service is independent of floor preheating and its ROOM lease. The
+thermal model does not invent extra house heat for a circulation request. Tank
+service remains outside the space-heating benefit assessment; pump electricity
+alone cannot account for tank and circulation heat losses.
 
 The native periodic high-temperature/14-day hygiene cycle is retained. The owner
 accepted that a temporary compressor-only strategy may delay the availability of

@@ -35,11 +35,13 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   for (const key of RIGHT_AXIS_SIGNALS) assert(!choices.has(key), `${key} already appears on the right axis`);
   const coefficients = select.children.find(group => group.label === 'Model coefficients · Calculated');
   assert.deepEqual(coefficients.children.map(option => option.value), Object.keys(MODEL_COEFFICIENT_INFO));
-  assert.equal(coefficients.children.length, 5);
+  assert.equal(coefficients.children.length, 4);
   assert.deepEqual(Object.values(MODEL_COEFFICIENT_INFO).map(info => info.parameter),
-    ['lossPerHour', 'normalHeatCPerHour', 'solarCPerHourPerKwM2', 'auxiliaryCPerKwh', 'fireplaceCPerKg']);
+    ['lossPerHour', 'hydronicCPerKwh', 'solarCPerHourPerKwM2', 'fireplaceCPerKg']);
   assert(choices.has('garage_model_front'));
   assert(choices.has('garage_coefficient_rear_lossPerHour'));
+  assert(choices.has('model_hydronic_heat'));
+  assert(choices.has('model_valve_override'));
   assert(choices.has('model_outdoor_temperature'), 'Saved outdoor learning inputs remain inspectable');
   const rooms = select.children.find(group => group.label === 'Home temperatures · Recorded');
   assert.deepEqual(rooms.children.map(option => [option.value, option.textContent]), [

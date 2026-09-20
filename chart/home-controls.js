@@ -42,3 +42,13 @@ export function rateRows(period) {
   }
   return rows;
 }
+
+/** Read-only policy summaries follow the existing configuration/reload workflow. */
+export function homePolicyValues(status = {}) {
+  const settings = status.settings ?? {}, comfort = settings.comfort ?? {};
+  return {
+    aggressiveness: Number.isFinite(settings.savingsAggressiveness) ? `${settings.savingsAggressiveness} / 100` : 'Unavailable',
+    preheat: Number.isFinite(settings.preheatRoomSettingC) ? `${settings.preheatRoomSettingC} °C ROOM` : 'Unavailable',
+    maximumRise: Number.isFinite(comfort.maxRiseC) ? `${comfort.maxRiseC} °C` : 'Unavailable',
+  };
+}

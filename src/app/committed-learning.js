@@ -8,8 +8,9 @@ import { indoorWeights, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReportCoverage } from './indoor-readings.js';
 import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from './sensor-inputs.js';
 import { withSensorMeasurements } from './sensor-samples.js';
+import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v9-reversible-sensors';
+export const LEARNING_ALGORITHM = 'committed-house-v10-hydronic-floor';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -17,7 +18,7 @@ const EQUIPMENT_KEYS = ['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', '
   'compressorIntegralA1', 'compressorHysteresisC', 'auxIntegralA2', 'auxHysteresisC', 'a2Basis',
   'recoveryCompressorOnly', 'recoveryCompressorOnlyHours', 'recoveryComfortMarginC',
   'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours', 'maxPreheatHours', 'maxRoomBoostC',
-  'recoveryTimeoutHours', 'dhwrPulseMinutes'];
+  'recoveryTimeoutHours', 'dhwrPulseMinutes', 'preheatRoomSettingC', 'heatPumpModelConfirmed', 'floorThermalPriors'];
 const MODEL_KEYS = [...EQUIPMENT_KEYS, 'targetC', 'thermalPriors', 'indoorSensorWeights'];
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
 const readingAge = (row, fallback) => row.source === 'husdata-h66' ? H66_MAX_AGE_MS : fallback;
@@ -170,7 +171,10 @@ export function recordLearningContext(store, input, context, at, { config = {}, 
   const controlContext = { phase: context.phase,
     roomBoostC: Number.isFinite(context.roomBoostC) ? context.roomBoostC : 0,
     targetC: Number.isFinite(context.targetC) ? context.targetC : null,
-    regime: context.regime, episodeId: context.episodeId ?? null };
+    regime: context.regime, episodeId: context.episodeId ?? null,
+    floorOverrideMode: ['on', 'off', 'partial', 'unknown'].includes(context.floorOverrideMode) ? context.floorOverrideMode : 'off',
+    treatmentKey: typeof context.treatmentKey === 'string' ? context.treatmentKey : 'native',
+    dhwrActive: typeof context.dhwrActive === 'boolean' ? context.dhwrActive : null };
   const previous = store.db.prepare(`SELECT id,at,config_version,payload FROM learning_journal
     WHERE input=? AND kind='context' AND algorithm_version=?
     AND json_type(payload,'$.value.controlContext')='object' ORDER BY at DESC,id DESC LIMIT 1`).get(input, LEARNING_ALGORITHM);
@@ -237,6 +241,7 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const compressor = get('compressor_active', H66_MAX_AGE_MS), route = get('dhw_routing', H66_MAX_AGE_MS);
   const auxiliary = get('auxiliary_output', H66_MAX_AGE_MS), integral = get('heating_integral', H66_MAX_AGE_MS);
   const supply = get('supply_temperature', H66_MAX_AGE_MS), setpoint = get('heating_setpoint', H66_MAX_AGE_MS);
+  const brine = get('brine_in_temperature', H66_MAX_AGE_MS);
   const alarm = get('alarm_active', H66_MAX_AGE_MS), mode = get('operating_mode', H66_MAX_AGE_MS);
   const radiation = weatherAt(store, from, at), contexts = controlContexts(store, input, from, at);
   const boundaries = [...new Set([from, at, ...Object.values(streams).flatMap(series => series.segments.flatMap(row => [row.start, row.end])),
@@ -252,12 +257,16 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
     const knownRoute = [0, 1].includes(observedRoute);
     const auxiliaryPower = configuration ? auxiliaryPowerFromOutput(valueAt(auxiliary, start), configuration.auxRatedKw ?? 9) : null;
     const auxKw = auxiliaryPower?.kw ?? null;
-    const compressorPowerKw = configuration ? configuration.heatPumpCompressorKw ?? 3 : null;
-    const circulationKw = configuration ? configuration.circulationKw ?? 0.08 : null;
-    const dhwrKw = configuration && context.phase === 'preheat' ? configuration.dhwrKw ?? 0.05 : 0;
+    const supplyC = valueAt(supply, start), brineC = valueAt(brine, start);
+    const performance = estimateHeatPumpPerformance({ supplyC, brineC, modelConfirmed: configuration?.heatPumpModelConfirmed });
+    const compressorPowerKw = configuration ? performance.electricalKw : null;
+    // This manufacturer boundary already includes circulation pumps. DHWR is a
+    // separate service, charged only when its observed/recorded ownership is ON.
+    const circulationKw = configuration ? 0 : null;
+    const dhwrKw = configuration && context.dhwrActive === true ? configuration.dhwrKw ?? 0.05 : 0;
     const powerKw = Number.isFinite(compressorDuty) && Number.isFinite(auxKw) && configuration
       ? compressorDuty * (compressorPowerKw + circulationKw) + auxKw + dhwrKw : null;
-    const outdoorC = valueAt(outdoor, start), supplyC = valueAt(supply, start), supplyTarget = valueAt(setpoint, start);
+    const outdoorC = valueAt(outdoor, start), supplyTarget = valueAt(setpoint, start);
     const quality = [];
     if (!context) quality.push('unavailable-controller-context');
     if (!Number.isFinite(outdoorC)) quality.push('missing');
@@ -265,6 +274,10 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
     const segment = { start, end, outdoorC, solarRadiationWm2: valueAt(radiation, start),
       phase: context?.phase ?? null, roomBoostC: context?.roomBoostC ?? null, targetC: context?.targetC ?? null,
       regime: context?.regime ?? null, episodeId: context?.episodeId ?? null,
+      supplyC, brineC, compressorHeatKw: performance.heatKw,
+      sourceRelativeUncertainty: performance.relativeUncertainty, sourceEstimateBasis: performance.basis,
+      sourceUncertaintyReasons: performance.uncertaintyReasons, sourcePumpsIncluded: true,
+      floorOverrideMode: context?.floorOverrideMode ?? 'unknown', treatmentKey: context?.treatmentKey ?? 'native',
       compressorDuty, compressorPowerKw, circulationKw, dhwrKw, auxKw, powerKw,
       thermalCompressorDuty: compressorDuty === 0 ? 0 : knownRoute ? observedRoute === 0 ? compressorDuty : 0 : null,
       thermalAuxKw: auxKw === 0 ? 0 : knownRoute && auxKw !== null ? observedRoute === 0 ? auxKw : 0 : null,
@@ -274,6 +287,8 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
       auxiliaryStage: auxiliaryPower?.stage ?? null, auxiliaryPowerBasis: auxiliaryPower?.basis ?? 'unavailable',
       integral: valueAt(integral, start), supplyShortfallC: Number.isFinite(supplyC) && Number.isFinite(supplyTarget) ? supplyTarget - supplyC : null,
       operatingMode: valueAt(mode, start), quality };
+    segment.hydronicHeatKw = Number.isFinite(segment.thermalCompressorDuty) && Number.isFinite(segment.thermalAuxKw)
+      ? segment.thermalCompressorDuty * performance.heatKw + segment.thermalAuxKw : null;
     segment.compressorActivityObserved = Number.isFinite(compressorDuty);
     segment.auxiliaryObserved = Number.isFinite(auxKw);
     segment.auxiliaryRouteKnown = knownRoute || auxKw === 0;
@@ -288,6 +303,7 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   for (const segment of inputSegments) {
     segment.durationHours = (segment.end - segment.start) / HOUR;
     segment.energyKwh = Number.isFinite(segment.powerKw) ? segment.powerKw * segment.durationHours : null;
+    segment.hydronicHeatKwh = Number.isFinite(segment.hydronicHeatKw) ? segment.hydronicHeatKw * segment.durationHours : null;
     segment.compressorKwh = Number.isFinite(segment.compressorDuty) && Number.isFinite(segment.compressorPowerKw)
       ? segment.compressorDuty * segment.compressorPowerKw * segment.durationHours : null;
     segment.spaceHeatingAuxKwh = Number.isFinite(segment.thermalAuxKw) ? segment.thermalAuxKw * segment.durationHours : null;
@@ -304,6 +320,9 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const sample = { sensorInputVersion: 1, timestamp: at, windowStart: from, windowEnd: at, durationHours, inputSegments,
     indoorC: indoor.value, indoorSensors, measurementEpochAt: sensorEpochAt || null,
     outdoorC: outdoor.mean, solarRadiationWm2: radiation.value,
+    supplyC: mean('supplyC'), brineC: mean('brineC'), hydronicHeatKw: mean('hydronicHeatKw'),
+    hydronicHeatKwh: mean('hydronicHeatKw') === null ? null : mean('hydronicHeatKw') * durationHours,
+    floorOverrideMode: oneValue(inputSegments, 'floorOverrideMode', 'unknown'), treatmentKey: oneValue(inputSegments, 'treatmentKey', 'mixed'),
     phase, roomBoostC: oneValue(inputSegments, 'roomBoostC'), targetC: oneValue(inputSegments, 'targetC'),
     regime: oneValue(inputSegments, 'regime', 'mixed'), quality,
     powerKw, energyKwh: powerKw === null ? null : powerKw * durationHours,
@@ -322,6 +341,7 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   // Compatibility summary only. Segments are authoritative when phase, target,
   // destination or configuration changes within the completed interval.
   sample.intervalInputs = { outdoorC: sample.outdoorC, solarRadiationWm2: sample.solarRadiationWm2,
+    supplyC: sample.supplyC, brineC: sample.brineC, floorOverrideMode: sample.floorOverrideMode, treatmentKey: sample.treatmentKey,
     phase, roomBoostC: sample.roomBoostC, targetC: sample.targetC,
     compressorDuty: thermalCompressorDuty, auxKw: thermalAuxKw };
   return withSensorMeasurements(sample, { sensorEpochs: boundariesBySensor, measurementEpochAt }, config);
@@ -370,8 +390,11 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
     key,
     algorithmVersion: LEARNING_ALGORITHM, configVersion: learningVersion(configuration),
     forecastVersion: value.provenance?.forecastVersion ?? null,
-    payload: { value, configuration, ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed }
-      : first ? { seed: seed ? structuredClone(seed) : null } : {}) } });
+    payload: { value, configuration, ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed,
+      ...(prior.epoch ? { epoch: prior.epoch } : {}) }
+      : first ? { seed: seed?.model?.version === 3 && (!seed.algorithmVersion || seed.algorithmVersion === LEARNING_ALGORITHM)
+        ? structuredClone(seed) : null, epoch: { algorithm: LEARNING_ALGORITHM,
+          initialization: 'explicit v3 seed or fresh hydronic priors; no v9 thermal reinterpretation' } } : {}) } });
 }
 
 function resetMeasurement(checkpoint, configuration, at) {
@@ -397,13 +420,19 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
     const previous = initial.learningConfiguration;
     if (learningVersion(indoorWeights(previous)) !== learningVersion(indoorWeights(configuration)))
       initial = resetMeasurement(initial, configuration, entry.at);
-    const changed = EQUIPMENT_KEYS.some(key => previous[key] !== configuration[key]);
+    const changed = EQUIPMENT_KEYS.some(key => learningVersion(previous[key] ?? null) !== learningVersion(configuration[key] ?? null));
     if (changed) {
       initial.equipmentEpochAt = entry.at;
       initial.model.equipmentResponse = { phases: {}, validation: null };
       initial.model.forecastValidation = null;
-      if (previous.auxRatedKw !== configuration.auxRatedKw)
-        initial.model.parameters.auxiliaryCPerKwh = initialAdaptiveModel(configuration).parameters.auxiliaryCPerKwh;
+      const structuralChanged = ['auxRatedKw', 'heatPumpModelConfirmed', 'floorThermalPriors'].some(key =>
+        learningVersion(previous[key] ?? null) !== learningVersion(configuration[key] ?? null));
+      if (structuralChanged) {
+        initial = resetMeasurement(initial, configuration, entry.at);
+        initial.model.performance = initialAdaptiveModel(configuration).performance;
+        initial.model.floor = initialAdaptiveModel(configuration).floor;
+        initial.model.parameters.hydronicCPerKwh = initialAdaptiveModel(configuration).parameters.hydronicCPerKwh;
+      }
       initial.model.energy = { ...initial.model.energy,
         compressorKw: defaults.compressorKw, auxiliaryKw: defaults.auxiliaryKw,
         circulationKw: defaults.circulationKw, dhwrKw: defaults.dhwrKw,

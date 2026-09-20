@@ -16,8 +16,7 @@ export function firewoodScenarios(model, initialState) {
     ...structuredClone(model), parameters: { ...model.parameters,
       fireplaceCPerKg: clampParameter('fireplaceCPerKg', nominalGain * scenario.gain),
       lossPerHour: clampParameter('lossPerHour', model.parameters.lossPerHour * scenario.loss),
-      normalHeatCPerHour: clampParameter('normalHeatCPerHour', model.parameters.normalHeatCPerHour * scenario.heat) },
-    energy: { ...model.energy, compressorKw: Math.min(30, model.energy.compressorKw * scenario.power) },
+      hydronicCPerKwh: clampParameter('hydronicCPerKwh', model.parameters.hydronicCPerKwh * scenario.heat) },
   }, withFire: { ...initialState }, withoutFire: { ...initialState }, cents: 0, kwh: 0 }));
 }
 
@@ -25,12 +24,10 @@ export function firewoodScenarios(model, initialState) {
  * comfort target and equipment configuration. No terminal heat is monetized. */
 export function advanceFirewoodPair(scenario, { start, end, outdoorC, solarRadiationWm2, price = 0,
   targetC, config = {}, fireplaceEvents = [], occupancy = { mode: 'occupied' } }) {
-  const changedNominal = Number.isFinite(config.heatPumpCompressorKw)
-    && config.heatPumpCompressorKw !== scenario.model.energy.nominalConfiguration?.compressorKw;
-  const model = changedNominal ? { ...scenario.model, energy: { ...scenario.model.energy,
-    compressorKw: Math.max(0.01, Math.min(30, config.heatPumpCompressorKw * scenario.powerMultiplier)) } } : scenario.model;
   const common = { intervals: [{ start, end, outdoorC, solarRadiationWm2, price }],
-    model, targetC, config, occupancy, schedule: null, includeTail: false };
+    model: scenario.model, targetC, config: { ...config,
+      scenarioElectricalScale: (config.scenarioElectricalScale ?? 1) * scenario.powerMultiplier },
+    occupancy, schedule: null, includeTail: false };
   const withFire = evaluateCycle({ ...common, initialState: scenario.withFire,
     equipment: { fireplaceEvents } });
   const withoutFire = evaluateCycle({ ...common, initialState: scenario.withoutFire,

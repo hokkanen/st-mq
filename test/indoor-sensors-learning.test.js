@@ -242,7 +242,7 @@ test('changed sensors cannot regain obsolete validation from imported upstairs-o
   assert(engine.status().observations.indoor.stale);
 });
 
-test('a cold room blocks reductions against its own reference even when the average is comfortable', async t => {
+test('cold and hot rooms independently block optimization against their own references', async t => {
   const store = new Store(':memory:'); let now = start + W;
   const engine = new Engine({ store, config: { input: 'providers', control: config,
     settings: { mode: 'shadow', comfort: { maxDropC: 1 } } }, clock: () => now });
@@ -253,9 +253,9 @@ test('a cold room blocks reductions against its own reference even when the aver
   seed.baselineC = 21; seed.comfortReference = reference(21);
   seed.sensorComfortReferences = { indoor_temperature: reference(23), downstairs_temperature: reference(21), bedroom_temperature: reference(19) };
   appendLearningRecord(store, 'providers', 'context', { timestamp: start }, { config, seed });
-  function readings(downstairs) {
-    for (const [signal, value] of [['indoor_temperature', 24], ['downstairs_temperature', downstairs],
-      ['bedroom_temperature', 20], ['outdoor_temperature', 0]]) engine.ingest({ signal, value,
+  function readings(downstairs, upstairs = 24, bedroom = 20) {
+    for (const [signal, value] of [['indoor_temperature', upstairs], ['downstairs_temperature', downstairs],
+      ['bedroom_temperature', bedroom], ['outdoor_temperature', 0]]) engine.ingest({ signal, value,
       source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: `invented-${signal}`,
       sourceTime: now, receivedAt: now, quality: [], unit: 'degC' });
   }
@@ -264,5 +264,7 @@ test('a cold room blocks reductions against its own reference even when the aver
   assert.equal(cold.observations.indoor.value, 21);
   assert(cold.decision.reasons.includes('room-comfort-limit'));
   now += 60_000; readings(20.5);
+  assert(engine.tick().decision.reasons.includes('room-comfort-limit'), 'Warm rooms at the upper bound retain the temperature margin');
+  now += 60_000; readings(20.5, 23, 19);
   assert(!engine.tick().decision.reasons.includes('room-comfort-limit'));
 });

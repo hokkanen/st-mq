@@ -15,7 +15,7 @@ const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 function setup(t, { delayed = false, mode = 'active' } = {}) {
   const store = new Store(':memory:'), commands = [], pending = [];
   let now = Date.parse('2026-09-07T21:00:00Z');
-  const config = { input: 'mqtt', settings: validateSettings({ mode, comfort: { targetC: 21 } }),
+  const config = { input: 'mqtt', settings: validateSettings({ mode, comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 } }),
     control: { ...CONTROL_DEFAULTS, learningTrials: false } };
   const transport = { publish(batch) {
     commands.push({ at: now, batch: [...batch] });
@@ -25,7 +25,7 @@ function setup(t, { delayed = false, mode = 'active' } = {}) {
   const ingest = (signal, value) => engine.ingest({ source: signal === 'outdoor_temperature' ? 'fmi' : 'synthetic',
     device: 'invented-house', signal, value, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] });
   const intervals = Array.from({ length: 24 }, (_, index) => ({ start: now + index * 15 * MINUTE,
-    end: now + (index + 1) * 15 * MINUTE, outdoorC: 10, solarRadiationWm2: 0, price: index === 0 ? 200 : 1 }));
+    end: now + (index + 1) * 15 * MINUTE, outdoorC: 10, solarRadiationWm2: 0, price: index === 0 ? 2000 : 1 }));
   store.setState('provider:market', { fetchedAt: now, intervals: intervals.map(row => ({ ...row,
     spotCtPerKwh: row.price, unit: 'c/kWh', vatIncluded: false })) });
   store.setState('provider:weather', { issuedAt: now, fetchedAt: now, forecast: [{ start: now,
@@ -56,13 +56,14 @@ function setup(t, { delayed = false, mode = 'active' } = {}) {
       // statistical identification and forecast acceptance have separate tests.
       const model = initialAdaptiveModel(config.control);
       model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3,
-        parameterEvidence: { lossPerHour: { status: 'identified' }, normalHeatCPerHour: { status: 'identified' } } };
-      model.equipmentResponse = { phases: { reduction: { ratio: 0.1, trainingEpisodes: 3 } },
-        validation: { phases: { reduction: { accepted: true, episodes: 3, maeDuty: 0.05, maxDurationHours: 0.5 } } } };
+        parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
+      model.equipmentResponse = { phases: { reduction: { ratio: 0.1, trainingEpisodes: 3, treatmentKey: 'reduction-only-v1' } },
+        validation: { phases: { reduction: { accepted: true, episodes: 3, maeDuty: 0.05, maxDurationHours: 0.5, treatmentKey: 'reduction-only-v1' } } } };
+      model.uncertainty = { points: [{ hours: 24, errorC: 0.1 }], extrapolationCPerHour: 0.05 };
       model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: 0.5 };
       engine.checkpoint = restoreAdaptiveCheckpoint(null, config.control);
       engine.checkpoint.model = model;
-      const schedule = { preheatStart: now, preheatEnd: now, reductionStart: now, reductionEnd: now + 15 * MINUTE, roomBoostC: 0 };
+      const schedule = { preheatStart: now, preheatEnd: now, reductionStart: now, reductionEnd: now + 15 * MINUTE, roomBoostC: 0, treatmentKey: 'reduction-only-v1' };
       const args = { model, intervals, initialState: { indoorC: 21.2, reserveC: 21.2 }, targetC: 21, config: config.control };
       engine.pendingPlan = { ...args, schedule, reference: null, referenceLabel: 'continuous normal operation',
         prediction: evaluateCycle({ ...args, schedule }), referencePrediction: evaluateCycle(args), trial: false };

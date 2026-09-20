@@ -7,6 +7,7 @@ import { configurationPaths, createConfigurationSource, readConfigurationOptions
 import { pairingEnabled, pairingConfiguration } from '../pairing/config.js';
 import { garageSettings } from '../garage/settings.js';
 import { garageAdapterSettings } from '../garage/contract.js';
+import { floorOverrideConfiguration } from '../control/floor-override.js';
 import { chargingConfiguration } from '../charging/config.js';
 
 // Keep the configuration source private and out of status/serialized settings.
@@ -19,13 +20,18 @@ export function configurationSource(config) { return configurationSources.get(co
 export function validateSettings(input = {}) {
   const settings = {
     mode: input.mode ?? 'shadow',
-    comfort: { targetC: null, maxDropC: 1, severeDropC: 2, ...(input.comfort ?? {}) },
+    savingsAggressiveness: input.savingsAggressiveness ?? 50,
+    preheatRoomSettingC: input.preheatRoomSettingC ?? 25,
+    comfort: { targetC: null, maxDropC: 1, maxRiseC: 1, severeDropC: 2, ...(input.comfort ?? {}) },
     occupancy: input.occupancy ?? { mode: 'occupied' },
   };
   if (!['monitoring', 'shadow', 'active'].includes(settings.mode)) throw new Error('Invalid operating mode');
-  const { targetC, maxDropC } = settings.comfort;
+  const { targetC, maxDropC, maxRiseC } = settings.comfort;
   if (targetC !== null && (!Number.isFinite(targetC) || targetC < 15 || targetC > 26)) throw new Error('Comfort target must be 15–26 °C or unset');
   if (!Number.isFinite(maxDropC) || maxDropC < 0 || maxDropC > 2) throw new Error('Preferred drop must be 0–2 °C');
+  if (!Number.isFinite(maxRiseC) || maxRiseC < 0.25 || maxRiseC > 2) throw new Error('Preferred rise must be 0.25–2 °C');
+  if (!Number.isFinite(settings.savingsAggressiveness) || settings.savingsAggressiveness < 0 || settings.savingsAggressiveness > 100) throw new Error('Savings aggressiveness must be 0–100');
+  if (!Number.isInteger(settings.preheatRoomSettingC) || settings.preheatRoomSettingC < 20 || settings.preheatRoomSettingC > 30) throw new Error('Preheat ROOM must be 20–30 °C');
   if (!['occupied', 'away'].includes(settings.occupancy.mode)) throw new Error('Invalid occupancy mode');
   if (settings.occupancy.returnAt != null && !Number.isFinite(Date.parse(settings.occupancy.returnAt))) throw new Error('Invalid return time');
   return settings;
@@ -35,7 +41,7 @@ export const CONTROL_DEFAULTS = Object.freeze({
   auxIntegralA2: -990, auxHysteresisC: 30, compressorIntegralA1: null, compressorHysteresisC: null,
   a2Basis: 'absolute', heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025,
   maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
-  maxPreheatHours: 2, maxRoomBoostC: 5, learningTrials: true, trialBudgetCentsPerDay: 100,
+  maxPreheatHours: 2, maxRoomBoostC: 5, preheatRoomSettingC: 25, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 100,
   maxTrialCostCents: 50, recoveryTimeoutHours: 48,
   recoveryCompressorOnly: true, recoveryCompressorOnlyHours: 4, recoveryComfortMarginC: 0.5,
   dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
@@ -142,6 +148,7 @@ export function controlConfiguration(input = {}) {
     a2_basis: 'a2Basis', heat_pump_compressor_kw: 'heatPumpCompressorKw', auxiliary_rated_kw: 'auxRatedKw',
     circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', dhwr_duration_minutes: 'dhwrPulseMinutes', max_reduction_hours: 'maxReductionHours',
     max_away_reduction_hours: 'maxAwayReductionHours', max_unobserved_reduction_hours: 'maxUnobservedReductionHours',
+    preheat_room_setting_c: 'preheatRoomSettingC', heat_pump_model_confirmed: 'heatPumpModelConfirmed',
     max_preheat_hours: 'maxPreheatHours', max_room_boost_c: 'maxRoomBoostC', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
     recovery_timeout_hours: 'recoveryTimeoutHours', recovery_compressor_only: 'recoveryCompressorOnly',
@@ -149,13 +156,14 @@ export function controlConfiguration(input = {}) {
   const result = { ...CONTROL_DEFAULTS };
   for (const [key, value] of Object.entries(input)) if (map[key]) result[map[key]] = value;
   for (const [key, value] of Object.entries(result)) {
-    if (['a2Basis', 'learningTrials', 'recoveryCompressorOnly'].includes(key)) continue;
+    if (['a2Basis', 'learningTrials', 'recoveryCompressorOnly', 'heatPumpModelConfirmed'].includes(key)) continue;
     if (value === null && ['compressorIntegralA1', 'compressorHysteresisC'].includes(key)) continue;
     if (!Number.isFinite(value)) throw new Error(`Invalid controller setting: ${key}`);
   }
   if (!['absolute', 'offset'].includes(result.a2Basis) || typeof result.learningTrials !== 'boolean'
     || typeof result.recoveryCompressorOnly !== 'boolean') throw new Error('Invalid learning or integral configuration');
-  if (result.auxIntegralA2 >= 0 || result.auxIntegralA2 < -5000 || result.auxHysteresisC <= 0 || result.auxHysteresisC > 50
+  if (typeof result.heatPumpModelConfirmed !== 'boolean' || !Number.isInteger(result.preheatRoomSettingC) || result.preheatRoomSettingC < 20 || result.preheatRoomSettingC > 30
+    || result.auxIntegralA2 >= 0 || result.auxIntegralA2 < -5000 || result.auxHysteresisC <= 0 || result.auxHysteresisC > 50
     || !Number.isInteger(result.maxRoomBoostC) || result.maxRoomBoostC < 1 || result.maxRoomBoostC > 5 || result.maxPreheatHours <= 0 || result.maxPreheatHours > 6
     || result.maxReductionHours <= 0 || result.maxReductionHours > 12 || result.maxAwayReductionHours <= 0 || result.maxAwayReductionHours > 24
     || result.maxUnobservedReductionHours <= 0 || result.maxUnobservedReductionHours > 2
@@ -169,6 +177,20 @@ export function controlConfiguration(input = {}) {
     || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1
     || result.dhwrPulseMinutes < 1 || result.dhwrPulseMinutes > 60)
     throw new Error('Controller settings exceed supported bounds');
+  if (input.floor_thermal_priors !== undefined && (input.floor_thermal_priors === null || typeof input.floor_thermal_priors !== 'object' || Array.isArray(input.floor_thermal_priors))) throw new Error('Floor thermal priors must be an object');
+  if (input.floor_thermal_priors && Object.keys(input.floor_thermal_priors).length) {
+    const keys = { capacity_kwh_per_c: 'capacityKwhPerC', native_capacity_kwh_per_c: 'nativeCapacityKwhPerC',
+      exchange_kw_per_c: 'exchangeKwPerC', ground_loss_kw_per_c: 'groundLossKwPerC', ground_c: 'groundC',
+      open_allocation_fraction: 'openAllocationFraction', closed_allocation_fraction: 'closedAllocationFraction' };
+    result.floorThermalPriors = {};
+    for (const [key, value] of Object.entries(input.floor_thermal_priors)) {
+      const bounds = key.includes('fraction') ? [0, 1] : key === 'ground_c' ? [-5, 25]
+        : key === 'ground_loss_kw_per_c' ? [0, 10] : key === 'exchange_kw_per_c' ? [.001, 100] : [.1, 100];
+      if (!keys[key] || !Number.isFinite(value) || value < bounds[0] || value > bounds[1]) throw new Error('Invalid floor thermal prior');
+      result.floorThermalPriors[keys[key]] = value;
+    }
+    if (!(result.floorThermalPriors.capacityKwhPerC > 0)) throw new Error('A positive floor capacity is required');
+  }
   return result;
 }
 
@@ -272,6 +294,14 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
     }
   }
+  const floorPreheat = floorOverrideConfiguration(options.controller?.floor_preheat);
+  const occupiedTopics = [...(connections.shelly?.devices ?? []).map(device => device.prefix),
+    ...(connections.equipment?.devices ?? []).filter(device => device.enabled && (device.controlsSwitch || device.controlsHeat || device.controlsCover))
+      .flatMap(device => [device.prefix, device.mqtt?.commandTopic]), connections.mqtt?.dhwr_topic].filter(Boolean);
+  for (const device of floorPreheat.devices) if (occupiedTopics.some(topic => topic === device.topicPrefix
+    || topic.startsWith(`${device.topicPrefix}/`) || device.topicPrefix.startsWith(`${topic}/`)))
+    throw new Error('Floor override devices must have dedicated MQTT prefixes separate from other equipment controls');
+  if (floorPreheat.enabled && ['mqtt', 'providers'].includes(input) && !connections.mqtt?.address) throw new Error('Floor overrides require the existing MQTT broker connection');
   const port = Number(env.STMQ_PORT ?? 1234);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');
   const host = env.STMQ_HOST ?? (addon ? '0.0.0.0' : '127.0.0.1');
@@ -293,6 +323,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       adapter: garageAdapterSettings(options.garage?.adapter) },
     replication: replicationConfiguration(options.replication, env, { role, dataDir, databaseDir }),
     deviceId: replica ? undefined : (env.STMQ_H66_DEVICE ?? options.controller?.h66_device) || undefined,
+    floorPreheat,
     control: { ...controlConfiguration(options.controller),
       indoorSensorWeights: indoorSensorWeightsConfiguration(options.controller?.indoor_sensor_weights, options) },
     recording: recordingConfiguration(options.recording),
@@ -301,8 +332,9 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       maxAgeMs: H66_MAX_AGE_MS, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
     h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
-    settings: validateSettings({ mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
-      comfort: { targetC: null, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
+    settings: validateSettings({ savingsAggressiveness: options.controller?.savings_aggressiveness ?? 50,
+      preheatRoomSettingC: options.controller?.preheat_room_setting_c ?? 25, mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
+      comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pairing = pairingConfiguration(options.pairing, env, config);
   configurationSources.set(config, source);
   configurationReaders.set(config, () => loadConfig(env, cwd));

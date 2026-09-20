@@ -17,9 +17,8 @@ import { initialAdaptiveModel, predictThermalStep, restoreAdaptiveCheckpoint } f
 const MINUTE = 60_000, start = Date.parse('2026-09-08T08:00:00Z');
 const coefficientFields = {
   model_coefficient_heat_loss: 'lossPerHour',
-  model_coefficient_compressor_response: 'normalHeatCPerHour',
+  model_coefficient_hydronic_response: 'hydronicCPerKwh',
   model_coefficient_solar_response: 'solarCPerHourPerKwM2',
-  model_coefficient_auxiliary_response: 'auxiliaryCPerKwh',
   model_coefficient_fireplace_response: 'fireplaceCPerKg',
 };
 
@@ -96,7 +95,7 @@ test('independent input journals and imported fallback never share a replay chec
   assert(history.every(point => point.inputSource === 'Imported history'));
 });
 
-test('the five coefficient selections preserve zero and expose no fixed structural coefficients', t => {
+test('the four coefficient selections preserve zero and expose no fixed structural coefficients', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { model: model(0.025, { solarCPerHourPerKwM2: 0 }) });
   assert.deepEqual(Object.keys(MODEL_COEFFICIENT_INFO).sort(), Object.keys(coefficientFields).sort());
@@ -118,8 +117,8 @@ test('a rejected refit retains learned coefficients while unfitted coefficients 
   const seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = 0.03;
   seed.model.trainedAt = new Date(start - 60 * MINUTE).toISOString();
-  seed.model.validation = { accepted: true, fittedParameters: ['lossPerHour', 'normalHeatCPerHour'],
-    parameterEvidence: { lossPerHour: { status: 'identified' }, normalHeatCPerHour: { status: 'identified' } } };
+  seed.model.validation = { accepted: true, fittedParameters: ['lossPerHour', 'hydronicCPerKwh'],
+    parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
   seed.health = { status: 'learning', acceptedFits: 1, rejectedFits: 0 };
   seed.sinceFit = 11;
   context(store, start, { seed });
@@ -135,7 +134,7 @@ test('a rejected refit retains learned coefficients while unfitted coefficients 
   assert(heatLoss.some(point => point.x >= start + 15 * MINUTE && point.coefficientStatus === 'retained'));
   assert(heatLoss.every(point => point.y === expected.model.parameters.lossPerHour));
   assert(values(result, 'model_coefficient_solar_response').every(point => point.coefficientStatus === 'initial'));
-  assert(values(result, 'model_coefficient_auxiliary_response').every(point => point.coefficientStatus === 'initial'));
+  assert(values(result, 'model_coefficient_solar_response').every(point => point.coefficientStatus === 'initial'));
 });
 
 test('an accepted fireplace-only seed preserves previously fitted core coefficients as retained', t => {
@@ -143,9 +142,8 @@ test('an accepted fireplace-only seed preserves previously fitted core coefficie
   const seed = restoreAdaptiveCheckpoint(null);
   seed.model.validation = { accepted: true, fittedParameters: ['fireplaceCPerKg'], parameterEvidence: {
     lossPerHour: { status: 'identified', fitStatus: 'retained-unchanged' },
-    normalHeatCPerHour: { status: 'identified', fitStatus: 'retained-unchanged' },
+    hydronicCPerKwh: { status: 'identified', fitStatus: 'retained-unchanged' },
     solarCPerHourPerKwM2: { status: 'identified' },
-    auxiliaryCPerKwh: { status: 'prior', fitStatus: 'retained-unchanged' },
     fireplaceCPerKg: { status: 'identified', fitStatus: 'fitted' },
   } };
   seed.health = { status: 'learning', acceptedFits: 3, rejectedFits: 0 };
@@ -153,9 +151,9 @@ test('an accepted fireplace-only seed preserves previously fitted core coefficie
   const before = databaseSnapshot(store);
   const result = project(store);
   assert(values(result).every(point => point.coefficientStatus === 'retained'));
-  assert(values(result, 'model_coefficient_compressor_response').every(point => point.coefficientStatus === 'retained'));
+  assert(values(result, 'model_coefficient_hydronic_response').every(point => point.coefficientStatus === 'retained'));
   assert(values(result, 'model_coefficient_fireplace_response').every(point => point.coefficientStatus === 'fitted'));
-  for (const key of ['model_coefficient_solar_response', 'model_coefficient_auxiliary_response'])
+  for (const key of ['model_coefficient_solar_response'])
     assert(values(result, key).every(point => point.coefficientStatus === 'initial'), 'Input evidence alone is not a previous fit');
   assert.deepEqual(databaseSnapshot(store), before);
 });
@@ -163,34 +161,34 @@ test('an accepted fireplace-only seed preserves previously fitted core coefficie
 test('an auxiliary rating change labels the reset gain initial despite stale model validation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const seed = restoreAdaptiveCheckpoint(null);
-  seed.model.parameters.auxiliaryCPerKwh = 0.33;
+  seed.model.parameters.hydronicCPerKwh = 0.33;
   seed.model.trainedAt = new Date(start - 60 * MINUTE).toISOString();
-  seed.model.validation = { accepted: true, fittedParameters: ['auxiliaryCPerKwh'],
-    parameterEvidence: { auxiliaryCPerKwh: { status: 'identified' } } };
+  seed.model.validation = { accepted: true, fittedParameters: ['hydronicCPerKwh'],
+    parameterEvidence: { hydronicCPerKwh: { status: 'identified' } } };
   seed.health = { status: 'learning', acceptedFits: 1, rejectedFits: 0 };
   context(store, start, { seed, config: { auxRatedKw: 9 } });
   context(store, start + 20 * MINUTE, { config: { auxRatedKw: 12 } });
   context(store, start + 40 * MINUTE, { config: { auxRatedKw: 12 } });
-  const points = values(project(store), 'model_coefficient_auxiliary_response');
+  const points = values(project(store), 'model_coefficient_hydronic_response');
   assert(points.some(point => point.x < start + 20 * MINUTE && point.y === 0.33 && point.coefficientStatus === 'fitted'));
-  assert(points.some(point => point.x === start + 20 * MINUTE && point.y === 0.15));
+  assert(points.some(point => point.x === start + 20 * MINUTE && point.y === initialAdaptiveModel({}).parameters.hydronicCPerKwh));
   assert(points.filter(point => point.x >= start + 20 * MINUTE)
-    .every(point => point.y === 0.15 && point.coefficientStatus === 'initial'));
+    .every(point => point.y === initialAdaptiveModel({}).parameters.hydronicCPerKwh && point.coefficientStatus === 'initial'));
 });
 
 test('the first recorded seed can reset an older auxiliary rating without retaining fitted status', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const seed = restoreAdaptiveCheckpoint(null);
   seed.learningConfiguration = learningConfiguration({ auxRatedKw: 9 });
-  seed.model.parameters.auxiliaryCPerKwh = 0.33;
+  seed.model.parameters.hydronicCPerKwh = 0.33;
   seed.model.trainedAt = new Date(start - 60 * MINUTE).toISOString();
-  seed.model.validation = { accepted: true, fittedParameters: ['auxiliaryCPerKwh'],
-    parameterEvidence: { auxiliaryCPerKwh: { status: 'identified' } } };
+  seed.model.validation = { accepted: true, fittedParameters: ['hydronicCPerKwh'],
+    parameterEvidence: { hydronicCPerKwh: { status: 'identified' } } };
   seed.health = { status: 'learning', acceptedFits: 1, rejectedFits: 0 };
   context(store, start, { seed, config: { auxRatedKw: 12 } });
-  const points = values(project(store), 'model_coefficient_auxiliary_response');
+  const points = values(project(store), 'model_coefficient_hydronic_response');
   assert(points.length > 0);
-  assert(points.every(point => point.y === 0.15 && point.coefficientStatus === 'initial'));
+  assert(points.every(point => point.y === initialAdaptiveModel({}).parameters.hydronicCPerKwh && point.coefficientStatus === 'initial'));
 });
 
 test('a missing first journal seed leaves a gap and blocks its dependent tail', t => {
@@ -315,7 +313,7 @@ test('a real sample refit reconstructs the same changed coefficients as the orde
   const hour = 60 * MINUTE, begin = start - 14 * 24 * hour;
   // This synthetic trajectory exercises replay and fitting together. It makes
   // no claim about physical accuracy or calibration of an installed building.
-  const generator = initialAdaptiveModel({ thermalPriors: { lossPerHour: 0.03, normalHeatCPerHour: 1.2 } });
+  const generator = initialAdaptiveModel({ thermalPriors: { lossPerHour: 0.03, hydronicCPerKwh: 1.2 / 9.4 } });
   let state = { indoorC: 21, reserveC: 21 };
   const samples = [];
   for (let i = 0; i <= 336; i++) {
@@ -334,7 +332,7 @@ test('a real sample refit reconstructs the same changed coefficients as the orde
   let expected = null;
   for (const entry of store.learningJournal({ input: 'providers' })) expected = applyLearningRecord(expected, entry);
   assert.equal(expected.health.acceptedFits, 1);
-  for (const parameter of ['lossPerHour', 'normalHeatCPerHour'])
+  for (const parameter of ['lossPerHour', 'hydronicCPerKwh'])
     assert.notEqual(expected.model.parameters[parameter], seed.model.parameters[parameter]);
   const before = databaseSnapshot(store);
   store.db.exec('PRAGMA query_only = ON');

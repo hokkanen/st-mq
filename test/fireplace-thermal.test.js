@@ -119,7 +119,7 @@ test('negligible residuals stop blocking planner readiness and revalidation whil
 function burnFixture({ confounded = false, repeated = false, daily = false, unknown = false, noFire = false } = {}) {
   const model = initialAdaptiveModel();
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3, fireplaceFreeSamples: 192,
-    parameterEvidence: { lossPerHour: { status: 'identified' }, normalHeatCPerHour: { status: 'identified' } } };
+    parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
   if (daily) delete model.validation.fireplaceFreeSamples;
   const trueModel = structuredClone(model); trueModel.parameters.fireplaceCPerKg = 0.3;
   const events = noFire ? [] : daily ? Array.from({ length: 16 }, (_, i) => event(`daily-${i}`, i * 24, [2, 8, 4, 10][i % 4]))
@@ -157,7 +157,7 @@ test('daily fireplace heat cannot establish the house anchor from unvalidated pr
   assert.equal(result.accepted, false);
   assert.notEqual(result.parameterEvidence.fireplaceCPerKg.status, 'identified');
   assert.notEqual(result.parameterEvidence.lossPerHour.status, 'identified');
-  assert.notEqual(result.parameterEvidence.normalHeatCPerHour.status, 'identified');
+  assert.notEqual(result.parameterEvidence.hydronicCPerKwh.status, 'identified');
 });
 
 test('varying daily fires calibrate from an established house anchor without new clean days or refitting house coefficients', () => {
@@ -167,7 +167,7 @@ test('varying daily fires calibrate from an established house anchor without new
   assert.deepEqual(result.model.validation.fittedParameters, ['fireplaceCPerKg']);
   assert.equal(thermalEvidenceReady(result.model), true);
   assert.equal(fireplaceEvidenceReady(result.model), true);
-  for (const name of ['lossPerHour', 'normalHeatCPerHour']) {
+  for (const name of ['lossPerHour', 'hydronicCPerKwh']) {
     assert.equal(result.model.parameters[name], cp.model.parameters[name]);
     assert.equal(result.model.validation.parameterEvidence[name].status, 'identified');
     assert.equal(result.model.validation.parameterEvidence[name].fitStatus, 'retained-unchanged');

@@ -208,3 +208,23 @@ test('v9 indoor averages survive unrelated failures while the chart retains the 
   assert.equal(before.meta.basis, 'immutable-learning-journal');
   assert.doesNotMatch(JSON.stringify(before), /measurementInputs|invented-configuration/);
 });
+
+test('combined thermal input and actual valve modes preserve saved treatment evidence without manufacturing legacy heat', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  put(store, start + 15 * MINUTE, sample(0, 15, [
+    segment(0, 5, { hydronicHeatKw: 7.66, floorOverrideMode: 'on', treatmentKey: 'private-treatment-never-exposed' }),
+    segment(5, 10, { hydronicHeatKw: 0, floorOverrideMode: 'partial' }),
+    segment(10, 15, { hydronicHeatKw: 2, floorOverrideMode: 'unknown' }),
+  ]), 'mqtt', LEARNING_ALGORITHM);
+  put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30, { thermalCompressorDuty: 1 })]),
+    'mqtt', 'committed-house-v9-reversible-sensors');
+  const result = project(store, 'mqtt');
+  assert(result.series.model_hydronic_heat.some(row => row.y === 7.66));
+  assert(result.series.model_hydronic_heat.some(row => row.y === 0));
+  assert(result.series.model_hydronic_heat.filter(row => row.x >= start + 15 * MINUTE).every(row => row.y === null));
+  for (const value of [1, 2, 3]) assert(result.series.model_valve_override.some(row => row.y === value));
+  assert.equal(historyStateLabel('model_valve_override', 1), 'Pooled override confirmed');
+  assert.equal(historyStateLabel('model_valve_override', 2), 'Partial override');
+  assert.equal(historyStateLabel('model_valve_override', 3), 'Unconfirmed override');
+  assert.doesNotMatch(JSON.stringify(result), /private-treatment/);
+});
