@@ -22,7 +22,9 @@ const planBasis = (view, prices, environment) => digest({ environment, deadlineA
   readings: ['soc', 'minimumSoc', 'capacityKwh'].map(key => { const value = view.values[key];
     return [value.value, value.source, value.measuredAt, value.measuredAt === null ? value.receivedAt : null, value.readingId]; }),
   prices: prices.map(row => [row.start, row.end, row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price]) });
-const initialMqtt = () => ({ connected: false, subscribed: false, reason: 'awaiting-mqtt' });
+const initialMqtt = () => ({ connected: false, brokerConnected: false, subscribed: false,
+  subscriptionStatus: 'pending', reason: 'awaiting-mqtt', invalidReason: null,
+  lastMessageAt: null, lastLiveAt: null, lastRetainedAt: null, lastValidAt: null });
 const activePeriod = (control, now) => control?.execution?.periods?.some(period => period.startAt <= now
   && (period.endAt === null || period.endAt > now));
 const scheduleCeiling = snapshot => {
@@ -128,20 +130,31 @@ export class ChargingRuntime {
     return item.adapterFlight;
   }
   setMqttStatus(status, id) {
-    for (const item of id ? [this.charger(id)] : Object.values(this.chargers)) item.mqtt = { ...item.mqtt, ...status };
+    for (const item of id ? [this.charger(id)] : Object.values(this.chargers)) {
+      const brokerConnected = status.brokerConnected ?? status.connected ?? item.mqtt.brokerConnected;
+      const subscribed = brokerConnected && (status.subscribed ?? item.mqtt.subscribed);
+      item.mqtt = { ...item.mqtt, ...status, connected: brokerConnected, brokerConnected, subscribed,
+        subscriptionStatus: !brokerConnected ? 'disconnected' : subscribed ? 'subscribed'
+          : status.reason === 'mqtt-subscription-failed' ? 'failed' : 'pending' };
+    }
   }
   receiveSoc(topic, payload, packet = {}, now = this.clock()) {
     if (this.closed) return false;
     const route = this.mqttRoutes().find(item => item.topic === topic);
     if (!route) return false;
     const item = this.charger(route.id);
-    if (Buffer.byteLength(payload) > 4096) { item.mqtt.reason = 'invalid-payload'; return true; }
+    item.mqtt.lastMessageAt = now;
+    if (packet.retain) item.mqtt.lastRetainedAt = now; else item.mqtt.lastLiveAt = now;
+    if (Buffer.byteLength(payload) > 4096) { item.mqtt.invalidReason = 'invalid-payload'; return true; }
     const result = acceptSocReading(item.automaticSoc, payload, { now, association: route.topic });
+    const valid = result.accepted || ['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason);
+    item.mqtt.invalidReason = valid ? null : result.reason;
+    if (valid) item.mqtt.lastValidAt = now;
     if (result.accepted) {
       const previous = item.automaticSoc; item.automaticSoc = result.reading;
       try { this.persist(); } catch (error) { item.automaticSoc = previous; throw error; }
-      item.mqtt.reason = null; this.tick({ now });
-    } else if (!['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason)) item.mqtt.reason = result.reason;
+      this.tick({ now });
+    }
     return true;
   }
   telemetry(now) {
@@ -212,12 +225,16 @@ export class ChargingRuntime {
           ? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE)
           : item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
       const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
+      const vehicleReception = { ...item.mqtt,
+        provider: item.automaticSoc?.provider === 'bmw-cardata' ? 'bmw-cardata' : null };
       return { ...charger, referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
         progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
         automaticSoc: item.automaticSoc, plan: item.plan,
         sessionCost: item.sessionCost ? { ...item.sessionCost, prices: undefined } : null,
-        forecast: item.forecast ?? null, mqtt: item.definition.provider === 'teslamate'
-          ? this.teslaCapture?.reception?.() ?? null : item.mqtt, error: item.error ?? null };
+        forecast: item.forecast ?? null,
+        vehicleMqtt: this.configuration.chargers[id].mqttTopic ? vehicleReception : null,
+        mqtt: item.definition.provider === 'teslamate'
+          ? this.teslaCapture?.reception?.() ?? null : vehicleReception, error: item.error ?? null };
     });
   }
   updatePlan(now = this.clock()) {

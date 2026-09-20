@@ -342,13 +342,14 @@ test('temperature groups show all probes directly, including Mitsubishi inventor
   assert.equal(native.querySelector('summary'), null);
 });
 
-test('vehicle connections identify the assigned TeslaMate charger and generic vehicle MQTT route', () => {
+test('vehicle connections identify TeslaMate and update a generic route to the reported BMW feed', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
-  panel.update(status({ equipment: { devices: [], topicGroups: [
+  const initial = status({ equipment: { devices: [], topicGroups: [
     { id: 'teslamate', topics: [{ role: 'Vehicle subscription', topic: 'fixture/vehicle/teslamate', direction: 'subscribe' }] },
     { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
       topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] },
-  ] } }));
+  ] } });
+  panel.update(initial);
   const connections = descendants(document.getElementById('equipment-connections'));
   const tesla = connections.find(node => node.dataset.deviceId === 'connection:teslamate:other');
   assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Charger 2 vehicle');
@@ -357,4 +358,13 @@ test('vehicle connections identify the assigned TeslaMate charger and generic ve
   assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'Charger 1 vehicle');
   assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · MQTT');
   assert.equal(generic.tagName, 'DETAILS', 'Connection folds still reveal their configured MQTT topics');
+  panel.update({ ...initial, charging: { chargers: [{ id: 'charger1', label: 'Charger 1', vehicleMqtt: {
+    provider: 'bmw-cardata', brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: now, lastLiveAt: now,
+  } }] } });
+  assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · BMW CarData');
+  assert.equal(generic.querySelector('.equipment-device-status').textContent, 'Connected');
+  assert.match(generic.querySelector('.equipment-connection-recent').textContent, /^Reported /);
+  assert.match(generic.textContent, /fixture\/charger1\/vehicle/);
+  assert.equal(descendants(document.getElementById('equipment-connections'))
+    .filter(node => node.dataset.deviceId === 'connection:charger1-vehicle:other').length, 1);
 });

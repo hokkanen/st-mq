@@ -62,6 +62,7 @@ test('CarData automation republishes measured facts with stable source clocks an
   assert.equal(config.actions[0].data.qos, 1);
   assert.equal(config.actions[0].data.retain, true);
   assert.equal(config.triggers.length, 4);
+  assert(config.actions[0].data.payload.includes("provider='bmw-cardata'"));
   assert(config.actions[0].data.payload.includes("state_attr('sensor.example_soc', 'timestamp')"));
   assert(!config.actions[0].data.payload.includes('now()'));
   assert.throws(() => bmwCardataAutomation({ socEntity: "sensor.bad'", targetEntity: 'sensor.example_target',

@@ -22,6 +22,7 @@ export function acceptSocReading(previous, payload, {
   try { value = typeof payload === 'string' || Buffer.isBuffer(payload) ? JSON.parse(payload.toString()) : payload; }
   catch { return reject('malformed-json'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return reject('invalid-payload');
+  if (value.provider !== undefined && value.provider !== 'bmw-cardata') return reject('invalid-provider');
   if (!validSoc(value.soc)) return reject('invalid-soc');
   if (value.usableCapacityKwh !== undefined && (!Number.isFinite(value.usableCapacityKwh)
     || value.usableCapacityKwh < 1 || value.usableCapacityKwh > 300)) return reject('invalid-capacity');
@@ -69,10 +70,18 @@ export function acceptSocReading(previous, payload, {
       optional[key] = previous[key]; fields[key] = prior;
     }
   }
-  if (socRejection) return independentUpdate
-    ? { accepted: true, reason: null, reading: { ...previous, ...optional, fields } } : reject(socRejection);
+  // A publisher upgrade may identify an already saved reading. Its provider is
+  // metadata, not a new measurement; older or conflicting replays cannot add it.
+  const exactDuplicate = socRejection === 'duplicate-reading' && value.soc === previous.soc
+    && measuredAt === previous.measuredAt && sequence === previous.sequence;
+  const provider = value.provider !== undefined && (!socRejection || exactDuplicate)
+    ? value.provider : socRejection && sameIdentity ? previous.provider : undefined;
+  const provenance = provider === 'bmw-cardata' ? { provider } : {};
+  const providerUpdate = exactDuplicate && provider !== previous.provider;
+  if (socRejection) return independentUpdate || providerUpdate
+    ? { accepted: true, reason: null, reading: { ...previous, ...optional, fields, ...provenance } } : reject(socRejection);
   return { accepted: true, reason: null, reading: { association, ...(vehicleId !== undefined ? { vehicleId } : {}), ...(sourceId !== undefined ? { sourceId } : {}), readingId: value.readingId,
-    soc: value.soc, measuredAt, receivedAt: now, sequence, ...optional,
+    soc: value.soc, measuredAt, receivedAt: now, sequence, ...optional, ...provenance,
     ...(Object.keys(fields).length ? { fields } : {}) } };
 }
 

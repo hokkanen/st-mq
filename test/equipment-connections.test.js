@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { equipmentConnections, equipmentConnectionSummary, equipmentTopicGroups } from '../chart/equipment.js';
+import { equipmentConnections, equipmentConnectionSummary, equipmentSource, equipmentTopicGroups } from '../chart/equipment.js';
+import { dashboardProviders } from '../chart/provider-status.js';
 
 const NOW = Date.parse('2026-09-14T12:00:00Z');
 const topic = (role, value, direction = 'subscribe') => ({ role, topic: value, direction });
@@ -113,4 +114,45 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
   assert.equal(equipmentConnectionSummary(connection({ brokerConnected: true, subscriptionStatus: 'denied' })).label, 'Subscription failed');
   assert.match(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).connectionDetail, /Configured vehicle feed for Charger 1/);
   assert.equal(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).label, 'Charger 1 vehicle');
+});
+
+test('BMW vehicle MQTT displays source, real reception and feed problems independently of consumption', () => {
+  const status = mqtt => ({ now: NOW, input: 'mqtt',
+    charging: { chargers: [{ id: 'charger1', label: 'Charger 1', mqtt }] },
+    equipment: { topicGroups: [{ id: 'charger1-vehicle', label: 'Charger 1 vehicle',
+      topics: [topic('Timestamped vehicle readings', 'fixture/bmw/vehicle')] }] },
+    providers: { easee: { status: 'ok' }, teslamate: { enabled: true, status: 'idle' } },
+  });
+  const connected = { provider: 'bmw-cardata', brokerConnected: true, subscriptionStatus: 'subscribed', subscribed: true };
+  const row = mqtt => equipmentConnections(status(mqtt))[0];
+  const live = row({ ...connected, lastMessageAt: NOW, lastLiveAt: NOW });
+  assert.equal(live.label, 'Charger 1 vehicle');
+  assert.equal(live.kind, 'vehicle');
+  assert.equal(equipmentSource(live), 'BMW CarData');
+  assert.equal(equipmentConnectionSummary(live).label, 'Connected');
+  assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
+  assert.match(live.connectionDetail, /Home Assistant.*charge.*target.*capacity/);
+  assert.deepEqual(live.topics.map(item => item.topic), ['fixture/bmw/vehicle']);
+  const retained = row({ ...connected, lastMessageAt: NOW, lastRetainedAt: NOW });
+  assert.equal(equipmentConnectionSummary(retained).recent, 'Saved broker value only');
+  assert.match(retained.packetDetail, /no live vehicle report received yet/);
+  assert.equal(equipmentConnectionSummary(row(connected)).recent, 'Waiting for the first vehicle report');
+  assert.equal(equipmentConnectionSummary(row({ ...connected, brokerConnected: false })).label, 'Disconnected');
+  assert.equal(equipmentConnectionSummary(row({ ...connected, subscriptionStatus: 'failed', subscribed: false })).label, 'Subscription failed');
+  const invalid = row({ ...connected, lastLiveAt: NOW, invalidReason: 'invalid-soc' });
+  assert.equal(equipmentConnectionSummary(invalid).state, 'attention');
+  assert.equal(equipmentConnectionSummary(invalid).label, 'Invalid vehicle report');
+  assert.match(invalid.packetDetail, /previous accepted readings keep their original timestamps/);
+  assert.equal(equipmentSource(row({ ...connected, provider: null })), 'MQTT', 'a charger topic alone does not identify BMW');
+  const electricity = dashboardProviders(status(connected), { now: NOW }).find(item => item.key === 'electricity');
+  assert.equal(electricity.source, 'Easee, Teslamate');
+  assert.doesNotMatch(JSON.stringify(electricity), /BMW|CarData|bmw-cardata/);
+  const other = status(connected);
+  other.charging.chargers[0] = { id: 'charger2', label: 'Charger 2',
+    mqtt: { connected: true, subscriptionStatus: 'subscribed' },
+    vehicleMqtt: { provider: 'bmw-cardata', brokerConnected: false, subscriptionStatus: 'disconnected' } };
+  other.equipment.topicGroups[0].id = 'charger2-vehicle';
+  const separate = equipmentConnections(other)[0];
+  assert.equal(equipmentSource(separate), 'BMW CarData');
+  assert.equal(equipmentConnectionSummary(separate).label, 'Disconnected', 'a separate Tesla subscription cannot confirm the BMW feed');
 });

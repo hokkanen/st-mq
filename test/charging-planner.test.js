@@ -66,3 +66,26 @@ test('MQTT topic association separates readings and retained vehicle facts witho
   assert.equal(changed.reading.association, 'charger-b/topic');
   assert.equal(Object.hasOwn(changed.reading, 'usableCapacityKwh'), false);
 });
+
+test('vehicle provider provenance requires explicit recognized metadata and cannot come from older or conflicting replays', () => {
+  const initial = { ...payload(31, now, 'first'), chargeLimitSoc: 80 };
+  const first = acceptSocReading(null, initial, { now }).reading;
+  assert.equal(first.provider, undefined, 'A generic MQTT source is not inferred from its topic or reading ID');
+  for (const stale of [
+    { ...initial, measuredAt: now - HOUR, readingId: 'older' },
+    { ...initial, soc: 30 },
+    { ...initial, measuredAt: now - 1 },
+  ]) {
+    const result = acceptSocReading(first, { ...stale, provider: 'bmw-cardata' }, { now });
+    assert.equal(result.accepted, false); assert.equal(result.reading.provider, undefined);
+  }
+  const identified = acceptSocReading(first, { ...initial, provider: 'bmw-cardata' }, { now: now + HOUR }).reading;
+  assert.deepEqual(identified, { ...first, provider: 'bmw-cardata' });
+  const repeated = acceptSocReading(identified, initial, { now: now + HOUR });
+  assert.equal(repeated.accepted, false); assert.equal(repeated.reading.provider, 'bmw-cardata');
+  const next = acceptSocReading(identified, payload(35, now + HOUR, 'second'), { now: now + HOUR }).reading;
+  assert.equal(next.provider, undefined, 'A newer unmarked publisher on the same topic remains generic MQTT');
+  const changedTopic = acceptSocReading(identified, payload(35, now + HOUR, 'second'), { now: now + HOUR, association: 'new/topic' }).reading;
+  assert.equal(changedTopic.provider, undefined, 'Provenance is scoped to the configured feed');
+  assert.equal(acceptSocReading(first, { ...initial, provider: 'unknown' }, { now }).reason, 'invalid-provider');
+});

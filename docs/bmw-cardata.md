@@ -5,6 +5,15 @@ topic, `stmq/garage/charger1/vehicle`, as retained JSON with QoS 1. This is a
 telemetry feed: the automation never starts, stops or wakes a vehicle. The normal
 charging controller selects Tesla telemetry when Tesla is identified at Easee.
 
+Under **Data & settings → MQTT**, the vehicle connection identifies **BMW
+CarData** and shows broker/subscription health, the latest live or retained
+report, and its incoming topic. The publisher's `provider: "bmw-cardata"` field
+identifies the source explicitly; other vehicle MQTT feeds remain generic.
+Repeated reports confirm MQTT reception without renewing battery measurement
+timestamps. Invalid reports need attention while the last accepted readings
+remain available. This source supplies vehicle data and is not listed under
+**Electricity consumption**.
+
 The automation builder is
 [`scripts/lib/bmw-cardata-automation.js`](../scripts/lib/bmw-cardata-automation.js).
 Supply three Home Assistant sensor entity IDs from the same BMW CarData vehicle:

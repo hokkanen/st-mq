@@ -15,7 +15,7 @@ export function bmwCardataAutomation({ socEntity, targetEntity, capacityEntity,
 {% set soc_at = soc_time.isoformat() if soc_time is not none else none %}
 {% set target_at = target_time.isoformat() if target_time is not none else none %}
 {% set capacity_at = capacity_time.isoformat() if capacity_time is not none else none %}
-{% set ns = namespace(data=dict(soc=soc|float, measuredAt=soc_at,
+{% set ns = namespace(data=dict(provider='bmw-cardata', soc=soc|float, measuredAt=soc_at,
   readingId='bmw:soc:' ~ soc_at ~ ':' ~ soc), fields=dict()) %}
 {% if is_number(target) and 0 <= target|float <= 100 %}
   {% set ns.data = dict(ns.data, chargeLimitSoc=target|float) %}

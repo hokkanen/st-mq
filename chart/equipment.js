@@ -8,7 +8,7 @@ const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', mo
 const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
-  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate'].includes(device.source) ? device.source : 'MQTT';
+  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData'].includes(device.source) ? device.source : 'MQTT';
 const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
 const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
@@ -278,6 +278,29 @@ export function equipmentConnectionSummary(device) {
   return { label, state, recent };
 }
 
+function vehicleConnection({ reception = {}, enabled = true, chargerLabel, source, detail }) {
+  const connected = reception.brokerConnected ?? reception.connected;
+  const subscribed = reception.subscribed === true || reception.subscriptionStatus === 'subscribed';
+  const failed = ['failed', 'denied', 'error'].includes(reception.subscriptionStatus);
+  const { lastLiveAt, lastRetainedAt, lastMessageAt, invalidReason } = reception;
+  return { label: `${chargerLabel} vehicle`, kind: 'vehicle', source, mqttStatus: reception,
+    lastReportAt: lastLiveAt,
+    connectionState: enabled === false ? { label: 'Not enabled', state: 'pending' }
+      : connected === false ? { label: 'Disconnected', state: 'attention' }
+        : failed ? { label: 'Subscription failed', state: 'attention' }
+          : invalidReason ? { label: 'Invalid vehicle report', state: 'attention' }
+            : connected === true && (subscribed || Number.isFinite(lastMessageAt)) ? { label: 'Connected', state: 'available' }
+              : { label: 'Awaiting subscription', state: 'pending' },
+    recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}`
+      : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
+    connectionDetail: `Configured vehicle feed for ${chargerLabel}. ${detail}`,
+    packetDetail: [invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : '',
+      Number.isFinite(lastLiveAt) ? `Latest live report: ${clock.format(lastLiveAt)}.`
+        : Number.isFinite(lastRetainedAt) ? `Saved broker reading received ${clock.format(lastRetainedAt)}; no live vehicle report received yet.`
+          : 'Connection status follows the MQTT subscription; vehicle charge readings keep their own timestamps.'].filter(Boolean).join(' '),
+  };
+}
+
 /** Fold supplemental routes into their device once; unowned routes remain
  * separate connections with an explicit, evidence-based monitoring state. */
 export function equipmentConnections(status = {}, devices = equipmentDevices(status), inventory = equipmentInventory(status)) {
@@ -328,27 +351,19 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const reception = provider.reception ?? status.charging?.chargers?.find(charger => charger.id === 'charger2')?.mqtt ?? {};
         const chargerLabel = status.charging?.chargers?.find(charger => charger.id === reception.chargerId)?.label
           ?? (reception.chargerId === 'charger1' ? 'Charger 1' : 'Charger 2');
-        const connected = reception.brokerConnected ?? reception.connected ?? provider.connected;
-        const subscription = reception.subscriptionStatus;
-        const subscribed = reception.subscribed === true || subscription === 'subscribed';
-        const liveAt = reception.lastLiveAt;
-        const retainedAt = reception.lastRetainedAt;
-        const lastMessageAt = reception.lastMessageAt ?? provider.lastMessageAt;
-        const failed = ['failed', 'denied', 'error'].includes(subscription);
-        Object.assign(row, { label: `${chargerLabel} vehicle`, kind: 'vehicle', source: 'TeslaMate', mqttStatus: reception,
-          lastReportAt: liveAt,
-          connectionState: provider.enabled === false ? { label: 'Not enabled', state: 'pending' }
-            : connected === false ? { label: 'Disconnected', state: 'attention' }
-              : failed ? { label: 'Subscription failed', state: 'attention' }
-                : connected === true && (subscribed || Number.isFinite(lastMessageAt)) ? { label: 'Connected', state: 'available' }
-                  : { label: 'Awaiting subscription', state: 'pending' },
-          recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}` : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
-          connectionDetail: `Configured vehicle feed for ${chargerLabel}. A sleeping or idle vehicle can remain quiet while MQTT stays connected.`,
-          packetDetail: Number.isFinite(liveAt) ? `Latest live report: ${clock.format(liveAt)}.`
-            : Number.isFinite(retainedAt) ? `Saved broker reading received ${clock.format(retainedAt)}; no live vehicle report received yet.`
-              : 'Connection status follows the MQTT subscription; vehicle charge readings keep their own timestamps.' });
+        Object.assign(row, vehicleConnection({ enabled: provider.enabled, source: 'TeslaMate', chargerLabel,
+          reception: { ...reception, connected: reception.connected ?? provider.connected,
+            lastMessageAt: reception.lastMessageAt ?? provider.lastMessageAt },
+          detail: 'A sleeping or idle vehicle can remain quiet while MQTT stays connected.' }));
       } else if (typeof group.id === 'string' && group.id.endsWith('-vehicle')) {
-        row.kind = 'vehicle';
+        const id = group.id.slice(0, -'-vehicle'.length);
+        const charger = status.charging?.chargers?.find(charger => charger.id === id);
+        const reception = charger?.vehicleMqtt ?? charger?.mqtt ?? {};
+        const bmw = reception.provider === 'bmw-cardata';
+        Object.assign(row, vehicleConnection({ reception, chargerLabel: charger?.label ?? group.label?.replace(/ vehicle$/, '') ?? pretty(id),
+          source: bmw ? 'BMW CarData' : 'MQTT',
+          detail: bmw ? 'BMW CarData through Home Assistant supplies charge, charge target and usable battery capacity. MQTT reception is separate from each measurement’s original timestamp.'
+            : 'Vehicle readings received over MQTT keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.' }));
       } else if (group.id === 'dhwr' || group.id === 'heating') {
         row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };
         row.recent = 'Delivery is confirmed separately';

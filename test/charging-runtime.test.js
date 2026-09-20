@@ -97,6 +97,59 @@ test('MQTT replay does not rewrite state and unknown-clock observations recover 
   assert.equal(runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic, packet(80, initialNow + HOUR, 'reading-after-close')), false);
 });
 
+test('vehicle MQTT distinguishes transport reception, retained context and invalid readings without refreshing battery clocks', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const topic = runtime.configuration.chargers.charger1.mqttTopic;
+  runtime.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription' }, 'charger1');
+  assert.equal(chargerView(runtime).mqtt.brokerConnected, true);
+  assert.equal(chargerView(runtime).mqtt.subscriptionStatus, 'pending');
+  runtime.setMqttStatus({ connected: true, subscribed: true, reason: null }, 'charger1');
+  const reading = packet(51, initialNow - HOUR, 'bmw-reading', { provider: 'bmw-cardata', chargeLimitSoc: 80 });
+  runtime.receiveSoc(topic, reading, { retain: true });
+  let mqtt = chargerView(runtime).mqtt;
+  assert.equal(mqtt.provider, 'bmw-cardata'); assert.equal(mqtt.subscriptionStatus, 'subscribed');
+  assert.equal(mqtt.lastRetainedAt, initialNow); assert.equal(mqtt.lastLiveAt, null);
+  const automatic = structuredClone(runtime.chargers.charger1.automaticSoc), writes = f.writes.length;
+  f.setNow(initialNow + 60_000);
+  runtime.receiveSoc(topic, reading, { dup: true });
+  mqtt = chargerView(runtime).mqtt;
+  assert.equal(mqtt.lastMessageAt, f.clock()); assert.equal(mqtt.lastLiveAt, f.clock()); assert.equal(mqtt.lastValidAt, f.clock());
+  assert.deepEqual(runtime.chargers.charger1.automaticSoc, automatic);
+  assert.equal(f.writes.length, writes, 'A repeated report confirms reception without rewriting the measurement');
+  f.setNow(initialNow + 120_000);
+  runtime.receiveSoc(topic, '{malformed');
+  mqtt = chargerView(runtime).mqtt;
+  assert.equal(mqtt.subscribed, true); assert.equal(mqtt.reason, null); assert.equal(mqtt.invalidReason, 'malformed-json');
+  assert.equal(mqtt.lastLiveAt, f.clock()); assert.equal(mqtt.lastValidAt, initialNow + 60_000);
+  runtime.receiveSoc(topic, reading);
+  assert.equal(chargerView(runtime).mqtt.invalidReason, null, 'A valid duplicate recovers payload health');
+  runtime.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
+  assert.equal(chargerView(runtime).mqtt.subscriptionStatus, 'disconnected');
+  const restarted = f.create(); t.after(() => restarted.close());
+  mqtt = chargerView(restarted).mqtt;
+  assert.equal(mqtt.provider, 'bmw-cardata', 'Provider identity survives restart with its saved reading');
+  assert.equal(mqtt.brokerConnected, false); assert.equal(mqtt.lastLiveAt, null); assert.equal(mqtt.lastRetainedAt, null);
+  assert.equal(mqtt.lastMessageAt, null, 'Saved measurements do not imply reception in this process');
+});
+
+test('BMW publisher metadata enriches a saved duplicate without changing measurement or field clocks', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const topic = runtime.configuration.chargers.charger1.mqttTopic;
+  const reading = packet(51, initialNow - HOUR, 'original-reading', { chargeLimitSoc: 80, usableCapacityKwh: 72 });
+  runtime.receiveSoc(topic, reading);
+  const original = structuredClone(runtime.chargers.charger1.automaticSoc);
+  f.setNow(initialNow + HOUR);
+  runtime.receiveSoc(topic, JSON.stringify({ ...JSON.parse(reading), provider: 'bmw-cardata' }));
+  assert.deepEqual(runtime.chargers.charger1.automaticSoc, { ...original, provider: 'bmw-cardata' });
+  assert.equal(chargerView(runtime).mqtt.provider, 'bmw-cardata');
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(chargerView(restarted).mqtt.provider, 'bmw-cardata');
+  runtime.receiveSoc(topic, packet(55, f.clock(), 'next-reading', { provider: 'invented-provider' }));
+  assert.equal(chargerView(runtime).mqtt.invalidReason, 'invalid-provider');
+  assert.equal(chargerView(runtime).mqtt.provider, 'bmw-cardata');
+  assert.deepEqual(runtime.chargers.charger1.automaticSoc, { ...original, provider: 'bmw-cardata' });
+});
+
 test('automatic SoC takes priority immediately and saved fallback has no deadline or expiry', async () => {
   const f = fixture(), runtime = f.create();
   await runtime.setChargerSettings('charger1', { manualSoc: 47 });
@@ -351,6 +404,17 @@ test('both chargers retain independent automatic readings and remembered fallbac
   assert.equal(restarted.settings.chargers.charger2.manualSoc, 54);
   assert.equal(f.values.get('charging:mqtt').version, 3);
   assert.deepEqual(runtime.mqttRoutes().map(route => route.id), ['charger1', 'charger2']);
+});
+
+test('a generic vehicle feed on the Tesla charger exposes its own independent reception status', async t => {
+  const f = fixture({}, { chargers: { charger2: { mqttTopic: 'invented/second-vehicle' } } }), runtime = f.create();
+  t.after(() => runtime.close());
+  runtime.teslaCapture.reception = () => ({ brokerConnected: true, subscribed: true, lastLiveAt: initialNow });
+  runtime.setMqttStatus({ connected: true, subscribed: false, reason: 'mqtt-subscription-failed' }, 'charger2');
+  const second = chargerView(runtime, 'charger2');
+  assert.equal(second.mqtt.subscribed, true, 'The Tesla subscription retains its existing status contract');
+  assert.equal(second.vehicleMqtt.subscribed, false); assert.equal(second.vehicleMqtt.subscriptionStatus, 'failed');
+  assert.equal(second.vehicleMqtt.lastLiveAt, null); assert.equal(second.vehicleMqtt.provider, null);
 });
 
 test('unsupported scheduling and invalid charger identifiers reject without affecting another charger', async t => {

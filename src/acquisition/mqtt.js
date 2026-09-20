@@ -79,6 +79,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   // Every connect explicitly subscribes below. MQTT.js automatic resubscription
   // can otherwise report cached success before the broker acknowledges a route.
   const client = connect(address, { username, password, reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false, resubscribe: false });
+  const vehicleSubscriptions = new Map();
   let connectionGeneration = 0, stopping = false, equipmentSubscriptionBuffer = null, teslaSubscriptionBuffer = null, teslaBufferSequence = 0;
   let connected = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
@@ -215,13 +216,24 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!engine.charging || !connected || stopped || stopping) return;
     const generation = connectionGeneration;
     for (const { id, topic } of engine.charging.mqttRoutes().filter(route => !selectedId || route.id === selectedId)) {
+      const subscription = { subscribed: false, messages: [] };
+      vehicleSubscriptions.set(topic, subscription);
       engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription' }, id);
-      client.subscribe(topic, { qos: 1 }, (error, granted) => {
+      const acknowledged = (error, granted) => {
         if (!connected || stopped || stopping || generation !== connectionGeneration
+          || vehicleSubscriptions.get(topic) !== subscription || subscription.messages === null
           || !engine.charging.mqttRoutes().some(route => route.id === id && route.topic === topic)) return;
         const rejected = subscriptionRejected(topic, error, granted);
+        subscription.subscribed = !rejected;
         engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null }, id);
-      });
+        const buffered = subscription.messages; subscription.messages = null;
+        if (!rejected) for (const message of buffered ?? []) {
+          try { engine.charging.receiveSoc(topic, message.payload, message.packet, message.at); }
+          catch { report('mqtt-observation-rejected'); }
+        }
+      };
+      try { client.subscribe(topic, { qos: 1 }, acknowledged); }
+      catch { acknowledged(new Error('MQTT subscription failed')); }
     }
   };
   const connectedHandler = () => {
@@ -295,7 +307,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('error', () => report('mqtt-error'));
   const disconnected = () => {
     if (stopped) return;
-    connected = false; connectionGeneration++; equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null; h66?.setConnected(false);
+    connected = false; connectionGeneration++; vehicleSubscriptions.clear(); equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null; h66?.setConnected(false);
     teslamate?.setConnected(false);
     chargingTesla?.setConnected(false);
     engine.charging?.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
@@ -312,8 +324,19 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   client.on('offline', disconnected);
   client.on('close', disconnected);
   client.on('message', (topic, payload, packet = {}) => {
-    if (!connected || stopped) return;
+    if (!connected || stopped || stopping) return;
     try {
+      const vehicleSubscription = vehicleSubscriptions.get(topic);
+      if (vehicleSubscription) {
+        if (vehicleSubscription.messages) {
+          // The broker may send retained data before SUBACK. Keep original
+          // reception times and only apply it after this route is acknowledged.
+          if (vehicleSubscription.messages.length >= 32) vehicleSubscription.messages.shift();
+          vehicleSubscription.messages.push({ payload: Buffer.from(payload.subarray(0, 4097)),
+            packet: { retain: packet.retain, dup: packet.dup }, at: engine.clock() });
+        } else if (vehicleSubscription.subscribed) engine.charging.receiveSoc(topic, payload, packet, engine.clock());
+        return;
+      }
       if (teslaSubscriptionBuffer && topic.startsWith(teslamate.topic.slice(0, -1))) {
         if (Buffer.byteLength(payload) <= 4096 && (teslaSubscriptionBuffer.has(topic) || teslaSubscriptionBuffer.size < 64))
           teslaSubscriptionBuffer.set(topic, { topic, payload: Buffer.from(payload), packet: { retain: packet.retain, dup: packet.dup }, at: engine.clock(), order: ++teslaBufferSequence });
@@ -390,7 +413,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
       if (stopped || stopping) return;
-      stopping = true; connectionGeneration++; equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null;
+      stopping = true; connectionGeneration++; vehicleSubscriptions.clear(); equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null;
       for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT closed'));
       clearInterval(maintenance);
       clearInterval(teslaMaintenance);
