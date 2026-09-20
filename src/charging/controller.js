@@ -30,10 +30,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
   canControl = () => false, getPlan, getMaximumAmps } = {}) {
   // Retain confirmed ownership across upgrades so an installed restriction can
   // still be relinquished. Version 1 manual flags lack an observed baseline.
-  const previous = [1, 2, 3].includes(initialState?.version) ? copy(initialState) : {};
+  const previous = [1, 2, 3, 4].includes(initialState?.version) ? copy(initialState) : {};
   let state = { phase: 'off', owned: null, pending: null, manual: null, released: false,
     disconnected: false, execution: null, handoverConfirmed: true, reason: 'Automatic charging is off.',
-    ...previous, version: 3, session: previous.version >= 2 ? previous.session ?? null : null,
+    ...previous, version: 4, session: previous.version >= 2 ? previous.session ?? null : null,
     manual: previous.version >= 2 ? previous.manual ?? null : null, errorCode: null };
   let desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, snapshot = null, closed = false, generation = 0, queue = Promise.resolve();
   const permitted = () => !closed && canControl() === true;
@@ -47,13 +47,13 @@ export function createChargingController({ adapter, initialState = null, saveSta
   function manual(kind, now, reason, extra = {}) {
     state.execution = null;
     const cycleEndsAt = cycleEnd(now), windowEndAt = extra.windowEndAt ?? extra.resumeAt ?? null;
-    const resumeAt = isTime(windowEndAt) ? Math.min(windowEndAt, cycleEndsAt) : cycleEndsAt;
+    const resumeAt = kind === 'window' && isTime(windowEndAt) ? windowEndAt : null;
     state.manual = { kind, detectedAt: now, reason, fingerprint: snapshot.fingerprint,
       activeFingerprint: currentFingerprint(), ...extra, windowEndAt, cycleEndsAt, resumeAt,
-      resumeReason: isTime(windowEndAt) && windowEndAt <= cycleEndsAt ? 'window-end' : 'ready-by' };
+      resumeReason: resumeAt !== null ? 'window-end' : null };
   }
   function yieldSchedule(now) {
-    const window = manualScheduleWindow(snapshot.schedule, now, cycleEnd(now));
+    const window = manualScheduleWindow(snapshot.schedule, now);
     manual(window ? 'window' : 'schedule', now, 'An observed change to the Easee schedule has temporary priority.', window ?? {});
   }
   function confirmedOwned(now, pending) {
@@ -72,11 +72,18 @@ export function createChargingController({ adapter, initialState = null, saveSta
       connectedAt: snapshot.pluggedIn === true ? prior?.connected === true ? prior.connectedAt : now : null,
       observedAt: now, instruction: currentFingerprint(), enabled: snapshot.enabled,
       stopped: stopped(snapshot), mode: snapshot.mode,
+      modeAt: snapshot.modeAt ?? null,
+      waitingForScheduleAt: snapshot.schedule.enabled !== 'none' && snapshot.pluggedIn === true
+        && snapshot.reason === 54 && snapshot.mode !== 3 ? now
+        : prior?.instruction === currentFingerprint() ? prior.waitingForScheduleAt ?? null : null,
       delayedReleaseAt: snapshot.schedule.enabled === 'delayed' ? prior?.instruction === currentFingerprint()
         ? prior.delayedReleaseAt : nextLocalOccurrence(snapshot.schedule.delayed.startTime, snapshot.schedule.delayed.timezone, now) : null };
   }
   function rememberOwnInstruction(now) {
-    if (state.session) { state.session.instruction = currentFingerprint(); state.session.delayedReleaseAt = state.owned?.startAt ?? null; }
+    if (state.session) {
+      state.session.instruction = currentFingerprint(); state.session.delayedReleaseAt = state.owned?.startAt ?? null;
+      state.session.waitingForScheduleAt = null;
+    }
     observeSession(now);
   }
   function observeSession(now) {
@@ -94,6 +101,17 @@ export function createChargingController({ adapter, initialState = null, saveSta
           manual('charge-now', now, 'The Easee schedule was removed. Immediate charging has temporary priority.');
         } else yieldSchedule(now);
       }
+      // Easee's Charge now command can bypass the native delayed start without
+      // changing /schedules. A fresh charging observation after a verified wait,
+      // before our release time, establishes that override. Initial plug-in
+      // charging and an unconfirmed pause do not meet this evidence threshold.
+      if (!scheduleChanged && !state.manual && ownsCurrent() && now < state.owned.startAt
+        && snapshot.pluggedIn === true && isTime(prior.waitingForScheduleAt)
+        && snapshot.mode === 3 && snapshot.reason !== 54
+        && isTime(snapshot.modeAt) && snapshot.modeAt >= (prior.modeAt ?? prior.waitingForScheduleAt)) {
+        state.released = true;
+        manual('charge-now', now, 'Charging started in Easee before the scheduled release. Manual charging has priority until the vehicle is unplugged.');
+      }
       if (snapshot.controlKnown && !snapshot.faulted && !snapshot.authorizationBlocked
         && ![5, 7, 8].includes(snapshot.mode) && ![55, 56].includes(snapshot.reason)) {
         if ((prior.enabled !== snapshot.enabled || prior.stopped !== stopped(snapshot)) && stopped(snapshot)) {
@@ -109,6 +127,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
           }
         }
       }
+    } else if (snapshot.schedule.enabled !== 'none' && !ownsCurrent()) {
+      yieldSchedule(now);
     }
     if (snapshot.controlKnown && snapshot.pluggedIn === false) {
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
@@ -119,7 +139,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
       state.disconnected = false;
       if (prior?.connected === false) state.released = false;
     }
-    // The first observation is a baseline, not evidence of an external action.
+    // An unrestricted first observation is a baseline. A pre-existing foreign
+    // restriction retains its owner's priority until a known end or resumption.
     remember(now);
   }
   function executionFor(plan) {
@@ -203,10 +224,16 @@ export function createChargingController({ adapter, initialState = null, saveSta
         }
         state.pending = null;
       }
-      if (state.manual && !isTime(state.manual.cycleEndsAt)) {
+      if (state.manual && (previous.version < 4 || !isTime(state.manual.cycleEndsAt))) {
         const { reason: _reason, ...prior } = state.manual;
-        manual(prior.kind, isTime(prior.detectedAt) ? prior.detectedAt : now, prior.kind === 'stop' ? STOP_REASON
-          : 'An observed manual Easee instruction has temporary priority.', prior);
+        const knownWindow = prior.kind === 'window' ? manualScheduleWindow(snapshot.schedule,
+          isTime(prior.detectedAt) ? prior.detectedAt : now) : null;
+        manual(prior.kind === 'window' && !knownWindow ? 'schedule' : prior.kind,
+          isTime(prior.detectedAt) ? prior.detectedAt : now, prior.kind === 'stop' ? STOP_REASON
+            : 'An observed manual Easee instruction has temporary priority.', { ...prior,
+              kind: prior.kind === 'window' && !knownWindow ? 'schedule' : prior.kind,
+              windowEndAt: knownWindow?.windowEndAt ?? null, resumeAt: null });
+        previous.version = 4;
       }
       observeSession(now);
       if (state.owned && !ownsCurrent()) {
@@ -253,7 +280,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         const prior = state.manual;
         // A user's enable must not remain blocked by our earlier delayed start.
         // Relinquish only the exact active instruction we still own.
-        if (prior.kind === 'enable' && ownsCurrent()) {
+        if (['enable', 'charge-now'].includes(prior.kind) && ownsCurrent()) {
           operation = 'command-failed'; await clearCurrent('delayed', expectedGeneration);
         }
         const ended = isTime(prior.resumeAt) && now >= prior.resumeAt;
@@ -280,6 +307,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
       }
       let plan = typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : desired.plan;
       now = clock();
+      if (plan?.state === 'identifying') {
+        await phase('identifying', 'Identifying the connected vehicle from its initial charging telemetry. Automatic scheduling follows when identified or after the three-minute observation limit.');
+        return status();
+      }
       let execution = state.execution && now >= state.execution.periods[0].startAt
         ? state.execution : executionFor(plan);
       if (execution && now >= execution.periods[0].startAt && now < execution.finalStartAt

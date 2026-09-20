@@ -29,8 +29,12 @@ export function chargingNotice(charger, view, summary) {
     detail: `${summary.roleDetail} ${view.readingTime || ''}`.trim(), state: 'quiet' };
 }
 
-/** Price the remaining native charging forecast only when rates cover it fully. */
+/** Show the durable connection total, including already delivered energy. */
 export function chargingCost(charger, view, summary, { now = Date.now(), prices = [] } = {}) {
+  if (view.showMetrics && finite(charger.sessionCost?.totalCents)) return {
+    value: `€${(charger.sessionCost.totalCents / 100).toFixed(2)}`,
+    detail: 'Estimated total electricity cost from plugging in through the target, including charging losses. Delivered energy remains included after the target and any further charging adds to the cost.'
+      + (charger.sessionCost.estimated ? ' Missing forecast or rate coverage uses the last available cost estimate.' : '') };
   const forecast = charger.forecast, remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh;
   const unavailable = { value: 'No estimate', detail: 'A current charging forecast and electricity rates covering the time to target are needed.' };
   if (!view.showMetrics || !finite(remaining)) return unavailable;

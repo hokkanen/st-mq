@@ -35,7 +35,7 @@ test('garage keeps cold budgets in settings and renders shared charger cards abo
 });
 
 test('only local charger preferences are editable, with SoC following the same fallback field pattern', () => {
-  assert.deepEqual(chargingFields.map(field => field.key), ['manualSoc', 'minimumSoc', 'readyBy', 'capacityKwh']);
+  assert.deepEqual(chargingFields.map(field => field.key), ['readyBy', 'manualSoc', 'minimumSoc', 'capacityKwh']);
   assert.equal(chargingFields.find(field => field.key === 'manualSoc').reading, 'soc');
   assert(chargingFields.find(field => field.key === 'manualSoc').automatic);
 });
@@ -348,7 +348,8 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Current allocation'], /Equalizer controls/);
   assert.match(explanations['Period transitions'], /service and the Easee cloud/);
   assert.match(explanations['Price planning'], /final period leaves charging enabled/);
-  assert.match(explanations['Manual priority'], /whichever comes first/);
+  assert.match(explanations['Manual priority'], /complete window, including after ready-by/);
+  assert.match(explanations['Manual priority'], /until unplugging/);
   assert(!JSON.stringify(result).includes('ST-MQ'));
   assert(!Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
 });
@@ -481,6 +482,12 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   const two = charger('charger2'); panel.update(status(charger(), { ...two, values: { ...two.values, minimumSoc: reading(85), soc: reading(62) } }));
   assert.equal($('charger1-setting-minimumSoc').value, 80); assert(!$('charger1-setting-minimumSoc').disabled);
   assert(!$('charger1-setting-readyBy').disabled); assert($('charger2-setting-readyBy').disabled);
+  const visibleFields = id => descendants($(`${id}-settings-form`))
+    .filter(node => node.tagName === 'INPUT' && !node.parentElement.hidden).map(node => node.id);
+  assert.equal(visibleFields('charger1')[0], 'charger1-setting-readyBy');
+  assert(!$('charger1-setting-readyBy').parentElement.hidden);
+  assert($('charger2-setting-readyBy').parentElement.hidden);
+  assert.equal(visibleFields('charger2')[0], 'charger2-setting-manualSoc');
   assert.equal($('charger2-setting-minimumSoc').value, 85); assert($('charger2-setting-minimumSoc').disabled);
   assert.equal($('charger2-setting-manualSoc').value, 62); assert($('charger2-setting-manualSoc').disabled);
   assert.match($('charger2-setting-minimumSoc-help').textContent, /Saved fallback: 80%/);

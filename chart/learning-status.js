@@ -303,11 +303,13 @@ export function h66HomeSummary(status = {}) {
   const actual = status.observations?.actual;
   const knownMode = ['normal', 'reduction'].includes(actual?.mode);
   const confirmed = knownMode && actual.verified === true && actual.stale !== true;
-  const requested = knownMode && actual.source === 'mqtt-request' && actual.stale !== true;
+  const requestedMode = actual?.requestedPhase === 'reduction' ? 'reduction'
+    : ['normal', 'preheat', 'recovery'].includes(actual?.requestedPhase) ? 'normal'
+      : actual?.source === 'mqtt-request' && actual?.stale !== true && knownMode ? actual.mode : null;
   rows.push({ key: 'tariff', title: 'Tariff control', available: confirmed,
     value: confirmed ? `${actual.mode === 'reduction' ? 'Reduction' : 'Normal heating'}${status.input === 'simulated' ? ' · simulated' : ' · confirmed'}`
-      : requested ? `${actual.mode === 'reduction' ? 'Reduction' : 'Normal heating'} requested · unverified` : 'Unknown · no device readback',
-    detail: 'The tariff relay is separate from H66. A sent request, operating mode or compressor reading does not confirm its state.' });
+      : requestedMode ? `${requestedMode === 'reduction' ? 'Reduction' : 'Normal heating'} requested · unverified` : 'Unknown · no device readback',
+    detail: 'The tariff relay is verified from its own device report after a request. H66 ROOM is the comfort setpoint and its tariff reduction setting is a temperature offset; they do not need to be equal and do not report the relay state.' });
   rows.push(readingRow('compressor', 'Compressor', '1A01'), readingRow('destination', 'Heating destination', '1A07'),
     readingRow('aux', 'Auxiliary output', '3104'), readingRow('alarm', 'Heat pump alarm', '1A20'));
   if (readings['0233']) rows.push(readingRow('tariffSetting', 'Tariff reduction setting', '0233'));

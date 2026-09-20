@@ -47,20 +47,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       reportIntervalMs: signal.startsWith('garage_') ? 30_000 : config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
       reportGraceMs: signal.startsWith('garage_') ? 90_000 : config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS,
     });
-  // The charger model owns vehicle attribution. Its configured Charger 2 feed
-  // must also feed Charger 2's energy recorder, without an identification pause.
+  // Recording and planning share the same vehicle-identification evidence.
   const teslaSettings = teslamateConfiguration(config.connections.teslamate);
-  if (engine.charging && teslaSettings.chargerAssignment === 'auto') {
-    teslaSettings.chargerAssignment = 'bmw'; teslaSettings.chargerIdentification = false;
-  }
   const teslamate = config.connections.teslamate?.enabled === true
     ? createTeslaMateCapture({ engine, store, settings: teslaSettings }) : null;
   const chargingTesla = teslamate && engine.charging ? createChargingTeslaCapture({ settings: teslaSettings,
     clock: () => engine.clock(), initialState: store.getState('charging:teslamate'),
     saveState: state => store.setState('charging:teslamate', state) }) : null;
   if (chargingTesla) engine.charging.teslaCapture = chargingTesla;
-  const hasEquipmentHeating = (equipmentSettings?.devices ?? config.connections.shelly?.devices ?? [])
-    .some(device => device.enabled !== false && device.controlsHeat);
   const topicGroups = [
     ...(engine.charging?.mqttRoutes() ?? []).map(route => ({ id: `${route.id}-vehicle`, label: `${route.label} vehicle`, source: 'MQTT', topics: [
       { role: 'Timestamped vehicle readings', topic: route.topic, direction: 'subscribe' },
@@ -79,9 +73,6 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     })) }] : []),
     ...(teslamate ? [{ id: 'teslamate', label: 'TeslaMate', source: 'MQTT', topics: [
       { role: 'Vehicle subscription', topic: teslamate.topic, direction: 'subscribe' },
-    ] }] : []),
-    ...(!hasEquipmentHeating ? [{ id: 'heating', label: 'Heating commands', source: 'MQTT', topics: [
-      { role: 'Heating mode command', topic: 'from_stmq/heat/action', direction: 'publish' },
     ] }] : []),
   ];
   if (teslamate) engine.teslamate = teslamate;

@@ -41,12 +41,12 @@ function assign(object, path, value) {
 // One field definition and one renderer serve every charger. The server supplies
 // first-use defaults and capabilities, including for chargers added later.
 export const chargingFields = [
+  { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
+    help: 'Plan to reach the target by this time. The final charging period continues until the vehicle finishes.' },
   { key: 'manualSoc', reading: 'soc', label: 'Starting charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
     help: 'Starting point when the vehicle does not report its charge. Delivered energy updates the estimate from here.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
     help: 'The vehicle charge target takes priority when available.' },
-  { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
-    help: 'Plan to reach the target by this time. The final charging period continues until the vehicle finishes.' },
   { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.1, automatic: true,
     help: 'Manual fallback when the vehicle does not report usable capacity.' },
 ].map(field => ({ type: 'text', ...field }));
@@ -159,6 +159,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   } else if (released || provisional || (owned || execution) && currentPeriod) {
     event = 'Charging is allowed';
     if (validTime(finishAt) && Number(finishAt) > now && requiredGridKwh > 0) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
+  } else if (phase === 'identifying') {
+    state = 'Identifying vehicle'; event = 'Observing initial charging before scheduling';
   } else if (enabled && validTime(nextPeriod?.startAt ?? plan.startAt) && Number(nextPeriod?.startAt ?? plan.startAt) > now) {
     eventAt = nextPeriod?.startAt ?? plan.startAt; eventKind = 'proposed'; event = `Proposed start ${time(eventAt)}`;
   } else if (!enabled && validTime(nativeStart) && Number(nativeStart) > now) {
@@ -237,7 +239,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const provider = charger.provider ?? charger.telemetry?.provider;
   const explanations = [
     ['Readings & fallbacks', 'Vehicle charge, target and usable capacity each take priority when available. Otherwise, their saved starting charge, requested target and capacity are used. Automatic readings do not erase those saved values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
-    ['Target & completion', 'The displayed target comes from the vehicle when available. A saved target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Remaining energy and estimated cost cover reaching this target, not the whole charging session.'],
+    ['Target & completion', 'The displayed target comes from the vehicle when available. A saved target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
     ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy is counted since that reference, not necessarily since plugging in. A new vehicle reading updates the reference and starts that count again. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; a saved starting charge must be updated after driving when no vehicle reading is available.'],
     ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings.${finite(efficiency) ? ` Charging efficiency is ${number(efficiency * 100, '%')}; grid energy includes those losses.` : ''}`],
   ];
@@ -259,8 +261,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Household forecast', 'Property consumption is reduced by known charging, then matched to local hours and outdoor conditions. A couple of usable nights can begin the estimate. Recent similar nights carry more weight, while older cold-weather readings remain useful when those conditions return. Broader history is used when close matches are scarce; zero other load is assumed only when no usable reference exists.'],
     ['Current reference', householdReferenceText(assumptions.householdReference, now)],
     ['Other charging', 'Another charger is reserved as a future load only when a charging event is scheduled. Actual consumption is already reflected in property readings.'],
-    ['Manual priority', 'A noticed external schedule change has priority until its window ends or the next ready-by time, whichever comes first. Resume automatic charging ends that priority early; a later manual change takes priority again. Changes are observed with automatic charging off too. A fresh charger read is required before handover.'],
-    ['Saved priority', 'The first charger reading establishes a baseline; existing schedules alone do not claim priority. Our own changes and normal schedule expiry do not count as manual changes. Priority survives reconnection and restart. Editing ready-by does not move an already recorded expiry.'],
+    ['Manual priority', 'A simple manual schedule has priority through its complete window, including after ready-by. Charge now has priority until unplugging. Multiple periods or an unknown end require Resume automatic charging; a later manual change takes priority again. A fresh charger read is required before handover.'],
+    ['Saved priority', 'An existing schedule with unknown ownership is preserved. Our own changes and normal schedule expiry do not count as manual changes. Manual windows survive reconnection and restart. Editing ready-by does not move a recorded window end.'],
     ['Turning automatic charging off', 'OFF stops automatic scheduling and removes only a confirmed restriction owned by this service. Newer manual instructions are preserved. OFF does not stop physical charging. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'],
     ['Unavailable data', 'Without a reliable price or power forecast, or with too little time, charging is allowed immediately while planning continues. Economical periods can still be scheduled when the forecast improves. A disabled charger, fault or authorization requirement must be resolved first. Unconfirmed changes retain the last known instruction and are retried after another charger reading.'],
   );
@@ -537,7 +539,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });
       device.cost.textContent = cost.value;
       device.facts.hidden = false;
-      metricDetail(device.costLabel, { label: 'Est. cost', title: 'Estimated cost to target',
+      metricDetail(device.costLabel, { label: 'Est. cost', title: 'Estimated total session cost',
         detail: cost.detail, key: `${charger.id}:cost` });
       const notice = chargingNotice(charger, view, presentation);
       device.notice.dataset.state = notice.state;

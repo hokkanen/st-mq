@@ -91,9 +91,9 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
   };
 }
 
-test('the common charging runtime uses the configured TeslaMate feed without acquiring legacy probe control', async t => {
+test('shared identification stays read-only until the charging runtime confirms a safe observation window', async t => {
   const f = await fixture(t);
-  assert.equal(f.factoryCalls, 0);
+  assert.equal(f.factoryCalls, 1);
   assert.deepEqual(f.mock.subscriptions, ['stmq/garage/charger1/vehicle', 'teslamate/cars/1/#']);
   assert.equal(f.engine.settings.mode, 'shadow');
   await f.baseline();
@@ -104,21 +104,22 @@ test('the common charging runtime uses the configured TeslaMate feed without acq
   f.engine.tick();
   const status = f.engine.status();
   assert.equal(status.liveWrites, false, 'Legacy identification preferences cannot enable heat-pump writes');
-  assert.deepEqual(status.chargerIdentification, { enabled: false, active: false, verdict: null });
+  assert.equal(status.chargerIdentification.enabled, true);
+  assert.equal(status.chargerIdentification.active, false);
   const vehicle = status.charging.chargers.find(charger => charger.id === 'charger2');
   assert.equal(vehicle.values.soc.value, 80);
   assert.equal(vehicle.values.soc.source, 'teslamate');
   assert.equal(vehicle.values.minimumSoc.value, 100);
   assert.equal(vehicle.values.connected.value, true);
-  assert.deepEqual((await f.call()).body, { enabled: false, active: false, verdict: null });
+  assert.equal((await f.call()).body.enabled, true);
   assert.deepEqual(f.mock.publications, []);
   for (let i = 0; i < 11; i++) await f.sample(5, { amps: 10, power: 6.9, teslaAmps: 10 });
   await f.sample(5, { amps: 16, power: 11.04, teslaAmps: 16 }); await f.sample();
   assert.equal((await f.call()).body.verdict, null, 'Correlated charger readings never reassign the configured vehicle');
   await f.restartProviders();
-  assert.equal(f.factoryCalls, 0);
+  assert.equal(f.factoryCalls, 2);
   assert.deepEqual(f.commands, [], 'Neither startup, live samples nor provider restart may request a probe');
-  assert.deepEqual((await f.call()).body, { enabled: false, active: false, verdict: null });
+  assert.equal((await f.call()).body.enabled, true);
   const durable = JSON.stringify(f.store.db.prepare('SELECT key,value FROM state').all());
   assert(!durable.includes('matched-charging-response'));
   assert(!durable.includes('applying-temporary-limit'));
@@ -138,12 +139,11 @@ test('disabled identification and explicit charger assignments do not acquire a 
   }
 });
 
-test('legacy identification API reports unavailable while retaining input and origin validation', async t => {
+test('identification API validates input and origin while requests still require a safe charging window', async t => {
   const f = await fixture(t);
   for (const strategy of ['auto', 'reduce', 'pause']) {
     const response = await f.call({ strategy });
-    assert.equal(response.status, 409);
-    assert.match(response.body.error, /not enabled|unavailable/);
+    assert.equal(response.status, 202);
     assert.equal(response.headers.get('cache-control'), 'no-store');
   }
   for (const invalid of [null, [], {}, { strategy: 'increase' }, { strategy: 'pause', minutes: 0 },
@@ -155,23 +155,22 @@ test('legacy identification API reports unavailable while retaining input and or
     request.on('error', reject); request.end();
   });
   assert.equal(otherHost, 403);
-  assert.deepEqual(f.commands, [], 'The obsolete API cannot acquire a command capability');
+  assert.deepEqual(f.commands, [], 'A request cannot bypass the charging ownership gate');
   await f.baseline();
   assert.deepEqual(f.commands, []);
   const duplicate = await f.call({ strategy: 'reduce' });
-  assert.equal(duplicate.status, 409);
-  assert.match(duplicate.body.error, /not enabled|unavailable/);
-  assert.deepEqual((await f.call()).body, { enabled: false, active: false, verdict: null });
-  assert.deepEqual(f.commands, [], 'Repeated requests remain unavailable after a stable baseline');
+  assert.equal(duplicate.status, 202);
+  assert.equal((await f.call()).body.enabled, true);
+  assert.deepEqual(f.commands, [], 'Repeated requests cannot bypass the ownership gate');
 });
 
-test('provider lifecycle never starts a probe preflight for the common charging runtime', async t => {
+test('provider lifecycle creates identification but cannot preflight without confirmed safe charging state', async t => {
   let reads = 0;
   const f = await fixture(t, { read: () => { reads++; throw new Error('Probe preflight must not be called'); } });
   await f.baseline();
   assert.equal(reads, 0);
-  assert.equal(f.factoryCalls, 0);
-  assert.equal(f.engine.chargerIdentification == null, true);
+  assert.equal(f.factoryCalls, 1);
+  assert.equal(f.engine.chargerIdentification == null, false);
   await f.providers.close();
   await drain(); await drain();
   assert.deepEqual(f.commands, []);
@@ -179,7 +178,7 @@ test('provider lifecycle never starts a probe preflight for the common charging 
   assert.equal((await f.call()).body.enabled, false);
 });
 
-test('application startup installs Tesla MQTT while a legacy identification opt-in acquires no probe controller', async t => {
+test('application startup retains automatic Tesla assignment and shared identification opt-in', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-identification-main-'));
   const mock = mqttClient(); let factoryCalls = 0;
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'mqtt',
@@ -195,9 +194,21 @@ test('application startup installs Tesla MQTT while a legacy identification opt-
   try {
     assert(app.engine.teslamate);
     assert(app.engine.charging);
-    assert.equal(factoryCalls, 0);
-    assert.equal(app.engine.chargerIdentification == null, true);
-    assert.equal(app.engine.status().chargerIdentification.enabled, false);
+    assert.equal(factoryCalls, 1);
+    assert.equal(app.engine.chargerIdentification == null, false);
+    assert.equal(app.engine.status().chargerIdentification.enabled, true);
+    assert.equal(app.engine.charging.teslaCapture.snapshot().assignment, 'auto');
     assert.deepEqual(mock.publications, []);
   } finally { await app.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('shared provider identification probes only during the runtime-approved initial window', async t => {
+  const f = await fixture(t);
+  f.engine.charging.canIdentifyVehicle = () => true;
+  await f.baseline();
+  assert.equal(f.commands.length, 1);
+  assert.equal(f.commands[0].minutes, 1);
+  f.engine.charging.canIdentifyVehicle = () => false;
+  await f.sample(5);
+  assert.equal(f.commands.length, 1);
 });

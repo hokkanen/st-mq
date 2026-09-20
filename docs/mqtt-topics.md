@@ -19,9 +19,13 @@ vocabulary; custom MQTT devices are still configured with `mqtt:` connections.
 | Optional HA garage air temperature | Existing HA publisher retained | `stmq/garage/air/status/temperature` | JSON Celsius snapshot |
 
 The installation uses power-only DHWR feedback. No physical or virtual switch-state
-publisher is required or enabled. Power is last-reported consumption, not an
-ON/OFF acknowledgement; timed circulation and its durable OFF obligation remain
-independent. See [DHWR setup](dhwr-mqtt.md).
+publisher is required or enabled. Positive power means on and zero means off.
+Every command needs a subsequent power report to verify its result; timed
+circulation and its durable OFF obligation remain independent. See [DHWR setup](dhwr-mqtt.md).
+
+[BMW CarData](bmw-cardata.md) publishes retained QoS 1 JSON on the established
+vehicle feed `stmq/garage/charger1/vehicle`: charge percentage, vehicle target,
+usable capacity and the original measurement timestamps.
 
 ## Publisher changes and cutover
 

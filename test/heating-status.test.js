@@ -31,7 +31,7 @@ test('Home confirmation requires current verified evidence matching the requeste
 });
 
 test('Home confirmation retains simulation, pending delivery, restoration, alarms and native-setting mismatches', () => {
-  for (const patch of [{ input: 'simulated' }, { role: 'replica' }, { mode: 'shadow' },
+  for (const patch of [{ input: 'simulated' }, { role: 'replica' },
     { execution: { status: 'pending' } }, { execution: { status: 'failed' } }, { execution: { restorationPending: true } },
     { h66: { enabled: true, connected: false } }]) {
     assert.equal(homeHeatingConfirmation({ ...home(), ...patch }).state, 'attention', JSON.stringify(patch));
@@ -48,6 +48,21 @@ test('Home confirmation retains simulation, pending delivery, restoration, alarm
   unverified.h66 = { connected: true, readings: { '1A01': { value: 1, available: true, observedAt: now } } };
   assert.equal(homeHeatingConfirmation(unverified).state, 'attention', 'compressor activity cannot verify the tariff relay');
   assert.match(homeHeatingConfirmation(unverified).detail, /tariff relay has no verified device readback/);
+});
+
+test('Home manual requests are confirmed from relay feedback while automatic control is disabled', () => {
+  const status = home();
+  status.mode = 'shadow';
+  status.decision.phase = 'normal';
+  Object.assign(status.observations.actual, { source: 'equipment-state-readback', stale: false,
+    requestedPhase: 'reduction', phase: 'reduction', mode: 'reduction' });
+  assert.equal(homeHeatingConfirmation(status).state, 'confirmed');
+  assert.match(homeHeatingConfirmation(status).detail, /device feedback still verifies manual requests/);
+  status.observations.actual.verified = false;
+  assert.equal(homeHeatingConfirmation(status).state, 'attention');
+  status.observations.actual.verified = true;
+  status.observations.actual.stale = true;
+  assert.equal(homeHeatingConfirmation(status).state, 'attention');
 });
 
 test('Garage confirmation requires fresh matching native power and healthy communication', () => {

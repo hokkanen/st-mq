@@ -185,7 +185,8 @@ Set `record: false` on an MQTT `switch` or `power` entry to keep its readings
 in live monitoring without adding database samples. Additional MQTT readings can
 individually use `record: false`; primary temperatures and cumulative energy
 counters retain their recording contracts. Native Shelly entries do not accept
-`record: false`. DHWR feedback is always live-only. The public defaults enable
+`record: false`. DHWR keeps raw watts live-only and records a compact ON/OFF
+state derived from measured power for chart shading. The public defaults enable
 `dhwr` as `kind: "power"` on `mqtt:stmq/home/dhwr/status/power`, with `record: false` and
 `max_age_seconds: 0`. Its SmartThings Rule publishes event-driven watts; ST-MQ
 owns the separate timed ON/OFF command path. See the

@@ -16,6 +16,7 @@ import { appendLearningRecord } from '../src/app/committed-learning.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { addFireplace } from '../src/app/fireplace.js';
 import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
+import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -158,7 +159,7 @@ try {
     }
   };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });
-  await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
+  await until("document.getElementById('chart-legend')?.querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.title'), 'Home Energy');
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark');
   assert.equal(await evaluate("document.getElementById('date-start').value"), '2026-09-07');
@@ -373,14 +374,14 @@ try {
   await checkPowerDrawn();
   assert.equal(await evaluate("localStorage.getItem('home-energy-theme')"), 'light', 'The last selected theme is saved');
   await command('browsingContext.reload', { context, wait: 'complete' });
-  await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
+  await until("document.getElementById('chart-legend')?.querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light', 'Reload restores the last light theme');
   assert.equal(await evaluate("document.getElementById('theme-toggle').getAttribute('aria-label')"), 'Switch to dark theme');
   await checkPowerDrawn();
   await evaluate("document.getElementById('theme-toggle').click(); true");
   assert.equal(await evaluate("localStorage.getItem('home-energy-theme')"), 'dark');
   await command('browsingContext.reload', { context, wait: 'complete' });
-  await until("document.getElementById('chart-legend').querySelectorAll('button').length > 5");
+  await until("document.getElementById('chart-legend')?.querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'dark', 'Reload restores the last dark theme');
   assert.equal(await evaluate("document.getElementById('theme-toggle').getAttribute('aria-label')"), 'Switch to light theme');
   const checkRange = async (start, end = start) => {
@@ -704,8 +705,13 @@ try {
     const client = new EventEmitter();
     client.subscribe = (_topic, _options, callback) => callback?.();
     client.publish = (topic, payload, options, callback) => {
-      if (!manual) { callback?.(); return; }
-      testPublishes.push({ topic, payload, options }); acknowledgeHeating = callback;
+      const tariff = topic === 'synthetic/tariff/set';
+      if (!manual && !tariff) { callback?.(); return; }
+      testPublishes.push({ topic, payload, options });
+      acknowledgeHeating = error => {
+        callback?.(error);
+        if (tariff && !error) queueMicrotask(() => client.emit('message', 'synthetic/tariff/status', Buffer.from(payload), {}));
+      };
     };
     client.end = (force, options, callback) => callback?.();
     queueMicrotask(() => client.emit('connect'));
@@ -713,7 +719,10 @@ try {
   };
   app = await start({ config: { ...config, input: 'providers', dbPath: join(directory, 'provider-fixture.sqlite'),
     priceSettings: { ...config.priceSettings, effectiveDate: '2026-09-07' },
-    connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } },
+    connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' },
+      equipment: equipmentConfiguration({ devices: [{ id: 'heat_savings', kind: 'switch',
+        connection: 'mqtt:synthetic/tariff/status', tariff_control: true,
+        mqtt: { command_topic: 'synthetic/tariff/set', on_payload: 'ON', off_payload: 'OFF' } }] }) } },
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
   // Supply capture health independently of the manual-command broker fixture.
   // No MQTT connection, household identifiers or raw TeslaMate fields are used.
@@ -847,36 +856,36 @@ try {
     document.getElementById('home-heat-pump-details').open = true; document.getElementById('temporary-details').open = true;
     document.getElementById('away-until').value = '2026-09-10T18:00';
     document.getElementById('away-until').dispatchEvent(new Event('input')); true`);
-  for (const command of ['heatoff', 'heaton15', 'heaton60']) {
+  for (const command of ['reduction', 'normal', 'circulation']) {
     acknowledgeHeating = null;
     await evaluate(`document.getElementById('test-${command}').click(); document.getElementById('test-${command}').click(); true`);
     await until("document.getElementById('heating-test-buttons').getAttribute('aria-busy') === 'true'");
     for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(typeof acknowledgeHeating, 'function');
     assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
-    assert.equal(await evaluate(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('sent at')`), false);
+    assert.equal(await evaluate(`document.getElementById('${command === 'circulation' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('sent at')`), false);
     acknowledgeHeating();
-    const commandLabel = { heatoff: 'Reduced heating', heaton15: 'Normal heating', heaton60: 'Circulation' }[command];
-    await until(`document.getElementById('${command === 'heaton60' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} sent at') && !document.getElementById('test-${command}').disabled`);
+    const commandLabel = { reduction: 'Reduced heating', normal: 'Normal heating', circulation: 'Circulation' }[command];
+    await until(`document.getElementById('${command === 'circulation' ? 'dhwr-message' : 'heating-test-message'}').textContent.includes('${commandLabel} sent at') && !document.getElementById('test-${command}').disabled`);
     assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
   }
   assert.deepEqual(testPublishes, [
-    ...['heatoff', 'heaton15'].map(payload => ({ topic: 'from_stmq/heat/action', payload, options: { qos: 1, retain: false } })),
+    ...['ON', 'OFF'].map(payload => ({ topic: 'synthetic/tariff/set', payload, options: { qos: 1, retain: false } })),
     { topic: 'stmq/home/dhwr/command/switch', payload: 'ON', options: { qos: 1, retain: false } },
   ]);
   const requestedHeating = app.engine.status().observations.actual;
   assert.equal(requestedHeating.mode, 'normal');
-  assert.equal(requestedHeating.source, 'mqtt-request');
-  assert.equal(requestedHeating.verified, false, 'Broker acknowledgement is not relay confirmation');
-  assert.match(await evaluate("document.getElementById('tariff-control-state').textContent"), /Normal heating requested · unverified/);
+  assert.equal(requestedHeating.source, 'equipment-state-readback');
+  assert.equal(requestedHeating.verified, true, 'A matching device report confirms the direct relay command');
+  assert.match(await evaluate("document.getElementById('tariff-control-state').textContent"), /Normal heating · confirmed/);
   acknowledgeHeating = null;
   // Normal heat is allowed during the preceding DHWR pulse; reduction would
   // correctly fail before publishing and never exercise broker-error handling.
-  await evaluate("document.getElementById('test-heaton15').click(); true");
+  await evaluate("document.getElementById('test-normal').click(); true");
   for (let i = 0; !acknowledgeHeating && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(typeof acknowledgeHeating, 'function');
   acknowledgeHeating(new Error('synthetic-private-broker-error'));
-  await until("document.getElementById('heating-test-message').classList.contains('form-error') && !document.getElementById('test-heaton15').disabled");
+  await until("document.getElementById('heating-test-message').classList.contains('form-error') && !document.getElementById('test-normal').disabled");
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');

@@ -80,10 +80,9 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
   };
 }
 
-/** The configured TeslaMate feed belongs to Charger 2. An explicit legacy
- * Easee assignment remains supported; automatic probing never hides its SoC. */
-export function teslamateChargerAssignment(snapshot = {}) {
-  return { chargerId: snapshot.assignment === 'easee' ? 'charger1' : 'charger2',
+/** A confirmed connection probe takes precedence over the default charger. */
+export function teslamateChargerAssignment(snapshot = {}, { identified } = {}) {
+  return { chargerId: snapshot.assignment === 'easee' || snapshot.assignment === 'auto' && identified === 'easee' ? 'charger1' : 'charger2',
     uncertain: false, reservationChargerId: null };
 }
 

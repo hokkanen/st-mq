@@ -95,9 +95,9 @@
                 </div>
                 <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
                 <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
-                  <button id="test-heaton15" class="secondary-button" type="button" data-heating-command="heaton15" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-normal" class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Max preheating</span><span class="heating-button-state" aria-hidden="true"></span></button>
-                  <button id="test-heatoff" class="secondary-button" type="button" data-heating-command="heatoff" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
+                  <button id="test-reduction" class="secondary-button" type="button" data-heating-command="reduction" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                 </div>
                 <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
                 <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
@@ -265,11 +265,11 @@
                     <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></span>
                   </summary>
                   <div class="equipment-device-body">
-                    <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported switch</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
+                    <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported operation</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
                     <div id="dhwr-controls" class="equipment-inline-controls">
                       <p id="dhwr-request-state" class="muted"></p>
                       <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">
-                        <button id="test-heaton60" class="secondary-button" type="button" data-heating-command="heaton60" disabled>Start circulation</button>
+                        <button id="test-circulation" class="secondary-button" type="button" data-heating-command="circulation" disabled>Start circulation</button>
                         <button id="dhwr-stop" class="secondary-button" type="button" disabled>Stop</button>
                       </div>
                       <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>

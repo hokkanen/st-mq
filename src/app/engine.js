@@ -4,6 +4,7 @@ import { restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch } from '../contr
 import { chooseCycle, evaluateCycle, forecastIntervals, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
+import { heatingFeedback } from './heating-feedback.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
@@ -599,20 +600,34 @@ export class Engine {
     const device = this.equipmentStatus().devices.find(row => row.id === 'dhwr' && row.enabled !== false);
     const configuredDevice = this.config.connections?.equipment?.devices?.find(row => row.enabled && row.id === 'dhwr');
     const reportedState = device?.readings?.dhwr_active ?? null, reportedPower = device?.readings?.dhwr_power ?? null;
-    const stateConfigured = Boolean(device && (configuredDevice ? configuredDevice.stateSignal === 'dhwr_active' : device.kind !== 'power'));
     const powerConfigured = Boolean(device && (device.kind === 'power' || reportedPower
       || configuredDevice?.readings.some(row => row.signal === 'dhwr_power')));
-    const actualOn = stateConfigured && reportedState && !reportedState.stale && [0, 1].includes(reportedState.value)
-      ? Boolean(reportedState.value) : null;
+    const stateConfigured = powerConfigured || Boolean(device && (configuredDevice ? configuredDevice.stateSignal === 'dhwr_active' : device.kind !== 'power'));
+    const feedbackState = powerConfigured ? reportedPower && { ...reportedPower, unit: 'state',
+      value: Number.isFinite(reportedPower.value) && reportedPower.value >= 0 ? Number(reportedPower.value > 0) : null } : reportedState;
+    const actualOn = stateConfigured && feedbackState && !feedbackState.stale && [0, 1].includes(feedbackState.value)
+      ? Boolean(feedbackState.value) : null;
     const active = Boolean(state.dhwrOutstanding && state.pulseUntil > now);
+    const requestedAt = state.dhwrRequested?.at ?? null;
+    const newer = requestedAt === null || feedbackState?.observedAt >= requestedAt
+      && (feedbackState?.receivedAt ?? feedbackState?.observedAt) >= requestedAt;
+    const expectedOn = active && state.dhwrRequested?.on !== false;
+    const confirmed = actualOn !== null && actualOn === expectedOn && newer;
+    const reason = confirmed ? null : actualOn === null ? 'Circulation feedback is unavailable.'
+      : !newer ? `Waiting for a new ${powerConfigured ? 'power' : 'switch'} report after the circulation request.`
+        : `Reported circulation is ${actualOn ? 'on' : 'off'}; the request is ${expectedOn ? 'on' : 'off'}.`;
     return { active,
       expiresAt: state.dhwrOutstanding ? state.pulseUntil : null,
       durationMinutes: this.executor.pulseMs / 60_000,
       restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
       commandTopic: this.config.connections?.mqtt?.dhwr_topic ?? 'stmq/home/dhwr/command/switch',
-      actualOn, confirmed: actualOn !== null && actualOn === active,
+      actualOn, confirmed, attention: !confirmed, reason, requestedAt,
       feedback: { configured: Boolean(device), stateConfigured, powerConfigured, deviceId: device?.id ?? null, available: device?.available === true,
-        state: reportedState, power: reportedPower } };
+        basis: powerConfigured ? 'power' : stateConfigured ? 'switch' : null, state: feedbackState, power: reportedPower } };
+  }
+  heatingActual(now = this.clock(), native = this.h66Status?.() ?? {}) {
+    return heatingFeedback({ equipment: this.equipmentStatus(), configured: this.config.connections?.equipment?.devices,
+      executor: this.executor.status(), applied: this.applied, h66: native, now });
   }
   async stopDhwr(input = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
@@ -638,7 +653,7 @@ export class Engine {
     if (!capability.available) throw new Error(capability.reason);
     if (input.command === 'preheat' && !capability.preheatAvailable) throw new Error(capability.preheatReason);
     if (this.heatingTestBusy) throw new Error('An MQTT test is already in progress.');
-    if (this.dispatchPending || input.command !== 'heaton60' && this.cycles.active())
+    if (this.dispatchPending || input.command !== 'circulation' && this.cycles.active())
       throw new Error('Wait for the current heating cycle or transition to finish before running a manual test.');
     this.heatingTestBusy = true;
     const command = input.command;
@@ -650,14 +665,14 @@ export class Engine {
       // any later manual choice until that pause ends. MQTT acknowledgement is
       // still not a physical readback.
       const execution = await this.executor.execute(command === 'preheat'
-        ? { phase: 'preheat', commands: ['heaton15', 'heaton60'], roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
+        ? { phase: 'preheat', commands: ['normal', 'circulation'], roomBoostC: capability.preheatRoomBoostC } : { commands: [command] },
       { mode: this.settings.mode, now, manualTest: true, pause });
       const result = { command, ...execution, at: this.clock() };
       this.store.setState(`heating-test:${this.config.input}`, result);
       this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
-      if (command === 'heaton60' || command === 'preheat') this.recordDhwr(this.executor.status().pulseUntil, result.at);
-      if (command !== 'heaton60') {
-        this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'heatoff' ? 'reduction' : 'normal',
+      if (command === 'circulation' || command === 'preheat') this.recordDhwr(this.executor.status().pulseUntil, result.at);
+      if (command !== 'circulation') {
+        this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'reduction' ? 'reduction' : 'normal',
           result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
       }
       return result;
@@ -864,6 +879,7 @@ export class Engine {
     this.charging.tick({ now, prices: outlook.prices, weather: outlook.forecast });
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
+    if (!this.plant) observations.actual = this.heatingActual(now, h66);
     const manualPause = priorExecutor?.manualPause;
     const ownsPausedSettings = Boolean(manualPause || h66.pauseId);
     const ownsTemporarySettings = Boolean(priorExecutor?.manualTemporary || h66.phase === 'manual-temporary');
@@ -1069,9 +1085,9 @@ export class Engine {
       : decision.phase === 'reduction' ? cycleSchedule.reductionEnd : now+1800000;
     const lastPulseAt = this.store.getState(`dhwr:${input}`)?.lastPulseAt;
     const pulse = !override && decision.phase === 'normal' && dhwrEligible(now,lastPulseAt,'normal');
-    decision.commands = decision.phase === 'reduction' ? ['heatoff'] : decision.phase === 'preheat' || pulse ? ['heaton60','heaton15'] : ['heaton15'];
+    decision.commands = decision.phase === 'reduction' ? ['reduction'] : decision.phase === 'preheat' || pulse ? ['circulation','normal'] : ['normal'];
     decision.dhwr = { requested: pulse || decision.phase === 'preheat', durationMinutes: this.control.dhwrPulseMinutes, lastPulseAt: lastPulseAt ?? null,
-      basis: 'ST-MQ controls MQTT ON and OFF; no direct DHWR readback' };
+      basis: 'ST-MQ requests MQTT ON/OFF; measured positive power verifies on and zero verifies off.' };
     decision.nextState = { phase: decision.phase };
     if (holdManualSettings) decision.manualHold = { until: override.expiresAt,
       phase: manualPause ? priorExecutor.manualRequested?.phase ?? this.applied.phase : this.applied.phase,
@@ -1093,7 +1109,7 @@ export class Engine {
         if (this.plant && decision.dhwr.requested) {
           this.store.setState(`dhwr:${input}`, { lastPulseAt: now }); this.recordDhwr(this.plant.state.pulseUntil,now);
         }
-        else if (executorStatus?.requested?.commands.includes('heaton60')
+        else if (executorStatus?.requested?.commands.includes('circulation')
           && execution.pulseUntil > (this.store.getState(`dhwr:${input}`)?.pulseUntil ?? 0))
           {
             this.store.setState(`dhwr:${input}`, { lastPulseAt: executorStatus.requested.at, pulseUntil: execution.pulseUntil });
@@ -1192,10 +1208,7 @@ export class Engine {
     if (this.h66Status) result.h66 = this.h66Status();
     const executor = this.executor.status(), native = result.h66 ?? {}, override = result.override;
     const manual = executor.manualRequested;
-    if (!this.plant && manual?.confirmed && manual.at >= (result.observations?.actual?.observedAt ?? -Infinity)) {
-      result.observations.actual = { ...result.observations.actual, mode: manual.phase === 'reduction' ? 'reduction' : 'normal',
-        phase: manual.phase, observedAt: manual.at, source: 'mqtt-request', verified: false };
-    }
+    if (!this.plant) result.observations.actual = this.heatingActual(now, native);
     const holding = override && !executor.manualTemporary && native.phase !== 'manual-temporary'
       && !executor.restorationPending && !native.restorationPending
       && Boolean(executor.manualPause || native.pauseId)

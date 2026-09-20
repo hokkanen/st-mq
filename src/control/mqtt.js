@@ -1,9 +1,9 @@
 import mqtt from 'mqtt';
 
-export const HEATING_COMMANDS = Object.freeze(['heatoff', 'heaton15', 'heaton60']);
-const TOPIC = 'from_stmq/heat/action';
+export const HEATING_COMMANDS = Object.freeze(['reduction', 'normal', 'circulation']);
 const MESSAGES = {
-  MQTT_COMMAND_INVALID: 'Choose heatoff, heaton15, or heaton60.',
+  MQTT_COMMAND_INVALID: 'Choose normal heating, reduced heating, or circulation.',
+  MQTT_RELAY_UNAVAILABLE: 'Configure a direct tariff relay with live device readback before requesting heating.',
   MQTT_CONNECTION_FAILED: 'Could not connect to the MQTT broker. Check the broker address and connection settings. No command was sent.',
   MQTT_CONNECTION_REFUSED: 'The MQTT broker refused the connection. Check that it is running and accepting connections on the configured port. No command was sent.',
   MQTT_NETWORK_UNREACHABLE: 'The MQTT broker is unreachable from this server. Check the broker address, network connection and routing. No command was sent.',
@@ -59,7 +59,7 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
       const batch = Array.isArray(commands) ? [...commands] : [];
       // Timed circulation belongs to Executor: publishing a button intent here
       // would bypass the durable OFF obligation.
-      if (!batch.length || batch.some(command => !['heatoff', 'heaton15'].includes(command))) {
+      if (!batch.length || batch.some(command => !['reduction', 'normal'].includes(command))) {
         throw failure('MQTT_COMMAND_INVALID');
       }
       if (heatingRelay) {
@@ -74,7 +74,10 @@ export function createHeatingTransport({ connection, connect = mqtt.connect, tim
         active = { completion, cancel() {} };
         try { return await completion; } finally { active = null; }
       }
-      return send(batch.map(payload => ({ topic: TOPIC, payload })));
+      if (closed) throw failure('MQTT_CLOSED');
+      if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
+      if (active) throw failure('MQTT_BUSY');
+      throw failure('MQTT_RELAY_UNAVAILABLE');
     },
     async publishDhwr(on) {
       if (typeof on !== 'boolean') throw failure('MQTT_COMMAND_INVALID');

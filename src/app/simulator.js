@@ -27,9 +27,9 @@ export class SimulatedPlant {
   }
   apply(commands, now, dhwrDurationMs = 600_000) {
     for (const command of commands) {
-      if (!['heatoff', 'heaton15', 'heaton60'].includes(command)) throw new Error('Unknown simulated command');
-      this.state.action = command === 'heatoff' ? 'reduction' : 'normal';
-      if (command === 'heaton60') this.state.pulseUntil = now + dhwrDurationMs;
+      if (!['reduction', 'normal', 'circulation'].includes(command)) throw new Error('Unknown simulated command');
+      this.state.action = command === 'reduction' ? 'reduction' : 'normal';
+      if (command === 'circulation') this.state.pulseUntil = now + dhwrDurationMs;
     }
     return { mode: this.state.action, observedAt: now, source: 'simulation', verified: true };
   }

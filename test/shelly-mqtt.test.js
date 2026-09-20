@@ -72,7 +72,7 @@ test('Garage add-on uses external temperature component, never the relay CPU tem
 test('Direct heating requires a post-command Switch.GetStatus response and preserves configurable polarity', async t => {
   const f = fixture(t, { heat_savings: { enabled: true, topic_prefix: 'invented-mini', reduction_on: false } });
   f.capture.setConnected(true);
-  const pending = f.capture.publishHeating(['heatoff']);
+  const pending = f.capture.publishHeating(['reduction']);
   await Promise.resolve();
   const set = f.publications.find(row => JSON.parse(row.payload).method === 'Switch.Set');
   assert.deepEqual(JSON.parse(set.payload).params, { id: 0, on: false });
@@ -84,14 +84,14 @@ test('Direct heating requires a post-command Switch.GetStatus response and prese
   assert(get); f.reply(get, { output: false });
   const result = await pending; assert.equal(result.acknowledgement, 'shelly-live-relay-readback');
   f.authority(false);
-  await assert.rejects(f.capture.publishHeating(['heaton15']), /unavailable/);
+  await assert.rejects(f.capture.publishHeating(['normal']), /unavailable/);
 });
 
 test('Readback timeout and device disconnect never claim delivery', async t => {
   const f = fixture(t, { heat_savings: { enabled: true, topic_prefix: 'invented-mini' } });
   f.capture.setConnected(true);
-  await assert.rejects(f.capture.publishHeating(['heatoff']), /readback timed out/);
-  const pending = f.capture.publishHeating(['heatoff']);
+  await assert.rejects(f.capture.publishHeating(['reduction']), /readback timed out/);
+  const pending = f.capture.publishHeating(['reduction']);
   f.capture.receive('invented-mini/online', 'false');
   await assert.rejects(pending, /unavailable/);
 });
@@ -193,13 +193,13 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
 test('A late readback from a timed-out command cannot confirm a newer command with the same output', async t => {
   const f = fixture(t, { heat_savings: { enabled: true, topic_prefix: 'invented-mini' } });
   f.capture.setConnected(true);
-  const first = f.capture.publishHeating(['heatoff']);
+  const first = f.capture.publishHeating(['reduction']);
   const firstSet = f.publications.find(row => JSON.parse(row.payload).method === 'Switch.Set');
   f.now(initial + 50); f.reply(firstSet, { was_on: false });
   const staleRead = f.publications.find(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
   await assert.rejects(first, /readback timed out/);
   f.now(initial + 100);
-  const second = f.capture.publishHeating(['heatoff']);
+  const second = f.capture.publishHeating(['reduction']);
   let completed = false; second.then(() => { completed = true; });
   f.now(initial + 110); f.reply(staleRead, { output: true });
   await Promise.resolve(); assert.equal(completed, false);

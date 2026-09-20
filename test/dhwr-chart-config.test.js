@@ -30,3 +30,27 @@ test('DHWR chart respects longer configured runs and recorded early OFF without 
     ]);
   } finally { store.close(); }
 });
+
+test('DHWR chart uses measured ON/OFF, leaves unknown gaps, and keeps pre-feedback CSV interpretation', () => {
+  const store = new Store(':memory:');
+  try {
+    const put = (signal, value, at, raw) => store.observation({ source: signal === 'dhwr_active' ? 'mqtt-equipment' : 'controller',
+      device: signal === 'dhwr_active' ? 'dhwr' : 'offline', signal, value, unit: 'state', sourceTime: at, receivedAt: at, raw });
+    put('dhwr_request', 1, start, { expiresAt: start + 60 * MINUTE });
+    put('dhwr_active', 0, start + 5 * MINUTE, { verified: true, eventOnly: true });
+    put('dhwr_active', 1, start + 10 * MINUTE, { verified: true, eventOnly: true });
+    put('dhwr_active', 0, start + 20 * MINUTE, { verified: true, eventOnly: true });
+    put('dhwr_active', 1, start + 30 * MINUTE, { verified: true, eventOnly: true });
+    put('dhwr_active', null, start + 35 * MINUTE, { verified: false });
+    put('dhwr_active', 1, start + 40 * MINUTE, { verified: true, maxAgeMs: 2 * MINUTE });
+    const result = getChartData({ store, input: 'offline', now: start + 60 * MINUTE,
+      startDate: '2026-09-10', endDate: '2026-09-10' });
+    assert.deepEqual(result.shading.dhwr, [
+      { start, end: start + 5 * MINUTE },
+      { start: start + 10 * MINUTE, end: start + 20 * MINUTE },
+      { start: start + 30 * MINUTE, end: start + 35 * MINUTE },
+      { start: start + 40 * MINUTE, end: start + 42 * MINUTE },
+    ]);
+    assert.match(result.meta.dhwrBasis, /Actual circulation/);
+  } finally { store.close(); }
+});

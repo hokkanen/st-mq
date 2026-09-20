@@ -46,7 +46,7 @@ let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
-const heatingCommandLabel = command => ({ heatoff: 'Reduced heating', heaton15: 'Normal heating', preheat: 'Max preheating', heaton60: 'Circulation' })[command] ?? 'Heating request';
+const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 'Normal heating', preheat: 'Max preheating', circulation: 'Circulation' })[command] ?? 'Heating request';
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
@@ -147,7 +147,7 @@ function updateTemporaryButtons(updateEquipment = true) {
   $('resume-now').disabled = busy || !($('pause-until').value || saved.pauseUntilLocal);
   for (const button of heatingTestButtons) button.disabled = busy || !lastStatus?.heatingTests?.available;
   $('test-preheat').disabled ||= lastStatus?.heatingTests?.preheatAvailable !== true;
-  $('test-heaton60').disabled ||= Boolean(lastStatus?.dhwr?.restorationPending);
+  $('test-circulation').disabled ||= Boolean(lastStatus?.dhwr?.restorationPending);
   $('dhwr-stop').disabled = busy || !lastStatus?.heatingTests?.available || !(lastStatus?.dhwr?.active || lastStatus?.dhwr?.restorationPending || lastStatus?.dhwr?.actualOn === true);
   $('h66-test-submit').disabled = busy || !h66Control(lastStatus?.h66, $('h66-test-register').value).available;
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
@@ -172,31 +172,31 @@ function renderTemporary(s) {
 }
 function showHeatingTestResult(result) {
   const failed = result.status === 'failed' || !result.sent;
-  const message = $(result.command === 'heaton60' ? 'dhwr-message' : 'heating-test-message');
-  const confirmation = result.command === 'heaton60' && lastStatus?.dhwr?.feedback?.stateConfigured === false
-    ? 'Switch feedback is not configured.' : 'Check the reported state for confirmation.';
+  const message = $(result.command === 'circulation' ? 'dhwr-message' : 'heating-test-message');
+  const confirmation = result.command === 'circulation' && lastStatus?.dhwr?.feedback?.stateConfigured === false
+    ? 'Circulation feedback is not configured.' : 'Waiting for a new device report to verify the request.';
   message.classList.toggle('form-error', failed);
   message.textContent = failed
     ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
     : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : confirmation}`;
-  if (!failed && result.command !== 'heaton60') {
+  if (!failed && result.command !== 'circulation') {
     const holdUntil = result.holdUntil ?? (lastStatus?.override?.expiresAt > lastStatus?.now ? lastStatus.override.expiresAt : null);
     message.textContent += holdUntil
       ? ` This setting is held until ${time(holdUntil)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
       : ' If not paused, the previous settings return on the controller’s next update, normally within 1 minute. Automatic price control then resumes if enabled.';
   }
-  if (!failed && result.command === 'heaton60') message.textContent += ` Circulation runs for ${lastStatus?.dhwr?.durationMinutes ?? 10} minutes from this click, including while price control is paused. Stop ends it immediately.`;
+  if (!failed && result.command === 'circulation') message.textContent += ` Circulation runs for ${lastStatus?.dhwr?.durationMinutes ?? 10} minutes from this click, including while price control is paused. Stop ends it immediately.`;
   lastHeatingTestResult = JSON.stringify(result);
 }
 function renderHeatingTests(s) {
   const capability = s.heatingTests;
   const actual = s.observations?.actual;
-  const phase = actual?.phase ?? actual?.mode;
-  const current = actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
-  const selected = current ? ({ normal: 'test-heaton15', recovery: 'test-heaton15',
-    preheat: 'test-preheat', reduction: 'test-heatoff' })[phase] : null;
-  for (const [id, name] of [['test-heaton15', 'Normal heating'], ['test-preheat', 'Max preheating'], ['test-heatoff', 'Reduced heating']]) {
-    const button = $(id), state = id === selected ? actual.verified === true ? 'Active' : 'Requested' : '';
+  const phase = actual?.requestedPhase ?? actual?.phase ?? actual?.mode;
+  const current = actual?.requestedPhase || actual?.stale !== true && (actual?.verified === true || actual?.source === 'mqtt-request');
+  const selected = current ? ({ normal: 'test-normal', recovery: 'test-normal',
+    preheat: 'test-preheat', reduction: 'test-reduction' })[phase] : null;
+  for (const [id, name] of [['test-normal', 'Normal heating'], ['test-preheat', 'Max preheating'], ['test-reduction', 'Reduced heating']]) {
+    const button = $(id), state = id === selected ? actual.stale !== true && actual.verified === true && (actual.phase ?? actual.mode) === phase ? 'Active' : 'Requested' : '';
     button.setAttribute('aria-pressed', String(id === selected));
     button.setAttribute('aria-label', `${name}${state ? ` · ${state}${state === 'Requested' ? ', awaiting device confirmation' : ''}` : ''}`);
     button.dataset.modeState = state.toLowerCase();
@@ -514,7 +514,7 @@ function render(s) {
       : obs.configured === false ? 'Not configured' : 'No current reading';
   }
   const manualHold = s.decision.manualHold?.until > s.now ? s.decision.manualHold : null;
-  const requested = label(manualHold?.phase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction')).replace(/^./, value => value.toUpperCase())
+  const requested = label(manualHold?.phase ?? s.observations?.actual?.requestedPhase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction')).replace(/^./, value => value.toUpperCase())
     + (manualHold ? ' · held' : '');
   const controlMode = s.mode === 'monitoring' ? 'Monitoring · no automatic commands'
     : s.input === 'simulated' && s.mode === 'active' ? 'Simulation · applying this plan'
@@ -540,7 +540,9 @@ function render(s) {
   const temporary = temporaryValues(s);
   $('control-price').textContent = temporary.pauseUntilLocal ? 'Paused' : temporary.awayUntilLocal ? 'Away' : 'Active';
   $('control-price').parentElement.dataset.state = temporary.pauseUntilLocal ? 'paused' : 'active';
-  $('dhwr').textContent = dhwrReadingSummary(s).summary;
+  const dhwr = dhwrReadingSummary(s);
+  $('dhwr').textContent = dhwr.summary;
+  $('dhwr').classList.toggle('stale', dhwr.attention);
   const reference = s.decision.comfort?.targetC ?? s.settings.comfort.targetC;
   const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings.comfort.targetC != null ? 'configured' : 'learned';
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : 'Learning';
@@ -696,7 +698,7 @@ $('resume-now').addEventListener('click', () => applyTemporary({ pauseUntilLocal
 async function testHeating(command) {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !lastStatus?.heatingTests?.available) return;
   if (command === 'preheat' && lastStatus.heatingTests.preheatAvailable !== true) return;
-  if (command !== 'heaton60' && lastStatus.override?.expiresAt > lastStatus.now
+  if (command !== 'circulation' && lastStatus.override?.expiresAt > lastStatus.now
     && !await confirmPausedHeating({ document, title: 'Change heating while price control is paused?',
       message: `${heatingCommandLabel(command)} will stay until ${time(lastStatus.override.expiresAt)} or Resume now. Room temperatures may change while automatic price control is paused. Previous settings return when the pause ends.`,
       action: `Apply ${heatingCommandLabel(command).toLowerCase()}` })) return;
@@ -705,7 +707,7 @@ async function testHeating(command) {
   ++refreshSequence;
   updateTemporaryButtons();
   $('heating-test-buttons').setAttribute('aria-busy', 'true');
-  const message = $(command === 'heaton60' ? 'dhwr-message' : 'heating-test-message');
+  const message = $(command === 'circulation' ? 'dhwr-message' : 'heating-test-message');
   message.classList.remove('form-error');
   message.textContent = `Sending ${heatingCommandLabel(command)}…`;
   try {
@@ -732,7 +734,7 @@ $('dhwr-stop').addEventListener('click', async () => {
   try {
     render(await api('/api/dhwr/stop', {}));
     $('dhwr-message').textContent = lastStatus?.dhwr?.feedback?.stateConfigured === false
-      ? 'Stop sent. Switch feedback is not configured.' : 'Stop sent. Check the reported switch state above.';
+      ? 'Stop sent. Circulation feedback is not configured.' : 'Stop sent. Waiting for a new device report to verify the request.';
   }
   catch { $('dhwr-message').textContent = 'Could not confirm the circulation stop request.'; $('dhwr-message').classList.add('form-error'); }
   finally { heatingTestBusy = false; updateTemporaryButtons(); }

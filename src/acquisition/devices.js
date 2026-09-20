@@ -34,7 +34,7 @@ export const ELECTRICITY_FIELDS = Object.freeze({
     [40, 'active_power', 'kW'], [45, 'import_energy_counter', 'kWh']],
 });
 const API = 'https://api.easee.com';
-const IDENTIFICATION_IDS = [47, 48, 109, 111, 112, 113, 114, 120, 183, 184, 185, 230, 231, 232, 250,
+const IDENTIFICATION_IDS = [31, 47, 48, 96, 109, 111, 112, 113, 114, 120, 183, 184, 185, 230, 231, 232, 250,
   ...CHARGER_TELEMETRY.map(row => row[0])];
 
 function number(value) {
@@ -230,7 +230,8 @@ function identificationSnapshot(payload, now) {
   if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee control observations');
   const pick = (id, unit, maximum = 1000, integer = false) => {
     const matches = list.filter(row => number(row?.id) === id).map(row => ({
-      value: number(row.value), at: sourceTime(row.timestamp), unit: row.unit,
+      value: id === 31 && [true, 'true'].includes(row.value) ? 1
+        : id === 31 && [false, 'false'].includes(row.value) ? 0 : number(row.value), at: sourceTime(row.timestamp), unit: row.unit,
     })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
     const row = matches[0];
     if (!row || row.value === null || row.value < 0 || row.value > maximum || integer && !Number.isInteger(row.value)
@@ -240,6 +241,7 @@ function identificationSnapshot(payload, now) {
     return { value: row.value, at: row.at };
   };
   const max = pick(47, 'A', 80), dynamic = pick(48, 'A', 80), mode = pick(109, undefined, 10, true);
+  const enabled = pick(31, undefined, 1, true), reason = pick(96, undefined, 1000, true);
   const output = pick(114, 'A', 80), power = pick(120, 'kW');
   const currents = [183, 184, 185].map(id => pick(id, 'A', 80));
   const circuit = [111, 112, 113].map(id => pick(id, 'A'));
@@ -251,7 +253,7 @@ function identificationSnapshot(payload, now) {
   // Only an unrestricted per-charger cap may be replaced: after TTL expiry the
   // existing static, circuit, Equalizer and car limits still apply.
   const safeToProbe = connection.connected === true && max.value !== null && max.value >= 6 && max.value <= 32
-    && dynamic.value !== null && dynamic.value >= 32;
+    && dynamic.value !== null && dynamic.value >= 32 && enabled.value === 1 && reason.value === 0;
   const recent = (at, maximumAge) => at !== null && now - at <= maximumAge;
   const electrical = [power, ...currents];
   const baselineHeld = electrical.some(row => !recent(row.at, 60_000));
@@ -403,8 +405,9 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const payload = await easeeRequest(easee.charger_id, IDENTIFICATION_IDS, signal);
       return identificationSnapshot(payload, clock());
     },
-    async limit({ amps, minutes, signal } = {}) {
+    async limit({ amps, minutes, signal, canMutate = () => true, requireUnscheduled = false } = {}) {
       if (!canControl()) throw new Error('Controller authority was revoked');
+      if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
       if (!Number.isInteger(amps) || !(amps === 0 || amps >= 6 && amps <= 32) || minutes !== 1)
         throw new TypeError('Charger identification requires 0 or 6..32 amps and a one-minute expiry');
       if (typeof http.text !== 'function') throw new Error('Easee charger identification transport is unavailable');
@@ -415,14 +418,21 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         // Re-read immediately before mutation, so a competing controller's newly
         // applied cap is not knowingly replaced by an expiring diagnostic limit.
         const snapshot = await identificationControl.read({ signal });
+        if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
         const active = snapshot.currents.filter(value => value !== null && value > 1);
         if (!snapshot.safeToProbe || !snapshot.baselineUsable || !active.length || amps >= Math.min(...active))
           throw new Error('Easee charger identification control is not currently safe');
+        if (requireUnscheduled) {
+          const schedule = await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`, { method: 'GET', signal });
+          if (schedule?.enabled !== 'none') throw new Error('Charging schedule has priority over vehicle identification');
+        }
+        if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
         const requestedAt = clock();
         attempted = true;
         identificationUntil = requestedAt + 60_000;
         await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/commands/set_dynamic_charger_current`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amps, minutes }), signal,
+          controlGuard: canMutate,
         }, true);
         // HTTP acceptance is not evidence the charger acted; callers must observe
         // actual current/power. No response bodies or remote identifiers escape.

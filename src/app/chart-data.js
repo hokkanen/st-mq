@@ -27,6 +27,7 @@ import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { RelatedStepSampler, alignRelatedSamples } from './chart-related-series.js';
+import { addDhwrFeedback } from './chart-dhwr.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -437,6 +438,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
   const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
+  const dhwrFeedback = [];
+  const dhwrFeedbackStart = addDhwrFeedback({ store, shading: { add: (start, end) => dhwrFeedback.push({ start, end }) }, range, now, input });
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
   const firewoodRange = detail && FIREWOOD_OUTCOME_NAMES.includes(left) ? { ...range,
@@ -505,7 +508,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const flushPulse = () => {
     if (!pendingPulse) return;
     const { start, end } = pendingPulse, until = Math.min(end, now, range.to);
-    shading.dhwr.add(start, until);
+    shading.dhwr.add(start, Math.min(until, dhwrFeedbackStart));
     if (envelopes.dhwr_request && until > Math.max(start, range.from)) {
       envelopes.dhwr_request.add(Math.max(start, range.from), 1);
       envelopes.dhwr_request.add(until - 1, 1);
@@ -550,7 +553,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (previous) {
       const until = Math.min(row.source_time, previous.at + gap);
       if (kind === 'heat' && previous.value === 0) shading.heatOff.add(previous.at, until);
-      if (kind === 'heat' && previous.value === 60) shading.dhwr.add(previous.at, Math.min(row.source_time, previous.at + 600_000));
+      if (kind === 'heat' && previous.value === 60) shading.dhwr.add(previous.at, Math.min(row.source_time, previous.at + 600_000, dhwrFeedbackStart));
     }
     previousHeat = { at: row.source_time, value };
   };
@@ -798,6 +801,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
 
   // A last command is only a bounded request; it is not indefinite confirmation.
   if (previousHeat) addState({ source_time: Math.min(now, range.to) }, null, 'heat');
+  for (const { start, end } of dhwrFeedback) shading.dhwr.add(start, end);
   flushTelemetry(Math.min(now, range.to));
   for (const name of LEARNING) if (lines[name]?.previous) {
     const previous = lines[name].previous, end = Math.min(now, range.to);
@@ -879,7 +883,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
     powerEstimate: left === 'power' ? 'Recorded phase or total energy divided by its interval duration; older current-only history uses 230 V. Phase allocation and energy integration are estimates.' : null,
     heatOffBasis: 'Historical requested reduction, not compressor activity.',
     auxHeatBasis: 'Estimated kW from H66 auxiliary output and configured capacity; cumulative counters do not identify episodes.',
-    dhwrBasis: 'Requested circulation with its recorded duration; legacy CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback.',
+    dhwrBasis: Number.isFinite(dhwrFeedbackStart)
+      ? 'Actual circulation from measured power: positive is on, zero is off. Missing feedback leaves gaps. Earlier history uses recorded requests.'
+      : 'Requested circulation with its recorded duration; legacy CSV requests last ten minutes. MQTT acknowledgement is not physical pump feedback.',
     fireplaceBasis: 'Corrected manual additions over the model burn timescale; heat release continues afterward.',
     decimation: 'Original recorded history, reduced in memory for display: first, last, minimum, maximum and missing-data breaks per time bucket. Costs use original energy intervals independently of drawing points.' } };
 }

@@ -459,7 +459,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 #events li { padding: 10px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 #events time { color: var(--muted); margin-right: 15px; }
 #updated { color: var(--muted); font-size: 11px; }
-#error { color: var(--error-text); background: var(--error-bg); padding: 16px; border-radius: 8px; overflow-wrap: anywhere; }
+#error { color: var(--error-text); background: var(--error-bg); margin: 24px 0; padding: 16px; border-radius: 8px; overflow-wrap: anywhere; }
 footer { text-align: center; color: var(--muted); font-size: 11px; padding: 10px 24px 28px; }
 footer a { color: inherit; text-underline-offset: 2px; }
 .stale { color: var(--stale) !important; }
@@ -539,8 +539,8 @@ details details { margin-inline-start: 24px; }
 .overview-temperature .status-detail-label { white-space: nowrap; }
 .overview-note { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .overview-request > strong, .overview-doors > strong { font-size: 18px; line-height: 1.4; font-weight: 500; }
-.overview-request > strong[data-state="confirmed"] { color: var(--chart-indoor); }
-.overview-request > strong[data-state="attention"] { color: var(--stale); }
+.overview-request > strong[data-state="confirmed"], .overview-doors > strong[data-state="confirmed"] { color: var(--chart-indoor); }
+.overview-request > strong[data-state="attention"], .overview-doors > strong[data-state="attention"] { color: var(--stale); }
 .overview-request > strong[data-state="muted"] { color: var(--muted); }
 .overview-request > strong[data-state] .status-detail-trigger:hover,
 .overview-request > strong[data-state] .status-detail-trigger[aria-expanded="true"] { color: inherit; }
@@ -1060,9 +1060,11 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-section-heading > .equipment-device-status { font-size: 10px; }
 .zone-content .zone-control-help { margin: 8px 0 12px; line-height: 1.65; }
 .zone-content .heating-mode-buttons { margin: 12px 0 0; }
-.heating-mode-buttons .heating-button-state { flex: none; color: var(--accent); font-size: 12px; line-height: 1; }
+.heating-mode-buttons .heating-button-state { flex: none; color: currentColor; font-size: 12px; line-height: 1; }
 .heating-mode-buttons .heating-button-state:empty { display: none; }
 .heating-mode-buttons button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.heating-mode-buttons button[data-mode-state="active"] { color: var(--chart-indoor); border-color: var(--chart-indoor); }
+.heating-mode-buttons button[data-mode-state="requested"] { color: var(--stale); border-color: var(--stale); }
 .heating-mode-buttons button:not(:disabled):hover { background: var(--surface-soft); border-color: var(--accent); }
 .zone-content .zone-configuration > .equipment-fold { margin: 14px 0 0; }
 .zone-content .equipment-device { min-width: 0; padding: 0; margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }

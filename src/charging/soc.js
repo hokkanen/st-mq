@@ -34,26 +34,43 @@ export function acceptSocReading(previous, payload, {
   if (sequence !== null && (!Number.isSafeInteger(sequence) || sequence < 0)) return reject('invalid-sequence');
   const sameIdentity = previous?.association === association
     && (vehicleId === undefined || previous?.vehicleId === vehicleId) && (sourceId === undefined || previous?.sourceId === sourceId);
+  let socRejection = null;
   if (sameIdentity) {
-    if (previous.readingId === value.readingId) return reject('duplicate-reading');
-    if (Number.isFinite(previous.measuredAt) && Number.isFinite(measuredAt)) {
-      if (measuredAt < previous.measuredAt) return reject('older-reading');
-      if (measuredAt === previous.measuredAt && !(sequence !== null && Number.isSafeInteger(previous.sequence) && sequence > previous.sequence)) return reject('unordered-reading');
+    if (previous.readingId === value.readingId) socRejection = 'duplicate-reading';
+    else if (Number.isFinite(previous.measuredAt) && Number.isFinite(measuredAt)) {
+      if (measuredAt < previous.measuredAt) socRejection = 'older-reading';
+      if (measuredAt === previous.measuredAt && !(sequence !== null && Number.isSafeInteger(previous.sequence) && sequence > previous.sequence)) socRejection = 'unordered-reading';
     } else if (Number.isSafeInteger(previous.sequence) && sequence !== null) {
-      if (sequence <= previous.sequence) return reject('older-reading');
-    } else if (Number.isFinite(previous.measuredAt) && !Number.isFinite(measuredAt)) return reject('unordered-reading');
+      if (sequence <= previous.sequence) socRejection = 'older-reading';
+    } else if (Number.isFinite(previous.measuredAt) && !Number.isFinite(measuredAt)) socRejection = 'unordered-reading';
   }
   const optional = {}, fields = {};
+  let independentUpdate = false;
   for (const key of ['usableCapacityKwh', 'chargeLimitSoc']) {
-    if (value[key] !== undefined) {
-      optional[key] = value[key]; fields[key] = { measuredAt, receivedAt: now, readingId: value.readingId };
-    } else if (sameIdentity && Number.isFinite(previous[key])) {
+    const supplied = value.fields?.[key];
+    const fieldTime = supplied === undefined ? measuredAt : socMeasurementTime(supplied?.measuredAt);
+    const fieldId = supplied === undefined ? value.readingId : supplied?.readingId;
+    if (supplied !== undefined && (value[key] === undefined || !identity(fieldId)
+      || Number.isNaN(fieldTime) || fieldTime > now + 5 * 60_000)) return reject('invalid-field-metadata');
+    const prior = sameIdentity && Number.isFinite(previous[key]) ? previous.fields?.[key]
+      ?? { measuredAt: previous.measuredAt ?? null, receivedAt: previous.receivedAt ?? null, readingId: previous.readingId } : null;
+    // CarData reports charge target/capacity independently of battery percentage.
+    // Accept new facts without rebasing SoC or refreshing older field clocks.
+    const sharesOrderedSoc = supplied === undefined && !socRejection;
+    const newer = !prior || (fieldId !== prior.readingId && (Number.isFinite(prior.measuredAt)
+      ? Number.isFinite(fieldTime) && (fieldTime > prior.measuredAt
+        || sharesOrderedSoc && fieldTime === prior.measuredAt) : true));
+    if (value[key] !== undefined && newer && (!socRejection || supplied !== undefined)) {
+      optional[key] = value[key]; fields[key] = { measuredAt: fieldTime, receivedAt: now, readingId: fieldId };
+      independentUpdate ||= supplied !== undefined;
+    } else if (prior) {
       // Configuration-like vehicle facts may be published less frequently than
       // SoC. Retain their own clocks instead of making them look freshly read.
-      optional[key] = previous[key]; fields[key] = previous.fields?.[key]
-        ?? { measuredAt: previous.measuredAt ?? null, receivedAt: previous.receivedAt ?? null, readingId: previous.readingId };
+      optional[key] = previous[key]; fields[key] = prior;
     }
   }
+  if (socRejection) return independentUpdate
+    ? { accepted: true, reason: null, reading: { ...previous, ...optional, fields } } : reject(socRejection);
   return { accepted: true, reason: null, reading: { association, ...(vehicleId !== undefined ? { vehicleId } : {}), ...(sourceId !== undefined ? { sourceId } : {}), readingId: value.readingId,
     soc: value.soc, measuredAt, receivedAt: now, sequence, ...optional,
     ...(Object.keys(fields).length ? { fields } : {}) } };

@@ -29,15 +29,18 @@ export function recordedChargingEnergy(store, { id, start, end }) {
   }
   const intervals = [...groups.values()].filter(row => signals.every(signal => finite(row.values[signal]) && row.values[signal] >= 0))
     .sort((a, b) => a.start - b.start || a.end - b.end);
+  const recordedIntervals = [];
   let gridKwh = 0, coveredMs = 0, cursor = start, continuousSince = null, lastMeasuredAt = null, incomplete = false;
   for (const row of intervals) {
     const a = Math.max(start, row.start), b = Math.min(end, row.end);
     if (b <= a || a < cursor) continue;
     if (a > cursor) { incomplete = true; continuousSince = a; }
     continuousSince ??= a;
-    gridKwh += signals.reduce((total, signal) => total + row.values[signal], 0) * (b - a) / (row.end - row.start);
+    const energyKwh = signals.reduce((total, signal) => total + row.values[signal], 0) * (b - a) / (row.end - row.start);
+    gridKwh += energyKwh;
+    recordedIntervals.push({ start: a, end: b, energyKwh });
     coveredMs += b - a; cursor = b; lastMeasuredAt = b;
   }
-  return { gridKwh, coveredMs, lastMeasuredAt, continuousSince,
+  return { gridKwh, coveredMs, lastMeasuredAt, continuousSince, intervals: recordedIntervals,
     incomplete: incomplete || end - cursor > 120_000, source: 'recorded-charger-energy' };
 }

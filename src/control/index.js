@@ -233,10 +233,10 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   const dhwrRequested = dhwrEligible(timestamp, state.lastDhwrAt, action);
   nextState.lastAction = action;
   nextState.lastDhwrAt = dhwrRequested ? iso(timestamp) : (state.lastDhwrAt ?? null);
-  return { action, reasons, commands: action === 'reduction' ? ['heatoff'] : dhwrRequested ? ['heaton60', 'heaton15'] : ['heaton15'],
+  return { action, reasons, commands: action === 'reduction' ? ['reduction'] : dhwrRequested ? ['circulation', 'normal'] : ['normal'],
     dhwr: { requested: dhwrRequested, lastPulseAt: nextState.lastDhwrAt, durationMinutes: 10 },
     nextState, plan, comfort: { targetC: finite(target) ? target : null, maxDropC: maxDrop, maxDropApplies: !away,
       source: finite(comfort.targetC) ? 'explicit-setting' : learned?.comfortReference?.source ?? 'awaiting-normal-baseline' },
     learningHealth: learned?.health ?? { status: 'collecting' },
-    semantics: 'heatoff requests tariff reduction; normal mode cannot force preheating or prove compressor operation' };
+    semantics: 'reduction requests tariff reduction; normal mode cannot force preheating or prove compressor operation' };
 }

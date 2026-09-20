@@ -128,7 +128,7 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   assert.equal(app.engine.latest.indoor_temperature, undefined);
   replacement.emit('message', 'invented/second', Buffer.from('22'), { retain: false });
   assert.equal(app.engine.latest.indoor_temperature.value, 22);
-  await app.engine.testHeating({ command: 'heaton15' });
+  await app.engine.testHeating({ command: 'circulation' });
   assert.equal(mqtt.packets.at(-1).address, 'mqtt://second.invalid');
   await app.close();
   assert.equal(replacement.endCalls, 1);

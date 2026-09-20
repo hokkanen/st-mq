@@ -19,6 +19,26 @@ const make = (id = 'first', extra = {}) => {
 };
 const run = (chargers, extra = {}) => planChargers({ now, supply, chargers, prices: prices([30, 20, 5, 5, 20, 30]), ...extra });
 
+test('partial published horizon selects its cheapest feasible slot and newly published cheaper prices revise it', () => {
+  const known = run([make()], { prices: prices([30, 5, 5]) });
+  assert.equal(known.assumptions.priceCoverage, 'partial');
+  assert.equal(known.plans.first.state, 'waiting');
+  assert.equal(known.plans.first.startAt, now + HOUR);
+  assert.equal(known.plans.first.feasible, true);
+  assert.match(known.plans.first.warnings.join(' '), /more prices arrive/);
+  const extended = run([make()], { prices: prices([30, 5, 5, 1, 1, 30]) });
+  assert.equal(extended.plans.first.startAt, now + 3 * HOUR);
+  assert.ok(extended.plans.first.costCents < known.plans.first.costCents);
+});
+
+test('missing all prices remains provisional and a partial horizon cannot invent free unknown prices', () => {
+  assert.equal(run([make()], { prices: [] }).plans.first.reason, 'price-coverage-unavailable');
+  const result = run([make('first', { preferences: { capacityKwh: 100 } })], { prices: prices([30, 5]) });
+  assert.equal(result.plans.first.feasible, false);
+  assert.ok(result.plans.first.deliveredGridKwh <= 22.08 + .001);
+  assert.equal(result.plans.first.provisional, true);
+});
+
 test('adjacent cheap hours remain one unrestricted charging period', () => {
   const result = run([make()]), plan = result.plans.first;
   assert.equal(plan.requiredGridKwh, 16);

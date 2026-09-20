@@ -89,7 +89,7 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
   const selectedSoc = effectiveSoc({ automatic: automatic.soc.available
     ? { ...automatic.soc, soc: automatic.soc.value } : null, fallbackSoc: settings.manualSoc });
   const values = {
-    capacityKwh: withFallback(automatic.capacityKwh, settings.capacityKwh),
+    capacityKwh: withFallback(automatic.capacityKwh, telemetry.vehicleCapacityFallbackKwh ?? settings.capacityKwh),
     soc: chargerValue(selectedSoc.soc, { ...selectedSoc, automaticAvailable: automatic.soc.available }),
     minimumSoc: withFallback(automatic.minimumSoc, settings.minimumSoc),
     connected: automaticValue(telemetry, ['connected', 'pluggedIn'], source, value => typeof value === 'boolean'),

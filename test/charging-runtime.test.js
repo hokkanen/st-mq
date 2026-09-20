@@ -385,6 +385,43 @@ test('vehicle association routes battery values once and preserves Equalizer ele
   assert.notEqual(chargerView(runtime, 'charger2').forecast.state, 'none', 'An actual reported future schedule remains a possible competing load');
 });
 
+test('initial identification waits at most three minutes and identified Tesla overrides another vehicle MQTT reading', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  let verdict = null;
+  f.engine.chargerIdentification = { status: () => ({ enabled: true, phase: verdict ? 'identified' : 'idle', verdict }) };
+  runtime.teslaCapture = { snapshot: () => ({ connected: true, pluggedIn: true, atHome: true, assignment: 'auto',
+    batteryLevel: 70, chargeLimitSoc: 90, charging: true, actualPowerKw: 11, requestedCurrentA: 16, voltageV: 230 }) };
+  runtime.receiveSoc(runtime.configuration.chargers.charger1.mqttTopic,
+    packet(10, initialNow, 'other-vehicle', { usableCapacityKwh: 50, chargeLimitSoc: 80 }));
+  runtime.tick({ prices });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'identifying');
+  assert.equal(adapter.calls.filter(row => row.kind === 'install').length, 0);
+  verdict = 'easee'; f.setNow(initialNow + 60_000); await runtime.reconcile();
+  const identified = chargerView(runtime);
+  assert.equal(identified.values.soc.value, 70); assert.equal(identified.values.minimumSoc.value, 90);
+  assert.equal(identified.values.capacityKwh.value, runtime.settings.chargers.charger2.capacityKwh);
+  assert.equal(chargerView(runtime, 'charger2').values.connected.value, false);
+  assert.equal(adapter.calls.filter(row => row.kind === 'install').length, 1);
+  verdict = null; runtime.tick();
+  assert.equal(chargerView(runtime).values.soc.value, 70, 'Identified vehicle persists through planned pauses');
+  adapter.setObservation({ pluggedIn: false, mode: 1 }); await runtime.reconcile();
+  assert.equal(runtime.chargers.charger1.identifiedVehicle, null);
+});
+
+test('inconclusive initial vehicle identification cannot postpone scheduling indefinitely', async t => {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  f.engine.chargerIdentification = { status: () => ({ enabled: true, phase: 'idle', verdict: null }) };
+  runtime.teslaCapture = { snapshot: () => ({ connected: true, pluggedIn: true, atHome: true, assignment: 'auto' }) };
+  runtime.tick({ prices }); await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'identifying');
+  f.setNow(initialNow + 180_000); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'waiting');
+  assert.equal(adapter.calls.filter(row => row.kind === 'install').length, 1);
+});
+
 test('first adapter attachment uses freshly read fixed limits when prices are already available', async t => {
   const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());

@@ -13,24 +13,22 @@ test('authority lost while connecting prevents the first device publish', async 
   let allowed = true;
   const transport = createHeatingTransport({ connection: { address: 'mqtt://invented.invalid' },
     connect: () => client, canControl: () => allowed });
-  const completion = transport.publish(['heatoff']);
+  const completion = transport.publishDhwr(true);
   allowed = false; client.emit('connect');
   await assert.rejects(completion, error => error.code === 'MQTT_AUTHORITY_LOST');
   assert.equal(messages.length, 0); await transport.close();
 });
 
-test('authority lost between acknowledgements cancels the remaining batch', async () => {
+test('authority lost after an acknowledgement prevents the next circulation command', async () => {
   const client = new EventEmitter(), messages = [];
   client.publish = (topic, payload, options, callback) => messages.push({ topic, payload, callback });
   client.end = (_force, _options, callback) => callback();
   let allowed = true;
   const transport = createHeatingTransport({ connection: { address: 'mqtt://invented.invalid' },
     connect: () => client, canControl: () => allowed });
-  const completion = transport.publish(['heaton15', 'heatoff']);
-  client.emit('connect');
-  assert.equal(messages.length, 1);
-  allowed = false; messages[0].callback();
-  await assert.rejects(completion, error => error.code === 'MQTT_AUTHORITY_LOST');
+  const completion = transport.publishDhwr(true); client.emit('connect');
+  messages[0].callback(); await completion; allowed = false;
+  await assert.rejects(transport.publishDhwr(false), error => error.code === 'MQTT_AUTHORITY_LOST');
   assert.equal(messages.length, 1); await transport.close();
 });
 

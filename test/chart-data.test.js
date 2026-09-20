@@ -597,7 +597,7 @@ test('shading respects bounded requests, DHWR pulses and separately verified com
     put(store, 'operating_mode', 1, from + HOUR, { ...aux, unit: 'state' });
     put(store, 'dhw_routing', 1, from + HOUR + 2 * MINUTE, { ...aux, unit: 'state' });
     store.counter({ signal: 'auxiliary_3kw_hours', value: 500, observedDate: date });
-    store.event('decision', { input: 'offline', action: 'reduction', commands: ['heatoff'], execution: 'shadow' }, from + 6 * HOUR);
+    store.event('decision', { input: 'offline', action: 'reduction', commands: ['reduction'], execution: 'shadow' }, from + 6 * HOUR);
     const result = get(store);
     assert.deepEqual(result.shading.heatOff, [{ start: from, end: from + 10 * MINUTE }, { start: from + 4 * HOUR, end: from + 4 * HOUR + 30 * MINUTE }]);
     assert.deepEqual(result.shading.dhwr, [{ start: from + HOUR, end: from + HOUR + 10 * MINUTE }]);

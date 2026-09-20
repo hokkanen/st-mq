@@ -59,7 +59,7 @@ test('recording choices do not change a physical switch identity or its restorat
     readings: [{ ...row.readings[0], record: false }] })));
 });
 
-test('live DHWR switch and power stay independent of requested operation and never write samples', t => {
+test('live DHWR switch and power stay independent of requested operation and record compact observed state', t => {
   const f = fixture(t);
   f.capture.receive('invented/dhwr/status', '{"switch":"on","power":24.5}');
   let status = f.status();
@@ -83,7 +83,7 @@ test('live DHWR switch and power stay independent of requested operation and nev
   assert.equal(status.feedback.power.value, 0);
   assert.deepEqual(f.writes, []);
   assert.deepEqual(f.commands, []);
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM observations').get().count, 0);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM observations').get().count, 2);
 });
 
 test('retained, invalid, disconnected and expired DHWR reports cannot establish current ON state', t => {
@@ -99,23 +99,23 @@ test('retained, invalid, disconnected and expired DHWR reports cannot establish 
   f.now(INITIAL + 120_000);
   assert.equal(f.status().actualOn, null);
   assert.equal(f.status().feedback.power.stale, true);
-  f.capture.receive('invented/dhwr/status', '{"switch":"unknown","power":25}');
+  f.capture.receive('invented/dhwr/status', '{"switch":"unknown","power":"invalid"}');
   assert.equal(f.status().actualOn, null);
   assert.equal(f.status().feedback.available, false);
   assert.deepEqual(f.writes, []);
 });
 
-test('a separate optional DHWR power topic never invents switch state or hides a valid switch', t => {
+test('a separate DHWR power topic determines operation independently of switch reports', t => {
   const f = fixture(t, { ...feedback, readings: [{ ...feedback.readings[0], topic: 'invented/dhwr/power', path: null }] });
   f.capture.receive('invented/dhwr/power', '22');
-  assert.equal(f.status().actualOn, null);
+  assert.equal(f.status().actualOn, true);
   assert.equal(f.status().feedback.power.value, 22);
   f.capture.receive('invented/dhwr/status', '{"switch":"off"}');
-  assert.equal(f.status().actualOn, false);
+  assert.equal(f.status().actualOn, true);
   assert.equal(f.status().feedback.available, true);
   f.capture.receive('invented/dhwr/power', 'invalid');
   assert.equal(f.status().feedback.power.value, null);
-  assert.equal(f.status().actualOn, false);
+  assert.equal(f.status().actualOn, null);
   assert.equal(f.status().feedback.available, true);
   assert.deepEqual(f.writes, []);
 });
@@ -143,7 +143,7 @@ test('DHWR remains usable without feedback configuration', () => {
     clock: () => INITIAL, equipmentStatus: () => ({ devices: [] }), config: {} });
   assert.equal(status.actualOn, null);
   assert.equal(status.confirmed, false);
-  assert.deepEqual(status.feedback, { configured: false, stateConfigured: false, powerConfigured: false, deviceId: null, available: false, state: null, power: null });
+  assert.deepEqual(status.feedback, { configured: false, stateConfigured: false, powerConfigured: false, deviceId: null, available: false, basis: null, state: null, power: null });
 });
 
 function externalPump(t, publishDhwr) {

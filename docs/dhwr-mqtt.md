@@ -180,7 +180,10 @@ The public defaults already contain this enabled monitoring entry:
 `kind: "power"` supplies the built-in `dhwr_power` reading in watts. A plain
 numeric payload needs no JSON path or extra reading mapping. The equipment card
 shows the last reported watts and their receive time alongside the requested
-run. Power is not interpreted as switch confirmation or proof of water flow.
+run. Positive watts means circulation is on; zero means off. This confirms
+electrical pump operation, not water flow. Each ON/OFF request needs a subsequent
+non-retained power report; the pre-request value cannot confirm a new command.
+Missing or mismatching feedback remains marked as needing attention.
 
 `max_age_seconds: 0` is an explicit event-only policy: while connected, the last
 reported value remains available with its original timestamp until replaced.
@@ -227,7 +230,9 @@ example, it sends non-retained JSON such as `{"switch":"on"}` and
 Omit `mqtt.state_path` for a plain state payload. This finite two-minute deadline
 requires genuine repeated switch reports, preferably every minute. Power expires
 under that deadline too; do not assume the event-only power Rule provides that
-cadence. Missing power does not invalidate a fresh switch report.
+cadence. When power feedback is configured, it remains authoritative for pump
+operation; a switch report cannot replace missing power. Omit the power mapping
+only when deliberately using switch-only verification.
 
 Safe dotted paths can select nested JSON fields. `mqtt.timestamp_path` can select
 a UTC epoch-millisecond timestamp or an ISO timestamp with an explicit timezone.
@@ -235,18 +240,20 @@ Without a source timestamp, a report uses its receive time. Command, state and
 separate power topics must be distinct. Configure a read-only request only if
 that integration implements it; its request topic must differ from the command.
 
-With actual switch feedback configured, **Stop** is available when a fresh report
+With power or switch feedback configured, **Stop** is available when a fresh report
 shows ON even without an ST-MQ run, such as circulation started in SmartThings.
 That explicit OFF uses the same durable delivery/retry path. Its broker
 acknowledgement remains separate from the reported switch becoming OFF.
 
 ## Recording and chart interpretation
 
-DHWR feedback stays in memory (`record: false` is enforced). State samples and
-power samples are not database time series; actual ON periods are not persisted.
-Requested circulation history continues to be recorded: chart shading shows
-**requested** circulation, clipped by recorded OFF requests. Watts and broker
-acknowledgements do not turn that shading into measured pump operation.
+Raw power stays in memory (`record: false`). Each accepted report also records
+compact `dhwr_active` state: positive watts is 1, zero is 0. Disconnects, invalid
+reports and configured expiry record unavailable boundaries. The chart shades
+these actual ON intervals; after feedback begins, commands cannot fill missing
+feedback. Event-only readings retain their last state until a subsequent report
+or loss of availability, without claiming periodic measurement coverage. Older
+history before the first feedback sample retains recorded requested intervals.
 Imported historical CSV `heaton60` pulses keep their original ten-minute
 interpretation. These changes preserve the committed learning algorithm and CSV
 provenance.

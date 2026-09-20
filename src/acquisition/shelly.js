@@ -314,12 +314,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       return switchDevice(device, on);
     },
     async publishHeating(commands) {
-      if (!Array.isArray(commands) || !commands.length || commands.some(command => !['heatoff', 'heaton15'].includes(command))) throw error('invalid heating command');
+      if (!Array.isArray(commands) || !commands.length || commands.some(command => !['reduction', 'normal'].includes(command))) throw error('invalid heating command');
       if (heatingBusy) throw error('heating operation already in progress');
       if (!connected || closed || !canControl()) throw error('MQTT unavailable');
       heatingBusy = true;
       try {
-        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'heatoff' ? device.reductionOn : !device.reductionOn);
+        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'reduction' ? device.reductionOn : !device.reductionOn);
         return { confirmed: true, status: 'confirmed', sent: true, commands: [...commands], acknowledged: commands.length,
           acknowledgement: devices.filter(device => device.controlsHeat).every(device => device.generation > 1) ? 'shelly-live-relay-readback' : 'shelly-live-relay-state' };
       } finally { heatingBusy = false; }

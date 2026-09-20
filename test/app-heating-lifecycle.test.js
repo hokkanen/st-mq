@@ -62,24 +62,20 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   });
   const nextPacket = () => new Promise(resolve => published.once('publish', resolve));
 
-  const firstPacket = nextPacket();
-  const firstResponse = post('heatoff');
-  const first = await firstPacket;
-  assert.equal(clients.length, 1);
-  assert.equal(first.topic, 'from_stmq/heat/action');
-  assert.equal(first.command, 'heatoff');
-  assert.deepEqual(first.publishOptions, { qos: 1, retain: false });
-  assert.equal(app.store.events().some(event => event.type === 'heating-test-sent'), false);
-  first.acknowledge();
-  const success = await firstResponse;
+  const relayCommands = [];
+  app.engine.executor.commandTransport.setHeatingRelay(async commands => {
+    relayCommands.push(commands); return { sent: true, confirmed: true };
+  });
+  const success = await post('reduction');
   assert.equal(success.status, 200);
   assert.equal((await success.json()).sent, true);
-  assert.equal(first.client.endCalls, 1);
+  assert.deepEqual(relayCommands, [['reduction']]);
+  assert.equal(clients.length, 0, 'Direct tariff relay uses its configured adapter');
 
   const pendingPacket = nextPacket();
-  const pendingResponse = post('heaton60');
+  const pendingResponse = post('circulation');
   const pending = await pendingPacket;
-  assert.equal(clients.length, 2, 'Each explicit test has its own connection');
+  assert.equal(clients.length, 1, 'Circulation has its own MQTT connection');
   assert.equal(pending.topic, 'stmq/home/dhwr/command/switch');
   assert.equal(pending.command, 'ON');
   assert.deepEqual(pending.publishOptions, { qos: 1, retain: false });
@@ -96,7 +92,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const failureBody = await failure.json();
   assert.match(failureBody.error, /closed|unconfirmed/i);
   assert.equal(pending.client.endCalls, 1);
-  assert.equal(stateAtClose.command, 'heaton60');
+  assert.equal(stateAtClose.command, 'circulation');
   assert.equal(stateAtClose.status, 'failed');
   assert.equal(stateAtClose.sent, false);
   assert.equal(stateAtClose.actual, null);
@@ -107,7 +103,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   pending.acknowledge();
   pending.client.emit('connect');
   pending.client.emit('error', new Error(connection.pw));
-  assert.equal(packets.length, 2, 'Late callbacks cannot publish a command after shutdown');
+  assert.equal(packets.length, 1, 'Late callbacks cannot publish a command after shutdown');
   const reopened = new Store(config.dbPath);
   try {
     assert.deepEqual(reopened.getState('heating-test:providers'), stateAtClose);

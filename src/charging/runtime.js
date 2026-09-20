@@ -13,6 +13,7 @@ import { createHouseholdForecastService } from './history-service.js';
 import { recordedChargingEnergy } from './energy.js';
 import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
+import { updateSessionCost } from './session-cost.js';
 
 const MINUTE = 60_000;
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
@@ -43,6 +44,8 @@ export class ChargingRuntime {
       const association = this.configuration.chargers[definition.id].mqttTopic;
       const automaticSoc = association && previous.automaticSoc?.association === association ? previous.automaticSoc : null;
       return [definition.id, { definition, automaticSoc, plan: previous.plan ?? null,
+        sessionCost: previous.sessionCost ?? null,
+        identifiedVehicle: previous.identifiedVehicle ?? null,
         progress: restoreChargingProgress(previous.progress), supplyEstimate: previous.supplyEstimate ?? null,
         wasPluggedIn: previous.progress?.connected,
         mqtt: initialMqtt(), lastReconcileAt: null }];
@@ -66,7 +69,8 @@ export class ChargingRuntime {
   }
   persist() {
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate }]));
+      { automaticSoc: item.automaticSoc, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
+        sessionCost: item.sessionCost, identifiedVehicle: item.identifiedVehicle }]));
     this.store.setState(this.key, { version: 3, settings: this.settings, chargers, view: this.status() });
   }
   mqttRoutes() {
@@ -76,6 +80,13 @@ export class ChargingRuntime {
   hasAutomaticControl() {
     return Object.entries(this.chargers).some(([id, item]) => this.settings.chargers[id].enabled
       || item.controller?.status()?.owned || this.savedOwnership(id)?.owned || this.savedOwnership(id)?.pending);
+  }
+  canIdentifyVehicle() {
+    const control = this.chargers.charger1?.controller?.status();
+    return Boolean(control?.snapshot?.online && control.snapshot.schedule?.enabled === 'none'
+      && !control.manual && !control.owned && !control.execution && !control.pending
+      && this.settings.chargers.charger1.enabled && control.phase === 'identifying'
+      && Number.isSafeInteger(control.session?.connectedAt) && this.clock() - control.session.connectedAt < 180_000);
   }
   setAdapter(id, adapter) {
     const item = this.charger(id);
@@ -92,7 +103,22 @@ export class ChargingRuntime {
         saveState: state => this.store.setState(this.ownershipKey(id), state), clock: this.clock,
         canControl: () => !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
         getMaximumAmps: scheduleCeiling,
-        getPlan: () => { this.updatePlan(); return this.pricesInitialized ? item.plan : null; } });
+        getPlan: snapshot => {
+          this.updatePlan();
+          const identification = this.engine.chargerIdentification?.status();
+          const vehicle = this.teslaCapture?.snapshot();
+          const control = item.controller?.status();
+          const connectedAt = control?.session?.connectedAt;
+          // Let the existing bounded comparison observe the initial charging
+          // burst. Do not open an existing restriction or prolong manual control.
+          if (id === 'charger1' && identification?.enabled && !identification.verdict && !item.identifiedVehicle
+            && identification.phase !== 'inconclusive' && vehicle?.assignment === 'auto'
+            && vehicle.connected && vehicle.atHome && vehicle.pluggedIn
+            && snapshot?.pluggedIn === true && !control?.owned && !control?.execution
+            && Number.isSafeInteger(connectedAt) && this.clock() - connectedAt < 180_000)
+            return { state: 'identifying', startAt: null };
+          return this.pricesInitialized ? item.plan : null;
+        } });
       item.lastReconcileAt = null;
       if (!this.timer) { this.timer = setInterval(() => this.tick(), MINUTE); this.timer.unref?.(); }
       this.tick();
@@ -139,7 +165,11 @@ export class ChargingRuntime {
       }
     }
     const snapshot = this.teslaCapture?.snapshot() ?? {};
-    const assignment = teslamateChargerAssignment(snapshot, { identified: this.engine.chargerIdentification?.status()?.verdict });
+    const easee = this.chargers.charger1;
+    const verdict = this.engine.chargerIdentification?.status()?.verdict;
+    if (result.charger1?.connected?.value === false) easee.identifiedVehicle = null;
+    else if (result.charger1?.connected?.value === true && ['easee', 'bmw'].includes(verdict)) easee.identifiedVehicle = verdict;
+    const assignment = teslamateChargerAssignment(snapshot, { identified: easee?.identifiedVehicle ?? verdict });
     if (assignment.chargerId && this.chargers[assignment.chargerId]) {
       const id = assignment.chargerId, vehicle = teslamateChargerTelemetry(snapshot, { now });
       if (this.chargers[id].definition.provider === 'teslamate' && !this.chargers[id].adapter?.normalize) result[id] = vehicle;
@@ -147,6 +177,8 @@ export class ChargingRuntime {
         // Attribution establishes which vehicle is attached. The charger remains
         // authoritative for its own connection, electrical limits and schedule.
         for (const key of ['capacityKwh', 'soc', 'minimumSoc']) if (vehicle[key]?.available) result[id][key] = vehicle[key];
+        result[id].assignedVehicleSource = 'teslamate';
+        result[id].vehicleCapacityFallbackKwh = this.settings.chargers.charger2.capacityKwh;
         for (const [otherId, item] of Object.entries(this.chargers)) if (otherId !== id
           && item.definition.provider === 'teslamate' && !item.adapter?.normalize) {
           result[otherId] = { connected: { value: false, available: true, source: 'vehicle-assignment' },
@@ -174,7 +206,8 @@ export class ChargingRuntime {
       const settings = this.settings.chargers[id], control = this.controlStatus(id);
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
       const charger = buildCharger({ definition, settings, telemetry: telemetry[id], timezone: TIME_ZONE,
-        automaticSoc: item.automaticSoc, configuration: this.configuration.chargers[id], now, control,
+        automaticSoc: telemetry[id]?.assignedVehicleSource === 'teslamate' ? null : item.automaticSoc,
+        configuration: this.configuration.chargers[id], now, control,
         deadlineAt: item.plan?.replanReadyBy && !activePeriod(control, now)
           ? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE)
           : item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
@@ -182,6 +215,7 @@ export class ChargingRuntime {
       return { ...charger, referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
         progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
         automaticSoc: item.automaticSoc, plan: item.plan,
+        sessionCost: item.sessionCost ? { ...item.sessionCost, prices: undefined } : null,
         forecast: item.forecast ?? null, mqtt: item.definition.provider === 'teslamate'
           ? this.teslaCapture?.reception?.() ?? null : item.mqtt, error: item.error ?? null };
     });
@@ -290,6 +324,10 @@ export class ChargingRuntime {
       const next = result.plans?.[view.id];
       if (next) item.plan = { ...next, basis, creditedGridKwh: credit, replannedGapAt: observedGap,
         id: started && !active ? randomUUID() : item.plan?.id ?? randomUUID() };
+    }
+    for (const view of this.views(now)) {
+      const item = this.charger(view.id);
+      item.sessionCost = updateSessionCost(item.sessionCost, view, now, this.prices, this.readEnergy);
     }
     this.persist(); this.scheduleWakeup(now);
   }

@@ -27,7 +27,7 @@ test('TeslaMate reception is independent of recording and unchanged retained bat
 });
 
 test('configured Charger 2 receives battery and schedule without an identification verdict, while an away vehicle is excluded', () => {
-  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger2');
+  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger1');
   const capture = createChargingTeslaCapture(); capture.setConnected(true);
   const fields = { plugged_in: 'true', geofence: 'Home', battery_level: '80', charge_limit_soc: '100',
     charge_current_request: '16', charge_current_request_max: '16', scheduled_charging_start_time: '2026-09-16T00:00:00Z' };

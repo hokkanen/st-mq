@@ -79,35 +79,41 @@ Process shutdown revokes new writes and drains outstanding work before storage
 can close; it does not invent a charger handover during authority transfer.
 
 The observed instruction baseline persists and is refreshed even while control
-is off or no vehicle is connected. The first observation alone is not evidence
-of a manual change. Later external schedule changes have priority until the
-**earlier of the final known manual window end and the recorded next ready-by**.
-A multiple-period window includes the intervening gaps; an unknown or ambiguous
-end uses the ready-by cap. Unplugging, restarting, OFF/ON and editing ready-by do
-not erase or move this recorded expiry. Own confirmed/recovered writes, inactive
+is off or no vehicle is connected. A foreign active schedule with unknown
+ownership is preserved on first observation. A simple daily/weekly window lasts
+through its **current or next concrete end**, even beyond ready-by. Multiple
+periods and unknown/ambiguous ends require explicit resumption. Unplugging,
+restarting, OFF/ON and editing ready-by do not erase or move a window end.
+Own confirmed/recovered writes, inactive
 schedule caches and normal one-off expiry are excluded from manual detection.
 
 The resume action acknowledges the currently observed manual fingerprint. A
 newer edit discovered during its fresh read wins again. Expiry also requires a
 fresh read before handback; loss of communication keeps handover visibly pending.
 The controller records why handback occurred so the runtime can advance to the
-next readiness cycle when the ready-by boundary, rather than an early window
-end, ended manual priority. Ongoing automatic charging is not itself evidence of
+next readiness cycle when the manual window ends after ready-by.
+Ongoing automatic charging is not itself evidence of
 a manual action or of final release: intermediate periods remain schedulable.
 
 [Override Charging Schedule](https://developer.easee.com/reference/charger_overrideschedule)
 is a documented current-session release, but the public schedule response has
 no dedicated manual-override flag. The controller observes
 [mode, enabled state and no-current reason](https://developer.easee.com/docs/enumerations)
-alongside schedules. An observed schedule removal or enable action has temporary
-priority. Zero power, Equalizer pauses and ordinary operating-mode changes do
+alongside schedules. An observed schedule removal or enable action has priority
+for the connected session. A fresh charging-mode observation after a verified
+scheduled wait (reason 54), before the owned future release time, also identifies
+Charge now when `/schedules` remains unchanged. ST-MQ then relinquishes only its
+own delay and yields until confirmed unplug or explicit resumption.
+Initial charging before any verified pause is separate and remains schedulable.
+Zero power, Equalizer pauses and ordinary operating-mode changes do
 not create manual priority. A disabled charger, authorization request or fault
 remains unavailable; no enable, authorization, start/stop or current command is
 issued. Final release remains open even after its estimated completion/deadline.
 
 Polling detects observed state changes, not app taps that leave the same state
 or changes completed between observations. A charge-now override that leaves
-scheduling state unchanged may therefore be unidentifiable. Easee documentation
+scheduling state unchanged and never produces a charging observation (for example,
+while continuously Equalizer-limited) can remain unidentifiable. Easee documentation
 does not explicitly guarantee mid-session pause behavior for every overridden
 session; failed pause confirmation stays visible instead of being inferred.
 

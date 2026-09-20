@@ -195,35 +195,47 @@ test('compact circulation state preserves pending stop delivery alongside indepe
   assert.equal(dhwrReadingSummary({ dhwr: { active: true } }).summary, 'On requested · state unknown');
 });
 
-test('DHWR power-only feedback displays measured zero without claiming relay state', () => {
-  const status = { dhwr: { active: true, feedback: { configured: true, available: true,
-    stateConfigured: false, powerConfigured: true,
+test('DHWR operation follows power feedback and requests still need new reports', () => {
+  const status = { dhwr: { active: true, actualOn: false, confirmed: false, attention: true,
+    reason: 'Waiting for a new power report after the circulation request.',
+    feedback: { configured: true, available: true, basis: 'power',
+    stateConfigured: true, powerConfigured: true, state: { value: 0, unit: 'state', stale: false, observedAt: now },
     power: { value: 0, unit: 'W', stale: false, observedAt: now } } } };
   let summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, '0 W');
   assert.equal(summary.power.stale, false);
-  assert.equal(summary.state.value, 'Not configured');
+  assert.equal(summary.state.value, 'Off');
   assert.equal(summary.state.stale, false);
-  assert.match(summary.state.detail, /Power does not confirm.*switch state or water flow/);
-  assert.equal(summary.feedbackLabel, 'Power available');
-  assert.equal(summary.request, 'Circulation requested');
+  assert.match(summary.state.detail, /Positive power means circulation is on; zero power means it is off/);
+  assert.equal(summary.feedbackLabel, 'Needs attention');
+  assert.equal(summary.attention, true);
+  assert.match(summary.summary, /Off · power reported · needs attention/);
+  assert.match(summary.request, /Waiting for a new power report/);
   status.dhwr.active = false;
+  status.dhwr.actualOn = true;
+  status.dhwr.attention = false;
+  status.dhwr.confirmed = true;
+  status.dhwr.reason = null;
+  status.dhwr.feedback.state.value = 1;
   status.dhwr.feedback.power.value = 38.25;
   summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, '38.25 W');
-  assert.equal(summary.state.value, 'Not configured');
+  assert.equal(summary.state.value, 'On');
+  assert.equal(summary.summary, 'On · power reported');
+  assert.equal(summary.feedbackLabel, 'Power available');
   assert.equal(summary.request, 'No circulation requested');
 });
 
 test('change-only DHWR power identifies the last report and stays distinct from missing or invalidated readings', () => {
   const status = { dhwr: { feedback: { configured: true, available: false,
-    stateConfigured: false, powerConfigured: true } } };
+    stateConfigured: true, powerConfigured: true, basis: 'power' } } };
   let summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, 'Unavailable');
   assert.match(summary.power.detail, /Waiting for a live MQTT report/);
   assert.equal(summary.feedbackLabel, 'Waiting for power');
   status.dhwr.feedback.available = true;
   status.dhwr.feedback.power = { value: 0, unit: 'W', stale: false, eventOnly: true, observedAt: now - 7 * 86400000 };
+  status.dhwr.feedback.state = { ...status.dhwr.feedback.power, unit: 'state' };
   summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, '0 W', 'The UI follows source health instead of imposing periodic-report semantics');
   assert.equal(summary.powerLabel, 'Last reported power');
@@ -232,11 +244,12 @@ test('change-only DHWR power identifies the last report and stays distinct from 
   assert.match(summary.power.detail, /Last reported.*Sept.*Updated when power changes/);
   status.dhwr.feedback.available = false;
   status.dhwr.feedback.power.stale = true;
+  status.dhwr.feedback.state.stale = true;
   summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, 'Unavailable');
   assert.equal(summary.feedbackLabel, 'Power unavailable');
   assert.match(summary.power.detail, /Last reported 0 W/);
-  assert.equal(summary.state.value, 'Not configured');
+  assert.equal(summary.state.value, 'Unknown');
 });
 
 test('monitoring-only power devices never gain ordinary switch or timed-test controls', () => {

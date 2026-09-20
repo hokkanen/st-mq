@@ -21,8 +21,13 @@ automatic ready-by deadline when applicable. Readiness and completion use the
 same current forecast of the periods actually being executed.
 
 The summary also shows grid energy added since the current charge reference,
-remaining grid energy and estimated remaining cost to target. Added energy is
+remaining grid energy and estimated total connection cost through the target. Added energy is
 not a whole-session total: a new vehicle charge reading rebases the reference.
+Cost has a separate persistent connection reference: already delivered electricity
+plus the estimated remaining requirement. It remains visible at the target,
+continues to include extra charging, and survives new SoC readings and restarts.
+Recorded intervals use their actual applicable prices; missing energy or forecast
+coverage retains an explicitly estimated contribution until evidence improves.
 A reserved notice area shows readiness, manual priority, unavailable readings
 or control problems without changing the summary height. Disconnected and
 unknown-connection summaries use explanatory states rather than presenting
@@ -56,23 +61,35 @@ over their saved manual fallback. Automatic SoC has no temporary manual override
 The fallback number remains saved while automatic readings are in use and is
 shown again if they become unavailable. The card identifies the charge source;
 the requested target is a preference, not an uncertain measurement.
-Neither current provider supplies usable capacity; it is never guessed from
-range or charging-session energy. See the [provider matrix](charging-provider-capabilities.md).
+Vehicle MQTT can supply usable capacity; it is never guessed from range or
+charging-session energy. See [BMW CarData through Home Assistant](bmw-cardata.md)
+and the [provider matrix](charging-provider-capabilities.md).
 
 Grid energy includes charging losses:
 `capacity × max(0, minimum − SoC) / 100 / efficiency`.
-Energy and cost estimates cover reaching this minimum. If the vehicle target is
+Remaining energy covers reaching this minimum; cost includes earlier charging
+in the same connection as well. If the vehicle target is
 unavailable, a manual 80% minimum can coexist with the vehicle continuing toward
 100%. The final charging period has no automatic end; charging may continue past
 the minimum and deadline.
 
 Connection, current, voltage and native schedules are automatic only. The
-configured TeslaMate feed belongs to Charger 2; its values do not depend on
-identification probes or simultaneous charging observations. Home location
-gates household connection and load accounting. The explicit legacy
+configured TeslaMate feed defaults to Charger 2. With automatic attribution,
+the existing charger-identification result also selects its planning values.
+A confirmed Tesla on Easee supplies Charger 1's SoC and target, using the saved
+Tesla vehicle capacity from Charger 2; the other vehicle MQTT feed cannot override
+that assignment. Charger 2 then has no duplicate forecast. The result stays with
+the connection through planned pauses and restart, and clears on confirmed unplug.
+Home location gates household connection and load accounting. The explicit
 `charger_assignment: "easee"` option still attaches TeslaMate's vehicle values to
-Charger 1 and avoids recording that charging again as Charger 2. With the charger
-model enabled, legacy `auto` configuration uses Charger 2 without active probes.
+Charger 1 and avoids recording that charging again as Charger 2.
+When identification is enabled and Tesla is plugged in at home, a new unrestricted
+Easee connection gives the existing bounded comparison up to three minutes of
+initial charging before scheduling. Confirmed identification ends that wait early.
+The diagnostic cannot replace a native restriction, run under manual priority,
+or start after the observation window. Its existing one-minute current reduction
+and device-side expiry remain unchanged. Inconclusive evidence keeps the configured
+vehicle assumption; matching power alone never establishes identity.
 
 ## Deployment configuration and vehicle MQTT
 
@@ -105,7 +122,7 @@ invalidates the stored automatic reading associated with the previous topic.
 Saved UI preferences are independent of deployment configuration.
 
 The dedicated topic identifies its charger; no vehicle/source identity fields
-are required. A future publisher should send retained JSON at QoS 1:
+are required. Publishers, including the BMW CarData automation, send retained JSON at QoS 1:
 
 ```json
 {
@@ -235,6 +252,10 @@ changes the real energy allocation: surplus energy is trimmed from expensive
 edges and the candidate is simulated again. Each additional period must justify
 a 1 cent cost preference for simplicity; otherwise fewer periods win. A feasible
 continuous candidate remains available. The final period is always open-ended.
+If tomorrow's prices are unpublished, the planner chooses the cheapest feasible
+periods in the contiguous published horizon. Unknown rates are not treated as
+free. New prices replan a still-pending start. If the published period cannot
+supply enough energy, ordinary insufficient-time fallback remains provisional.
 Once that final release is reached, the connected session is not
 automatically delayed again. An overdue connected deadline does not silently
 advance to tomorrow; an expiring manual readiness cycle is a separate handback.
@@ -269,27 +290,28 @@ executor; today's integrations issue only confirmed native Easee schedules.
 
 ## Manual priority
 
-Enabling **Automatic charging** takes scheduling control unless an observed
-manual change has priority. The first observation establishes a baseline; a
-pre-existing schedule alone is not a newly observed action. Later schedule
+Enabling **Automatic charging** takes scheduling control unless a manual
+instruction has priority. A pre-existing foreign schedule is preserved when
+ownership is unknown. An unrestricted first observation establishes a baseline. Later schedule
 changes are observed even while disconnected or automatic charging is off.
 Native expiry, inactive saved schedules, Equalizer pauses and the controller's
 own writes do not count as manual actions.
 
-Manual priority expires at the earlier of the manual window's final known end
-and the next ready-by time recorded when the change was noticed. Multiple manual
-periods keep their gaps under manual control. An unknown or ambiguous end uses
-the ready-by boundary. Restart, unplugging, OFF/ON and later ready-by edits do
-not extend or erase the recorded expiry. **Resume automatic charging** ends the
+One simple repeating daily/weekly manual window keeps priority through its
+current or next concrete end, including beyond ready-by. Multiple periods or an
+unknown/ambiguous end require explicit resumption. Restart, unplugging, OFF/ON
+and later ready-by edits do not extend or erase a recorded window end.
+**Resume automatic charging** ends the
 observed override early; a newer edit noticed during the confirmation read still
 wins. The card shows the effective resumption time and why it was chosen.
 
 Handback requires a fresh charger read. A failed connection shows pending
-handover rather than claiming control resumed. At a ready-by boundary, subsequent
-planning uses the next readiness cycle. An actual disabled or unauthorized
+handover rather than claiming control resumed. If a window ends after ready-by,
+subsequent planning uses the next readiness cycle. An actual disabled or unauthorized
 charger must first be enabled/authorized in Easee; no such command is issued
-automatically. An observed immediate-charge instruction is respected until its recorded expiry
-or explicit resumption. The final automatic release is not stopped by later
+automatically. An observed immediate-charge instruction is respected until confirmed
+unplug or explicit resumption, including zero-power pauses and passed deadlines.
+The final automatic release is not stopped by later
 price changes.
 
 Turning automatic charging off removes only its confirmed native restriction.

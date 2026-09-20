@@ -8,7 +8,8 @@ const connections = { easee: { charger_id: 'example-charger', access_token: 'syn
 const commandUrl = 'https://api.easee.com/api/chargers/example-charger/commands/set_dynamic_charger_current';
 const observation = (id, value, at = NOW, unit) => ({ id, value, timestamp: new Date(at).toISOString(), ...(unit ? { unit } : {}) });
 function snapshot(at = NOW) {
-  return [observation(47, 16, at - 86400_000, 'A'), observation(48, 32, at - 86400_000, 'A'),
+  return [observation(31, true, at), observation(96, 0, at),
+    observation(47, 16, at - 86400_000, 'A'), observation(48, 32, at - 86400_000, 'A'),
     observation(109, 3, at), observation(250, true, at - 86400_000), observation(120, 10.7, at, 'kW'),
     ...[183, 184, 185].map(id => observation(id, 15.6, at, 'A')),
     observation(114, 16, at, 'A'), ...[111, 112, 113].map(id => observation(id, 25, at, 'A')),
@@ -22,7 +23,7 @@ test('identification reads only bounded control data and retains original source
     calls++;
     assert.equal(options.method, 'GET');
     const ids = new URL(url).searchParams.get('ids').split(',').map(Number);
-    assert.deepEqual(ids, [47, 48, 109, 111, 112, 113, 114, 120, 183, 184, 185, 230, 231, 232, 250, 130, 132, 136, 150]);
+    assert.deepEqual(ids, [31, 47, 48, 96, 109, 111, 112, 113, 114, 120, 183, 184, 185, 230, 231, 232, 250, 130, 132, 136, 150]);
     return { observations: [...snapshot(), observation(128, 'private-auth-payload')], privateValue: 'private-account' };
   } });
   assert.equal(calls, 0);
@@ -217,6 +218,29 @@ test('authority loss during a fresh control read prevents the charger command', 
     http: { async json() { allowed = false; return snapshot(); }, async text() { writes++; return ''; } } });
   await assert.rejects(devices.chargerIdentificationControl().limit({ amps: 10, minutes: 1 }), /authority was revoked/);
   assert.equal(writes, 0);
+});
+
+test('manual schedule ownership acquired during a probe read prevents the diagnostic command', async () => {
+  let permitted = true, writes = 0;
+  const devices = createDeviceProviders({ connections, clock: () => NOW, canControl: () => true,
+    http: { async json() { permitted = false; return snapshot(); }, async text() { writes++; return ''; } } });
+  await assert.rejects(devices.chargerIdentificationControl().limit({ amps: 10, minutes: 1, canMutate: () => permitted }), /schedule has priority/);
+  assert.equal(writes, 0);
+});
+
+test('fresh manual schedule and stop readbacks prevent identification even before runtime observes them', async () => {
+  for (const changed of ['schedule', 'disabled', 'stopped']) {
+    let writes = 0;
+    const devices = createDeviceProviders({ connections, clock: () => NOW, canControl: () => true, http: {
+      async json(url) {
+        if (url.endsWith('/schedules')) return { enabled: changed === 'schedule' ? 'daily' : 'none' };
+        return snapshot().map(row => row.id === 31 && changed === 'disabled' ? { ...row, value: false }
+          : row.id === 96 && changed === 'stopped' ? { ...row, value: 53 } : row);
+      }, async text() { writes++; return ''; },
+    } });
+    await assert.rejects(devices.chargerIdentificationControl().limit({ amps: 10, minutes: 1, requireUnscheduled: true }), /priority|not currently safe/);
+    assert.equal(writes, 0);
+  }
 });
 
 test('authority loss during token rotation prevents a second physical command', async () => {

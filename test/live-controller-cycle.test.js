@@ -55,9 +55,9 @@ test('a due base cycle remains intent until broker acknowledgement, then pause r
   assert.equal(r.engine.cycles.active(),null);assert.equal(r.store.getState('applied:mqtt'),null);
   await Promise.resolve();r.acknowledge();await r.settle();
   assert.equal(r.engine.applied.phase,'reduction');assert.ok(r.engine.cycles.active());
-  assert.deepEqual(r.commands,[['heatoff']]);
+  assert.deepEqual(r.commands,[['reduction']]);
   r.engine.setOverride(15);await Promise.resolve();r.acknowledge();await r.settle();
-  assert.equal(r.engine.applied.phase,'normal');assert.deepEqual(r.commands.at(-1),['heaton15']);
+  assert.equal(r.engine.applied.phase,'normal');assert.deepEqual(r.commands.at(-1),['normal']);
   const request=r.store.latestObservation('controller_phase');assert.equal(request.raw.expiresAt,r.now+1_800_000);assert.equal(request.raw.verified,false);
 });
 
@@ -68,7 +68,7 @@ test('native setting tests remain active for their bounded interval across contr
   assert.equal(r.engine.tick().execution.status,'manual-test-in-progress');assert.equal(r.commands.length,0);
   r.advance(60_000);assert.equal(r.engine.tick().execution.status,'manual-test-in-progress');assert.equal(native.values['0212'],40);
   r.advance(60_000);await native.h66.reconcile({now:r.now});
-  assert.equal(native.values['0212'],47);r.engine.tick();await r.settle();assert.deepEqual(r.commands.at(-1),['heaton15']);
+  assert.equal(native.values['0212'],47);r.engine.tick();await r.settle();assert.deepEqual(r.commands.at(-1),['normal']);
 });
 
 test('direct native settings outside Pause restore on the next controller update with a one-minute deadline', async t => {
@@ -98,7 +98,7 @@ test('a restarted interrupted live cycle is incomplete while relay restoration r
   assert.equal(restarted.cycles.active(),null);assert.equal(restarted.applied.at,null);
   assert.equal(r.store.cycles({input:'mqtt'})[0].status,'incomplete');
   restarted.tick();await restarted.dispatchPending;
-  assert.deepEqual(r.commands.at(-1),['heaton15']);assert.equal(restarted.executor.status().legacyOutstanding,false);
+  assert.deepEqual(r.commands.at(-1),['normal']);assert.equal(restarted.executor.status().legacyOutstanding,false);
 });
 
 test('history baseline arriving after startup is adopted without replacing live temperature records',async t=>{

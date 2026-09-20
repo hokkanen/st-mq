@@ -37,7 +37,7 @@ function snapshot(directory, generation, value = 21, sourceAt = at) {
   const dbPath = join(directory, `${generation}.sqlite`), store = new Store(dbPath);
   store.observation({ source: 'test-fixture', device: 'synthetic-sensor', signal: 'indoor_temperature',
     value, unit: 'degC', sourceTime: sourceAt - 60_000, receivedAt: sourceAt - 60_000 });
-  store.event('decision', { input: 'mqtt', mode: 'active', phase: 'reduction', commands: ['heatoff'] }, sourceAt);
+  store.event('decision', { input: 'mqtt', mode: 'active', phase: 'reduction', commands: ['reduction'] }, sourceAt);
   // Copied settings and outstanding obligations must never activate on a viewer.
   store.setState('settings:mqtt', { mode: 'active' });
   store.setState('executor:mqtt', { version: 1, legacyOutstanding: true, phase: 'reduction' });

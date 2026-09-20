@@ -201,8 +201,13 @@ baseline. **Max preheating** raises the selected ROOM setting by the configured
 maximum boost, capped at the writable ROOM upper limit, requests normal tariff
 operation and starts a configured circulation run. Repeated clicks use the same
 unboosted ROOM setting, so the boost does not accumulate.
-A tariff request remains unverified without
-relay readback; stale H66 readings are not shown as current settings.
+A tariff request is verified from fresh configured relay readback received after
+the request. Native Shelly control uses Switch.Set followed by Switch.GetStatus;
+the command acknowledgement alone is insufficient. Missing, stale or mismatching
+readback needs attention. Stale H66 readings are not shown as current settings.
+H66 0233 is the configured temperature reduction offset for the EVU input, not
+an active-tariff indicator or a room-temperature target. Equality with ROOM 0203
+or ambient temperature is therefore not a valid verification check.
 
 The integration uses the documented Thermia/Danfoss C60 register profile. For a
 standard DHP-H installation, the reversing valve routes the inline auxiliary
@@ -253,8 +258,8 @@ DHWR uses MQTT switch ON and OFF and the configurable run duration
 (`controller.dhwr_duration_minutes`, default 10), whether paused or not. Clicking
 Start again starts a full new run; Stop ends it immediately. Restoring manual
 heating or native parameters does not end that independent circulation run.
-The internal `heaton60` intent is never published as a push-button command. `heaton15`
-separately restores normal heating. Pending OFF is saved before ON is sent and
+Internal/API actions are `circulation`, `normal` and `reduction`; obsolete timed
+button commands are rejected. Tariff control uses the configured relay directly. Pending OFF is saved before ON is sent and
 reconciled on restart, shutdown and restoration. See [device setup](dhwr-mqtt.md).
 The planner includes a nominal pulse-electricity allowance, but the thermal
 model does not invent extra delivered heat for the request. The coupled action
@@ -283,7 +288,9 @@ rather than extending indefinitely.
 Yellow background means the compressor was reported running toward the house;
 blue means it was running toward DHW. Missing/stale routing leaves a gap. Tariff reduction
 is crosshatched and describes a reduction request, not proof of a stopped
-compressor. **DHWR** shows requests with their recorded durations in its own strip below the chart,
+compressor. **DHWR** shows observed circulation from power feedback in its own strip below the chart
+(positive watts means on, zero means off; unavailable feedback leaves gaps). Earlier
+history retains its recorded requests and durations. The strip appears
 alongside **Pump mode** and **Fireplace**. These strips start visible. **Fireplace**
 uses the same recorded additions and burn duration as the model, currently two hours;
 overlapping periods merge, and corrections update the strip. This duration marks

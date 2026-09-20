@@ -90,16 +90,17 @@ export class Executor {
   }
   async publish(commands, now, { allowReductionWithCirculation = false, manualCirculation = false } = {}) {
     this.validateCommands(commands);
-    if (commands.includes('heatoff') && now < this.state.pulseUntil && !allowReductionWithCirculation)
+    if (commands.includes('reduction') && now < this.state.pulseUntil && !allowReductionWithCirculation)
       throw failure('DHWR_ACTIVE', 'Reduction is waiting for the configured DHWR run to end.');
-    const pulse = commands.includes('heaton60');
-    if ((pulse || commands.includes('heatoff')) && this.state.dhwrOutstanding && now >= this.state.pulseUntil)
+    const pulse = commands.includes('circulation');
+    if ((pulse || commands.includes('reduction')) && this.state.dhwrOutstanding && now >= this.state.pulseUntil)
       await this.stopDhwr(now);
     if (pulse && typeof this.commandTransport.publishDhwr !== 'function')
       throw failure('DHWR_UNAVAILABLE', 'MQTT switch control is required for DHWR.');
     // A lost PUBACK may still mean ON delivery. Persist the OFF obligation first.
     if (pulse) {
       this.state.dhwrOutstanding = true;
+      this.state.dhwrRequested = { on: true, at: now };
       this.state.pulseUntil = now + this.pulseMs + this.deliveryBoundMs;
       this.state.manualDhwrUntil = manualCirculation ? this.state.pulseUntil : null;
     }
@@ -115,8 +116,11 @@ export class Executor {
         }
         if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR switch delivery is unconfirmed.');
       }
-      const heating = commands.filter(command => command !== 'heaton60');
-      if (heating.length) result = await this.commandTransport.publish(heating);
+      const heating = commands.filter(command => command !== 'circulation');
+      if (heating.length) {
+        this.state.tariffRequested = { mode: heating.at(-1), at: this.clock() }; this.persist();
+        result = await this.commandTransport.publish(heating);
+      }
     }
     finally { this.persist(); }
     if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'Heating-command delivery is unconfirmed.');
@@ -133,6 +137,8 @@ export class Executor {
     }
     if (typeof this.commandTransport?.publishDhwr !== 'function')
       throw failure('DHWR_UNAVAILABLE', 'DHWR OFF is pending until MQTT switch control is available.');
+    this.state.dhwrRequested = { on: false, at: now };
+    this.persist();
     const result = await this.commandTransport.publishDhwr(false);
     if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
     this.state.dhwrOutstanding = false; this.state.pulseUntil = 0; this.state.manualDhwrUntil = null;
@@ -168,9 +174,9 @@ export class Executor {
   async manual(commands, now, pause = null, decision = {}) {
     // Explicit circulation always owns its complete configured timer, separately
     // from the short heating-setting hold or a price-control pause.
-    if (commands.every(command => command === 'heaton60')) return this.publish(commands, now, { manualCirculation: true });
+    if (commands.every(command => command === 'circulation')) return this.publish(commands, now, { manualCirculation: true });
     const end = await this.beginManual(now, pause);
-    const phase = decision.phase === 'preheat' ? 'preheat' : commands.at(-1) === 'heatoff' ? 'reduction' : 'normal';
+    const phase = decision.phase === 'preheat' ? 'preheat' : commands.at(-1) === 'reduction' ? 'reduction' : 'normal';
     const nativeOptions = { now, expiresAt: end, ...(pause ? { pauseId: pause.id } : {}) };
     if (phase === 'preheat' && typeof this.h66?.setManualPreheat !== 'function')
       throw failure('H66_UNAVAILABLE', 'Preheating requires writable native heat-pump settings.');
@@ -184,9 +190,9 @@ export class Executor {
     this.state.expiresAt = end;
     this.persist();
     if (phase === 'preheat') {
-      await this.publish(['heaton60', 'heaton15'], now, { manualCirculation: true });
+      await this.publish(['circulation', 'normal'], now, { manualCirculation: true });
       await this.h66.setManualPreheat({ enabled: true, roomBoostC: decision.roomBoostC ?? 1, ...nativeOptions });
-    } else await this.publish([phase === 'reduction' ? 'heatoff' : 'heaton15'], now, { allowReductionWithCirculation: true });
+    } else await this.publish([phase === 'reduction' ? 'reduction' : 'normal'], now, { allowReductionWithCirculation: true });
     this.state.phase = phase;
     this.state.manualRequested.confirmed = true;
     this.state.legacyOutstanding = phase === 'reduction';
@@ -211,7 +217,7 @@ export class Executor {
       this.reconcileManualPreheat(now);
       const refresh = this.state.manualPause && this.state.manualRequested?.confirmed
         && (this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS);
-      if (refresh) await this.publish([this.state.manualRequested.phase === 'reduction' ? 'heatoff' : 'heaton15'], now,
+      if (refresh) await this.publish([this.state.manualRequested.phase === 'reduction' ? 'reduction' : 'normal'], now,
         { allowReductionWithCirculation: true });
       return this.result(this.state.phase, refresh, { status: 'paused-manual', holdUntil: this.state.manualPause ? end : null,
         roomBoostC: this.state.manualRequested?.roomBoostC ?? 0 });
@@ -226,7 +232,7 @@ export class Executor {
   }
   async executePhysical(decision, now) {
     if (!Number.isFinite(now)) throw new Error('A valid execution timestamp is required');
-    const phase = decision.phase ?? decision.action ?? (decision.commands.includes('heatoff') ? 'reduction' : 'normal');
+    const phase = decision.phase ?? decision.action ?? (decision.commands.includes('reduction') ? 'reduction' : 'normal');
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw new Error('Invalid heating phase');
     const expiresAt = decision.expiresAt == null ? now + 1_800_000 : time(decision.expiresAt);
     if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt - now > 86_400_000)
@@ -242,7 +248,7 @@ export class Executor {
       const native = await this.h66.setPhase({ phase, compressorOnly: true, now, expiresAt });
       const refresh = this.state.phase !== phase || this.state.legacyOutstanding
         || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
-      if (refresh) await this.publish(['heaton15'], now);
+      if (refresh) await this.publish(['normal'], now);
       this.state.phase = phase; this.state.legacyOutstanding = false; this.state.expiresAt = expiresAt;
       this.restartRestore = false;
       return this.result(phase, refresh || native.changed?.length > 0, { native, recoveryCompressorOnly: true });
@@ -267,7 +273,7 @@ export class Executor {
       this.persist();
       let sent = false;
       if (needsPulse) {
-        await this.publish(['heaton60', 'heaton15'], now); sent = true;
+        await this.publish(['circulation', 'normal'], now); sent = true;
         this.state.expiresAt = Math.min(expiresAt, this.state.pulseUntil); this.persist();
       }
       try {
@@ -297,7 +303,7 @@ export class Executor {
       native = await this.h66.setPhase({ phase, now, expiresAt });
     const refresh = this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
     this.state.legacyOutstanding = true; this.state.expiresAt = expiresAt; this.persist();
-    if (refresh) await this.publish(['heatoff'], now);
+    if (refresh) await this.publish(['reduction'], now);
     this.state.phase = phase; this.restartRestore = false;
     return this.result(phase, refresh || native?.changed?.length > 0, { native,
       ...(native ? {} : { nativeSettings: 'unavailable; base tariff reduction only' }) });
@@ -305,12 +311,12 @@ export class Executor {
   async normal(now, phase = 'normal', detail = {}, commands = []) {
     if (this.state.legacyOutstanding || Object.keys(this.h66?.status(now).obligations ?? {}).length) {
       const restored = await this.restoreInternal({ now, phase, reason: phase, detail, preserveManualDhwr: true });
-      if (restored.restorationPending || !commands.includes('heaton60')) return restored;
+      if (restored.restorationPending || !commands.includes('circulation')) return restored;
     }
     const native = this.h66 ? await this.h66.setPhase({ phase, now }) : null;
-    const pulse = commands.includes('heaton60') && now >= this.state.pulseUntil;
+    const pulse = commands.includes('circulation') && now >= this.state.pulseUntil;
     const refresh = pulse || this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
-    if (refresh) await this.publish(pulse ? ['heaton60', 'heaton15'] : ['heaton15'], now);
+    if (refresh) await this.publish(pulse ? ['circulation', 'normal'] : ['normal'], now);
     this.state.phase = phase; this.state.expiresAt = null;
     return this.result(phase, refresh, { native, ...detail });
   }
@@ -332,7 +338,7 @@ export class Executor {
     const phase = baseline ? originalReduction ? 'reduction' : 'normal'
       : ['normal', 'recovery', 'reduction', 'preheat'].includes(this.state.phase) ? this.state.phase : 'normal';
     if (baseline && this.state.manualRequested) {
-      await this.publish([originalReduction ? 'heatoff' : 'heaton15'], this.clock(), { allowReductionWithCirculation: true });
+      await this.publish([originalReduction ? 'reduction' : 'normal'], this.clock(), { allowReductionWithCirculation: true });
       sent = true;
       this.state.legacyOutstanding = originalReduction;
       this.state.expiresAt = originalReduction ? baseline.expiresAt : null;
@@ -365,7 +371,7 @@ export class Executor {
     catch (error) { nativeError = error.code ?? 'H66_RESTORATION_FAILED'; }
     // Restore the tariff relay even if native-setting restoration is temporarily offline.
     if (this.state.legacyOutstanding || this.state.phase === 'reduction' || this.state.phase === 'preheat') {
-      await this.publish(['heaton15'], now); sent = true; this.state.legacyOutstanding = false;
+      await this.publish(['normal'], now); sent = true; this.state.legacyOutstanding = false;
     }
     const restorationPending = Boolean(dhwrError || this.state.dhwrOutstanding && !keepCirculation || nativeError || native?.restorationPending);
     if (!restorationPending) this.clearManual();

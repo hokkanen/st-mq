@@ -109,11 +109,11 @@ export function delayedScheduleFor({ startAt, timezone, maximumAmps }, now) {
   return { timezone, startTime, maximumAmps };
 }
 
-/** Known manual periods in this readiness cycle. Gaps between multiple periods
- * remain under manual control; only their final end permits early handback. */
-export function manualScheduleWindow(state, now, cycleEndsAt) {
+/** One simple repeating window grants control through its concrete end.
+ * Multiple periods or ambiguous endpoints require explicit resumption. */
+export function manualScheduleWindow(state, now) {
   const kind = state.enabled, schedule = state[kind];
-  if (!['daily', 'weekly'].includes(kind) || !schedule?.periods?.length) return null;
+  if (!['daily', 'weekly'].includes(kind) || schedule?.periods?.length !== 1) return null;
   const local = moment.tz(now, schedule.timezone).startOf('day'), candidates = [];
   for (const period of schedule.periods) for (let offset = -7; offset <= 7; offset++) {
     const day = local.clone().add(offset, 'days');
@@ -122,12 +122,11 @@ export function manualScheduleWindow(state, now, cycleEndsAt) {
     let days = kind === 'weekly' ? (DAYS.indexOf(period.stopDay) - DAYS.indexOf(period.startDay) + 7) % 7 : 0;
     if (days === 0 && period.stopTime <= period.startTime) days = kind === 'weekly' ? 7 : 1;
     const end = wallTime(day.clone().add(days, 'days').format('YYYY-MM-DD'), period.stopTime, schedule.timezone);
-    if (start !== null && end !== null && end > now && end > start
-      && (!Number.isFinite(cycleEndsAt) || start < cycleEndsAt)) candidates.push({ startsAt: start, windowEndAt: end,
+    if (start !== null && end !== null && end > now && end > start) candidates.push({ startsAt: start, windowEndAt: end,
       ambiguous: ambiguousWallTime(start, schedule.timezone) || ambiguousWallTime(end, schedule.timezone) });
   }
   candidates.sort((a, b) => a.startsAt - b.startsAt);
-  const selected = Number.isFinite(cycleEndsAt) ? candidates : candidates.slice(0, 1);
+  const selected = candidates.slice(0, 1);
   if (!selected.length || selected.some(row => row.ambiguous)) return null;
   const windowEndAt = Math.max(...selected.map(row => row.windowEndAt));
   return { kind: 'window', repeating: true, startsAt: selected[0].startsAt, windowEndAt, resumeAt: windowEndAt };

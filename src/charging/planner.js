@@ -529,12 +529,24 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     ...household.flatMap(row => [row.start, row.end]), ...fixed.flatMap(row => [row.startAt, row.endAt])]
     .filter(at => finite(at) && at >= now && at <= end)).sort((a, b) => a - b);
   const intervals = [];
+  let partialPrices = false;
   for (let index = 0; index < boundaries.length - 1; index++) {
     const start = boundaries[index], stop = boundaries[index + 1];
     const price = validPrices.find(row => row.start <= start && row.end >= stop);
-    if (!price && !forecastOnly) return fallback('price-coverage-unavailable', 'Electricity prices do not cover the complete remaining readiness horizon.');
+    if (!price && !forecastOnly) {
+      partialPrices = true;
+      // Do not pretend an unrestricted native period pauses inside an unknown
+      // price gap. Optimize the first contiguous published horizon.
+      if (intervals.length) break;
+      continue;
+    }
     intervals.push({ start, end: stop, priceCtPerKwh: price ? priceValue(price) : 0, ...resources(start, supply, household, fixed) });
   }
+  if (!intervals.length) return fallback('price-coverage-unavailable', 'No published electricity prices cover the remaining readiness horizon.');
+  if (jobs.some(job => !intervals.some(row => row.start < job.targetAt)))
+    return fallback('price-coverage-unavailable', 'No published electricity prices are available before a charger readiness deadline.');
+  if (partialPrices) warnings.push('Only published electricity prices are used. The pending schedule will be reconsidered when more prices arrive.');
+  result.assumptions.priceCoverage = partialPrices ? 'partial' : 'complete';
   result.assumptions.household = intervals.every(row => row.history) ? 'history' : intervals.some(row => row.history) ? 'mixed' : 'zero';
   warnings.push(...fixed.flatMap(forecast => forecast.warnings));
   let best = null, continuous = null;
@@ -556,7 +568,8 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
           ? distribution.currents[job.charger.id] * job.electric.voltageV * job.electric.phases.count / 1000 : 0 };
       });
       const candidates = unique([now, ...backwardStarts(solo, job.charger.requiredGridKwh), ...sharedStarts]
-        .filter(at => at >= now && at < job.targetAt).map(at => Math.max(now, Math.floor(at / 1000) * 1000)));
+        .filter(at => at >= now && at < job.targetAt && (forecastOnly || intervals.some(row => row.start <= at && row.end > at)))
+        .map(at => Math.max(now, Math.floor(at / 1000) * 1000)));
       const ranked = candidates.map(at => {
         const starts = { [job.charger.id]: at }, simulation = simulate({ starts, jobs: [job], intervals });
         return { ...simulation, starts, at, zeroEnergyPrice: job.charger.requiredGridKwh <= EPS
@@ -565,7 +578,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       // The single-charger case retains all piecewise-linear economic optima.
       // Joint search keeps the best starts plus immediate release for bounded work.
       const selected = jobs.length === 1 ? ranked : ranked.slice(0, 47);
-      return unique([now, ...selected.map(item => item.at)]);
+      return unique([...(candidates.includes(now) ? [now] : []), ...selected.map(item => item.at)]);
     });
     const inspect = starts => {
       const candidate = { ...simulate({ starts, jobs, intervals }), starts: { ...starts },
@@ -618,6 +631,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     const chargingHours = item.accounting.reduce((sum, row) => sum + (row.end - row.start) / HOUR, 0);
     const expectedPowerKw = chargingHours > 0 ? Number((item.deliveredGridKwh / chargingHours).toFixed(6)) : 0;
     Object.assign(forecast, { state: value(item.charger, 'connected') === false ? 'preview' : feasible ? 'planned' : 'uncertain', reason, startAt, finishAt: item.finishAt,
+      accounting: item.accounting,
       endAt: targetKnown(item.charger) && finite(item.finishAt) ? item.finishAt : end,
       known: feasible && targetKnown(item.charger), feasible, shortfallGridKwh: plan.shortfallGridKwh, warnings: plan.warnings,
       currentA: expectedPowerKw * 1000 / (3 * item.electric.voltageV), powerKw: expectedPowerKw });

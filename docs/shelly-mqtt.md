@@ -7,3 +7,15 @@ monitoring, connection checks, timed switch tests and hourly energy recording.
 Device connections and topics now have public defaults in `config.json`; broker
 credentials remain in the private configuration. ST-MQ does not automatically
 recognise or switch between the two connection formats.
+
+Heating verification uses the configured tariff relay's output. For Gen2 and
+later, a matching post-command `Switch.GetStatus` RPC response verifies
+`Switch.Set`; the `was_on` command response does not. Live status keeps the
+dashboard current, and stale/offline readings or a mismatching output need
+attention. The API actions are `normal` and `reduction`; no legacy button topic
+is used. See [Shelly Switch documentation](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch/).
+
+H66 register 0233 configures the reduction offset for EVU external control. It
+does not report whether that input is active; equality with the ROOM setting or
+measured room temperature cannot verify tariff operation. See the
+[Husdata C60 register profile](https://online.husdata.se/h-docs/C60.pdf).

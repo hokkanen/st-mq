@@ -85,6 +85,15 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     }
     device.readings[definition.signal] = { value, unit: definition.unit, label: definition.label, observedAt: at, receivedAt, quality,
       ...(observation.raw.eventOnly ? { eventOnly: true } : {}), ...raw };
+    // The pump's measured load is its operational ON/OFF feedback. Keep this
+    // compact state history even when the raw watts are configured live-only.
+    const powerFeedback = device.kind === 'power' || device.mappings.some(row => row.signal === 'dhwr_power');
+    if (device.id === 'dhwr' && definition.signal === (powerFeedback ? 'dhwr_power' : 'dhwr_active')) {
+      store.observation({ source: 'mqtt-equipment', device: 'dhwr', signal: 'dhwr_active',
+        value: value === null ? null : Number(value > 0), unit: 'state', sourceTime: at ?? receivedAt, receivedAt, quality,
+        raw: { basis: powerFeedback ? 'measured-power' : 'reported-switch', eventOnly: device.maxAgeMs === 0,
+          maxAgeMs: device.maxAgeMs, verified: value !== null } });
+    }
     if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
       signature: signature(device.id), reading: device.readings[definition.signal] });
     return true;
@@ -431,13 +440,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       return config.protocol === 'shelly' ? native.setSwitch(deviceId, on) : switchDevice(devices.find(row => row.id === deviceId), on);
     },
     async publishHeating(commands) {
-      if (!Array.isArray(commands) || !commands.length || commands.some(command => !['heatoff', 'heaton15'].includes(command))) throw fail('invalid heating command');
+      if (!Array.isArray(commands) || !commands.length || commands.some(command => !['reduction', 'normal'].includes(command))) throw fail('invalid heating command');
       if (heatingBusy) throw fail('heating operation already in progress');
       if (!connected || closed || !canControl()) throw fail('control authority unavailable');
       heatingBusy = true;
       try {
         if (native?.hasHeating) await native.publishHeating(commands);
-        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'heatoff' ? device.reductionOn : !device.reductionOn);
+        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'reduction' ? device.reductionOn : !device.reductionOn);
         return { confirmed: true, status: 'confirmed', sent: true, commands: [...commands], acknowledged: commands.length, acknowledgement: 'equipment-state-readback' };
       } finally { heatingBusy = false; }
     },

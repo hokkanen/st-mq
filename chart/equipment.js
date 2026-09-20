@@ -395,26 +395,30 @@ export function dhwrReadingSummary(status) {
   const powerConfigured = feedback.powerConfigured ?? feedback.configured === true;
   const reading = (value, signal, configured) => {
     if (feedback.configured && !configured) return { value: 'Not configured', stale: false,
-      detail: signal === 'state' ? 'Switch feedback is not configured. Power does not confirm the relay switch state or water flow.'
+      detail: signal === 'state' ? 'Circulation feedback is not configured.'
         : 'Power feedback is not configured.' };
     return value ? equipmentReadingRows({ kind: 'switch', available: feedback.available,
       readings: { [signal]: value } })[0] : { value: signal === 'state' ? 'Unknown' : 'Unavailable', stale: true,
       detail: configured ? 'Waiting for a live MQTT report.' : 'Configure DHWR MQTT feedback to see device reports.' };
   };
   const state = reading(feedback.state, 'state', stateConfigured), power = reading(feedback.power, 'power', powerConfigured);
+  const powerBasis = feedback.basis === 'power';
+  if (powerBasis) state.detail += '. Positive power means circulation is on; zero power means it is off.';
   const eventOnly = feedback.power?.eventOnly === true;
   if (eventOnly) power.detail += '. Updated when power changes; there is no periodic measurement guarantee.';
-  const powerOnly = !stateConfigured && powerConfigured;
-  const reported = dhwr.actualOn === true ? 'On · device reported' : dhwr.actualOn === false ? 'Off · device reported' : '';
+  const powerOnly = powerBasis || !stateConfigured && powerConfigured;
+  const reported = typeof dhwr.actualOn === 'boolean' ? `${dhwr.actualOn ? 'On' : 'Off'} · ${powerBasis ? 'power' : 'device'} reported` : '';
   const summary = dhwr.restorationPending ? ['Stop delivery pending', reported].filter(Boolean).join(' · ')
+    : dhwr.attention ? [reported || (dhwr.active ? 'On requested' : 'Off requested'), 'needs attention'].join(' · ')
     : reported || (dhwr.active ? 'On requested · state unknown' : 'No request · state unknown');
-  return { state, power, summary, powerLabel: eventOnly ? 'Last reported power' : 'Live power',
+  return { state, power, summary, attention: dhwr.attention === true,
+    powerLabel: eventOnly ? 'Last reported power' : 'Live power',
     powerReportedAt: eventOnly && Number.isFinite(feedback.power.observedAt) ? `Reported ${clock.format(feedback.power.observedAt)}` : '',
-    feedbackLabel: !feedback.configured ? 'Feedback not configured' : powerOnly
+    feedbackLabel: dhwr.attention ? 'Needs attention' : !feedback.configured ? 'Feedback not configured' : powerOnly
       ? feedback.available ? eventOnly ? 'Power reported' : 'Power available' : feedback.power ? 'Power unavailable' : 'Waiting for power'
       : feedback.available ? 'Available' : 'Needs attention',
     request: dhwr.restorationPending ? 'Stop requested · delivery pending'
-      : dhwr.active ? 'Circulation requested' : 'No circulation requested',
+      : dhwr.reason || (dhwr.active ? 'Circulation requested' : 'No circulation requested'),
     duration: dhwr.durationMinutes ?? 10,
     available: feedback.available === true, configured: feedback.configured === true };
 }
@@ -670,12 +674,13 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     for (const [key, row] of [['state', dhwr.state], ['power', dhwr.power]]) {
       const root = $(`dhwr-live-${key}`); root.classList.toggle('stale', row.stale);
       setStatusDetail(root, { key: `dhwr-live-${key}`, label: row.value,
-        title: key === 'state' ? 'Circulation · reported switch' : `Circulation · ${dhwr.powerLabel.toLowerCase()}`,
-        detail: row.detail + (key === 'power' ? ' Live monitoring only; power samples are not stored.' : '') });
+        title: key === 'state' ? 'Circulation · reported operation' : `Circulation · ${dhwr.powerLabel.toLowerCase()}`,
+        detail: row.detail + (key === 'power' ? ' Power readings also determine the circulation shading in history.' : '') });
     }
     $('dhwr-feedback-status').textContent = dhwr.feedbackLabel;
-    $('dhwr-feedback-status').dataset.state = dhwr.available ? 'available' : dhwr.configured ? 'attention' : 'pending';
+    $('dhwr-feedback-status').dataset.state = dhwr.attention ? 'attention' : dhwr.available ? 'available' : dhwr.configured ? 'attention' : 'pending';
     $('dhwr-request-state').textContent = dhwr.request;
+    $('dhwr-request-state').classList.toggle('stale', dhwr.attention);
     $('dhwr-control-help').textContent = `Each click starts a full ${dhwr.duration}-minute run, whether price control is paused or not. Stop ends it immediately.`;
     const commandRoot = $('heating-mqtt-topics');
     commandRoot.replaceChildren(); commandRoot.hidden = true;

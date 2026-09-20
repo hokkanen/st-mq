@@ -235,7 +235,7 @@ test('native schedule display distinguishes a real stop from a delayed start wit
   assert.deepEqual(nextScheduleOccurrence(daily, now), {
     startAt: now + hour, endAt: now + 4 * hour, endKind: 'scheduled-stop', kind: 'daily',
   });
-  assert.equal(manualScheduleWindow(daily, now, now + 24 * hour).windowEndAt, now + 4 * hour, 'All periods in the readiness cycle retain manual priority until the last end');
+  assert.equal(manualScheduleWindow(daily, now), null, 'Multiple periods require explicit resumption');
 });
 
 test('past Tesla schedules do not roll forward into a new charging event', () => {
@@ -260,7 +260,7 @@ test('TeslaMate is the configured Charger 2 vehicle feed unless explicitly assig
   assert.deepEqual(teslamateChargerAssignment({ assignment: 'auto' }), {
     chargerId: 'charger2', uncertain: false, reservationChargerId: null,
   });
-  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger2');
+  assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'easee' }).chargerId, 'charger1');
   assert.equal(teslamateChargerAssignment({ assignment: 'auto' }, { identified: 'bmw' }).chargerId, 'charger2');
   assert.equal(teslamateChargerAssignment({ assignment: 'easee' }, { identified: 'bmw' }).chargerId, 'charger1');
   assert.equal(teslamateChargerAssignment({ assignment: 'bmw' }, { identified: 'easee' }).chargerId, 'charger2',

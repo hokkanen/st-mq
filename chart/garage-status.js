@@ -405,6 +405,9 @@ export function renderGarage(document, status) {
   detail('garage-door-summary', doorSummary,
     'Garage doors', doors.length ? doors.map(row => `${row.name}: ${row.value}. ${row.detail}`).join('\n')
       : 'No garage door reports are available.', !doors.length || doors.some(row => row.stale));
+  const doorStatus = document.getElementById('garage-door-summary');
+  if (doorStatus) doorStatus.dataset.state = doors.length && closedDoors.length === doors.length && !doors.some(row => row.stale)
+    ? 'confirmed' : 'attention';
 
   const nativeReading = (field, title, format) => {
     const value = native(reported[field]), at = reported.readbacks?.[field]?.measuredAt

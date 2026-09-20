@@ -165,7 +165,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true, canControl = () => true } = {}) {
   const connections = config.connections ?? {};
-  const identifyCharger = !engine.charging && connections.teslamate?.enabled === true
+  const identifyCharger = connections.teslamate?.enabled === true
     && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
   http ??= createHttp({ allowChargerIdentification: identifyCharger, allowChargerScheduling: true, canControl });
   const location = configuredLocation(connections);
@@ -181,7 +181,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     read: args => identificationControl.read(args),
     limit: args => {
       if (!canControl() || args.signal?.aborted) throw new Error('Controller authority was revoked');
-      return identificationControl.limit(args);
+      if (engine.charging && !engine.charging.canIdentifyVehicle?.()) throw new Error('Charging schedule has priority over vehicle identification');
+      return identificationControl.limit({ ...args, requireUnscheduled: Boolean(engine.charging),
+        canMutate: () => !engine.charging || engine.charging.canIdentifyVehicle?.() === true });
     },
   } }) : null;
   if (identification) engine.chargerIdentification = identification;
@@ -191,11 +193,12 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (!canControl()) { identification.stop(); return; }
     // A diagnostic current restriction must not become a second controller for
     // a native charging schedule or defeat a manual app override.
-    if (engine.charging?.hasAutomaticControl()) return;
+    if (engine.charging && !engine.charging.canIdentifyVehicle?.() && !identification.status().active) return;
     try {
       await identification.tick({ tesla: engine.teslamate?.identificationSnapshot(),
         charger: engine.electricitySnapshot?.charger }, clock());
       engine.teslamate?.tick(clock());
+      engine.charging?.tick({ force: Boolean(identification.status().verdict) });
     } catch { /* Only transient status, never a database experiment/error log. */ }
   };
   const easee = connections.easee ?? {}, cadence = config.acquisition ?? {};

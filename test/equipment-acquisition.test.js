@@ -379,7 +379,7 @@ test('explicit modern native RPC accepts Gen3 identity without changing protocol
   f.capture.setConnected(true);
   f.reply(f.publications.find(row => JSON.parse(row.payload).method === 'Shelly.GetDeviceInfo'), { id: 'invented-mini-gen3', gen: 3 });
   assert.match(f.capture.signature('heat_savings'), /^[a-f0-9]{64}$/);
-  const pending = f.capture.publishHeating(['heatoff']); await Promise.resolve();
+  const pending = f.capture.publishHeating(['reduction']); await Promise.resolve();
   const set = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set');
   assert.deepEqual(JSON.parse(set.payload).params, { id: 0, on: true });
   f.reply(set, { was_on: false });

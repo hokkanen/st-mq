@@ -12,10 +12,10 @@ import { Store } from '../src/storage/store.js';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 
-test('legacy publisher exits at the live gate before loading credentials or connecting', () => {
+test('retired legacy publisher exits before loading credentials or connecting', () => {
   const result = spawnSync(process.execPath, ['scripts/mqtt-control.js'], { encoding: 'utf8', env: { ...process.env, STMQ_LEGACY_LIVE: '' }, timeout: 3000 });
   assert.equal(result.status, 1);
-  assert.match(result.stdout, /Legacy live publishing is disabled/);
+  assert.match(result.stderr, /legacy heating controller is retired/);
   assert.doesNotMatch(result.stdout, /MQTT client connected|MQTT published/);
 });
 

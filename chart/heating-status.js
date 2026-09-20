@@ -29,16 +29,16 @@ export function garageNativeReadingFresh(garage = {}, field, now) {
 export function homeHeatingConfirmation(status = {}) {
   const now = status.now ?? Date.now(), decision = status.decision ?? {}, actual = status.observations?.actual ?? {};
   const hold = decision.manualHold?.until > now ? decision.manualHold : null;
-  const phase = hold?.phase ?? decision.phase ?? decision.action;
+  const phase = hold?.phase ?? actual.requestedPhase ?? decision.phase ?? decision.action;
   const expected = phase === 'reduction' ? 'reduction' : ['normal', 'preheat', 'recovery'].includes(phase) ? 'normal' : null;
   const at = timestamp(actual.observedAt ?? actual.sourceTime ?? actual.receivedAt);
-  const current = actual.stale !== true && fresh(at, now, H66_MAX_AGE_MS);
+  const current = actual.stale !== true && (actual.source === 'equipment-state-readback'
+    ? actual.stale === false && Number.isFinite(at) && at <= now : fresh(at, now, H66_MAX_AGE_MS));
   const known = ['normal', 'reduction'].includes(actual.mode);
   const reasons = [];
   if (isReadOnlyReplica(status)) reasons.push('Recorded history cannot confirm the current home state.');
   if (status.input === 'simulated' || actual.source === 'simulation') reasons.push('Simulated state; no physical heating confirmation.');
   if (status.input === 'offline') reasons.push('No live device connection is open.');
-  if (status.mode && status.mode !== 'active') reasons.push('This heating plan sends no automatic commands.');
   if (!expected) reasons.push('No current heating request is available.');
   if (!known || !current || actual.verified !== true || actual.source === 'mqtt-request') {
     reasons.push(actual.source === 'mqtt-request' ? 'The heating request was sent, but the tariff relay has no verified device readback.'
@@ -65,9 +65,11 @@ export function homeHeatingConfirmation(status = {}) {
       break;
     }
   }
-  return result(reasons, known
+  const confirmation = result(reasons, known
     ? `Actual heating mode: ${words(actual.mode)}${actual.source === 'mqtt-request' ? ' · requested, unverified' : current && actual.verified === true ? ' · current readback' : ' · current state unconfirmed'}.`
     : 'Actual heating state: unknown.');
+  if (status.mode && status.mode !== 'active') confirmation.detail += '\n\nAutomatic heating control is disabled; device feedback still verifies manual requests.';
+  return confirmation;
 }
 
 /** Confirm requested availability/off only from fresh native power and healthy reporting. */

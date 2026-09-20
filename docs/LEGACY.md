@@ -50,10 +50,10 @@ and learning queries retain their deterministic duplicate handling. Imported
 model learning continues to use the historical Upstairs measurement and its
 matching algorithm, as required by the [reconstruction contract](reconstruction-and-versioning.md).
 
-## Retained relay protocol
+## Retired relay protocol
 
-The current controller retains the `from_stmq/heat/action` MQTT integration with
-the existing `heaton15`, `heaton60` and `heatoff` commands. Configure the active
-controller through the current setup guide; do not run a second command owner
-alongside the production controller. The old `temp_to_hours` scheduling mapping
-is not part of the learned controller.
+The current controller uses direct configured tariff-relay MQTT commands and
+independent relay state readback. DHWR uses timed ON/OFF commands on its own
+configured topic. Legacy button commands and the old controller entry point are
+retired in this checkout; the separate 0.7.5 installation is unchanged. Historical
+CSV numeric modes retain their original import semantics.

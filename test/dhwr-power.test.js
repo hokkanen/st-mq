@@ -21,14 +21,14 @@ function fixture(t, patch = {}) {
     equipmentStatus: () => capture.status() };
   t.after(() => { capture.close(); store.close(); });
   capture.setConnected(true); capture.confirmSubscriptions([TOPIC]);
-  return { capture, settings, publications, observations, store, status: () => Engine.prototype.dhwrStatus.call(context),
+  return { capture, settings, publications, observations, store, context, status: () => Engine.prototype.dhwrStatus.call(context),
     at: at => { now = at; }, report: (payload, packet = {}) => capture.receive(TOPIC, payload, packet) };
 }
 
-test('DHWR watts-only feed accepts 0 and 1 without inventing switch feedback or recorder samples', async t => {
+test('DHWR watts-only feed accepts 0 and 1 as measured ON/OFF feedback and records only derived state', async t => {
   const f = fixture(t);
   assert.deepEqual(f.settings.devices[0].ownedSignals, ['dhwr_power']);
-  assert.equal(f.status().feedback.stateConfigured, false);
+  assert.equal(f.status().feedback.stateConfigured, true);
   assert.equal(f.status().feedback.powerConfigured, true);
   assert.equal(f.status().feedback.available, false);
   for (const watts of [0, 1, 24.5, 100000]) {
@@ -38,15 +38,15 @@ test('DHWR watts-only feed accepts 0 and 1 without inventing switch feedback or 
     assert.equal(state.feedback.power.value, watts);
     assert.equal(state.feedback.power.unit, 'W');
     assert.equal(state.feedback.power.eventOnly, true);
-    assert.equal(state.feedback.state, null);
-    assert.equal(state.actualOn, null);
-    assert.equal(state.confirmed, false);
+    assert.equal(state.feedback.state.value, Number(watts > 0));
+    assert.equal(state.actualOn, watts > 0);
+    assert.equal(state.confirmed, watts > 0);
     assert.equal(state.active, true, 'Measured watts do not rewrite a timed command');
   }
   await f.capture.recheck({ deviceId: 'dhwr' });
   assert.deepEqual(f.publications, [], 'A subscription recheck cannot run the pump or manufacture a measurement');
   assert.deepEqual(f.observations, []);
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM observations').get().count, 0);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM observations').get().count, 4);
 });
 
 test('change-only power preserves original report age, clears on disconnect and waits for genuine recovery', t => {
@@ -117,10 +117,28 @@ test('provider MQTT acquisition loads the default DHWR topic and exposes live fe
   client.emit('message', TOPIC, Buffer.from('24.5'), { retain: false, qos: 1 });
   const status = engine.status();
   assert.equal(status.dhwr.feedback.power.value, 24.5);
-  assert.equal(status.dhwr.feedback.stateConfigured, false);
-  assert.equal(status.dhwr.actualOn, null);
+  assert.equal(status.dhwr.feedback.stateConfigured, true);
+  assert.equal(status.dhwr.actualOn, true);
   assert.equal(status.equipment.devices[0].topics[0].role, 'Power');
   assert.equal(status.equipment.topicGroups.find(row => row.id === 'dhwr').topics[0].topic, 'stmq/home/dhwr/command/switch');
-  assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM observations WHERE signal IN ('dhwr_power', 'dhwr_active')").get().count, 0);
+  assert.equal(store.db.prepare("SELECT COUNT(*) AS count FROM observations WHERE signal IN ('dhwr_power', 'dhwr_active')").get().count, 1);
   assert.deepEqual(publications, []);
+});
+
+
+test('every circulation request needs a new matching power report, including unchanged state', t => {
+  const f = fixture(t); f.report('25');
+  assert.equal(f.status().confirmed, true);
+  f.at(INITIAL + 1000);
+  f.context.executor.status = () => ({ dhwrOutstanding: true, pulseUntil: INITIAL + 600000,
+    dhwrRequested: { on: true, at: INITIAL + 1000 } });
+  assert.equal(f.status().actualOn, true); assert.equal(f.status().confirmed, false);
+  assert.equal(f.status().attention, true); assert.match(f.status().reason, /new power report/);
+  f.report('25'); assert.equal(f.status().confirmed, true);
+  f.at(INITIAL + 2000);
+  f.context.executor.status = () => ({ dhwrOutstanding: false, pulseUntil: 0,
+    dhwrRequested: { on: false, at: INITIAL + 2000 } });
+  assert.equal(f.status().confirmed, false);
+  f.report('25'); assert.equal(f.status().confirmed, false);
+  f.report('0'); assert.equal(f.status().confirmed, true); assert.equal(f.status().attention, false);
 });

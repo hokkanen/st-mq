@@ -34,6 +34,7 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
   const rawRequiredGridKwh = Math.max(0, charger.requiredGridKwh ?? 0);
   const remainingGridKwh = Math.max(0, capacity * (charger.values.minimumSoc.value - estimatedSoc) / 100 / efficiency);
   return { state, estimatedSoc, hasEnergyEstimate: state.creditKwh > .00001,
+    connectionAt,
     estimatedSocSource: automatic ? 'vehicle' : 'starting-charge', anchorAt: reference.at,
     deliveredGridKwh: state.creditKwh, remainingGridKwh,
     basis: { source: state.creditKwh > 0 ? 'recorded-charger-energy' : 'soc',

@@ -26,7 +26,7 @@ test('conservative startup needs no credentials or model and issues normal inten
   assert.equal(decision.action, 'normal');
   assert.ok(decision.reasons.includes('learning-normal-comfort-reference'));
   assert.ok(decision.reasons.includes('unvalidated-thermal-model'));
-  assert.deepEqual(decision.commands, ['heaton60', 'heaton15']);
+  assert.deepEqual(decision.commands, ['circulation', 'normal']);
   assert.equal(decision.comfort.maxDropC, 1);
   assert.equal(decision.comfort.targetC, null);
 });
@@ -45,7 +45,7 @@ test('stable learned target is used and does not follow current room temperature
 test('a high current price can select a modest reduction after accounting for full recovery', () => {
   const result = decide(fixture());
   assert.equal(result.action, 'reduction');
-  assert.deepEqual(result.commands, ['heatoff']);
+  assert.deepEqual(result.commands, ['reduction']);
   assert.equal(result.dhwr.requested, false);
   assert.equal(result.plan.baseline.reductionHours, 0);
   assert.ok(result.plan.chosen.reductionHours <= 2);
@@ -314,9 +314,9 @@ test('DHWR recency persists independently and exact 52.5 minutes is eligible', (
   assert.equal(dhwrEligible(now, null, 'reduction'), false);
   const input = fixture(); input.learned = null; input.state.lastDhwrAt = iso(now - HOUR);
   const pulse = decide(input);
-  assert.deepEqual(pulse.commands, ['heaton60', 'heaton15']);
+  assert.deepEqual(pulse.commands, ['circulation', 'normal']);
   const restarted = { ...fixture(now + HOUR / 4), state: JSON.parse(JSON.stringify(pulse.nextState)), learned: null };
-  assert.deepEqual(decide(restarted).commands, ['heaton15']);
+  assert.deepEqual(decide(restarted).commands, ['normal']);
   assert.equal(decide(restarted).nextState.lastDhwrAt, iso(now));
 });
 
