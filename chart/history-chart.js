@@ -391,6 +391,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   }
   async function refresh(nextStatus = status, { force = false } = {}) {
     if (closed) return;
+    // An explicit refresh follows a mutation and must discard earlier queries.
+    // Recorder updates discovered below may still coalesce a slow live query.
+    if (force) invalidate();
     status = nextStatus ?? { now: Date.now() };
     if (navigation.moving && overview && sameSelection(selection, plottedSelection)) { refreshQueued = true; queuedForce ||= force; return; }
     const today = finnishDate(status.now);

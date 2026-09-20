@@ -468,6 +468,15 @@ test('Easee waiting, unknown errors and untrusted scope fields produce only name
   assert.doesNotMatch(JSON.stringify(display), /private-secret|provider\.example|https:|constructor|different times/);
 });
 
+test('cached request failures do not present generated empty fields as defective device readings', () => {
+  const display = describeProvider('easee', { status: 'degraded', error: 'provider-network-error',
+    currentReadings: { property: { qualityIssues: ['provider_error', 'missing', 'source_time_unknown'],
+      error: 'provider-network-error', lastSuccessAt: now - 60_000 } } }, options);
+  assert.equal(display.attention, true);
+  assert.match(display.detail, /Property readings: Network request failed\./);
+  assert.doesNotMatch(display.detail, /missing|no source timestamp/);
+});
+
 test('Easee download sentence is shared across healthy, legacy and partially successful snapshots', () => {
   for (const health of [
     { lastSuccessAt: now, currentReadings: {

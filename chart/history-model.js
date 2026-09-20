@@ -299,7 +299,12 @@ export function createChartLoader({ api, now = Date.now, maxEntries = 6, liveTtl
   function invalidate() { cache.clear(); cancel(); }
   function load(selection, { force = false, today = finnishDate(now()) } = {}) {
     const path = chartQuery(selection);
-    if (pending?.path === path && !force) return pending.promise;
+    if (pending?.path === path) {
+      // New telemetry should not repeatedly kill a slow identical query. Let
+      // it finish, then fetch its newer readings on the following refresh.
+      pending.refreshRequested ||= force;
+      return pending.promise;
+    }
     cancel();
     const entry = cache.get(path);
     const longRange=Date.parse(selection.endDate)-Date.parse(selection.startDate)>=7*86400000;
@@ -312,7 +317,8 @@ export function createChartLoader({ api, now = Date.now, maxEntries = 6, liveTtl
     const request = { path, controller };
     request.promise = Promise.resolve().then(() => api(path, { signal: controller.signal })).then(data => {
       if (sequence !== generation) throw new DOMException('A newer chart selection is active.', 'AbortError');
-      cache.delete(path); cache.set(path, { data, at: now() });
+      cache.delete(path);
+      if (!request.refreshRequested) cache.set(path, { data, at: now() });
       while (cache.size > maxEntries) cache.delete(cache.keys().next().value);
       return data;
     }).finally(() => { if (pending === request) pending = undefined; });

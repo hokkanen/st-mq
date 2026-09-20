@@ -12,6 +12,7 @@
 // https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
 import { createEaseeScheduleAdapter } from '../charging/easee.js';
+import { ProviderError, providerFailureCode } from './http.js';
 
 const CURRENT_DEVICES = [
   ['charger_id', [183, 184, 185], 'ev1_current'],
@@ -58,6 +59,7 @@ function httpStatus(error) {
 function sanitized(error, provider) {
   const status = httpStatus(error);
   const clean = new Error(`${provider} request failed${status === null ? '' : ` (HTTP ${status})`}`);
+  clean.code = providerFailureCode(error);
   if (status !== null) clean.status = status;
   if (Number.isFinite(error?.retryAfterMs)) clean.retryAfterMs = Math.min(86400_000, Math.max(0, error.retryAfterMs));
   return clean;
@@ -76,7 +78,7 @@ function baseObservation({ source, device, signal, unit, now, quality = [], retr
 
 function currentObservations(payload, device, ids, prefix, now) {
   const observations = Array.isArray(payload) ? payload : payload?.observations;
-  if (!Array.isArray(observations) || observations.length > 1000) throw new Error('Invalid Easee observations');
+  if (!Array.isArray(observations) || observations.length > 1000) throw new ProviderError('invalid-provider-observations');
   return ids.map((id, index) => {
     const matches = observations.filter(item => item && number(item.id) === id);
     const candidates = matches.map(item => ({ item, at: sourceTime(item.timestamp) }))
@@ -173,7 +175,7 @@ function chargerSession(list, id, device, now) {
 
 function electricalObservations(payload, device, prefix, fields, now, voltageVerified = false) {
   const list = Array.isArray(payload) ? payload : payload?.observations;
-  if (!Array.isArray(list) || list.length > 1000) throw new Error('Invalid Easee observations');
+  if (!Array.isArray(list) || list.length > 1000) throw new ProviderError('invalid-provider-observations');
   const connection = deviceConnection(list, now);
   const telemetryAt = prefix === 'ev1' ? chargerTelemetryAt(list, now) : null;
   const sessions = prefix === 'ev1' ? { chargingSession: chargerSession(list, 129, device, now),
@@ -454,7 +456,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : ELECTRICITY_FIELDS[jobs[index][1]].map(([id, name, unit]) => ({
         ...baseObservation({ source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][1]}_${name}`, unit, now,
           quality: failureFlags(result.reason) }),
-        raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'), retryAfterMs: result.reason?.retryAfterMs },
+        raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'),
+          error: providerFailureCode(result.reason), retryAfterMs: result.reason?.retryAfterMs },
       }))));
     },
 
@@ -463,10 +466,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const jobs = CURRENT_DEVICES.filter(([key]) => supplied(easee[key]));
       const results = await Promise.allSettled(jobs.map(async ([key, ids, prefix]) =>
         currentObservations(await easeeRequest(easee[key], ids, signal), easee[key], ids, prefix, now)));
-      const rows = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : jobs[index][1].map((id, phase) => baseObservation({
+      const rows = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : jobs[index][1].map((id, phase) => ({ ...baseObservation({
         source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][2]}_l${phase + 1}`, unit: 'A', now,
         quality: ['current_snapshot_not_energy', ...failureFlags(result.reason)], retryAfterMs: result.reason?.retryAfterMs,
-      })));
+      }), raw: { error: providerFailureCode(result.reason), retryAfterMs: result.reason?.retryAfterMs } })));
       const property = rows.filter(row => row.signal.startsWith('property_'));
       const charger = rows.filter(row => row.signal.startsWith('ev1_'));
       if (property.length === 3 && property.every(row => row.value === 0)) property.forEach(row => row.quality.push('all_zero_property_current'));

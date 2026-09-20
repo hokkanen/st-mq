@@ -14,3 +14,17 @@ export function authenticationMessage(ingress) {
     ? 'Your host session needs attention. Reopen ST-MQ from the host dashboard.'
     : 'Enter your access token to view this installation.';
 }
+
+/** Timer polls must not overtake a slow response indefinitely. An explicit
+ * refresh (for example after login or a mutation) may still supersede it. */
+export function createPollingRequest(request) {
+  let pending;
+  return ({ background = false } = {}) => {
+    if (background && pending) return null;
+    const current = Promise.resolve().then(request);
+    pending = current;
+    const clear = () => { if (pending === current) pending = undefined; };
+    current.then(clear, clear);
+    return current;
+  };
+}

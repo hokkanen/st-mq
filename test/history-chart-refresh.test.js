@@ -1,0 +1,68 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHistoryChart } from '../chart/history-chart.js';
+
+/** Exercise the real refresh/request path without finishing a download or
+ * starting canvas rendering. Controls need only their ordinary DOM methods. */
+function fixture(t) {
+  class Element extends EventTarget {
+    constructor() { super(); this.dataset = {}; this.children = []; this.attributes = new Map(); }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    closest() { return this; }
+  }
+  const nodes = new Map();
+  const document = Object.assign(new EventTarget(), {
+    documentElement: new Element(),
+    getElementById(id) {
+      if (id === 'timing-benefit') return null;
+      if (!nodes.has(id)) nodes.set(id, new Element());
+      return nodes.get(id);
+    },
+    createElement() { return new Element(); },
+  });
+  const globals = { document, localStorage: { getItem: () => null },
+    window: Object.assign(new EventTarget(), { matchMedia: () => new EventTarget() }),
+    getComputedStyle: () => ({ getPropertyValue: () => '' }) };
+  const previous = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals))
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  t.after(() => {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  const requests = [];
+  const chart = createHistoryChart({ api: (path, { signal }) => new Promise((_resolve, reject) => {
+    requests.push({ path, signal });
+    signal.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true });
+  }) });
+  t.after(() => chart.close());
+  return { chart, requests };
+}
+
+test('explicit chart refresh after a mutation cancels old work while recorder polls share it', async t => {
+  const { chart, requests } = fixture(t);
+  const status = { now: Date.parse('2026-09-20T12:00:00Z'), input: 'providers',
+    recording: { historyRevision: 1, temperatureReportRevision: 1 } };
+  const initial = chart.refresh(status);
+  await Promise.resolve();
+  assert.equal(requests.length, 1);
+  const updated = { ...status, recording: { ...status.recording, historyRevision: 2 } };
+  const polled = chart.refresh(updated);
+  await Promise.resolve();
+  assert.equal(requests.length, 1, 'A new recorder revision must not restart the pending query');
+  assert.equal(requests[0].signal.aborted, false);
+
+  // For example, a garage sensor correction need not change the house model's
+  // trainedAt field or another automatically observed chart invalidation key.
+  const corrected = chart.refresh(updated, { force: true });
+  await Promise.resolve();
+  assert.equal(requests[0].signal.aborted, true, 'The explicit correction discards the pre-mutation query');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].path, requests[0].path, 'Even identical selected dates must be refetched');
+  chart.close();
+  await Promise.all([initial, polled, corrected]);
+});

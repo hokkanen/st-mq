@@ -9,7 +9,7 @@ import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from '.
 import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
-import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from './network.js';
+import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel, isPairManagementRequest } from './pair-status.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
@@ -591,11 +591,14 @@ async function events() {
   }
   while ($('events').children.length > 100) $('events').lastChild.remove();
 }
-async function refresh({ forceChart = false } = {}) {
+const requestStatus = createPollingRequest(() => api('/api/status'));
+async function refresh({ forceChart = false, background = false } = {}) {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy) return;
+  const request = requestStatus({ background });
+  if (!request) return;
   const sequence = ++refreshSequence;
   try {
-    const s = await api('/api/status');
+    const s = await request;
     if (sequence !== refreshSequence) return;
     const replica = render(s);
     if (replica && !replica.available) return;
@@ -781,5 +784,5 @@ setInterval(refreshAudits,60_000);
 historyChart = createHistoryChart({ api: (path, options) => api(path, undefined, options) });
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 await refresh();
-setInterval(refresh, 15_000);
+setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);

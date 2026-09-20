@@ -333,6 +333,16 @@ function failureLabel(value) {
     return /HTTP-(401|403)/.test(code) ? `access denied (${code.replace('-', ' ')})`
       : code === 'HTTP-429' ? 'rate limited (HTTP 429)' : `download failed (${code.replace('-', ' ')})`;
   }
+  const requestFailures = {
+    'provider-request-timeout': 'download timed out',
+    'provider-request-aborted': 'download was interrupted',
+    'provider-network-error': 'network request failed',
+    'invalid-provider-json': 'provider returned invalid JSON',
+    'invalid-provider-observations': 'provider returned an unsupported readings response',
+    'provider-response-too-large': 'provider response exceeded the size limit',
+    'empty-provider-response': 'provider returned an empty response',
+  };
+  if (typeof code === 'string' && Object.hasOwn(requestFailures, code)) return requestFailures[code];
   return code === 'incomplete-market-coverage' ? 'price coverage is incomplete'
     : code === 'missing-or-invalid-observations' ? 'readings are missing or invalid' : 'download failed';
 }
@@ -391,8 +401,10 @@ function describeEasee(health, { now, formatTime }) {
   if (groups.length) {
     for (const key of groups) {
       const reading = health.currentReadings[key];
-      addIssues(scopedCurrentFlags(reading.qualityIssues, key)
-        .filter(flag => !reading.error || flag !== 'provider_error'), scope(key));
+      const flags = scopedCurrentFlags(reading.qualityIssues, key);
+      addIssues(flags
+        .filter(flag => !reading.error || flag !== 'provider_error')
+        .filter(flag => !flags.includes('provider_error') || !['missing', 'source_time_unknown'].includes(flag)), scope(key));
       if (reading.error) { scopedError = true; sentence(scope(key), `${failureLabel(reading.error)}.`); }
     }
   } else {

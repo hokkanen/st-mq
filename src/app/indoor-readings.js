@@ -74,7 +74,12 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     age = earlier ? temperatureReportMaxAge({ raw: JSON.parse(earlier.raw) }) : null;
     if (age === null) return null;
   }
-  const args = [reading.source, reading.device, reading.signal, at, from, from - age, from];
+  // This boundary is constant for the whole query. Correlating it with each
+  // candidate span repeatedly scans/sorts the same stream as history grows.
+  const preceding = store.db.prepare(`SELECT id FROM recorder_coverage
+    WHERE source=? AND device=? AND signal=? AND start_at<=?
+    ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, from)?.id ?? null;
+  const args = [reading.source, reading.device, reading.signal, at, from, from - age, preceding];
   const spans = store.db.prepare(`SELECT c.*,o.id AS original_id,o.source_time AS original_source_time,
       o.received_at AS original_received_at,o.value,o.unit,o.quality,o.raw,o.import_id,o.row_number,
       (SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
@@ -83,8 +88,7 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=?
       AND (c.source_time+COALESCE(json_extract(o.raw,'$.reportIntervalMs'),0)
         +COALESCE(json_extract(o.raw,'$.reportGraceMs'),0)>=? OR c.end_at>=?
-        OR c.id=(SELECT n.id FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
-          AND n.signal=c.signal AND n.start_at<=? ORDER BY n.start_at DESC,n.id DESC LIMIT 1))
+        OR c.id=?)
     ORDER BY c.start_at,c.id`).all(...args);
   const events = spans.map(span => {
     const observation = decode({ ...span, id: span.original_id, source_time: span.original_source_time,
@@ -130,8 +134,10 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
 }
 
 /** Last genuine indoor measurement known at a causal boundary. Availability
- * events and age do not erase it, and no receipt/coverage span renews its time. */
-export function lastIndoorReading(store, { signal, at, input, notBefore = -Infinity }) {
+ * events and age do not erase it, and no receipt/coverage span renews its time.
+ * Recording can ask only whether a genuine measurement already exists after
+ * a sensor boundary; that does not need to reconstruct report availability. */
+export function lastIndoorReading(store, { signal, at, input, notBefore = -Infinity, includeAvailability = true }) {
   const scope = input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'";
   let newerCoverage;
   const withRecordedOrder = observation => {
@@ -156,6 +162,7 @@ export function lastIndoorReading(store, { signal, at, input, notBefore = -Infin
   for (const row of query.iterate(signal, notBefore, at, at)) {
     const observation = withRecordedOrder(decode(row));
     if (!observation.raw?.acquisitionOnly && indoorReadingUsable(observation, at)) {
+      if (!includeAvailability) return observation;
       const after = store.db.prepare(`SELECT * FROM observations WHERE signal=? AND source=? AND device=?
         AND received_at>=? AND received_at<=? AND (source_time IS NULL OR source_time>=? AND source_time<=?)
         ORDER BY received_at DESC,id DESC`);

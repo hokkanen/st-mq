@@ -116,6 +116,20 @@ test('rate limiting and server outages never trigger Easee authentication retrie
   }
 });
 
+test('Easee retains only allowlisted request diagnostics on failed observation placeholders', async () => {
+  for (const code of ['provider-request-timeout', 'provider-network-error', 'invalid-provider-json',
+    'synthetic-private-error']) {
+    const providers = createDeviceProviders({ connections: { easee }, http: { async json() {
+      throw Object.assign(new Error('synthetic-private-response'), { code });
+    } } });
+    for (const rows of [await providers.easee({ now }), await providers.electricity({ now })]) {
+      assert(rows.every(row => row.value === null && row.quality.includes('provider_error')));
+      assert(rows.every(row => row.raw.error === (code === 'synthetic-private-error' ? 'provider-request-failed' : code)));
+      assert(!JSON.stringify(rows).includes('synthetic-private'));
+    }
+  }
+});
+
 test('Easee anomalies retain values, quality and unknown timestamps without energy inference', async () => {
   const providers = createDeviceProviders({ connections: { easee }, http: { async json(url) {
     return (url.includes('ids=183') ? [183, 184, 185] : [31, 32, 33]).map(id => ({ id, value: id > 100 ? 16 : 0 }));

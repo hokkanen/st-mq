@@ -5,6 +5,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { ELECTRICITY_FIELDS } from '../src/acquisition/devices.js';
 import { getChartData } from '../src/app/chart-data.js';
+import { describeProvider } from '../chart/provider-status.js';
 
 const start = Date.parse('2026-09-08T10:00:00Z'), SECOND = 1000, MINUTE = 60 * SECOND;
 
@@ -28,7 +29,7 @@ function fixture(t, failureAt) {
           value: failure ? null : unit === 'A' ? 10 : unit === 'V' ? 230 : unit === 'kW' ? 6.9 : 100,
           sourceTime: failure ? null : now, receivedAt: now,
           quality: failure ? ['provider_error', 'missing', ...(failure.status ? [`http_status_${failure.status}`] : [])] : [],
-          raw: { observationId: id, retryAfterMs: failure?.retryAfterMs },
+          raw: { observationId: id, error: failure?.code, retryAfterMs: failure?.retryAfterMs },
         }));
       });
     } } };
@@ -71,6 +72,23 @@ test('repeated transient Easee failures back off exponentially and remain bounde
     assert.equal(f.health().nextAttemptAt - at, seconds * SECOND);
     at = f.health().nextAttemptAt;
   }
+});
+
+test('Easee timeout diagnostics survive restart and recovery without blaming absent response fields', async t => {
+  const f = fixture(t, (prefix, at) => prefix === 'property' && at === start ? { code: 'provider-request-timeout' } : null);
+  await f.poll(start);
+  assert.equal(f.health().currentReadings.charger.error, null);
+  assert.equal(f.health().currentReadings.property.error, 'provider-request-timeout');
+  assert.deepEqual(f.health().currentReadings.property.qualityIssues, []);
+  assert.deepEqual(f.health().qualityIssues, []);
+  const display = describeProvider('easee', f.health(), { now: start, formatTime: String });
+  assert.match(display.detail, /Property readings: Download timed out\./);
+  assert.doesNotMatch(display.detail, /missing|no source timestamp|Charger 1 readings: Download/);
+  await f.restart();
+  assert.equal(f.health().currentReadings.property.error, 'provider-request-timeout');
+  await f.poll(start + 15 * SECOND);
+  assert.equal(f.health().currentReadings.property.error, null);
+  assert.equal(f.health().lastSuccessAt, start + 15 * SECOND);
 });
 
 for (const [failure, expected] of [

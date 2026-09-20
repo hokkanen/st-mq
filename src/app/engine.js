@@ -438,7 +438,8 @@ export class Engine {
       // A new measurement period needs its own original observation even if
       // the replacement sensor reports exactly the old sensor's temperature.
       force = Number.isFinite(boundary) && observation.sourceTime >= boundary
-        && !lastIndoorReading(this.store, { signal: observation.signal, at: now, input: this.config.input, notBefore: boundary });
+        && !lastIndoorReading(this.store, { signal: observation.signal, at: now, input: this.config.input,
+          notBefore: boundary, includeAvailability: false });
     }
     const result = observation.raw?.acquisitionOnly ? { saved: false, reason: 'acquisition-only' } : this.recorder.record(observation, { force });
     const rejectedTime = HELD_TEMPERATURE_SIGNALS.includes(observation.signal)

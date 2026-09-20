@@ -1,5 +1,14 @@
 const ALLOWED_HOSTS = new Set(['api.easee.com', 'web-api.tp.entsoe.eu',
   'dashboard.elering.ee', 'api.open-meteo.com', 'opendata.fmi.fi']);
+const FAILURE_CODES = new Set(['provider-request-timeout', 'provider-request-aborted',
+  'provider-network-error', 'invalid-provider-json', 'invalid-provider-observations',
+  'provider-response-too-large', 'empty-provider-response']);
+
+/** Retain only known diagnostics, never provider messages, URLs or bodies. */
+export function providerFailureCode(error) {
+  return Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599
+    ? `HTTP-${error.status}` : FAILURE_CODES.has(error?.code) ? error.code : 'provider-request-failed';
+}
 
 export class ProviderError extends Error {
   constructor(code, status = null, retryAfterMs = null) {
@@ -87,7 +96,8 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
       return Buffer.concat(chunks, bytes).toString('utf8');
     } catch (error) {
       if (error instanceof ProviderError) throw error;
-      throw new ProviderError(signal.aborted ? 'provider-request-aborted' : 'provider-network-error');
+      throw new ProviderError(options.signal?.aborted || closed ? 'provider-request-aborted'
+        : controller.signal.aborted ? 'provider-request-timeout' : 'provider-network-error');
     } finally {
       clearTimeout(timer); pending.delete(controller);
       if (reader) await reader.cancel().catch(() => {});

@@ -39,6 +39,20 @@ test('body and lifetime bounds apply without Content-Length; pending requests st
   await assert.rejects(aborted.json('https://api.easee.com'), /closed/);
 });
 
+test('a provider deadline is distinguished from caller cancellation without exposing transport details', async () => {
+  const http = createHttp({ timeoutMs: 10, fetchImpl: (url, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('synthetic-private-transport-detail')));
+  }) });
+  try {
+    await assert.rejects(http.json('https://api.easee.com'), error =>
+      error.code === 'provider-request-timeout' && !JSON.stringify(error).includes('synthetic-private'));
+    const cancellation = new AbortController();
+    const pending = http.json('https://api.easee.com', { signal: cancellation.signal });
+    cancellation.abort();
+    await assert.rejects(pending, error => error.code === 'provider-request-aborted');
+  } finally { http.close(); }
+});
+
 test('rate-limit delays are bounded and preserved without response secrets', async () => {
   for (const [header, expected] of [['120', 120_000], ['9999999', 86400_000], ['invalid', null]]) {
     const http = createHttp({ fetchImpl: async () => new Response('secret', { status: 429, headers: { 'Retry-After': header } }) });

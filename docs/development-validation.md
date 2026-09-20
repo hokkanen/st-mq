@@ -26,6 +26,20 @@ They do not use household SSH credentials. `STMQ_TEST_RSYNC` selects the binary
 for transport tests; `STMQ_SQLITE_RSYNC_PATH` selects it for SSH tests. Putting the
 tool on `PATH` supplies both.
 
+For sensor bookkeeping performance as recorded history grows, run:
+
+```sh
+node scripts/benchmark-sensor-queries.js
+```
+
+This uses synthetic history and reports timings without machine-specific pass
+thresholds. Sensor-boundary queries must read the selected input's contexts once,
+not rescan the full learning journal for every correction. Periodic report
+coverage must resolve its preceding span once per query, and acquisition's
+measurement-existence check must not reconstruct report availability. These
+paths run on the server's main thread: regressions can delay HTTP responses and
+provider downloads even when chart calculations run in a worker.
+
 ## Browser suites
 
 Build first with `npm run build`. All browser scripts create isolated application

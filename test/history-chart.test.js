@@ -355,6 +355,44 @@ test('cache coalesces duplicate polls, preserves fast return navigation and expi
   loader.invalidate();
   assert.deepEqual(await loader.load(past), { call: 4 });
 });
+
+test('recorder updates allow slow chart requests to finish before fetching newer history', async () => {
+  const requests = [];
+  const loader = createChartLoader({ api: (path, { signal }) => new Promise(resolve => requests.push({ signal, resolve })) });
+  const selection = { startDate: '2026-09-07', endDate: '2026-09-07', left: 'power' };
+  const first = loader.load(selection);
+  await Promise.resolve();
+  for (let poll = 0; poll < 10; poll++) assert.equal(loader.load(selection, { force: true }), first);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].signal.aborted, false);
+  requests[0].resolve({ revision: 1 });
+  assert.deepEqual(await first, { revision: 1 });
+  const next = loader.load(selection);
+  await Promise.resolve();
+  assert.equal(requests.length, 2, 'An update during the query expires its cache for the next poll');
+  requests[1].resolve({ revision: 2 });
+  assert.deepEqual(await next, { revision: 2 });
+  assert.deepEqual(await loader.load(selection), { revision: 2 });
+  loader.close();
+});
+
+test('explicit configuration or correction invalidation still cancels pending chart history', async () => {
+  const requests = [];
+  const loader = createChartLoader({ api: (path, { signal }) => new Promise(resolve => requests.push({ signal, resolve })) });
+  const selection = { startDate: '2026-09-07', endDate: '2026-09-07', left: 'power' };
+  const first = loader.load(selection);
+  await Promise.resolve();
+  const rejected = assert.rejects(first, { name: 'AbortError' });
+  loader.invalidate();
+  assert.equal(requests[0].signal.aborted, true);
+  const next = loader.load(selection, { force: true });
+  await Promise.resolve();
+  requests[1].resolve({ revision: 2 });
+  assert.deepEqual(await next, { revision: 2 });
+  requests[0].resolve({ revision: 1 });
+  await rejected;
+  loader.close();
+});
 test('a live year view refreshes at five-minute intervals to keep frequent status polling inexpensive',async()=>{
   let time=Date.parse('2026-09-08T12:00Z'),calls=0;
   const loader=createChartLoader({now:()=>time,api:async()=>({call:++calls})});

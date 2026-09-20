@@ -5,7 +5,7 @@ import { Engine } from '../src/app/engine.js';
 import { validateSettings } from '../src/app/config.js';
 import { addSensorChange, sensorChangesView } from '../src/app/sensor-changes.js';
 import { sensorChangeEvents, sensorBoundaries, affectsThermalLearning } from '../src/app/sensor-inputs.js';
-import { appendLearningRecord } from '../src/app/committed-learning.js';
+import { appendLearningRecord, LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { SENSOR_SETTLING_MS } from '../src/domain/indoor-sensors.js';
 
@@ -60,6 +60,44 @@ test('sensor source changes preserve server time and one immutable event per ret
   for (const payload of [change('invented-change', 'bedroom_temperature'), change('invented-change', 'indoor_temperature', 'other')])
     assert.throws(() => addSensorChange(store, 'providers', payload, now), error => error.statusCode === 409);
   assert.equal(sourceCount(store), 3);
+});
+
+test('sensor boundaries select the latest unreverted time within the requested correction revision and input', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const append = (value, at, input = 'providers') => store.appendLearningJournal(input, {
+    kind: 'context', at, algorithmVersion: LEARNING_ALGORITHM, key: `invented-context-${input}-${at}`,
+    payload: { value },
+  });
+  const first = append({ sensorChange: { signal: 'indoor_temperature' } }, now);
+  const latest = append({ sensorChange: { signal: 'indoor_temperature' } }, now + 2);
+  append({ sensorChange: { signal: 'indoor_temperature' } }, now + 1);
+  append({ sensorChange: { signal: 'bedroom_temperature' } }, now + 5);
+  append({ sensorRevert: { id: first } }, now + 10, 'simulated');
+  const revision = append({ sensorRevert: { id: latest } }, now + 10);
+  const lastRevision = append({ sensorRevert: { id: first } }, now + 11);
+  assert.deepEqual(sensorBoundaries(store, 'providers', now + 2, { revision: 0 }), { indoor_temperature: now + 2 });
+  assert.deepEqual(sensorBoundaries(store, 'providers', now + 2, { revision }), { indoor_temperature: now + 1 });
+  assert.deepEqual(sensorBoundaries(store, 'providers', now, { revision }), { indoor_temperature: now });
+  assert.deepEqual(sensorBoundaries(store, 'providers', now, { revision: lastRevision }), {});
+  assert.deepEqual(sensorBoundaries(store, 'providers', now + 11), {
+    indoor_temperature: now + 1, bedroom_temperature: now + 5,
+  });
+  assert.throws(() => sensorBoundaries(store, 'providers', now, { revision: -1 }), TypeError);
+});
+
+test('sensor boundaries follow the selected journal epoch and referenced immutable context payloads', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const source = store.appendLearningJournal('providers', { kind: 'context', at: now,
+    algorithmVersion: LEARNING_ALGORITHM, key: 'invented-original-change',
+    payload: { value: { sensorChange: { signal: 'garage_temperature' } } } });
+  store.appendLearningJournal('providers', { kind: 'context', at: now + 1,
+    algorithmVersion: LEARNING_ALGORITHM, key: 'invented-original-revert',
+    payload: { value: { sensorRevert: { id: source } } } });
+  store.db.prepare(`INSERT INTO learning_journal_entries
+    (epoch,input,key,kind,at,algorithm_version,source_entry_id) VALUES(?,?,'invented-projected-change','context',?,?,?)`)
+    .run('invented-recovery', 'providers', now, LEARNING_ALGORITHM, source);
+  store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?)').run('providers', 'invented-recovery');
+  assert.deepEqual(sensorBoundaries(store, 'providers', now + 2), { garage_temperature: now });
 });
 
 test('sensor changes reject timestamps, private fields, unsupported signals and invalid identities before storing a source event', t => {

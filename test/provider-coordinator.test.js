@@ -574,7 +574,7 @@ test('Easee scopes partial errors and quality notes to the affected current read
     assert.equal(health.error, 'HTTP-503');
     assert.equal(health.status, 'degraded');
     assert.deepEqual(health.currentReadings.charger, {
-      qualityIssues: ['provider_error', 'missing', 'source_time_unknown'], error: 'HTTP-503', lastSuccessAt: initial,
+      qualityIssues: [], error: 'HTTP-503', lastSuccessAt: initial,
     });
     assert.deepEqual(health.currentReadings.property, {
       qualityIssues: ['negative_current'], error: null, lastSuccessAt: initial + 5 * MINUTE,

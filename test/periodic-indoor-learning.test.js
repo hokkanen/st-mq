@@ -194,3 +194,22 @@ test('a sensor measurement boundary records the first new report even if its val
   assert.equal(reading.id, replacement.id);
   assert.equal(reading.sourceTime, start + 15 * MINUTE);
 });
+
+test('recording existence checks retain genuine boundary evidence independently of report availability', t => {
+  const { store, recorder } = fixture(t);
+  recorder.record(report(0));
+  const replacement = recorder.record(report(15, { value: 22 }));
+  recorder.recordFailure({ source: 'mqtt-temperature', device: 'invented-periodic-room', signal,
+    unit: 'degC', at: start + 20 * MINUTE, quality: ['mqtt-disconnected'] });
+  const request = { signal, at: start + 45 * MINUTE, input: 'providers', notBefore: start + 5 * MINUTE };
+  const available = lastIndoorReading(store, request);
+  const recorded = lastIndoorReading(store, { ...request, includeAvailability: false });
+  assert.equal(available.stale, true, 'The outage must still affect control and learning');
+  assert.equal(recorded.id, replacement.id, 'An outage does not erase the saved measurement after replacement');
+  assert.equal(recorded.reportCoverage, undefined, 'Existence does not require resolving report availability');
+  assert.equal(lastIndoorReading(store, { ...request, notBefore: start + 16 * MINUTE, includeAvailability: false }), null);
+  store.observation(report(30, { raw: { acquisitionOnly: true }, value: 23 }));
+  store.observation(report(35, { quality: ['invalid_numeric'], value: 24 }));
+  assert.equal(lastIndoorReading(store, { ...request, includeAvailability: false }).id, replacement.id,
+    'Unsaved control inputs and invalid attempts cannot establish a committed measurement');
+});

@@ -1,6 +1,6 @@
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../domain/reading-freshness.js';
 import { join } from 'node:path';
-import { createHttp } from './http.js';
+import { createHttp, providerFailureCode } from './http.js';
 import { fileTokenStore } from './token-store.js';
 import { createDeviceProviders } from './devices.js';
 import { fetchMarket } from './market.js';
@@ -11,8 +11,7 @@ import { createChargerIdentification } from './charger-identification.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
-const errorCode = error => Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599
-  ? `HTTP-${error.status}` : 'provider-request-failed';
+const errorCode = providerFailureCode;
 const SOURCES = new Set(['entsoe', 'elering', 'fmi', 'openmeteo']);
 const OBSERVATION_SOURCES = ['easee', 'fmi', 'openmeteo'];
 const QUALITY_ISSUES = new Set(['future_source_time', 'source_time_unknown', 'stale', 'charger_stale', 'property_stale',
@@ -35,6 +34,9 @@ const savedStaleSourceTimes = times => Object.fromEntries(Object.entries(times ?
 function observationQuality(name, rows, now) {
   const staleSourceTimes = {};
   const issues = rows.flatMap(row => {
+    // Null placeholders following a failed request are not malformed readings
+    // supplied by the device. Report the request failure separately.
+    if (row.quality.includes('provider_error')) return [];
     const maximumAge = /_current_l[123]$/.test(row.signal) ? PROVIDER_CURRENT_ATTENTION_MS
       : /_temperature$/.test(row.signal) ? PROVIDER_TEMPERATURE_ATTENTION_MS : null;
     const stale = maximumAge === null ? row.quality.includes('stale')
@@ -53,7 +55,7 @@ function observationQuality(name, rows, now) {
 const savedError = error => ['incomplete-market-coverage', 'missing-or-invalid-observations', 'provider-request-failed'].includes(error)
   ? error : error ? safeFailure(error) : null;
 const safeFailure = value => typeof value === 'string' && /^HTTP[-_][1-5]\d{2}$/i.test(value)
-  ? value.toUpperCase().replace('_', '-') : 'provider-request-failed';
+  ? value.toUpperCase().replace('_', '-') : providerFailureCode({ code: value });
 const currentError = value => value === 'missing-or-invalid-observations' ? value : value ? safeFailure(value) : null;
 const currentIssues = (group, flags) => [...new Set((Array.isArray(flags) ? flags : [])
   .map(flag => flag === 'stale' ? `${group}_stale` : flag)
@@ -61,9 +63,11 @@ const currentIssues = (group, flags) => [...new Set((Array.isArray(flags) ? flag
     && (flag !== 'charger_stale' || group === 'charger')
     && (!['property_stale', 'all_zero_property_current'].includes(flag) || group === 'property')))];
 function observationFailure(rows) {
-  return !rows.length || rows.some(row => row.value === null || row.quality.some(flag => DOWNLOAD_ISSUES.has(flag)))
-    ? rows.flatMap(row => row.quality).find(flag => /^http_status_[1-5]\d{2}$/.test(flag))
-      ?.replace('http_status_', 'HTTP-') ?? 'missing-or-invalid-observations' : null;
+  if (rows.length && !rows.some(row => row.value === null || row.quality.some(flag => DOWNLOAD_ISSUES.has(flag)))) return null;
+  const status = rows.flatMap(row => row.quality).find(flag => /^http_status_[1-5]\d{2}$/.test(flag));
+  if (status) return status.replace('http_status_', 'HTTP-');
+  const failedRequest = rows.find(row => row.quality.includes('provider_error'));
+  return failedRequest ? safeFailure(failedRequest.raw?.error) : 'missing-or-invalid-observations';
 }
 function savedCurrentReadings(previous, configured) {
   const candidate = previous?.currentReadings;
@@ -91,7 +95,7 @@ function currentReadings(rows, configured, previous, now) {
     if (!configured.includes(group) && !readings.length) continue;
     const error = observationFailure(readings);
     result[group] = { qualityIssues: currentIssues(group, [
-      ...readings.flatMap(row => row.quality.filter(flag => !STALE_ISSUES.has(flag))),
+      ...readings.flatMap(row => row.quality.includes('provider_error') ? [] : row.quality.filter(flag => !STALE_ISSUES.has(flag))),
       ...observationQuality('easee', readings, now).issues,
     ]), error, lastSuccessAt: error ? previous?.[group]?.lastSuccessAt ?? null : now };
   }

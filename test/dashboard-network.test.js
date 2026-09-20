@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applicationUrl, usesHomeAssistantLogin, authenticationMessage } from '../chart/network.js';
+import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest } from '../chart/network.js';
 import { chartQuery } from '../chart/history-model.js';
 
 test('dashboard requests retain the Home Assistant ingress prefix for reads and mutations', () => {
@@ -30,4 +30,40 @@ test('ingress login errors direct users back to Home Assistant without requestin
   assert.match(authenticationMessage(true), /Reopen ST-MQ from the host dashboard/);
   assert.doesNotMatch(authenticationMessage(true), /access token/);
   assert.match(authenticationMessage(false), /access token/);
+});
+
+test('slow status reads survive repeated timer polls without accumulating requests', async () => {
+  const requests = [];
+  const poll = createPollingRequest(() => new Promise(resolve => requests.push(resolve)));
+  const first = poll();
+  await Promise.resolve();
+  for (let interval = 0; interval < 10; interval++) assert.equal(poll({ background: true }), null);
+  assert.equal(requests.length, 1);
+  requests[0]({ ready: true });
+  assert.deepEqual(await first, { ready: true });
+  const next = poll({ background: true });
+  await Promise.resolve();
+  assert.equal(requests.length, 2, 'Polling resumes as soon as the status fetch settles');
+  requests[1]({ ready: true });
+  await next;
+});
+
+test('explicit login refresh can supersede a pending status read and failures release polling', async () => {
+  const requests = [];
+  const poll = createPollingRequest(() => new Promise((resolve, reject) => requests.push({ resolve, reject })));
+  const beforeLogin = poll({ background: true });
+  const afterLogin = poll();
+  await Promise.resolve();
+  assert.equal(requests.length, 2);
+  requests[0].resolve({ authenticated: false });
+  await beforeLogin;
+  assert.equal(poll({ background: true }), null, 'An obsolete response cannot release a newer pending read');
+  const failed = assert.rejects(afterLogin, /temporarily unavailable/);
+  requests[1].reject(new Error('temporarily unavailable'));
+  await failed;
+  const retried = poll({ background: true });
+  await Promise.resolve();
+  assert.equal(requests.length, 3);
+  requests[2].resolve({ authenticated: true });
+  assert.deepEqual(await retried, { authenticated: true });
 });
