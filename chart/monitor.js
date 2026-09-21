@@ -19,6 +19,7 @@ import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-statu
 import { confirmPausedHeating, homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 import { createDashboardLayout } from './dashboard-layout.js';
 import { createPageFullscreen } from './page-fullscreen.js';
+import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
@@ -41,7 +42,10 @@ let heatingTestBusy = false;
 let h66TestBusy = false;
 let settingsReloadBusy = false;
 let equipmentBusy = false;
-let lastHeatingTestResult;
+let circulationStopAt;
+let dismissedH66Request;
+const controlErrors = new Map();
+const heatingResults = new Map();
 let refreshSequence = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
@@ -171,6 +175,7 @@ function renderTemporary(s) {
   updateTemporaryButtons();
 }
 function showHeatingTestResult(result) {
+  heatingResults.set(result.command === 'circulation' ? 'dhwr-message' : 'heating-test-message', result);
   const failed = result.status === 'failed' || !result.sent;
   const message = $(result.command === 'circulation' ? 'dhwr-message' : 'heating-test-message');
   const confirmation = result.command === 'circulation' && lastStatus?.dhwr?.feedback?.stateConfigured === false
@@ -180,13 +185,24 @@ function showHeatingTestResult(result) {
     ? `${heatingCommandLabel(result.command)} · ${result.error ?? 'The MQTT command could not be confirmed as sent.'}`
     : `${heatingCommandLabel(result.command)} sent at ${time(result.at)}. ${result.confirmed === true ? 'Device confirmed.' : confirmation}`;
   if (!failed && result.command !== 'circulation') {
-    const holdUntil = result.holdUntil ?? (lastStatus?.override?.expiresAt > lastStatus?.now ? lastStatus.override.expiresAt : null);
+    const holdUntil = result.holdUntil;
     message.textContent += holdUntil
       ? ` This setting is held until ${time(holdUntil)} or Resume now, then the previous settings are restored. Automatic price control then resumes if enabled.`
       : ' If not paused, the previous settings return on the controller’s next update, normally within 1 minute. Automatic price control then resumes if enabled.';
   }
   if (!failed && result.command === 'circulation') message.textContent += ` Circulation runs for ${lastStatus?.dhwr?.durationMinutes ?? 10} minutes from this click, including while price control is paused. Stop ends it immediately.`;
-  lastHeatingTestResult = JSON.stringify(result);
+}
+function showControlError(id, text) {
+  controlErrors.set(id, Date.now() + 60_000);
+  $(id).classList.add('form-error');
+  $(id).textContent = text;
+}
+function clearControlMessage(id) {
+  if (controlErrors.get(id) > Date.now()) return false;
+  controlErrors.delete(id);
+  $(id).textContent = '';
+  $(id).classList.remove('form-error');
+  return true;
 }
 function renderHeatingTests(s) {
   const capability = s.heatingTests;
@@ -223,8 +239,23 @@ function renderHeatingTests(s) {
     label: capability?.available ? 'Control available' : 'Control unavailable', detail: capability?.available
       ? 'Requests are sent over MQTT. The reported state updates when device feedback arrives.'
       : capability?.reason || 'Manual heating control is unavailable in this installation.' });
-  if (!heatingTestBusy && capability?.lastResult
-    && JSON.stringify(capability.lastResult) !== lastHeatingTestResult) showHeatingTestResult(capability.lastResult);
+  if (!heatingTestBusy) {
+    if (capability?.lastResult) heatingResults.set(capability.lastResult.command === 'circulation'
+      ? 'dhwr-message' : 'heating-test-message', capability.lastResult);
+    for (const id of ['heating-test-message', 'dhwr-message']) {
+      clearControlMessage(id);
+      const result = heatingResults.has(id) ? heatingRequestResult(s, heatingResults.get(id)) : null;
+      if (result && !controlErrors.has(id)) showHeatingTestResult(result);
+      if (!result) heatingResults.delete(id);
+    }
+    if (!controlErrors.has('heating-test-message') && (s.execution?.restorationPending
+      || s.preheatValves?.restorationPending)) $('heating-test-message').textContent = 'Restoring previous heating settings. Waiting for device confirmation.';
+    if (!controlErrors.has('dhwr-message')) {
+      if (s.dhwr?.restorationPending) $('dhwr-message').textContent = 'Stopping circulation. Restoration is still pending.';
+      else if (circulationStopPending(s, circulationStopAt)) $('dhwr-message').textContent = 'Stop sent. Waiting for a new device report to verify the request.';
+      else circulationStopAt = undefined;
+    }
+  }
 }
 function renderProviderSeries(root, rows, { datasets = false } = {}) {
   let list = root.querySelector('.provider-series');
@@ -387,6 +418,13 @@ function showH66Test(result) {
     ? ` · Held until ${time(result.expiresAt ?? lastStatus.override.expiresAt)} or Resume now, then the previous setting is restored.`
     : ' · Temporary change. If not paused, the previous setting returns on the controller’s next update, normally within 1 minute. Automatic price control then resumes if enabled.';
 }
+function renderH66TestResult(s) {
+  if (h66TestBusy || !clearControlMessage('h66-test-message')) return;
+  const result = h66RequestResult(s), last = s.h66?.lastManual;
+  const key = last && JSON.stringify([last.at, last.register, last.value, last.pauseId]);
+  if (last?.status === 'confirmed' && !result) dismissedH66Request = key;
+  showH66Test(key === dismissedH66Request ? null : result);
+}
 function renderH66(s) {
   const h66 = s.h66 ?? {}, summary = h66HomeSummary(s), root = $('home-h66-summary');
   const tariff = summary.find(row => row.key === 'tariff');
@@ -473,7 +511,7 @@ function renderH66(s) {
     }
   }
   updateH66Selector();
-  if (!h66TestBusy && h66.lastManual) showH66Test(h66.lastManual);
+  renderH66TestResult(s);
 }
 function render(s) {
   lastStatus = s;
@@ -706,6 +744,8 @@ async function testHeating(command) {
   updateTemporaryButtons();
   $('heating-test-buttons').setAttribute('aria-busy', 'true');
   const message = $(command === 'circulation' ? 'dhwr-message' : 'heating-test-message');
+  controlErrors.delete(message.id);
+  if (command === 'circulation') circulationStopAt = undefined;
   message.classList.remove('form-error');
   message.textContent = `Sending ${heatingCommandLabel(command)}…`;
   try {
@@ -714,8 +754,7 @@ async function testHeating(command) {
     // Keep the success visible even if the subsequent status refresh fails.
     if (lastStatus.heatingTests) lastStatus.heatingTests.lastResult = result;
   } catch (error) {
-    message.classList.add('form-error');
-    message.textContent = error.message;
+    showControlError(message.id, error.message);
   } finally {
     heatingTestBusy = false;
     $('heating-test-buttons').removeAttribute('aria-busy');
@@ -727,14 +766,16 @@ for (const button of heatingTestButtons) button.addEventListener('click', () => 
 $('dhwr-stop').addEventListener('click', async () => {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus) || !lastStatus?.heatingTests?.available) return;
   heatingTestBusy = true; ++refreshSequence; updateTemporaryButtons();
+  controlErrors.delete('dhwr-message');
   $('dhwr-message').classList.remove('form-error');
   $('dhwr-message').textContent = 'Requesting circulation stop…';
   try {
     render(await api('/api/dhwr/stop', {}));
+    circulationStopAt = lastStatus?.dhwr?.requestedAt ?? lastStatus.now;
     $('dhwr-message').textContent = lastStatus?.dhwr?.feedback?.stateConfigured === false
       ? 'Stop sent. Circulation feedback is not configured.' : 'Stop sent. Waiting for a new device report to verify the request.';
   }
-  catch { $('dhwr-message').textContent = 'Could not confirm the circulation stop request.'; $('dhwr-message').classList.add('form-error'); }
+  catch { showControlError('dhwr-message', 'Could not confirm the circulation stop request.'); }
   finally { heatingTestBusy = false; updateTemporaryButtons(); }
 });
 $('h66-test-register').addEventListener('change', () => updateH66Selector({ useReadback: true }));
@@ -748,6 +789,7 @@ $('h66-test-form').addEventListener('submit', async event => {
       action: 'Apply parameter' })) return;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
   h66TestBusy = true; ++refreshSequence; updateTemporaryButtons();
+  controlErrors.delete('h66-test-message');
   $('h66-test-form').setAttribute('aria-busy', 'true');
   $('h66-test-message').classList.remove('form-error');
   $('h66-test-message').textContent = 'Applying heat-pump setting…';
@@ -757,7 +799,7 @@ $('h66-test-form').addEventListener('submit', async event => {
     render(result);
     showH66Test(result.h66?.lastManual);
   } catch (error) {
-    $('h66-test-message').classList.add('form-error'); $('h66-test-message').textContent = error.message;
+    showControlError('h66-test-message', error.message);
   } finally {
     h66TestBusy = false; $('h66-test-form').removeAttribute('aria-busy'); updateTemporaryButtons();
   }

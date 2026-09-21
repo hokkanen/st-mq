@@ -490,6 +490,10 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   const button = $('garage-release'), message = $('garage-release-message');
   const form = $('garage-pause-form'), until = $('garage-pause-until');
   let status = null, busy = false, closed = false, dirty = false;
+  const notices = new Map();
+  const restorationPending = value => Boolean(value?.garage?.adapter?.restorePending
+    || value?.garage?.episode?.restorationPending || value?.garage?.adapter?.phase === 'restoring');
+  const rememberNotice = (target, result, refresh) => notices.set(target, { result, refresh });
   const refreshControls = () => {
     const locked = closed || busy || blocked() || !status || isReadOnlyReplica(status);
     if (button) button.disabled = locked || !garageReleaseAvailable(status);
@@ -518,16 +522,22 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if (off) off.title = controls.offAvailable ? '' : controls.offReason ?? controls.reason ?? 'Heating off is unavailable.';
     const warning = garageHeatingWarning(status, clock), node = $('garage-hold-warning');
     if (node) { node.hidden = !warning; node.textContent = warning; }
+    if (!busy) for (const [target, notice] of notices) {
+      target.textContent = notice.refresh(status, notice.result);
+      if (!target.textContent) { notices.delete(target); target.classList.remove('form-error'); }
+    }
     refreshControls();
   };
-  const send = async (path, input, target, pending, success) => {
+  const send = async (path, input, target, pending, success, refresh) => {
     if (closed || busy || blocked() || !status || isReadOnlyReplica(status)) return;
     busy = true; beforeRequest(); onBusy(true); refreshControls();
+    notices.delete(target);
     target.classList.remove('form-error'); target.textContent = pending;
     try {
       const result = await request(path, input);
       if (path.endsWith('/temporary')) dirty = false;
       status = result; onStatus(result); render(); target.textContent = success(result);
+      rememberNotice(target, result, refresh);
     } catch (error) { target.classList.add('form-error'); target.textContent = error.message; }
     finally { busy = false; onBusy(false); refreshControls(); }
     await afterRequest();
@@ -542,21 +552,36 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
         : 'Automatic price control stays paused until then.'} Normal heating returns when the pause ends.`,
       action: mode === 'off' ? 'Turn heating off' : 'Apply normal heating' })) return;
     if (!status?.garage?.heatingControls?.[`${mode}Available`]) return;
-    await send('/api/garage/heating', { mode }, $('garage-heating-message'), 'Applying garage heating…', result => {
+    const heatingMessage = result => {
       const next = result.garage?.heatingControls, held = next?.paused && next.holdUntil > result.now;
       return `${mode === 'off' ? 'Heating off' : 'Normal heating'} requested. ${held
-        ? `Held until ${clock(next.holdUntil)} or Resume now.` : 'Automatic control takes over on its next update, normally within 1 minute.'} Check the reported pump state for confirmation.`;
+        ? `Held until ${clock(next.holdUntil)} or Resume now.` : 'Automatic control takes over on its next update, normally within 1 minute.'} ${next?.confirmed ? 'Device confirmed.' : 'Check the reported pump state for confirmation.'}`;
+    };
+    await send('/api/garage/heating', { mode }, $('garage-heating-message'), 'Applying garage heating…', heatingMessage, (next, requested) => {
+      const controls = next.garage?.heatingControls;
+      if (controls?.requestedMode === mode && controls.holdUntil === requested.garage?.heatingControls?.holdUntil
+        && controls.holdUntil > next.now) return heatingMessage(next);
+      if (controls?.requestedMode && controls.holdUntil > next.now) return '';
+      return restorationPending(next) ? 'Temporary heating request ended. Waiting for normal heating confirmation.' : '';
     });
+  };
+  const pauseMessage = (next, requested) => {
+    const temporary = next.garage?.temporary;
+    if (temporary?.pauseActive && temporary.pauseUntil > next.now) return temporary.pauseUntil === requested.garage?.temporary?.pauseUntil
+      ? `Price control paused until ${clock(temporary.pauseUntil)}. Manual changes stay until the pause ends.` : '';
+    return !next.garage?.heatingControls?.requestedMode && restorationPending(next)
+      ? 'Price control resumed. Waiting for normal heating confirmation.' : '';
   };
   const pause = event => {
     event.preventDefault();
     if (!dirty || !status?.garage?.temporary?.available) return;
     void send('/api/garage/temporary', { pauseUntilLocal: until.value || null }, $('garage-pause-message'), 'Updating garage pause…',
-      result => result.garage?.temporary?.pauseActive ? 'Pause saved. Normal heating is requested; later manual changes stay until the pause ends.' : 'Price control resumed.');
+      result => result.garage?.temporary?.pauseActive ? 'Pause saved. Normal heating is requested; later manual changes stay until the pause ends.' : 'Price control resumed.', pauseMessage);
   };
   const resume = () => {
     if (!status?.garage?.temporary?.available) return;
-    void send('/api/garage/temporary', { pauseUntil: null }, $('garage-pause-message'), 'Resuming garage price control…', () => 'Price control resumed. Normal heating is being restored.');
+    void send('/api/garage/temporary', { pauseUntil: null }, $('garage-pause-message'), 'Resuming garage price control…',
+      result => restorationPending(result) ? 'Price control resumed. Waiting for normal heating confirmation.' : 'Price control resumed.', pauseMessage);
   };
   const edit = () => { dirty = true; refreshControls(); };
   const normal = () => { void heat('normal'); }, off = () => { void heat('off'); };
@@ -567,6 +592,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   const release = async () => {
     if (closed || busy || blocked() || !garageReleaseAvailable(status)) return;
     busy = true; beforeRequest(); onBusy(true); refreshControls();
+    notices.delete(message);
     button.setAttribute('aria-busy', 'true'); message.classList.remove('form-error');
     message.textContent = 'Ending garage pause; awaiting heating confirmation…';
     try {
@@ -574,6 +600,8 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
       status = result; onStatus(result);
       message.textContent = result.garage?.adapter?.restorePending
         ? 'Restoration requested. Waiting for heating confirmation.' : 'Garage pause ended.';
+      rememberNotice(message, result, next => next.garage?.heatingControls?.requestedMode === 'off' ? ''
+        : restorationPending(next) ? 'Restoration requested. Waiting for heating confirmation.' : '');
     } catch (error) {
       message.classList.add('form-error'); message.textContent = error.message;
     } finally {

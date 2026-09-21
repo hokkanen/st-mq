@@ -202,6 +202,94 @@ test('garage release uses the empty safe request, rejects double clicks and awai
   panel.close(); assert.equal(button.listeners.has('click'), false);
 });
 
+function garageControlFixture() {
+  const ids = ['garage-release', 'garage-release-message', 'garage-pause-form', 'garage-pause-until',
+    'garage-heating-message', 'garage-pause-message', 'garage-mode-normal', 'garage-mode-off', 'garage-resume-now'];
+  const nodes = new Map(ids.map(id => [id, {
+    textContent: '', value: '', listeners: new Map(), classes: new Set(),
+    classList: { add(name) { nodes.get(id).classes.add(name); }, remove(name) { nodes.get(id).classes.delete(name); } },
+    setAttribute() {}, removeAttribute() {}, querySelector() { return { textContent: '' }; },
+    addEventListener(event, handler) { this.listeners.set(event, handler); }, removeEventListener(event) { this.listeners.delete(event); },
+  }]));
+  const initial = { now, garage: { adapter: { restorePending: false, simulation: true },
+    heatingControls: { available: true, normalAvailable: true, offAvailable: true, requestedMode: null },
+    temporary: { available: true, pauseActive: false } } };
+  let response = initial;
+  const panel = createGarageControls({ document: { getElementById: id => nodes.get(id), defaultView: { confirm: () => true } },
+    request: async () => { if (response instanceof Error) throw response; return response; } });
+  panel.update(initial);
+  return { panel, nodes, initial, reply(value) { response = value; },
+    async trigger(id, event = 'click') { nodes.get(id).listeners.get(event)({ preventDefault() {} }); await new Promise(setImmediate); } };
+}
+
+test('garage manual feedback follows confirmation and clears after hold expiry and restoration', async () => {
+  const f = garageControlFixture(), deadline = now + 3600_000;
+  const paused = { ...f.initial, garage: { ...f.initial.garage,
+    temporary: { available: true, pauseActive: true, pauseUntil: deadline } } };
+  const held = { ...paused, garage: { ...paused.garage, adapter: { restorePending: true, simulation: true },
+    heatingControls: { ...paused.garage.heatingControls, requestedMode: 'off', holdUntil: deadline, paused: true, confirmed: false } } };
+  f.panel.update(paused); f.reply(held); await f.trigger('garage-mode-off');
+  const message = f.nodes.get('garage-heating-message');
+  assert.match(message.textContent, /Held until.*Check the reported pump state/);
+  const confirmed = { ...held, garage: { ...held.garage, heatingControls: { ...held.garage.heatingControls, confirmed: true } } };
+  f.panel.update(confirmed); assert.match(message.textContent, /Device confirmed/);
+  const restoring = { ...f.initial, now: deadline, garage: { ...f.initial.garage,
+    adapter: { restorePending: true, simulation: true } } };
+  f.panel.update(restoring);
+  assert.match(message.textContent, /Waiting for normal heating confirmation/);
+  assert.doesNotMatch(message.textContent, /Held until|Device confirmed/);
+  f.panel.update({ ...f.initial, now: deadline + 60_000 }); assert.equal(message.textContent, '');
+  f.panel.update(restoring); assert.equal(message.textContent, '', 'Completed feedback cannot return with a later restoration');
+  f.panel.close();
+});
+
+test('garage manual feedback clears on the controller update or a replacement manual request', async () => {
+  for (const superseded of [false, true]) {
+    const f = garageControlFixture();
+    const requested = { ...f.initial, garage: { ...f.initial.garage,
+      heatingControls: { ...f.initial.garage.heatingControls, requestedMode: 'normal', holdUntil: now + 60_000, confirmed: true } } };
+    f.reply(requested); await f.trigger('garage-mode-normal');
+    assert.match(f.nodes.get('garage-heating-message').textContent, /next update/);
+    f.panel.update(superseded ? { ...requested, now: now + 1000, garage: { ...requested.garage,
+      adapter: { restorePending: true, simulation: true },
+      heatingControls: { ...requested.garage.heatingControls, requestedMode: 'off' } } } : { ...f.initial, now: now + 1000 });
+    assert.equal(f.nodes.get('garage-heating-message').textContent, '');
+    f.panel.close();
+  }
+});
+
+test('garage pause and resume feedback drops obsolete heating claims and ends with restoration', async () => {
+  const f = garageControlFixture(), deadline = now + 3600_000;
+  const paused = { ...f.initial, garage: { ...f.initial.garage,
+    temporary: { available: true, pauseActive: true, pauseUntil: deadline } } };
+  f.nodes.get('garage-pause-until').value = '2026-09-09T04:00';
+  await f.trigger('garage-pause-until', 'input'); f.reply(paused); await f.trigger('garage-pause-form', 'submit');
+  const message = f.nodes.get('garage-pause-message'); assert.match(message.textContent, /Pause saved/);
+  f.panel.update({ ...paused, garage: { ...paused.garage,
+    heatingControls: { ...paused.garage.heatingControls, requestedMode: 'off', holdUntil: deadline, paused: true } } });
+  assert.match(message.textContent, /Price control paused until/); assert.doesNotMatch(message.textContent, /Normal heating is requested/);
+  const restoring = { ...f.initial, garage: { ...f.initial.garage, adapter: { restorePending: true, simulation: true } } };
+  f.reply(restoring); await f.trigger('garage-resume-now');
+  f.panel.update(restoring); assert.match(message.textContent, /Waiting for normal heating confirmation/);
+  f.panel.update(f.initial); assert.equal(message.textContent, '');
+  f.panel.close();
+});
+
+test('garage release keeps unresolved and failed requests visible but clears completed feedback', async () => {
+  const f = garageControlFixture(), pending = { ...f.initial, garage: { ...f.initial.garage,
+    adapter: { restorePending: true, simulation: true } } };
+  const message = f.nodes.get('garage-release-message');
+  f.panel.update(pending); f.reply(pending); await f.trigger('garage-release');
+  f.panel.update(pending); assert.match(message.textContent, /Waiting for heating confirmation/);
+  f.panel.update(f.initial); assert.equal(message.textContent, '');
+  f.panel.update(pending); assert.equal(message.textContent, '');
+  f.reply(new Error('Heating restoration could not be confirmed.')); await f.trigger('garage-release');
+  f.panel.update(pending);
+  assert.equal(message.textContent, 'Heating restoration could not be confirmed.');
+  assert(message.classes.has('form-error'));
+  f.panel.close();
+});
+
 
 test('Garage outcomes retain electrical error evidence and omit temperature step diagnostics', () => {
   const rows = Object.fromEntries(garageDisplay({ learning: { heldOut: {

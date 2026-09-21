@@ -7,6 +7,15 @@ const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', mo
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Shelly Pro 2 v0' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
+const RESULT_NOTICE_MS = 60_000;
+const recentResult = (at, now) => !Number.isFinite(now)
+  || Number.isFinite(at) && at <= now && now - at < RESULT_NOTICE_MS;
+function equipmentStateReading(device, now) {
+  const readings = Object.values(device?.readings ?? {}).filter(reading => reading.unit === 'state');
+  const reading = readings.length === 1 ? readings[0] : null;
+  return device?.available && reading?.stale === false && [0, 1].includes(reading.value)
+    && Number.isFinite(reading.observedAt) && (!Number.isFinite(now) || reading.observedAt <= now) ? reading : null;
+}
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
   : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData'].includes(device.source) ? device.source : 'MQTT';
 const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
@@ -173,17 +182,19 @@ export function equipmentTestAllowed(status, device, busy = false) {
  * to be verified without replacing real DOM interaction with implementation tests. */
 export function createEquipmentActions({ request, onChange = () => {}, onStatus = () => {}, beforeRequest = () => {} }) {
   let status, busy = false, message = '', error = false, actionKind = null, actionDeviceId = null;
+  let messageAt = null;
   const snapshot = () => ({ status, busy, message, error, actionKind, actionDeviceId });
   const emit = () => onChange(snapshot());
   async function send(path, body, success) {
     if (!status || isReadOnlyReplica(status) || busy) return false;
     actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control' : path.endsWith('/cover') ? 'cover' : 'test';
     actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
+    messageAt = status.now ?? Date.now();
     busy = true; error = false; message = path.endsWith('/recheck') ? 'Checking configured connections…' : 'Applying request…';
     beforeRequest(); emit();
     try {
       const result = await request(path, body);
-      status = result; message = success; onStatus(result); return true;
+      status = result; messageAt = result.now ?? Date.now(); message = success; onStatus(result); return true;
     } catch {
       error = true;
       message = path.endsWith('/recheck') ? 'Could not recheck devices. Existing readings are retained.'
@@ -195,7 +206,17 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
     snapshot,
     update(next) {
       if (!busy) {
-        if (!error && JSON.stringify(next.equipmentTests?.lastResult) !== JSON.stringify(status?.equipmentTests?.lastResult)) message = '';
+        const device = next.equipment?.devices?.find(device => device.id === actionDeviceId);
+        const reading = equipmentStateReading(device, next.now);
+        const latest = actionKind === 'control' ? next.equipmentControls?.lastResult
+          : actionKind === 'cover' ? device?.cover?.operation : null;
+        const reported = reading && reading.observedAt > messageAt
+          && (actionKind === 'control' || actionKind === 'cover' && ['open', 'closed'].includes(reading.coverState));
+        const returned = latest && (latest.at ?? latest.requestedAt) >= messageAt;
+        if (!recentResult(messageAt, next.now ?? Date.now()) || error && (reported || returned)
+          || !error && JSON.stringify(next.equipmentTests?.lastResult) !== JSON.stringify(status?.equipmentTests?.lastResult)) {
+          message = ''; error = false;
+        }
         status = next;
       }
       emit();
@@ -238,9 +259,31 @@ export function equipmentCoverAllowed(status, device, action, busy = false) {
     && ['open', 'close', 'stop'].includes(action) && device.controls?.cover?.[action] === true && device.cover?.available === true);
 }
 
-export function equipmentCoverResult(device) {
+/** A saved command receipt is temporary feedback; current readings and active
+ * operations describe the device after that receipt is no longer relevant. */
+export function equipmentControlResult(status, device) {
+  const last = status.equipmentControls?.lastResult;
+  if (last?.deviceId !== device.id || typeof last.on !== 'boolean') return '';
+  const pending = last.status === 'pending' && status.equipmentControls?.busy;
+  if (!pending) {
+    if (!recentResult(last.at, status.now ?? Date.now())) return '';
+    const reading = equipmentStateReading(device, status.now);
+    if (reading && reading.observedAt > (last.confirmedAt ?? last.at)
+      && (reading.value !== Number(last.on) || last.confirmed !== true)) return '';
+  }
+  return `${last.on ? 'On' : 'Off'} requested · ${last.confirmed === true ? 'device confirmed'
+    : last.sent ? 'sent; awaiting device confirmation' : pretty(last.status ?? 'not sent')}${Number.isFinite(last.at) ? ` · ${clock.format(last.at)}` : ''}`;
+}
+
+export function equipmentCoverResult(device, now) {
   const operation = device.cover?.operation;
-  if (!operation || !['open', 'close', 'stop'].includes(operation.action)) return '';
+  if (!operation || !['open', 'close', 'stop'].includes(operation.action) || operation.status === 'observed') return '';
+  if (operation.status !== 'publishing') {
+    if (!recentResult(operation.requestedAt, now)) return '';
+    const reading = equipmentStateReading(device, now);
+    if (reading && reading.observedAt > operation.requestedAt && ['open', 'closed'].includes(reading.coverState)
+      && (operation.action === 'stop' || ['failed', 'unconfirmed'].includes(operation.status))) return '';
+  }
   const result = { publishing: 'sending…', published: 'sent; position unconfirmed', observed: 'state reported',
     failed: 'could not send; check the door', unconfirmed: 'no new position report' }[operation.status] ?? 'position unconfirmed';
   const detail = operation.action === 'stop' && operation.status === 'published' ? 'sent; stopping unconfirmed' : result;
@@ -586,8 +629,10 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
               : status.equipmentControls?.reason ?? 'Manual control is unavailable.';
       const last = status.equipmentControls?.lastResult;
       const scoped = actionKind === 'control' && actionDeviceId === device.id;
-      const result = last?.deviceId === device.id ? `${last.on ? 'On' : 'Off'} requested · ${last.confirmed === true ? 'device confirmed'
-        : last.sent ? 'sent; awaiting device confirmation' : pretty(last.status ?? 'not sent')}${Number.isFinite(last.at) ? ` · ${clock.format(last.at)}` : ''}` : '';
+      let result = equipmentControlResult(status, device);
+      const controlRequest = last?.deviceId === device.id ? `${last.at}:${last.on}` : null;
+      if (!result && controlRequest) node.dismissedControlRequest = controlRequest;
+      if (controlRequest && node.dismissedControlRequest === controlRequest) result = '';
       node.result.textContent = scoped && (busy || error) ? message : result;
       node.result.hidden = !node.result.textContent;
       node.result.classList.toggle('form-error', Boolean(scoped && error || last?.deviceId === device.id && last.confirmed !== true && ['failed', 'unconfirmed'].includes(last.status)));
@@ -605,7 +650,12 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         : busy || blocked() ? 'Another request is in progress.'
           : !device.cover?.available ? 'Door control is unavailable. Check the connection.'
             : 'Open means the door is not fully closed.';
-      node.coverResult.textContent = coverScoped && (busy || error) ? message : equipmentCoverResult(device);
+      let coverResult = equipmentCoverResult(device, status.now ?? Date.now());
+      const operation = device.cover?.operation;
+      const coverRequest = operation ? `${operation.requestedAt}:${operation.action}` : null;
+      if (!coverResult && coverRequest) node.dismissedCoverRequest = coverRequest;
+      if (coverRequest && node.dismissedCoverRequest === coverRequest) coverResult = '';
+      node.coverResult.textContent = coverScoped && (busy || error) ? message : coverResult;
       node.coverResult.hidden = !node.coverResult.textContent;
       node.coverResult.classList.toggle('form-error', Boolean(coverScoped && error || ['failed', 'unconfirmed'].includes(device.cover?.operation?.status)));
     }

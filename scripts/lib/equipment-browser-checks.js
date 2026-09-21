@@ -12,7 +12,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
   await evaluate(`(() => {
     const at = Date.parse('2026-09-07T11:00:00Z');
     const reading = (label,value,unit,observedAt=at) => ({label,value,unit,observedAt,stale:false});
-    const fixture = window.equipmentUiFixture = {fetch:window.fetch.bind(window),calls:[],responses:0,lastResult:null,
+    const fixture = window.equipmentUiFixture = {fetch:window.fetch.bind(window),calls:[],responses:0,now:at,lastResult:null,heatingResult:null,status:{},
       originalHash:location.hash,openDetails:[...document.querySelectorAll('.controller-panels details[open]')].map(node=>node.id)};
     fixture.devices = [
       {id:'garage-probes',label:'Garage temperatures',area:'garage',kind:'temperature',source:'MQTT-shelly',available:true,
@@ -28,13 +28,13 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
         check:{status:'listening',checkedAt:at},recheck:{method:'subscription',requestSupported:false,description:'This device publishes changes; no status-request topic is configured.'},
         topics:[{role:'Door state',topic:'invented/garage/long-device-prefix/door'+index+'/contact/state',direction:'subscribe'}]})),
     ];
-    fixture.dhwr={active:false,durationMinutes:10,actualOn:false,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
+    fixture.dhwr={active:false,durationMinutes:10,actualOn:false,confirmed:false,requestedAt:null,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
-    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
+    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
       {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
       {id:'teslamate',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
     ]},providers:{...base.providers,teslamate:{enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at,chargerId:'charger2'}}},dhwr:fixture.dhwr,
-      heatingTests:{available:true},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}}); };
+      heatingTests:{available:true,lastResult:fixture.heatingResult},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}}); };
     window.fetch = async (...args) => {
       const path = new URL(args[0],location.href).pathname;
       if(path.endsWith('/api/status')) {const response=await fixture.fetch(...args);fixture.base=await response.json();fixture.responses++;return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});}
@@ -42,16 +42,16 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
         const body=JSON.parse(args[1].body);fixture.calls.push({path,body});
         if(fixture.failNext) {fixture.failNext=false;return new Response(JSON.stringify({error:'Synthetic control failure'}),{status:503});}
         if(path.endsWith('/switch')) {
-          fixture.lastResult={...body,at,status:'unconfirmed',sent:true,confirmed:false};
+          fixture.lastResult={...body,at:fixture.now,status:'unconfirmed',sent:true,confirmed:false};
           return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
         }
         if(path.endsWith('/cover')) {
           if(fixture.holdCover) await new Promise(resolve=>{fixture.releaseCover=resolve;});
-          fixture.devices.find(device=>device.id===body.deviceId).cover.operation={action:body.action,status:'published',requestedAt:at,acknowledgedAt:at};
+          fixture.devices.find(device=>device.id===body.deviceId).cover.operation={action:body.action,status:'published',requestedAt:fixture.now,acknowledgedAt:fixture.now};
           return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
         }
-        if(path.endsWith('/heating-test')) {fixture.dhwr.active=true;return new Response(JSON.stringify({command:body.command,sent:true,at,status:'sent'}),{status:200});}
-        if(path.endsWith('/stop')) {fixture.dhwr.active=false;if(fixture.dhwr.feedback.power) fixture.dhwr.feedback.power.value=0;if(fixture.dhwr.feedback.state){fixture.dhwr.actualOn=false;fixture.dhwr.feedback.state.value=0;}}
+        if(path.endsWith('/heating-test')) {fixture.dhwr.active=true;fixture.dhwr.confirmed=false;fixture.dhwr.requestedAt=fixture.now;fixture.dhwr.expiresAt=fixture.now+600000;fixture.heatingResult={command:body.command,sent:true,at:fixture.now,status:'sent'};return new Response(JSON.stringify(fixture.heatingResult),{status:200});}
+        if(path.endsWith('/stop')) {fixture.dhwr.active=false;fixture.dhwr.confirmed=false;fixture.dhwr.requestedAt=fixture.now;if(fixture.dhwr.feedback.power) fixture.dhwr.feedback.power.value=0;if(fixture.dhwr.feedback.state){fixture.dhwr.actualOn=false;fixture.dhwr.feedback.state.value=0;}}
         return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
       }
       return fixture.fetch(...args);
@@ -88,6 +88,18 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${caravan} .status-detail-label').textContent`), 'Off');
     assert.equal(await evaluate(`document.querySelector('${caravan} button[aria-pressed=true]').textContent`), 'Turn off');
+    assert.match(await evaluate(`document.querySelector('${caravan} .equipment-control-result').textContent`), /device confirmed/);
+    await evaluate('window.equipmentUiFixture.now+=60000;true'); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'Old switch receipts disappear while the actual setting remains visible');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;f.lastResult={deviceId:'caravan',on:false,at:f.now,confirmedAt:f.now,status:'confirmed',sent:true,confirmed:true};return true;})()`);
+    await refresh();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), false, 'A new request can show its own receipt');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;Object.assign(f.devices.find(d=>d.id==='caravan').readings.caravan_active,{value:1,observedAt:f.now});return true;})()`);
+    await refresh();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'New device state supersedes the old switch confirmation');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;Object.assign(f.devices.find(d=>d.id==='caravan').readings.caravan_active,{value:0,observedAt:f.now});return true;})()`);
+    await refresh();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .equipment-control-result').hidden`), true, 'A superseded receipt cannot reappear when the device later returns to that value');
     assert.equal(await evaluate("document.getElementById('equipment-recheck-all') === null && [...document.querySelectorAll('#mqtt-devices-details button')].every(button=>!/^Recheck/i.test(button.textContent))"), true, 'Connections show live status without Recheck controls');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
@@ -159,6 +171,36 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await evaluate("document.getElementById('dhwr-stop').click();true");
     await until("window.equipmentUiFixture.calls.length === 6 && document.getElementById('dhwr-stop').disabled"); await settle();
     assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), 'Stop sent. Waiting for a new device report to verify the request.');
+    await evaluate('window.equipmentUiFixture.dhwr.confirmed=true;true'); await refresh();
+    assert.equal(await evaluate("document.getElementById('dhwr-message').textContent"), '', 'Fresh OFF confirmation clears the circulation stop acknowledgement');
+    // Persisted manual receipts follow current ownership, including an early Resume.
+    await evaluate(`(() => {const f=window.equipmentUiFixture;
+      f.beginManual=()=>{const at=++f.now,until=at+60000,pauseId='invented-ui-pause-'+at;
+        f.heatingResult={command:'preheat',status:'mqtt',sent:true,at,expiresAt:until,holdUntil:until};
+        f.status={override:{id:pauseId,createdAt:at,expiresAt:until},execution:{status:'mqtt'},
+          decision:{...f.base.decision,manualHold:{phase:'preheat',until,parameters:true,changed:true}},
+          observations:{...f.base.observations,actual:{requestedPhase:'preheat',phase:'preheat',mode:'normal',verified:false,stale:false,observedAt:at}},
+          h66:{...f.base.h66,enabled:true,connected:true,brokerConnected:true,phase:'manual-pause',pauseId,expiresAt:until,restorationPending:false,
+            requested:{'0203':25},obligations:{'0203':{baseline:20,expected:25}},manualPreheat:{confirmed:true,baseValue:20},
+            lastManual:{register:'0203',value:25,previousValue:20,readback:25,at,expiresAt:until,pauseId,status:'confirmed',confirmed:true,sent:true},
+            readings:{...f.base.h66?.readings,'0203':{value:25,available:true,stale:false,receivedAt:at,observedAt:at}}}};};
+      f.endManual=()=>{f.status.override=null;delete f.status.decision.manualHold;
+        Object.assign(f.status.h66,{phase:'normal',pauseId:null,expiresAt:null,requested:{},obligations:{},manualPreheat:null});
+        Object.assign(f.status.h66.readings['0203'],{value:20,receivedAt:f.now,observedAt:f.now});
+        Object.assign(f.status.observations.actual,{requestedPhase:'normal',phase:'normal',verified:true,observedAt:f.now});};
+      f.beginManual();return true;})()`); await refresh();
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Preheat sent.*held until/);
+    assert.match(await evaluate("document.getElementById('h66-test-message').textContent"), /requested 25.*readback 25.*Held until/);
+    await evaluate('window.equipmentUiFixture.now=window.equipmentUiFixture.status.override.expiresAt;window.equipmentUiFixture.endManual();true'); await refresh();
+    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent"), '', 'Expired preheat receipts disappear after restoration');
+    assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Expired native-setting receipts disappear after restoration');
+    await refresh();
+    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Polling the same stored results cannot bring ended changes back');
+    await evaluate('window.equipmentUiFixture.beginManual();true'); await refresh();
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /held until/);
+    await evaluate('window.equipmentUiFixture.now++;window.equipmentUiFixture.endManual();true'); await refresh();
+    assert.equal(await evaluate("document.getElementById('heating-test-message').textContent+document.getElementById('h66-test-message').textContent"), '', 'Resume removes both receipts before their original deadline');
+    await evaluate('window.equipmentUiFixture.status={};window.equipmentUiFixture.heatingResult=null;true'); await refresh();
     // Cover operations remain separate from the contact state and from other device results.
     const door1 = '#garage-equipment-readings [data-device-id=door1]', door2 = '#garage-equipment-readings [data-device-id=door2]';
     await evaluate(`document.querySelector('${door1}').open=true;document.querySelector('${door2}').open=true;true`);
@@ -183,6 +225,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     await evaluate(`document.querySelector('${door1} [data-cover-action=stop]').click();true`);
     await until(`window.equipmentUiFixture.calls.length === ${coverCalls + 3}`); await settle();
     assert.match(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').textContent`), /Stop requested.*stopping unconfirmed/);
+    await evaluate('window.equipmentUiFixture.now+=60000;true'); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${door1} .equipment-cover-controls .equipment-control-result').hidden`), true, 'Unconfirmed door receipts expire while current door state stays visible');
+    assert.equal(await evaluate(`document.querySelector('${door1} .status-detail-label').textContent`), 'Closed');
     await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=false;true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), true);
     await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=true;true"); await refresh();
