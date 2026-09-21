@@ -322,21 +322,23 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       }
     });
   }
-  async function setManualPreheat({ enabled, roomBoostC = 1, roomSettingC = 25, now = clock(), expiresAt, pauseId } = {}) {
+  async function setManualPreheat({ enabled, roomBoostC = 5, now = clock(), expiresAt, pauseId } = {}) {
     if (typeof enabled !== 'boolean') throw failure('H66_PHASE_INVALID', 'Choose whether manual preheating is enabled.');
     const overlay = state.manualPreheat;
     if (!enabled && !overlay) return { status: 'unchanged', phase: state.phase, changed: [] };
-    if (enabled && (!Number.isInteger(roomSettingC) || roomSettingC < 20 || roomSettingC > 30))
-      throw failure('H66_BOOST_INVALID', 'Preheat ROOM must be 20–30°C.');
+    if (enabled && (!Number.isFinite(roomBoostC) || roomBoostC < 0 || roomBoostC > 5))
+      throw failure('H66_BOOST_INVALID', 'Preheat ROOM increase must be 0–5°C after device limits.');
     const reading = current('0203', clock());
     if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh ROOM setting is required before changing preheat.');
     const baseValue = overlay?.baseValue ?? reading.value;
-    return setManualSetting({ register: '0203', value: enabled ? Math.max(baseValue, roomSettingC) : baseValue,
-      now, expiresAt, pauseId }, { enabled, roomSettingC, roomBoostC: enabled ? Math.max(0, roomSettingC - baseValue) : overlay.roomBoostC, baseValue, at: now });
+    const roomSettingC = Math.min(LIMITS['0203'][1], baseValue + roomBoostC);
+    const result = await setManualSetting({ register: '0203', value: enabled ? roomSettingC : baseValue,
+      now, expiresAt, pauseId }, { enabled, roomSettingC, roomBoostC: enabled ? roomSettingC - baseValue : overlay.roomBoostC, baseValue, at: now });
+    return { ...result, roomSettingC: enabled ? roomSettingC : baseValue, roomBoostC: enabled ? roomSettingC - baseValue : 0 };
   }
-  async function setPhase({ phase, roomBoostC = 1, roomSettingC = 25, compressorOnly = false, now = clock(), expiresAt } = {}) {
+  async function setPhase({ phase, roomBoostC = 5, compressorOnly = false, holdDhwReduced = false, now = clock(), expiresAt } = {}) {
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw failure('H66_PHASE_INVALID', 'Unknown H66 control phase.');
-    if (phase === 'normal' || phase === 'recovery' && !compressorOnly) return restore({ now, reason: phase, phase });
+    if (phase === 'normal' || phase === 'recovery' && !compressorOnly && !holdDhwReduced) return restore({ now, reason: phase, phase });
     return exclusive(async () => {
       if (manualPhase(state.phase)) throw failure('H66_MANUAL_CONFLICT', 'Restore manual native settings before starting an automatic override.');
       requireConnection(now);
@@ -352,15 +354,17 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       }
       let changed = [];
       if (phase === 'recovery') {
-        // End the tariff/DHW overrides while retaining ownership of mode2.
-        // Avoid briefly enabling AUX between reduction and compressor recovery.
-        for (const index of ['0203', '0212', '0208']) if (state.obligations[index])
+        // Space heating resumes immediately. DHW demand and AUX have separate
+        // ownership so a cold-room fallback can permit AUX without ending the hold.
+        for (const index of ['0203', ...(!holdDhwReduced ? ['0212', '0208'] : []), ...(!compressorOnly ? ['2201'] : [])]) if (state.obligations[index])
           changed.push(...await apply({ [index]: state.baseline[index] }, { now, reason: 'recovery', restoring: true }));
-        changed.push(...await apply({ '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'compressor-recovery', expiresAt }));
+        const values = { ...(holdDhwReduced ? { '0212': Math.min(40, state.baseline['0212']), '0208': 50 } : {}),
+          ...(compressorOnly ? { '2201': config.compressorOnlyMode ?? 2 } : {}) };
+        if (Object.keys(values).length) changed.push(...await apply(values, { now, reason: 'recovery-hold', expiresAt }));
       } else if (phase === 'preheat') {
         if (state.phase === 'reduction') throw failure('H66_PHASE_CONFLICT', 'Restore normal operation before starting preheat.');
-        if (!Number.isInteger(roomSettingC) || roomSettingC < 20 || roomSettingC > 30) throw failure('H66_BOOST_INVALID', 'Preheat ROOM must be 20–30°C.');
-        changed = await apply({ '0203': Math.max(state.baseline['0203'], roomSettingC) }, { now, reason: 'preheat', expiresAt });
+        if (!Number.isFinite(roomBoostC) || roomBoostC < 0 || roomBoostC > 5) throw failure('H66_BOOST_INVALID', 'Preheat ROOM increase must be 0–5°C after device limits.');
+        changed = await apply({ '0203': Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC) }, { now, reason: 'preheat', expiresAt });
       } else {
         // ROOM restoration completes before reduction settings are sent. The executor owns DHWR.
         if (state.obligations['0203']) changed.push(...await apply({ '0203': state.baseline['0203'] }, { now, reason: 'preheat-complete', restoring: true }));
@@ -369,7 +373,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       }
       state.phase = phase;
       const result = { status: 'confirmed', phase, changed, expiresAt: state.expiresAt,
-        limitation: phase === 'reduction' ? 'DHW stop setting may apply only to auxiliary operation; compressor DHW cutoff is not established.' : undefined };
+        ...(phase === 'preheat' ? { roomSettingC: Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC),
+          roomBoostC: Math.min(LIMITS['0203'][1] - state.baseline['0203'], roomBoostC) } : {}),
+        limitation: phase === 'reduction' || holdDhwReduced ? 'DHW stop setting may apply only to auxiliary operation; compressor DHW cutoff is not established.' : undefined };
       noteResult(result); return result;
     });
   }

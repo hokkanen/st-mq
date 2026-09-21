@@ -10,15 +10,15 @@ import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from 
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v10-hydronic-floor';
+export const LEARNING_ALGORITHM = 'committed-house-v11-preheat-recovery';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
 const EQUIPMENT_KEYS = ['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', 'dhwrKw',
   'compressorIntegralA1', 'compressorHysteresisC', 'auxIntegralA2', 'auxHysteresisC', 'a2Basis',
-  'recoveryCompressorOnly', 'recoveryCompressorOnlyHours', 'recoveryComfortMarginC',
-  'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours', 'maxPreheatHours', 'maxRoomBoostC',
-  'recoveryTimeoutHours', 'dhwrPulseMinutes', 'preheatRoomSettingC', 'heatPumpModelConfirmed', 'floorThermalPriors'];
+  'recoveryCompressorOnly', 'recoveryHoldMinutes', 'recoveryComfortMarginC',
+  'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours', 'maxPreheatHours', 'preheatRoomBoostC',
+  'recoveryTimeoutHours', 'dhwrPulseMinutes', 'heatPumpModelConfirmed', 'floorThermalPriors'];
 const MODEL_KEYS = [...EQUIPMENT_KEYS, 'targetC', 'thermalPriors', 'indoorSensorWeights'];
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
 const readingAge = (row, fallback) => row.source === 'husdata-h66' ? H66_MAX_AGE_MS : fallback;

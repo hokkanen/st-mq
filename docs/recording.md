@@ -599,8 +599,9 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v5-fireplace`. Configuration epochs retain power
-and control-policy interpretation; changed equipment assumptions invalidate old
+The current algorithm is `committed-house-v11-preheat-recovery`. Saved configuration retains
+source-output assumptions, selected-slab priors, the relative ROOM increase and the
+bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
 accidental corruption and trigger replay. They are integrity checks, not authentication.
 Older algorithm entries remain archival rather than being silently relabeled.
@@ -869,8 +870,7 @@ soft target.
 
 ### Reversible sensor changes
 
-Sensor-change recording leaves acquisition and stored observations intact. Under
-`committed-house-v9-reversible-sensors`, learning saves the original temperature
+Sensor-change recording leaves acquisition and stored observations intact. Learning saves the original temperature
 inputs needed to undo a reset's exclusions as a compact patch on affected samples.
 Periodic report coverage remains bounded to the original window; undo cannot
 fill genuine sensor outages. The journal, its seed/configuration and selected

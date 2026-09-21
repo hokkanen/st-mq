@@ -36,7 +36,7 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
   return { executor, h66, log, observations, values, saved, store, transport, get now() { return now; },
     advance(ms) { now += ms; if (h66) for (const [index, value] of Object.entries(values)) receive(index, value); },
     run(phase, duration = 1_800_000, extra = {}) { return executor.execute({ phase, action: phase === 'reduction' ? 'reduction' : 'normal',
-      commands: phase === 'reduction' ? ['reduction'] : ['normal'], roomBoostC: 2, expiresAt: now + duration, ...extra }, { mode: 'active', now }); } };
+      commands: phase === 'reduction' ? ['reduction'] : ['normal'], roomBoostC: 5, expiresAt: now + duration, ...extra }, { mode: 'active', now }); } };
 }
 
 test('active base control works without H66 and refreshes idempotently', async t => {
@@ -50,47 +50,114 @@ test('active base control works without H66 and refreshes idempotently', async t
   assert.equal(r.executor.status().legacyOutstanding, false);
 });
 
-test('compressor recovery restores ROOM and DHW while retaining mode2 until fallback',async t=>{
+test('recovery holds reduced DHW after cold-room fallback releases AUX alone',async t=>{
   const r=rig(t);
   await r.run('reduction');
   const first=r.log.length;
-  const result=await r.run('recovery',1800000,{recoveryCompressorOnly:true});
+  const hold = { recoveryHoldActive:true, recoveryCompressorOnly:true, owner:'synthetic-cycle' };
+  const result=await r.run('recovery',1800000,hold);
   assert.equal(result.recoveryCompressorOnly,true);
-  assert.deepEqual(r.values,{'0203':19,'0212':47,'0208':62,'2201':2});
+  assert.equal(result.recoveryHoldUntil,r.now+3600000);
+  assert.deepEqual(r.values,{'0203':19,'0212':40,'0208':50,'2201':2});
   assert.deepEqual(r.log.at(-1).commands,['normal']);
   assert.equal(r.log.slice(first).some(row=>row.native==='2201'&&row.value===1),false);
   assert.ok(r.h66.status().obligations['2201']);
   const before=r.log.length;
-  await r.run('recovery',1800000,{recoveryCompressorOnly:true});
+  await r.run('recovery',1800000,hold);
   assert.equal(r.log.length,before);
-  await r.run('recovery',1800000,{recoveryCompressorOnly:false,recoveryFallbackReason:'recovery-comfort-margin'});
-  assert.equal(r.values['2201'],1);assert.deepEqual(r.h66.status().obligations,{});
+  r.advance(15*60000);
+  const fallback = await r.run('recovery',1800000,{...hold,recoveryCompressorOnly:false,recoveryFallbackReason:'recovery-comfort-margin'});
+  assert.equal(fallback.recoveryHoldUntil,result.recoveryHoldUntil);
+  assert.deepEqual(r.values,{'0203':19,'0212':40,'0208':50,'2201':1});
+  assert.equal(r.h66.status().obligations['2201'],undefined);
+  assert.ok(r.h66.status().obligations['0212']);
+  assert.ok(r.h66.status().obligations['0208']);
+  const renewed=await r.run('recovery',1800000,hold);
+  assert.equal(renewed.recoveryCompressorOnly,false,'AUX permission is not removed again within the same hold');
+  assert.equal(r.values['2201'],1);
+  r.advance(45*60000);
+  await r.run('recovery',1800000,{...hold,recoveryHoldActive:false,recoveryCompressorOnly:false});
+  assert.deepEqual(r.values,{'0203':19,'0212':47,'0208':62,'2201':1});
+  assert.deepEqual(r.h66.status().obligations,{});
+  assert.equal(r.log.some(row=>row.dhwr===true),false,'Restoration does not force circulation');
 });
 
-test('compressor recovery expires back to the captured native mode',async t=>{
-  const r=rig(t);
-  await r.run('reduction');await r.run('recovery',60000,{recoveryCompressorOnly:true});
+test('the common recovery deadline restores DHW and native AUX permission without controller refresh',async t=>{
+  const r=rig(t,{config:{recoveryHoldMinutes:1}});
+  await r.run('reduction');await r.run('recovery',60000,{recoveryHoldActive:true,recoveryCompressorOnly:true});
   r.advance(60000);await r.h66.reconcile({now:r.now});
-  assert.equal(r.values['2201'],1);assert.deepEqual(r.h66.status().obligations,{});
+  assert.deepEqual(r.values,{'0203':19,'0212':47,'0208':62,'2201':1});assert.deepEqual(r.h66.status().obligations,{});
 });
 
-test('a45-minute preheat keeps its fixed ROOM deadline through acknowledgement latency without requesting extra DHWR', async t => {
+test('the reduction timer enters recovery without restoring and reapplying DHW or AUX',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const r=rig(t);
+  await r.run('reduction',60000,{owner:'timer-cycle',recoveryAuxRestrictionAllowed:true});
+  const boundary=r.now+60000, before=r.log.length;
+  assert.equal(r.h66.status().expiresAt,boundary+3600000);
+  r.advance(60000);
+  t.mock.timers.tick(60000);
+  await new Promise(resolve=>setImmediate(resolve));
+  if(r.executor.pending)await r.executor.pending;
+  assert.equal(r.executor.status().phase,'recovery');
+  assert.deepEqual(r.values,{'0203':19,'0212':40,'0208':50,'2201':2});
+  assert.deepEqual(r.log.slice(before).filter(row=>row.native),[],'No transient native DHW/AUX restore');
+  assert.deepEqual(r.log.at(-1).commands,['normal']);
+  assert.equal(r.executor.status().recoveryStartedAt,boundary);
+  assert.equal(r.executor.status().recoveryHoldUntil,boundary+3600000);
+});
+
+test('recovery deadline starts at tariff acknowledgement and survives executor restart',async t=>{
+  let r;
+  r=rig(t,{publishLegacy:async commands=>{
+    if(commands.includes('normal'))r.advance(2000);
+    return {status:'mqtt',sent:true,actual:null};
+  }});
+  await r.run('reduction');
+  const requested=r.now;
+  const hold={recoveryHoldActive:true,recoveryCompressorOnly:true,owner:'persisted-cycle'};
+  const first=await r.run('recovery',3600000,hold);
+  assert.equal(first.recoveryStartedAt,requested+2000);
+  assert.equal(first.recoveryHoldUntil,requested+2000+3600000);
+  clearTimeout(r.executor.timer);
+  r.advance(20*60000);
+  const restarted=new Executor({input:'mqtt',store:r.store,h66:r.h66,commandTransport:r.transport,clock:()=>r.now});
+  t.after(()=>{clearTimeout(restarted.timer);restarted.closed=true;});
+  const result=await restarted.execute({phase:'recovery',commands:['normal'],expiresAt:r.now+3600000,...hold},{mode:'active',now:r.now});
+  assert.equal(result.recoveryHoldUntil,first.recoveryHoldUntil);
+  assert.equal(r.h66.status().expiresAt,first.recoveryHoldUntil);
+});
+
+test('an explicit circulation pulse survives automatic recovery holding',async t=>{
+  const r=rig(t);
+  await r.run('reduction');
+  const hold={recoveryHoldActive:true,recoveryCompressorOnly:true,owner:'manual-hot-water-cycle'};
+  await r.run('recovery',3600000,hold);
+  await r.executor.execute({commands:['circulation']},{mode:'active',manualTest:true,now:r.now});
+  const until=r.executor.status().pulseUntil;
+  await r.run('recovery',3600000,hold);
+  assert.equal(r.executor.status().pulseUntil,until);
+  assert.equal(r.log.filter(row=>row.dhwr===true).length,1);
+  assert.equal(r.log.filter(row=>row.dhwr===false).length,0);
+});
+
+test('a45-minute preheat keeps its ROOM deadline through acknowledgement latency without requesting extra DHWR', async t => {
   let r;
   r = rig(t, { publishLegacy: async () => { r.advance(1000); return { status: 'mqtt', sent: true, actual: null }; } });
   const end = r.now + 45 * 60_000;
   for (let i = 0; i < 5 && r.now < end; i++) {
     assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
     assert.equal(r.h66.status().expiresAt, end);
-    assert.equal(r.values['0203'], 25);
+    assert.equal(r.values['0203'], 24);
     r.advance(10 * 60_000);
   }
   assert.equal(r.log.some(row => row.dhwr === true), false);
 });
 
-test('fixed ROOM preheat restores the exact native baseline before reduction without a circulation dependency', async t => {
+test('ROOM increase preheat restores the exact native baseline before reduction without a circulation dependency', async t => {
   const r = rig(t);
   const preheat = await r.run('preheat');
-  assert.equal(preheat.phase, 'preheat'); assert.equal(r.values['0203'], 25);
+  assert.equal(preheat.phase, 'preheat'); assert.equal(r.values['0203'], 24);
   assert.deepEqual(r.log.slice(0, 2).map(entry => entry.commands ?? entry.native), [['normal'], '0203']);
   assert.equal(r.h66.status().expiresAt, r.now + 1_800_000);
   assert.equal((await r.run('preheat')).sent, false);
@@ -112,7 +179,7 @@ test('preheat with less than one DHWR pulse remaining still reaches its own plan
   assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
   r.advance(4 * 60_000);
   assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
-  assert.equal(r.values['0203'], 25);
+  assert.equal(r.values['0203'], 24);
   assert.equal(r.h66.status().expiresAt, end);
   assert.equal(r.log.some(entry => entry.dhwr === true), false);
   r.advance(60_000);

@@ -29,6 +29,7 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     preheatAvailable: h.controlsReady === true && h.writesEnabled === true,
     nativeAuxAllowed: nativeMode === 2 ? false : nativeMode === 1 ? true : null,
     roomSettingC: h.baseline?.['0203'] ?? h.readings?.['0203']?.value ?? null,
+    roomSettingMaximumC: Math.min(35, h.controls?.['0203']?.max ?? 35),
     supplyC: supply, normalSupplyC: finite(supply) ? supply - (phase === 'preheat' ? 3 * roomBoostC : 0) : null,
     observedRoomBoostC: phase === 'preheat' ? roomBoostC : 0, brineC: value('brine_in_temperature'),
     integral, supplyShortfallC: finite(supply) && finite(targetSupply) ? targetSupply - supply : null,
@@ -36,7 +37,7 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     operatingMode: connected ? value('operating_mode') : null };
   if (observations.actual?.source === 'simulation') Object.assign(equipment, {
     h66Available:true,preheatAvailable:true,compressorOn:observations.actual.compressorDuty,
-    dhwRouting:observations.actual.auxRoute==='dhw'?1:0,nativeAuxAllowed:true,
+    dhwRouting:observations.actual.auxRoute==='dhw'?1:0,nativeAuxAllowed:true,roomSettingC:20,roomSettingMaximumC:35,
   });
   let predicted = null;
   if (finite(indoorC) && finite(outdoorC)) predicted = predictThermalStep(checkpoint.model,

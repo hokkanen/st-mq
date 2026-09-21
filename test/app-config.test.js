@@ -160,7 +160,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
       downstairs_temperature: 'invented/downstairs', bedroom_temperature: 'invented/bedroom', garage_temperature: 'invented/garage' });
     assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
     assert.equal(config.settings.comfort.targetC, null);
-    assert.equal(config.settings.comfort.maxDropC, 1);
+    assert.equal(config.settings.comfort.maxDropC, 1.5);
     assert.equal(readFileSync(path, 'utf8'), original);
   }
   assert.throws(() => loadConfig({ STMQ_INPUT: 'simulated', STMQ_CONFIG: '/missing/credentials.json' }), /existing/);
@@ -285,7 +285,7 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.schema.temp_to_hours, undefined);
   assert.equal(addon.options.electricity.margin_ct_per_kwh_ex_vat, 0.33);
   assert.equal(addon.options.electricity.vat_percent, 25.5);
-  assert.equal(addon.options.controller.max_drop_c, 1);
+  assert.equal(addon.options.controller.max_drop_c, 1.5);
   assert.equal(addon.options.easee.charger_id, '');
   assert.equal(addon.schema.easee.charger_id, 'str?');
 });

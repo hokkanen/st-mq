@@ -12,15 +12,15 @@ import { createH66Decoder } from '../src/domain/telemetry.js';
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(t, { delayed = false, mode = 'active' } = {}) {
-  const store = new Store(':memory:'), commands = [], pending = [];
-  let now = Date.parse('2026-09-07T21:00:00Z');
+function setup(t, { delayed = false, mode = 'active', startAt = Date.parse('2026-09-07T21:00:00Z') } = {}) {
+  const store = new Store(':memory:'), commands = [], pending = [], circulation = [];
+  let now = startAt, indoorC = 21.2;
   const config = { input: 'mqtt', settings: validateSettings({ mode, comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 } }),
     control: { ...CONTROL_DEFAULTS, learningTrials: false } };
   const transport = { publish(batch) {
     commands.push({ at: now, batch: [...batch] });
     return delayed ? new Promise(resolve => pending.push(resolve)) : Promise.resolve({ status: 'mqtt', sent: true, actual: null });
-  } };
+  }, publishDhwr:async on=>{circulation.push({at:now,on});return {status:'mqtt',sent:true};} };
   const engine = new Engine({ store, config, commandTransport: transport, clock: () => now });
   const ingest = (signal, value) => engine.ingest({ source: signal === 'outdoor_temperature' ? 'fmi' : 'synthetic',
     device: 'invented-house', signal, value, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] });
@@ -42,8 +42,9 @@ function setup(t, { delayed = false, mode = 'active' } = {}) {
     await engine.h66?.close();
     store.close();
   });
-  return { store, engine, config, commands, get now() { return now; },
-    advance(milliseconds) { now += milliseconds; ingest('indoor_temperature', 21.2); ingest('outdoor_temperature', 10); },
+  return { store, engine, config, commands, circulation, get now() { return now; },
+    room(value) { indoorC=value;ingest('indoor_temperature',indoorC); },
+    advance(milliseconds) { now += milliseconds; ingest('indoor_temperature', indoorC); ingest('outdoor_temperature', 10); },
     async acknowledge() {
       await nextTurn();
       assert.equal(pending.length, 1, 'Exactly one synthetic command batch is awaiting acknowledgement');
@@ -157,6 +158,77 @@ test('a manual mode1 change during compressor-only recovery remains owned by the
     assert.equal(status.decision.recoveryCompressorOnly, false);
   }
   assert.equal(native.writes.slice(writesBeforeTicks).some(write => write.register === '2201' && write.value === 2), false);
+});
+
+test('recovery releases AUX for cold rooms, then restores DHW and scheduled circulation at the same fixed deadline', async t => {
+  const r=setup(t,{startAt:Date.parse('2026-09-07T09:00:00Z')});r.plan();
+  r.engine.tick();await r.settle();
+  const native=r.native();
+  r.advance(MINUTE);native.refresh();
+  r.engine.cycles.shorten(r.now,'synthetic-recovery-transition');
+  let cycle=r.engine.cycles.active();cycle.observerState.reserveC=10;r.engine.cycles.save(cycle);
+  let status=r.engine.tick();await r.settle();
+  const deadline=r.engine.cycles.active().recoveryHoldUntil;
+  assert.equal(status.decision.recoveryHoldActive,true);
+  assert.equal(deadline,r.now+HOUR);
+  assert.deepEqual(native.values['0212'],40);assert.equal(native.values['0208'],50);
+  assert.equal(native.values['2201'],2);assert.deepEqual(r.circulation,[]);
+  r.room(20.4);
+  for(let step=0;step<6;step++){
+    r.advance(10*MINUTE);native.refresh();status=r.engine.tick();await r.settle();
+    assert.equal(status.decision.phase,'recovery');
+    assert.equal(status.decision.recoveryHoldUntil,deadline,'Polling cannot extend the shared hold');
+    assert.equal(status.decision.recoveryCompressorOnly,false,'Cold room permits AUX throughout the rest of recovery');
+    if(r.now<deadline){
+      assert.equal(status.decision.recoveryHoldActive,true);
+      assert.equal(native.values['0212'],40);assert.equal(native.values['0208'],50);
+      assert.equal(native.values['2201'],1);assert.deepEqual(r.circulation,[]);
+    }
+  }
+  assert.equal(status.decision.recoveryHoldActive,false);
+  assert.equal(native.values['0212'],47);assert.equal(native.values['0208'],62);
+  assert.equal(status.decision.dhwr.requested,true);
+  assert.deepEqual(r.circulation,[{at:deadline,on:true}]);
+});
+
+test('pausing price control during recovery restores native DHW settings for an explicit hot-water override', async t=>{
+  const r=setup(t);r.plan();r.engine.tick();await r.settle();
+  const native=r.native();r.advance(MINUTE);native.refresh();
+  r.engine.cycles.shorten(r.now,'synthetic-recovery-transition');r.engine.tick();await r.settle();
+  assert.equal(native.values['0212'],40);assert.equal(native.values['2201'],2);
+  r.engine.setTemporary({pauseUntil:new Date(r.now+HOUR).toISOString()});await r.settle();
+  assert.equal(r.engine.cycles.active(),null);
+  assert.equal(native.values['0212'],47);assert.equal(native.values['0208'],62);assert.equal(native.values['2201'],1);
+  await r.engine.testHeating({command:'circulation'});
+  assert.deepEqual(r.circulation,[{at:r.now,on:true}]);
+});
+
+test('an expiry-timer AUX release stays latched when fresh warm observations arrive',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});
+  const r=setup(t);r.plan();
+  const first=r.engine.tick();await r.settle();
+  const native=r.native();
+  await r.engine.executor.execute({...first.decision,recoveryAuxRestrictionAllowed:true},{mode:'active',now:r.now});
+  assert.equal(r.engine.cycles.active()?.plan.executionOwner,r.engine.executor.status().recoveryOnExpiry.owner);
+  r.advance(15*MINUTE);native.refresh();
+  t.mock.timers.tick(15*MINUTE);await nextTurn();
+  if(r.engine.executor.pending)await r.engine.executor.pending;
+  const saved=r.engine.executor.status();
+  assert.equal(saved.phase,'recovery');
+  assert.equal(saved.recoveryAuxReleasedAt,r.now);
+  assert.equal(native.values['2201'],1,'An expired temperature assessment permits native AUX');
+  assert.equal(native.values['0212'],40);assert.equal(native.values['0208'],50);
+  const status=r.engine.tick();await r.settle();
+  assert.equal(status.decision.recoveryCompressorOnly,false);
+  assert.equal(status.decision.recoveryHoldUntil,saved.recoveryHoldUntil);
+  assert.equal(native.values['2201'],1,'Fresh warm observations cannot re-block AUX during the same hold');
+});
+
+test('settings updates retain the configured preheat and recovery policy for display',async t=>{
+  const r=setup(t,{mode:'shadow'});
+  r.engine.updateSettings({...r.engine.settings,preheatRoomBoostC:1});await r.settle();
+  assert.equal(r.engine.settings.preheatRoomBoostC,r.engine.control.preheatRoomBoostC);
+  assert.equal(r.engine.settings.recoveryHoldMinutes,r.engine.control.recoveryHoldMinutes);
 });
 
 test('old algorithm history is refused both at startup and when a background seed arrives', async t => {

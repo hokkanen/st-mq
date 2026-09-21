@@ -5,7 +5,7 @@ import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
 const start = Date.parse('2026-01-01T00:00:00Z');
 const schedule = { preheatStart: start, preheatEnd: start + 900000, reductionStart: start + 900000,
-  reductionEnd: start + 1800000, roomBoostC: 5, treatmentKey: 'fixed-room-v1' };
+  reductionEnd: start + 1800000, roomBoostC: 5, treatmentKey: 'room-boost-v1' };
 const args = { schedule, intervals: [{ start, end: start + 900000, outdoorC: 0, solarRadiationWm2: 0, price: 20 }],
   model: initialAdaptiveModel({ heatPumpModelConfirmed: true }), initialState: { indoorC: 21, reserveC: 25.7 }, targetC: 21 };
 

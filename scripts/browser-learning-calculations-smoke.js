@@ -34,8 +34,8 @@ const learning = { adaptive: { model, baselineC: 21,
   readiness: { thermalValidated: false, responseValidated: false, advanceValidated: false,
     actionValidated: false, trialReady: false, reasons: ['collecting-independent-equipment-episodes'] },
   parameters: { auxIntegralA2: -990, auxHysteresisC: 30, a2Basis: 'absolute' } };
-const context = { settings: { savingsAggressiveness: 50, preheatRoomSettingC: 25,
-  comfort: { targetC: 21, maxDropC: 1, maxRiseC: 1, severeDropC: 2 } },
+const context = { settings: { savingsAggressiveness: 50, preheatRoomBoostC: 5, recoveryHoldMinutes: 60,
+  comfort: { targetC: 21, maxDropC: 1.5, maxRiseC: 1.5, severeDropC: 2 } },
   preheatValves: { enabled: true, available: true, active: false, leaseSeconds: 900, renewSeconds: 300 } };
 const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
   <title>Learning calculation fixture</title><link rel="stylesheet" href="/monitor.css">
@@ -239,6 +239,8 @@ try {
     for (const [panel, key, name] of [
       ['actual-coefficients', 'source-model-confirmed', 'source-map'],
       ['actual-calculations', 'model-fitting', 'model-fitting'],
+      ['actual-policy', 'Preheat and comfort policy', 'preheat-policy'],
+      ['actual-policy', 'Recovery hold', 'recovery-hold'],
     ]) {
       await evaluate(`document.querySelectorAll('#actual > section').forEach(section => { section.hidden = section.id !== '${panel}'; });
         document.querySelectorAll('#${panel} .learning-entry').forEach(row => { row.hidden = row.dataset.learningKey !== '${key}'; row.open = true; });

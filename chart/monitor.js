@@ -209,7 +209,7 @@ function renderHeatingTests(s) {
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
     : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable ROOM setting and qualified floor-valve control when configured.';
   $('test-preheat').title = capability?.preheatAvailable === true
-    ? `Request ROOM ${decimal(capability.preheatTargetC)} °C${s.preheatValves?.enabled ? ' and the pooled floor override' : ''}. The configured preheat setting never lowers a warmer native baseline. Normal recirculation keeps its own schedule.`
+    ? `Request ROOM ${decimal(capability.preheatTargetC)} °C, ${decimal(capability.preheatRoomBoostC)} °C above the saved normal setting${s.preheatValves?.enabled ? ', with the pooled floor override' : ''}. Native limits bound the increase; repeated commands do not stack it. Normal recirculation keeps its own schedule.`
     : $('heating-preheat-help').textContent;
   const warning = homeHeatingWarning(s, time);
   $('home-hold-warning').hidden = !warning;

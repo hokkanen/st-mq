@@ -150,7 +150,7 @@ test('a failed reconnect restores the previous configuration and rate history wi
   assert.equal(response.status, 400);
   const failure = await response.json();
   assert.match(failure.error, /previous configuration was restored/);
-  assert.equal(app.engine.settings.comfort.maxDropC, 1);
+  assert.equal(app.engine.settings.comfort.maxDropC, 1.5);
   assert.deepEqual(app.engine.contract(), originalContract);
   assert.equal(app.engine.executor.closed, false);
   assert.equal(mqtt.clients[0].endCalls, 1);

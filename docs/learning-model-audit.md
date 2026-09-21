@@ -11,7 +11,7 @@ they do not prove optimal settings or savings for the actual house.
 | Failure found | Implemented correction |
 | --- | --- |
 | Separate compressor/AUX responses could be indistinguishable during correlated operation. | Convert source input to estimated thermal kWh and fit one downstream hydronic response; preserve source uncertainty and independent electricity accounting. |
-| Previously restricted valves made ROOM-only evidence a poor guide to new slab charging. | Record actual override mode and treatment identity in a new learning epoch; fixed slab states preserve stored heat through relay changes. |
+| Restricted valves make ROOM-only evidence a poor guide to slab charging. | Record actual override mode and treatment identity; fixed slab states preserve stored heat through relay changes. |
 | A controller crash could leave a remote override active. | Renew device-local timed ON commands; an expired lease releases the override without a server OFF command. |
 | A 15-minute window could inherit the controller's current phase even when a transition happened near its end. | Persist causal control-context events and split input windows at their actual boundaries. Never backfill unknown history from current settings. |
 | Separately averaging compressor and reversing-valve state discarded mixed heating/DHW windows. | Intersect timelines first, then integrate total and destination-specific compressor/AUX activity. |
@@ -20,7 +20,7 @@ they do not prove optimal settings or savings for the actual house.
 | Sample counts could qualify coefficients whose effect was absent or confounded. | Test observed-input sensitivity and independent variation before fitting. Keep unsupported coefficients fixed. |
 | Reduction imposed an artificial compressor-capacity ceiling. Preheat received extra heat merely because it was requested. | Separate observed thermal input from estimated equipment response. A reduction can run the compressor fully. No direct preheat heat credit. |
 | The slow state could not charge before the room warmed. | Put hydronic heat into a slow node with conservation-weighted exchange; keep the unobserved topology/memory constants explicit priors. |
-| A thermal fit could authorize a long economic action without tested control response. | Require separate conditional thermal, equipment-response and frozen advance-cycle checks; limit action durations to repeated treatment-specific evidence; preheat uses one fixed absolute ROOM target. |
+| A thermal fit could authorize a long economic action without tested control response. | Require separate conditional thermal, equipment-response and frozen advance-cycle checks; limit action durations to repeated treatment-specific evidence; preheat uses one configured ROOM increase, default +5 °C, above the saved normal setting. |
 | Sparse weekly cycles could never fit three held-out episodes into a short rolling tail. | Preserve complete episode samples with causal thermal warmup, and reserve the latest three episodes chronologically once enough exist, with an embargo. |
 | A queued plan could start using stale benefit calculations. | Re-evaluate the promised schedule against current evidence, settings, prices and weather before dispatch. |
 | Multiplying every reduction by every preheat duration/boost could block the control loop for seconds. | Evaluate the reduction grid first, then expand a bounded set of promising preheat choices while retaining trial opportunities. This remains an approximate search. |
@@ -29,7 +29,8 @@ they do not prove optimal settings or savings for the actual house.
 | DHW compressor/AUX costs contaminated space-heating calibration and profit. | Keep attributed space-heating energy and recovery AUX separate; show covered total costs independently. Whole-cycle profit remains unavailable without a DHW service model. |
 | A newer model's reserve could make an older cycle appear recovered. | Maintain an observer with the frozen cycle model. Missing thermal input invalidates its reserve claim. |
 | Failed attempts disappeared from completed-only benefit means. | Show all-attempt outcomes, incomplete counts, covered costs and missing hours alongside the completed subset. |
-| Recovery immediately enabled native AUX; manual setting changes could then be overwritten. | Default to bounded compressor-only recovery with a latched comfort/control fallback. Persist external-change revisions and respect them during active cycles. |
+| Unbounded recovery restrictions can delay hot-water service; releasing all restrictions when rooms are cold can redirect capacity. | Use one 60-minute AUX/DHW/DHWR hold. A latched cold-room fallback releases AUX only; normal DHW settings and scheduled circulation resume at the original deadline, independently of thermal assessment completion. |
+| Ending the valve override could prematurely reduce the floor uncertainty allowance. | Keep the explicit slab allowance at 0.15√h °C in every valve mode because stored heat and its uncertainty persist. |
 | A plausible but corrupted checkpoint could be trusted merely because its cursor existed. | Check a state/configuration digest and journal-prefix identity, otherwise replay. This detects accidental corruption, not malicious alteration. |
 
 ## Inputs and fitted complexity
@@ -93,10 +94,9 @@ learning journal records causal input segments, configuration snapshots, archive
 forecast identity, context, episodes and an explicit seed where needed. The current
 algorithm replays the same ordered operations after a restart or corrupt checkpoint.
 The original recordings and context also remain available for future re-training.
-Version `committed-house-v10-hydronic-floor` distinguishes the new interpretation; older journal
-versions remain archival and are not silently interpreted as identical new-model
-history. Imported CSV formats, timestamps, units, duplicate handling and provenance
-remain unchanged.
+Replay requires the saved configuration and matching algorithm version. Development
+databases can be recreated for model changes; imported CSV formats, timestamps,
+units, duplicate handling and provenance remain unchanged.
 
 The four fitted-coefficient chart choices use the same per-entry learning operation
 in a read-only replay. They derive steps and provenance in memory without recording
@@ -130,8 +130,11 @@ zonal heat-transfer models. Automatic preheat requires observed and projected
 source-map supply inside the provisional 30–50 °C range; B0 reference data do not
 make a missing live brine reading known. The fixed future-supply assumption is
 3 °C per degree of ROOM increase. Savings aggressiveness is a preference over
-admitted cycle choices, not an annual savings percentage or guarantee. Final DHW
-refill is unimplemented; whole-home savings and matched tank service are unproven.
+admitted cycle choices, not an annual savings percentage or guarantee. Room-air
+limits default to ±1.5 °C. The common 60-minute recovery hold is a provisional
+engineering setting, not a measured optimum. The model assigns zero room heat to
+DHW tank, use and recirculation losses; whole-home savings and matched tank service
+remain outside its claims.
 Internal gains, open windows, changing emitter behavior, DHW demand, defrost and
 weather forecast error can cause residual errors. Manufacturer source estimates and nominal electrical input are not
 heat metering or observed COP. Correlated observations and repeated holdout use mean empirical

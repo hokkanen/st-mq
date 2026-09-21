@@ -2,6 +2,7 @@ import { MODEL_INPUT_INFO } from '../domain/history-series.js';
 import { FIREPLACE_INPUT_NAMES } from './chart-fireplace.js';
 import { goodQuality } from '../control/learning.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
+import { LEARNING_ALGORITHM } from './committed-learning.js';
 
 const WINDOW = 15 * 60_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -78,7 +79,8 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
       // These algorithms record indoor availability independently of the other
       // learning inputs. A missing outdoor segment must not erase a known
       // indoor average. Older algorithms retain their original chart gates.
-      const currentIndoor = ['committed-house-v7-held-indoor','committed-house-v8-report-coverage','committed-house-v9-reversible-sensors','committed-house-v10-hydronic-floor'].includes(row.algorithm_version);
+      const currentIndoor = row.algorithm_version === LEARNING_ALGORITHM
+        || ['committed-house-v7-held-indoor','committed-house-v8-report-coverage','committed-house-v9-reversible-sensors','committed-house-v10-hydronic-floor'].includes(row.algorithm_version);
       project('model_indoor_temperature', start, end, (currentIndoor || usable) && finite(sample.indoorC) ? sample.indoorC : null,
         currentIndoor ? { ...common, ...indoorEndpointMetadata(sample, usable) } : common, true);
     }

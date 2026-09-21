@@ -185,7 +185,7 @@ test('right-axis data cannot hide missing or hidden left-axis values and states 
   assert.equal(historyStateLabel('operating_mode', 2), 'Compressor only');
 });
 
-test('v9 indoor averages survive unrelated failures while the chart retains the originally recorded settling gap', t => {
+test('current indoor averages survive unrelated failures while the chart retains the originally recorded settling gap', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const covered = { indoorC: 20.5, valid: false, quality: ['missing'], indoorSensors: {
     indoor_temperature: { value: 20.5, weight: 1, observedAt: start, reportCoverageComplete: true, held: false, needsAttention: false },

@@ -8,7 +8,7 @@ import { estimateHeatPumpPerformance } from '../src/domain/heat-pump-performance
 import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 
-const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z'), treatmentKey = 'fixed-room-floor-v1';
+const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z'), treatmentKey = 'room-boost-floor-v1';
 function fixture(t, { reductionHours = 4 } = {}) {
   const store = new Store(':memory:'); t.after(() => store.close());
   const config = { recoveryTimeoutHours: 12, heatPumpModelConfirmed: true,

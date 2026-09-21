@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { estimateHeatPumpPerformance, estimateHydronicHeat } from '../src/domain/heat-pump-performance.js';
 import { initialAdaptiveModel, predictThermalStep, evaluateThermalModel, thermalObservationIntervals,
   fitAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearningBatch, updateAdaptiveEpisode,
-  actionEvidenceReady } from '../src/control/adaptive-learning.js';
+  actionEvidenceReady, thermalUncertaintyC } from '../src/control/adaptive-learning.js';
 
 const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
 const near = (actual, expected, tolerance = 1e-10) => assert.ok(Math.abs(actual - expected) <= tolerance,
@@ -129,7 +129,18 @@ test('old separate-gain checkpoints and other treatment validation cannot qualif
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3,
     parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
   model.equipmentResponse = { phases: { preheat: { trainingEpisodes: 3 } },
-    validation: { phases: { preheat: { accepted: true, episodes: 3, maxDurationHours: 2, treatmentKey: 'fixed-room-v1' } } } };
-  assert.equal(actionEvidenceReady(model, 'preheat', 1, 'fixed-room-v1'), true);
-  assert.equal(actionEvidenceReady(model, 'preheat', 1, 'fixed-room-floor-v1'), false);
+    validation: { phases: { preheat: { accepted: true, episodes: 3, maxDurationHours: 2, treatmentKey: 'room-boost-v1' } } } };
+  assert.equal(actionEvidenceReady(model, 'preheat', 1, 'room-boost-v1'), true);
+  assert.equal(actionEvidenceReady(model, 'preheat', 1, 'room-boost-floor-v1'), false);
+});
+
+
+test('configured slab uncertainty remains after override release throughout recovery', () => {
+  const configured = initialAdaptiveModel({ floorThermalPriors: { capacityKwhPerC: 2 } });
+  const unconfigured = initialAdaptiveModel();
+  const inputs = { supplyC: 35, brineC: 0, compressorDuty: 0.5, solarRadiationWm2: 0 };
+  const base = thermalUncertaintyC(unconfigured, 4, inputs);
+  for (const [phase, floorOverrideMode] of [['preheat', 'on'], ['reduction', 'off'], ['recovery', 'off'], ['normal', 'off']]) {
+    near(thermalUncertaintyC(configured, 4, { ...inputs, phase, floorOverrideMode }), base + 0.3);
+  }
 });

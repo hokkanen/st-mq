@@ -27,7 +27,7 @@ test('conservative startup needs no credentials or model and issues normal inten
   assert.ok(decision.reasons.includes('learning-normal-comfort-reference'));
   assert.ok(decision.reasons.includes('unvalidated-thermal-model'));
   assert.deepEqual(decision.commands, ['circulation', 'normal']);
-  assert.equal(decision.comfort.maxDropC, 1);
+  assert.equal(decision.comfort.maxDropC, 1.5);
   assert.equal(decision.comfort.targetC, null);
 });
 

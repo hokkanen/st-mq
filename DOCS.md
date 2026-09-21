@@ -58,7 +58,7 @@ for the algorithm, native-setting restoration and equipment testing limits.
    Transfer defaults are stored excluding VAT and yield day/night **3.34/1.96**,
    seasonal winter daytime/other **4.17/2.07 c/kWh including VAT**. Day/night stays
    selected. All four amounts and the tariff are configurable.
-9. Set the occupied preferred drop with `controller.max_drop_c` (default **1°C**).
+9. Set the occupied preferred drop with `controller.max_drop_c` (default **1.5°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
    change them in options, then use **Data & settings → Connections & configuration →
    Configuration → Apply configuration**.
@@ -237,7 +237,7 @@ occupied requirements when the return falls within the available forecast horizo
 Data/model confidence requirements still apply. Pause requests normal native
 operation without price reductions and restores owned native settings. `active`
 operates real configured MQTT equipment for either live input.
-The house comfort reference is inferred; preferred drop defaults to 1 °C.
+The house comfort reference is inferred; preferred drop defaults to 1.5 °C.
 Unsupported warm-weather temperature plateaus are excluded from new reference
 candidates. Cached provider readings keep their source timestamps through outages
 and restarts. FMI forecast publication, model analysis and valid times are stored

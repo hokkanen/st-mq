@@ -367,21 +367,21 @@ test('new algorithm starts its own journal while older entries remain explicitly
   assert.equal(replayLearningJournal(store, 'mqtt').algorithmVersion, LEARNING_ALGORITHM);
 });
 
-test('hydronic learning establishes a v10 seed without reinterpreting the v9 archive', t => {
+test('fresh learning saves the ROOM boost and shared recovery policy for deterministic replay', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  store.appendLearningJournal('mqtt', { kind: 'context', at: start - HOUR,
-    algorithmVersion: 'committed-house-v9-reversible-sensors', key: 'invented-v9-archive',
-    payload: { value: { timestamp: start - HOUR }, configuration: {}, seed: null } });
-  const archived = store.db.prepare("SELECT * FROM learning_journal WHERE algorithm_version='committed-house-v9-reversible-sensors'").get();
-  const model = initialAdaptiveModel(); model.parameters.fireplaceCPerKg = 0.23;
-  appendLearningRecord(store, 'mqtt', 'context', { timestamp: start }, { config, seed: { version: 1, samples: [], model } });
+  const configuration = { ...config, preheatRoomBoostC: 5, recoveryHoldMinutes: 60,
+    floorThermalPriors: { capacityKwhPerC: 2, groundLossKwPerC: 0.01 } };
+  const model = initialAdaptiveModel(configuration); model.parameters.fireplaceCPerKg = 0.23;
+  appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
+    { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v10-hydronic-floor');
-  assert.equal(entry.payload.seed.model.parameters.fireplaceCPerKg, 0.23);
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v11-preheat-recovery');
+  assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
+  assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
+  assert.equal(entry.payload.seed.model.floor.enabled, true);
   const checkpoint = replayLearningJournal(store, 'mqtt');
   assert.equal(checkpoint.model.parameters.fireplaceCPerKg, 0.23);
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true }), checkpoint);
-  assert.deepEqual(store.db.prepare('SELECT * FROM learning_journal WHERE id=?').get(archived.id), archived);
 });
 
 test('checkpoint digest rejects plausible model/state corruption and rebuilds from immutable entries', t => {

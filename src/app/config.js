@@ -21,8 +21,8 @@ export function validateSettings(input = {}) {
   const settings = {
     mode: input.mode ?? 'shadow',
     savingsAggressiveness: input.savingsAggressiveness ?? 50,
-    preheatRoomSettingC: input.preheatRoomSettingC ?? 25,
-    comfort: { targetC: null, maxDropC: 1, maxRiseC: 1, severeDropC: 2, ...(input.comfort ?? {}) },
+    preheatRoomBoostC: input.preheatRoomBoostC ?? 5,
+    comfort: { targetC: null, maxDropC: 1.5, maxRiseC: 1.5, severeDropC: 2, ...(input.comfort ?? {}) },
     occupancy: input.occupancy ?? { mode: 'occupied' },
   };
   if (!['monitoring', 'shadow', 'active'].includes(settings.mode)) throw new Error('Invalid operating mode');
@@ -31,7 +31,7 @@ export function validateSettings(input = {}) {
   if (!Number.isFinite(maxDropC) || maxDropC < 0 || maxDropC > 2) throw new Error('Preferred drop must be 0–2 °C');
   if (!Number.isFinite(maxRiseC) || maxRiseC < 0.25 || maxRiseC > 2) throw new Error('Preferred rise must be 0.25–2 °C');
   if (!Number.isFinite(settings.savingsAggressiveness) || settings.savingsAggressiveness < 0 || settings.savingsAggressiveness > 100) throw new Error('Savings aggressiveness must be 0–100');
-  if (!Number.isInteger(settings.preheatRoomSettingC) || settings.preheatRoomSettingC < 20 || settings.preheatRoomSettingC > 30) throw new Error('Preheat ROOM must be 20–30 °C');
+  if (!Number.isInteger(settings.preheatRoomBoostC) || settings.preheatRoomBoostC < 1 || settings.preheatRoomBoostC > 5) throw new Error('Preheat ROOM increase must be 1–5 °C');
   if (!['occupied', 'away'].includes(settings.occupancy.mode)) throw new Error('Invalid occupancy mode');
   if (settings.occupancy.returnAt != null && !Number.isFinite(Date.parse(settings.occupancy.returnAt))) throw new Error('Invalid return time');
   return settings;
@@ -41,9 +41,9 @@ export const CONTROL_DEFAULTS = Object.freeze({
   auxIntegralA2: -990, auxHysteresisC: 30, compressorIntegralA1: null, compressorHysteresisC: null,
   a2Basis: 'absolute', heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025,
   maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
-  maxPreheatHours: 2, maxRoomBoostC: 5, preheatRoomSettingC: 25, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 100,
+  maxPreheatHours: 2, preheatRoomBoostC: 5, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 100,
   maxTrialCostCents: 50, recoveryTimeoutHours: 48,
-  recoveryCompressorOnly: true, recoveryCompressorOnlyHours: 4, recoveryComfortMarginC: 0.5,
+  recoveryCompressorOnly: true, recoveryHoldMinutes: 60, recoveryComfortMarginC: 0.5,
   dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
 });
 
@@ -148,11 +148,11 @@ export function controlConfiguration(input = {}) {
     a2_basis: 'a2Basis', heat_pump_compressor_kw: 'heatPumpCompressorKw', auxiliary_rated_kw: 'auxRatedKw',
     circulation_kw: 'circulationKw', dhwr_kw: 'dhwrKw', dhwr_duration_minutes: 'dhwrPulseMinutes', max_reduction_hours: 'maxReductionHours',
     max_away_reduction_hours: 'maxAwayReductionHours', max_unobserved_reduction_hours: 'maxUnobservedReductionHours',
-    preheat_room_setting_c: 'preheatRoomSettingC', heat_pump_model_confirmed: 'heatPumpModelConfirmed',
-    max_preheat_hours: 'maxPreheatHours', max_room_boost_c: 'maxRoomBoostC', learning_trials: 'learningTrials',
+    preheat_room_boost_c: 'preheatRoomBoostC', heat_pump_model_confirmed: 'heatPumpModelConfirmed',
+    max_preheat_hours: 'maxPreheatHours', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
     recovery_timeout_hours: 'recoveryTimeoutHours', recovery_compressor_only: 'recoveryCompressorOnly',
-    recovery_compressor_only_hours: 'recoveryCompressorOnlyHours', recovery_comfort_margin_c: 'recoveryComfortMarginC' };
+    recovery_hold_minutes: 'recoveryHoldMinutes', recovery_comfort_margin_c: 'recoveryComfortMarginC' };
   const result = { ...CONTROL_DEFAULTS };
   for (const [key, value] of Object.entries(input)) if (map[key]) result[map[key]] = value;
   for (const [key, value] of Object.entries(result)) {
@@ -162,9 +162,9 @@ export function controlConfiguration(input = {}) {
   }
   if (!['absolute', 'offset'].includes(result.a2Basis) || typeof result.learningTrials !== 'boolean'
     || typeof result.recoveryCompressorOnly !== 'boolean') throw new Error('Invalid learning or integral configuration');
-  if (typeof result.heatPumpModelConfirmed !== 'boolean' || !Number.isInteger(result.preheatRoomSettingC) || result.preheatRoomSettingC < 20 || result.preheatRoomSettingC > 30
+  if (typeof result.heatPumpModelConfirmed !== 'boolean' || !Number.isInteger(result.preheatRoomBoostC) || result.preheatRoomBoostC < 1 || result.preheatRoomBoostC > 5
     || result.auxIntegralA2 >= 0 || result.auxIntegralA2 < -5000 || result.auxHysteresisC <= 0 || result.auxHysteresisC > 50
-    || !Number.isInteger(result.maxRoomBoostC) || result.maxRoomBoostC < 1 || result.maxRoomBoostC > 5 || result.maxPreheatHours <= 0 || result.maxPreheatHours > 6
+    || result.maxPreheatHours <= 0 || result.maxPreheatHours > 6
     || result.maxReductionHours <= 0 || result.maxReductionHours > 12 || result.maxAwayReductionHours <= 0 || result.maxAwayReductionHours > 24
     || result.maxUnobservedReductionHours <= 0 || result.maxUnobservedReductionHours > 2
     || result.heatPumpCompressorKw <= 0 || result.heatPumpCompressorKw > 20 || result.auxRatedKw <= 0 || result.auxRatedKw > 20
@@ -173,7 +173,7 @@ export function controlConfiguration(input = {}) {
     || result.circulationKw < 0 || result.circulationKw > 1 || result.dhwrKw < 0 || result.dhwrKw > 1 || result.trialBudgetCentsPerDay < 0 || result.trialBudgetCentsPerDay > 1000
     || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
     || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168
-    || result.recoveryCompressorOnlyHours < 0.25 || result.recoveryCompressorOnlyHours > 12
+    || !Number.isInteger(result.recoveryHoldMinutes) || result.recoveryHoldMinutes < 1 || result.recoveryHoldMinutes > 240
     || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1
     || result.dhwrPulseMinutes < 1 || result.dhwrPulseMinutes > 60)
     throw new Error('Controller settings exceed supported bounds');
@@ -333,8 +333,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       auxRatedKw: options.controller?.auxiliary_rated_kw ?? 9, compressorOnlyMode: 2 },
     h66Verification: !replica && verification ? resolve(addon ? '/config' : cwd, verification) : undefined,
     settings: validateSettings({ savingsAggressiveness: options.controller?.savings_aggressiveness ?? 50,
-      preheatRoomSettingC: options.controller?.preheat_room_setting_c ?? 25, mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
-      comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1 : Number(env.STMQ_MAX_DROP_C) } }) };
+      preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5, mode: replica ? 'monitoring' : env.STMQ_MODE ?? options.controller?.mode ?? 'shadow',
+      comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pairing = pairingConfiguration(options.pairing, env, config);
   configurationSources.set(config, source);
   configurationReaders.set(config, () => loadConfig(env, cwd));

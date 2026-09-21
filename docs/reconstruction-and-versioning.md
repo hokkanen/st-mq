@@ -57,188 +57,66 @@ the service or recording another correction retries it.
 
 ## Version discipline
 
-`committed-house-v4-fireplace` introduced the pooled fireplace response and its
-original evidence rules (Git revision `a3390ad`). `committed-house-v5-fireplace`
-adds meaningful-tail learning gates and fitting against retained, validated house
-coefficients. The fixed response curve remains version 1. The v4 journal remains
-an archive requiring its matching code; the current runtime does not relabel it.
-The first v5 record establishes the new algorithm's explicit seed/learning epoch.
-`committed-house-v6-sensors` introduces a configured indoor average, individual
-room comfort references, bounded bidirectional comfort adaptation, and recorded
-sensor-change boundaries. The v5 archive requires its matching code (for example
-Git revision `dd7d378`); it is never replayed as v6. The first v6 entry saves the
-explicit initial seed. Legacy CSV `temp_in` still means the original upstairs
-sensor; imported learning remains separate from a live multi-sensor average.
+The Home learning algorithm is `committed-house-v11-preheat-recovery`, with
+thermal model version 3. Production starts from a fresh database and an explicit
+initial seed. There is no compatibility migration for development databases.
 
-Sensor changes are compact immutable journal context events, with a server
-timestamp, logical signal, reason, settling deadline and retry identity. They
-start a new measurement period under the active algorithm; an ordinary sensor
-replacement does not create a new software algorithm version. Affected thermal
-and comfort evidence is cleared, with house coefficients retained only as starting
-estimates. Live updates and replay apply this same reset. Old observations and
-frozen cycle forecasts remain unchanged, and no calibration offset is invented.
-Configured average-membership or weight changes also establish a measurement
-boundary. See [temperature sensors](temperature-sensors.md) for operational rules.
+The journal saves the resolved learning configuration, including the relative
+ROOM preheat increase, shared recovery-hold duration, source assumptions and
+selected-slab priors. The actual ROOM increase respects the native setting limit;
+recorded heat delivery remains separate from the requested action. Action evidence
+is matched to the hydraulic treatment used throughout charging, reduction and
+recovery. Changes to equipment or treatment assumptions invalidate the relevant
+action evidence; source/rating and slab changes also clear thermal validation.
 
-`committed-house-v7-held-indoor` keeps the latest genuine known reading for each
-configured indoor sensor through age and disconnection, with the configured
-weights unchanged. These held contributions remain usable for control and
-learning; no cross-room estimate or replacement timestamp is invented. Every
-committed member saves its original observation time and lineage, plus whether
-it was held and needed attention (older than two hours, disconnected or an
-invalid later update). Never-seen sensors remain missing. Invalid, retained,
-unknown-time and future measurements cannot replace a genuine reading. Sensor
-changes and their settling periods still exclude earlier measurement periods;
-outdoor and equipment freshness rules are unchanged.
+One hydronic coefficient acts on routed space-heating compressor heat plus AUX
+heat. Compressor thermal and electrical estimates remain separate. Domestic
+hot-water production contributes zero to the space-heating thermal input by
+explicit simplifying assumption. The optional slab has a persistent latent
+state, fixed material capacity, room exchange and ground exchange. Configuring it
+allocates selected material from the seeded reserve unless a separate remaining
+capacity is supplied. Ending the override does not reset stored heat or remove its
+forecast uncertainty. No slab coefficient is fitted automatically.
 
-The v6 journal remains an archive requiring its matching code (Git revision
-`113e495`); the runtime does not replay it as v7. The first v7 entry records its
-explicit initial seed and starts the new learning epoch. Historical CSV indoor
-values retain their original Upstairs interpretation and import provenance.
+Fitting requires independent input evidence. Genuine temperature endpoints,
+complete source-report coverage and causal thermal warmup are preserved in replay.
+Repeated held readings do not add independent fitting targets; the original heat
+input windows continue to integrate between reports. Warmup is at least 48 hours
+(four reserve time constants, capped at 288 hours). The bounded episode cache
+retains that prefix; unsupported initial storage cannot establish fit acceptance.
+The recent sample cache and retained episode count remain bounded, with up to two
+additional hours of input windows for a delayed genuine endpoint. These are
+checkpoint fitting caches, not duplicate source journals.
 
-`committed-house-v8-report-coverage` adds a recorded reporting contract for
-periodic indoor MQTT sensors: a 15-minute interval plus two minutes of grace by
-default. A genuine newer report confirms coverage even if its temperature is
-unchanged. Compact recorder spans preserve that evidence without inserting
-scheduled temperature rows. Each span extends only when the next report arrives
-before the previous source report expires; missed deadlines and explicit source
-failures start a gap that later recovery cannot erase. Retained packets and
-repeated source timestamps cannot extend coverage. The original saved temperature
-and its observation time remain separate from report availability.
-Enabling or changing a periodic reporting policy records one explicit availability
-boundary and waits for a genuine report under the new contract. Restarting while
-that report is pending does not duplicate the boundary. Disabling the policy
-cannot erase a periodic gap earlier in the same learning window.
+Configured sensor membership and weights do not change when a reading is missing.
+Held values retain their genuine source and receipt clocks, lineage and recorded
+report-coverage contract. Required reporting gaps and acquisition failures exclude
+those intervals even if telemetry later recovers. A reconnection can end a
+transport-only gap only when the genuine reading remains valid and its saved route
+matches; it never creates a new temperature observation. Configuration and
+reporting-policy changes are recorded at their effective time.
 
-Live control uses the normal safe fallback when any configured periodic member
-is unavailable. Learning also rejects a completed window that crosses a report
-gap, even if the sensor has recovered by the endpoint. The committed sample saves
-the complete-window coverage result and observation/coverage lineage; live
-updates and rebuilding consume that same immutable sample. Sensors without this
-periodic contract, including the existing H66 and garage sources, retain their
-previous behavior. CSV interpretation and provenance are unchanged.
+Sensor changes and reversals are compact immutable journal events. A sensor change
+clears the affected measurement evidence; retained coefficients are starting
+estimates until independently validated. Corrected replay uses the same pure
+eligibility projection as live learning. It may recover preserved measurements
+behind a reversed settling period, but cannot erase actual reporting gaps or
+replace original frozen forecasts. Rebuilds pin correction revisions and the
+journal head, catch up in the background, and atomically publish a verified
+checkpoint while control remains available. Pending rebuilds survive restart.
 
-The v7 journal remains an archive requiring its matching code (Git revision
-`b779b44`), and is never replayed as v8. The first v8 entry records the explicit
-initial seed and starts its own learning epoch.
+Changes to numerical interpretation, training selection, corrections, seeds or
+fitting rules require an explicit learning algorithm identifier change and replay
+tests. Configuration changes are recorded with their digest and snapshot. SQLite
+schema versioning is separate from learning algorithm versioning. A journal whose
+algorithm is unsupported must be reported as such, never silently reinterpreted.
+Historical CSV imports retain their source meaning and timestamps.
 
-The current 70-minute reporting interval plus five-minute grace is a recorded
-configuration choice under the existing report-coverage rules. A policy change
-now saves an explicitly marked policy event at its effective time. It may carry
-an already genuine report that remains within the new deadline, retaining that
-report's source time and original receipt lineage. Its new coverage span starts
-at the configuration time with zero new reports; earlier spans, outages and
-committed learning samples remain unchanged. Restart cannot renew that deadline.
-Explicit acquisition failures and sensor-change exclusions still require genuine
-recovery evidence. This forward-only configuration event does not reinterpret
-archived journal entries or change the ordered learning update and replay rules.
-
-A confirmed MQTT subscription can likewise end a transport-only outage for a
-room whose genuine report is still inside its original deadline. A saved route
-hash must match the confirmed broker, topic and decoder mapping. The recovery
-event retains the original source/receipt clocks and starts zero-report coverage
-at reconnection; preceding outage windows and committed samples stay excluded.
-Invalid payloads, device-offline evidence and sensor-change exclusions cannot be
-cleared this way. Unsigned older reports need one genuine publication to establish
-route lineage; no restart or retained publication certifies that missing evidence.
-
-`committed-house-v9-reversible-sensors` adds append-only sensor-change reversals.
-A reversal references the original change; both records remain in the journal.
-Its selected correction revision retracts that measurement boundary throughout
-reconstruction while preserving other sensor changes and configuration boundaries.
-Only changes within the supported algorithm can be reverted; the v8 archive
-requires its matching code (Git revision `fc5ec60`) and is never relabelled as v9.
-The first v9 entry records the explicit initial seed for the new learning epoch.
-A seed after an archived reset is not evidence of the state before that reset.
-
-Acquisition and recording remain independent of resets. V9 resolves genuine
-indoor endpoints, periodic coverage and outdoor interval measurements before
-applying sensor exclusions. Reset-affected samples retain a compact patch of
-those original temperature inputs, including bounded coverage intervals. Other
-sample inputs are not duplicated. Live updates and corrected replay apply the
-same pure eligibility projection to these saved inputs. Thus a reverted reset
-recovers settling-period temperatures without new device polls, rewriting old
-journal payloads or relying on later mutable coverage. Real reporting gaps,
-invalid measurements and original historical configuration remain authoritative.
-This is a temperature-input addition, not a per-minute model snapshot or a full
-decision-input archive. Imported CSV interpretation and provenance are unchanged.
-
-A sensor reversal queues the shared background correction worker even before a
-subsequent sample exists, because the boundary itself cleared model state. The
-worker pins both correction revisions and the selected journal epoch, catches up
-the journal head, and publishes a complete checkpoint atomically. The previous
-model continues serving control until publication; pending intent survives restart
-and failed jobs can be retried. Reversal never resumes an interrupted historical
-cycle or invents the control actions that might have occurred without the reset.
-Original recorded model-input charts retain the inputs used at that time;
-coefficient charts show the selected corrected model assessment.
-
-Existing experimental SQLite contents do not require a compatibility migration.
-
-`committed-house-v10-hydronic-floor` starts a new thermal epoch with model version
-3. The v9 journal remains an honest archive at Git revision `5bde1d7`; replay it
-only with its matching implementation. A v9 seed is not numerically converted:
-v10 saves an explicit compatible seed or starts from documented new priors. In
-particular, old action validation cannot qualify fixed ROOM requests or newly
-opened floor loops.
-
-The fitted hydronic response is now degrees C per estimated thermal kWh. It
-acts on routed compressor duty times the fixed DHP-H 10 B0 output map, plus
-routed AUX thermal power. The old independently fitted compressor and AUX gains
-are gone. The map uses published W35/W45 output and COP, keeps electrical input
-separate, includes the published circulation-pump boundary, and reports missing
-source temperatures, extrapolation and unconfirmed equipment as uncertainty.
-It is not a heat meter, measured COP, or an identified brine-temperature curve.
-
-Committed windows retain integrated supply/brine temperatures, source heat and
-electrical estimates, confirmed floor mode and treatment identity. Mixed and
-incomplete override intervals cannot teach successful all-open actions. Service
-circulation is independent of preheat and is recorded through its actual context.
-The optional selected slab uses private configured capacity/allocation/exchange
-priors; its state persists after the override ends. Selected capacity is removed
-from the seeded generic reserve, transfer and source allocation conserve energy,
-and baseline ground loss is not added twice. No slab coefficient is fitted yet.
-
-Fitting checks candidate coefficients against all materially present uncertain
-inputs, even when those peers remain fixed. Repeated held indoor endpoints are
-coalesced into genuine observation intervals while their original hydronic input
-windows remain integrated. Fit acceptance requires causal warmup of at least 48
-hours (four reserve time constants, capped at 288 hours); isolated fragments with
-unsupported initial reserve are excluded. The bounded episode cache retains that
-warmup prefix so weekly cycles survive eviction of the recent sample cache.
-Periodic observations can retain up to two further hours of original windows for
-the first genuine endpoint after recovery. This is a bounded checkpoint fitting
-cache, not additional source journal copies. An invented 23-hour episode with a
-48-hour prefix used 285 normalized samples / 128 kB of JSON; 21 such episodes
-would use about 2.7 MB before richer input segments. The retained episode count
-and original 1,536-sample recent cache remain bounded; actual byte size depends
-on the number of source transitions and sensor members.
-These changes use the same ordered update in live operation and reconstruction;
-original observations, legacy CSV interpretation and frozen forecasts remain
-unchanged.
-
-Changes to numerical interpretation,
-training selection, corrections, seeds or fitting rules require an explicit learning
-algorithm version change and appropriate replay tests. Configuration changes remain
-recorded with their configuration digest and snapshot. SQLite schema versioning is
-separate from learning algorithm versioning.
-
-Never interpret an old journal as a newer algorithm while claiming identical
-reconstruction. Support an older version explicitly, or preserve its history as an
-archive with the matching Git revision/release and establish an explicit new seed
-or new learning epoch. Old implementations do not have to run beside the current
-controller. Reproduction of an archived unsupported version requires checking out
-its corresponding code; the current runtime must report unsupported history honestly.
-
-The fireplace addition must remain compact: source events are stored once, input
-projections are derived, and rolling model state remains bounded. Do not add repeated
-full histories, per-minute model snapshots or comprehensive decision-input archives
-without a separately agreed change of scope and a measured storage budget.
-
-Retrospective firewood savings are a separate, read-only calculation under the
-current corrected model and normal heating policy. A model update can revise them.
-They do not claim to reconstruct a past controller's forecast or control choice,
-and must remain labelled as estimated rather than measured savings.
+Source events are stored once, input projections are derived and rolling state
+remains bounded. Do not add repeated full histories, per-minute model snapshots or
+comprehensive decision-input archives without an agreed scope and storage budget.
+Retrospective firewood benefit remains a read-only estimate under the corrected
+model; it is separate from a forecast saved before execution or measured savings.
 
 ## Separate Garage learning
 

@@ -4,7 +4,8 @@ import { H66_MAX_AGE_MS } from '../src/domain/reading-freshness.js';
 import { durationText, qualityReasonText } from './reading-status.js';
 import { renderLearningRows } from './learning-rows.js';
 import { coefficientCalculation, floorCalculation, sourceCalculation, heatBalanceCalculation, outcomeCalculation,
-  inputCalculation, dutyCalculation, economicCalculation, validationCalculation, calibrationCalculation, fittingCalculation } from './home-learning-math.js';
+  inputCalculation, dutyCalculation, economicCalculation, validationCalculation, calibrationCalculation, fittingCalculation,
+  preheatCalculation, recoveryHoldCalculation, hotWaterCalculation } from './home-learning-math.js';
 
 const finite = Number.isFinite;
 const number = (value, digits = 2) => finite(value) ? value.toFixed(digits) : '—';
@@ -19,18 +20,13 @@ const metricDefinitions = [
   ['indoorTemperature', 'Normal indoor temperature', '°C', 'The temperature achieved during sustained, stable periods declared occupied with normal heating. Verified heating activity supports the reference; sustained cool weather can establish a provisional reference when equipment observations are missing. Preheating, recovery and logged fireplace heating do not raise it.'],
 ];
 const coefficientLabels = {
-  lossPerHour: 'Heat loss', hydronicCPerKwh: 'Combined compressor + auxiliary response', normalHeatCPerHour: 'Legacy compressor heating response', solarCPerHourPerKwM2: 'Solar response',
-  auxiliaryCPerKwh: 'Legacy auxiliary heating response', fireplaceCPerKg: 'Fireplace response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
-  reducedHeatCPerHour: 'Legacy reduced-mode allowance', preheatCPerHourPerDegree: 'Legacy preheat allowance',
+  lossPerHour: 'Heat loss', hydronicCPerKwh: 'Combined compressor + auxiliary response', solarCPerHourPerKwM2: 'Solar response',
+  fireplaceCPerKg: 'Fireplace response', memoryExchangePerHour: 'Building heat exchange', reserveTimeHours: 'Building memory time',
 };
 const coefficientInfo = {
   ...Object.fromEntries(Object.values(MODEL_COEFFICIENT_INFO).map(info => [info.parameter, info])),
-  normalHeatCPerHour: { unit: '°C/h', digits: 3, legacy: true, detail: 'Archived compressor-only temperature response. The current model replaces separate source responses with one coefficient per estimated thermal kWh.' },
-  auxiliaryCPerKwh: { unit: '°C/kWh', digits: 3, legacy: true, detail: 'Archived auxiliary-only response. It is not fitted by the current combined hydronic model.' },
   memoryExchangePerHour: { unit: '1/h', digits: 4, fixed: true, detail: 'Exchange rate between the modeled building heat reserve and indoor air. The slow reserve is unmeasured, so this remains a fixed structural assumption.' },
   reserveTimeHours: { unit: 'h', digits: 1, fixed: true, detail: 'Time scale of the modeled building heat reserve. This is temperature memory, not a measured floor temperature or storage capacity.' },
-  reducedHeatCPerHour: { unit: '°C/h', digits: 3, legacy: true, detail: 'Reduced-mode heating allowance carried by a legacy model. The current observed-input model does not fit this coefficient.' },
-  preheatCPerHourPerDegree: { unit: '1/h', digits: 4, legacy: true, detail: 'Legacy heating allowance per degree of requested preheat boost. The current model treats boost as control context, without a direct unmeasured heat contribution.' },
 };
 const inputSources = {
   model_indoor_temperature: 'The configured sensors contribute according to their weights. Their latest genuine readings can be held between reports; freshness and report coverage determine whether the interval is usable. A missing contributing sensor or a gap in required reports excludes the average. The chart preserves the originally supplied average, including sensor-change settling gaps; corrected learning can use preserved readings behind those settling gaps.',
@@ -87,7 +83,6 @@ const evidenceReason = reason => evidenceReasons[reason] ?? words(reason);
 
 function coefficientState(model, key, info) {
   if (!finite(model.parameters?.[key])) return 'unavailable';
-  if (info.legacy) return 'legacy';
   if (info.fixed) return 'fixed';
   if (model.validation?.accepted !== true) return 'initial';
   if (model.validation.fittedParameters?.includes(key)) return 'fitted';
@@ -95,7 +90,7 @@ function coefficientState(model, key, info) {
 }
 
 const coefficientProvenance = {
-  unavailable: 'Unavailable', legacy: 'Legacy model value', fixed: 'Fixed assumption',
+  unavailable: 'Unavailable', fixed: 'Fixed assumption',
   fitted: 'Fitted in current model', retained: 'Retained from an earlier validated fit',
   unvalidated: 'Estimate — not independently identified', initial: 'Initial estimate — not validated',
 };
@@ -119,7 +114,7 @@ export function modelCoefficientDescriptions(learning = {}) {
     const state = coefficientState(model, key, info);
     const latest = adaptive.health?.status === 'retained-previous' ? adaptive.health.parameterEvidence?.[key] : null;
     return { key, title: coefficientLabels[key], unit: info.unit, available,
-      group: info.fixed ? 'Building assumptions' : info.legacy ? 'Legacy values' : 'Thermal responses',
+      group: info.fixed ? 'Building assumptions' : 'Thermal responses',
       value: available ? `${number(rawValue, info.digits)} ${info.unit}` : 'Unavailable',
       provenance: coefficientProvenance[state],
       detail: info.detail, calculation: key === 'reserveTimeHours' && !finite(model.parameters?.hydronicCPerKwh)
@@ -171,7 +166,6 @@ export function learningDisplay(learning = {}, context = {}) {
   if (health.phaseSamples) record('Control-phase coverage', 'Retained fitting window', `Retained intervals by control phase: ${Object.entries(health.phaseSamples).map(([phase, count]) => `${words(phase)} ${count}`).join(', ')}. These counts do not establish independent completed-cycle evidence.`);
   const horizon = finite(validation?.horizonHours) ? `${number(validation.horizonHours, 1)}${finite(validation.maximumHorizonHours) && validation.maximumHorizonHours !== validation.horizonHours ? `–${number(validation.maximumHorizonHours, 1)}` : ''} hours` : 'the saved forecast horizon';
   if (validation?.accepted && finite(validation.maeC)) record('Temperature prediction', `${number(validation.maeC)} °C mean error`, `Conditional temperature validation: ${number(validation.maeC)} °C mean absolute trajectory error over ${validation.samples ?? 0} later blocks of ${horizon}${finite(validation.maxErrorC) ? `; maximum ${number(validation.maxErrorC)} °C` : ''}${finite(validation.persistenceMaeC) ? `. Holding the initial temperature gives ${number(validation.persistenceMaeC)} °C` : ''}. Errors are weighted by duration. Each trajectory starts once and runs forward with observed heat input supplied; this does not validate full-cycle cost or future compressor duty.`);
-  else if (validation?.accepted && finite(validation.maeCPerHour)) record('Legacy temperature check', `${number(validation.maeCPerHour)} °C/h`, `Legacy temperature validation: ${number(validation.maeCPerHour)} °C/h over ${validation.samples ?? 0} saved checks of ${horizon}. This rate-normalized legacy score does not validate full-cycle cost or current action readiness.`);
   if (health.reason) record('Latest model update', words(health.reason), `Latest update: ${words(health.reason)}.`);
   if (finite(p.fireplaceCPerKg)) {
     const fire = validation?.fireplace;
@@ -194,14 +188,18 @@ export function learningDisplay(learning = {}, context = {}) {
     basis('Worthwhile cycle threshold', `${number(50 - 40 * a, 0)} ct before comfort and duration costs`, `The current preference requires conservative benefit above ${number(50 - 40 * a, 0)} cents to start, plus ${number(30 - 25 * a, 1)} cents per weighted hot/cold °C²-hour, 2 cents per extra active hour and a 2-cent start cost. Ongoing-cycle checks omit the already committed start hurdle. Among qualified plans, the mildest retaining at least ${number((0.6 + 0.4 * a) * 100, 0)}% of the best conservative benefit is preferred. At zero, the economic preference favors comfort most; pause and operating mode control whether optimization runs.`);
     basis('Shared economic stress checks', 'Same scenarios for action and reference', 'Selection, dispatch and continuation compare paired physical scenarios: heat response ±15%, heat loss ±15%, initial reserve/slab ±0.5 °C, compressor duty ±0.08, source electricity within its operating-point allowance and AUX exposure ±50%. A residual 5-cent uncertainty floor remains. These are engineering stress cases, not probability bounds or measured savings. The bounded search examines a nominal shortlist independently of savings preference; no exhaustive optimum is claimed.');
   }
-  if (Object.keys(policy).length) basis('Preheat and comfort policy', 'Configured control limits', `Preheating requests an absolute ROOM setting${finite(policy.preheatRoomSettingC) ? ` of ${number(policy.preheatRoomSettingC, 1)} °C` : ''}; this is a heat-pump demand setting, not the desired room-air temperature. Configured floor outputs form one pooled override. Normal hot-water recirculation remains independently scheduled. Savings preference changes the economic hurdle and discomfort cost; occupied-room upper and lower limits remain hard constraints. Warming one room does not establish storage available to another room. Automatic forecasts assume supply rises 3 °C per degree of ROOM increase; that fixed planning prior is not a learned heating curve or an H66 forecast. An existing warmer ROOM baseline is never lowered.`);
-  if (finite(p.hydronicCPerKwh)) record('Learning epoch and treatment', 'Combined hydronic model', 'The current epoch uses a fixed compressor heat estimate and a shared compressor/AUX response. Source/rating or floor-assumption changes clear thermal and action validation. An automatic cycle retains its original treatment identity through reduction and recovery even after the override closes. Current valve mode is recorded separately; older ROOM-only evidence cannot qualify newly opened circuits. Archived episodes retain causal thermal warmup, and unsupported initial storage cannot establish fit acceptance.');
+  if (Object.keys(policy).length) {
+    basis('Preheat and comfort policy', finite(policy.preheatRoomBoostC) ? `ROOM +${number(policy.preheatRoomBoostC, 1)} °C` : 'Configured control limits', `Preheating increases the saved normal ROOM setting${finite(policy.preheatRoomBoostC) ? ` by ${number(policy.preheatRoomBoostC, 1)} °C` : ''}, limited by verified native bounds. Repeated commands use the same baseline rather than stacking increases. ROOM is a heat-pump demand setting, not a room-air target. Configured floor outputs form one pooled override. Normal hot-water recirculation keeps its own schedule during preheat. Occupied-room limits${finite(policy.comfort?.maxDropC) && finite(policy.comfort?.maxRiseC) ? ` are ${number(policy.comfort.maxDropC, 1)} °C below and ${number(policy.comfort.maxRiseC, 1)} °C above each room’s reference` : ' remain hard constraints'} at every savings preference. Warming one room does not establish storage available to another room. Automatic forecasts assume supply rises 3 °C per degree of ROOM increase; that fixed planning prior is not a learned heating curve or an H66 forecast.`);
+    const holdMinutes = finite(policy.recoveryHoldMinutes) ? policy.recoveryHoldMinutes : 60;
+    basis('Recovery hold', `${number(holdMinutes, 0)} min shared deadline`, `After tariff reduction ends, one ${number(holdMinutes, 0)}-minute hold keeps the reduced DHW settings, suppresses automatic recirculation and applies the AUX restriction when enabled. The compressor can recover space heating. A cold-room safeguard releases AUX permission early without restarting recirculation or restoring DHW settings. At the fixed deadline, normal settings and scheduled recirculation eligibility resume even if thermal recovery assessment continues. The hold is a configured engineering choice, not a learned recovery time.`);
+  }
+  if (finite(p.hydronicCPerKwh)) record('Heating treatment evidence', 'Combined hydronic model', 'Source/rating or floor-assumption changes clear thermal and action validation. An automatic cycle retains its original treatment identity through reduction and recovery even after the override closes. Current valve mode is recorded separately; ROOM-only evidence cannot qualify newly opened circuits. Retained episodes preserve causal thermal warmup, and unsupported initial storage cannot establish fit acceptance.');
   if (finite(p.hydronicCPerKwh)) {
     record('Room comfort projection', 'Conservative room-offset proxy', 'There is no separately identified thermal model for each room. Forecasts preserve each participating room’s current offset from the indoor average along the common forecast. A supplied room trend can extend that proxy for at most one hour; current room telemetry does not establish an independently learned trend. Upper and lower bounds include the common temperature allowance; individual live readings also protect control. A warm downstairs cannot establish how much useful heat reaches a bedroom later.');
     record('Forward uncertainty', 'Conditional errors + engineering allowances', 'Conditional temperature validation supplies observed heating input. Forward forecasts additionally carry engineering allowances for source estimates, unvalidated actions, missing solar, fireplace response and optional floor storage, plus paired economic stress cases. Learning trials additionally test full compressor and permitted rated AUX heat during preheat, followed by native demand until the delayed room peak is covered; insufficient coverage or excessive room warmth blocks the trial. The calculated equipment-duty error is disclosed separately; these bounds are not calibrated probabilities. Frozen forecasts saved before cycles require their own later-outcome validation.');
-    record('Domestic hot-water boundary', 'Space-heating savings only', 'Normal recirculation retains its independent schedule. Final DHW refill is not implemented and is not enabled as an automatic treatment. Tank demand, delivered hot-water service and tank recovery are not matched in the counterfactual, so reported cycle benefit cannot establish whole-house savings.');
+    record('Domestic hot-water boundary', 'Zero modeled room-heat contribution', 'The space-heating model assumes zero room heating from the hot-water tank, hot-water use and recirculation losses. Recorded DHW routing excludes that compressor and AUX heat from the house thermal input. This is a simplifying assumption, not a measurement of physical losses. Tank demand, delivered service and tank recovery are not matched in the counterfactual, so assessed space-heating benefit does not establish whole-house savings.');
   }
-  if (model.floor) basis('Floor storage assumptions', model.floor.enabled ? 'Configured physical priors' : 'Floor model disabled', 'Selected-slab capacity, heat allocation, release timing and ground exchange are fixed configured priors, not measured or automatically identified values. The same concrete exists before and after the override: opening valves changes heat allocation, not material capacity. Permanently open circuits remain available in both modes. Slab state is retained when valves close; thermal kWh stored are not electricity saved. The public default leaves the explicit slab disabled. Automatic floor preheating needs configured capacity within the reserve budget; commissioned manual control does not imply thermal validation. See the physical assumption rows for configured values.');
+  if (model.floor) basis('Floor storage assumptions', model.floor.enabled ? 'Configured physical priors' : 'Floor model disabled', 'Selected-slab capacity, heat allocation, release timing and ground exchange are fixed configured priors, not measured or automatically identified values. The same concrete exists before and after the override: opening valves changes heat allocation, not material capacity. Permanently open circuits remain available in both modes. Slab state is retained when valves close; thermal kWh stored are not electricity saved. Enabling the physical model does not commission the valve hardware or establish storage-response validation. Automatic floor preheating also requires available, commissioned controls. See the physical assumption rows for configured values.');
   if (context.preheatValves) {
     const valves = context.preheatValves;
     const duration = finite(valves.leaseSeconds) ? valves.leaseSeconds / 60 : 15;
@@ -214,7 +212,7 @@ export function learningDisplay(learning = {}, context = {}) {
     .map(([key, info]) => coefficientState(model, key, info));
   if (coefficientStates.length) {
     const count = (...states) => coefficientStates.filter(state => states.includes(state)).length;
-    basis('Coefficient evidence', `${count('fitted')} fitted · ${count('retained')} retained`, `Thermal coefficients: ${count('fitted')} fitted in current model; ${count('retained')} retained from an earlier validated fit; ${count('fixed')} fixed assumptions; ${count('initial', 'unvalidated')} estimates without independent validation${count('legacy') ? `; ${count('legacy')} legacy values` : ''}${count('unavailable') ? `; ${count('unavailable')} unavailable` : ''}. Source and optional slab assumptions are additional fixed quantities listed separately from this coefficient count. A fitted value alone does not establish overall model readiness.`);
+    basis('Coefficient evidence', `${count('fitted')} fitted · ${count('retained')} retained`, `Thermal coefficients: ${count('fitted')} fitted in current model; ${count('retained')} retained from an earlier validated fit; ${count('fixed')} fixed assumptions; ${count('initial', 'unvalidated')} estimates without independent validation${count('unavailable') ? `; ${count('unavailable')} unavailable` : ''}. Source and optional slab assumptions are additional fixed quantities listed separately from this coefficient count. A fitted value alone does not establish overall model readiness.`);
   }
   for (const [phase, estimate] of Object.entries(model.equipmentResponse?.phases ?? {})) {
     if (finite(estimate.ratio)) basis(`${words(phase)} duty response`, `${number(estimate.ratio)} × normal demand`, `Episode-weighted compressor-duty response from ${estimate.trainingEpisodes ?? 0} training episodes. It starts near unchanged native demand and can change with informative observations. Ratios apply only to the supported hydraulic treatment; requested modes and a good thermal fit cannot independently validate equipment timing.`);
@@ -267,13 +265,13 @@ export function learningDisplay(learning = {}, context = {}) {
   const policyGroups = {
     'Savings aggressiveness': 'Economic decisions', 'Worthwhile cycle threshold': 'Economic decisions',
     'Shared economic stress checks': 'Economic decisions',
-    'Preheat and comfort policy': 'Comfort & control', 'Room comfort projection': 'Comfort & control',
+    'Preheat and comfort policy': 'Comfort & control', 'Recovery hold': 'Comfort & control', 'Room comfort projection': 'Comfort & control',
     'Forward uncertainty': 'Comfort & control', 'Valve override lease': 'Comfort & control',
     'Native-control assumptions': 'Comfort & control', 'Domestic hot-water boundary': 'Scope of savings',
   };
   const policyRows = [...coefficientEvidenceRows, ...evidenceRows]
     .filter(row => policyGroups[row.key]).map(row => ({ ...row, group: policyGroups[row.key] }));
-  const evidenceGroup = key => ['Action readiness', 'Readiness conditions', 'Temperature prediction', 'Legacy temperature check',
+  const evidenceGroup = key => ['Action readiness', 'Readiness conditions', 'Temperature prediction',
     'Fireplace validation', 'Forecast saved before the cycle'].includes(key) || key.endsWith(' equipment response')
     ? 'Prediction checks' : ['Attempted cycles', 'Current cycle', 'Automatic cycle hold'].includes(key)
       ? 'Cycle coverage' : 'Learning evidence';
@@ -300,15 +298,22 @@ export function learningDisplay(learning = {}, context = {}) {
     economics.calculation = economicCalculation();
   }
   const policySummaries = {
-    'Preheat and comfort policy': 'Preheat uses the fixed ROOM demand setting and, when available, the pooled valve override. An already higher ROOM setting is preserved. Occupied-room limits remain hard constraints at every savings preference.',
+    'Preheat and comfort policy': 'Preheat raises ROOM above its saved normal setting and, when available, enables the pooled valve override. It keeps normal recirculation scheduling. Occupied-room limits remain hard constraints.',
+    'Recovery hold': 'A single timed hold keeps reduced DHW settings and suppresses automatic recirculation after tariff reduction. The AUX restriction, when enabled, can end early for cold-room protection without changing the hot-water deadline.',
+    'Domestic hot-water boundary': 'Hot-water heat is assigned no contribution to room warming. Hot-water service and its recovery remain outside the space-heating benefit comparison.',
     'Forward uncertainty': 'Future actions add uncertainty beyond a temperature check supplied with observed heating. Source estimates, equipment behavior and stored heat each contribute allowances; learning trials also test a high-heat case.',
     'Valve override lease': 'Device-local timed commands let the valve override expire if renewals stop. The application renews only while preheating remains authorized; restoring the H66 ROOM setting separately requires the application.',
     'Shared economic stress checks': 'The action and reference use the same two physical stress directions. Conservative benefit must clear the economic hurdle; these engineering allowances are not statistical confidence bounds.',
   };
   for (const row of policyRows) if (policySummaries[row.key]) {
-    const math = validationCalculation(row.key);
-    row.calculation = math ? { ...math, paragraphs: [...math.paragraphs, row.detail] }
+    const math = row.key === 'Preheat and comfort policy' ? preheatCalculation()
+      : row.key === 'Recovery hold' ? recoveryHoldCalculation()
+        : row.key === 'Domestic hot-water boundary' ? hotWaterCalculation() : validationCalculation(row.key);
+    const dedicated = ['Preheat and comfort policy', 'Recovery hold', 'Domestic hot-water boundary'].includes(row.key);
+    row.calculation = math ? { ...math, paragraphs: dedicated ? [...math.paragraphs] : [...math.paragraphs, row.detail] }
       : { summary: 'Assumptions & limits', equations: [], paragraphs: [row.detail] };
+    if (row.key === 'Preheat and comfort policy' && finite(policy.comfort?.maxDropC) && finite(policy.comfort?.maxRiseC))
+      row.calculation.paragraphs.push(`Current occupied-room limits: ${number(policy.comfort.maxDropC, 1)} °C below and ${number(policy.comfort.maxRiseC, 1)} °C above each room’s normal reference.`);
     row.detail = policySummaries[row.key];
   }
   return { title, message: learning.message ?? learning.reason ?? (readiness?.thermalValidated === true
@@ -316,7 +321,7 @@ export function learningDisplay(learning = {}, context = {}) {
     : validation?.accepted ? 'An accepted parameter update is in use. Identified heat loss and heating response are both required for temperature readiness; action evidence is checked separately.'
       : 'Initial estimates remain in use while independent evidence is collected.'),
     process, metrics, evidence, evidenceRows: visibleEvidenceRows, coefficientEvidenceRows: visibleCoefficientRows, policyRows, inputs: modelInputDescriptions(), coefficients: modelCoefficientDescriptions(learning), coefficientEvidence,
-    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the four coefficients eligible for fitting, reconstructed from the learning journal and applicable firewood and sensor-change history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. The combined hydronic response belongs to the new learning epoch; separate source gains from older algorithms are archival gaps, not converted fitted values. Fixed building and source assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
+    coefficientHistory: 'These are current values from the latest retained model. Select Model coefficients on the chart to see the four coefficients eligible for fitting, reconstructed from the learning journal and applicable firewood and sensor-change history. The chart preserves initial, fitted and retained estimates; today’s values are not applied to earlier intervals. Corrections can change retrospective reconstruction. Fixed building and source assumptions are shown here only. Reconstruction stays in memory and creates no additional stored history.',
     history: 'The chart stores these values when they are assessed. Earlier history keeps the estimate known at that time; later model updates do not rewrite it.' };
 }
 
@@ -408,10 +413,10 @@ export function h66HomeSummary(status = {}) {
   const rangeReasons = ['0212', '0208'].filter(register => !current(register)).map(register =>
     `${register === '0212' ? 'Start' : 'Stop'} setting: ${describe(readings[register]).reason}`);
   const rows = [readingRow('mode', 'Heat pump mode', '2201'), readingRow('room', 'Heat pump room setting', '0203'),
-    { key: 'dhw', title: 'DHW target range', available: rangeAvailable,
+    { key: 'dhw', title: 'DHW start / stop settings', available: rangeAvailable,
       value: rangeAvailable ? `${number(start.value, Number.isInteger(start.value) ? 0 : 1)}–${number(stop.value, Number.isInteger(stop.value) ? 0 : 1)} °C`
         : `Unavailable · ${rangeReasons.join('; ')}`, detail: rangeAvailable
-          ? `Current H66 start–stop temperature settings for domestic hot water. ${describe(start).detail} ${describe(stop).detail}`
+          ? `Current H66 start–stop temperature settings for domestic hot water. The stop setting may govern AUX operation only; it is not an established compressor cutoff. ${describe(start).detail} ${describe(stop).detail}`
           : rangeReasons.join('. ') }];
   const actual = status.observations?.actual;
   const knownMode = ['normal', 'reduction'].includes(actual?.mode);
@@ -422,7 +427,7 @@ export function h66HomeSummary(status = {}) {
   rows.push({ key: 'tariff', title: 'Tariff control', available: confirmed,
     value: confirmed ? `${actual.mode === 'reduction' ? 'Reduction' : 'Normal heating'}${status.input === 'simulated' ? ' · simulated' : ' · confirmed'}`
       : requestedMode ? `${requestedMode === 'reduction' ? 'Reduction' : 'Normal heating'} requested · unverified` : 'Unknown · no device readback',
-    detail: 'The tariff relay is verified from its own device report after a request. H66 ROOM is the comfort setpoint and its tariff reduction setting is a temperature offset; they do not need to be equal and do not report the relay state.' });
+    detail: 'The tariff relay is verified from its own device report after a request. H66 ROOM is a heat-pump demand setting and its tariff reduction setting is a temperature offset; they do not need to be equal and do not report the relay state.' });
   rows.push(readingRow('compressor', 'Compressor', '1A01'), readingRow('destination', 'Heating destination', '1A07'),
     readingRow('aux', 'Auxiliary output', '3104'), readingRow('alarm', 'Heat pump alarm', '1A20'));
   if (readings['0233']) rows.push(readingRow('tariffSetting', 'Tariff reduction setting', '0233'));

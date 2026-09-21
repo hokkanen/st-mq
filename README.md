@@ -70,7 +70,7 @@ upstream source reference and exact reconstruction patch are kept in st-mq.
 
 The comfort reference is inferred from sustained occupied normal-temperature
 plateaus under the house's existing controls. The preferred maximum drop defaults
-to **1 °C**. References stay fixed during cooling, recovery and preheating. A
+to **1.5 °C**. References stay fixed during cooling, recovery and preheating. A
 missing reference keeps the requested heating mode normal. Initial model estimates
 retain uncertainty and limit the duration and cost of learning trials.
 A provisional historical reference is not automatically applied to the live house.
@@ -385,7 +385,7 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | `STMQ_HOST` | `127.0.0.1` on standalone; optional add-on direct access listens on `0.0.0.0` |
 | `STMQ_API_TOKEN` | Overrides `controller.web_token`; at least 24 characters for direct network access |
 | `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the add-on, overrides only the initial/fallback Supervisor export path. |
-| `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1°C) |
+| `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1.5°C) |
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
@@ -609,8 +609,18 @@ The numeric VAT-exclusive defaults are in `config.json`. `vat_percent` defaults 
 November–March, Monday–Saturday 07:00–22:00; Sundays and all other times use the
 lower seasonal rate. Seasonal is available but is not activated automatically.
 
-`controller.max_drop_c` defaults to 1°C for occupied operation; it does not constrain
-away cooling. The comfort reference remains learned from native occupied operation.
+`controller.max_drop_c` and `controller.max_rise_c` both default to 1.5°C around
+the learned occupied comfort reference. The drop limit does not constrain away
+cooling. `controller.preheat_room_boost_c` defaults to 5°C above the ROOM setting
+captured before preheat, capped at the device maximum. It changes heat-pump demand,
+not the room-air comfort reference. `controller.recovery_hold_minutes` defaults to
+60: space heating resumes while DHWR remains suppressed and DHW settings remain
+reduced. AUX stays restricted during the same interval when
+`controller.recovery_compressor_only` is enabled; room-comfort fallback can restore
+AUX earlier. The deadline is fixed when reduction ends and survives restarts.
+Normal DHW settings and circulation eligibility return at expiry. To restore them
+earlier, pause price control; this selects Normal heating and restores the captured
+native settings. Start a timed circulation run separately if needed.
 `controller.input` and `controller.mode` are also configuration-owned.
 
 The optional `electricity.effective_date` is a Finnish calendar date. First-use

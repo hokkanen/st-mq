@@ -218,7 +218,8 @@ export class CycleTracker {
       && (sample.indoorTrendCPerHour ?? 0) >= -0.15
       && (!number(equipment.integral) || !number(cycle.plan.initialState.integral) || equipment.integral >= cycle.plan.initialState.integral - 60);
     cycle.stableSince = settled ? cycle.stableSince ?? now : null;
-    if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR) {
+    if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
+      && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
       if (a.missingHours > 0.05) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
       cycle.status = 'completed'; cycle.endedAt = now;
       // Assess the executed recovery under the frozen model and original settings,

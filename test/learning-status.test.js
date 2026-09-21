@@ -41,7 +41,7 @@ test('learning explanations distinguish missing evidence, genuine zero and unfav
 
 test('temperature validation does not imply validated cycle savings or measured equipment parameters', () => {
   const display = learningDisplay({ adaptive: { health: { usableSamples: 100, phaseSamples: { normal: 100, reduction: 0 }, evidence: 'includes-requested-modes' },
-    model: { validation: { accepted: true, samples: 10, maeCPerHour: 0.1, persistenceMaeCPerHour: 0.2 },
+    model: { validation: { accepted: true, samples: 10, maeC: 0.1, persistenceMaeC: 0.2 },
       parameters: { lossPerHour: 0.02, reserveTimeHours: 12 }, energy: { compressorKw: 3, auxiliaryKw: 9, basis: 'estimated' } } } });
   const text = display.evidence.join(' ');
   const coefficients = display.coefficientEvidence.join(' ');
@@ -143,14 +143,12 @@ test('unavailable and rejected coefficients are never presented as learned value
   const rows = modelCoefficientDescriptions({ adaptive: { model: { parameters: { lossPerHour: null,
     hydronicCPerKwh: 0.7, reducedHeatCPerHour: 0.2, unrelatedValue: 1 },
   validation: { accepted: false, fittedParameters: ['lossPerHour', 'hydronicCPerKwh'] } } } });
-  assert.equal(rows.length, 4);
+  assert.equal(rows.length, 3);
   assert.equal(rows[0].available, false);
   assert.equal(rows[0].value, 'Unavailable');
   assert.equal(rows[1].provenance, 'Initial estimate — not validated');
-  assert.equal(rows[2].provenance, 'Legacy model value');
-  const legacy = learningDisplay({ adaptive: { model: { parameters: { normalHeatCPerHour: 0.75, reserveTimeHours: 12 } } } });
-  assert(!legacy.coefficientEvidenceRows.some(row => row.key === 'model-fitting'));
-  assert.equal(legacy.coefficients.find(row => row.key === 'reserveTimeHours').calculation, undefined);
+  assert(!rows.some(row => ['reducedHeatCPerHour', 'unrelatedValue'].includes(row.key)));
+  assert.doesNotMatch(JSON.stringify(rows), /Legacy|Archived/);
 });
 
 test('initial and partially fitted models do not claim overall temperature readiness', () => {
@@ -323,7 +321,8 @@ test('combined hydronic parameter explains the source conversion and separates f
     exchangeKwPerC: 0.2, groundLossKwPerC: 0.01, groundC: 9, openAllocationFraction: 0.3,
     closedAllocationFraction: 0.04 } });
   const display = learningDisplay({ adaptive: { model } }, { settings: {
-    savingsAggressiveness: 50, preheatRoomSettingC: 25, comfort: { maxRiseC: 1 } }, preheatValves: {} });
+    savingsAggressiveness: 50, preheatRoomBoostC: 5, recoveryHoldMinutes: 60,
+    comfort: { maxDropC: 1.5, maxRiseC: 1.5 } }, preheatValves: {} });
   const combined = display.coefficients.find(row => row.key === 'hydronicCPerKwh');
   assert.equal(combined.value, '0.0798 °C/kWh thermal');
   const source = display.coefficients.find(row => row.key === 'source-model-confirmed');
@@ -337,7 +336,7 @@ test('combined hydronic parameter explains the source conversion and separates f
   assert.match(sourceNotes, /30–50 °C/);
   assert.match(sourceNotes, /Missing brine stays unknown/);
   assert.match(display.evidence.join(' '), /no separately identified thermal model for each room/);
-  assert.match(display.evidence.join(' '), /Final DHW refill is not implemented/);
+  assert.match(display.evidence.join(' '), /assumes zero room heating from the hot-water tank/);
   assert.match(display.evidence.join(' '), /original treatment identity through reduction and recovery/);
   assert.match(display.coefficientEvidence.join(' '), /no annual savings guarantee/);
   assert.match(source.calculation.equations.find(row => row.label === 'Space-heating electricity').expression, /d × P/);
@@ -350,8 +349,18 @@ test('combined hydronic parameter explains the source conversion and separates f
   assert.match(display.coefficients.find(row => row.key === 'floor-state-validation').detail, /No extra storage-response coefficient is fitted/);
   assert.match(display.coefficientEvidence.join(' '), /15-minute expiry renewed every 5 minutes/);
   assert.match(display.coefficientEvidence.join(' '), /H66 ROOM has no device-side lease/);
-  assert.match(display.coefficientEvidence.join(' '), /absolute ROOM setting of 25\.0 °C/);
-  assert.match(display.coefficientHistory, /older algorithms are archival gaps/);
+  assert.match(display.coefficientEvidence.join(' '), /increases the saved normal ROOM setting by 5\.0 °C/);
+  assert.match(display.coefficientEvidence.join(' '), /1\.5 °C below and 1\.5 °C above each room’s reference/);
+  assert.doesNotMatch(JSON.stringify(display), /absolute ROOM setting|Final DHW refill|older algorithms|archival gaps/);
+  const recovery = display.policyRows.find(row => row.key === 'Recovery hold');
+  assert.equal(recovery.value, '60 min shared deadline');
+  assert.match(recovery.calculation.paragraphs.join(' '), /release AUX permission early while reduced DHW settings and DHWR suppression retain their original deadline/);
+  assert.match(recovery.calculation.paragraphs.join(' '), /AUX restriction applies when enabled/);
+  assert.match(recovery.calculation.paragraphs.join(' '), /normal DHWR eligibility resumes.*does not force an immediate circulation pulse or end the thermal recovery assessment/);
+  const heatBalance = display.coefficientEvidenceRows.find(row => row.key === 'heat-balance');
+  assert(heatBalance.calculation.equations.some(row => row.expression === 'H_DHW→rooms = 0'));
+  const uncertainty = display.policyRows.find(row => row.key === 'Forward uncertainty');
+  assert.match(uncertainty.calculation.paragraphs.join(' '), /0\.15√h °C in every valve mode/);
 });
 
 test('Home separates outcomes, model equations and planning without repeating grouped rows', () => {

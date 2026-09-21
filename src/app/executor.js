@@ -15,7 +15,9 @@ export class Executor {
     const minutes = config.dhwrPulseMinutes ?? 10;
     if (!Number.isFinite(minutes) || minutes < 1 || minutes > 60) throw new Error('DHWR duration must be 1–60 minutes');
     this.pulseMs = minutes * 60_000;
-    this.preheatRoomSettingC = config.preheatRoomSettingC ?? 25;
+    this.preheatRoomBoostC = config.preheatRoomBoostC ?? 5;
+    this.recoveryHoldMinutes = config.recoveryHoldMinutes ?? 60;
+    this.recoveryCompressorOnly = config.recoveryCompressorOnly ?? true;
     this.key = `executor:${input}`;
     let saved;
     try { saved = store.getState(this.key); } catch { saved = null; }
@@ -40,6 +42,7 @@ export class Executor {
       this.plant.state.phase = decision.phase ?? decision.action;
       this.plant.state.roomBoostC = decision.roomBoostC ?? 0;
       this.plant.state.recoveryCompressorOnly = decision.recoveryCompressorOnly === true;
+      this.plant.state.recoveryHoldActive = decision.recoveryHoldActive === true;
       return this.sendCommands(decision.commands, { now });
     }
     if (!['mqtt', 'providers'].includes(this.input) || !this.commandTransport)
@@ -82,8 +85,19 @@ export class Executor {
             : this.restoreInternal({ now, reason: 'expiry' });
         if (this.state.manualPause?.expiresAt <= now || this.state.manualTemporary?.expiresAt <= now)
           return this.restoreManualInternal({ now, reason: 'manual-expiry' });
-        if (!this.state.manualBaseline && this.state.legacyOutstanding && time(this.state.expiresAt) <= now)
+        if (!this.state.manualBaseline && this.state.legacyOutstanding && time(this.state.expiresAt) <= now) {
+          const recovery = this.state.recoveryOnExpiry;
+          const native = this.h66?.status(now);
+          if (this.state.phase === 'reduction' && recovery
+            && recovery.externalChangeRevision === (native?.externalChangeRevision ?? 0))
+            return this.executePhysical({ phase: 'recovery', commands: ['normal'], owner: recovery.owner,
+              recoveryHoldActive: true,
+              recoveryCompressorOnly: recovery.compressorOnly && now <= recovery.temperatureValidUntil,
+              recoveryFallbackReason: now > recovery.temperatureValidUntil ? 'recovery-temperature-evidence-expired'
+                : !recovery.compressorOnly ? 'recovery-comfort-or-native-permission' : null,
+              expiresAt: now + this.recoveryHoldMinutes * 60_000 }, now);
           return this.restoreInternal({ now, reason: 'expiry', preserveManualDhwr: true });
+        }
         // Circulation ending must not cancel separately held heating parameters.
         if (this.state.dhwrOutstanding && this.state.pulseUntil <= now) await this.stopDhwr(now);
       }).catch(() => this.armExpiry()), Math.min(2_147_483_647, Math.max(1000, end - this.clock())));
@@ -182,7 +196,7 @@ export class Executor {
     const nativeOptions = { now, expiresAt: end, ...(pause ? { pauseId: pause.id } : {}) };
     if (phase === 'preheat' && typeof this.h66?.setManualPreheat !== 'function')
       throw failure('H66_UNAVAILABLE', 'Preheating requires writable native heat-pump settings.');
-    this.state.manualRequested = { phase, at: now, confirmed: false, floorOwner: phase === 'preheat' ? `manual:${randomUUID()}` : null, roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? 1 : 0 };
+    this.state.manualRequested = { phase, at: now, confirmed: false, floorOwner: phase === 'preheat' ? `manual:${randomUUID()}` : null, roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? this.preheatRoomBoostC : 0 };
     this.persist();
     if (phase !== 'preheat' && this.h66?.status(now).manualPreheat)
       await this.h66.setManualPreheat({ enabled: false, ...nativeOptions });
@@ -195,7 +209,8 @@ export class Executor {
       try {
         await this.publish(['normal'], now);
         if (this.floorOverride?.status(now).enabled) await this.floorOverride.lease({ owner: this.state.manualRequested.floorOwner, until: end, now });
-        await this.h66.setManualPreheat({ enabled: true, roomSettingC: this.preheatRoomSettingC, ...nativeOptions });
+        const native = await this.h66.setManualPreheat({ enabled: true, roomBoostC: this.state.manualRequested.roomBoostC, ...nativeOptions });
+        this.state.manualRequested.roomBoostC = native?.roomBoostC ?? this.state.manualRequested.roomBoostC;
       } catch (error) {
         await this.floorOverride?.release({ reason: 'manual-preheat-failed', now: this.clock() });
         throw error;
@@ -262,18 +277,42 @@ export class Executor {
       const floor = await this.floorOverride?.release({ reason: phase, now });
       if (floor?.restorationPending) return this.result('restoration-pending', false, { restorationPending: true, floor });
     }
-    if (phase === 'recovery' && decision.recoveryCompressorOnly === true
+    if (phase === 'recovery' && decision.recoveryHoldActive === true
       && this.h66?.status(now).controlsReady && this.h66.status(now).writesEnabled === true) {
-      const native = await this.h66.setPhase({ phase, compressorOnly: true, now, expiresAt });
       const refresh = this.state.phase !== phase || this.state.legacyOutstanding
         || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
       if (refresh) await this.publish(['normal'], now);
-      this.state.phase = phase; this.state.legacyOutstanding = false; this.state.expiresAt = expiresAt;
+      // Capture the actual tariff release once. Retries and process restarts use
+      // the persisted deadline; ordinary control refreshes cannot extend it.
+      if (this.state.recoveryOwner !== decision.owner || !Number.isFinite(this.state.recoveryHoldUntil)) {
+        this.state.recoveryOwner = decision.owner;
+        this.state.recoveryStartedAt = decision.recoveryStartedAt ?? this.clock();
+        this.state.recoveryHoldUntil = decision.recoveryStartedAt != null ? decision.recoveryHoldUntil
+          : this.state.recoveryStartedAt + this.recoveryHoldMinutes * 60_000;
+        this.state.recoveryAuxReleasedAt = null;
+        this.state.recoveryFallbackReason = null;
+        this.persist();
+      }
+      const recoveryHoldUntil = this.state.recoveryHoldUntil;
+      if (recoveryHoldUntil <= this.clock()) return this.normal(this.clock(), phase,
+        { recoveryHoldActive: false, recoveryHoldUntil, recoveryCompressorOnly: false }, decision.commands);
+      if (decision.recoveryCompressorOnly !== true && this.state.recoveryAuxReleasedAt == null) {
+        this.state.recoveryAuxReleasedAt = this.clock();
+        this.state.recoveryFallbackReason = decision.recoveryFallbackReason ?? 'native-recovery-permitted';
+        this.persist();
+      }
+      const recoveryCompressorOnly = this.state.recoveryAuxReleasedAt == null && decision.recoveryCompressorOnly === true;
+      const native = await this.h66.setPhase({ phase, compressorOnly: recoveryCompressorOnly,
+        holdDhwReduced: true, now: this.clock(), expiresAt: recoveryHoldUntil });
+      this.state.phase = phase; this.state.legacyOutstanding = false; this.state.expiresAt = recoveryHoldUntil;
       this.restartRestore = false;
-      return this.result(phase, refresh || native.changed?.length > 0, { native, recoveryCompressorOnly: true });
+      return this.result(phase, refresh || native.changed?.length > 0, { native,
+        recoveryStartedAt: this.state.recoveryStartedAt, recoveryHoldActive: true, recoveryHoldUntil,
+        recoveryCompressorOnly, recoveryFallbackReason: this.state.recoveryFallbackReason ?? decision.recoveryFallbackReason });
     }
     if (phase === 'normal' || phase === 'recovery') return this.normal(now, phase, {
-      ...(phase === 'recovery' ? { recoveryCompressorOnly: false, recoveryFallbackReason: decision.recoveryFallbackReason
+      ...(phase === 'recovery' ? { recoveryHoldActive: false, recoveryHoldUntil: decision.recoveryHoldUntil,
+        recoveryCompressorOnly: false, recoveryFallbackReason: decision.recoveryFallbackReason
         ?? (decision.recoveryCompressorOnly ? 'native-settings-unavailable' : null) } : {}),
     }, decision.commands);
     if (phase === 'preheat') {
@@ -299,10 +338,10 @@ export class Executor {
         }
         const refresh = needsPulse || this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
         if (refresh) { await this.publish(needsPulse ? ['circulation', 'normal'] : ['normal'], now); sent = true; }
-        const native = await this.h66.setPhase({ phase, roomSettingC: decision.roomSettingC ?? this.preheatRoomSettingC,
+        const native = await this.h66.setPhase({ phase, roomBoostC: decision.roomBoostC ?? this.preheatRoomBoostC,
           now: this.clock(), expiresAt });
         this.state.phase = phase; this.restartRestore = false;
-        return this.result(phase, sent || native.changed?.length > 0, { native, roomBoostC: decision.roomBoostC ?? 0,
+        return this.result(phase, sent || native.changed?.length > 0, { native, roomBoostC: native.roomBoostC ?? decision.roomBoostC ?? this.preheatRoomBoostC,
           floor: this.floorOverride?.status(this.clock()),
           coupling: 'ROOM and floor override use the preheat deadline; circulation retains its independent pulse timer.' });
       } catch (error) {
@@ -323,8 +362,14 @@ export class Executor {
     const nativeStatus = this.h66?.status(now);
     let native = null;
     if (nativeStatus?.controlsReady && nativeStatus.writesEnabled === true)
-      native = await this.h66.setPhase({ phase, now, expiresAt });
+      // The tariff timer ends reduction; native DHW/AUX obligations continue
+      // through the bounded recovery hold without a restore/reapply gap.
+      native = await this.h66.setPhase({ phase, now,
+        expiresAt: Math.min(expiresAt + this.recoveryHoldMinutes * 60_000, now + 86_400_000) });
     const refresh = this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
+    this.state.recoveryOnExpiry = { owner: decision.owner,
+      compressorOnly: decision.recoveryAuxRestrictionAllowed ?? this.recoveryCompressorOnly,
+      temperatureValidUntil: now + 300_000, externalChangeRevision: nativeStatus?.externalChangeRevision ?? 0 };
     this.state.legacyOutstanding = true; this.state.expiresAt = expiresAt; this.persist();
     if (refresh) await this.publish(['reduction'], now);
     this.state.phase = phase; this.restartRestore = false;

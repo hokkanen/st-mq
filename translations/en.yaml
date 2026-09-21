@@ -14,7 +14,7 @@ configuration:
       relative paths are inside this add-on's SSH-accessible /config folder.
       Active mode operates the selected supported control transport.
       max_drop_c is the preferred occupied
-      temperature drop in °C (default 1); away periods have no comfort-drop
+      temperature drop in °C (default 1.5); away periods have no comfort-drop
       limit. The comfort reference is learned from continuous normal heating.
       Away until and Pause until are temporary dashboard controls.
   electricity:

@@ -94,7 +94,35 @@ export function heatBalanceCalculation(model = {}) {
   );
   else equations.push(equation('Building reserve', 'dT_res/dt = (g × H − X) / (a × τ)',
     'H is hydronic thermal kW. a × τ is the fixed reserve-to-room capacity ratio; all hydronic heat enters this slow reserve before reaching the room.'));
+  equations.push(equation('Hot-water heat reaching rooms', 'H_DHW→rooms = 0',
+    'Tank, hot-water use and recirculation losses contribute no room heat in this model. This fixed simplification does not mean those physical losses are zero.'));
   return calculation(equations, ['The implementation advances these rates in small time steps. Reserve and slab temperatures are latent model states, not direct sensor readings. Opening circuits changes heat allocation; it does not add material capacity or reset stored energy.']);
+}
+
+export function preheatCalculation() {
+  return calculation([
+    equation('Bounded ROOM increase', 'b = min(b_configured, max(0, ROOM_max − ROOM_baseline)); ROOM_request = ROOM_baseline + b',
+      'The default configured increase is 5 °C. ROOM_baseline is the saved normal native setting; ROOM_max is the verified writable upper bound. Repeated preheat commands do not accumulate increases.'),
+    equation('Forecast supply temperature', 'T_water,preheat = T_water,normal + 3 × b',
+      'Temperatures are in °C. This fixed forecast prior changes the source-map operating point and predicted demand; it is not a measured heating curve or a direct heat input.'),
+  ], ['ROOM is a heating-demand setting. Room-air limits remain separate, with default maximum occupied drop and rise both 1.5 °C. Normal DHWR scheduling continues during preheat; the ROOM and valve deadlines do not depend on the circulation pulse timer.']);
+}
+
+export function recoveryHoldCalculation() {
+  return calculation([
+    equation('One recovery deadline', 't_release = t_reduction_end + hold_minutes',
+      'Use consistent time units. The default hold is 60 minutes after tariff reduction ends. The deadline remains fixed while the controller refreshes its decisions.'),
+    equation('Reduced hot-water settings', 'start_hold = min(start_normal, 40 °C); stop_hold = 50 °C',
+      'These native settings remain reduced during tariff reduction and the recovery hold. The stop register may govern AUX operation only; 50 °C is not an established compressor hot-water cutoff.'),
+  ], ['During the hold, normal ROOM and tariff operation allow compressor recovery and automatic DHWR starts are suppressed. The AUX restriction applies when enabled; cold-room protection can release AUX permission early while reduced DHW settings and DHWR suppression retain their original deadline.',
+    'At the deadline, captured normal DHW and operating-mode settings are restored and normal DHWR eligibility resumes. This does not force an immediate circulation pulse or end the thermal recovery assessment. Native AUX permission applies to the heat pump as a whole; it is not a space-heating-only command.',
+    'For hot water before the deadline, pause price control: this selects Normal heating and restores the captured native DHW settings. Start a timed circulation run if needed. A setting changed directly on the heat pump is respected; app parameter edits are available after pausing. The hold is an engineering setting, not a learned recovery time.']);
+}
+
+export function hotWaterCalculation() {
+  return calculation([equation('DHW contribution to the house model', 'H_DHW→rooms = 0',
+    'Thermal power in kW. Compressor and AUX activity routed to hot water is excluded from space-heating input. Tank and recirculation losses receive no room-heating credit.')],
+  ['This fixed simplification keeps the room/slab model focused on space heating. It does not assert that physical hot-water heat losses vanish. Hot-water demand, delivered service and tank recovery are not matched between the action and its reference.']);
 }
 
 export function outcomeCalculation(key) {
@@ -165,7 +193,7 @@ export function inputCalculation(key) {
     ['Space-heating routing selects the part used by the house model. This is an estimate from recorded output and nominal capacity; it is not a heat-meter measurement.']),
     model_room_boost: calculation([equation('Recorded ROOM increase', 'b = ROOM_requested − ROOM_baseline',
       'b is the temporary change in the heat pump’s ROOM demand setting, in °C. It is separate from measured room-air temperature.')],
-    ['The demand predictor bounds the preheat increase to 0–5 °C. ROOM changes affect predicted equipment demand and supply temperature; they do not add a direct temperature-model heat term.']),
+    ['Preheat requests the configured increase above the saved normal ROOM setting, default +5 °C, within verified native bounds. ROOM changes affect predicted equipment demand and supply temperature; they do not add a direct temperature-model heat term.']),
   }[key];
 }
 
@@ -196,7 +224,7 @@ export function validationCalculation(key) {
     equation('Forward temperature allowance', 'U(h) = U_observed(h) + g × Q × ε_source × √h / 4 + U_floor + U_action + U_solar + r̄ × h × δf',
       'U is in °C and h is hours. g is hydronic response, Q is compressor thermal kW, ε_source is the source-map allowance, r̄ is fireplace release in kg/h and δf is its gain allowance in °C/kg. The square-root terms are fixed engineering growth rules.'),
   ], ['The observed component uses the largest checked trajectory error plus 0.1 °C, with at least three supporting blocks and a 0.15 °C floor. Beyond supported horizons it grows by at least 0.05 °C/h. Without checked horizons it starts at 0.25 + 0.15√h °C.',
-    'When an explicit slab is configured, its allowance is 0.15√h °C with confirmed override and 0.08√h °C otherwise. An unsupported non-normal action without observed duty adds 0.10√h °C; missing solar adds 0.08√h °C. These allowances and the separate paired economic stress cases are engineering safeguards, not calibrated probabilities.']);
+    'When an explicit slab is configured, its allowance is 0.15√h °C in every valve mode: switching the override off does not remove stored heat or its uncertainty. An unsupported non-normal action without observed duty adds 0.10√h °C; missing solar adds 0.08√h °C. These allowances and the separate paired economic stress cases are engineering safeguards, not calibrated probabilities.']);
   return undefined;
 }
 

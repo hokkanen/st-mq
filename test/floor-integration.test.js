@@ -44,7 +44,7 @@ test('active pooled preheat leases before ROOM and preserves one owner through c
   const f = executorFixture(t);
   await f.executor.execute(f.decision, { mode: 'active', now: NOW });
   assert.equal(f.calls[0].kind, 'lease');
-  assert.equal(f.calls.find(row => row.kind === 'native').roomSettingC, 25);
+  assert.equal(f.calls.find(row => row.kind === 'native').roomBoostC, 5);
   assert.equal(f.calls.some(row => row.kind === 'dhwr'), false);
   await f.executor.execute({ ...f.decision, expiresAt: NOW + 1_800_000 }, { mode: 'active', now: NOW });
   assert.deepEqual(f.calls.filter(row => row.kind === 'lease').map(row => row.owner), ['cycle-one', 'cycle-one']);

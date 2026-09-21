@@ -9,24 +9,37 @@ import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
 const floorMapping = { storage: { topic_prefix: 'invented-floor-storage' }, living: { topic_prefix: 'invented-floor-living' } };
 
-test('heating preference boundaries preserve hard temperature limits and fixed ROOM units', () => {
+test('heating preference boundaries preserve hard temperature limits and baseline-relative ROOM units', () => {
   for (const savingsAggressiveness of [0, 50, 100]) {
     const value = validateSettings({ savingsAggressiveness });
     assert.equal(value.savingsAggressiveness, savingsAggressiveness);
-    assert.equal(value.comfort.maxRiseC, 1);
-    assert.equal(value.preheatRoomSettingC, 25);
+    assert.equal(value.comfort.maxRiseC, 1.5);
+    assert.equal(value.comfort.maxDropC, 1.5);
+    assert.equal(value.preheatRoomBoostC, 5);
   }
   for (const value of [-1, 101, '50', NaN, Infinity]) assert.throws(() => validateSettings({ savingsAggressiveness: value }));
   for (const maxRiseC of [0.25, 1, 2]) assert.equal(validateSettings({ comfort: { maxRiseC } }).comfort.maxRiseC, maxRiseC);
   for (const maxRiseC of [0, 0.24, 2.01, '1', Infinity]) assert.throws(() => validateSettings({ comfort: { maxRiseC } }));
-  for (const preheatRoomSettingC of [20, 25, 30]) {
-    assert.equal(validateSettings({ preheatRoomSettingC }).preheatRoomSettingC, preheatRoomSettingC);
-    assert.equal(controlConfiguration({ preheat_room_setting_c: preheatRoomSettingC }).preheatRoomSettingC, preheatRoomSettingC);
+  for (const preheatRoomBoostC of [1, 3, 5]) {
+    assert.equal(validateSettings({ preheatRoomBoostC }).preheatRoomBoostC, preheatRoomBoostC);
+    assert.equal(controlConfiguration({ preheat_room_boost_c: preheatRoomBoostC }).preheatRoomBoostC, preheatRoomBoostC);
   }
-  for (const value of [19, 31, 25.5, '25']) {
-    assert.throws(() => validateSettings({ preheatRoomSettingC: value }));
-    assert.throws(() => controlConfiguration({ preheat_room_setting_c: value }));
+  for (const value of [0, 6, 2.5, '5']) {
+    assert.throws(() => validateSettings({ preheatRoomBoostC: value }));
+    assert.throws(() => controlConfiguration({ preheat_room_boost_c: value }));
   }
+});
+
+test('one bounded recovery hold configures hot-water restrictions and optional AUX restriction', () => {
+  assert.equal(controlConfiguration().recoveryHoldMinutes, 60);
+  assert.equal(controlConfiguration().recoveryCompressorOnly, true);
+  for (const recoveryHoldMinutes of [1, 60, 240]) {
+    const value = controlConfiguration({ recovery_hold_minutes: recoveryHoldMinutes, recovery_compressor_only: false });
+    assert.equal(value.recoveryHoldMinutes, recoveryHoldMinutes);
+    assert.equal(value.recoveryCompressorOnly, false);
+  }
+  for (const value of [0, 241, 1.5, '60', null, Infinity])
+    assert.throws(() => controlConfiguration({ recovery_hold_minutes: value }));
 });
 
 test('floor control has strict flags, two exclusive device mappings and bounded renewal periods', () => {
@@ -63,7 +76,7 @@ test('private thermal priors load into physical model assumptions without silent
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
   const options = { controller: { input: 'simulated', savings_aggressiveness: 0, max_rise_c: 0.5,
-    preheat_room_setting_c: 24, heat_pump_model_confirmed: true,
+    preheat_room_boost_c: 4, heat_pump_model_confirmed: true,
     floor_thermal_priors: { capacity_kwh_per_c: 2.4, native_capacity_kwh_per_c: 6,
       exchange_kw_per_c: 0.2, ground_loss_kw_per_c: 0.03, ground_c: 9,
       open_allocation_fraction: 0.45, closed_allocation_fraction: 0.04 },
@@ -73,7 +86,7 @@ test('private thermal priors load into physical model assumptions without silent
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
   assert.equal(config.settings.savingsAggressiveness, 0);
   assert.equal(config.settings.comfort.maxRiseC, 0.5);
-  assert.equal(config.control.preheatRoomSettingC, 24);
+  assert.equal(config.control.preheatRoomBoostC, 4);
   assert.equal(config.control.heatPumpModelConfirmed, true);
   const model = initialAdaptiveModel(config.control);
   assert.equal(model.floor.enabled, true);

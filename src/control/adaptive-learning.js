@@ -32,10 +32,10 @@ const optionalPower = (value, fallback) => finite(value) && value >= 0 && value 
 
 function floorPriors(input, parameters) {
   if (!input || !(input.capacityKwhPerC > 0)) return { enabled: false,
-    basis: 'no commissioned selected-slab capacity; legacy effective reserve only' };
+    basis: 'selected-slab capacity not configured; effective building reserve' };
   const capacityKwhPerC = clamp(input.capacityKwhPerC, 0.1, 100);
   const inheritedCapacity = parameters.memoryExchangePerHour * parameters.reserveTimeHours / parameters.hydronicCPerKwh;
-  // Carve selected concrete out of the old effective reserve at the epoch seed.
+  // Allocate selected concrete from the effective reserve at initialization.
   // Fixed physical capacities are not enlarged each time the response gain fits.
   const nativeCapacityKwhPerC = positive(input.nativeCapacityKwhPerC,
     Math.max(0.5, inheritedCapacity - capacityKwhPerC), 1000);
@@ -161,7 +161,8 @@ export function thermalUncertaintyC(model, hours, inputs = {}) {
   const source = estimateHeatPumpPerformance({ ...model?.performance, ...inputs });
   const sourceAllowance = (model?.parameters?.hydronicCPerKwh ?? DEFAULTS.hydronicCPerKwh)
     * source.heatKw * source.relativeUncertainty * Math.sqrt(duration) * 0.25;
-  const floorAllowance = model?.floor?.enabled ? (inputs.floorOverrideMode === 'on' ? 0.15 : 0.08) * Math.sqrt(duration) : 0;
+  // Stored heat and its uncertainty persist when the valve override ends.
+  const floorAllowance = model?.floor?.enabled ? 0.15 * Math.sqrt(duration) : 0;
   return base + sourceAllowance + floorAllowance + (unknownAction ? 0.1 * Math.sqrt(duration) : 0)
     + (missingSolar ? 0.08 * Math.sqrt(duration) : 0) + fireAllowance;
 }

@@ -4,6 +4,53 @@ The floor override controls two dedicated Shelly Pro 2 v0 devices, each with out
 
 The adapter and device script are implemented and exercised in an API harness. They have **not been installed or verified on household equipment**. Keep the feature disabled until the wiring, firmware and failure tests below pass. The separate heat-pump ROOM setting retains its own host-side restoration; local Shelly expiry releases only the valve overrides. It cannot restore ROOM across a host or H66 communication failure.
 
+## Thermal model and control settings
+
+Preheating requests the captured normal ROOM setting plus
+`controller.preheat_room_boost_c` (default **5 °C**), capped at the device's supported
+maximum. Renewals maintain that request without adding another increment. This is
+a heat-pump demand setting; occupied room temperatures remain bounded by the learned
+reference and `max_drop_c` / `max_rise_c` (both default **1.5 °C**).
+
+A positive `controller.floor_thermal_priors.capacity_kwh_per_c` enables one separate
+selected-slab state. Configure it in the installation's private configuration,
+then choose **Apply configuration**. The following keys express fixed assumptions:
+
+| Key | Meaning |
+| --- | --- |
+| `capacity_kwh_per_c` | Selected concrete heat capacity, kWh/K; geometry and material assumptions establish a prior, not usable tariff storage. |
+| `native_capacity_kwh_per_c` | Remaining building reserve, kWh/K; when omitted, the selected capacity is subtracted from the seeded total reserve. |
+| `exchange_kw_per_c` | Effective slab-to-room conductance, kW/K; a provisional release assumption until measured. |
+| `ground_loss_kw_per_c` | Effective slab-to-ground conductance, kW/K; positive insulated floors still lose heat. |
+| `ground_c` | Assumed slow ground temperature, °C, independent of outdoor air and heat-pump brine. |
+| `open_allocation_fraction` | Fraction of space-heating input allocated to the selected slab with confirmed override. |
+| `closed_allocation_fraction` | Fraction allocated with native thermostat authority; OFF does not imply no heat. |
+
+Document the basis for each installation value privately. Floor area and thickness
+can support a material-capacity estimate; they do not measure hydraulic allocation,
+release time, ground temperature or charging efficiency. The permanently open loops
+remain in the native building reserve. The model conserves supplied heat across both
+paths and accounts for the envelope's baseline ground loss without adding it twice.
+DHW-routed compressor heat is excluded from space heating as a deliberate simplifying
+assumption.
+
+Thermal configuration and relay permission are independent. Keep
+`floor_preheat.enabled` and `floor_preheat.commissioned` false until the physical
+checks below pass. Configuring the slab does not activate any output or establish
+usable storage from room temperature alone.
+
+Normal DHWR scheduling continues during preheat. During tariff reduction it is
+suppressed and DHW demand settings are reduced. Space heating resumes immediately
+when reduction ends, followed by a bounded recovery hold
+(`controller.recovery_hold_minutes`, default **60 minutes**) with those hot-water
+restrictions retained. AUX shares that deadline when
+`controller.recovery_compressor_only` is enabled, with independent early release
+for room comfort. At expiry, native DHW settings and circulation eligibility return;
+a circulation pulse is not forced. To restore normal hot-water settings earlier,
+pause price control; this selects Normal heating and restores the captured native
+settings. A timed circulation run can then be started if needed. The deadline is not extended by ongoing estimated
+thermal recovery.
+
 ## Renewal and failback
 
 The controller renews an active lease every **5 minutes**. Each renewal expires locally after **15 minutes**, or at the planned preheat end, whichever comes first. Five-minute renewals do not cycle the relay: they reaffirm ON and its deadline. This allows missed renewals while bounding unwanted extra heating more tightly than a 50-minute timeout. Changing these defaults requires validating the installed firmware again; software accepts no local lease above 15 minutes.
@@ -53,7 +100,7 @@ Commands and script statuses use QoS 1 and are never retained. The script obtain
 
 Release and verify all four outputs before changing the MQTT broker address or username. If a release obligation survives a restart with a different broker/account, the adapter sends no floor commands through the new route and blocks new leases. It keeps the original obligation pending. Reconnect using the original broker address and username, verify the acknowledged OFF release, and then apply the migration. A password-only rotation does not change the scope marker. Local expiry still releases the original devices if the original broker is unreachable; that alone does not fabricate host readback or clear its obligation.
 
-Old experimental pending records without a broker scope also fail closed: the adapter cannot infer which broker owns them. No floor equipment was deployed by this change. Such an unscoped record requires independent verification that the original outputs are OFF and deliberate recovery of the experimental control state; do not treat a new broker's matching topic names as evidence.
+A release obligation without a broker scope also blocks activation: matching topic names do not establish which broker owns the outputs. Verify the original outputs are OFF before deliberately resetting an obligation whose route cannot be established.
 
 ## Commissioning
 
@@ -63,7 +110,7 @@ Old experimental pending records without a broker scope also fail closed: the ad
 4. Initialize the KVS key **`stmq_floor_boot_v1` to numeric `0` once**, before commissioning. Upload the script and enable startup execution. Check that every script/device restart increments this persistent value and begins OFF. Never reset or restore this key on a commissioned device: reinitialization requires clearing old commands and recommissioning. KVS failure must prevent activation.
 5. Verify both clocks, MQTT topics, ON readback, OFF readback and renewal of a still-ON native timer. The script uses absolute deadlines and supplies a remaining `toggle_after`; verify this behavior on the installed firmware. Confirm expiry at a deliberately short plan end as well as the 15-minute ceiling.
 6. Test host termination, broker/network loss, script stop, power cycle, missing/stepped UTC clock, stale/retained commands, delayed duplicate ON, failed renewal, one failed output and lost OFF acknowledgement. Observe actual override release and native thermostat operation; electrical status alone is insufficient. Test native auto-off after script failure separately.
-7. Record the commissioning outcome and hydraulic configuration epoch privately. Then set `commissioned: true` and `enabled: true` for a supervised short treatment, checking supply/floor limits, occupied-room temperatures, hydraulic redistribution, valve delays and the complete recovery. Old ROOM-only preheating does not qualify this newly accessible slab capacity.
+7. Record the commissioning outcome and hydraulic configuration epoch privately. Then set `commissioned: true` and `enabled: true` for a supervised short treatment, checking supply/floor limits, occupied-room temperatures, hydraulic redistribution, valve delays and the complete recovery. Equipment-response evidence must cover the selected valve configuration throughout charging, reduction and recovery.
 
 The initial software treatment is pooled. Separate Storage/Living experimentation, direct valve-position/flow sensing and automatic tuning of a separate slab parameter need their own evidence; they are not established by successful MQTT commands.
 

@@ -2,16 +2,15 @@
 
 ## Development data and eventual production migration
 
-- Until the owner explicitly starts the production migration, SQLite databases
-  used by this development version are disposable. Do not add compatibility or
-  data-preservation work solely for existing experimental SQLite contents.
+- The first production version will start with a fresh SQLite database. Current
+  development databases are disposable and need no compatibility migration or
+  data-preservation work. Documentation should describe production behavior,
+  without explaining superseded development implementations.
 - Version 0.7.5 continues running on another machine until the actual migration.
   Leave that installation and its source data intact.
-- The production starting history will be imported from the old Easee and st-mq
-  CSV files. Preserve those import formats, timestamp/unit interpretation,
-  duplicate handling and provenance when changing recording or chart code.
-- Update this section when production migration begins; do not carry the
-  disposable-database assumption into production. The secret-handling rules
+- When historical Easee or st-mq CSV files are explicitly imported, preserve
+  their formats, timestamp/unit interpretation, duplicate handling and provenance.
+- Update this section when production migration begins. The secret-handling rules
   below apply to development data and CSV imports throughout.
 
 ## Model reconstruction and versioning contract

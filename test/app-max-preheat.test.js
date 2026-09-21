@@ -6,14 +6,14 @@ import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 
 const START = Date.parse('2026-09-14T12:00:00Z');
-function setup(t, { room = 20, maximumBoost = 5, roomSettingC = 25, writableMaximum, circulation = true, writable = true, floor = false } = {}) {
+function setup(t, { room = 20, boostC = 5, writableMaximum, circulation = true, writable = true, floor = false } = {}) {
   let now = START;
   const store = new Store(':memory:'), native = { '0203': room, '0212': 44, '0208': 60, '2201': 1 };
   const writes = [], commands = [], switches = [];
   const transport = { close: async () => {}, publish: async batch => { commands.push(batch); return { status: 'mqtt', sent: true }; },
     ...(circulation ? { publishDhwr: async on => { switches.push(on); return { status: 'mqtt', sent: true }; } } : {}) };
   const engine = new Engine({ store, config: { input: 'providers', settings: { mode: 'shadow' },
-    control: { maxRoomBoostC: maximumBoost, preheatRoomSettingC: roomSettingC } }, clock: () => now, commandTransport: transport });
+    control: { preheatRoomBoostC: boostC } }, clock: () => now, commandTransport: transport });
   const deviceId = 'fixture-max-preheat', decoder = createH66Decoder({ deviceId });
   let controller;
   const feed = register => controller.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`,
@@ -49,11 +49,13 @@ function setup(t, { room = 20, maximumBoost = 5, roomSettingC = 25, writableMaxi
 }
 
 for (const [name, options, boost, target] of [
-  ['fixed default despite the legacy boost setting', { maximumBoost: 3 }, 5, 25],
-  ['configured absolute target', { roomSettingC: 24 }, 4, 24],
-  ['unchanged ROOM already at target', { room: 25, floor: true }, 0, 25],
-  ['warmer native baseline', { room: 27, floor: true }, 0, 27],
-  ['fractional baseline', { room: 20.5 }, 4.5, 25],
+  ['default five-degree increase', {}, 5, 25],
+  ['configured increase', { boostC: 4 }, 4, 24],
+  ['warmer baseline', { room: 27 }, 5, 32],
+  ['device maximum', { room: 33 }, 2, 35],
+  ['reported device maximum', { writableMaximum: 24 }, 4, 24],
+  ['no ROOM increase at the maximum with floor override', { room: 35, floor: true }, 0, 35],
+  ['fractional baseline', { room: 20.5 }, 5, 25.5],
   ['independent DHWR without a circulation transport', { circulation: false }, 5, 25],
 ]) test(`Preheat selects the ${name} and records its actual increase`, async t => {
   const f = setup(t, options), capability = f.engine.heatingTests();
@@ -67,8 +69,8 @@ for (const [name, options, boost, target] of [
   assert.deepEqual(f.switches, [], 'Preheating does not initiate a DHWR run');
 });
 
-test('Preheat stays unavailable when its fixed target cannot be written or fresh controls are absent', async t => {
-  for (const options of [{ writableMaximum: 24 }, { writable: false }, { room: 25 }, { room: 27 }]) {
+test('Preheat stays unavailable without ROOM headroom or fresh controls', async t => {
+  for (const options of [{ writableMaximum: 20 }, { writable: false }, { room: 35 }]) {
     const f = setup(t, options);
     const capability = f.engine.heatingTests();
     assert.equal(capability.preheatAvailable, false);
@@ -80,7 +82,7 @@ test('Preheat stays unavailable when its fixed target cannot be written or fresh
   assert.equal(stale.engine.heatingTests().preheatAvailable, false);
 });
 
-test('repeated fixed preheat during a pause uses its original ROOM baseline and restores it when pause ends', async t => {
+test('repeated preheat during a pause uses its original ROOM baseline and restores it when pause ends', async t => {
   const f = setup(t, { room: 22 });
   f.store.setState('override:providers', { id: 'fixture-max-preheat-pause', mode: 'normal', createdAt: START, expiresAt: START + 3_600_000 });
   await f.engine.testHeating({ command: 'preheat' });
@@ -88,17 +90,17 @@ test('repeated fixed preheat during a pause uses its original ROOM baseline and 
   f.at(START + 1000);
   const capability = f.engine.heatingTests();
   assert.equal(capability.preheatAvailable, true);
-  assert.equal(capability.preheatRoomBoostC, 3); assert.equal(capability.preheatTargetC, 25);
+  assert.equal(capability.preheatRoomBoostC, 5); assert.equal(capability.preheatTargetC, 27);
   await f.engine.testHeating({ command: 'preheat' });
-  assert.deepEqual(f.writes, [{ register: '0203', value: 25 }]);
-  assert.equal(f.native['0203'], 25);
+  assert.deepEqual(f.writes, [{ register: '0203', value: 27 }]);
+  assert.equal(f.native['0203'], 27);
   f.engine.setTemporary({ pauseUntil: null }); await f.engine.dispatchPending;
   assert.equal(f.native['0203'], 22); assert.equal(f.controller.status().manualPreheat, null);
   assert.equal(Boolean(f.engine.executor.status().dhwrOutstanding), false);
   assert.deepEqual(f.switches, []);
 });
 
-test('unpaused fixed preheat restores on the next controller update without starting circulation', async t => {
+test('unpaused preheat restores on the next controller update without starting circulation', async t => {
   const f = setup(t);
   await f.engine.testHeating({ command: 'preheat' });
   assert.equal(f.native['0203'], 25);

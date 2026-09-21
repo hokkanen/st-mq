@@ -66,7 +66,7 @@ function getIntervals(prices, forecast, now) {
 
 /** Evaluate a whole candidate including recovery and conservative terminal reserve cost. */
 export function evaluateSchedule({ intervals, reductionHours = 0, indoorC, targetC, maxDropC,
-  severeDropC = 2, maxRiseC = 2, deficitDegreeHours = 0, model, occupancy = { mode: 'occupied' },
+  severeDropC = 2, maxRiseC = 1.5, deficitDegreeHours = 0, model, occupancy = { mode: 'occupied' },
   nativeEndIndoorC = null }) {
   const p = model.parameters, energy = model.energy;
   const returnAt = instant(occupancy.returnAt);
@@ -148,9 +148,9 @@ export function decide({ now = Date.now(), settings = {}, observations = {}, pri
   if (!finite(timestamp)) throw new TypeError('now must be a valid UTC instant');
   const comfort = settings.comfort ?? {};
   const target = finite(comfort.targetC) ? comfort.targetC : learned?.comfortReference?.targetC;
-  const maxDrop = finite(comfort.maxDropC) && comfort.maxDropC >= 0 && comfort.maxDropC <= 2 ? comfort.maxDropC : 1;
+  const maxDrop = finite(comfort.maxDropC) && comfort.maxDropC >= 0 && comfort.maxDropC <= 2 ? comfort.maxDropC : 1.5;
   const severeDrop = finite(comfort.severeDropC) && comfort.severeDropC > maxDrop && comfort.severeDropC <= 5 ? comfort.severeDropC : Math.max(2, maxDrop + 0.5);
-  const maxRise = finite(comfort.maxRiseC) && comfort.maxRiseC > 0 && comfort.maxRiseC <= 5 ? comfort.maxRiseC : 2;
+  const maxRise = finite(comfort.maxRiseC) && comfort.maxRiseC > 0 && comfort.maxRiseC <= 5 ? comfort.maxRiseC : 1.5;
   const returnAt = instant(settings.occupancy?.returnAt);
   const away = settings.occupancy?.mode === 'away' && !(finite(returnAt) && returnAt <= timestamp);
   const occupancy = away ? settings.occupancy : { mode: 'occupied' };

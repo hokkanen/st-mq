@@ -39,7 +39,7 @@ Space-heating input = routed compressor duty × Q(T) + routed AUX kW
 
 At 40 °C water, 50% compressor duty and 3 kW average AUX give about **7.66 kW
 thermal**. Initial `hydronicCPerKwh` is `0.75/9.40 ≈ 0.0798`; this is a prior,
-not a measurement or a converted validation of the old separate gains. A shared
+not a measurement. A shared
 coefficient is conditional on this source estimate: a wrong compressor-output map
 can bias predictions during AUX operation.
 
@@ -55,8 +55,9 @@ not an assumed measurement of the installed ground loop. The published electrica
 must not add the same pumping load twice. Separate DHWR remains separately accounted.
 These are performance estimates, not heat/electricity metering. See the
 [manufacturer technical data, pages 107–108](https://assets.danfoss.com/documents/latest/29671/AN000086466221en-010701.pdf).
-The combined parameter's expandable row includes these equations, example, source
-link, limitations and distinction between thermal input and electricity cost.
+The combined parameter's expandable row explains the shared thermal response.
+The **Installed heat-pump model** row holds the source equations, worked example,
+manufacturer link and limitations, using the same calculation disclosure as other parameters.
 
 Each dashboard **Heating configuration** includes its learning summary above the pause controls. Home reports
 counts of usable observations and accepted model updates. These counts describe
@@ -84,10 +85,9 @@ selected range's start. Each coefficient is a stepped line with initial, fitted 
 retained status in its tooltip. Unsupported or incomplete replay prefixes leave
 gaps; an explicit saved seed can establish a new supported start. The selected live
 learner and imported history are replayed separately, and simulation stays separate.
-Earlier chart intervals never receive today's coefficient values. Algorithm
-`committed-house-v10-hydronic-floor` starts an explicit epoch for the combined heat
-input and new hydraulic treatment. Older algorithms remain archival gaps in current
-coefficient replay; old separate-source fits cannot qualify the new override.
+Earlier chart intervals never receive today's coefficient values. Replay uses the
+saved configuration and matching learning algorithm; treatment-specific evidence
+keeps ROOM-only observations separate from confirmed floor charging.
 
 Chart requests use a read-only database connection and never save replay checkpoints,
 coefficient rows or new snapshots. A bounded memory cache reuses derived timelines
@@ -189,17 +189,22 @@ observed phase and a short projection. Unknown tariff response starts from uncha
 normal demand with explicit uncertainty. Episode evidence can subsequently change
 that response. A stored pending schedule is re-evaluated before it starts.
 
-Preheating uses one configured **absolute ROOM request**, default **25 °C**, and
-one pooled override across configured floor channels. A warmer existing ROOM
-baseline is never lowered. ROOM is a native demand
-setting, not a 25 °C room-air target. Previously thermostat-limited loops need
+Preheating requests one configured **ROOM increase above the saved normal setting**,
+default **+5 °C** (`controller.preheat_room_boost_c`), and one pooled override across
+configured floor channels. The request stays within the verified native upper
+bound; repeated commands use the saved baseline and never stack increases.
+ROOM is a native demand setting, not a room-air target. Thermostat-limited loops need
 fresh override evidence; baseline and permanently open paths do not establish
 successful charging of newly opened circuits. Normal DHWR continues on its own
-schedule. An optional final DHW refill is not implemented; hot-water service and
-whole-house savings remain outside the space-heating benefit claim. The future
+schedule during preheat. The space-heating model assumes **zero room heat from
+the DHW tank, hot-water use and recirculation losses**. This simplification does
+not mean that physical losses are zero. Hot-water service and whole-house savings
+remain outside the space-heating benefit claim. The future
 supply estimate adds 3 °C per degree of ROOM increase to the current supply. This
 is a fixed planning assumption, not a learned heating curve or a native forecast;
 projected temperatures outside the provisional source-map range reject preheat.
+Occupied-room maximum drop and rise both default to **1.5 °C** around their normal
+references; savings preference never changes these hard limits.
 An automatic cycle keeps its original treatment identity through reduction and
 recovery, separately from actual valve mode after the override closes.
 
@@ -271,14 +276,35 @@ completion or 24 hours after an incomplete attempt; new automatic cycles also wa
 extend a tested duration; small preheat trials require thermal and reduction-response
 evidence. Unexecuted promises are not counted as learning episodes.
 
-Recovery defaults to compressor-only operation while restoring ROOM and DHW
-settings. `recovery_compressor_only_hours` defaults to four hours. Falling below
-target minus `recovery_comfort_margin_c` (default 0.5°C), a 30-minute trend towards
-that boundary, lost native control, forced restoration or the time limit restores
-the captured native mode. The fallback remains in effect for the rest of the cycle.
-`recovery_compressor_only: false` selects immediate native recovery. Restore
-obligations survive interruption and expire independently of planner ticks; separate
-transports do not guarantee atomic compressor switching.
+Recovery restores normal ROOM and tariff operation while applying one shared
+**60-minute hold** (`controller.recovery_hold_minutes`). Until its fixed deadline,
+DHW start stays at the lower of 40 °C and its normal setting, the stop register
+stays at 50 °C, new automatic DHWR pulses are suppressed and AUX is restricted.
+The stop register may govern AUX operation only; this is not an established 50 °C
+compressor cutoff. The hour is an initial engineering choice, not a learned
+recovery duration.
+
+Cold-room protection releases AUX permission early without restoring the DHW
+settings or restarting circulation. It considers the aggregate and individual
+participating rooms, using `recovery_comfort_margin_c` (default 0.5 °C) and a
+30-minute falling-trend projection where available. The AUX fallback remains
+latched for the cycle. Native AUX permission applies to the pump as a whole,
+not exclusively to space heating. `recovery_compressor_only: false` disables
+the AUX restriction while retaining the timed hot-water hold.
+
+At the original deadline, normal DHW and operating-mode settings restore and
+scheduled DHWR eligibility resumes even if thermal recovery assessment continues.
+Resuming eligibility does not force a circulation pulse. The deadline does not
+restart on each controller update. Restoration obligations survive interruption;
+loss of control can require earlier full restoration. Separate transports do not
+guarantee atomic compressor switching.
+
+For hot water before the deadline, use **Pause price control**, which selects
+Normal heating and restores the captured native DHW settings. Start a timed
+circulation run if needed. The Normal heating button alone changes tariff/manual
+heating selection; it does not guarantee restoration of an automatic DHW hold.
+App native-parameter edits require pausing an active cycle. A setting changed
+directly on the heat pump is respected rather than overwritten by the hold.
 
 Completion requires comparable room temperature, native reserve and selected slab state when configured, reconstructed
 under the **frozen cycle model**, held for one hour. A newly fitted warmer reserve
@@ -315,7 +341,7 @@ until the pause ends or the owner selects Resume now. Previous settings are then
 restored and the automatic schedule resumes if enabled. Outside Pause, these
 manual changes revert on the next controller update, normally within one minute,
 with a one-minute restoration deadline. Repeated edits preserve the original
-baseline. **Preheat** requests the configured absolute ROOM setting and the pooled
+baseline. **Preheat** requests the configured increase above that ROOM baseline and the pooled
 floor-valve override, with normal tariff operation. It does not stack temperature
 boosts or start continuous DHWR.
 A tariff request is verified from fresh configured relay readback received after
@@ -379,15 +405,18 @@ Internal/API actions are `circulation`, `normal` and `reduction`; obsolete timed
 button commands are rejected. Tariff control uses the configured relay directly. Pending OFF is saved before ON is sent and
 reconciled on restart, shutdown and restoration. See [device setup](dhwr-mqtt.md).
 Normal DHWR service is independent of floor preheating and its ROOM lease. The
-thermal model does not invent extra house heat for a circulation request. Tank
+default schedule allows starts from 05:45 through 19:45 Finnish time, at least
+52.5 minutes apart. An existing pulse finishes before automatic tariff reduction
+starts. New automatic pulses stay suppressed through reduction and the bounded
+recovery hold; eligibility resumes at the hold deadline. An explicit manual
+circulation request retains its own complete timer.
+The thermal model assigns zero room heat to tank and circulation losses. Tank
 service remains outside the space-heating benefit assessment; pump electricity
 alone cannot account for tank and circulation heat losses.
 
-The native periodic high-temperature/14-day hygiene cycle is retained. The owner
-accepted that a temporary compressor-only strategy may delay the availability of
-auxiliary heat during its control window. These writes must not be described as
-proving that every native hygiene cycle completes on schedule. The software does
-not rewrite the native hygiene schedule or claim a software-verified hygiene result.
+The software does not rewrite the native periodic high-temperature schedule.
+Temporary compressor-only operation can delay AUX availability; readback of these
+settings does not verify completion of the pump's separate hygiene cycle.
 
 ## Reading the power chart
 
