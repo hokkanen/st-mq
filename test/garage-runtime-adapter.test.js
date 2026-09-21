@@ -22,14 +22,14 @@ function syntheticSeed(settings) {
     powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0 }, settings);
   model.evidence.offIntervals = 12;
   for (const metrics of Object.values(model.heldOut)) Object.assign(metrics, { n: 30, absolute: 1.5, square: .15, signed: 0 });
-  model.rear.values = [.02, .10, .55, .5, .012, .012, .04, .04];
-  model.front.values = [.55, .012, .07, .06, 0, 0, 0, 0];
-  model.native.values = [.26, .012, .35, .1];
+  model.rear.values = [.02];
+  model.front.values = [.025];
+  model.native.values = [.5];
   return assignGaragePlanningEvidence(model);
 }
 function setup(t) {
   let now = BASE, owner = true, stateSequence = 0;
-  const settings = garageSettings({ enabled: true, frontRequired: true, aggressiveness: 100, protection: { approved: true } });
+  const settings = garageSettings({ enabled: true, minOnMs: 0, frontRequired: true, aggressiveness: 100, protection: { approved: true } });
   const store = new Store(':memory:');
   appendGarageEntry(store, 'mqtt', 'context', {}, settings, BASE - 1, { key: 'explicit-synthetic-fixture-seed', seed: syntheticSeed(settings) });
   const config = { input: 'mqtt', garage: { ...settings, adapter: { stateTopic: 'fixture/garage/state' } } };
@@ -150,7 +150,7 @@ test('runtime and acquisition graceful close request release once and keep accou
   assert.equal(f.store.getState(f.runtime.keys.adapter).restorePending, true);
 });
 
-test('a later pause uses a new adapter episode while preserving frozen accounting and unrecovered front debt', async t => {
+test('recovery blocks another pause and preserves frozen accounting and unrecovered front debt', async t => {
   const f = setup(t); await f.tick(); const first = f.commands[0];
   const frozen = structuredClone(f.runtime.episode.frozenModel), assessmentId = f.runtime.episode.id;
   f.at(BASE + MINUTE); f.temperatures(); f.accepted(first); await f.tick();
@@ -165,11 +165,11 @@ test('a later pause uses a new adapter episode while preserving frozen accountin
     if (f.commands.at(-1).action === 'start') break;
   }
   const later = f.commands.at(-1);
-  assert.equal(later.action, 'start');
-  assert.notEqual(later.episodeId, first.episodeId);
-  assert.ok(later.issuedAt >= BASE + 32 * MINUTE, 'runtime minimum ON lock remains binding');
+  assert.equal(later.action, 'release');
+  assert.equal(f.commands.filter(command => command.action === 'start').length, 1);
+  assert.equal(f.runtime.plan.reason, 'normal-heating-recovery');
   assert.equal(f.runtime.episode.id, assessmentId);
-  assert.equal(f.runtime.episode.pauseId, later.episodeId);
+  assert.equal(f.runtime.episode.pauseId, first.episodeId);
   assert.deepEqual(f.runtime.episode.frozenModel, frozen);
   assert.ok(f.runtime.status().episode.heatDebt.frontC > .25, 'new permission does not erase front recovery debt');
 });

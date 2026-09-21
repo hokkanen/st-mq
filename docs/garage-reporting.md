@@ -55,27 +55,28 @@ qualification. Combined timing coverage divides included Home plus Garage time
 by their combined elapsed time; it does not imply that the same hours were
 observed in both systems. Missing periods are never scaled up.
 
-The equipment area adds a closed Mitsubishi heating fold with separate front/rear
-readings, remaining heat reserve in kJ/m, limiting location, native readbacks, health,
-accepted lease and unresolved restoration. Its nested settings fold shows the
-three owner preferences using the application's existing configuration-and-reload
-workflow. Freezing protection shows the 1°C protection margin, 21 mm reference
-pipe diameter, assumed 1 mm wall, 20 W/m²·K heat-transfer estimate and fixed 2×
-safety factor. It briefly explains the pipe reference for protecting pipes and
-stored liquids, independent local allowances and continuous temperature-dependent
-recovery. No percentage suggests a fixed full allowance, and the old air hard
-limit, degree-minute allowance, recovery temperature, warm-up duration and fixed
-repayment controls are removed. An End garage pause action releases only an owned restoration obligation;
-it stays disabled on replicas, without compatible actuation capability, or when no
-managed pause needs restoration. Home and Garage each have a closed learning summary in their heating configuration,
-above the pause controls. Each uses matching
-outcome, input and coefficient sections with values and provenance visible in expandable rows.
-Garage separates pause readiness, learned references and model records from the
-detailed episode checks under Validation & evidence. Input definitions distinguish
-reported temperatures, the calculated front–rear difference, modeled building warmth
-and protection context. Coefficients are grouped by rear air, front–rear difference,
-pump electricity and fixed building assumptions. Evidence includes complete cooling
-and recovery episodes and prediction errors, without a completion percentage.
+The Garage heating configuration follows Home's control, pause and learning
+structure. Savings & protection lists explicit minimum benefit, OFF duration,
+normal-heating dwell, daily limit and reference-pipe assumptions. Garage learning
+has four matching sections: **Learning outcomes · Calculated**, **Model inputs ·
+Recorded & modeled**, **Model coefficients · Current values**, and **Planning &
+safeguards · Decisions & limits**. Rows distinguish learned cooling, observed normal
+power, fixed assumptions and unavailable readings without a completion percentage.
+There are two adjustable thermal coefficients, rear/front cooling per hour.
+
+The Mitsubishi Heat-pump settings fold includes **Assume i-save 10°C**. Its room
+setting is marked **Assumed i-save** while expanded native readbacks remain
+truthful, including reported 16°C and an unverified low-heat state. Checkbox changes
+are persisted by the owning instance; replicas are read-only. Native frequency
+and activity are not reported as watts. Known charger power has a separate 7.5%
+heat assumption; missing input stays unknown. Future opportunities display their
+planned start and end even before a live OFF lease exists.
+
+The pipe reference remains a continuous sensible-heat estimate in kJ/m, with an
+independent state at rear and front. No percent indicates a fixed full allowance.
+Protection or restoration blockers remain visible independently of learning and
+economic qualification. A new cold-door admission reason does not imply that an
+open door automatically cancels an already authorized pause.
 
 The chart selector includes separate Garage model input and coefficient groups.
 Inputs come from the original normalized immutable garage journal, preserving

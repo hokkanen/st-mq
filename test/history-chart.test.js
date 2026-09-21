@@ -314,6 +314,7 @@ test('coefficient history keeps exact replay metadata and visible steps alongsid
   assert.equal(historyValueLabel('model_coefficient_fireplace_response', 0.135, '°C/kg'), '0.135 °C/kg');
   assert.equal(historyValueLabel('model_controller_phase', 2, 'state'), 'Tariff reduction');
   assert.equal(historyValueLabel('indoor_temperature', 21.256, '°C'), '21.26 °C');
+  assert.equal(coefficientStatusLabel('observed'), 'Recorded normal-heating average');
   assert.match(coefficientStatusLabel('initial'), /Initial estimate/);
   assert.match(coefficientStatusLabel('fitted'), /Fitted in current model/);
   assert.match(coefficientStatusLabel('retained'), /Retained from an earlier fit/);

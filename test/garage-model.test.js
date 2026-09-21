@@ -1,262 +1,206 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { garageSettings, garageWarmthPrice } from '../src/garage/settings.js';
-import { knownGarageReserve } from './helpers/garage-reserve-fixture.js';
+import { garageSettings } from '../src/garage/settings.js';
 import { createGarageModel, updateGarageModel, replayGarageModel, predictGarageStep, forecastGarage,
-  garageModelSummary, normalGarageTemperature, knownGarageEvAt } from '../src/garage/model.js';
-import { planGarage as planGarageImplementation } from '../src/garage/planner.js';
-import { assignGaragePlanningEvidence } from './helpers/garage-model-fixture.js';
-const HOUR = 3_600_000, MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
-const settings = garageSettings({ enabled: true, maxSensorAgeMs: 4 * HOUR,
-  protection: { approved: true } });
-const observation = (i, extra = {}) => ({ at: start + i * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
+  garageModelSummary, normalGarageTemperature, knownGarageEvAt, garageAssumedEvHeat } from '../src/garage/model.js';
+const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
+const settings = garageSettings({ enabled: true, maxSensorAgeMs: 4 * HOUR, protection: { approved: true } });
+const observation = (hour, extra = {}) => ({ at: start + hour * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
   available: true, baselineVerified: true, powerKw: .3, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0, ...extra });
-function trainedModel(hours = 96) {
+function steady(hours = 48, extra = {}) {
   let model = createGarageModel({ seedAt: start });
-  for (let i = 0; i < hours * 4; i++) model = updateGarageModel(model, observation(i / 4), settings);
+  for (let i = 0; i <= hours * 4; i++) model = updateGarageModel(model, observation(i / 4, extra), settings);
   return model;
 }
-function plannerModel() {
-  const model = trainedModel();
-  model.evidence.offIntervals = 12;
-  for (const metrics of Object.values(model.heldOut)) Object.assign(metrics, { n: 30, absolute: 1.5, square: .15, signed: 0 });
-  model.rear.values = [.02, .10, .55, .5, .012, .012, .04, .04];
-  model.front.values = [.55, .012, .07, .06, 0, 0, 0, 0];
-  model.native.values = [.26, .012, .35, .1];
-  return assignGaragePlanningEvidence(model);
-}
-function outlook(values) {
-  return { prices: values.map((value, i) => ({ start: start + i * HOUR, end: start + (i + 1) * HOUR, allInCentsPerKWh: value })),
-    forecast: [{ start, end: start + values.length * HOUR, outdoorC: 0, issuedAt: start }] };
-}
 
-// Scheduling tests start with explicitly known, warm synthetic objects.
-function planFixture(args) {
-  return planGarageImplementation({ restorationDelayMs: 2 * MINUTE,
-    exposure: knownGarageReserve(args.settings ?? settings, { at: args.now,
-      rearC: args.observation?.rearC ?? 7, frontC: args.observation?.frontC ?? 6.7 }), ...args });
-}
-
-test('owner policy is explicit, versioned and independent of stable economic preference', () => {
-  assert.equal(garageSettings().enabled, false); assert.equal(garageSettings().protection.approved, false);
-  assert.throws(() => garageSettings({ aggressiveness: 101 }));
-  assert.throws(() => garageSettings({ protection: { marginC: 0 } }));
-  assert.throws(() => garageSettings({ secret: 'unused-test-value' }), /Unknown garage setting/);
-  assert.throws(() => garageSettings({ protection: { extra: true } }), /Unknown garage protection/);
-  const values = [0, 25, 50, 75, 100].map(garageWarmthPrice);
-  assert.ok(values.every((value, i) => i === 0 || value <= values[i - 1]));
-  assert.equal(garageWarmthPrice(100), 0);
+test('two independent cooling coefficients and explicit assumptions replace latent heat and pump heat coefficients', () => {
+  const model = createGarageModel(), summary = garageModelSummary(model);
+  assert.equal(model.rear.values.length, 1); assert.equal(model.front.values.length, 1);
+  assert.deepEqual(summary.structure, { thermalStates: 2, learnedCoolingCoefficients: 2 });
+  assert.equal(Object.hasOwn(model.state, 'coreC'), false);
+  assert.equal(summary.assumptions.evHeatFraction, .075);
+  assert.equal(summary.assumptions.recoveryEnergyFactor, 1.25);
+  assert.equal(summary.electricity.basis, 'fixed-power-assumption');
 });
 
-test('protection parameters do not retune or reset the garage learner', () => {
-  const original = createGarageModel({ seedAt: start });
-  let normal = original, changedProtection = structuredClone(original);
+test('protection parameters do not retune or reset the learner', () => {
+  let normal = createGarageModel({ seedAt: start }), changed = structuredClone(normal);
   for (let i = 0; i < 200; i++) {
     const row = observation(i / 4);
     normal = updateGarageModel(normal, row, settings);
-    changedProtection = updateGarageModel(changedProtection, row, { ...settings,
+    changed = updateGarageModel(changed, row, { ...settings,
       protection: { ...settings.protection, marginC: 2, heatTransferWPerM2K: 30, pipeOutsideDiameterMm: 25 } });
   }
-  assert.deepEqual(changedProtection, normal);
+  assert.deepEqual(changed, normal);
 });
 
-test('ordered replay from saved seed/settings exactly matches online learning and stays bounded', () => {
+test('ordered journal replay exactly reconstructs bounded online learning and rejects old algorithms', () => {
   const seed = createGarageModel({ seedAt: start });
-  const entries = Array.from({ length: 400 }, (_, i) => ({ observation: observation(i / 4, { frontC: i < 100 ? null : 6.7 }), settings }));
+  const entries = Array.from({ length: 400 }, (_, i) => ({ observation: observation(i / 4,
+    { frontC: i < 100 ? null : 6.7 }), settings }));
   let live = seed;
   for (const entry of entries) live = updateGarageModel(live, entry.observation, entry.settings);
-  const rebuilt = replayGarageModel(JSON.parse(JSON.stringify(seed)), entries);
-  assert.deepEqual(rebuilt, live);
+  assert.deepEqual(replayGarageModel(JSON.parse(JSON.stringify(seed)), entries), live);
   assert.ok(JSON.stringify(live).length < 25_000);
-  assert.throws(() => replayGarageModel({ ...seed, algorithm: 'old-unsupported' }, entries), /Unsupported/);
+  assert.throws(() => replayGarageModel({ ...seed, algorithm: 'committed-garage-v3-event-doors' }, entries), /Unsupported/);
+  assert.throws(() => replayGarageModel(seed, [{ ...entries[0], algorithm: 'old' }]), /Mixed/);
 });
 
-test('rear-only history is useful without fabricating front evidence when front is commissioned', () => {
+test('rear-only OFF history fits rear cooling without fabricating front or normal-reference evidence', () => {
   let model = createGarageModel({ seedAt: start });
-  for (let i = 0; i < 100; i++) model = updateGarageModel(model, observation(i / 4, { frontC: null }), settings);
-  assert.ok(model.rear.samples > 50); assert.equal(model.front.samples, 0);
+  for (let i = 0; i < 20; i++) model = updateGarageModel(model, observation(i / 4,
+    { available: false, frontC: null, rearC: 7 * Math.exp(-.03 * i / 4) }), settings);
+  assert.ok(model.rear.samples > 10); assert.equal(model.front.samples, 0);
   assert.equal(garageModelSummary(model).heldOut.front.n, 0);
-  const before = model.front.samples;
-  model = updateGarageModel(model, observation(25, { frontC: 5 }), settings);
-  assert.equal(model.front.samples, before);
-  model = updateGarageModel(model, observation(25.25, { frontC: 5.1 }), settings);
-  assert.ok(model.front.samples > before);
+  model = updateGarageModel(model, observation(5, { available: false, frontC: 5 }), settings);
+  assert.equal(model.front.samples, 0);
+  model = updateGarageModel(model, observation(5.25, { available: false, frontC: 4.96 }), settings);
+  assert.ok(model.front.samples > 0);
+  assert.equal(steady(48, { frontC: null }).normalReference.initialized, false);
 });
 
-test('only genuinely newer temperature reports count, including identical values', () => {
-  let model = updateGarageModel(null, observation(0), settings);
-  model = updateGarageModel(model, observation(.25), settings);
+test('only fresh, newer OFF temperature reports count, including unchanged values', () => {
+  let model = updateGarageModel(null, observation(0, { available: false }), settings);
+  model = updateGarageModel(model, observation(.25, { available: false }), settings);
   const trained = model.trainedIntervals;
-  const repeated = updateGarageModel(model, observation(.5, { rearAt: start + .25 * HOUR }), settings);
-  assert.equal(repeated.trainedIntervals, trained);
-  const fresh = updateGarageModel(repeated, observation(.75), settings);
-  assert.equal(fresh.trainedIntervals, trained + 1);
-  const retained = updateGarageModel(fresh, observation(1, { rearRetained: true }), settings);
-  assert.equal(retained.trainedIntervals, fresh.trainedIntervals);
+  model = updateGarageModel(model, observation(.5, { available: false, rearAt: start + .25 * HOUR }), settings);
+  assert.equal(model.trainedIntervals, trained);
+  model = updateGarageModel(model, observation(.75, { available: false }), settings);
+  assert.equal(model.trainedIntervals, trained + 1);
+  const retained = updateGarageModel(model, observation(1, { available: false, rearRetained: true }), settings);
+  assert.equal(retained.trainedIntervals, model.trainedIntervals);
+  const backwards = updateGarageModel(model, observation(.5), settings);
+  assert.deepEqual(backwards, model);
 });
 
-test('temporally held-out rear/front and advance/native errors are distinct evidence', () => {
-  const model = trainedModel();
-  const summary = garageModelSummary(model);
-  assert.ok(summary.heldOut.rear.n > 40); assert.ok(summary.heldOut.front.n > 40);
-  assert.ok(summary.heldOut.advanceRear.rmse >= 0); assert.ok(summary.heldOut.advanceFront.rmse >= 0);
-  assert.ok(summary.heldOut.native.n > 40); assert.ok(model.rear.samples < model.updates);
-  assert.equal(summary.ready, false, 'No OFF observations means cooling remains unvalidated');
+test('normal heating cannot fit OFF cooling; native electricity remains separately measured', () => {
+  const model = steady(96), summary = garageModelSummary(model);
+  assert.equal(model.rear.samples, 0); assert.equal(model.front.samples, 0);
+  assert.equal(summary.heldOut.offRear.n, 0); assert.equal(summary.heldOut.offFront.n, 0);
+  assert.ok(summary.heldOut.native.n > 40);
+  assert.equal(summary.ready, false);
+  assert.equal(summary.electricity.basis, 'observed-normal-power');
 });
 
-test('normal reference learns verified continuous native warmth and cannot absorb pauses or EV warmth', () => {
-  let model = trainedModel(72);
-  assert.ok(model.normalReference.initialized);
-  const reference = normalGarageTemperature(model, 0);
-  assert.ok(reference < 7.3 && reference > 6.9);
-  for (let i = 288; i < 500; i++) model = updateGarageModel(model, observation(i / 4,
+test('normal reference accepts the explicit owner assumption and excludes pause, recovery, EV and missing baseline', () => {
+  let model = steady(72, { baselineVerified: false, baselineAccepted: true });
+  const reference = normalGarageTemperature(model);
+  assert.ok(model.normalReference.initialized); assert.ok(Math.abs(reference - 7) < .1);
+  for (let i = 289; i < 500; i++) model = updateGarageModel(model, observation(i / 4,
     { rearC: 4, frontC: 3.8, managedPause: i < 350, recovering: i >= 350 }), settings);
-  assert.equal(normalGarageTemperature(model, 0), reference);
-  const unverified = createGarageModel({ seedAt: start });
-  let unknown = unverified;
-  for (let i = 0; i < 100; i++) unknown = updateGarageModel(unknown, observation(i, { baselineVerified: false }), settings);
-  assert.equal(unknown.normalReference.samples, 0);
-  assert.equal(unverified.normalReference.interceptC, 10, 'No invented fixed near-pipe offset');
+  assert.equal(normalGarageTemperature(model), reference);
+  for (const extra of [{ baselineVerified: false }, { ev1Kw: 7 }, { ev1Kw: null, evEvidenceRequired: { ev1: true } }])
+    assert.equal(steady(48, extra).normalReference.initialized, false);
 });
 
-test('front door plunge preserves slow rear memory; thoroughly cold history predicts weaker rebound', () => {
-  let warm = trainedModel(48);
-  warm = updateGarageModel(warm, observation(48, { frontC: 2 }), settings);
-  assert.ok(warm.state.coreC > 6.5); assert.equal(warm.state.frontC, 2);
-  const cold = { ...warm, state: { ...warm.state, coreC: 2, rearC: 3, frontC: 2, differenceC: -1 } };
-  const a = predictGarageStep(warm, warm.state, { outdoorC: 0, available: false }, 1);
-  const b = predictGarageStep(cold, cold.state, { outdoorC: 0, available: false }, 1);
-  assert.ok(a.frontC > b.frontC); assert.ok(a.coreC > b.coreC);
+test('local temperatures and cooling rates determine the OFF forecast independently', () => {
+  const model = createGarageModel();
+  const state = { rearC: 7, frontC: 2, differenceC: -5 };
+  const prediction = predictGarageStep(model, state, { outdoorC: -3, available: false }, 1);
+  assert.ok(Math.abs(prediction.rearC - (-3 + 10 * Math.exp(-.03))) < 1e-12);
+  assert.ok(Math.abs(prediction.frontC - (-3 + 5 * Math.exp(-.04))) < 1e-12);
+  const changedRear = predictGarageStep(model, { ...state, rearC: 3 }, { outdoorC: -3, available: false }, 1);
+  assert.equal(changedRear.frontC, prediction.frontC);
 });
 
-test('activity-only heating and both EV sources learn effective responses without invented metering', () => {
-  let model = createGarageModel({ seedAt: start });
-  for (let i = 0; i < 250; i++) model = updateGarageModel(model, observation(i / 4, {
-    powerKw: null, activity: i % 4 < 2, ev1Kw: i % 5 < 2 ? 5 : 0,
-    ev2Kw: null, ev2Active: i % 7 < 3, frontC: 6.7 + .05 * (i % 4) }), settings);
-  assert.equal(model.evidence.powerIntervals, 0); assert.ok(model.evidence.activityIntervals > 100);
-  assert.ok(model.evidence.ev[0].powerIntervals > 30); assert.ok(model.evidence.ev[1].activityIntervals > 30);
-  assert.equal(model.native.samples, 0);
-  const prediction = predictGarageStep(model, model.state, { outdoorC: 0, available: true }, .25);
-  assert.equal(prediction.electricityBasis, 'prior-modeled-electricity');
+test('activity and charger evidence do not become heat-pump watts or fitted charger heat', () => {
+  const model = steady(48, { powerKw: null, activity: true });
+  assert.equal(model.native.samples, 0); assert.ok(model.nativeActivity.mean > .95);
+  const result = predictGarageStep(model, model.state, { outdoorC: 0, available: true, ev1Kw: 8, ev2Kw: 4 }, .25);
+  assert.equal(result.electricityBasis, 'fixed-power-assumption');
+  assert.equal(result.electricityKwh, .125);
+  assert.deepEqual(result.assumedEvHeat.map(row => row.heatKw), [.6, .3]);
+  assert.deepEqual(garageAssumedEvHeat({ ev1Kw: -1, ev2Kw: 100 }).map(row => row.heatKw), [null, null]);
 });
 
-test('advance forecasts ignore future actual power, fan and defrost; conditional assessment can use elapsed measured power', () => {
-  const model = plannerModel(), initial = { rearC: 7, frontC: 6.7, coreC: 7, differenceC: -.3 };
+test('conditional electricity uses elapsed qualified power without changing temperature or assumed delivered heat', () => {
+  const model = steady(), initial = { rearC: 6, frontC: 5.7, differenceC: -.3 };
   const steps = [{ start, end: start + HOUR, outdoorC: 0, available: true, priceCtPerKwh: 10 }];
   const ordinary = forecastGarage(model, { now: start, initial, steps, settings });
-  const leaked = forecastGarage(model, { now: start, initial, steps: steps.map(s => ({ ...s, powerKw: 8, activity: 1, fan: 5, defrost: false })), settings });
-  assert.deepEqual(leaked.state, ordinary.state); assert.equal(leaked.electricityKwh, ordinary.electricityKwh);
-  const measured = predictGarageStep(model, initial, { outdoorC: 0, available: true, powerKw: 1, powerQuality: 'verified' }, 1, { conditional: true });
-  assert.equal(measured.electricityKwh, 1);
-  assert.ok(measured.rearC > ordinary.state.rearC);
+  const polluted = forecastGarage(model, { now: start, initial,
+    steps: steps.map(row => ({ ...row, powerKw: 8, activity: 1, fan: 5, defrost: true })), settings });
+  assert.deepEqual(polluted, ordinary);
+  const measured = predictGarageStep(model, initial,
+    { outdoorC: 0, available: true, powerKw: 1, powerQuality: 'verified' }, 1, { conditional: true });
+  assert.equal(measured.electricityKwh, 1); assert.deepEqual(measured.state, ordinary.state);
+  const standby = predictGarageStep(model, initial,
+    { outdoorC: 0, available: false, powerKw: .01, powerQuality: 'verified' }, 1, { conditional: true });
+  assert.equal(standby.electricityKwh, .01); assert.ok(standby.rearC < initial.rearC);
 });
 
-test('EV plans use only decision-time knowledge, retain both identities and protection assumes cancellation', () => {
+test('known charger plans honor decision time and cancellation but never extend the temperature forecast', () => {
   const plans = [{ charger: 1, start, end: start + HOUR, knownAt: start + 1, powerKw: 8 },
-    { charger: 2, start, end: start + HOUR, knownAt: start - 1, active: true, confidence: .5 }];
+    { charger: 2, start, end: start + HOUR, knownAt: start - 1, powerKw: 8, confidence: 1 }];
   assert.equal(knownGarageEvAt(plans, start, start).ev1Kw, 0);
-  assert.equal(knownGarageEvAt(plans, start, start).ev2Active, .5);
-  const model = plannerModel(), steps = [{ start, end: start + HOUR, outdoorC: 0, available: false }];
-  const initial = { rearC: 7, frontC: 6.7, coreC: 7, differenceC: -.3 };
-  const planned = forecastGarage(model, { now: start, initial, steps, knownEvPlans: plans, settings });
-  const protectedForecast = forecastGarage(model, { now: start, initial, steps, knownEvPlans: plans, protection: true, settings });
-  assert.ok(planned.state.rearC > protectedForecast.state.rearC);
+  assert.equal(knownGarageEvAt(plans, start, start).ev2Kw, 8);
+  const model = steady(), steps = [{ start, end: start + HOUR, outdoorC: 0, available: false }];
+  const planned = forecastGarage(model, { now: start, steps, knownEvPlans: plans });
+  const protectedForecast = forecastGarage(model, { now: start, steps, knownEvPlans: plans, protection: true });
+  assert.deepEqual(planned.state, protectedForecast.state);
+  assert.equal(planned.points[0].assumedEvHeat[1].heatKw, .6);
+  assert.equal(protectedForecast.points[0].assumedEvHeat[1].heatKw, 0);
+  assert.equal(knownGarageEvAt([...plans, { ...plans[1], knownAt: start, cancelled: true }], start, start).ev2Kw, 0);
 });
 
-test('flat prices and aggression zero always preserve normal availability and zero timing benefit', () => {
-  const args = { now: start, model: plannerModel(), observation: observation(0), settings, ...outlook(Array(12).fill(12)) };
-  const flat = planFixture(args);
-  assert.equal(flat.nextAction, 'available'); assert.equal(flat.timingBenefitEur, 0); assert.match(flat.reason, /flat/);
-  const disabled = planFixture({ ...args, settings: { ...settings, aggressiveness: 0 }, ...outlook([2, 100, 100, 2, 2, 2]) });
-  assert.equal(disabled.nextAction, 'available'); assert.equal(disabled.reason, 'normal-heating-preference');
-});
-
-test('planner covers multiple opportunities, retains terminal debt and monotonic warmth preference', () => {
-  const args = { now: start, model: plannerModel(), observation: observation(0),
-    ...outlook([5, 5, 35, 35, 5, 5, 5, 5, 5, 90, 90, 90, 5, 5, 5, 5]) };
-  const results = [25, 50, 75, 100].map(aggressiveness => planFixture({ ...args, settings: { ...settings, aggressiveness } }));
-  assert.ok(results.some(result => result.timingBenefitEur > 0));
-  assert.ok(results.at(-1).steps.some(step => step.phase === 'pause'));
-  assert.ok(results.at(-1).steps.some(step => step.phase === 'recovery'));
-  assert.ok(results.at(-1).heatDebt.effectiveKwh >= 0);
-  assert.ok(results.at(-1).uncertainty.terminalPriceEurPerKwh >= .9);
-  for (let i = 1; i < results.length; i++) assert.ok((results[i].coolingDegreeHours ?? 0) + 1e-8 >= (results[i - 1].coolingDegreeHours ?? 0));
-});
-
-test('planner never pauses with one protection sensor even when rear-only monitoring is configured', () => {
-  const result = planFixture({ now: start, model: plannerModel(), observation: observation(0, { frontC: null }), settings,
-    ...outlook([100, 100, 1, 1, 1, 1]) });
-  assert.equal(result.nextAction, 'available'); assert.match(result.reason, /front/);
-});
-
-test('native OFF still records qualified observed standby electricity without treating it as delivered heat', () => {
-  const model = createGarageModel({ seedAt: start });
-  const state = { rearC: 7, frontC: 6.7, coreC: 7, differenceC: -.3 };
-  const predicted = predictGarageStep(model, state, { available: false, outdoorC: 0, powerKw: .01, powerQuality: 'verified' }, 1, { conditional: true });
-  assert.ok(Math.abs(predicted.electricityKwh - .01) < 1e-10);
-  assert.ok(predicted.rearC < 7);
-});
-
-test('controlled thermal excitation fits rear response without qualifying EV-disturbed episodes', () => {
-  const truth = createGarageModel({ seedAt: start });
-  truth.rear.values[0] = .035; truth.rear.values[2] = .9;
-  truth.rear.values[4] = .03; truth.rear.values[5] = .05;
-  let actual = { rearC: 7, frontC: 6.7, coreC: 8, differenceC: -.3 };
-  let model = createGarageModel({ seedAt: start });
-  const configs = { ...settings, baselineC: 10 };
-  const samples = [];
-  for (let i = 0; i < 14 * 96; i++) {
-    const hour = i / 4, available = i % 32 < 24, outdoorC = 2 + 6 * Math.sin(hour / 21);
-    const powerKw = available ? [.3, .6, .9, .45][Math.floor(i / 16) % 4] : 0;
-    const ev1Kw = i % 40 < 8 ? 6 : 0, ev2Kw = i % 40 >= 20 && i % 40 < 28 ? 8 : 0;
-    const input = { outdoorC, available, powerKw, powerQuality: 'verified', ev1Kw, ev2Kw };
-    const row = observation(hour, { ...input, rearC: actual.rearC, frontC: actual.frontC });
-    samples.push({ observation: row, settings: configs });
-    model = updateGarageModel(model, row, configs);
-    actual = predictGarageStep(truth, actual, input, .25, { conditional: true }).state;
+test('short door and charger events between temperature reports cannot disappear from learning', () => {
+  for (const disturbance of [{ inputDisturbed: true }, { doorFront: true }, { ev1Kw: 6 }, { ev1Kw: 0, ev1Active: true }]) {
+    let model = updateGarageModel(null, observation(0, { available: false }), settings);
+    model = updateGarageModel(model, observation(.1, { available: false, rearAt: start, ...disturbance }), settings);
+    model = updateGarageModel(model, observation(.2, { available: false, rearAt: start }), settings);
+    model = updateGarageModel(model, observation(.25, { available: false, rearC: 6.8 }), settings);
+    assert.equal(model.rear.samples, 0); assert.equal(model.front.samples, 0);
+    assert.equal(model.validation.active.clean, false);
   }
-  const summary = garageModelSummary(model);
-  assert.ok(model.rear.values[0] > .026 && model.rear.values[0] < .06);
-  assert.ok(model.rear.values[2] > .65 && model.rear.values[2] < 1.1);
-  assert.ok(summary.heldOut.offRear.n >= 12 && summary.heldOut.offFront.n >= 12);
-  assert.ok(summary.heldOut.rear.rmse < .15 && summary.heldOut.front.rmse < .2);
-  assert.equal(summary.ready, false, 'Door/EV disturbance cannot qualify a clean long OFF episode');
-  assert.ok(model.evidence.ev.every(ev => ev.independentIntervals >= 24));
-  assert.deepEqual(replayGarageModel(createGarageModel({ seedAt: start }), samples), model);
 });
 
-test('48 hour plan uses ordinary peaks, reserves preparation and never credits unknown cheap terminal recovery', () => {
-  const model = plannerModel(), values = Array.from({ length: 48 }, (_, i) => i % 24 >= 17 && i % 24 <= 20 ? 40 : 7);
-  const result = planFixture({ now: start, model, settings: { ...settings, aggressiveness: 75 }, observation: observation(0), ...outlook(values) });
-  assert.equal(result.reason, 'prepare-for-later-price-opportunity');
-  assert.equal(result.steps.length, 192);
-  assert.ok(result.timingBenefitEur > .05);
-  assert.equal(result.steps[0].phase, 'preparation');
-  assert.ok(result.steps.some(step => step.start >= start + 24 * HOUR && step.phase === 'pause'));
-  assert.ok(result.uncertainty.terminalPriceEurPerKwh >= .4);
+
+test('a journaled runtime disturbance flag excludes an otherwise clean interval and replays exactly', () => {
+  const seed = createGarageModel({ seedAt: start });
+  const entries = [observation(0, { available: false }), observation(.25, { available: false, rearC: 6.9, inputDisturbed: true })];
+  const model = replayGarageModel(seed, entries.map(observation => ({ observation, settings })));
+  assert.equal(model.rear.samples, 0); assert.equal(model.front.samples, 0);
+  assert.equal(model.validation.active.clean, false);
+  let online = seed;
+  for (const entry of entries) online = updateGarageModel(online, entry, settings);
+  assert.deepEqual(online, model);
 });
 
-test('same-episode renewals remain bounded by their original authorization endpoint', () => {
-  const endpoint = start + HOUR;
-  const result = planFixture({ now: start, model: plannerModel(), settings: { ...settings, aggressiveness: 100 },
-    observation: observation(0, { available: false, availableChangedAt: start - HOUR }),
-    activeEpisode: { state: 'active', authorizedEndAt: endpoint }, ...outlook([60, 60, 5, 5, 5, 5, 5, 5]) });
-  assert.equal(result.nextAction, 'renew'); assert.ok(result.pauseUntil <= endpoint);
-  assert.ok(result.steps.filter(step => step.available === false).every(step => step.end <= endpoint));
+
+test('one ordinary release between asynchronous front and rear reports preserves clean episode validation', () => {
+  const seed = createGarageModel({ seedAt: start });
+  const entries = [
+    observation(0, { available: false, powerKw: 0 }),
+    observation(.25, { available: false, powerKw: 0, rearC: 6.95, frontC: 6.65 }),
+    observation(.26, { available: true, rearAt: start + .25 * HOUR, rearC: 6.95, frontC: 6.65 }),
+    observation(.27, { available: true, rearAt: start + .25 * HOUR, rearC: 6.95, frontC: 6.65 }),
+    observation(.5, { available: true, rearC: 6.97, frontC: 6.67 }),
+    observation(.75, { available: true }),
+  ];
+  let model = seed;
+  for (const row of entries) {
+    model = updateGarageModel(model, row, settings);
+    if (row.at > start) assert.equal(model.validation.active.clean, true);
+  }
+  assert.equal(model.validation.active.offEndedAt, start + .5 * HOUR);
+  assert.equal(model.rear.samples, 1, 'The interval with an OFF/ON edge cannot fit OFF cooling');
+  assert.deepEqual(replayGarageModel(seed, entries.map(observation => ({ observation, settings }))), model);
 });
 
-test('later opportunities retain frozen host debt while scoring only incremental future choices', () => {
-  const model = plannerModel();
-  model.state = { rearC: 6.5, frontC: 6.2, coreC: 6.6, differenceC: -.3 };
-  const args = { now: start, model, observation: observation(0, { rearC: 6.5, frontC: 6.2 }),
-    settings: { ...settings, aggressiveness: 100 }, ...outlook([65, 65, 5, 5, 5, 5, 5, 5]) };
-  const continuation = planFixture(args);
-  const outstanding = planFixture({ ...args, referenceInitialState: { rearC: 7, frontC: 6.7, coreC: 7, differenceC: -.3 } });
-  assert.equal(outstanding.nextAction, 'pause');
-  assert.equal(outstanding.obligationReference.basis, 'frozen-host-normal-reference');
-  assert.ok(outstanding.heatDebt.coreC > continuation.heatDebt.coreC);
-  assert.ok(outstanding.continuationDebt.effectiveKwh > 0);
-  assert.ok(outstanding.timingBenefitEur > 0, 'Existing recovery debt must not be charged as the new opportunity entry cost');
-  assert.ok(outstanding.heatDebt.effectiveKwh >= outstanding.continuationDebt.effectiveKwh);
+test('a native bounce hidden between rear reports excludes fitting and whole-episode validation', () => {
+  for (const initialAvailable of [true, false]) {
+    let model = updateGarageModel(null, observation(0, { available: initialAvailable }), settings);
+    model = updateGarageModel(model, observation(.1, { available: !initialAvailable, rearAt: start }), settings);
+    assert.equal(model.intervalDisturbed, false, 'A single edge alone is ordinary operation');
+    model = updateGarageModel(model, observation(.2, { available: initialAvailable, rearAt: start }), settings);
+    assert.equal(model.intervalDisturbed, true);
+    model = updateGarageModel(model, observation(.25, { available: initialAvailable, rearC: 6.9 }), settings);
+    assert.equal(model.rear.samples, 0); assert.equal(model.front.samples, 0);
+    assert.equal(model.normalReference.availableSince, null);
+    if (!initialAvailable) assert.equal(model.validation.active.clean, false);
+  }
+  // The second edge can arrive with the new rear measurement itself.
+  let model = updateGarageModel(null, observation(0, { available: false }), settings);
+  model = updateGarageModel(model, observation(.1, { available: true, rearAt: start }), settings);
+  model = updateGarageModel(model, observation(.25, { available: false, rearC: 6.9 }), settings);
+  assert.equal(model.rear.samples, 0); assert.equal(model.validation.active.clean, false);
 });

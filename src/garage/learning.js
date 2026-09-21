@@ -49,6 +49,20 @@ export function applyGarageEntry(checkpoint, entry, context = { changes: [], rev
     const change = context.changes.find(change => change.id === value.sensorChangeId);
     if (change && change.revertedAt === null || value.baselineChanged === true)
       model = createGarageModel({ seedAt: entry.at, baselineC: settings.baselineC });
+    else if (value.normalReferenceReset === true) {
+      const fresh = createGarageModel({ seedAt: entry.at, baselineC: settings.baselineC });
+      model.normalReference = fresh.normalReference;
+      model.native = fresh.native; model.nativeActivity = fresh.nativeActivity;
+      model.heldOut.native = fresh.heldOut.native;
+      model.previous = null; model.intervalDisturbed = false;
+      const active = model.validation.active;
+      if (active) model.validation.episodes = [...model.validation.episodes, {
+        id: active.id, role: active.role, startedAt: active.startedAt, endedAt: entry.at,
+        offHours: active.offHours, recoveryHours: active.recoveryHours, complete: false,
+        clean: false, metered: active.metered, reason: 'normal-reference-reset',
+      }].slice(-24);
+      model.validation.active = null; model.validation.previousAvailable = null;
+    }
   }
   const next = { algorithmVersion: GARAGE_ALGORITHM_VERSION, model, cursor: entry.id,
     configVersion: entry.configVersion, correctionRevision: context.revision,

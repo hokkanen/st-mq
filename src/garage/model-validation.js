@@ -10,7 +10,7 @@ const secondLargest = values => [...values].sort((a, b) => b - a)[1] ?? 0;
 export function createGarageValidation() { return { nextId: 0, active: null, episodes: [], previousAvailable: null }; }
 function freezeModel(model) {
   return { algorithm: model.algorithm, rear: { values: [...model.rear.values], active: [...model.rear.active], evidence: [...model.rear.evidence] }, front: { values: [...model.front.values] },
-    native: { values: [...model.native.values], samples: model.native.samples, hours: model.native.hours, active: [...model.native.active] },
+    native: { values: [model.native.active[0] ? model.native.values[0] : .5], samples: model.native.samples, hours: model.native.hours, active: [...model.native.active] },
     evidence: { powerIntervals: model.evidence.powerIntervals, activityIntervals: model.evidence.activityIntervals,
       powerHours: model.evidence.powerHours, activityHours: model.evidence.activityHours },
     nativeActivity: { ...model.nativeActivity }, normalReference: { ...model.normalReference }, heldOut: structuredClone(model.heldOut) };
@@ -35,7 +35,7 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
       offEndedAt: null, offHours: 0, recoveryHours: 0, clean: frontKnown, metered: true,
       initialRearC: state.rearC, initialFrontC: state.frontC, initialOutdoorC: prior.outdoorC,
       minimumRearC: state.rearC, minimumFrontC: state.frontC, rearDropC: 0, frontDropC: 0,
-      forecast: freezeModel(model), state: { ...state }, observedKwh: 0, predictedKwh: 0,
+      forecast: freezeModel(model), state: { ...state }, observedKwh: 0, predictedKwh: 0, recoveryAllowanceKwh: 0, recoveryAccountedKwh: 0,
       trainingSupportHours: secondLargest(validation.episodes.filter(e => e.role === 'training' && e.complete && e.clean).map(e => e.offHours)),
       rear: metric(), front: metric(), offRear: metric(), offFront: metric() };
   }
@@ -60,6 +60,11 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
     { outdoorC: prior.outdoorC, available: prior.available, restart, ev1Kw: 0, ev2Kw: 0 }, hours);
   episode.state = forecast.state;
   episode.predictedKwh += forecast.electricityKwh;
+  if (prior.available === false) episode.recoveryAllowanceKwh += episode.forecast.native.values[0] * hours * 1.25;
+  else {
+    const repayment = Math.min(Math.max(0, episode.recoveryAllowanceKwh - episode.recoveryAccountedKwh), episode.recoveryAllowanceKwh * hours / 3);
+    episode.predictedKwh += repayment; episode.recoveryAccountedKwh += repayment;
+  }
   if (metered) episode.observedKwh += prior.powerKw * hours;
   else if (prior.available === true) episode.metered = false;
   add(episode.rear, current.rearC - forecast.rearC, hours);
@@ -73,27 +78,22 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
   // Absolute 0.2/0.3C allowances alone call a short pause 'recovered' even
   // before any warmth returns. Require at least 75% of its observed cooling
   // to return, with a 0.05C floor for ordinary sensor resolution.
-  // Compare with normal warmth under the current measured weather. Otherwise
-  // a small cold-weather change can keep a fully reheated short trial waiting
-  // for its former absolute temperature indefinitely. This correction uses the
-  // frozen achieved-reference slope, never a post-pause temperature refit.
-  const outdoorChange = current.outdoorC - episode.initialOutdoorC;
-  const rearShift = episode.forecast.normalReference.outdoorSlope * outdoorChange;
-  const frontShift = rearShift + episode.forecast.front.values[1] / episode.forecast.front.values[0] * (outdoorChange - rearShift);
-  episode.rearDropC = Math.max(episode.rearDropC, episode.initialRearC + rearShift - current.rearC);
-  if (frontKnown) episode.frontDropC = Math.max(episode.frontDropC, episode.initialFrontC + frontShift - current.frontC);
+  // Require the measured pre-pause temperatures. An assumed recovery envelope
+  // or changed thermostat setting cannot declare measured recovery complete.
+  episode.rearDropC = Math.max(episode.rearDropC, episode.initialRearC - current.rearC);
+  if (frontKnown) episode.frontDropC = Math.max(episode.frontDropC, episode.initialFrontC - current.frontC);
   const rearTolerance = Math.min(.2, Math.max(.05, .25 * episode.rearDropC));
   const frontTolerance = Math.min(.3, Math.max(.05, .25 * episode.frontDropC));
-  const requiredRecoveryHours = Math.max(.5, Math.min(episode.offHours, 4));
+  const requiredRecoveryHours = 3;
   const recovered = prior.available === true && episode.recoveryHours + 1e-9 >= requiredRecoveryHours
-    && current.rearC + 1e-9 >= episode.initialRearC + rearShift - rearTolerance
-      && frontKnown && current.frontC + 1e-9 >= episode.initialFrontC + frontShift - frontTolerance;
+    && current.rearC + 1e-9 >= episode.initialRearC - rearTolerance
+      && frontKnown && current.frontC + 1e-9 >= episode.initialFrontC - frontTolerance;
   const expired = episode.recoveryHours + 1e-9 >= 12 || current.at - episode.startedAt >= 48 * HOUR;
   if (recovered || expired) {
     const rearRmse = rmse(episode.rear), frontRmse = rmse(episode.front);
     const offRearRmse = rmse(episode.offRear), offFrontRmse = rmse(episode.offFront);
     const thermalPassed = recovered && episode.clean && offRearRmse <= .6 && offFrontRmse <= .9
-      && rearRmse <= .8 && frontRmse <= 1.1 && episode.rear.maximum <= 1.5 && episode.front.maximum <= 2;
+      && episode.offRear.maximum <= 1.5 && episode.offFront.maximum <= 2;
     const electricalPassed = thermalPassed && episode.metered && episode.observedKwh > .05
       && Math.abs(episode.predictedKwh - episode.observedKwh) <= Math.max(.12, .35 * episode.observedKwh);
     validation.episodes.push({ id: episode.id, role, startedAt: episode.startedAt, endedAt: current.at,

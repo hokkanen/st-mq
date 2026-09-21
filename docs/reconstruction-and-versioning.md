@@ -234,3 +234,40 @@ freeze-protection reserve cannot alone finish a building-recovery episode or
 qualify savings. Historical frozen assessments retain their matching algorithm
 and evidence; an incompatible protection baseline cannot create a comparable
 recovery claim. See [protection details](garage-protection-defaults.md).
+
+
+## Garage simple OFF epoch
+
+`committed-garage-v4-simple-off` replaces the coupled v3 dynamics with two independent
+OFF cooling rates, observed normal references and explicit fixed electricity /
+recovery assumptions. It also replaces multi-pause preference scoring with
+`garage-simple-opportunities-v1`. The v3 learner, planning and assessment code is
+archival at Git revision `09618e5029d1e8a7d30af38909078b4db4c775d2`.
+The first v4 journal entry records a fresh explicit seed, settings checksum and
+algorithm boundary. Old records, coefficients, costs and frozen forecasts are not
+replayed or relabeled as v4; original old code remains available in Git.
+
+The operational protection policy stays `garage-thermal-reserve-v1`. Both local
+pipe states and unresolved native restoration survive independently of the new
+learning seed. An existing v3 episode becomes archived recovery: its frozen
+accounting is not advanced by v4 and cannot report new savings or renew OFF.
+Both measured locations and pipe reserves must recover, with continuous normal
+availability; the established eight-hour accepted-native fallback may close
+changed-weather recovery as incomplete, without savings. Gaps reset that dwell.
+
+Changing the owner i-save assumption records a context event and stored preference
+atomically and releases owned OFF permission. Normalized samples preserve whether
+the accepted baseline was verified or owner-assumed. Matching configuration and
+source epochs drive the same ordered update in live learning, background replay
+and charts; changing the assumption cannot rewrite historical verification.
+
+If changed weather makes the frozen pre-pause temperatures unreachable, eight
+continuous hours of fresh accepted native ON with both actual locations and both
+certain pipe references above the protection margin can close recovery as
+**incomplete**, with no savings claim. This also respects a longer configured
+minimum ON time. Closing and a normal-reference reset are committed atomically.
+The reset clears reference/electricity observers and their previous input, retires
+active validation as incomplete, and retains learned cooling rates. The same
+context event replays deterministically; new normal-temperature evidence must
+qualify before another economic pause. Brief charging disturbances, changed
+baseline/source and unqualified electricity never fabricate completed savings.

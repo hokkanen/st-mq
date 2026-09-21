@@ -2,10 +2,11 @@
  * is an operational approximation, not a certified first-ice prediction. */
 export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
-export const GARAGE_PREFERENCE_VERSION = 'garage-warmth-cost-v1';
+export const GARAGE_PREFERENCE_VERSION = 'garage-simple-opportunities-v1';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
-  enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false,
-  maxSensorAgeMs: 120_000, minOnMs: 30 * 60_000, minOffMs: 10 * 60_000,
+  enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false, assumeISave10C: false,
+  minSavingsEur: .5, maxPauseHours: 2, maxPausesPerDay: 1,
+  maxSensorAgeMs: 120_000, minOnMs: 3 * 3_600_000, minOffMs: 3_600_000,
   maxHorizonHours: 48, stepMinutes: 15,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
     marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 }),
@@ -31,10 +32,13 @@ export function garageSettings(input = {}) {
   for (const key of Object.keys(protection)) if (Object.hasOwn(supplied, key)) protection[key] = supplied[key];
   if (legacy) { protection.version = GARAGE_POLICY_VERSION; protection.approved = false; }
   const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
-  for (const key of ['enabled', 'frontRequired']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
+  for (const key of ['enabled', 'frontRequired', 'assumeISave10C']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   number(output, 'aggressiveness', 0, 100); number(output, 'baselineC', 8, 16);
+  number(output, 'minSavingsEur', 0, 100); number(output, 'maxPauseHours', .5, 8);
+  number(output, 'maxPausesPerDay', 1, 4);
+  if (!Number.isInteger(output.maxPausesPerDay)) throw new Error('Garage maxPausesPerDay must be a whole number');
   number(output, 'maxSensorAgeMs', 30_000, 4 * 3_600_000);
-  number(output, 'minOnMs', 0, 6 * 3_600_000); number(output, 'minOffMs', 0, 3_600_000);
+  number(output, 'minOnMs', 0, 24 * 3_600_000); number(output, 'minOffMs', 0, 3 * 3_600_000);
   number(output, 'maxHorizonHours', 2, 48); number(output, 'stepMinutes', 5, 30);
   const policy = output.protection;
   if (typeof policy.approved !== 'boolean') throw new Error('Garage protection approval must be boolean');
@@ -44,9 +48,4 @@ export function garageSettings(input = {}) {
   if (policy.pipeWallMm * 2 >= policy.pipeOutsideDiameterMm)
     throw new Error('Garage pipe wall must leave a positive water diameter');
   return output;
-}
-/** Stable mapping: higher aggressiveness lowers warmth cost. Never price-normalized. */
-export function garageWarmthPrice(aggressiveness) {
-  if (!finite(aggressiveness) || aggressiveness < 0 || aggressiveness > 100) throw new Error('Invalid garage aggressiveness');
-  return aggressiveness === 0 ? Infinity : 0.012 * ((100 - aggressiveness) / 50) ** 2;
 }

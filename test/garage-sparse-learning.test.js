@@ -31,32 +31,33 @@ function experiment({ cadenceMinutes = 5, days = 8, offHours = .5, activityOnly 
   return { model, entries };
 }
 
-test('event-driven doors have an explicit epoch and refuse previous learning semantics', () => {
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v3-event-doors');
+test('simple OFF learning has an explicit epoch and refuse previous learning semantics', () => {
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v4-simple-off');
+  assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v3-event-doors' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v1-coupled' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v2-sparse' }, row(1)), /Unsupported/);
 });
 
-test('an adapter source epoch interrupts intervals without erasing building memory or completed evidence', () => {
+test('an adapter source epoch interrupts intervals without erasing learned cooling or completed evidence', () => {
   let model = updateGarageModel(null, row(0, { sourceEpoch: 'adapter-boot-one' }), settings);
-  model.state.coreC = 9;
+  model.rear.values[0] = .035;
   model.validation.episodes = [{ id: 0, complete: true, clean: true, offHours: 2 }];
   const after = updateGarageModel(model, row(.1, { sourceEpoch: 'adapter-boot-two', rearC: 6 }), settings);
-  assert.equal(after.state.coreC, 9);
+  assert.equal(after.rear.values[0], .035);
+  assert.equal(Object.hasOwn(after.state, 'coreC'), false);
   assert.equal(after.state.rearC, 6);
   assert.deepEqual(after.validation.episodes, model.validation.episodes);
   assert.equal(after.rear.samples, model.rear.samples, 'No fit crosses the boot boundary');
 });
 
-test('thousands of collinear thermostat rows cannot separately identify heat and loss', () => {
+test('thousands of thermostat rows cannot fit OFF cooling or fabricate additional coefficients', () => {
   const model = steady(1), summary = garageModelSummary(model);
-  assert.equal(model.rear.values[0], .022); assert.equal(model.rear.values[2], .55);
-  assert.equal(model.rear.active[0], false); assert.equal(model.rear.active[2], false);
+  assert.deepEqual(model.rear.values, [.03]); assert.deepEqual(model.front.values, [.04]);
+  assert.deepEqual(model.rear.active, [false]); assert.deepEqual(model.front.active, [false]);
   assert.equal(summary.ready, false); assert.equal(summary.maxPauseHours, 0);
-  assert.equal(summary.coefficients.rear[1].basis, 'fixed-prior');
+  assert.equal(summary.coefficients.rear[0].basis, 'fixed-prior');
   assert.equal(summary.coefficients.front[0].basis, 'fixed-prior');
-  assert.equal(summary.coefficients.native[3].basis, 'fixed-prior');
-  assert.ok(summary.coefficients.front.filter(c => c.basis === 'fitted-effective-response').length <= 1);
+  assert.equal(summary.coefficients.native.length, 1);
 });
 
 test('reference and native learning depend on elapsed duration rather than row count', () => {
@@ -65,12 +66,12 @@ test('reference and native learning depend on elapsed duration rather than row c
   assert.ok(Math.abs(minute.normalReference.interceptC - quarter.normalReference.interceptC) < .015);
   assert.ok(Math.abs(minute.native.values[0] - quarter.native.values[0]) < .015);
   assert.ok(minute.native.samples > quarter.native.samples * 10);
-  assert.equal(minute.native.active[1], false, 'Unchanged weather cannot fit its slope');
+  assert.equal(minute.native.values.length, 1, 'Normal power is one duration-weighted observed mean');
 });
 
 test('a single twenty-minute episode crossing the old daily split never validates itself', () => {
   let model = steady(1, 17);
-  for (let minute = 17 * 60 + 1; minute <= 20 * 60; minute++) {
+  for (let minute = 17 * 60 + 1; minute <= 22 * 60; minute++) {
     const available = minute < 17 * 60 + 50 || minute >= 18 * 60 + 10;
     model = updateGarageModel(model, row(minute / 60, { available, powerKw: available ? .3 : 0 }), settings);
   }
@@ -142,21 +143,20 @@ test('routine heating cannot age retained OFF sufficient statistics', () => {
   assert.deepEqual(model.rear.statistics.off, retained);
 });
 
-test('changing from long activity history to qualified power fits one consistent input path', () => {
-  const specs = [['lossPerHour', .022, .001, .15], ['memory', .11, .01, .6],
-    ['power', .55, .02, 4], ['activity', .5, .02, 4]];
-  const reg = createGarageRegression(specs);
-  for (let i = 0; i < 200; i++) {
-    const off = i % 4 === 0, x = [-10, 0, 0, off ? 0 : 1];
-    fitGarageRegression(reg, specs, x, -.3 + (off ? 0 : .8), .25, off ? 'off' : 'normal', 'rear');
-  }
-  assert.equal(reg.active[3], true);
-  for (let i = 0; i < 40; i++) {
-    const power = i % 2 ? .8 : .4;
-    fitGarageRegression(reg, specs, [-10, 0, power, 0], -.3 + power * .7, .25, 'normal', 'rear');
-  }
-  assert.equal(reg.active[2], true); assert.equal(reg.active[3], false); assert.equal(reg.fitted[3], true);
-  assert.ok(Math.abs(reg.values[2] - .7) < .08);
+test('duration weighting retains rare OFF evidence and bounds an ill-conditioned fit', () => {
+  const specs = [['coolingPerHour', .03, .001, .3]];
+  const minute = createGarageRegression(specs), quarter = createGarageRegression(specs);
+  for (let i = 0; i < 120; i++) fitGarageRegression(minute, specs, [-10], -.35, 1 / 60);
+  for (let i = 0; i < 8; i++) fitGarageRegression(quarter, specs, [-10], -.35, .25);
+  assert.ok(Math.abs(minute.values[0] - quarter.values[0]) < 1e-12);
+  assert.ok(Math.abs(quarter.values[0] - .035) < .001);
+  const before = structuredClone(quarter);
+  for (let i = 0; i < 1000; i++) fitGarageRegression(quarter, specs, [-10], 1, .25, 'normal');
+  assert.deepEqual(quarter, before);
+  fitGarageRegression(quarter, specs, [.01], 5, 1);
+  assert.deepEqual(quarter, before, 'Tiny outdoor difference carries no cooling information');
+  fitGarageRegression(quarter, specs, [-10], -100, 1);
+  assert.equal(quarter.values[0], .3);
 });
 
 test('advance forecast margins continue growing beyond six hours without future-input leakage', () => {
@@ -179,6 +179,7 @@ test('observed boolean activity predicts dimensionless duty independently of mod
   const ordinary = predictGarageNative(model, model.state, { outdoorC: 0, available: true });
   const changedElectricalPrior = structuredClone(model);
   changedElectricalPrior.native.values[0] = 1.5;
+  changedElectricalPrior.native.active[0] = true;
   const changed = predictGarageNative(changedElectricalPrior, model.state, { outdoorC: 0, available: true });
   assert.equal(ordinary.activity, changed.activity); assert.ok(ordinary.activity > .95);
   assert.notEqual(ordinary.powerKw, changed.powerKw);

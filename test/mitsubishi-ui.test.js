@@ -86,6 +86,7 @@ function panelFixture() {
   }
   const ids=['form','setting','value','temperature','submit','message','temperature-field','value-field','status','control-details'];
   const nodes=new Map(ids.map(id=>[`garage-native-${id}`,new Node()]));
+  for (const id of ['garage-assume-isave', 'garage-assume-isave-status']) nodes.set(id, new Node());
   const setting=nodes.get('garage-native-setting');setting.value='power';
   for(const field of ['power','mode','targetC','fan','vane','wideVane']){const option=new Node();option.value=field;setting.append(option);}
   const document={getElementById:id=>nodes.get(id),createElement:()=>new Node()};
@@ -154,4 +155,47 @@ test('explicitly unknown diagnostic values stay absent even when an older source
   status.garage.adapter.telemetry={compressorFrequency:{value:0,sourceTime:now-120000,supported:true,quality:['stale']}};
   const stale=mitsubishiReadings(status.garage,now).find(row=>row.key==='telemetry-compressorFrequency');
   assert.equal(stale.value,'Unavailable');assert.match(stale.detail,/Last reported: 0 Hz/);
+});
+
+
+test('i-save checkbox saves only an owner assumption and preserves native readback and verification', async () => {
+  const f = panelFixture(), checkbox = f.nodes.get('garage-assume-isave');
+  const original = { ...f.status, garage: { ...f.status.garage, preferences: { available: true },
+    settings: { ...f.status.garage.settings, assumeISave10C: false },
+    adapter: { ...f.status.garage.adapter, baselineVerified: false,
+      native: { ...f.status.garage.adapter.native, targetC: 16 } } } };
+  f.panel.update(original); assert.equal(checkbox.disabled, false); assert.equal(checkbox.checked, false);
+  checkbox.checked = true;
+  let done; f.reply(() => new Promise(resolve => { done = resolve; }));
+  const pending = checkbox.listeners.get('change')();
+  assert.equal(checkbox.disabled, true); await checkbox.listeners.get('change')();
+  assert.deepEqual(f.calls, [['/api/garage/preferences', { assumeISave10C: true }]]);
+  const assumed = { ...original, garage: { ...original.garage, settings: { ...original.garage.settings, assumeISave10C: true } } };
+  done(assumed); await pending;
+  assert.equal(checkbox.checked, true); assert.equal(checkbox.disabled, false);
+  assert.equal(assumed.garage.adapter.baselineVerified, false);
+  assert.equal(assumed.garage.adapter.native.targetC, 16);
+  assert.match(f.nodes.get('garage-assume-isave-status').textContent, /assumed.*readings remain unchanged/);
+  for (const role of ['replica', 'protected', 'transition']) {
+    f.panel.update({ ...assumed, role }); checkbox.checked = false;
+    await checkbox.listeners.get('change')(); assert.equal(checkbox.disabled, true);
+  }
+  f.panel.update({ ...assumed, readOnly: true });
+  await checkbox.listeners.get('change')(); assert.equal(checkbox.disabled, true); assert.equal(f.calls.length, 1);
+  f.panel.close(); assert.equal(checkbox.listeners.size, 0);
+});
+
+test('failed i-save preference save restores the last accepted checkbox value and remains retryable', async () => {
+  const f = panelFixture(), checkbox = f.nodes.get('garage-assume-isave');
+  const status = { ...f.status, garage: { ...f.status.garage, preferences: { available: true },
+    settings: { assumeISave10C: false } } };
+  f.panel.update(status); checkbox.checked = true;
+  f.reply(() => { throw new Error('Saving preference failed'); });
+  await checkbox.listeners.get('change')();
+  assert.equal(checkbox.checked, false); assert.equal(checkbox.disabled, false);
+  assert.match(f.nodes.get('garage-assume-isave-status').textContent, /Saving preference failed/);
+  assert(f.nodes.get('garage-assume-isave-status').classes.has('form-error'));
+  f.panel.update({ ...status, garage: { ...status.garage, nativeControls: { available: false, settings: {} } } });
+  assert.equal(f.nodes.get('garage-native-control-details').hidden, false, 'Owner assumption remains configurable without native writable fields');
+  assert.equal(f.nodes.get('garage-native-form').hidden, true);
 });

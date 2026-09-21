@@ -151,10 +151,12 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
   const $ = id => document.getElementById(id), form = $('garage-native-form'), setting = $('garage-native-setting');
   const select = $('garage-native-value'), input = $('garage-native-temperature'), submit = $('garage-native-submit');
   const message = $('garage-native-message');
+  const assumption = $('garage-assume-isave'), assumptionMessage = $('garage-assume-isave-status');
   let status = null, busy = false, closed = false, edited = false, optionSignature = null, settingSignature = null, requestError = null;
   const refreshControls = () => {
     if (!form) return;
     const control = mitsubishiControl(status, setting.value), locked = closed || busy || blocked();
+    if (assumption) assumption.disabled = locked || status?.readOnly === true || isReadOnlyReplica(status) || status?.garage?.preferences?.available !== true;
     setting.disabled = locked;
     select.disabled = locked || !control.available || setting.value === 'targetC';
     input.disabled = locked || !control.available || setting.value !== 'targetC';
@@ -168,7 +170,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
       return capability?.supported === true && scalar(capability.value);
     });
     const fold = $('garage-native-control-details');
-    if (fold) fold.hidden = !known.length;
+    if (fold) fold.hidden = !known.length && !status?.garage?.preferences;
+    form.hidden = !known.length;
+    if (assumption && !busy) assumption.checked = status?.garage?.settings?.assumeISave10C === true;
     if (settingSignature !== JSON.stringify(known)) {
       const previous = setting.value;
       setting.replaceChildren();
@@ -232,9 +236,23 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     finally { busy = false; onBusy(false); render(); }
     await afterRequest();
   };
+  const changeAssumption = async () => {
+    if (closed || busy || blocked() || status?.readOnly === true || isReadOnlyReplica(status) || status?.garage?.preferences?.available !== true) return;
+    const value = assumption.checked;
+    busy = true; beforeRequest(); onBusy(true); refreshControls();
+    assumptionMessage.textContent = 'Saving i-save assumption…'; assumptionMessage.classList.remove('form-error');
+    try {
+      status = await request('/api/garage/preferences', { assumeISave10C: value });
+      onStatus(status); assumptionMessage.textContent = value ? '10°C i-save is assumed. Native readings remain unchanged.' : 'i-save assumption removed.';
+    } catch (error) { assumptionMessage.textContent = error.message; assumptionMessage.classList.add('form-error'); }
+    finally { busy = false; onBusy(false); render(); }
+    await afterRequest();
+  };
   form?.addEventListener('submit', send); setting?.addEventListener('change', change);
+  assumption?.addEventListener('change', changeAssumption);
   select?.addEventListener('change', edit); input?.addEventListener('input', edit); refreshControls();
   return { update(value) { status = value; render(); }, refreshControls,
     close() { closed = true; form?.removeEventListener('submit', send); setting?.removeEventListener('change', change);
+      assumption?.removeEventListener('change', changeAssumption);
       select?.removeEventListener('change', edit); input?.removeEventListener('input', edit); refreshControls(); } };
 }

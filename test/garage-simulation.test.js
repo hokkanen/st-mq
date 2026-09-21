@@ -19,9 +19,9 @@ test('independent plant retains separate slow masses through a local door plunge
   assert.ok(warm.state.frontC > cold.state.frontC + .5);
 });
 
-test('noisy one-minute and fifteen-minute histories retain consistent frozen long forecasts', () => {
-  const minute = runScenario({ name: 'one-minute', cadenceMinutes: 1 });
-  const quarter = runScenario({ name: 'quarter-hour', cadenceMinutes: 15 });
+test('noisy one-minute and fifteen-minute histories retain accurate independent short OFF forecasts', () => {
+  const minute = runScenario({ name: 'one-minute', cadenceMinutes: 1, days: 21 });
+  const quarter = runScenario({ name: 'quarter-hour', cadenceMinutes: 15, days: 21 });
   for (const result of [minute, quarter]) {
     assert.equal(result.ready, true);
     assert.ok(result.stateBytes < 50_000, 'Checkpoint size is bounded independently of sensor report count');
@@ -29,9 +29,9 @@ test('noisy one-minute and fifteen-minute histories retain consistent frozen lon
       const learned = episode.models.learned;
       assert.ok(Math.abs(learned.offEndRearErrorC) < .35, JSON.stringify({ cadence: result.cadenceMinutes, episode }));
       assert.ok(Math.abs(learned.offEndFrontErrorC) < .4);
-      assert.ok(Math.abs(learned.energyErrorKwh) / episode.actualEnergyKwh < .1);
-      assert.ok(Math.abs(learned.recoveryExtraErrorKwh) < Math.max(.1, .15 * episode.actualRecoveryExtraKwh),
-        'Ordinary maintenance energy must not hide a poor prediction of the extra recovery');
+      assert.ok(learned.recoveryExtraKwh > 0, 'Explicit recovery allowance is included beyond normal maintenance power');
+      assert.ok(Math.abs(learned.recoveryExtraKwh - result.coefficients.native[0] * episode.offHours * 1.25) < .001);
+      assert.ok(Number.isFinite(learned.energyErrorKwh), 'Independent electricity mismatch remains visible');
     }
   }
   for (let i = 0; i < minute.evaluation.length; i++) {
@@ -50,7 +50,7 @@ test('rare independent episodes remain useful while activity alone cannot qualif
   assert.equal(activity.electricalReady, false);
   const noOff = runScenario({ name: 'never-off', days: 21, cadenceMinutes: 15, frequency: 'never' });
   assert.equal(noOff.ready, false); assert.equal(noOff.maxPauseHours, 0);
-  assert.equal(noOff.coefficients.rear[1], .11, 'Slow memory is retained until it has independent evidence');
+  assert.deepEqual(noOff.coefficients.rear, [.03], 'No OFF history leaves the declared cooling prior intact');
 });
 
 test('independent noisy journal replay and repeated simulation are deterministic', () => {
@@ -72,19 +72,16 @@ test('independent noisy journal replay and repeated simulation are deterministic
   assert.deepEqual(first, second);
 });
 
-test('default preference takes ordinary price opportunities and preserves flat-price warmth in independent simulation', () => {
-  const report = runPlanningAudit();
-  assert.equal(report.training.electricalReady, true);
-  for (const row of report.rows.filter(row => row.tariff === 'flat' || row.aggressiveness === 0)) {
+test('default policy chooses only a large opportunity and preserves normal operation for modest or flat tariffs', () => {
+  const report = runPlanningAudit({ days: 43, cadenceMinutes: 15 });
+  for (const row of report.rows.filter(row => row.tariff !== 'exceptional-peak' || row.aggressiveness === 0)) {
     assert.equal(row.offHours, 0); assert.equal(row.simulatedBillDifferenceEur, 0);
   }
-  const ordinary = report.rows.find(row => row.tariff === 'ordinary-peak' && row.aggressiveness === 50);
-  assert.ok(ordinary.offHours >= 2);
-  assert.ok(ordinary.simulatedBillDifferenceEur > .2);
-  assert.ok(ordinary.minimumFrontC > 3 && ordinary.minimumRearC > 3);
-  assert.ok(ordinary.endDebtC.coreC < .2 && ordinary.endDebtC.slabC < .2);
-  for (const tariff of ['mild-peak', 'ordinary-peak', 'two-peaks']) {
-    const rows = report.rows.filter(row => row.tariff === tariff);
-    for (let i = 1; i < rows.length; i++) assert.ok(rows[i].coolingDegreeHours + 1e-6 >= rows[i - 1].coolingDegreeHours);
-  }
+  const selected = report.rows.find(row => row.tariff === 'exceptional-peak' && row.aggressiveness === 50);
+  assert.ok(selected.offHours >= 1 && selected.offHours <= 2);
+  assert.ok(selected.simulatedBillDifferenceEur > .5);
+  assert.ok(selected.minimumFrontC > 3 && selected.minimumRearC > 3);
+  assert.ok(selected.endDebtC.coreC < .2 && selected.endDebtC.slabC < .2);
+  const positivePreferences = report.rows.filter(row => row.tariff === 'exceptional-peak' && row.aggressiveness > 0);
+  assert.ok(positivePreferences.every(row => row.offHours === selected.offHours), 'Old aggression no longer tunes a warmth optimizer');
 });

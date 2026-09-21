@@ -167,7 +167,7 @@ export function historyValueLabel(key, value, unit) {
 }
 
 export function coefficientStatusLabel(status) {
-  return { fitted: 'Fitted in current model', retained: 'Retained from an earlier fit',
+  return { observed: 'Recorded normal-heating average', fitted: 'Fitted in current model', retained: 'Retained from an earlier fit',
     'fixed-prior': 'Fixed assumption', initial: 'Initial estimate — not validated' }[status] ?? 'Coefficient status unavailable';
 }
 

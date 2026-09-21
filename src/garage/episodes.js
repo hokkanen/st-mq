@@ -1,4 +1,5 @@
-import { predictGarageStep, GARAGE_ALGORITHM_VERSION } from './model.js';
+import { predictGarageStep, GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS,
+  qualifiedGaragePower, garageChargingClean } from './model.js';
 import { garageDoorIntervalUnknown } from './door-state.js';
 
 const HOUR = 3_600_000, finite = Number.isFinite;
@@ -10,7 +11,8 @@ export function startGarageAssessment(model, observation) {
   return { algorithmVersion: GARAGE_ALGORITHM_VERSION, at: observation.at, previous: structuredClone(observation),
     actualState: structuredClone(initial), referenceState: structuredClone(initial),
     actualCostCents: 0, referenceCostCents: 0, actualKwh: 0, referenceKwh: 0, uncertaintyCents: 0,
-    coveredMs: 0, missingMs: 0, recordedMs: 0, steps: 0, qualified: true, provisional: true };
+    coveredMs: 0, missingMs: 0, recordedMs: 0, steps: 0, qualified: true, provisional: true,
+    recoveryAllowanceKwh: 0, recoveryAccountedKwh: 0, recoveryHours: 0 };
 }
 export function updateGarageAssessment(previous, model, observation, { recordedKwh = null, priceCtPerKwh = null, priceSegments = null } = {}) {
   const next = structuredClone(previous), duration = observation.at - next.at;
@@ -20,6 +22,11 @@ export function updateGarageAssessment(previous, model, observation, { recordedK
   // Keep measured costs and the restoration obligation while withholding the
   // savings claim; a recovered endpoint cannot undo the earlier uncertainty.
   if (garageDoorIntervalUnknown(observation, actual, actual.at)) next.qualified = false;
+  if ([actual, observation].some(row => !garageChargingClean(row) || row.inputDisturbed === true
+    || (Object.hasOwn(row, 'baselineAccepted') || Object.hasOwn(row, 'baselineVerified'))
+      && row.baselineAccepted !== true && row.baselineVerified !== true)
+    || actual.sourceEpoch != null && observation.sourceEpoch !== actual.sourceEpoch) next.qualified = false;
+  const recorded = finite(recordedKwh) && recordedKwh >= 0;
   const segments = priceSegments ?? [{ start: next.at, end: observation.at, priceCtPerKwh }];
   let cursor = next.at;
   const coveredPrices = segments.length > 0 && segments.every(segment => {
@@ -40,32 +47,43 @@ export function updateGarageAssessment(previous, model, observation, { recordedK
         restart: actual.restart === true }, hours, { conditional: true });
       // Qualifying short electrical intervals are allocated by elapsed time;
       // their counter totals never become an arrival-time energy spike.
-      const energy = finite(recordedKwh) && recordedKwh >= 0 ? recordedKwh * (segment.end - segment.start) / duration : execution.electricityKwh;
+      const observed = recorded || qualifiedGaragePower(actual);
+      let energy = recorded ? recordedKwh * (segment.end - segment.start) / duration : execution.electricityKwh;
+      if (actual.available === false) {
+        next.recoveryAllowanceKwh += Math.max(0, reference.electricityKwh - energy) * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor;
+      } else {
+        const repayment = Math.min(Math.max(0, next.recoveryAllowanceKwh - next.recoveryAccountedKwh),
+          next.recoveryAllowanceKwh * hours / GARAGE_MODEL_ASSUMPTIONS.recoveryTimeHours);
+        next.recoveryHours += hours; next.recoveryAccountedKwh += repayment;
+        // Qualified actual input already includes recovery. Unmetered costs
+        // explicitly repay the same allowance used when selecting the pause.
+        if (!observed) energy += repayment;
+      }
       next.actualKwh += energy; next.referenceKwh += reference.electricityKwh;
       next.actualCostCents += energy * segment.priceCtPerKwh;
       next.referenceCostCents += reference.electricityKwh * segment.priceCtPerKwh;
-      next.uncertaintyCents += (reference.uncertaintyKwh + (finite(recordedKwh) ? 0 : execution.uncertaintyKwh)) * Math.abs(segment.priceCtPerKwh);
+      next.uncertaintyCents += (reference.uncertaintyKwh + (recorded ? 0 : execution.uncertaintyKwh)) * Math.abs(segment.priceCtPerKwh);
       next.referenceState = reference.state; next.actualState = execution.state;
     }
-    // Actual external sensors anchor local air; slow memory remains a modeled
-    // state. A rear recovery cannot conceal a still-cold front.
+    // Actual external sensors anchor each local air state independently.
     next.actualState = { ...next.actualState,
       ...(finite(observation.rearC) ? { rearC: observation.rearC } : {}),
       ...(finite(observation.frontC) ? { frontC: observation.frontC } : {}),
       ...(finite(observation.frontC) && finite(observation.rearC) ? { differenceC: observation.frontC - observation.rearC } : {}) };
-    next.coveredMs += duration; if (finite(recordedKwh)) next.recordedMs += duration; next.steps++;
+    next.coveredMs += duration; if (recorded) next.recordedMs += duration; next.steps++;
   }
   next.at = observation.at; next.previous = structuredClone(observation);
   return next;
 }
 export function garageRecoveryDebt(assessment) {
-  return Object.fromEntries(['rearC', 'frontC', 'coreC'].map(key => [key,
+  return Object.fromEntries(['rearC', 'frontC'].map(key => [key,
     finite(assessment?.referenceState?.[key]) && finite(assessment?.actualState?.[key])
       ? Math.max(0, assessment.referenceState[key] - assessment.actualState[key]) : null]));
 }
 export function completeGarageAssessment(assessment) {
   const debt = garageRecoveryDebt(assessment);
-  if (!assessment.qualified || !assessment.steps || Object.values(debt).some(value => !finite(value) || value > .25)) return null;
+  if (!assessment.qualified || !assessment.steps || Object.values(debt).some(value => !finite(value) || value > .25)
+    || (assessment.recoveryAllowanceKwh ?? 0) - (assessment.recoveryAccountedKwh ?? 0) > .000001) return null;
   return { basis: 'garage-frozen-normal-reference', algorithmVersion: assessment.algorithmVersion,
     profitCents: assessment.referenceCostCents - assessment.actualCostCents,
     uncertaintyCents: assessment.uncertaintyCents, referenceCostCents: assessment.referenceCostCents,
@@ -73,6 +91,7 @@ export function completeGarageAssessment(assessment) {
     provisional: true, residualDebt: debt, coveredMs: assessment.coveredMs,
     electricityBasis: assessment.recordedMs === assessment.coveredMs ? 'qualified-recorded-electricity'
       : assessment.recordedMs ? 'recorded-and-modeled-electricity' : 'modeled-native-electricity',
-    serviceBasis: 'both external locations and estimated building memory recovered within 0.25 C of frozen normal reference',
+    serviceBasis: 'both external locations recovered within 0.25 C of frozen normal reference; runtime requires sustained normal heating and pipe reserve recovery',
+    recoveryEnergyBasis: 'observed-electricity-when-qualified-otherwise-fixed-recovery-allowance',
     stage: 'completed', selectionBasis: 'cycles-completed-in-range' };
 }

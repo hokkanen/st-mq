@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { H66_HISTORY_SIGNALS,HISTORY_AXES,PHASE_ENERGY_SIGNALS,MODEL_COEFFICIENT_INFO,RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { H66_HISTORY_SIGNALS,HISTORY_AXES,PHASE_ENERGY_SIGNALS,MODEL_COEFFICIENT_INFO,GARAGE_COEFFICIENT_INFO,RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 import { H66_REGISTERS } from '../src/domain/telemetry.js';
 import { recordingRows, populateHistoryAxes } from '../chart/recording.js';
 
@@ -39,7 +39,13 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   assert.deepEqual(Object.values(MODEL_COEFFICIENT_INFO).map(info => info.parameter),
     ['lossPerHour', 'hydronicCPerKwh', 'solarCPerHourPerKwM2', 'fireplaceCPerKg']);
   assert(choices.has('garage_model_front'));
-  assert(choices.has('garage_coefficient_rear_lossPerHour'));
+  const garageCoefficients = select.children.find(group => group.label === 'Garage model coefficients · Calculated');
+  assert.deepEqual(garageCoefficients.children.map(option => option.value), [
+    'garage_coefficient_rear_coolingPerHour', 'garage_coefficient_front_coolingPerHour', 'garage_coefficient_native_normalPowerKw',
+  ]);
+  assert.deepEqual(garageCoefficients.children.map(option => option.value), Object.keys(GARAGE_COEFFICIENT_INFO));
+  assert(!choices.has('garage_coefficient_rear_lossPerHour'));
+  assert(!choices.has('garage_coefficient_native_restartKw'));
   assert(choices.has('model_hydronic_heat'));
   assert(choices.has('model_valve_override'));
   assert(choices.has('model_outdoor_temperature'), 'Saved outdoor learning inputs remain inspectable');
@@ -63,6 +69,8 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   const manual = select.children.flatMap(group => group.children).find(option => option.value === 'firewood_load');
   assert.equal(manual.textContent, 'Manually recorded firewood additions');
   assert(!recordingRows().some(row => row.group === 'Model coefficients'), 'Replay does not add recorder channels');
+  select.value = 'garage_coefficient_rear_lossPerHour'; populateHistoryAxes(select);
+  assert.equal(select.value, 'power', 'An archived garage coefficient choice falls back instead of reinterpreting its history');
   select.value = 'spot_price'; populateHistoryAxes(select);
   assert.equal(select.value, 'power', 'An unavailable old choice falls back to the default');
 });

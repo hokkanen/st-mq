@@ -118,9 +118,7 @@ try {
         status.learning.adaptive.model.parameters.lossPerHour = missing ? null : 0;
         for (const location of ['rear', 'front'])
           status.garage.observations[location] = { ...status.garage.observations[location], value: missing ? null : 0 };
-        status.garage.learning.state.coreC = missing ? null : 0;
-        status.garage.learning.state.differenceC = missing ? null : 0;
-        status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value = missing ? null : 0;
+        status.garage.learning.coefficients.rear.find(row => row.name === 'coolingPerHour').value = missing ? null : 0;
       }
       if (globalThis.garageBudgetSmokeState) {
         const state = globalThis.garageBudgetSmokeState, approved = state !== 'unapproved';
@@ -405,7 +403,7 @@ try {
     'The existing Home outcome entries are preserved');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#learning-panel-details > details > summary')].map(row => row.textContent.trim())"),
     await evaluate("[...document.querySelectorAll('#garage-learning-details > details > summary')].map(row => row.textContent.trim())"),
-    'Home and Garage use the same outcome, input and coefficient fold headings');
+    'Home and Garage use the same outcome, input, coefficient and planning headings');
   assert.match(await evaluate("document.getElementById('learning-progress').textContent"), /usable temperature intervals/);
   assert.match(await evaluate("document.getElementById('garage-learning-progress').textContent"), /completed cooling \/ recovery episodes.*validated pause hours/);
   assert.doesNotMatch(await evaluate("document.getElementById('garage-learning-progress').textContent"), /trained intervals|prediction checks/);
@@ -492,6 +490,7 @@ try {
     ['learning-metrics', 'home-outcomes'], ['model-inputs-content', 'home-inputs'],
     ['model-coefficients-content', 'home-coefficients'], ['garage-learning-outcomes', 'garage-outcomes'],
     ['garage-learning-inputs', 'garage-inputs'], ['garage-learning-coefficients', 'garage-coefficients'],
+    ['learning-policy-content', 'home-planning'], ['garage-learning-planning', 'garage-planning'],
   ];
   for (const [id, name] of learningSections) {
     assert.equal(await evaluate(`(() => {
@@ -555,8 +554,8 @@ try {
     ['#learning-metrics [data-learning-key=profit]', /^0[.,]00 €/],
     ['#model-coefficients-content [data-learning-key=lossPerHour]', /^0[.,]0+ 1\/h$/],
     ['#garage-learning-inputs [data-learning-key=rear-air-temperature]', /^0 °C(?: · stale)?$/],
-    ['#garage-learning-inputs [data-learning-key=front-rear-difference]', /^0 °C$/],
-    ['#garage-learning-coefficients [data-learning-key=rear-heat-loss]', /^0 1\/h$/],
+    ['#garage-learning-inputs [data-learning-key=front-air-temperature]', /^0 °C(?: · stale)?$/],
+    ['#garage-learning-coefficients [data-learning-key=rear-cooling-rate]', /^0 1\/h$/],
   ];
   await evaluate(`(() => {
     globalThis.learningSmokeValueRows = ${JSON.stringify(valueCases.map(([selector]) => selector))}.map(selector => {
@@ -1006,7 +1005,7 @@ try {
     }
   }
   await evaluate("globalThis.chargingSmokeValues=null; globalThis.refreshLearningSmokeStatus()");
-  for (const left of ['garage_model_front', 'garage_model_difference', 'garage_coefficient_rear_lossPerHour']) {
+  for (const left of ['garage_model_front', 'garage_model_difference', 'garage_coefficient_rear_coolingPerHour']) {
     await evaluate(`document.getElementById('left-axis').value='${left}'; document.getElementById('left-axis').dispatchEvent(new Event('change'))`);
     await until(`document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.left==='${left}'`);
     assert.equal(await evaluate("document.getElementById('chart-status').textContent.includes('No recorded values')"), false, left);

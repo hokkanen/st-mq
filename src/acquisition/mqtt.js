@@ -201,6 +201,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   // installed commissioning evidence and a fresh device ownership handshake.
   const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
     settings: config.garage?.adapter, baselineC: config.garage?.baselineC ?? 10, clock: () => engine.clock(), canControl,
+    assumeISave10C: () => engine.garage?.settings?.assumeISave10C ?? config.garage?.assumeISave10C ?? false,
     productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),
     persisted: store.getState?.(`garage:adapter:${config.input}`),
     onObservation: observation => engine.ingest(observation),

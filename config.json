@@ -358,8 +358,8 @@
       "baselineC": 10,
       "frontRequired": false,
       "maxSensorAgeMs": 120000,
-      "minOnMs": 1800000,
-      "minOffMs": 600000,
+      "minOnMs": 10800000,
+      "minOffMs": 3600000,
       "maxHorizonHours": 48,
       "stepMinutes": 15,
       "protection": {
@@ -377,7 +377,11 @@
         "commandTopic": "",
         "maxAgeMs": 120000,
         "electricalSource": "none"
-      }
+      },
+      "assumeISave10C": false,
+      "minSavingsEur": 0.5,
+      "maxPauseHours": 2,
+      "maxPausesPerDay": 1
     }
   },
   "schema": {
@@ -640,7 +644,7 @@
       "baselineC": "float(8,16)",
       "frontRequired": "bool",
       "maxSensorAgeMs": "int(30000,14400000)",
-      "minOnMs": "int(0,21600000)",
+      "minOnMs": "int(0,86400000)",
       "minOffMs": "int(0,10800000)",
       "maxHorizonHours": "float(2,48)",
       "stepMinutes": "float(5,30)",
@@ -659,7 +663,11 @@
         "commandTopic": "str?",
         "maxAgeMs": "int(1000,600000)",
         "electricalSource": "list(none|native-counter|native-power)"
-      }
+      },
+      "assumeISave10C": "bool",
+      "minSavingsEur": "float(0,100)",
+      "maxPauseHours": "float(0.5,8)",
+      "maxPausesPerDay": "int(1,4)"
     }
   },
   "host_network": true,

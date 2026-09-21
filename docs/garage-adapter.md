@@ -6,11 +6,17 @@ observations. Select it explicitly with `garage.adapter.driver: "shelly-cn105"`.
 The default `fixture` driver remains an isolated, read-only consumer of the
 `stmq-garage-fixture/v1` host simulation vocabulary.
 
-Automatic pause control requires fresh device evidence: armed mode, verified native
-baseline, all essential capabilities and four installed commissioning results
-(`selectivePowerVerified`, `lowHeatVerified`, `expiryVerified`, `restartVerified`).
-Neither a configuration flag nor fixture telemetry bypasses this gate. The
-initial installation remains in monitoring until those real-pump tests pass.
+Automatic pause control requires fresh device evidence: armed mode, matching native
+profile, essential capabilities and installed selective-power, local-expiry and
+restart-restoration results. Low-heat verification normally remains required.
+With the explicit owner **Assume i-save 10°C** preference and driver capability
+`assumeISave10C`, the owner may assume that low-heat profile survives OFF/ON.
+Every managed claim/start/renew sends the assumption explicitly. This does not
+falsify `lowHeatVerified` or `baseline.verified`, grant missing restoration proof,
+arm a device, or create measured electricity. Restart clears the driver's owner
+assumption; fresh authority must establish it again. Old drivers without this
+capability stay blocked. No driver deployment or physical commissioning is implied
+by enabling the checkbox in ST-MQ.
 
 ## Connection and evidence
 

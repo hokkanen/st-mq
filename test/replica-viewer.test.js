@@ -17,6 +17,8 @@ import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { appendGarageEntry, applyGarageEntry } from '../src/garage/learning.js';
 import { createGarageModel, GARAGE_ALGORITHM_VERSION } from '../src/garage/model.js';
 import { garageSettings } from '../src/garage/settings.js';
+import { garageDisplay, garageReleaseAvailable, renderGarage } from '../chart/garage-status.js';
+import { mitsubishiControl } from '../chart/mitsubishi.js';
 
 const at = Date.parse('2026-01-15T12:00:00+02:00');
 const chartPath = '/api/chart?start=2026-01-15&end=2026-01-15&left=power';
@@ -83,7 +85,10 @@ function recordLearningModels(publication, { recordedAt = publication.sourceAt, 
   store.setState('adaptive:mqtt', checkpoint);
   const garageSeed = createGarageModel({ seedAt: recordedAt });
   garageSeed.rear.values[0] = .026;
-  const entry = appendGarageEntry(store, 'mqtt', 'context', {}, garageSettings(), recordedAt, { seed: garageSeed });
+  const settings = garageSettings({ enabled: true, assumeISave10C: true });
+  store.setState('garage:configuration:mqtt', settings);
+  store.setState('garage:preferences:mqtt', { assumeISave10C: true });
+  const entry = appendGarageEntry(store, 'mqtt', 'context', {}, settings, recordedAt, { seed: garageSeed });
   const garage = applyGarageEntry(null, entry);
   if (!matching) garage.algorithmVersion = 'invented-unsupported-garage-algorithm';
   store.setState('garage:checkpoint:mqtt', garage);
@@ -110,7 +115,7 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(Object.hasOwn(status.learning.adaptive, 'samples'), false);
   assert.equal(Object.hasOwn(status.learning.adaptive, 'episodeArchive'), false);
   assert.doesNotMatch(JSON.stringify(status.learning), /invented-.*marker/);
-  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value, .026);
+  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'coolingPerHour').value, .026);
   assert.equal(status.garage.learning.algorithm, GARAGE_ALGORITHM_VERSION);
   for (const learning of [status.learning, status.garage.learning]) {
     assert.equal(learning.reconstruction, 'snapshot');
@@ -120,6 +125,31 @@ test('replica exposes both saved models without sample histories, live readiness
   }
   assert.equal(status.liveWrites, false);
   assert.equal(status.garage.adapter.automaticControl, false);
+  assert.equal(status.garage.adapter.liveControlSupported, false);
+  assert.equal(status.garage.settings.assumeISave10C, true, 'Saved owner assumption remains distinct from native verification');
+  assert.equal(status.garage.settings.maxPauseHours, 2);
+  assert.equal(status.garage.preferences?.available ?? false, false);
+  assert.equal(status.garage.adapter.baselineVerified, undefined);
+  assert.equal(status.garage.adapter.native, undefined);
+  assert.equal(status.garage.plan, undefined, 'A viewer never advertises a new savings opportunity');
+  assert.equal(status.garage.planningLimits, undefined, 'Live normal-heating dwell and daily start eligibility are not projected');
+  assert.equal(garageReleaseAvailable(status), false);
+  assert.equal(mitsubishiControl(status, 'power').available, false);
+  const garageDisplayValue = garageDisplay(status.garage, status.now);
+  for (const section of ['outcomeDetails', 'inputDetails', 'coefficientDetails', 'planningDetails'])
+    assert(garageDisplayValue[section].length > 0, `${section} is available as a recorded model explanation`);
+  assert.equal(garageDisplayValue.coefficientDetails.length, 6);
+  assert.equal(garageDisplayValue.evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
+  assert.match(garageDisplayValue.planningDetails.find(row => row.key === 'current-opportunity').value, /Read.only replica/);
+  assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'pause-window').value, 'None');
+  const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true };
+  renderGarage({ getElementById: id => ({ 'garage-native-target': target, 'garage-native-target-basis': basis })[id] }, status);
+  assert.equal(target.textContent, '10 °C');
+  assert.equal(basis.textContent, 'Assumed i-save');
+  assert.equal(basis.hidden, false);
+  for (const path of ['/api/garage/preferences', '/api/garage/native', '/api/garage/heating', '/api/garage/release', '/api/garage/temporary'])
+    assert.equal((await request(path, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assumeISave10C: false }) })).status, 405, `${path} remains read-only`);
   assert.equal(app.engine, undefined);
   assert.equal((await request('/api/override', { method: 'POST' })).status, 405);
   now += 7 * 86_400_000;
@@ -145,7 +175,7 @@ test('replica infers the primary input from a Garage journal when decisions and 
   assert.equal(status.input, 'mqtt', 'Unsupported journal scopes cannot conceal the latest known Garage input');
   assert.equal(status.lastDecision, null);
   assert.equal(status.learning.adaptive.model.parameters.lossPerHour, .031);
-  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'lossPerHour').value, .026);
+  assert.equal(status.garage.learning.coefficients.rear.find(row => row.name === 'coolingPerHour').value, .026);
   assert.equal(status.liveWrites, false);
   assert.equal(digest(publication.dbPath), publication.digest);
 });

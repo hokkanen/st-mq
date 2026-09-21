@@ -28,7 +28,8 @@ test('imported rear/outdoor reconstruction remains separate and cannot invent fr
     const result = reconstructGarageHistory(store, config);
     assert.equal(result.samples, 24); assert.equal(result.rearOnly, 24);
     assert.equal(result.model.state.frontC, null);
-    assert.ok(result.model.state.coreC < 7 && result.model.state.coreC > result.model.state.rearC);
+    assert.equal(Object.hasOwn(result.model.state, 'coreC'), false);
+    assert.equal(result.model.state.rearC, 6.77);
     assert.equal(result.model.evidence.offIntervals, 0); assert.equal(result.model.native.samples, 0);
     assert.equal(result.model.normalReference.samples, 0); assert.equal(result.model.rear.samples, 0);
     assert.equal(result.summary.ready, false); assert.equal(result.summary.heldOut.rear.n, 0);

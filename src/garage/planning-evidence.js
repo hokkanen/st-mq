@@ -4,39 +4,22 @@ const finite = Number.isFinite;
 /** Duration support belongs to completed experiments, not sensor row counts.
  * Small worthwhile trials can collect the first evidence without granting a
  * long pause from an untested prior. The caller still enforces both budgets. */
-export function garagePlanningEvidence(model, summary, { now, observation, stepMinutes = 15, activeEpisode = null } = {}) {
-  const validation = summary.validation ?? {};
-  const allEpisodes = model.validation?.episodes ?? [];
-  const failureAt = Math.max(-Infinity, ...allEpisodes.filter(row => row.clean && row.thermalPassed === false)
-    .map(row => row.endedAt).filter(finite));
-  const episodes = allEpisodes.filter(row => row.complete && row.clean && row.thermalPassed !== false
-    && (!finite(row.endedAt) || row.endedAt > failureAt));
-  const durations = episodes.map(row => row.offHours).filter(value => finite(value) && value > 0).sort((a, b) => b - a);
-  const repeatedHours = durations[1] ?? 0;
-  const economicHours = summary.thermalReady && summary.electricalReady ? summary.maxPauseHours ?? 0 : 0;
-  const stepHours = stepMinutes / 60;
-  const trialCeilingHours = summary.electricalReady ? Math.min(8, Math.max(2, 1.5 * economicHours)) : 1;
-  const trialHours = Math.min(trialCeilingHours,
-    Math.max(.5, Math.ceil(repeatedHours * 1.5 / stepHours - 1e-9) * stepHours));
+export function garagePlanningEvidence(model, summary, { observation, now = observation?.at ?? model.at, activeEpisode = null } = {}) {
+  const economicHours = summary.thermalReady ? summary.maxPauseHours ?? 0 : 0;
   const active = activeEpisode != null;
-  const latest = allEpisodes.at(-1);
-  const latestEnd = latest?.endedAt ?? latest?.endAt;
-  const recovered = !model.validation?.active || active;
-  const recent = finite(latestEnd) && now >= latestEnd && now - latestEnd < 6 * HOUR;
-  const doorDisturbance = observation?.doorFront === true || observation?.doorRear === true
-    || observation?.doorEvidenceRequired === true && observation.doorFront !== false;
-  const evDisturbance = [1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true);
-  const trialEligible = model.normalReference?.initialized === true
-    && model.rear.samples >= 24 && model.front.samples >= 12
-    && observation?.baselineVerified === true && (active || observation?.available === true)
-    && !evDisturbance && (!doorDisturbance || active) && recovered && (!recent || active);
-  const maxPauseHours = Math.max(economicHours, trialEligible ? trialHours : 0);
+  const recovering = !active && (Boolean(model.validation?.active) || observation?.recovering === true);
+  const lastFailure = (model.validation?.episodes ?? []).filter(row => row.complete === false || row.clean === true && row.thermalPassed === false).at(-1);
+  const retryCooldown = !active && lastFailure && (!finite(now) || !finite(lastFailure.endedAt) || now - lastFailure.endedAt < 6 * HOUR);
+  const charging = [1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true);
+  const trialEligible = model.normalReference?.initialized === true && !recovering && !charging && !retryCooldown
+    && (observation?.baselineAccepted === true || observation?.baselineVerified === true)
+    && (active || observation?.available === true);
+  const trialHours = Math.min(2, Math.max(1, economicHours > 0 ? economicHours * 1.25 : 1));
   return { thermalReady: summary.thermalReady === true, electricalReady: summary.electricalReady === true,
-    economicHours, trialEligible, trialHours, maxPauseHours, trialCoolingLimitC: Math.min(3, 1 + .25 * economicHours),
-    completedEpisodes: validation.completedEpisodes ?? episodes.length,
-    reason: maxPauseHours > 0 ? economicHours >= maxPauseHours ? 'validated-episode-duration' : 'bounded-learning-trial'
-      : !recovered ? 'learning-episode-recovering' : recent ? 'learning-trial-recovery-interval'
-        : 'insufficient-validated-thermal-evidence' };
+    economicHours, trialEligible, trialHours, maxPauseHours: recovering || retryCooldown ? 0 : Math.max(economicHours, trialEligible ? trialHours : 0),
+    completedEpisodes: summary.validation?.completedEpisodes ?? 0,
+    reason: retryCooldown ? 'learning-retry-cooldown' : recovering ? 'learning-episode-recovering'
+      : economicHours > 0 ? 'validated-episode-duration' : trialEligible ? 'bounded-learning-trial' : 'insufficient-validated-thermal-evidence' };
 }
 
 /** Whole-trajectory errors have units of degrees C at their observed horizon.
@@ -56,14 +39,19 @@ export function garagePlanningMargins(summary, horizonHours) {
   return { rearC: margin('rear', .2, .2), frontC: margin('front', .3, .3) };
 }
 
-/** Energy prediction error scales in kWh, retaining systematic episode error.
- * A kW residual times hours has explicit units without assuming independent
- * hourly errors in a slow thermal recovery. */
+/** Separate uncertainty in avoided maintenance power from extra recovery energy.
+ * Maintenance error is priced over the OFF opportunity. Only optimistic recovery
+ * error adds a penalty, at the recovery tariff; already conservative extra-energy
+ * assumptions must not count as a second peak-price loss. */
 export function garagePlanningEnergyUncertainty(model, summary, offHours) {
   const episodes = (model.validation?.episodes ?? []).filter(row => row.role === 'validation' && row.clean
     && row.metered && row.offHours > 0 && finite(row.predictedKwh) && finite(row.observedKwh));
-  const rates = episodes.map(row => (row.predictedKwh - row.observedKwh) / row.offHours);
-  const episodeRate = rates.length ? Math.sqrt(rates.reduce((sum, value) => sum + value * value, 0) / rates.length) : 0;
-  const rateKw = Math.max(.03, summary.heldOut?.native?.rmse ?? .25, episodeRate);
-  return { kwh: rateKw * offHours, basis: rates.length ? 'whole-episode-energy-error' : 'native-power-error-times-duration' };
+  const rates = episodes.map(row => Math.max(0, row.observedKwh - row.predictedKwh) / row.offHours);
+  const recoveryRateKw = rates.length ? Math.sqrt(rates.reduce((sum, value) => sum + value * value, 0) / rates.length) : 0;
+  const measured = model.native?.active?.[0] === true;
+  const nativeRmse = summary.heldOut?.native?.rmse;
+  const rateKw = Math.max(measured ? .1 : .25, finite(nativeRmse) ? nativeRmse : .25);
+  const hours = finite(offHours) ? Math.max(0, offHours) : 0;
+  return { kwh: rateKw * hours, recoveryKwh: recoveryRateKw * hours,
+    basis: rates.length ? 'normal-power-error-and-optimistic-recovery-error' : 'normal-power-error-and-fixed-recovery-allowance' };
 }

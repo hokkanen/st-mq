@@ -31,7 +31,8 @@ const nativeCommandSummary = command => command ? { setting: command.setting, va
 
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, persisted = null,
-  simulationTransport = null, productionTransport = null, hostSession = randomUUID(), baselineC = 10 } = {}) {
+  simulationTransport = null, productionTransport = null, hostSession = randomUUID(), baselineC = 10,
+  assumeISave10C = false } = {}) {
   const settings = garageAdapterSettings(input);
   if (!Number.isFinite(baselineC) || baselineC < 8 || baselineC > 16) throw new RangeError('Garage native baseline must be between 8 and 16 degrees Celsius');
   const production = settings.driver === 'shelly-cn105';
@@ -40,6 +41,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   const transport = live ? productionTransport : simulated ? simulationTransport : null;
   const contractVersion = production ? SHELLY_CN105_CONTRACT : GARAGE_FIXTURE_CONTRACT;
   const contractStatus = production ? 'supported-driver' : GARAGE_CONTRACT_STATUS;
+  if (typeof assumeISave10C !== 'boolean' && typeof assumeISave10C !== 'function')
+    throw new TypeError('The i-save assumption must be a boolean or preference reader');
+  const ownerAssumesISave = () => (typeof assumeISave10C === 'function' ? assumeISave10C() : assumeISave10C) === true;
   const startedAt = clock();
   let connected = false, reconciled = false, stopped = false, state = null;
   let claimPending = null;
@@ -105,8 +109,25 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       && state.health[name].value === true;
     return { deviceOnline: check('device'), driverProgressing: check('driver'), pumpCommunicating: check('pump') };
   }
+  function baselineAssessment(now) {
+    const assumed = ownerAssumesISave();
+    const profileFresh = connected && reconciled && !state?.retained
+      && freshField(state?.baseline, now, settings.maxAgeMs)
+      && state.baseline.profile === 'existing-low-heat'
+      && state.baseline.fan === 'auto' && state.baseline.vanes === 'fixed';
+    const verified = profileFresh && state.baseline.verified === true && state.baseline.targetC === baselineC;
+    // A matched native signature establishes unchanged settings, not the hidden
+    // i-save thermostat behavior. Only the explicit owner preference supplies
+    // that assumption; driver commissioning evidence remains unchanged.
+    const acceptedAssumption = assumed && profileFresh && state.baseline.targetC === 10
+      && (state.baseline.candidateMatched === true || state.baseline.verified === true);
+    return { assumed, verified: Boolean(verified), accepted: Boolean(verified || acceptedAssumption),
+      targetC: assumed ? 10 : baselineC, source: assumed ? 'owner-assumed' : verified ? 'device-verified' : 'configured',
+      nativeTargetC: state?.native.targetC?.value ?? null };
+  }
   function blockers(now, { forRelease = false } = {}) {
     const reasons = [];
+    const baseline = baselineAssessment(now);
     if (!transport) reasons.push(production ? 'adapter-command-route-unavailable' : 'real-adapter-contract-unavailable');
     if (!canControl()) reasons.push('control-authority-unavailable');
     if (!connected || stopped) reasons.push('mqtt-unavailable');
@@ -119,18 +140,23 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       reasons.push('adapter-authority-unavailable');
     if (!forRelease) {
       if (nativePending(now) || state?.manualPending) reasons.push('manual-setting-pending');
-      if (production && !SHELLY_CN105_COMMISSIONING.every(name => state?.commissioning[name] === true))
+      if (production && !SHELLY_CN105_COMMISSIONING.every(name => state?.commissioning[name] === true
+        || name === 'lowHeatVerified' && baseline.assumed))
         reasons.push('installed-commissioning-required');
+      if (production && baseline.assumed && state?.commissioning.lowHeatVerified !== true
+        && state?.capabilities.assumeISave10C !== true)
+        reasons.push('assumed-isave-driver-support-required');
       const h = health(now);
       if (!h.deviceOnline) reasons.push('device-offline');
       if (!h.driverProgressing) reasons.push('driver-not-progressing');
       if (!h.pumpCommunicating) reasons.push('pump-not-communicating');
       if (state?.mode !== 'armed') reasons.push(`adapter-${state?.mode ?? 'unavailable'}`);
-      if (!CAPABILITIES.every(name => state?.capabilities[name] === true)) reasons.push('essential-capability-unverified');
-      if (state?.baseline.verified !== true || !freshField(state?.baseline, now, settings.maxAgeMs)
-        || state.baseline.profile !== 'existing-low-heat' || state.baseline.targetC !== baselineC
-        || state.baseline.fan !== 'auto' || state.baseline.vanes !== 'fixed') reasons.push('native-baseline-unverified');
-      if (state && [['mode', 'heat'], ['targetC', baselineC], ['fan', 'auto'], ['vanes', 'fixed']].some(([key, expected]) =>
+      if (!CAPABILITIES.every(name => state?.capabilities[name] === true
+        || name === 'preserveNativeBaseline' && baseline.assumed && state?.capabilities.assumeISave10C === true))
+        reasons.push('essential-capability-unverified');
+      if (!baseline.accepted) reasons.push('native-baseline-unverified');
+      if (state && [['mode', 'heat'], ...(baseline.assumed ? [] : [['targetC', baselineC]]),
+        ['fan', 'auto'], ['vanes', 'fixed']].some(([key, expected]) =>
         state.native[key]?.value !== null && state.native[key]?.value !== undefined
         && freshField(state.native[key], now, settings.maxAgeMs) && state.native[key].value !== expected))
         reasons.push('native-settings-changed');
@@ -268,7 +294,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return nativeCommandSummary(attempt);
   }
   async function claimAuthority(now) {
-    if (!live || restorePending || state?.authority.ownerSession || state?.restorationPending || state?.lease
+    const needsAssumedClaim = state?.authority.ownerSession === hostSession && !state.authority.controlAllowed
+      && ownerAssumesISave() && state.capabilities.assumeISave10C === true;
+    if (!live || restorePending || state?.authority.ownerSession && !needsAssumedClaim || state?.restorationPending || state?.lease
       || claimPending && now < claimPending.deadlineAt) return;
     // A claim changes ownership only. It requires the same commissioned,
     // current baseline as a pause, and never takes ownership from another host.
@@ -276,6 +304,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(),
       sequence: ++sequence, challenge: state.challenge.value, action: 'claim', issuedAt: now,
+      ...(ownerAssumesISave() && state.capabilities.assumeISave10C === true ? { assumeISave10C: true } : {}),
       deadlineAt: Math.min(state.challenge.expiresAt, now + 30_000) };
     consumeChallenge(now);
     claimPending = command;
@@ -296,6 +325,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, episodeId: episode?.id ?? 'restoration',
       commandId, sequence: ++sequence, challenge, action, issuedAt: now, deadlineAt,
+      ...(state.capabilities.assumeISave10C === true ? { assumeISave10C: ownerAssumesISave() } : {}),
       ...(action === 'release' ? {} : { endpointAt: episode.endpointAt,
         temperatureEvidenceAt: permission.temperatureEvidenceAt,
         requestedExpiryAt: Math.min(now + state.limits.maximumMs, episode.endpointAt,
@@ -354,7 +384,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       targetStep: [1, .5].includes(value.capabilities?.targetStep) ? value.capabilities.targetStep : null,
       manualOptions: garageNativeOptions(value.capabilities?.manualOptions),
       commissioning: Object.fromEntries(SHELLY_CN105_COMMISSIONING.map(key => [key, value.commissioning?.[key] === true])),
-      capabilities: Object.fromEntries(CAPABILITIES.map(key => [key, value.capabilities?.[key] === true])),
+      capabilities: Object.fromEntries([...CAPABILITIES, 'assumeISave10C'].map(key => [key, value.capabilities?.[key] === true])),
       native: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vanes', 'vane', 'wideVane'].map(key => {
         const field = cleanField(value.native[key]);
         const allowed = { power: ['on', 'off'], mode: ['heat', 'cool', 'auto', 'dry', 'fan'],
@@ -364,7 +394,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
           : allowed[key].includes(field?.value);
         return [key, field ? { ...field, value: valid ? field.value : null } : null];
       })),
-      baseline: { verified: value.baseline?.verified === true, measuredAt: value.baseline?.measuredAt,
+      baseline: { verified: value.baseline?.verified === true, candidateMatched: value.baseline?.candidateMatched === true,
+        measuredAt: value.baseline?.measuredAt,
         profile: value.baseline?.profile, targetC: value.baseline?.targetC, fan: value.baseline?.fan, vanes: value.baseline?.vanes },
       limits: validLimits ? { maximumMs: limits.maximumMs, renewAfterMs: limits.renewAfterMs,
         minimumOnMs: limits.minimumOnMs, restorationDelayMs: limits.restorationDelayMs } : null,
@@ -527,6 +558,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   }
   function status(now = clock()) {
     const reasons = blockers(now);
+    const baseline = baselineAssessment(now);
     const telemetry = Object.fromEntries(Object.entries(latest).filter(([, row]) => !production
       || row.supported && row.value !== null && !row.quality.some(flag => ['unknown', 'unsupported', 'invalid'].includes(flag)))
       .map(([signal, row]) => {
@@ -538,10 +570,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     for (const [key, definition] of Object.entries(GARAGE_FIELDS)) if (telemetry[definition.signal]) telemetry[key] = telemetry[definition.signal];
     return { contractVersion, contractStatus,
       sourceEpoch: state || telemetryBoot ? createHash('sha256').update(JSON.stringify([
-        contractVersion, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource])).digest('hex') : null,
+        contractVersion, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource,
+        baseline.assumed])).digest('hex') : null,
       liveControlSupported: live, simulation: simulated, connected, mode: state?.mode ?? 'monitoring',
       automaticControl: Boolean(transport) && reasons.length === 0, blockedReasons: reasons, health: health(now),
-      baselineVerified: !reasons.includes('native-baseline-unverified'), telemetry,
+      baselineVerified: baseline.verified, baselineAccepted: baseline.accepted, assumeISave10C: baseline.assumed,
+      normalHeating: { targetC: baseline.targetC, source: baseline.source, verified: baseline.verified,
+        nativeTargetC: baseline.nativeTargetC, driverSupportsAssumption: state?.capabilities.assumeISave10C === true }, telemetry,
       commissioning: state?.commissioning ? { ...state.commissioning } : null,
       authority: { owned: state?.authority.ownerSession === hostSession, claimPending: claimPending !== null },
       native: { ...Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field?.value != null)

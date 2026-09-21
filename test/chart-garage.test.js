@@ -9,7 +9,7 @@ import { garageSettings } from '../src/garage/settings.js';
 import { GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 
 const MINUTE = 60_000, range = chartRange({ startDate: '2026-09-08' }), now = range.to;
-const coefficient = 'garage_coefficient_rear_lossPerHour';
+const coefficient = 'garage_coefficient_rear_coolingPerHour';
 function sample(store, at, changes = {}, input = 'providers') {
   const observation = { at, rearAt: at, rearC: 8, frontAt: at, frontC: 7.5, outdoorAt: at, outdoorC: -5,
     available: true, powerKw: 0.4, powerQuality: 'provisional', ev1Kw: 0, ev2Kw: 0, ...changes };
@@ -120,7 +120,7 @@ test('coefficient chart uses same ordered learner and seed, then incrementally e
     checkpoint = applyGarageEntry(checkpoint, entry, garageCorrectionContext(store, 'providers'));
   }
   let result = chart(store, [coefficient]);
-  const expected = garageModelSummary(checkpoint.model).coefficients.rear.find(row => row.name === 'lossPerHour');
+  const expected = garageModelSummary(checkpoint.model).coefficients.rear.find(row => row.name === 'coolingPerHour');
   assert.equal(result.series[coefficient].at(-1).y, expected.value);
   assert.equal(result.series[coefficient][0].coefficientStatus, 'initial');
   assert.equal(result.stats.replayedRecords, 18);
@@ -130,33 +130,41 @@ test('coefficient chart uses same ordered learner and seed, then incrementally e
   result = chart(store, [coefficient]);
   assert.equal(result.stats.replayedRecords, 19);
   assert.equal(result.series[coefficient].at(-1).y,
-    garageModelSummary(checkpoint.model).coefficients.rear.find(row => row.name === 'lossPerHour').value);
+    garageModelSummary(checkpoint.model).coefficients.rear.find(row => row.name === 'coolingPerHour').value);
   assert.deepEqual(result.series[coefficient].filter(point => point.x < range.from + 17 * MINUTE),
     first.filter(point => point.x < range.from + 17 * MINUTE));
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 0);
 });
 
-test('coefficient replay preserves fixed and retained provenance and duration evidence in hours', t => {
+test('coefficient replay distinguishes learned cooling from observed electricity and the fixed power prior', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const seed = createGarageModel({ seedAt: range.from });
   seed.rear.active[0] = true; seed.rear.fitted[0] = true; seed.rear.evidence[0] = 12.75;
-  seed.rear.fitted[3] = true; seed.rear.evidence[3] = 3.5;
+  const power = 'garage_coefficient_native_normalPowerKw';
   appendGarageEntry(store, 'providers', 'context', {}, garageSettings(), range.from, { seed });
-  const fixed = 'garage_coefficient_rear_memoryExchangePerHour', retained = 'garage_coefficient_rear_activityHeatCPerHour';
   const before = store.learningJournal({ input: 'garage:providers' });
-  const result = chart(store, [coefficient, fixed, retained]);
+  const result = chart(store, [coefficient, power]);
   for (const [key, status, basis, hours] of [
     [coefficient, 'fitted', 'fitted-effective-response', 12.75],
-    [retained, 'retained', 'retained-effective-response', 3.5],
-    [fixed, 'fixed-prior', 'fixed-prior', 0],
-  ]) for (const point of result.series[key]) {
-    assert.equal(point.coefficientStatus, status);
-    assert.equal(point.coefficientBasis, basis);
-    assert.equal(point.evidenceHours, hours);
-    assert.equal(point.algorithmVersion, GARAGE_ALGORITHM_VERSION);
-    assert.equal(Object.hasOwn(point, 'evidenceIntervals'), false);
+    [power, 'fixed-prior', 'fixed-prior', 0],
+  ]) {
+    assert(result.series[key].length > 0, key);
+    for (const point of result.series[key]) {
+      assert.equal(point.coefficientStatus, status);
+      assert.equal(point.coefficientBasis, basis);
+      assert.equal(point.evidenceHours, hours);
+      assert.equal(point.algorithmVersion, GARAGE_ALGORITHM_VERSION);
+      assert.equal(Object.hasOwn(point, 'evidenceIntervals'), false);
+    }
   }
   assert.deepEqual(store.learningJournal({ input: 'garage:providers' }), before);
+  seed.native.active[0] = true; seed.native.hours = 6; seed.native.values[0] = .42;
+  const observedStore = new Store(':memory:'); t.after(() => observedStore.close());
+  appendGarageEntry(observedStore, 'providers', 'context', {}, garageSettings(), range.from, { seed });
+  const observed = chart(observedStore, [power]).series[power];
+  assert(observed.length > 0);
+  assert(observed.every(point => point.y === .42 && point.coefficientBasis === 'observed-normal-power'
+    && point.coefficientStatus === 'observed' && point.evidenceHours === 6));
 });
 
 test('future journal dependencies and unknown algorithm tails cannot fill coefficient history', t => {
@@ -176,12 +184,12 @@ test('future journal dependencies and unknown algorithm tails cannot fill coeffi
 
 test('all Garage input and coefficient axes are selectable without adding them to Home learning', t => {
   const store = new Store(':memory:'); t.after(() => store.close()); sample(store, range.from);
-  for (const left of ['garage_model_front', coefficient, 'garage_coefficient_native_restartKw']) {
+  for (const left of ['garage_model_front', coefficient, 'garage_coefficient_native_normalPowerKw']) {
     const result = getChartData({ store, input: 'providers', startDate: range.startDate, now, left });
     assert(result.series[left].some(point => Number.isFinite(point.y)), left);
     assert.equal(result.meta.garageHistory.invalidRecords, 0);
     assert.equal(result.meta.garageHistory.basis, 'original-garage-inputs-and-versioned-read-only-replay');
   }
-  assert(Object.keys(GARAGE_COEFFICIENT_INFO).length >= 12);
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v3-event-doors');
+  assert.equal(Object.keys(GARAGE_COEFFICIENT_INFO).length, 3);
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v4-simple-off');
 });

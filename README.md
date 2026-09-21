@@ -426,11 +426,13 @@ Freezing protection tracks separate local heat reserves for pipes and stored
 liquids, using a water-filled copper pipe as the reference. Garage settings show
 the temperature margin, reference dimensions, heat-transfer estimate and fixed
 safety factor. Cooling and recovery follow measured air temperature continuously;
-there is no fixed refill timer or automatic door-open veto. See
+there is no fixed refill timer. An open door blocks a new savings pause below
+2°C outside; an existing pause is reassessed against measured protection. See
 [protection parameters](docs/garage-protection-defaults.md) for assumptions and
 reporting/restoration deadlines.
-The Pill integration remains provisional and read-only until its actual contract
-and commissioning are available. Provider input in shadow mode observes
+The `shelly-cn105` Pill integration supports native controls and commissioned
+selective pause leases. An explicit owner i-save assumption can replace low-heat
+verification on a supporting driver; local arming and restoration proof still apply. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
 | Data | Primary → backup | Normal collection interval |

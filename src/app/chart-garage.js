@@ -82,7 +82,7 @@ function coefficient({ store, range, now, input, envelopes, key, stats }) {
   const info = GARAGE_COEFFICIENT_INFO[key];
   const emit = value => {
     const previous = state.events.at(-1);
-    const status = value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained'
+    const status = value?.basis === 'observed-normal-power' ? 'observed' : value?.basis?.startsWith('fitted') ? 'fitted' : value?.basis?.startsWith('retained') ? 'retained'
       : value?.basis === 'fixed-prior' && info.fixed ? 'fixed-prior' : 'initial';
     if (previous && previous.value === (value?.value ?? null) && previous.status === status) return;
     const event = { at: state.at, value: value?.value ?? null, status, basis: value?.basis,

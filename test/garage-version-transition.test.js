@@ -16,7 +16,7 @@ const LEGACY = 'committed-garage-v1-coupled';
 function setup(t, { mismatchedSnapshot = false, mismatchedAccounting = false, existingDebt = true } = {}) {
   let now = START;
   const store = new Store(':memory:');
-  const settings = garageSettings({ enabled: true, protection: { approved: true } });
+  const settings = garageSettings({ enabled: true, minOnMs: 30 * MINUTE, protection: { approved: true } });
   const oldSettings = { ...settings, protection: { ...settings.protection, version: 'garage-exposure-v1' } };
   const model = createGarageModel({ seedAt: START - 120 * MINUTE });
   model.algorithm = LEGACY;
@@ -165,7 +165,7 @@ test('malformed saved Garage exposure cannot prevent Home construction or grant 
     let engine;
     try {
       engine = new Engine({ store, config: { input: 'mqtt', settings: { mode: 'shadow' }, connections: {},
-        garage: garageSettings({ enabled: true, protection: { approved: true } }) }, clock: () => START });
+        garage: garageSettings({ enabled: true, minOnMs: 30 * MINUTE, protection: { approved: true } }) }, clock: () => START });
       assert.equal(engine.garage.corruptState, true);
       for (const row of Object.values(engine.garage.exposure.locations)) {
         assert.ok(row.energyJPerM < 0); assert.equal(row.uncertain, true);
@@ -178,7 +178,7 @@ test('malformed saved Garage exposure cannot prevent Home construction or grant 
 });
 
 test('malformed thermal state cannot preserve fabricated reserve or prevent Home control', async t => {
-  const store = new Store(':memory:'), settings = garageSettings({ enabled: true, protection: { approved: true } });
+  const store = new Store(':memory:'), settings = garageSettings({ enabled: true, minOnMs: 30 * MINUTE, protection: { approved: true } });
   const saved = updateGarageExposure(null, { at: START, rearC: 8, frontC: 7 }, settings);
   saved.locations.front.energyJPerM = Infinity;
   delete saved.locations.front.estimatedC;

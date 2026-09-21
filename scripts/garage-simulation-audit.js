@@ -33,7 +33,7 @@ function smallMetrics(sum) { return { rearRmseC: round(Math.sqrt(sum.rear / sum.
  * comparison, keeping weather forecast error separate from model error. */
 export function runScenario(options = {}, api = currentModel) {
   const { name = 'nominal', cadenceMinutes = 5, days = 42, frequency = 'three-weekly', parameters = {}, seed = 731,
-    offDurations = [1, 2, 4, 8], includeSnapshot = false } = options;
+    offDurations = [1, 2], includeSnapshot = false } = options;
   const started = performance.now(), plant = createPlant(parameters), random = randomSource(seed);
   let model = api.createGarageModel({ seedAt: AUDIT_START });
   let observedRows = 0, priorRow = null, offEpisodes = 0, wasAvailable = true;
@@ -83,6 +83,10 @@ export function runScenario(options = {}, api = currentModel) {
       for (const [key, fitted] of [['learned', model], ['prior', prior]]) {
         const prediction = api.predictGarageStep(fitted, states[key], forecastInput, 5 / 60);
         states[key] = prediction.state; metrics[key].energyKwh += prediction.electricityKwh;
+        // The planner accounts for extra recovery explicitly; the illustrative
+        // temperature envelope alone does not estimate that electricity.
+        if (available && minute < (offHours + 3) * 60)
+          metrics[key].energyKwh += api.predictGarageNative(fitted, states[key], { available: true }).powerKw * offHours * 1.25 * (5 / 60) / 3;
         const normal = api.predictGarageStep(fitted, normalStates[key], { ...forecastInput, available: true, restart: false }, 5 / 60);
         normalStates[key] = normal.state;
         if (available) metrics[key].normalRecoveryKwh += normal.electricityKwh;
@@ -124,7 +128,7 @@ export function runScenario(options = {}, api = currentModel) {
           recoveryExtraErrorKwh: round(m.energyKwh - m.normalRecoveryKwh - actualRecoveryExtraKwh) } : {}) }])) });
   }
   return { name, algorithm: model.algorithm, cadenceMinutes, days, frequency, seed, parameters, observedRows, offEpisodes,
-    ready: summary.ready, electricalReady: summary.electricalReady ?? null,
+    ready: summary.ready, electricalReady: summary.electricalReady ?? null, electricityBasis: summary.electricity?.basis ?? null,
     maxPauseHours: summary.maxPauseHours ?? summary.validation?.maxPauseHours ?? null,
     episodeValidation: summary.episodes ?? summary.validation ?? null,
     coefficients: { rear: model.rear.values.map(round), front: model.front.values.map(round), native: model.native.values.map(round) },
@@ -136,7 +140,7 @@ export async function runAudit({ api = currentModel, scenarios = AUDIT_SCENARIOS
   const results = scenarios.map(scenario => runScenario(scenario, api));
   return { fixtureVersion: 'independent-garage-plant-v1', algorithm: results[0]?.algorithm,
     scope: 'Synthetic model audit; no installed hardware measurements or pipe-safety validation.',
-    evaluation: 'Frozen coefficients, independent two-mass plant, 1/2/4/8h OFF plus 24h recovery; perfect outdoor forecasts; no future actual power.',
+    evaluation: 'Frozen coefficients, independent two-mass plant, 1/2h OFF plus 24h recovery with fixed 125% extra recovery allowance; perfect outdoor forecasts; no future actual power.',
     runtimeMs: round(performance.now() - started), results };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

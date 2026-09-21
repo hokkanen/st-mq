@@ -18,6 +18,7 @@ const PRICES = [
   { name: 'flat', values: Array(24).fill(7) },
   { name: 'mild-peak', values: Array.from({ length: 24 }, (_, i) => i >= 6 && i < 10 ? 12 : 7) },
   { name: 'ordinary-peak', values: Array.from({ length: 24 }, (_, i) => i >= 6 && i < 10 ? 40 : 7) },
+  { name: 'exceptional-peak', values: Array.from({ length: 24 }, (_, i) => i >= 6 && i < 10 ? 400 : 7) },
   { name: 'two-peaks', values: Array.from({ length: 24 }, (_, i) => i >= 4 && i < 7 || i >= 15 && i < 18 ? 40 : 7) },
 ];
 export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {}, restorationDelayMs = SIMULATED_HEATING_RESPONSE_MS } = {}) {
@@ -75,7 +76,7 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
  * continuation before the next decision. This tests learning/control economics,
  * not the external adapter's native lease or acknowledgements. */
 export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = {}, seed = 731,
-  peakCents = 40, baseCents = 7, restorationDelayMs = SIMULATED_HEATING_RESPONSE_MS } = {}) {
+  peakCents = 400, baseCents = 7, restorationDelayMs = SIMULATED_HEATING_RESPONSE_MS } = {}) {
   const started = performance.now(), plant = createPlant(parameters), random = randomSource(seed);
   // Extra protection reports must not consume the learner's existing noise
   // sequence. Both consumers use the same report at each learning boundary.
@@ -91,7 +92,7 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
     let available = row?.available !== false;
     if (available !== previousAvailable) { availableChangedAt = at; previousAvailable = available; }
     let input = { ...plantInputs(plant, hour, { available }), managedPause: !available,
-      recovering: row?.phase === 'recovery', availableChangedAt };
+      recovering: row?.phase === 'restoration-delay' || model.validation.active?.offEndedAt != null, availableChangedAt };
     const learningReport = minute % cadenceMinutes === 0;
     const observation = observedPlant(plant, hour, input, learningReport ? random : protectionRandom);
     exposure = updateGarageExposure(exposure, observation, settings);
