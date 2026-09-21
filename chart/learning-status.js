@@ -340,18 +340,50 @@ export function renderModelInputs(root, rows = modelInputDescriptions(), { senso
   }
 }
 
-export const h66Registers = {
-  '0007': { label: 'Outdoor temperature', unit: '°C' }, '0002': { label: 'Supply temperature', unit: '°C' },
-  '0001': { label: 'Return temperature', unit: '°C' }, '0009': { label: 'Hot water temperature', unit: '°C' },
-  '0107': { label: 'Supply temperature target', unit: '°C' },
-  '1A20': { label: 'Pump alarm', unit: '' },
-  '8105': { label: 'Heating integral', unit: '°min' }, '0203': { label: 'Room setting', unit: '°C', min: 10, max: 30 },
-  '0212': { label: 'DHW start temperature', unit: '°C', min: 30, max: 60 },
-  '0208': { label: 'DHW stop temperature', unit: '°C', min: 30, max: 65 },
-  '2201': { label: 'Operating mode', unit: '' }, '1A01': { label: 'Compressor', unit: '' },
-  '1A07': { label: 'Heating destination', unit: '' }, '3104': { label: 'Auxiliary output', unit: '%' },
-  '0233': { label: 'Tariff reduction setting', unit: '°C' },
-};
+export const h66ReadingGroups = [
+  { label: 'Heating', readings: [
+    ['0002', { label: 'Supply temperature', unit: '°C', description: 'Water leaving the heat pump for home heating.' }],
+    ['0001', { label: 'Return temperature', unit: '°C', description: 'Water returning from the home heating circuit.' }],
+    ['0107', { label: 'Supply temperature target', unit: '°C', description: 'Flow temperature the heat pump is aiming for.' }],
+    ['0007', { label: 'Outdoor temperature', unit: '°C', description: 'Temperature at the heat pump’s outdoor sensor.' }],
+    ['8105', { label: 'Heating integral', unit: '°min', description: 'Accumulated difference between actual and target supply temperature.' }],
+    ['1A06', { label: 'Heating pump', unit: '', description: 'Whether the heating circulation pump is running.' }],
+    ['3109', { label: 'Heating pump speed', unit: '%', description: 'Reported speed of the heating circulation pump.' }],
+    ['3104', { label: 'Auxiliary output', unit: '%', description: 'Reported backup heater output, as a share of rated capacity.' }],
+  ] },
+  { label: 'Ground loop', readings: [
+    ['0005', { label: 'Brine in', unit: '°C', description: 'Ground-loop fluid entering the heat pump from the ground.' }],
+    ['0006', { label: 'Brine out', unit: '°C', description: 'Ground-loop fluid leaving the heat pump for the ground.' }],
+    ['3110', { label: 'Brine pump speed', unit: '%', description: 'Reported speed of the ground-loop circulation pump.' }],
+  ] },
+  { label: 'Hot water', readings: [
+    ['0009', { label: 'Hot water temperature', unit: '°C', description: 'Temperature measured in the hot-water tank.' }],
+    ['0212', { label: 'Hot water start', unit: '°C', min: 30, max: 60, description: 'Tank temperature setting for starting hot-water heating.' }],
+    ['0208', { label: 'Hot water stop', unit: '°C', min: 30, max: 65, description: 'Reported stop setting; compressor cutoff may differ.' }],
+    ['1A07', { label: 'Heating destination', unit: '', description: 'Whether heat is routed to the home or the hot-water tank.' }],
+  ] },
+  { label: 'Equipment states', readings: [
+    ['2201', { label: 'Operating mode', unit: '', description: 'Operating mode currently reported by the heat pump.' }],
+    ['1A01', { label: 'Compressor', unit: '', description: 'Whether the compressor is running; backup heating is separate.' }],
+    ['1A20', { label: 'Pump alarm', unit: '', description: 'Whether the heat pump reports an active alarm.' }],
+    ['2A91', { label: 'Alarm code', unit: '', description: 'Reported fault code; see the heat pump’s alarm guide.' }],
+  ] },
+  { label: 'Settings', readings: [
+    ['0203', { label: 'Room setting', unit: '°C', min: 10, max: 30, description: 'Heating reference setting, not a measured room temperature.' }],
+    ['0205', { label: 'Heating curve', unit: '°C', description: 'Curve setting used to determine the heating supply target.' }],
+    ['2204', { label: 'Room influence', unit: 'factor', description: 'How strongly room temperature affects the heating target.' }],
+    ['0206', { label: 'Maximum supply setting', unit: '°C', description: 'Configured upper limit for the heating supply temperature.' }],
+    ['0211', { label: 'Heat-stop setting', unit: '°C', description: 'Outdoor temperature setting for stopping space heating.' }],
+    ['0233', { label: 'Tariff reduction setting', unit: '°C', description: 'Configured reduction amount; does not confirm tariff control is active.' }],
+  ] },
+  { label: 'Runtime counters', readings: [
+    ['6C60', { label: 'Compressor runtime', unit: 'h', description: 'Accumulated compressor hours reported by the heat pump.' }],
+    ['6C63', { label: 'Auxiliary 3 kW runtime', unit: 'h', description: 'Accumulated hours for the 3 kW backup heater stage.' }],
+    ['6C66', { label: 'Auxiliary 6 kW runtime', unit: 'h', description: 'Accumulated hours for the 6 kW backup heater stage.' }],
+    ['6C64', { label: 'Hot-water runtime', unit: 'h', description: 'Accumulated hot-water heating hours reported by the heat pump.' }],
+  ] },
+];
+export const h66Registers = Object.fromEntries(h66ReadingGroups.flatMap(group => group.readings));
 
 /** Readback validity comes from the controller. Its MQTT connection and the
  * recency of its publications are separate facts, with the same age boundary. */
@@ -466,10 +498,10 @@ export function h66EquipmentSummary(status = {}) {
 export function h66ReadingValue(register, reading) {
   if (!finite(reading?.value)) return 'Unavailable';
   if (register === '2201') return operationModes[reading.value] ?? `Unknown mode (${reading.value})`;
-  if (register === '1A01') return reading.value === 1 ? 'On' : reading.value === 0 ? 'Off' : 'Unknown';
+  if (register === '1A01' || register === '1A06') return reading.value === 1 ? 'On' : reading.value === 0 ? 'Off' : 'Unknown';
   if (register === '1A20') return reading.value === 1 ? 'Alarm active' : reading.value === 0 ? 'No active alarm' : 'Unknown';
   if (register === '1A07') return reading.value === 1 ? 'Domestic hot water' : reading.value === 0 ? 'Space heating' : 'Unknown';
-  const unit = reading.unit === 'degC' ? '°C' : reading.unit ?? h66Registers[register]?.unit ?? '';
+  const unit = h66Registers[register]?.unit ?? (reading.unit === 'degC' ? '°C' : reading.unit ?? '');
   return `${number(reading.value, Number.isInteger(reading.value) ? 0 : 1)} ${unit}`.trim();
 }
 

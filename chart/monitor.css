@@ -454,15 +454,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .settings-actions button { margin: 0; }
 .settings-actions p { flex: 1 1 180px; margin: 0; }
-.h66-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-.h66-table caption { text-align: left; color: var(--muted); font-size: 11px; padding: 8px 0; }
-.h66-table th, .h66-table td { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; }
-.h66-table th, .h66-table td { overflow-wrap: anywhere; }
-.h66-table td:nth-child(2) { min-width: 100px; }
-@media (max-width: 600px) {
-  .h66-table th:last-child, .h66-table td:last-child { display: none; }
-  .h66-table td:nth-child(2) { text-align: right; width: 45%; }
-}
+.h66-table { width: 100%; margin: 0 0 18px; border-collapse: collapse; font-size: 12px; line-height: 1.5; }
+.h66-table caption { padding: 12px 0 4px; text-align: left; font-size: 12px; font-weight: 550; color: var(--text); }
+.h66-table th, .h66-table td { padding: 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.h66-table th { text-align: left; font-weight: 400; }
+.h66-table td { width: 36%; padding-left: 14px; text-align: right; font-variant-numeric: tabular-nums; }
+.h66-reading-description { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.h66-table .status-detail-trigger { min-height: 24px; }
+.h66-table:last-child { margin-bottom: 0; }
 .h66-test-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; align-items: end; }
 .h66-test-form label { margin: 12px 0 0; }
 .h66-test-form button { margin-bottom: 0; }
@@ -680,9 +679,6 @@ details details { margin-inline-start: 24px; }
 .equipment-fold[open] > summary { padding-bottom: 8px; }
 .equipment-fold > .muted { margin: 5px 0 12px; }
 .equipment-fold > :last-child:not(summary) { margin-bottom: 18px; }
-.equipment-series-group { margin: 20px 0; }
-.equipment-series-group > h4 { margin: 0; font-size: 12px; font-weight: 550; }
-.equipment-series-group .provider-series { margin: 8px 0 0; }
 .model-headline { font-size: 17px; font-weight: 500; letter-spacing: -.2px; margin: 18px 0 6px; }
 #learning-overview { margin: 0; }
 .learning-progress { display: flex; gap: 10px 22px; flex-wrap: wrap; margin-top: 16px; }

@@ -360,7 +360,10 @@ intervals, preserve nulls and transitions, and do not rerun today's model on his
 
 In the dashboard, the **Home** upper summary opens **Heating configuration**.
 Under **Sensors & Equipment**, the **Ground-source heat pump** overview contains
-**Adjust heat-pump parameters** and **All heat-pump readings**.
+**Adjust heat-pump parameters**, followed by the **All heat-pump readings** fold.
+Readings are grouped into heating, ground loop, hot water, equipment states,
+settings and runtime counters. Each has a reported value and a short description;
+select a value for freshness, receipt time and any requested or original setting.
 Starting a price-control pause selects Normal heating;
 subsequent manual heating and parameter changes are held
 until the pause ends or the owner selects Resume now. Previous settings are then

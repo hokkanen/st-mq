@@ -547,19 +547,19 @@ try {
     await evaluate("document.querySelector('#home-equipment-details > summary').focus(); true");
     await command('input.performActions', { context, actions: [{ type: 'key', id: 'equipment-keyboard', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
     assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), true, 'Equipment opens by keyboard');
-    const parents = { 'home-pump-device': 'home-equipment-details', 'h66-provider-details': 'home-pump-device',
+    const parents = { 'home-pump-device': 'home-equipment-details', 'h66-readings-details': 'home-pump-device',
       'h66-test-details': 'home-pump-device' };
     assert.equal(await evaluate(`Object.entries(${JSON.stringify(parents)}).every(([id,parent]) => {
       const fold = document.getElementById(id);
       return !fold.open && fold.parentElement.closest('details').id === parent;
-    })`), true, 'Equipment groups readings, their guide, and manual controls separately');
+    })`), true, 'Equipment keeps grouped readings and manual controls in sibling disclosures');
     assert.equal(await evaluate("['home-pump-device'].every(id=>document.querySelector('#'+id+' > summary').checkVisibility())"), true);
-    assert.equal(await evaluate("['h66-provider-details','h66-test-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Secondary guidance and tests stay behind their parent disclosure');
+    assert.equal(await evaluate("['h66-readings-details','h66-test-details'].every(id=>!document.querySelector('#'+id+' > summary').checkVisibility())"), true, 'Readings and adjustments stay behind their parent disclosure');
     for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
       await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });
       await evaluate("document.getElementById('home-equipment-details').scrollIntoView({block:'start'}); true");
       await capture(`home-energy-equipment-${viewport.width}`);
-      for (const id of ['home-pump-device', 'h66-provider-details']) {
+      for (const id of ['home-pump-device', 'h66-readings-details']) {
         await evaluate(`(() => {const fold=document.getElementById('${id}');for(let parent=fold.parentElement.closest('details');parent;parent=parent.parentElement.closest('details'))parent.open=true;fold.querySelector(':scope > summary').click();fold.scrollIntoView({block:'start'});return true;})()`);
         assert.equal(await evaluate(`document.getElementById('${id}').open`), true);
         assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded equipment content fits the viewport');
@@ -616,7 +616,7 @@ try {
   assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
   assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
-  assert.equal(await evaluate("document.getElementById('h66-provider-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('h66-readings-details').open"), false);
   assert.equal(await evaluate("document.getElementById('home-equipment-details').open"), false);
   assert.equal(await evaluate("[...document.querySelectorAll('[data-heating-command]')].every(button => button.disabled)"), true);
   assert.equal(await evaluate("document.getElementById('home-control').contains(document.getElementById('temporary-details')) && document.getElementById('providers-controls').contains(document.getElementById('electricity-details'))"), true);
@@ -889,7 +889,7 @@ try {
   assert.equal(await evaluate("document.body.textContent.includes('synthetic-private-broker-error')"), false);
   await evaluate("document.querySelector('.temporary-panel').scrollIntoView({block:'start'}); true");
   await capture('home-energy-mqtt-tests-desktop');
-  await evaluate("document.getElementById('home-pump-device').open = true; document.getElementById('h66-provider-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
+  await evaluate("document.getElementById('home-pump-device').open = true; document.getElementById('h66-readings-details').open = true; document.getElementById('connections-details').open = true; document.querySelectorAll('#providers .provider-fold').forEach(fold => fold.open = true); document.getElementById('providers').scrollIntoView({block:'center'}); true");
   await capture('home-energy-provider-fixture-desktop');
   await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 844 }, devicePixelRatio: 1 });
   await new Promise(resolve => setTimeout(resolve, 150));

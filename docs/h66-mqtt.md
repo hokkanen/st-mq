@@ -60,7 +60,9 @@ Changing from `simulated` or `offline` to a live input requires a restart. See
 ## Verify live readings
 
 Open **Home → Sensors & Equipment →
-Ground-source heat pump**. In **All heat-pump readings**, check:
+Ground-source heat pump**. Open **All heat-pump readings**, below
+**Adjust heat-pump parameters**. Readings are grouped by function with a short
+description beside each value. Select a value for freshness and receipt time. Check:
 
 - Fresh temperatures, including outdoor register `0007`, against the gateway.
 - Compressor `1A01`, reversing valve `1A07` and auxiliary output `3104` against

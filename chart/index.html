@@ -253,6 +253,7 @@
                   </summary>
                   <div class="equipment-device-body">
                     <p id="home-pump-reading-info" class="pump-reading-info"></p>
+                    <p id="h66-context" class="muted" role="status" hidden></p>
                     <details id="h66-test-details" class="equipment-fold">
                       <summary>Adjust heat-pump parameters</summary>
                       <form id="h66-test-form" class="h66-test-form" aria-describedby="heating-test-help home-hold-warning h66-test-status">
@@ -268,17 +269,11 @@
                       <p id="h66-test-status" class="muted">H66 is not connected.</p>
                       <p id="h66-test-message" class="temporary-status" role="status" aria-live="polite"></p>
                     </details>
-                    <section id="h66-readings-details" class="equipment-reading-section">
-                      <h5 class="equipment-body-title">All heat-pump readings</h5>
-                      <p id="h66-readings-help" class="muted">Latest temperatures, states and settings reported by the heat pump.</p>
-                      <p id="h66-context" class="muted"></p>
-                      <div id="h66-readings" aria-describedby="h66-readings-help h66-readings-time-help"></div>
-                      <p id="h66-readings-time-help" class="muted">Times show receipt by this app. Open a value for freshness details.</p>
-                      <details id="h66-provider-details" class="equipment-fold"><summary>About these readings</summary>
-                        <p class="muted">Readbacks are reported by the pump. Requested settings come from this controller. H66 usually reports receipt time, not measurement time.</p>
-                        <div id="h66-series"></div>
-                      </details>
-                    </section>
+                    <details id="h66-readings-details" class="equipment-fold">
+                      <summary>All heat-pump readings</summary>
+                      <p id="h66-readings-help" class="muted">Values reported by the heat pump. Select a value for freshness, receipt time and setting details.</p>
+                      <div id="h66-readings" aria-describedby="h66-readings-help"></div>
+                    </details>
                   </div>
                 </details>
                 <div id="home-equipment-readings" class="equipment-device-list"></div>

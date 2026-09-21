@@ -8,7 +8,7 @@ import { loadConfig } from '../src/app/config.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 import { providerFixture } from './lib/provider-fixture.js';
 import { createH66Controller } from '../src/control/h66.js';
-import { createH66Decoder } from '../src/domain/telemetry.js';
+import { createH66Decoder, H66_REGISTERS } from '../src/domain/telemetry.js';
 import { Store } from '../src/storage/store.js';
 import { appendLearningRecord } from '../src/app/committed-learning.js';
 import { MODEL_INPUT_INFO } from '../src/domain/history-series.js';
@@ -86,7 +86,14 @@ try {
   await evaluate("document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change'))");
   assert.equal(await evaluate("document.getElementById('h66-test-temperature-field').hidden"), false);
   assert.equal(await evaluate("document.getElementById('h66-test-value').value"), '50');
-  assert.equal(await evaluate("document.querySelector('#h66-provider-details > summary').textContent"), 'About these readings');
+  assert.equal(await evaluate("document.querySelector('#h66-readings-details > summary').textContent"), 'All heat-pump readings');
+  assert.equal(await evaluate("document.getElementById('h66-readings-details').tagName === 'DETAILS' && document.getElementById('h66-readings-details').previousElementSibling.id === 'h66-test-details'"), true,
+    'One readings disclosure follows the adjustment controls');
+  assert.equal(await evaluate("document.querySelector('#h66-provider-details, #h66-series')"), null, 'Descriptions live with their readings');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#h66-readings table caption')].map(caption => caption.textContent)"),
+    ['Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters']);
+  assert.deepEqual((await evaluate("[...document.querySelectorAll('#h66-readings tr[data-register]')].map(row => row.dataset.register)")).sort(),
+    Object.keys(H66_REGISTERS).sort(), 'Every supported reading appears once in a group');
   assert.equal(await evaluate("document.querySelector('#learning-details summary').textContent"), 'Learning outcomes · Calculated');
   assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#model-inputs-content > details')].map(fold=>fold.dataset.modelInput))")),Object.keys(MODEL_INPUT_INFO));
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column')].map(column => [...column.querySelectorAll(':scope > article')].map(card => card.id))"),
@@ -215,15 +222,26 @@ try {
     await evaluate("document.getElementById('left-axis').value='power'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
     await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === 'power'");
   }
+  await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.querySelector('#h66-readings-details > summary').focus();true");
+  assert.equal(await evaluate("document.getElementById('h66-readings-details').open"), false);
+  assert.equal(await evaluate("document.getElementById('h66-readings').checkVisibility()"), false, 'Readings start hidden behind their fold');
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  assert.equal(await evaluate("document.getElementById('h66-readings-details').open && document.getElementById('h66-readings').checkVisibility()"), true, 'Readings open with Enter');
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  assert.equal(await evaluate("document.getElementById('h66-readings-details').open"), false, 'Readings close with Space');
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width < 600 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
-    await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true;document.getElementById('h66-readings-details').scrollIntoView({block:'start'});true");
+    await evaluate("document.getElementById('h66-readings-details').open=true;document.getElementById('h66-readings-details').scrollIntoView({block:'start'});true");
     assert.equal(await evaluate(`(() => {
-      const table=document.querySelector('#h66-readings table'),labels=[...table.querySelectorAll('.status-detail-label')];
-      return document.documentElement.scrollWidth<=innerWidth && labels.every(label=>{
-        const range=document.createRange();range.selectNodeContents(label);return range.getClientRects().length===1;
-      }) && getComputedStyle(table.querySelector('thead th:last-child')).display${width < 600 ? '===' : '!=='}'none';
-    })()`), true, `H66 values stay readable with an appropriate received-time column at ${width}px`);
+      const rows=[...document.querySelectorAll('#h66-readings tbody tr')];
+      return document.documentElement.scrollWidth<=innerWidth && rows.every(row=>{
+        const description=row.querySelector('th small.h66-reading-description'),value=row.querySelector('td .status-detail-trigger');
+        return row.children.length===2 && row.querySelector('th').scope==='row' && description?.textContent.trim()
+          && description.checkVisibility() && value?.checkVisibility() && value.getBoundingClientRect().right<=innerWidth;
+      });
+    })()`), true, `Grouped H66 readings show descriptions and values without overflow at ${width}px`);
     writeFileSync(`var/home-energy-h66-compact-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   }
   // Exercise the real Engine/status/API/H66 controller with an in-memory MQTT
@@ -242,12 +260,15 @@ try {
   h66 = createH66Controller({ deviceId, store: app.store, clock: () => now, config: { writeEnabled: true },
     publish: async (topic, value) => { publications.push({ topic, value }); readback(topic.slice(-4), Number(value)); } });
   h66.setConnected(true);
-  for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0]]) readback(register, value);
+  for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0], ['1A06', 1], ['0005', 4.5], ['0006', 1.2], ['3110', 80]]) readback(register, value);
   app.engine.setH66(h66); app.engine.tick();
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('home-pump-health')?.textContent === 'Connected'");
   await until("document.getElementById('h66-test-submit')?.disabled === false");
   assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
+  assert.equal(await evaluate("document.querySelector('#h66-readings tr[data-register=\"0005\"] .status-detail-label').textContent"), '4.5 °C');
+  assert.equal(await evaluate("document.querySelector('#h66-readings tr[data-register=\"1A06\"] .status-detail-label').textContent"), 'On');
+  assert.equal(await evaluate("document.querySelector('#h66-readings tr[data-register=\"0005\"]').closest('table').querySelector('caption').textContent"), 'Ground loop');
   assert.equal(await evaluate("document.querySelector('[data-h66-summary=mode]').textContent.includes('Auto')"), true);
   assert.equal(await evaluate("document.getElementById('home-pump-dhw').textContent.includes('40–55 °C')"), true);
   assert.equal(await evaluate("document.getElementById('home-tariff-status') === null"), true);
@@ -269,7 +290,7 @@ try {
     }
     await evaluate("document.querySelector('.controller-panels').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-panels-providers-${width}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
-    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-provider-details').open=true;  document.getElementById('providers-controls').scrollIntoView({block:'start'})");
+    await evaluate("document.getElementById('connections-details').open=true; document.querySelectorAll('#providers .provider-fold').forEach(fold=>fold.open=true); document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-readings-details').open=true;  document.getElementById('providers-controls').scrollIntoView({block:'start'})");
     assert.equal(await evaluate(`(() => {
       const summaries = [...document.querySelectorAll('#providers .provider-fold > summary')];
       return summaries.length === 4 && summaries.every(summary => summary.checkVisibility()
@@ -283,14 +304,14 @@ try {
         && (!index || row.box.top >= rows[index - 1].box.bottom - 1));
     })()`), true, 'MQTT topics, rates and configuration form three aligned rows without vertical overlap');
     assert.equal(await evaluate(`(() => {
-      const parents = { 'home-pump-device': 'home-equipment-details', 'h66-provider-details': 'home-pump-device',
+      const parents = { 'home-pump-device': 'home-equipment-details', 'h66-readings-details': 'home-pump-device',
         'h66-test-details': 'home-pump-device' };
       return Object.entries(parents).every(([id,parent]) => {
         const fold=document.getElementById(id),summary=fold.querySelector(':scope > summary');
         const parentSummary=document.querySelector('#'+parent+' > summary');
         return summary.checkVisibility() && fold.parentElement.closest('details').id === parent
           && summary.getBoundingClientRect().left >= parentSummary.getBoundingClientRect().left + (id === 'home-pump-device' ? 0 : 8);
-      }) && document.getElementById('h66-readings-details').tagName === 'SECTION'
+      }) && document.getElementById('h66-readings-details').tagName === 'DETAILS'
         && document.getElementById('h66-readings-details').checkVisibility();
     })()`), true, 'Heat-pump settings and readings are visibly nested inside the Home heat pump');
     await evaluate("document.getElementById('home-heat-pump-details').open=true");
@@ -306,7 +327,7 @@ try {
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
-  await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
+  await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-readings-details').open=true; window.savedH66Row=document.querySelector('#h66-readings tr[data-register=\"0208\"]'); window.savedH66Trigger=window.savedH66Row.querySelector('.status-detail-trigger'); document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");
   assert.equal(publications.length, 1); assert.equal(publications[0].value, '50');
   assert.equal(h66.status().readings['0208'].baseline, 55);
@@ -315,8 +336,13 @@ try {
   assert.equal(h66.status().expiresAt, now + 60_000);
   assert.equal(await evaluate("document.getElementById('h66-test-message').textContent.includes('previously 55')"), true);
   assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('50 °C')"), true);
-  await evaluate("document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
-  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /Received/);
+  assert.equal(await evaluate("document.getElementById('h66-readings-details').open && window.savedH66Row === document.querySelector('#h66-readings tr[data-register=\"0208\"]') && window.savedH66Trigger === window.savedH66Row.querySelector('.status-detail-trigger')"), true,
+    'Readings keep their expanded fold, row and value trigger across a status refresh');
+  await evaluate("document.getElementById('h66-readings-details').open=true; document.querySelector('#h66-readings tr[data-register=\"0208\"] .status-detail-trigger').click();true");
+  const settingDetails = await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent");
+  assert.match(settingDetails, /Received/);
+  assert.match(settingDetails, /requested.*50 °C/i);
+  assert.match(settingDetails, /original.*55 °C/i);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   now += 61_000; await h66.reconcile({ now }); app.engine.tick();
   await send('Page.reload');
@@ -327,7 +353,7 @@ try {
   assert.equal(await evaluate("document.getElementById('h66-manual-state').textContent.includes('55 °C')"), true);
   assert.equal(h66.status().restorationPending, false);
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'Home and Garage card structure', 'independent expanded dashboard cards', 'Home equipment and learning nesting', 'preserved nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'temporary manual H66 API setting, readback and restoration with synthetic transport'] }));
+  console.log(JSON.stringify({ result: 'learning-ui-smoke-passed', checks: ['real chart pixels', 'four learning axes', 'solar axis', 'immutable model input axes', 'empty selected axis', 'all catalogued input source folds', 'separate action readiness', 'mode strip', 'saved visibility', 'Home and Garage card structure', 'independent expanded dashboard cards', 'Home equipment and learning nesting', 'preserved nested disclosures', 'chart disclosure markers and keyboard controls', 'provider folds preserve focus', 'visible settings reload scope', 'settings reload preserves drafts and nested disclosures', 'current coefficients', 'H66 home summary', 'grouped H66 readings and inline descriptions', 'H66 disclosure keyboard controls', 'stable H66 readings across refreshes', 'actual Engine parameters', 'unavailable H66 controls', 'desktop and mobile layout', 'temporary manual H66 API setting, readback and restoration with synthetic transport'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

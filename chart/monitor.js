@@ -4,7 +4,7 @@ import { createChargingPanel } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues, homePolicyValues } from './home-controls.js';
-import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, renderModelInputs } from './learning-status.js';
+import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
@@ -259,21 +259,6 @@ function renderProviderSeries(root, rows, { datasets = false } = {}) {
     }
   }
 }
-function renderH66Series(root) {
-  const groups = new Map();
-  for (const row of providerSeries('h66')) {
-    if (!groups.has(row.group)) groups.set(row.group, []);
-    groups.get(row.group).push(row);
-  }
-  const sections = [];
-  for (const [group, rows] of groups) {
-    const section = document.createElement('section'); section.className = 'equipment-series-group';
-    const heading = document.createElement('h4'); heading.textContent = group;
-    const list = document.createElement('div'); renderProviderSeries(list, rows);
-    section.append(heading, list); sections.push(section);
-  }
-  root.replaceChildren(...sections);
-}
 function renderProviders(s) {
   const marketSource = providerName(s.providers?.market?.source), weatherSource = providerName(s.providers?.weather?.source);
   $('price-status').textContent = `${priceStatuses[s.priceStatus] ?? 'Price status unavailable'}${marketSource ? ` · ${marketSource}` : ''}`;
@@ -431,54 +416,61 @@ function renderH66(s) {
     }
   }
   setStatusDetail($('home-pump-reading-info'), { key: 'home-pump-readings', label: 'Reading details', title: 'Ground-source heat-pump readings',
-    detail: pumpReadings.map(row => `${row.title}: ${row.detail}`).join('\n\n') });
+    detail: [h66.reason, ...pumpReadings.map(row => `${row.title}: ${row.detail}`)].filter(Boolean).join('\n\n') });
   let notice = root.querySelector('.equipment-alarm');
   const alarm = summary.find(row => row.key === 'alarm');
   if (alarm?.available && alarm.value === 'Alarm active') {
     if (!notice) { notice = document.createElement('p'); notice.className = 'equipment-alarm'; root.append(notice); }
     notice.textContent = 'Heat-pump alarm active';
   } else notice?.remove();
-  const connectionDetail = (h66.reason ?? (h66.connected
-    ? 'H66 is connected. Requested and original settings are shown alongside reported values when a temporary override is active.'
-    : 'Waiting for a live H66 connection and fresh values from the heat pump.')).trim().replace(/^./, value => value.toUpperCase());
   $('home-pump-health').textContent = h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
   $('home-pump-health').dataset.state = h66.connected ? 'available' : 'attention';
-  if (!$('h66-series').childElementCount) renderH66Series($('h66-series'));
-  if (h66.restorationPending) setStatusDetail($('h66-context'), { key: 'h66-context',
-    label: 'Restoring previous H66 settings. Restoration stays pending until fresh values reported by the pump confirm those settings.', detail: '' });
-  else setStatusDetail($('h66-context'), { key: 'h66-context', label: 'Connection details', title: 'Heat-pump connection', detail: connectionDetail });
-  let table = $('h66-readings').querySelector('table');
-  if (!table) {
-    table = document.createElement('table'); table.className = 'h66-table';
-    const caption = document.createElement('caption'); caption.textContent = 'Latest values reported through H66'; table.append(caption);
-    const head = document.createElement('thead'), header = document.createElement('tr');
-    for (const text of ['Reading', 'Value', 'Received']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = text; header.append(cell); }
-    head.append(header); table.append(head, document.createElement('tbody')); $('h66-readings').append(table);
-  }
-  const body = table.querySelector('tbody'), readings = h66.readings ?? {};
-  const registers = [...new Set([...Object.keys(h66Registers), ...Object.keys(readings)])];
-  for (const row of [...body.children]) if (!registers.includes(row.dataset.register)) row.remove();
-  for (const [index, register] of registers.entries()) {
-    const reading = readings[register];
-    let row = [...body.children].find(row => row.dataset.register === register);
-    if (!row) {
-      row = document.createElement('tr'); row.dataset.register = register;
-      const title = document.createElement('th'); title.scope = 'row';
-      row.append(title, document.createElement('td'), document.createElement('td'));
+  $('h66-context').hidden = !h66.restorationPending;
+  $('h66-context').textContent = h66.restorationPending
+    ? 'Restoring previous H66 settings. Waiting for fresh values from the pump to confirm restoration.' : '';
+  const readings = h66.readings ?? {};
+  const groups = [...h66ReadingGroups, { label: 'Other readings', readings: Object.keys(readings)
+    .filter(register => !Object.hasOwn(h66Registers, register)).map(register => [register, {
+      label: label(readings[register]?.signal ?? `Register ${register}`), description: 'Additional reading reported by the heat pump.',
+    }]) }].filter(group => group.readings.length);
+  const readingsRoot = $('h66-readings');
+  for (const table of [...readingsRoot.children]) if (!groups.some(group => group.label === table.dataset.group)) table.remove();
+  for (const group of groups) {
+    let table = [...readingsRoot.children].find(table => table.dataset.group === group.label);
+    if (!table) {
+      table = document.createElement('table'); table.className = 'h66-table'; table.dataset.group = group.label;
+      const caption = document.createElement('caption'); caption.textContent = group.label;
+      table.append(caption, document.createElement('tbody')); readingsRoot.append(table);
     }
-    if (body.children[index] !== row) body.insertBefore(row, body.children[index] ?? null);
-    const [title, value, at] = row.children;
-    title.textContent = h66Registers[register]?.label ?? label(reading?.signal ?? `Register ${register}`);
-    const availability = h66ReadingStatus(h66, reading, { now: s.now });
-    let valueLabel = availability.usable ? h66ReadingValue(register, reading) : 'Unavailable';
-    value.classList.toggle('stale', !availability.usable);
-    if (Number.isFinite(reading?.requested)) valueLabel += ` · requested ${h66ReadingValue(register, { ...reading, value: reading.requested })}`;
-    if (Number.isFinite(reading?.baseline)) valueLabel += ` · original ${h66ReadingValue(register, { ...reading, value: reading.baseline })}`;
-    const timestamp = reading?.receivedAt ?? reading?.at;
-    at.textContent = timestamp && Number.isFinite(new Date(timestamp).getTime()) ? time(timestamp) : '—';
-    setStatusDetail(value, { key: `h66-reading-${register}`, label: valueLabel,
-      title: title.textContent, detail: `${availability.detail}${!availability.usable && Number.isFinite(reading?.value)
-        ? ` Last reported value: ${h66ReadingValue(register, reading)}.` : ''}${at.textContent !== '—' ? ` Received ${at.textContent}.` : ''}` });
+    const body = table.querySelector('tbody');
+    for (const row of [...body.children]) if (!group.readings.some(([register]) => register === row.dataset.register)) row.remove();
+    for (const [index, [register, metadata]] of group.readings.entries()) {
+      const reading = readings[register];
+      let row = [...body.children].find(row => row.dataset.register === register);
+      if (!row) {
+        row = document.createElement('tr'); row.dataset.register = register;
+        const title = document.createElement('th'); title.scope = 'row';
+        const description = document.createElement('small'); description.className = 'h66-reading-description';
+        title.append(document.createElement('span'), description);
+        row.append(title, document.createElement('td'));
+      }
+      if (body.children[index] !== row) body.insertBefore(row, body.children[index] ?? null);
+      const [title, value] = row.children;
+      title.children[0].textContent = metadata.label;
+      title.children[1].textContent = metadata.description;
+      const availability = h66ReadingStatus(h66, reading, { now: s.now });
+      const valueLabel = availability.usable ? h66ReadingValue(register, reading) : 'Unavailable';
+      value.classList.toggle('stale', !availability.usable);
+      const settingDetails = [];
+      if (Number.isFinite(reading?.requested)) settingDetails.push(`Requested by this controller: ${h66ReadingValue(register, { ...reading, value: reading.requested })}.`);
+      if (Number.isFinite(reading?.baseline)) settingDetails.push(`Original setting: ${h66ReadingValue(register, { ...reading, value: reading.baseline })}.`);
+      const timestamp = reading?.receivedAt ?? reading?.at;
+      const received = timestamp != null && Number.isFinite(new Date(timestamp).getTime()) ? time(timestamp) : null;
+      setStatusDetail(value, { key: `h66-reading-${register}`, label: valueLabel, title: metadata.label,
+        detail: [metadata.description, `${availability.detail}${!availability.usable && Number.isFinite(reading?.value)
+          ? ` Last reported value: ${h66ReadingValue(register, reading)}.` : ''}${received ? ` Received ${received}.` : ''}`,
+        ...settingDetails].join('\n\n') });
+    }
   }
   updateH66Selector();
   if (!h66TestBusy && h66.lastManual) showH66Test(h66.lastManual);
