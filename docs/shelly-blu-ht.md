@@ -5,11 +5,13 @@ Shelly Plus running the supplied bridge script. No Shelly account, phone app,
 Home Assistant or Zigbee coordinator is needed for this Bluetooth route. The
 Plus 1 receives Bluetooth; it is not a Zigbee coordinator.
 
-The public equipment configuration includes **Shelly BLU H&T** under **Home →
-Sensors & Equipment**, on `stmq/home/blu_ht/state`. It is a separate monitoring
-sensor: `blu_ht_temperature` (°C), `blu_ht_humidity` (% RH), and `blu_ht_battery`
-(%) are recorded. Bluetooth signal strength is live-only. This sensor is not an
-input to Home learning, its indoor average, or Garage protection.
+The public equipment configuration labels the Shelly BLU H&T **Caravan air** in
+Garage MQTT diagnostics and shows its temperature and humidity inside **Garage →
+Sensors & More equipment → Caravan**. Its established `stmq/home/blu_ht/state`
+topic is unchanged, so moving the sensor does not require reinstalling the bridge.
+`caravan_temperature` (°C) and `caravan_humidity` (% RH) are recorded and available
+in chart history. Battery and Bluetooth signal strength are live diagnostics only.
+This sensor is not an input to Home learning, its indoor average, or Garage protection.
 
 ## Gateway setup
 
@@ -46,7 +48,9 @@ input to Home learning, its indoor average, or Garage protection.
    Keep any sensor hardware address out of public configuration and Git.
 
 `bluHtScript()` and `bluHtEquipment()` accept a matching `prefix` for additional
-sensors. Each equipment entry also needs its own `id`. These generators do not
+sensors. Each equipment entry also needs its own `id`. The default entry is Caravan air;
+additional sensors can supply `label`, `area`, `temperatureSignal` and
+`humiditySignal` (custom IDs default to their own signal names). These generators do not
 modify device settings or install scripts themselves.
 
 ## Reporting and polling

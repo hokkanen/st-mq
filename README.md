@@ -50,7 +50,9 @@ committed windows and a versioned replay journal. See
 Home and Garage equipment uses explicit `shelly:<prefix>` or `mqtt:<state topic>`
 connections, with public topic defaults and private broker credentials. See
 [MQTT equipment and device setup](docs/mqtt-equipment.md) for garage probes, doors,
-Caravan metering, connection checks and timed switch tests. Independent MQTT feeds
+Caravan metering, air monitoring, connection checks and timed switch tests.
+The [Caravan dehumidifier](docs/caravan-dehumidifier.md) has MQTT controls ready
+for its future bridge and records one combined power/fan state. Independent MQTT feeds
 remain separate; ST-MQ never guesses a protocol or switches sources automatically.
 
 See [indoor temperatures and sensor changes](docs/temperature-sensors.md) for the
@@ -142,7 +144,9 @@ inside Garage's heating configuration. Home shows **Tariff control** directly
 above **Recirculation**, separating a request from confirmed equipment state.
 Connection links end each equipment section. Selection marks sit beside the
 button labels. The equipment inventory includes individual room and protection
-sensors, native heat-pump temperatures, tariff relays and legacy Shelly devices.
+sensors, tariff relays and legacy Shelly devices. The Caravan fold groups air
+temperature and humidity, energy and dehumidifier controls. Native Mitsubishi
+temperatures remain in the heat-pump detail view.
 Held changes during Pause show an amber notice even when the sections are closed;
 changing a paused heating setting opens a confirmation explaining its lifetime.
 With live `providers` or `mqtt` input and configured controls, Normal and Reduced

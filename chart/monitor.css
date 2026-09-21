@@ -907,6 +907,34 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .equipment-switch-buttons > button[aria-pressed="true"] { border-color: var(--chart-indoor); color: var(--chart-indoor); background: color-mix(in srgb, var(--chart-indoor) 8%, transparent); }
 .equipment-switch-buttons > button:disabled { cursor: default; }
 .equipment-control-result { overflow-wrap: anywhere; }
+.caravan-section-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 5px 12px; }
+.caravan-section-heading h5, .caravan-energy-title { margin: 0; font-size: 12px; font-weight: 550; }
+.caravan-section-heading > small { font-size: 10px; }
+.caravan-air { padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--border); }
+.caravan-air-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.caravan-air-metrics dl { min-width: 0; margin: 0; }
+.caravan-air-metrics dt { color: var(--muted); font-size: 11px; }
+.caravan-air-metrics dd { margin: 5px 0 0; font-size: 23px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.caravan-air-metrics strong { font-weight: inherit; }
+.caravan-air-metrics button.status-detail-trigger { font-size: inherit; }
+.caravan-section-status { margin: 10px 0 0; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.caravan-sensor-details { margin-top: 8px; }
+.caravan-sensor-details > summary { padding: 5px 0; color: var(--muted); font-size: 10px; }
+.caravan-sensor-details .equipment-readings { font-size: 10px; }
+.caravan-dehumidifier { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+.caravan-dehumidifier-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; margin-top: 16px; }
+.caravan-setting { display: grid; min-width: 0; gap: 7px; margin: 0; align-content: start; }
+.caravan-setting-label { color: var(--muted); font-size: 11px; }
+.caravan-setting select { box-sizing: border-box; min-width: 0; width: 100%; min-height: 36px; margin: 0; padding: 6px 8px; font-size: 12px; }
+.caravan-setting-swing { grid-column: 1 / -1; }
+.caravan-power-buttons { display: flex; gap: 8px; max-width: 240px; }
+.caravan-power-buttons > button { flex: 1; min-height: 36px; padding: 6px 14px; margin: 0; font-size: 12px; }
+.caravan-power-buttons > button[aria-pressed="true"] { border-color: var(--chart-indoor); color: var(--chart-indoor); background: color-mix(in srgb, var(--chart-indoor) 8%, transparent); }
+.caravan-power-buttons > button:disabled { cursor: default; }
+.caravan-control-help, .caravan-dehumidifier > .equipment-control-result { margin: 12px 0 0; font-size: 10px; line-height: 1.65; }
+@container (max-width: 280px) {
+  .caravan-dehumidifier-controls { grid-template-columns: minmax(0, 1fr); }
+}
 .equipment-cover-buttons { display: flex; flex-wrap: wrap; gap: 6px; max-width: 300px; }
 .equipment-cover-buttons > button { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 1; min-width: 0; min-height: 36px; margin: 0; padding: 6px 24px; font-size: 12px; }
 .equipment-cover-buttons > button[hidden] { display: none; }

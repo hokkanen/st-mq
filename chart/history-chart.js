@@ -10,6 +10,7 @@ import { createChartNavigation } from './chart-navigation.js';
 import { createDetailLoader, viewportTicks } from './chart-viewport.js';
 import { chartBucketWidth, chartDetailRequest, clipChartSeries, selectChartResolution } from './chart-resolution.js';
 import { preparePowerFills, powerFillPlugin } from './power-fill.js';
+import { CARAVAN_RUNNING_STATES } from '../src/domain/history-series.js';
 
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -46,6 +47,11 @@ export function historyValueScales(left, datasets, palette = defaultPalette) {
     left: { type: 'linear', position: 'left', beginAtZero: ['power', 'phases', 'solar_radiation', 'learning_recovery_error'].includes(left), grid: { color: palette.grid }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: leftTitles[left], color: palette.muted } },
     right: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, border: { color: palette.border }, ticks: { color: palette.muted, maxTicksLimit: 7 }, title: { display: true, text: 'Air temperature · °C / Price · c/kWh', color: palette.muted } },
   };
+  if (left === 'caravan_dehumidifier_running_state') {
+    scales.left.min = 0; scales.left.max = 4;
+    scales.left.ticks.stepSize = 1;
+    scales.left.ticks.callback = value => CARAVAN_RUNNING_STATES[value] ?? '';
+  }
   if (left === 'temperatures') {
     // Both sides describe air temperatures in this view. Include every visible
     // curve (also prices) so neither axis clips values or gives equal °C values

@@ -1,15 +1,19 @@
 // Generate a Shelly Gen2 script. Hardware addresses belong in the installed
 // script/private configuration, never in a committed household example.
-export function bluHtEquipment({ id = 'blu_ht', label = 'Shelly BLU H&T', area = 'home', prefix = 'stmq/home/blu_ht' } = {}) {
+export function bluHtEquipment({ id = 'blu_ht', label = 'Caravan air', area = 'garage', prefix = 'stmq/home/blu_ht',
+  temperatureSignal = id === 'blu_ht' ? 'caravan_temperature' : `${id}_temperature`,
+  humiditySignal = id === 'blu_ht' ? 'caravan_humidity' : `${id}_humidity` } = {}) {
   if (!/^[a-z][a-z0-9_]{0,79}$/.test(id) || !['home', 'garage'].includes(area)
     || typeof label !== 'string' || !label.trim() || label.length > 120) throw new Error('Invalid BLU sensor identity');
   validatePrefix(prefix);
-  return { id, label, area, kind: 'temperature', connection: `mqtt:${prefix}/state`,
+  if (![temperatureSignal, humiditySignal].every(value => typeof value === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(value))
+    || temperatureSignal === humiditySignal) throw new Error('Invalid BLU sensor signals');
+  return { id, label, area, kind: 'temperature', signal: temperatureSignal, connection: `mqtt:${prefix}/state`,
     max_age_seconds: 180,
     mqtt: { state_path: 'temperature', timestamp_path: 'timestamp', request_topic: `${prefix}/get`, request_payload: 'status' },
     readings: [
-      { key: 'humidity', label: 'Relative humidity', unit: '%', path: 'humidity', required: true },
-      { key: 'battery', label: 'Battery', unit: '%', path: 'battery' },
+      { key: 'humidity', signal: humiditySignal, label: 'Relative humidity', unit: '%', path: 'humidity', required: true },
+      { key: 'battery', label: 'Battery', unit: '%', path: 'battery', record: false },
       { key: 'rssi', label: 'Bluetooth signal', unit: 'dBm', path: 'rssi', record: false },
     ] };
 }

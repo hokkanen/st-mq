@@ -235,10 +235,10 @@ test('phone tooltip wrapping retains all content within the available canvas wid
   assert(lines.every(line => chart.ctx.measureText(line).width <= chart.width - 52));
 });
 
-test('Caravan energy popups distinguish apportioned partial hourly energy', () => {
+test('Caravan energy popups identify measured interval energy outside heating learning', () => {
   const label = (key, raw) => historyTooltipLabel({ dataset: { key, label: 'Caravan', unit: key === 'caravan_energy' ? 'kWh' : 'A' },
     parsed: { x: 1, y: 1.2 }, raw: { source: 'shelly-mqtt', ...raw } });
-  assert.match(label('caravan_energy', { partialCoverage: true, timeAllocated: true }), /hourly meter energy · partial hour · meter change apportioned across hour boundaries · not used for learning/);
+  assert.match(label('caravan_energy', {}), /meter energy over the recorded interval · not used for learning/);
 });
 
 test('all measured air, liquid and estimated temperatures render bounded cubic curves on either axis', t => {

@@ -34,8 +34,9 @@ const h66 = [
 
 export const H66_HISTORY_SIGNALS = Object.freeze(h66.map(([signal]) => signal));
 export const PHASE_ENERGY_SIGNALS = Object.freeze(['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_energy_l${phase}`)));
-export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy']);
+export const ENERGY_SIGNALS = Object.freeze([...PHASE_ENERGY_SIGNALS, 'ev2_energy', 'caravan_energy']);
 export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
+export const CARAVAN_RUNNING_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Auto' });
 export const SESSION_CHECK_INFO = Object.freeze({
   ev1_session_energy_check: { label: 'Charger 1', source: 'easee', color: 'ev', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
     detail: 'Final session electricity reading; each point represents one completed session' },
@@ -47,7 +48,10 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['indoor_temperature', { label: 'Upstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['downstairs_temperature', { label: 'Downstairs', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
   ['bedroom_temperature', { label: 'Bedroom', unit: '°C', group: 'Home temperatures', role: 'House input', kind: 'Recorded' }],
-  ['caravan_energy', { label: 'Caravan hourly energy', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Completed hourly totals from the meter counter; partial hours retain measured coverage, excluded from learning' }],
+  ['caravan_energy', { label: 'Caravan energy per interval', unit: 'kWh', group: 'Electricity', role: 'History only', kind: 'Recorded', detail: 'Measured meter-counter increments over adaptive recording intervals; excluded from house and garage learning' }],
+  ['caravan_temperature', { label: 'Caravan air temperature', unit: '°C', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU air temperature; excluded from house and garage learning' }],
+  ['caravan_humidity', { label: 'Caravan relative humidity', unit: '%', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Shelly BLU relative humidity; battery and Bluetooth signal remain live details' }],
+  ['caravan_dehumidifier_running_state', { label: 'Caravan dehumidifier running state', unit: 'state', group: 'Caravan', role: 'History only', kind: 'Recorded', detail: 'Reported Off, Low, Medium, High or Auto; missing reports remain gaps, commands do not create readings' }],
   ['garage_temperature_2', { label: 'Garage front temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded', detail: 'Front pipe-location sensor; separate exposure and garage learning input' }],
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
@@ -133,7 +137,7 @@ const basic = [
 
 export const HISTORY_AXES = Object.freeze([
   ...basic.map(([key, label, group, signals, unit, kind]) => ({ key, label, group, signals, unit, kind })),
-  ...Object.entries(SIGNAL_INFO).filter(([signal]) => !ENERGY_SIGNALS.includes(signal)).map(([signal, info]) => ({
+  ...Object.entries(SIGNAL_INFO).filter(([signal]) => !ENERGY_SIGNALS.includes(signal) || signal === 'caravan_energy').map(([signal, info]) => ({
     key: signal === 'heating_integral' ? 'integral' : signal, ...info, signals: [signal],
   })),
   ...Object.entries({ ...GARAGE_INPUT_INFO, ...GARAGE_COEFFICIENT_INFO }).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
@@ -142,4 +146,4 @@ export const HISTORY_AXES = Object.freeze([
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);

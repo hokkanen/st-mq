@@ -439,7 +439,7 @@ test('Caravan instantaneous values and tariff/garage relay states stay live with
   assert.equal(f.store.observations({ signal: 'garage_temperature' }).length, 1);
 });
 
-test('generic Caravan state/current/power remain runtime-only while completed hourly energy persists', t => {
+test('generic Caravan state/current/power remain runtime-only while adaptive measured energy persists', t => {
   const f = fixture(t, [{ id: 'caravan', kind: 'metered_switch', connection: 'mqtt:invented/generic-caravan' }]);
   const ingested = [], ingest = f.engine.ingest;
   f.engine.ingest = observation => { ingested.push(observation.signal); ingest(observation); };
@@ -450,8 +450,11 @@ test('generic Caravan state/current/power remain runtime-only while completed ho
   f.capture.receive('invented/generic-caravan', JSON.stringify({ value: true, power: 0.6, current: 2.6, energy: 1.01 }));
   assert.deepEqual(ingested, []);
   assert.equal(f.capture.status().devices[0].readings.caravan_power.value, 0.6);
-  const hourly = f.store.observations({ signal: 'caravan_energy' }); assert.equal(hourly.length, 1);
-  assert(Math.abs(hourly[0].value - 0.01) < 1e-9);
+  const intervals = f.store.observations({ signal: 'caravan_energy' }); assert.equal(intervals.length, 1);
+  assert(Math.abs(intervals[0].value - 0.01) < 1e-9);
+  assert.equal(intervals[0].raw.intervalStart, initial + 3_540_000);
+  assert.equal(intervals[0].raw.intervalEnd, initial + 3_600_000);
+  assert.equal(intervals[0].raw.basis, 'meter-counter-delta');
 });
 
 test('retained room replay cannot replace a genuine live reading or alter its deadline', t => {

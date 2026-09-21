@@ -231,42 +231,6 @@
           "readings": []
         },
         {
-          "id": "blu_ht",
-          "label": "Shelly BLU H&T",
-          "area": "home",
-          "kind": "temperature",
-          "connection": "mqtt:stmq/home/blu_ht/state",
-          "max_age_seconds": 180,
-          "mqtt": {
-            "state_path": "temperature",
-            "timestamp_path": "timestamp",
-            "request_topic": "stmq/home/blu_ht/get",
-            "request_payload": "status"
-          },
-          "readings": [
-            {
-              "key": "humidity",
-              "label": "Relative humidity",
-              "unit": "%",
-              "path": "humidity",
-              "required": true
-            },
-            {
-              "key": "battery",
-              "label": "Battery",
-              "unit": "%",
-              "path": "battery"
-            },
-            {
-              "key": "rssi",
-              "label": "Bluetooth signal",
-              "unit": "dBm",
-              "path": "rssi",
-              "record": false
-            }
-          ]
-        },
-        {
           "id": "heat_savings",
           "label": "Tariff control",
           "area": "home",
@@ -313,8 +277,47 @@
           "max_age_seconds": 120
         },
         {
+          "id": "blu_ht",
+          "label": "Caravan air",
+          "area": "garage",
+          "kind": "temperature",
+          "connection": "mqtt:stmq/home/blu_ht/state",
+          "max_age_seconds": 180,
+          "mqtt": {
+            "state_path": "temperature",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/home/blu_ht/get",
+            "request_payload": "status"
+          },
+          "readings": [
+            {
+              "key": "humidity",
+              "label": "Relative humidity",
+              "unit": "%",
+              "path": "humidity",
+              "required": true,
+              "signal": "caravan_humidity"
+            },
+            {
+              "key": "battery",
+              "label": "Battery",
+              "unit": "%",
+              "path": "battery",
+              "record": false
+            },
+            {
+              "key": "rssi",
+              "label": "Bluetooth signal",
+              "unit": "dBm",
+              "path": "rssi",
+              "record": false
+            }
+          ],
+          "signal": "caravan_temperature"
+        },
+        {
           "id": "caravan",
-          "label": "Caravan",
+          "label": "Caravan energy",
           "area": "garage",
           "kind": "metered_switch",
           "connection": "shelly:stmq/garage/caravan",
@@ -366,6 +369,25 @@
           },
           "readings": [],
           "cover_control": true
+        },
+        {
+          "id": "caravan_dehumidifier",
+          "label": "Caravan dehumidifier",
+          "area": "garage",
+          "kind": "dehumidifier",
+          "connection": "mqtt:stmq/garage/caravan_dehumidifier/state",
+          "signal": "caravan_dehumidifier_running_state",
+          "enabled": true,
+          "dehumidifier_control": true,
+          "max_age_seconds": 180,
+          "mqtt": {
+            "timestamp_path": "timestamp",
+            "command_topic": "stmq/garage/caravan_dehumidifier/set",
+            "request_topic": "stmq/garage/caravan_dehumidifier/get",
+            "request_payload": "{}",
+            "availability_topic": "stmq/garage/caravan_dehumidifier/availability"
+          },
+          "readings": []
         }
       ]
     },
@@ -636,7 +658,7 @@
           "id": "str",
           "label": "str?",
           "area": "list(home|garage)",
-          "kind": "list(temperature|switch|metered_switch|door|power)",
+          "kind": "list(temperature|switch|metered_switch|door|power|dehumidifier)",
           "connection": "str",
           "enabled": "bool?",
           "signal": "str?",
@@ -682,7 +704,8 @@
             "stop_payload": "str?",
             "cover_state_path": "str?"
           },
-          "cover_control": "bool?"
+          "cover_control": "bool?",
+          "dehumidifier_control": "bool?"
         }
       ]
     },

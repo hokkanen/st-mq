@@ -1,12 +1,14 @@
-// These channels are live equipment details, retired duplicate feeds, or an
-// uninstalled sensor. None belongs in recorded telemetry or chart datasets.
+// Live equipment details and retired duplicate feeds do not belong in recorded
+// telemetry. Caravan monitoring has an explicit, small history contract.
 const LIVE_ONLY = new Set(['caravan_active', 'caravan_power', 'caravan_current',
-  'heat_savings_active', 'garage_relay_active']);
+  'heat_savings_active', 'garage_relay_active', 'blu_ht_battery', 'blu_ht_rssi']);
 const RETIRED = new Set(['garage_temperature_ha']);
+const CARAVAN_RECORDED = new Set(['caravan_energy', 'caravan_temperature', 'caravan_humidity',
+  'caravan_dehumidifier_running_state']);
 
 export function isRecordedDataset({ source, signal }) {
   return !LIVE_ONLY.has(signal) && !RETIRED.has(signal)
-    && !(signal?.startsWith('caravan_') && signal !== 'caravan_energy')
+    && !(signal?.startsWith('caravan_') && !CARAVAN_RECORDED.has(signal))
     && !signal?.startsWith('garage_heat_pump_')
     && source !== 'mqtt-temperature-ha'
     && !(source === 'husdata-h66' && signal === 'indoor_temperature');
@@ -16,7 +18,7 @@ export function isRecordedDataset({ source, signal }) {
  * rather than hiding it in the UI. Imported history and the immutable learning
  * journal remain intact. Run before constructing the engine or chart readers. */
 export function pruneRetiredDatasets(store) {
-  const marker = 'recorded-datasets:equipment-cleanup:v1';
+  const marker = 'recorded-datasets:equipment-cleanup:v2';
   if (store.getState(marker)) return { observations: 0, coverage: 0, metrics: 0, states: 0 };
   return store.transaction(() => {
     const streams = store.db.prepare(`SELECT DISTINCT source,device,signal FROM observations WHERE import_id IS NULL

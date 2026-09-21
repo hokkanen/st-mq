@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createEquipmentActions, createEquipmentPanel, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
 import { historyDatasets, historyValueLabel } from '../chart/history-model.js';
 import { providerName } from '../chart/provider-status.js';
+import { DEHUMIDIFIER_OPTIONS, dehumidifierControlAllowed, dehumidifierResult } from '../chart/caravan.js';
 
 const now = Date.parse('2026-09-13T12:00:00Z');
 const plug = { id: 'caravan', label: 'Caravan', area: 'garage', kind: 'metered_switch', source: 'MQTT-shelly',
@@ -327,7 +328,7 @@ test('temperature-only equipment exposes every reading without an empty fold and
   assert(caravan.querySelector('.equipment-inline-controls'), 'Equipment with controls remains expandable');
 });
 
-test('temperature groups show all probes directly, including Mitsubishi inventory readings', () => {
+test('temperature groups show all probes directly without a duplicate Mitsubishi temperature card', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   panel.update(status({ equipment: { devices: [{ id: 'temperature-group', label: 'Garage temperatures', area: 'garage', kind: 'temperature',
     available: true, readings: Object.fromEntries([8.2, 11.3, 13.4].map((value, index) => [`probe_${index}`,
@@ -338,8 +339,7 @@ test('temperature groups show all probes directly, including Mitsubishi inventor
   assert.deepEqual(descendants(row).filter(node => node.classList.contains('status-detail-label')).map(node => node.textContent),
     ['8.2 °C', '11.3 °C', '13.4 °C']);
   const native = deviceNode(document, 'garage-equipment-readings', 'inventory:garage-pump-temperatures');
-  assert.equal(native.tagName, 'SECTION'); assert.match(native.textContent, /16.5 °C/);
-  assert.equal(native.querySelector('summary'), null);
+  assert.equal(native, undefined);
 });
 
 test('vehicle connections identify TeslaMate and update a generic route to the reported BMW feed', () => {
@@ -368,4 +368,105 @@ test('vehicle connections identify TeslaMate and update a generic route to the r
   assert.match(generic.textContent, /fixture\/charger1\/vehicle/);
   assert.equal(descendants(document.getElementById('equipment-connections'))
     .filter(node => node.dataset.deviceId === 'connection:charger1-vehicle:other').length, 1);
+});
+
+const caravanAir = () => ({ id: 'blu_ht', label: 'Caravan air', area: 'garage', kind: 'temperature', available: true,
+  readings: { caravan_temperature: { label: 'Temperature', value: 14.1, unit: 'degC', observedAt: now, stale: false },
+    caravan_humidity: { label: 'Relative humidity', value: 63, unit: '%', observedAt: now, stale: false },
+    blu_ht_battery: { label: 'Battery', value: 100, unit: '%', observedAt: now, stale: false },
+    blu_ht_rssi: { label: 'Bluetooth signal', value: -81, unit: 'dBm', observedAt: now, stale: false } } });
+const dehumidifier = (live = false) => ({ id: 'caravan_dehumidifier', label: 'Caravan dehumidifier', area: 'garage',
+  kind: 'dehumidifier', available: live, controls: { dehumidifier: true }, readings: {},
+  dehumidifier: { available: live, state: live ? { power: 'off', mode: 'auto', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' } : {},
+    runningState: live ? 'off' : null, operation: null } });
+
+test('Caravan groups air and pending dehumidifier with energy, preserving disclosure and showing only reported values', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  const initial = status({ equipment: { devices: [caravanAir(), { ...plug, label: 'Caravan energy' }, dehumidifier()] } });
+  panel.update(initial);
+  const caravan = deviceNode(document, 'garage-equipment-readings', 'caravan');
+  assert.equal(caravan.children[0].querySelector('h4').textContent, 'Caravan');
+  assert.match(caravan.querySelector('.equipment-device-preview').textContent, /14.1 °C · 63 % · 0.28 kW/);
+  assert.equal(deviceNode(document, 'garage-equipment-readings', 'blu_ht'), undefined);
+  assert.equal(deviceNode(document, 'home-equipment-readings', 'blu_ht'), undefined);
+  const air = caravan.querySelector('.caravan-air');
+  assert.equal(air.querySelector('.caravan-air-metrics').textContent, 'Temperature14.1 °CRelative humidity63 %');
+  assert.match(air.querySelector('.caravan-sensor-details').textContent, /Battery100 %Bluetooth signal-81 dBm/);
+  const appliance = caravan.querySelector('.caravan-dehumidifier');
+  assert.match(appliance.textContent, /electriQ DESD8LW.*Awaiting first MQTT report/);
+  assert(descendants(appliance).filter(node => ['SELECT', 'BUTTON'].includes(node.tagName)).every(node => node.disabled));
+  assert.deepEqual(DEHUMIDIFIER_OPTIONS.targetHumidity.map(option => option[0]), [35, 40, 45, 50, 55, 60, 65, 70, 75, 80]);
+  caravan.open = true;
+  const next = structuredClone(initial); next.equipment.devices[2] = dehumidifier(true); panel.update(next);
+  assert.equal(deviceNode(document, 'garage-equipment-readings', 'caravan'), caravan); assert.equal(caravan.open, true);
+  const fan = descendants(appliance).find(node => node.dataset.setting === 'fanSpeed');
+  assert.equal(fan.disabled, false); assert.equal(fan.value, 'low');
+  const liveDevice = next.equipment.devices[2];
+  liveDevice.dehumidifier.operation = { setting: 'fanSpeed', value: 'high', requestedAt: now, status: 'published' };
+  panel.update(next);
+  assert.equal(fan.value, 'low', 'Publishing a command cannot overwrite a reported setting');
+  assert.equal(fan.disabled, true, 'Pending delivery prevents conflicting requests');
+  assert.match(appliance.querySelector('.equipment-control-result').textContent, /High requested.*awaiting device report/);
+  liveDevice.dehumidifier.state.fanSpeed = 'high'; liveDevice.dehumidifier.operation.status = 'observed'; panel.update(next);
+  assert.equal(fan.value, 'high'); assert.equal(fan.disabled, false);
+  assert.match(appliance.querySelector('.equipment-control-result').textContent, /device reported/);
+  liveDevice.dehumidifier.available = false;
+  panel.update({ ...next, role: 'replica' }); assert.equal(fan.disabled, true);
+  assert.equal(fan.value, 'high', 'Read-only authority cannot hide healthy reported settings');
+  assert.match(appliance.querySelector('.caravan-control-help').textContent, /primary computer/);
+  next.equipment.devices[0].readings.caravan_temperature.stale = true; next.equipment.devices[0].available = false;
+  liveDevice.available = false; liveDevice.dehumidifier.available = false; panel.update(next);
+  assert.equal(fan.value, '', 'Stale settings cannot look live');
+  assert.match(air.querySelector('.caravan-air-metrics').textContent, /TemperatureUnavailableRelative humidity63 %/);
+});
+
+test('Caravan air and dehumidifier remain grouped when the energy device is absent or disabled', () => {
+  const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
+  panel.update(status({ equipment: { devices: [caravanAir(), dehumidifier()] } }));
+  const caravan = deviceNode(document, 'garage-equipment-readings', 'caravan');
+  assert(caravan); assert.equal(caravan.querySelector('.caravan-air').hidden, false);
+  assert.equal(caravan.querySelector('.equipment-inline-controls').hidden, true);
+  panel.update(status({ equipment: { devices: [{ ...plug, enabled: false }, caravanAir()] } }));
+  assert.equal(deviceNode(document, 'garage-equipment-readings', 'caravan'), caravan);
+  assert.equal(caravan.querySelector('.caravan-dehumidifier').hidden, true);
+});
+
+test('dehumidifier commands validate allowed values, require live authority and preserve telemetry until a report arrives', async () => {
+  const device = dehumidifier(true), calls = []; let resolve;
+  const initial = status({ equipment: { devices: [device] } });
+  const actions = createEquipmentActions({ request: (path, body) => { calls.push({ path, body }); return new Promise(done => { resolve = done; }); } });
+  actions.update(initial);
+  for (const [setting, value] of [['power', true], ['targetHumidity', 34], ['targetHumidity', 52], ['fanSpeed', 'off'], ['__proto__', 'off'], ['topic', 'invented/set']])
+    assert.equal(await actions.dehumidifier(device.id, setting, value), false);
+  assert.equal(await actions.dehumidifier('missing', 'power', 'on'), false);
+  const pending = actions.dehumidifier(device.id, 'power', 'on');
+  assert.equal(await actions.dehumidifier(device.id, 'mode', 'heater'), false);
+  assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier', body: { deviceId: device.id, setting: 'power', value: 'on' } }]);
+  resolve(initial); await pending;
+  assert.equal(actions.snapshot().status.equipment.devices[0].dehumidifier.state.power, 'off');
+  for (const unavailable of [{ ...initial, role: 'replica' }, { ...initial, role: 'protected' }, { ...initial, role: 'transition' },
+    { ...initial, pairing: { enabled: true, role: 'primary', canControl: false } }]) {
+    actions.update(unavailable); assert.equal(await actions.dehumidifier(device.id, 'power', 'on'), false);
+  }
+  assert.equal(dehumidifierControlAllowed(initial, dehumidifier()), false);
+  assert.equal(dehumidifierControlAllowed(initial, { ...device, controls: {} }), false);
+  assert.equal(dehumidifierControlAllowed(initial, { ...device, enabled: false }), false);
+  device.dehumidifier.operation = { setting: 'power', value: 'on', requestedAt: now, status: 'unconfirmed' };
+  assert.match(dehumidifierResult(device, now), /no confirming device report/);
+  assert.equal(dehumidifierResult(device, now + 60_000), '');
+});
+
+test('equipment readings honor categorical state labels and never coerce unknown running states to Off', () => {
+  const device = { kind: 'dehumidifier', available: true, readings: { caravan_dehumidifier_running_state: {
+    label: 'Running state', unit: 'state', observedAt: now, stale: false,
+    stateLabels: { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Auto' },
+  } } };
+  const reading = device.readings.caravan_dehumidifier_running_state;
+  for (const [value, expected] of [[0, 'Off'], [1, 'Low'], [2, 'Medium'], [3, 'High'], [4, 'Auto'],
+    [5, 'Unknown'], [null, 'Unknown'], [false, 'Unknown'], ['0', 'Unknown']]) {
+    reading.value = value; assert.equal(equipmentReadingRows(device)[0].value, expected);
+  }
+  reading.value = 2; reading.stale = true;
+  assert.equal(equipmentReadingRows(device)[0].value, 'Unknown');
+  assert.match(equipmentReadingRows(device)[0].detail, /Last reported Medium/);
 });

@@ -68,9 +68,7 @@ export function historyTooltipLabel(item) {
   else if (key.startsWith('learning_')) details.push('model assessment');
   else if (key === 'heat_pump_power') details.push('reconstructed estimate');
   else if (key === 'caravan_energy') {
-    details.push('hourly meter energy');
-    if (raw.partialCoverage || raw.partial || raw.quality?.includes('partial-coverage')) details.push('partial hour');
-    if (raw.timeAllocated) details.push('meter change apportioned across hour boundaries');
+    details.push('meter energy over the recorded interval');
   }
   else if (raw.equivalentCurrent) details.push('interval average', 'equivalent at 230 V');
   else if (['property_power', 'charger_power', 'charger2_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');

@@ -1,7 +1,7 @@
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
-import { HISTORY_AXES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
+import { HISTORY_AXES, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, SIGNAL_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 // Calendar navigation always refers to the house, regardless of browser timezone.
 const calendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' });
 const hourInFinland = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', hourCycle: 'h23' });
@@ -87,7 +87,10 @@ const seriesInfo = {
   property_power: ['Property', 'kW · interval average from recorded energy; older history uses 230 V × current', 'property'],
   charger_power: ['Charger 1', 'kW · interval average from recorded energy; older history uses 230 V × current', 'ev', 'fill'],
   charger2_power: ['Charger 2', 'kW · interval average from recorded total energy; phase distribution unknown', 'ev2', 'fill'],
-  caravan_energy: ['Caravan energy', 'kWh · hourly accumulated meter energy', 'garage'],
+  caravan_energy: ['Caravan energy', 'kWh · measured meter energy over the recorded interval', 'garage'],
+  caravan_temperature: ['Caravan air', '°C', 'garage'],
+  caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
+  caravan_dehumidifier_running_state: ['Caravan dehumidifier', 'state · reported running state', 'garage'],
   ev2_energy: ['Charger 2 total energy', 'kWh · estimated from TeslaMate charging power over the recorded interval', 'ev2'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
   tesla_session_energy_check: ['Charger 2', 'kWh · finalized session energy added to the battery', 'ev2', 'session'],
@@ -147,6 +150,7 @@ export function leftAxisAvailability(datasets) {
 }
 
 export function historyStateLabel(key, value) {
+  if (key === 'caravan_dehumidifier_running_state') return CARAVAN_RUNNING_STATES[value] ?? 'Unknown';
   if (/^garage_door[12]_open$/.test(key)) return value === 1 ? 'Open' : value === 0 ? 'Closed' : `Unknown (${value})`;
   if (key === 'operating_mode') return operationModes[value] ?? `Unknown mode (${value})`;
   if (['controller_phase', 'model_controller_phase'].includes(key))
@@ -179,7 +183,7 @@ export function sessionPointDetail(point = {}) {
 }
 
 // Learning and H66 output have their own bounded/recorded-state semantics.
-const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'];
+const heldReadingKeys = ['property_power', 'charger_power', 'charger2_power', ...leftGroups.phases, 'heating_integral', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature', 'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_running_state'];
 
 /** Advance display tails without changing source timestamps or cached history. */
 export function historySeriesAt(payload, now = payload.now) {
@@ -191,6 +195,7 @@ export function historySeriesAt(payload, now = payload.now) {
     const points = series[key];
     const last = meta.lastReadings?.[key] ?? points.at(-1);
     if (!last || !Number.isFinite(last.x) || !Number.isFinite(last.y) || last.x > now) continue;
+    if (key.startsWith('caravan_') && !last.periodicCoverage) continue;
     // Explicit missing/invalid readings remain breaks, even if older metadata
     // was paired with a newer series. Never bridge a missing final sample.
     const end = points.at(-1);

@@ -202,3 +202,14 @@ test('configured vehicle feeds retain independent names before reports and follo
   assert.equal(starting.label, 'BMW'); assert.equal(equipmentSource(starting), 'BMW CarData');
   assert.equal(equipmentConnectionSummary(starting).label, 'Awaiting subscription');
 });
+
+test('Garage MQTT order puts heat pump and temperatures before Caravan air, energy and both doors', () => {
+  const devices = [
+    { id: 'door2', kind: 'door' }, { id: 'caravan_dehumidifier', kind: 'dehumidifier' }, { id: 'caravan', kind: 'metered_switch' },
+    { id: 'blu_ht', kind: 'temperature' }, { id: 'door1', kind: 'door' }, { id: 'garage-probes', kind: 'temperature' },
+  ].map(device => ({ ...device, area: 'garage', topics: [] }));
+  const rows = equipmentConnections({ equipment: { devices, topicGroups: [{ id: 'garage-adapter',
+    topics: [{ role: 'Status', topic: 'invented/pump/state', direction: 'subscribe' }] }] } });
+  assert.deepEqual(rows.filter(device => device.area === 'garage').map(device => device.id),
+    ['connection:garage-adapter:garage', 'garage-probes', 'blu_ht', 'caravan', 'door1', 'door2', 'caravan_dehumidifier']);
+});

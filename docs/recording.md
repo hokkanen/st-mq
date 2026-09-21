@@ -879,3 +879,20 @@ provider state. **Revert and relearn** runs in the background and preserves both
 the original maintenance event and its reversal. See
 [temperature sensors](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)
 for the indoor and outdoor maintenance controls, confirmation and rebuild status.
+
+## Caravan monitoring
+
+Caravan temperature and relative humidity are separate recorded Shelly BLU H&T
+series with the configured source deadline; battery and Bluetooth signal strength
+remain live-only. One categorical dehumidifier series combines reported power and
+fan setting: Off, Low, Medium, High or Auto. Unknown/offline data stays a gap;
+commands and other dehumidifier settings are not recorded as measurements.
+
+Caravan energy uses the same adaptive interval recorder as property and charging
+energy. Its input is the measured difference between successive meter counters,
+not an estimate from watts. The recorder chooses interval lengths from changes in
+the measured interval power and the shared recording budget/maximum spacing.
+All measured increments are conserved when compacted. First reports establish a
+baseline; counter resets, excessive gaps and implausible jumps interrupt coverage.
+Pending increments are checkpointed with the counter and daily total. Caravan
+measurements do not enter either heating learner.

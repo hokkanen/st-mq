@@ -2,10 +2,11 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
+import { createCaravanContents, dehumidifierControlAllowed, dehumidifierValueAllowed } from './caravan.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Switch' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Switch' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const RESULT_NOTICE_MS = 60_000;
 const recentResult = (at, now) => !Number.isFinite(now)
@@ -69,7 +70,7 @@ export function equipmentDevices(status = {}) {
   return [...devices.values()];
 }
 
-/** Public observations also contain legacy room feeds and garage pump temperatures.
+/** Public observations also contain legacy room feeds.
  * These views have no control or connection-check route of their own. */
 export function equipmentInventory(status = {}) {
   const now = status.now ?? Date.now(), observations = status.observations ?? {};
@@ -117,17 +118,6 @@ export function equipmentInventory(status = {}) {
     append(`sensor:${signal}`, `${sensor?.label ?? TEMPERATURE_SENSORS[signal]} temperature`, garage ? 'garage' : 'home', source,
       { [signal]: sensorReading(signal, reading ?? {}, 'Temperature') });
   }
-  const garageReadings = {};
-  for (const [signal, label] of [['garage_native_indoor_temperature', 'Pump indoor'], ['garage_native_outdoor_temperature', 'Pump outdoor']]) {
-    const reading = status.garage?.adapter?.telemetry?.[signal];
-    if (!reading?.supported || represented.has(signal)) continue;
-    const usable = reading.usable === true && Number.isFinite(reading.value);
-    garageReadings[signal] = { ...reading, label, unit: 'degC', observedAt: reading.sourceTime,
-      displayStatus: { usable, attention: !usable, detail: usable
-        ? `Reported by the Mitsubishi heat pump${Number.isFinite(reading.sourceTime) ? ` · ${clock.format(reading.sourceTime)}` : ''}.`
-        : 'The Mitsubishi temperature reading is unavailable or not qualified for use.' } };
-  }
-  append('garage-pump-temperatures', 'Mitsubishi temperatures', 'garage', 'Mitsubishi', garageReadings);
   return inventory;
 }
 const isState = (signal, reading) => reading.unit === 'state' || /_(active|open)$/.test(signal) || typeof reading.value === 'boolean';
@@ -135,6 +125,11 @@ const stateNumber = value => value === true || value === 'open' || value === 'on
   : value === false || value === 'closed' || value === 'off' ? 0 : value;
 function valueText(signal, reading, device) {
   const value = stateNumber(reading.value);
+  if (reading.stateLabels && typeof reading.stateLabels === 'object') {
+    const label = Number.isInteger(reading.value) && Object.hasOwn(reading.stateLabels, reading.value)
+      ? reading.stateLabels[reading.value] : null;
+    return typeof label === 'string' && label.length > 0 && label.length <= 80 ? label : 'Unknown';
+  }
   if (isState(signal, reading) && device.kind === 'floor_override') return value === 1 ? 'Override on' : value === 0 ? 'Thermostat control' : 'Unknown';
   if (isState(signal, reading)) return value === 1 ? device.kind === 'door' || signal.endsWith('_open') ? 'Open' : 'On'
     : value === 0 ? device.kind === 'door' || signal.endsWith('_open') ? 'Closed' : 'Off' : 'Unknown';
@@ -188,7 +183,8 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
   const emit = () => onChange(snapshot());
   async function send(path, body, success) {
     if (!status || isReadOnlyReplica(status) || busy) return false;
-    actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control' : path.endsWith('/cover') ? 'cover' : 'test';
+    actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control'
+      : path.endsWith('/dehumidifier') ? 'dehumidifier' : path.endsWith('/cover') ? 'cover' : 'test';
     actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
     messageAt = status.now ?? Date.now();
     busy = true; error = false; message = path.endsWith('/recheck') ? 'Checking configured connections…' : 'Applying request…';
@@ -210,7 +206,8 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
         const device = next.equipment?.devices?.find(device => device.id === actionDeviceId);
         const reading = equipmentStateReading(device, next.now);
         const latest = actionKind === 'control' ? next.equipmentControls?.lastResult
-          : actionKind === 'cover' ? device?.cover?.operation : null;
+          : actionKind === 'cover' ? device?.cover?.operation
+            : actionKind === 'dehumidifier' ? device?.dehumidifier?.operation : null;
         const reported = reading && reading.observedAt > messageAt
           && (actionKind === 'control' || actionKind === 'cover' && ['open', 'closed'].includes(reading.coverState));
         const returned = latest && (latest.at ?? latest.requestedAt) >= messageAt;
@@ -235,6 +232,11 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);
       if (!equipmentCoverAllowed(status, device, action, busy)) return Promise.resolve(false);
       return send('/api/equipment/cover', { deviceId, action }, 'Door request sent. Check the reported state.');
+    },
+    dehumidifier(deviceId, setting, value) {
+      const device = status?.equipment?.devices?.find(device => device.id === deviceId);
+      if (!dehumidifierControlAllowed(status, device, busy) || !dehumidifierValueAllowed(setting, value)) return Promise.resolve(false);
+      return send('/api/equipment/dehumidifier', { deviceId, setting, value }, 'Request sent; awaiting a live device report.');
     },
     test(deviceId, on, durationMinutes) {
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);
@@ -491,10 +493,16 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     }
   }
   // Stable sorting keeps room temperatures in their configured order.
-  const order = row => row.kind === 'floor_override' ? 6 : row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
+  const order = row => row.area === 'garage' ? garageEquipmentOrder(row) : row.kind === 'floor_override' ? 6 : row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
     : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2
       : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 3 : 4;
   return rows.sort((a, b) => order(a) - order(b));
+}
+
+function garageEquipmentOrder(device) {
+  return device.kind === 'heat_pump' ? 0 : device.id === 'blu_ht' ? 2 : device.kind === 'temperature' ? 1
+    : device.id === 'caravan' ? 3 : device.kind === 'door' ? 4 + Number(device.id.match(/door([12])$/)?.[1] ?? 0) / 10
+      : device.kind === 'dehumidifier' ? 5 : 6;
 }
 
 export function dhwrReadingSummary(status) {
@@ -583,15 +591,21 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         coverHelp.id = `equipment-cover-${device.id}-help`;
         coverResult.setAttribute('role', 'status'); coverResult.setAttribute('aria-live', 'polite');
         coverControls.append(coverButtons, coverHelp, coverResult);
+        const caravan = device.id === 'caravan' ? createCaravanContents({ document, actions, blocked,
+          readingsFor: equipmentReadingRows, summaryFor: equipmentConnectionSummary }) : null;
+        const energyTitle = make('h5', 'Energy', 'caravan-energy-title');
         heading.append(title, metadata); health.append(source, recent);
         if (staticReadings) {
           summary.append(heading, health, list, empty); section.append(summary);
         } else {
           summary.append(heading, preview, health);
-          body.append(list, empty, controls, coverControls); section.append(summary, body);
+          if (caravan) body.append(caravan.air, energyTitle);
+          body.append(list, empty, controls, coverControls);
+          if (caravan) body.append(caravan.dehumidifier);
+          section.append(summary, body);
         }
         node = { section, staticReadings, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
-          coverControls, coverButtons, coverActions, coverHelp, coverResult, rows: new Map() }; readingNodes.set(device.id, node);
+          coverControls, coverButtons, coverActions, coverHelp, coverResult, caravan, energyTitle, rows: new Map() }; readingNodes.set(device.id, node);
       }
       if (root.children[index] !== node.section) {
         // Moving a details element preserves its open state. Keep keyboard focus
@@ -611,6 +625,21 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.preview.textContent = rows.slice(0, 2).map(row => `${rows.length > 1 || device.kind === 'heat_pump' ? `${row.label}: ` : ''}${row.value}${row.qualifier ? ` (${row.qualifier})` : ''}`).join(' · ');
       node.preview.hidden = !rows.length;
       node.empty.hidden = rows.length > 0; node.list.hidden = !rows.length;
+      if (node.caravan) {
+        const garageDevices = status.equipment?.devices?.filter(device => device.area === 'garage' && device.enabled !== false) ?? [];
+        const air = garageDevices.find(device => device.id === 'blu_ht'), dehumidifier = garageDevices.find(device => device.id === 'caravan_dehumidifier');
+        node.caravan.update(snapshot, air, dehumidifier);
+        node.title.textContent = 'Caravan';
+        node.metadata.textContent = [air ? 'Air' : null, rows.length ? 'Energy' : null, dehumidifier ? 'Dehumidifier' : null].filter(Boolean).join(' · ');
+        node.energyTitle.hidden = !rows.length || !air && !dehumidifier;
+        if (air) {
+          const airRows = equipmentReadingRows(air).filter(row => /(?:^|_)(?:temperature|humidity)$/.test(row.signal));
+          const power = rows.find(row => row.signal === 'caravan_power');
+          node.preview.textContent = [...airRows.map(row => row.value), ...(power ? [power.value] : [])].join(' · ');
+          node.preview.hidden = !node.preview.textContent;
+        }
+        if (!rows.length) { node.empty.hidden = true; node.source.textContent = ''; node.recent.textContent = ''; }
+      }
       for (const [index, row] of rows.entries()) {
         let cells = node.rows.get(row.signal);
         if (!cells) {
@@ -695,11 +724,15 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     if (!status) return;
     const devices = equipmentDevices(status), inventory = equipmentInventory(status), active = status.equipmentTests?.active;
     const connections = equipmentConnections(status, devices, inventory);
+    const isCaravanMember = device => device.area === 'garage' && ['blu_ht', 'caravan_dehumidifier'].includes(device.id);
+    if (inventory.some(isCaravanMember) && !inventory.some(device => device.id === 'caravan')) inventory.push({
+      id: 'caravan', label: 'Caravan', area: 'garage', kind: 'caravan_group', readings: {}, controls: {}, available: true, inventoryOnly: true,
+    });
     const readOnly = isReadOnlyReplica(status), locked = busy || blocked();
     for (const area of ['home', 'garage']) {
       const members = inventory.filter(device => device.area === area);
-      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId)
-        .sort((a, b) => area === 'garage' ? Number(b.kind === 'temperature') - Number(a.kind === 'temperature') : 0), snapshot);
+      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId && !isCaravanMember(device))
+        .sort((a, b) => area === 'garage' ? garageEquipmentOrder(a) - garageEquipmentOrder(b) : 0), snapshot);
       if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'No garage devices enabled.', 'muted equipment-empty'));
       const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available || device.needsAttention).length;
       if (overview) {

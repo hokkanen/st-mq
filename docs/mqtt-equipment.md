@@ -47,7 +47,7 @@ the complete public list; arrays are not merged by device ID.
       },
       {
         "id": "caravan",
-        "label": "Caravan",
+        "label": "Caravan energy",
         "area": "garage",
         "kind": "metered_switch",
         "connection": "shelly:stmq/garage/caravan",
@@ -67,12 +67,14 @@ the complete public list; arrays are not merged by device ID.
 
 Use a stable device `id` and signal names so changing a display label does not
 create a new history series. Device kinds are `temperature`, `door`, `switch`,
-`metered_switch` and MQTT-only `power`. The kind describes the readings; write access
-requires `switch_control: true`, `cover_control: true` for a door, or
+`metered_switch`, MQTT-only `power` and `dehumidifier`. The kind describes the readings; write access
+requires `switch_control: true`, `cover_control: true` for a door,
+`dehumidifier_control: true` for a dehumidifier, or
 `tariff_control: true` for the home's reduction relay. A discovered output is
 never automatically made writable.
-`enabled: false` keeps an entry inactive. Add future equipment once its actual
-device capabilities and intended measurements are known.
+`enabled: false` keeps an entry inactive. Configured future equipment can remain
+enabled to await its first live report; unknown readings never create invented history.
+The [Caravan dehumidifier contract](caravan-dehumidifier.md) defines its planned bridge.
 
 The garage addon uses external sensor 100 as the existing rear probe. Sensor 101
 is the front probe: its absence does not erase the rear reading, but both fresh
@@ -293,16 +295,24 @@ unresolved restoration. Explicit manual controls can operate equipment in shadow
 mode; automatic control stays subject to the application's mode and controller
 authority.
 
-The Caravan reports on/off, kW, A and energy today in live monitoring. Only its
-hourly energy is recorded in the database and offered in the chart. Successive
-cumulative meter readings produce completed UTC-hour kWh
-intervals. Daily totals use Europe/Helsinki, including daylight-saving boundaries.
-The unfinished hour is saved as a checkpoint and contributes to the daily display;
-it appears as an hourly chart interval after completion. Outages, first partial days
-and counter resets retain partial coverage. No outage energy is invented.
+The **Caravan** fold groups air, energy and dehumidifier controls. **Caravan air**
+records the [Shelly BLU H&T](shelly-blu-ht.md) temperature and relative humidity;
+battery and Bluetooth signal remain live-only. **Caravan energy** reports on/off,
+kW, A and energy today in live monitoring. Of these plug readings, only measured
+energy increments are recorded. Consecutive cumulative meter readings supply kWh
+intervals to the same adaptive recorder used for property and charging energy.
+Steady consumption compacts into longer intervals; load changes shorten them,
+subject to the shared recording settings and maximum interval. Each recorded
+interval preserves its measured energy and actual time bounds. Pending increments
+are checkpointed atomically and survive restart. Daily totals update at acquisition
+cadence in Europe/Helsinki, including daylight-saving boundaries. Outages,
+counter resets and implausible jumps split coverage rather than inventing energy.
 
-The chart includes all configured home/garage probes through **All home
-temperatures**, door states and Caravan hourly energy. Tariff status already comes
+The chart includes the home/garage protection probes through **All home
+temperatures**, door states and Caravan interval energy. The separate **Caravan**
+group adds its air temperature, humidity and combined dehumidifier running state
+(Off, Low, Medium, High or Auto). Unknown state remains a gap. These caravan
+measurements are excluded from house and garage learning. Tariff status already comes
 from heating control; duplicate relay-state datasets are not recorded. The
 [garage adapter](garage-adapter.md) keeps optional native temperatures live-only,
 records qualified dedicated electrical intervals, and retains used learning inputs

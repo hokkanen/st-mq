@@ -28,7 +28,7 @@ test('left-axis menu puts electricity first and groups replay coefficients witho
   const select = node(); select.value = 'model_coefficient_heat_loss';
   populateHistoryAxes(select);
   assert.equal(select.value, 'model_coefficient_heat_loss');
-  assert.deepEqual(select.children.map(group => group.label.split(' · ')[0]), ['Electricity', 'Home temperatures', 'Heating', 'Hot water',
+  assert.deepEqual(select.children.map(group => group.label.split(' · ')[0]), ['Electricity', 'Home temperatures', 'Caravan', 'Heating', 'Hot water',
     'Ground loop', 'Control', 'Weather', 'Learning', 'Model coefficients', 'Model inputs', 'Equipment states',
     'Settings', 'Runtime counters', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);
   const choices = new Set(select.children.flatMap(group => group.children.map(option => option.value)));

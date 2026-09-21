@@ -7,8 +7,7 @@ import { Store } from '../src/storage/store.js';
 import { createShellyCapture } from '../src/acquisition/shelly.js';
 import { shellyConfiguration } from '../src/acquisition/shelly-config.js';
 import { createCaravanEnergy } from '../src/acquisition/shelly-energy.js';
-import { Envelope } from '../src/app/chart-data.js';
-import { addShellyEnergy } from '../src/app/chart-shelly.js';
+import { Recorder } from '../src/storage/recorder.js';
 
 const HOUR = 3_600_000, initial = Date.parse('2026-09-10T12:00:00Z');
 function fixture(t, options = {}, initialAt = initial) {
@@ -104,32 +103,33 @@ test('Gen1 plug watt-minute counter converts to kWh and labels current as an est
   f.capture.receive('shellies/invented-plug/relay/0/energy', '60000');
   const current = f.observations.find(row => row.signal === 'caravan_current');
   assert.equal(current.value, 2); assert(current.quality.includes('estimated'));
-  assert.equal(f.store.getState('shelly:caravan-energy:v1').previous.counterKwh, 1);
+  assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.counterKwh, 1);
 });
 
-test('Hourly counter deltas survive restart, conserve energy across hour boundaries and retain partial coverage', t => {
-  const f = fixture(t, {}), energy = createCaravanEnergy({ store: f.store, device: 'fixture-caravan', maxGapMs: 120_000 });
+test('Adaptive counter deltas survive restart and conserve measured energy across resets', t => {
+  const f = fixture(t, {}), recorder = new Recorder(f.store);
+  const energy = createCaravanEnergy({ store: f.store, recorder, device: 'fixture-caravan', maxGapMs: 120_000 });
   energy.receive(20, initial - 30_000);
-  energy.tick(initial); // A maintenance tick cannot finalize before the boundary-straddling report.
+  energy.tick(initial);
   energy.receive(20.01, initial + 30_000);
-  const rows = f.store.db.prepare("SELECT * FROM observations WHERE signal='caravan_energy'").all();
-  assert.equal(rows.length, 1); assert(Math.abs(rows[0].value - 0.005) < 1e-10);
-  assert(JSON.parse(rows[0].quality).includes('partial-coverage'));
-  assert.equal(JSON.parse(rows[0].raw).intervalEnd, initial);
-  const resumed = createCaravanEnergy({ store: f.store, device: 'fixture-caravan', maxGapMs: 120_000 });
+  const rows = f.store.observations({ signal: 'caravan_energy' });
+  assert.equal(rows.length, 1); assert(Math.abs(rows[0].value - 0.01) < 1e-10);
+  assert.equal(rows[0].raw.intervalStart, initial - 30_000);
+  assert.equal(rows[0].raw.intervalEnd, initial + 30_000);
+  assert.equal(rows[0].raw.basis, 'meter-counter-delta');
+  const resumed = createCaravanEnergy({ store: f.store, recorder, device: 'fixture-caravan', maxGapMs: 120_000 });
   resumed.receive(20.02, initial + 60_000);
   assert(Math.abs(resumed.status(initial + 60_000).dailyKwh - 0.02) < 1e-10);
-  resumed.receive(0.001, initial + 90_000); // Reset creates a baseline, never a negative interval.
+  resumed.receive(0.001, initial + 90_000);
   assert.equal(resumed.status(initial + 90_000).counterReset, true);
   resumed.receive(0.003, initial + 120_000);
   resumed.tick(initial + HOUR + 120_000);
-  const completed = f.store.db.prepare("SELECT * FROM observations WHERE signal='caravan_energy' ORDER BY source_time").all();
-  assert.equal(completed.length, 2); assert(completed.every(row => row.value >= 0));
-  assert(Math.abs(completed.reduce((sum, row) => sum + row.value, 0) - 0.022) < 1e-10);
-  const range = { from: initial - HOUR, to: initial + HOUR };
-  const envelope = new Envelope(range.from, range.to, 200);
-  addShellyEnergy({ store: f.store, range, now: initial + 2 * HOUR, input: 'mqtt', envelopes: { caravan_energy: envelope } });
-  assert(envelope.values().some(row => row.partialCoverage && row.intervalEnd === initial));
+  const completed = f.store.observations({ signal: 'caravan_energy' });
+  assert(completed.some(row => row.value === null));
+  const measured = completed.filter(row => Number.isFinite(row.value));
+  assert(measured.every(row => row.value >= 0));
+  assert(Math.abs(measured.reduce((sum, row) => sum + row.value, 0) - 0.022) < 1e-10);
+  assert(measured.every(row => row.raw.learningRole === 'history-only'));
 });
 
 test('Midnight in Helsinki resets the daily display; long offline gaps and implausible counter jumps are not allocated', t => {

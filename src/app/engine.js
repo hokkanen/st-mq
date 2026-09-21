@@ -591,6 +591,11 @@ export class Engine {
     await this.equipment.setCover(input);
     return this.status();
   }
+  async dehumidifierEquipment(input) {
+    if (!this.equipment?.setDehumidifier) throw new Error('MQTT dehumidifier controls are unavailable.');
+    await this.equipment.setDehumidifier(input);
+    return this.status();
+  }
   async recheckEquipment(input = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || Object.keys(input).some(key => key !== 'deviceId')

@@ -76,7 +76,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   // The CASE expression has a bounded number of groups even when an imported
   // database contains arbitrary source or signal names. Imported rows always
   // belong to the import inventory, including incomplete/failed imports.
-  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...ENERGY_SIGNALS, 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'auxiliary_power'];
+  const adaptiveSignals = [...H66_HISTORY_SIGNALS, ...ENERGY_SIGNALS, 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'auxiliary_power',
+    'caravan_temperature', 'caravan_humidity', 'caravan_dehumidifier_running_state'];
   const observationCategory = `CASE
     WHEN source='csv:stmq' THEN CASE ${importedSignals.stmq.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`stmq:${signal}`)}`).join(' ')} ELSE 'import-other' END
     WHEN source='csv:easee' THEN CASE ${importedSignals.easee.map(signal => `WHEN signal=${quote(signal)} THEN ${quote(`easee:${signal}`)}`).join(' ')} ELSE 'import-other' END
@@ -266,7 +267,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const otherEpochs = aggregate('learning_journal_entries', 'at', 'at',
     "epoch<>COALESCE((SELECT epoch FROM learning_epochs WHERE input=learning_journal_entries.input),'original')");
   add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read original committed records using SQLite indexes. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
-    item('adaptive-observations', 'Adaptive observations', 'The recorded temperature, equipment, phase energy and charger-2 total energy series listed in the main adaptive table above.', observations.get('adaptive'), {
+    item('adaptive-observations', 'Adaptive observations', 'The temperature, equipment, phase energy, charger-2 total energy and caravan monitoring series listed in the main recording table above.', observations.get('adaptive'), {
       dateBasis: 'observation time', writeBehavior: 'When adaptive thresholds, maximum fresh-data spacing, state or quality changes require a record.', fields: observationFields }),
     item('coverage', 'Availability and verification coverage', 'Compact spans distinguish fresh unchanged readings from stale, failed or unavailable acquisition.', coverage, {
       countLabel: 'spans', dateBasis: 'span start / end', retention: 'mixed', retentionDescription: 'New spans are retained; the current unchanged span is extended in place.',

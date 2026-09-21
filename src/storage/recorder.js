@@ -34,7 +34,7 @@ const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric
 function recordingFreshness(state, coverage, now) {
   const eventOnly = state.source === 'mqtt-equipment' && state.unit === 'state' && state.eventOnly === true;
   const periodicAge = temperatureReportMaxAge({ raw: state.reportPolicy });
-  const interval = /_energy_l[123]$/.test(state.signal) || state.signal === 'ev2_energy';
+  const interval = /_energy_l[123]$/.test(state.signal) || ['ev2_energy', 'caravan_energy'].includes(state.signal);
   const held = !interval && periodicAge === null && HELD_TEMPERATURE_SIGNALS.includes(state.signal);
   const maximumAge = interval ? null : sourceAge({ ...state, raw: state.reportPolicy });
   const maxAgeMs = Number.isFinite(maximumAge) ? maximumAge : null;
@@ -413,7 +413,8 @@ export class Recorder {
     const observations = p.energies.map((value,i) => {
       const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
-          basis:prefix==='ev2'?'integrated-total-power':'integrated-power-phase-allocation',recorder:{version:VERSION,reason,group:prefix}}};
+          basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'integrated-total-power':'integrated-power-phase-allocation',
+          ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,reason,group:prefix}}};
       o.id = this.store.observation(o);
       const s = this.signalState(o,receivedAt);
       const previous = s.last;
@@ -524,7 +525,7 @@ export class Recorder {
           normalizedRmsError:errorTime ? Math.sqrt(buckets.reduce((n,b)=>n+b.error_squared_time,0)/errorTime) : null,
           estimatedBytes:buckets.reduce((n,b)=>n+b.bytes,0)};
       }
-      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = s.signal==='ev2_energy', exact = Boolean(s.reportPolicy) || ['state','code'].includes(s.unit) || EXACT.test(s.signal);
+      const grouped = /_energy_l[123]$/.test(s.signal), totalEnergy = ['ev2_energy','caravan_energy'].includes(s.signal), exact = Boolean(s.reportPolicy) || ['state','code'].includes(s.unit) || EXACT.test(s.signal);
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
         freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
@@ -538,7 +539,7 @@ export class Recorder {
 }
 
 function energySignals(prefix) {
-  return prefix === 'ev2' ? ['ev2_energy'] : ['ev1','property'].includes(prefix)
+  return ['ev2','caravan'].includes(prefix) ? [`${prefix}_energy`] : ['ev1','property'].includes(prefix)
     ? [1,2,3].map(phase=>`${prefix}_energy_l${phase}`) : null;
 }
 

@@ -5,6 +5,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { ElectricityAccumulator } from '../src/domain/electricity.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
 import { DailyTimingBenchmark, Envelope, chartRange, getChartData } from '../src/app/chart-data.js';
+import { ENERGY_SIGNALS } from '../src/domain/history-series.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000;
 const day = chartRange({ startDate: '2026-09-08', now: Date.parse('2026-09-10T00:00:00Z') });
@@ -503,7 +504,7 @@ test('energy index scans merge chronologically without a full-range SQL sort or 
     assert.equal(result.meta.rows, 21, 'Simulation and future receipt rows stay outside the physical query');
     assert(result.series.charger_power.some(row => row.x === start + 3 * MINUTE && row.y === null));
     assert(result.series.property_power.some(row => Math.abs(row.y - 36) < 1e-10));
-    assert.equal(plans.length, 7, 'Six phase-energy series and one total-only Tesla series each use an index scan');
+    assert.equal(plans.length, ENERGY_SIGNALS.length, 'Each phase or total-only energy series, including caravan, uses an index scan');
     assert(plans.every(plan => plan.some(row => /SEARCH observations USING INDEX observations_signal_time/.test(row.detail))));
     assert(plans.every(plan => plan.every(row => !/TEMP B-TREE/.test(row.detail))), 'The default original-energy path must not sort all selected rows');
   } finally { store.close(); }

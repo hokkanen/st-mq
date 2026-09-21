@@ -68,7 +68,7 @@ test('H66 temperatures stay in the dedicated pump readings instead of duplicate 
     sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } }).length, 0);
 });
 
-test('garage protection probes and supported Mitsubishi temperatures are distinct without duplicate probes', () => {
+test('garage probes remain distinct and native Mitsubishi temperatures do not create an extra inventory card', () => {
   const rear = temperature(10), front = temperature(8);
   const inventory = equipmentInventory({ now, equipment: { devices: [{ id: 'garage_sensor', kind: 'temperature', area: 'garage',
     available: true, readings: { garage_temperature: { ...rear, unit: 'degC' } } }] },
@@ -78,7 +78,7 @@ test('garage protection probes and supported Mitsubishi temperatures are distinc
   } } } });
   assert.equal(signals(inventory).filter(signal => signal === 'garage_temperature').length, 1);
   assert.equal(signals(inventory).filter(signal => signal === 'garage_temperature_2').length, 1);
-  assert.equal(signals(inventory).includes('garage_native_indoor_temperature'), true);
+  assert.equal(signals(inventory).includes('garage_native_indoor_temperature'), false);
   assert.equal(signals(inventory).includes('garage_native_outdoor_temperature'), false);
   assert(inventory.every(device => device.area === 'garage'));
 });

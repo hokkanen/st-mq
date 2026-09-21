@@ -1,5 +1,4 @@
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
-import { isInterpolatedTemperature } from '../domain/chart-temperatures.js';
 
 /** Availability has an acquisition clock, distinct from the measurement clock.
  * A failed request must break a line when it failed, not overwrite the last
@@ -43,8 +42,10 @@ function* availabilityRows(store,{from,to,input,signals}) {
  * are drawing boundaries, never new measurements. A later source report cannot
  * repair an earlier expired deadline, and explicit failures truncate at receipt.
  */
-function* periodicTemperatureRows(store,{from,to,input,signals,now=to}) {
-  const wanted=[...signals].filter(isInterpolatedTemperature);
+function* periodicReportRows(store,{from,to,input,signals,now=to}) {
+  // Humidity and equipment state use the same recorded report deadline as
+  // temperature. Restricting this to temperature silently drops their history.
+  const wanted=[...signals];
   if (!wanted.length) return;
   const sql=`SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
     (SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
@@ -104,7 +105,7 @@ function* mergeRows(rows,other) {
 }
 
 export function* chartCoverageRows(store,options) {
-  yield* mergeRows(availabilityRows(store,options),periodicTemperatureRows(store,options));
+  yield* mergeRows(availabilityRows(store,options),periodicReportRows(store,options));
 }
 
 export function* mergeCoverageRows(rows,store,options) {

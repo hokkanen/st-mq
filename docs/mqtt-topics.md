@@ -27,6 +27,15 @@ circulation and its durable OFF obligation remain independent. See [DHWR setup](
 vehicle feed `stmq/garage/charger1/vehicle`: charge percentage, vehicle target,
 usable capacity and the original measurement timestamps.
 
+## Caravan devices
+
+Caravan air retains its installed Shelly BLU bridge topic `stmq/home/blu_ht/state`
+and read-only query `stmq/home/blu_ht/get`; its Garage label does not change that route.
+The future dehumidifier uses the separate `stmq/garage/caravan_dehumidifier` prefix
+with `/state` snapshots, `/set` commands, `/get` readback queries and `/availability`.
+See the [payload and confirmation contract](caravan-dehumidifier.md). It does not
+share the Caravan energy plug’s native `stmq/garage/caravan` prefix.
+
 ## Publisher changes and cutover
 
 Update the SmartThings MQTT switch subscription to the new DHWR command topic,

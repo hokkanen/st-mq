@@ -207,6 +207,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.switchEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/cover')
           return await mutate(async (current, input) => { await current.coverEquipment(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/dehumidifier')
+          return await mutate(async (current, input) => { await current.dehumidifierEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/h66')
           return await mutate(async (current, input) => { await current.setH66Setting(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/test')

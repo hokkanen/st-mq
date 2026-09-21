@@ -3,7 +3,7 @@ import { durationText, qualityReasonText } from './reading-status.js';
 import { providerName } from './provider-status.js';
 
 // Frequent chart choices first; equipment diagnostics remain together at the end.
-const leftAxisGroups = ['Electricity', 'Home temperatures', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
+const leftAxisGroups = ['Electricity', 'Home temperatures', 'Caravan', 'Heating', 'Hot water', 'Ground loop', 'Control', 'Weather',
   'Learning', 'Model coefficients', 'Model inputs', 'Equipment states', 'Settings', 'Runtime counters', 'Meter checks', 'Garage model inputs', 'Garage model coefficients'];
 const roomSignals = new Set(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2']);
 const leftAxes = HISTORY_AXES.filter(axis => !RIGHT_AXIS_SIGNALS.includes(axis.key) && !roomSignals.has(axis.key));

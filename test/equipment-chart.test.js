@@ -68,18 +68,22 @@ test('cached door recovery preserves its source clock and the historical outage'
   }
 });
 
-test('Caravan hourly energy plots native and explicitly mapped MQTT meter intervals with coverage', t => {
+test('Caravan adaptive energy plots native and explicitly mapped MQTT meter intervals with coverage', t => {
   for (const source of ['shelly-mqtt', 'mqtt-equipment']) {
     const store = new Store(':memory:'); t.after(() => store.close());
-    const counter = createCaravanEnergy({ store, device: 'fixture-meter', source, signal: 'caravan_energy',
-      recordDevice: 'caravan', stateKey: 'fixture-hourly', maxGapMs: 120_000 });
+    const recorder = new Recorder(store);
+    const counter = createCaravanEnergy({ store, recorder, device: 'fixture-meter', source, signal: 'caravan_energy',
+      recordDevice: 'caravan', stateKey: 'fixture-adaptive', maxGapMs: 120_000 });
     counter.receive(10, start + HOUR - 30_000); counter.receive(10.02, start + HOUR + 30_000);
-    const result = getChartData({ store, input: 'mqtt', startDate: date, endDate: date, now: start + 2 * HOUR,
-      left: 'caravan_energy' });
-    const points = result.series.caravan_energy.filter(point => Number.isFinite(point.y));
-    assert(points.length >= 2);
-    assert(points.every(point => Math.abs(point.y - 0.01) < 1e-9));
-    assert(points.every(point => point.partialCoverage && point.intervalEnd === start + HOUR));
-    assert(points.every(point => point.learningRole === 'history-only'));
+    for (const view of [{}, { viewFrom: start + HOUR - 10_000, viewTo: start + HOUR + 10_000 }]) {
+      const result = getChartData({ store, input: 'mqtt', startDate: date, endDate: date, now: start + 2 * HOUR,
+        left: 'caravan_energy', ...view });
+      const points = result.series.caravan_energy.filter(point => Number.isFinite(point.y));
+      assert(points.length >= 2);
+      assert(points.every(point => Math.abs(point.y - 0.02) < 1e-9));
+      assert(points.every(point => point.intervalStart === start + HOUR - 30_000 && point.intervalEnd === start + HOUR + 30_000));
+      assert(points.every(point => point.basis === 'meter-counter-delta' && point.learningRole === 'history-only'));
+      assert(!result.series.property_power, 'Caravan demand does not become property power');
+    }
   }
 });

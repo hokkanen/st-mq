@@ -72,15 +72,17 @@ test('standalone BLU equipment receives both measurements and expires cached rea
   assert.equal(capture.status().devices[0].available, false);
   capture.receive(frame.topic, frame.body, {}, now);
   let device = capture.status().devices[0]; assert.equal(device.available, true);
-  assert.equal(device.readings.blu_ht_temperature.value, 21.5);
-  assert.equal(device.readings.blu_ht_humidity.value, 46);
+  assert.equal(device.readings.caravan_temperature.value, 21.5);
+  assert.equal(device.readings.caravan_humidity.value, 46);
   assert.equal(device.readings.blu_ht_battery.value, 95);
   assert.equal(device.readings.blu_ht_rssi.value, -65);
-  assert(!observations.some(row => row.signal === 'blu_ht_rssi'));
+  assert(!observations.some(row => ['blu_ht_rssi', 'blu_ht_battery'].includes(row.signal)));
+  assert.deepEqual(observations.filter(row => Number.isFinite(row.value)).map(row => row.signal).sort(),
+    ['caravan_humidity', 'caravan_temperature']);
   assert(!settings.ownedSignals.some(signal => /^(indoor|garage|bedroom|downstairs)_temperature$/.test(signal)));
   now += 181000; capture.receive(frame.topic, frame.body, {}, now);
   device = capture.status().devices[0]; assert.equal(device.available, false);
-  assert.equal(device.readings.blu_ht_temperature.observedAt, initial);
+  assert.equal(device.readings.caravan_temperature.observedAt, initial);
   b.time(now); b.receive(packet(223, 51));
   capture.receive(frame.topic, b.publications.at(-1).body, {}, now);
   assert.equal(capture.status().devices[0].available, true);

@@ -2,7 +2,6 @@ import { addGarageHistory } from './chart-garage.js';
 import { DailyTimingBenchmark } from './daily-timing-benchmark.js';
 export { DailyTimingBenchmark } from './daily-timing-benchmark.js';
 import { getGarageModelBenefit, getGarageTimingBenefit, buildHeatingSavings } from './garage-reporting.js';
-import { addShellyEnergy } from './chart-shelly.js';
 import { isRecordedDataset } from '../storage/recorded-datasets.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isInterpolatedTemperature } from '../domain/chart-temperatures.js';
@@ -15,7 +14,7 @@ import { historicalSpotIntervals } from './historical-spot-prices.js';
 import { decodeHistoryRow } from '../storage/history.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { timingPowerEvidence } from './timing-evidence.js';
-import { HISTORY_AXIS_BY_KEY, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
+import { HISTORY_AXIS_BY_KEY, CARAVAN_RUNNING_STATES, GARAGE_INPUT_INFO, GARAGE_COEFFICIENT_INFO, ENERGY_SIGNALS, AUDIT_SIGNALS, SESSION_CHECK_INFO, MODEL_INPUT_INFO, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { addChargingSessionChecks } from './chart-session-checks.js';
 import { addModelInputs } from './chart-model-inputs.js';
 import { addModelCoefficients } from './chart-model-coefficients.js';
@@ -164,6 +163,8 @@ function qualityReader() {
 function valueOf(row, flags) {
   if (!Number.isFinite(row.value) || flags.some(flag => BAD.has(flag))) return null;
   if (row.signal.endsWith('_temperature') && !['degC', '°C'].includes(row.unit)) return null;
+  if (row.signal === 'caravan_humidity' && (row.unit !== '%' || row.value < 0 || row.value > 100)) return null;
+  if (row.signal === 'caravan_dehumidifier_running_state' && (row.unit !== 'state' || !Object.hasOwn(CARAVAN_RUNNING_STATES, row.value))) return null;
   if (PHASES.includes(row.signal) && row.unit !== 'A') return null;
   if (row.signal === 'spot_price' && !['c/kWh_ex_vat', 'c/kWh'].includes(row.unit)) return null;
   if (['auxiliary_power', 'heat_pump_power', 'charger_power'].includes(row.signal) && (row.unit !== 'kW' || row.value < 0)) return null;
@@ -607,7 +608,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
           try { raw = JSON.parse(row.raw); } catch { /* Older archived forecasts may lack metadata. */ }
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
-        if (row.periodicCoverage) metadata = { periodicCoverage:true,displayBoundary:true,
+        if (row.periodicCoverage) metadata = { ...metadata, source: row.source, periodicCoverage:true,displayBoundary:true,
           observedAt:row.observedAt,reportExpiresAt:row.reportExpiresAt,coverageId:row.coverageId };
         if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
         if (signal === 'charger_power' && !drawingOnly) timing.add('charger', time, row.unit === 'kW' ? value : null, timingPowerEvidence(row));
@@ -743,7 +744,6 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
     || ['property_power', 'charger_power', 'charger2_power'].includes(name))
     ? addRecordedEnergy({store,range,now,input,envelopes,timing}) : { rows: 0, intervals: 0 };
-  addShellyEnergy({ store, range, now, input, envelopes });
   const finishHeldLines = () => {
     for (const name of ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS]) if (lines[name]?.previous) {
       const line = lines[name], previous = line.previous, nowEnd = Math.min(now, range.to), end = Math.min(nowEnd, previous.x + line.gap);

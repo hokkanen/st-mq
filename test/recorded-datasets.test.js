@@ -25,7 +25,7 @@ test('retired equipment datasets cannot create observations, coverage or recorde
   assert.equal(recorder.record(observation('indoor_temperature', 'mqtt-temperature')).saved, true);
 });
 
-test('cleanup removes obsolete telemetry, coverage and caches while preserving hourly energy and learning history', t => {
+test('cleanup removes obsolete telemetry, coverage and caches while preserving caravan energy and learning history', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const row of [...retired.map(signal => observation(signal)), observation('indoor_temperature', 'husdata-h66')]) {
     const id = store.observation(row), key = JSON.stringify([row.source, row.device, row.signal]);

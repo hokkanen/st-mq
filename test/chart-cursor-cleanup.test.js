@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { addRecordedEnergy } from '../src/app/chart-energy.js';
 import { chartRange, getChartData } from '../src/app/chart-data.js';
-import { HISTORY_AXIS_BY_KEY } from '../src/domain/history-series.js';
+import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY } from '../src/domain/history-series.js';
 
 const MINUTE = 60_000;
 const day = chartRange({ startDate: '2026-01-15', now: Date.parse('2026-01-16T00:00:00Z') });
@@ -53,7 +53,8 @@ for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors c
     store.observation({ source: 'easee', device: `invented-${prefix}`, signal: `${prefix}_energy_l${phase}`,
       value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
       quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });
-  for (const minute of [1, 2]) store.observation({ source: 'teslamate', device: 'invented-car', signal: 'ev2_energy',
+  for (const [source, signal] of [['teslamate', 'ev2_energy'], ['mqtt-equipment', 'caravan_energy']])
+    for (const minute of [1, 2]) store.observation({ source, device: `invented-${signal}`, signal,
     value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
     quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });
   const originalError = new Error(`Synthetic energy ${failure} failure`);
@@ -63,7 +64,7 @@ for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors c
     input: 'providers', envelopes: { charger_power: { add() { throw originalError; } } }, timing: { addEnergy() {} } }),
   error => error === originalError);
   assert.equal(tracker.pending.size, 0);
-  assert.equal(tracker.counts().opened, failure === 'prepare' ? 2 : failure === 'prime' ? 3 : 7);
+  assert.equal(tracker.counts().opened, failure === 'prepare' ? 2 : failure === 'prime' ? 3 : ENERGY_SIGNALS.length);
   assert.equal(tracker.counts().closed, tracker.counts().opened);
 });
 

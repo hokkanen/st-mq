@@ -30,7 +30,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     available: false, lastAt: null, lastPollAt: -Infinity, readings: {}, state: null, identity: null, identityPending: null, waiters: new Set(), checks: new Set(), check: null }));
   const source = `stmq-shelly-${randomUUID()}`, replyTopic = `${source}/rpc`, requests = new Map();
   let sequence = 0, commandSequence = 0, connected = false, closed = false, heatingBusy = false;
-  const energies = new Map(devices.filter(metered).map(device => [device.id, createCaravanEnergy({ store,
+  const energies = new Map(devices.filter(metered).map(device => [device.id, createCaravanEnergy({ store, recorder: engine.recorder,
     device: device.prefix, maxGapMs: device.maxAgeMs ?? settings.maxAgeMs, signal: `${device.role}_energy`, recordDevice: device.role,
     ...(device.role === 'caravan' ? {} : { stateKey: `shelly:equipment-energy:v1:${device.id}` }) })]));
   const pollInterval = device => protectsGarage(device) ? GARAGE_TEMPERATURE_POLL_MS : settings.pollIntervalMs;
@@ -70,6 +70,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, quality, ...raw };
   };
   const unavailable = (device, reason) => {
+    energies.get(device.id)?.unavailable?.(engine.clock(), reason);
     const previous = device.available;
     device.available = false; device.state = null;
     for (const waiter of [...device.waiters]) waiter.reject(error('relay readback unavailable'));
