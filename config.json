@@ -124,7 +124,15 @@
       "savings_aggressiveness": 50,
       "preheat_room_boost_c": 5,
       "heat_pump_model_confirmed": false,
-      "floor_thermal_priors": {},
+      "floor_thermal_priors": {
+        "capacity_kwh_per_c": 3.2,
+        "exchange_kw_per_c": 0.266667,
+        "ground_loss_kw_per_c": 0.013596,
+        "ground_c": 10,
+        "open_allocation_fraction": 0.4,
+        "closed_allocation_fraction": 0.05,
+        "native_capacity_kwh_per_c": 8.832
+      },
       "floor_preheat": {
         "enabled": false,
         "commissioned": false,

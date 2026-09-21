@@ -59,9 +59,17 @@ test('floor control has strict flags, two exclusive device mappings and bounded 
   assert.equal(floorOverrideConfiguration({ renew_seconds: 450, lease_seconds: 900 }).renewSeconds, 450);
 });
 
-test('public defaults contain no selected-slab household assumptions or device identifiers', () => {
+test('public defaults expose floor thermal priors while physical overrides stay disabled', () => {
   const publicConfig = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
-  assert.deepEqual(publicConfig.options.controller.floor_thermal_priors, {});
+  assert.deepEqual(publicConfig.options.controller.floor_thermal_priors, {
+    capacity_kwh_per_c: 3.2, exchange_kw_per_c: 0.266667, ground_loss_kw_per_c: 0.013596,
+    ground_c: 10, open_allocation_fraction: 0.4, closed_allocation_fraction: 0.05,
+    native_capacity_kwh_per_c: 8.832,
+  });
+  const model = initialAdaptiveModel(controlConfiguration(publicConfig.options.controller));
+  assert.equal(model.floor.enabled, true);
+  assert.equal(model.floor.capacityKwhPerC, 3.2);
+  assert.equal(model.floor.nativeCapacityKwhPerC, 8.832);
   assert.equal(publicConfig.options.controller.floor_preheat.enabled, false);
   assert.equal(publicConfig.options.controller.floor_preheat.commissioned, false);
   assert.equal(publicConfig.options.controller.floor_preheat.storage.topic_prefix, '');
