@@ -5,7 +5,7 @@ import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Shelly Pro 2 v0' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Caravan', heat_pump: 'Heat pump', vehicle: 'Vehicle', floor_override: 'Switch' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const RESULT_NOTICE_MS = 60_000;
 const recentResult = (at, now) => !Number.isFinite(now)
@@ -32,11 +32,11 @@ export function equipmentDevices(status = {}) {
       || device.role === 'heat_savings' ? 'home' : 'garage') });
   }
   const floor = status.preheatValves ?? { enabled: false, commissioned: false, devices: [] };
-  for (const group of ['storage', 'living']) {
+  for (const group of ['living', 'storage']) {
     const reported = floor.devices?.find(device => device.group === group);
     const enabled = floor.enabled === true, commissioned = floor.commissioned === true;
     const available = reported?.available === true;
-    const label = group === 'storage' ? 'Storage floor valves' : 'Living floor valves';
+    const label = group === 'storage' ? 'Storage area floor valves' : 'Living area floor valves';
     const leaseMinutes = (floor.leaseSeconds ?? 900) / 60;
     const renewMinutes = (floor.renewSeconds ?? 300) / 60;
     devices.set(`floor-override:${group}`, { id: `floor-override:${group}`, label,
@@ -49,10 +49,11 @@ export function equipmentDevices(status = {}) {
             : !available ? { label: 'Awaiting local-script readback', state: 'attention' }
               : { label: floor.active ? 'Preheating' : 'Ready', state: 'available' },
       recent: !reported ? 'Device mapping not configured' : 'Waiting for a live script report',
-      connectionDetail: `${label}: outputs 0 and 1 share the pooled four-output preheat treatment. `
+      connectionDetail: 'Each output (0 and 1) overrides one thermostat, so this device overrides two thermostats. '
+        + 'Both floor-valve devices preheat together, overriding four thermostats in total. '
         + (!enabled ? 'Disabled until device mapping and commissioning are complete. '
           : !commissioned ? 'Local expiry and native thermostat failback need commissioning. ' : '')
-        + `Renew every ${renewMinutes} minutes; release locally after at most ${leaseMinutes} minutes without renewal, or at the planned end. `
+        + `The override renews every ${renewMinutes} minutes and ends locally after at most ${leaseMinutes} minutes without renewal, or at the planned end. `
         + 'OFF restores thermostat control. Relay readback does not prove valve movement or water flow. Local expiry does not restore the heat-pump ROOM setting. '
         + [0, 1].map(id => {
           const output = available ? reported?.channels?.find(channel => channel.id === id)?.output : null;

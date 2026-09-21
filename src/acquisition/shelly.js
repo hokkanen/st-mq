@@ -14,7 +14,7 @@ const metered = device => device.metered ?? device.role === 'caravan';
 const tempName = device => device.temperatureSignal ?? (device.role === 'garage' ? 'garage_temperature' : `${device.role}_temperature`);
 const definitions = device => [
   ...(stateName(device) ? [{ signal: stateName(device), unit: 'state', label: device.kind === 'door' ? 'Door' : 'Switch', required: true }] : []),
-  ...(hasTemperature(device) ? [{ signal: tempName(device), unit: 'degC', label: device.role === 'garage' ? 'Garage temperature' : 'Temperature', required: true }] : []),
+  ...(hasTemperature(device) ? [{ signal: tempName(device), unit: 'degC', label: device.role === 'garage' ? 'Garage rear' : 'Temperature', required: true }] : []),
   ...(metered(device) ? [{ signal: `${device.role}_power`, unit: 'kW', label: 'Power', required: true },
     { signal: `${device.role}_current`, unit: 'A', label: 'Current', required: true }] : []),
   ...device.customReadings,

@@ -19,7 +19,7 @@ test('home connections show pump, temperatures in configured order, circulation 
     topics: [topic('State', 'fixture/tariff/state')] }, circulation, ...temperatures], topicGroups: groups },
     shelly: { topicGroups: groups }, dhwr: { feedback: { deviceId: circulation.id }, commandTopic: 'fixture/circulation/set' },
     h66: { available: true, brokerConnected: true, lastPublicationAt: NOW } });
-  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', ...temperatures.map(device => device.id), circulation.id, 'fixture-tariff', 'floor-override:storage', 'floor-override:living']);
+  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', ...temperatures.map(device => device.id), circulation.id, 'fixture-tariff', 'floor-override:living', 'floor-override:storage']);
   const device = rows.find(row => row.id === circulation.id);
   const deviceTopics = equipmentTopicGroups(device.topics).flatMap(group => group.topics);
   assert.deepEqual(deviceTopics.map(row => row.topic), ['fixture/circulation/state', 'fixture/circulation/set']);
@@ -159,7 +159,7 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
 
 test('both floor Shellys are visible before device IDs are supplied and have no bypass controls', () => {
   const floor = equipmentConnections({}).filter(device => device.kind === 'floor_override');
-  assert.deepEqual(floor.map(device => device.id), ['floor-override:storage', 'floor-override:living']);
+  assert.deepEqual(floor.map(device => device.id), ['floor-override:living', 'floor-override:storage']);
   assert(floor.every(device => device.area === 'home' && equipmentSource(device) === 'Shelly'));
   assert(floor.every(device => device.enabled === false && device.controls.switch === false && device.topics.length === 0));
   assert(floor.every(device => equipmentConnectionSummary(device).label === 'Not enabled'));
@@ -169,7 +169,7 @@ test('both floor Shellys are visible before device IDs are supplied and have no 
 
 test('floor MQTT cards distinguish commissioning, confirmed preheating, missing readback and pending release', () => {
   const view = extra => equipmentConnections({ now: NOW, preheatValves: { enabled: true, commissioned: true,
-    devices: [{ group: 'storage', available: true, at: NOW, channels: [{ id: 0, output: true }, { id: 1, output: true }] }], ...extra } })
+    devices: [{ group: 'living', available: true, at: NOW, channels: [{ id: 0, output: true }, { id: 1, output: true }] }], ...extra } })
     .filter(device => device.kind === 'floor_override');
   assert.equal(equipmentConnectionSummary(view({ commissioned: false })[0]).label, 'Needs commissioning');
   const active = view({ active: true });

@@ -247,7 +247,7 @@
         },
         {
           "id": "garage",
-          "label": "Garage protection temperatures",
+          "label": "Garage temperatures",
           "area": "garage",
           "kind": "temperature",
           "connection": "shelly:stmq/garage/temperatures",
