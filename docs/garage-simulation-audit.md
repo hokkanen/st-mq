@@ -1,6 +1,6 @@
 # Garage simple OFF simulation audit
 
-The current audit tests `committed-garage-v4-simple-off` against an independent
+The current audit tests `committed-garage-v5-protection-limited` against an independent
 simulated garage. It checks short cooling forecasts, deterministic learning,
 conservative opportunity selection and separation of thermal evidence from
 measured electricity. These are software experiments, not installed garage
@@ -27,8 +27,9 @@ The frozen forecast audit uses 1h and 2h OFF branches followed by 24h of normal
 heating. Future actual power, temperatures, fan and defrost never enter the
 forecast. Outdoor forecasts are perfect in this controlled experiment, so field
 weather errors remain additional. Historical training deliberately includes
-2/4/8h OFF periods; this does not authorize those durations in operation. The
-default configured maximum remains 2h.
+2/4/8h OFF periods. These durations describe the experiment; they are not
+operating limits. Actual opportunities must pass the independent pipe forecast
+with its uncertainty margins, including useful-heat return delay.
 
 ## Reproducible short-forecast results
 
@@ -43,7 +44,7 @@ errors are forecast minus simulation at the OFF endpoint.
 | 15 minutes | 2h | +0.013°C | +0.054°C | +2.05 kWh |
 
 Short cooling predictions agree closely across these sampling intervals, with
-checkpoints under 9 KB. Total electricity is substantially less accurate. The
+checkpoints under 12 KB. Total electricity is substantially less accurate. The
 calculation includes observed normal electrical power plus a fixed extra recovery
 allowance of 125% of avoided electricity, spread over three hours. For the
 15-minute fixture its 1h/2h extra allowance is 0.306/0.612 kWh; the independent
@@ -51,10 +52,11 @@ plant uses 0.154/0.284 kWh extra. The declared allowance is conservative in this
 fixture, but is not a universal bound. `electricalReady` remains false in both
 21-day runs despite measured normal power and good thermal validation.
 
-Across the broader 21-scenario CLI audit, the worst 1h/2h endpoint error among
-scenarios with OFF observations was 0.222°C; the untrained no-OFF prior reached
-0.519°C and remained thermally unqualified. Checkpoints stayed below 18 KB. This
-finite plant family is descriptive evidence, not a field confidence interval.
+The broader CLI audit also exercises 21 combinations of plant behavior, weather,
+disturbances and sensor quality. This finite plant family provides descriptive
+evidence, not a field confidence interval. Long 6h and 30h audit branches check
+that the full recovery allowance is accounted over a proportionate time window;
+finite forecast errors remain visible rather than being treated as validation.
 
 The independent plant's remaining core/slab deficits are retained in the audit
 output. Neither a warm local sensor nor the illustrative three-hour ON envelope
@@ -62,33 +64,30 @@ establishes complete physical recovery or measured savings.
 
 ## Conservative decisions and causal bootstrap
 
-The frozen planning audit uses 43 days of training and evaluates flat, mild,
-ordinary, exceptional and repeated-peak tariffs. At the default minimum net saving
-of €0.50 it skips the 7/12 and 7/40 c/kWh examples. A deliberately exceptional
-7/400 c/kWh fixture selects one continuous 2h OFF window; it does not preheat or
-schedule a second shutdown. These prices are stress inputs, not representative
-or forecast tariffs. Positive legacy aggression values produce the same policy;
-zero keeps normal availability.
-
-The selected 43-day/15-minute fixture estimates €3.57 before its separate
-uncertainty deduction; the independent 48h plant comparison produces €5.39.
-These are distinct modeled counterfactuals, not an accuracy guarantee or household
-saving. The remaining core/slab deficits after that window are approximately
-0.025/0.023°C.
+The frozen planning audit trains against the independent plant and evaluates flat,
+mild, ordinary, exceptional and repeated-peak tariffs. It compares one contiguous
+OFF opportunity against unchanged native heating, without preheating or a second
+shutdown. The default €0.50 minimum saving remains after recovery and uncertainty
+allowances; removing duration ceilings does not remove the economic threshold.
+Exceptional tariffs are stress inputs, not representative or forecast prices.
 
 Bootstrap starts with untouched priors. Only the planner's own choices provide
 OFF observations, with opportunities 56h apart. Pipe reserve starts unknown and
 is earned from live synthetic temperatures; protection reports arrive each
-minute while learning uses five-minute reports. Both the frozen and bootstrap
+minute while learning uses five-minute reports. Both frozen and bootstrap
 comparisons declare a **10-minute simulated restoration delay**, not an installed
-heat-pump bound.
+heat-pump bound. Activity-only experiments keep normal electricity assumption-based
+while independently gathering temperature evidence.
 
-In the 42-day exceptional-price run, initial trials are 1h. Independent completed
-episodes eventually support 1.25h, permitting 1.5h extension trials within the 2h
-configured cap. The activity-only variant also gains thermal evidence while
-retaining zero native electrical fitting samples and no electrical qualification.
-Flat and ordinary tariffs produce no bootstrap experiments. Growth is deliberately
-slow and can stall when recovery or estimated net saving is insufficient.
+The current policy imposes no initial one-hour trial ceiling, two-hour extension
+ceiling or maximum total pause. One hour remains the planned minimum. Tests must
+allow opportunities longer than previously validated evidence while checking the
+larger uncertainty margins and pipe reserve. The audit's finite price and weather
+coverage limits each simulated opportunity naturally. Predictions, actual plant
+cost differences and remaining slow-mass deficits are separate outputs; none is
+a household savings claim. The short-forecast results above characterize the
+unchanged two-rate thermal equations and do not establish accuracy for longer
+pauses.
 
 Avoided-power uncertainty is priced at the opportunity spread. Only optimistic
 whole-episode recovery error adds a separate deduction at the recovery tariff.

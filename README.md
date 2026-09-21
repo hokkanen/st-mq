@@ -427,7 +427,11 @@ liquids, using a water-filled copper pipe as the reference. Garage settings show
 the temperature margin, reference dimensions, heat-transfer estimate and fixed
 safety factor. Cooling and recovery follow measured air temperature continuously;
 there is no fixed refill timer. An open door blocks a new savings pause below
-2°C outside; an existing pause is reassessed against measured protection. See
+2°C outside; an existing pause is reassessed against measured protection.
+Savings pauses have a one-hour planned minimum and no fixed maximum; local
+temperatures, forecast pipe reserve, uncertainty, economics and available forecast
+coverage determine their duration. The Pill's short renewable OFF permission
+still restores heating on communication loss without limiting the total pause. See
 [protection parameters](docs/garage-protection-defaults.md) for assumptions and
 reporting/restoration deadlines.
 The `shelly-cn105` Pill integration supports native controls and commissioned

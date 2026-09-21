@@ -405,7 +405,7 @@ try {
     await evaluate("[...document.querySelectorAll('#garage-learning-details > details > summary')].map(row => row.textContent.trim())"),
     'Home and Garage use the same outcome, input, coefficient and planning headings');
   assert.match(await evaluate("document.getElementById('learning-progress').textContent"), /usable temperature intervals/);
-  assert.match(await evaluate("document.getElementById('garage-learning-progress').textContent"), /completed cooling \/ recovery episodes.*validated pause hours/);
+  assert.match(await evaluate("document.getElementById('garage-learning-progress').textContent"), /completed cooling \/ recovery episodes.*OFF hours covered by validation/);
   assert.doesNotMatch(await evaluate("document.getElementById('garage-learning-progress').textContent"), /trained intervals|prediction checks/);
   for (const id of ['garage-learning-context', 'garage-input-context', 'garage-coefficient-context'])
     assert.ok((await evaluate(`document.getElementById('${id}').textContent`)).trim(), `${id} explains its list`);

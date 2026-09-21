@@ -1,4 +1,4 @@
-const HOUR = 3_600_000;
+import { GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model-assumptions.js';
 const metric = () => ({ hours: 0, square: 0, signed: 0, maximum: 0 });
 function add(metric, residual, hours) {
   metric.hours += hours; metric.square += residual ** 2 * hours; metric.signed += residual * hours;
@@ -60,9 +60,10 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
     { outdoorC: prior.outdoorC, available: prior.available, restart, ev1Kw: 0, ev2Kw: 0 }, hours);
   episode.state = forecast.state;
   episode.predictedKwh += forecast.electricityKwh;
-  if (prior.available === false) episode.recoveryAllowanceKwh += episode.forecast.native.values[0] * hours * 1.25;
+  if (prior.available === false) episode.recoveryAllowanceKwh += episode.forecast.native.values[0] * hours * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor;
   else {
-    const repayment = Math.min(Math.max(0, episode.recoveryAllowanceKwh - episode.recoveryAccountedKwh), episode.recoveryAllowanceKwh * hours / 3);
+    const repayment = Math.min(Math.max(0, episode.recoveryAllowanceKwh - episode.recoveryAccountedKwh),
+      episode.recoveryAllowanceKwh * hours / garageRecoveryHours(episode.offHours));
     episode.predictedKwh += repayment; episode.recoveryAccountedKwh += repayment;
   }
   if (metered) episode.observedKwh += prior.powerKw * hours;
@@ -84,11 +85,14 @@ export function advanceGarageValidation(model, { state, prior, current, hours, f
   if (frontKnown) episode.frontDropC = Math.max(episode.frontDropC, episode.initialFrontC - current.frontC);
   const rearTolerance = Math.min(.2, Math.max(.05, .25 * episode.rearDropC));
   const frontTolerance = Math.min(.3, Math.max(.05, .25 * episode.frontDropC));
-  const requiredRecoveryHours = 3;
+  const requiredRecoveryHours = garageRecoveryHours(episode.offHours);
   const recovered = prior.available === true && episode.recoveryHours + 1e-9 >= requiredRecoveryHours
     && current.rearC + 1e-9 >= episode.initialRearC - rearTolerance
       && frontKnown && current.frontC + 1e-9 >= episode.initialFrontC - frontTolerance;
-  const expired = episode.recoveryHours + 1e-9 >= 12 || current.at - episode.startedAt >= 48 * HOUR;
+  // A long, continuously observed OFF interval stays one frozen experiment.
+  // Only observed normal heating can exhaust the reporting recovery window;
+  // no learning timeout imposes a maximum pause or requests restoration.
+  const expired = prior.available === true && episode.recoveryHours + 1e-9 >= Math.max(12, requiredRecoveryHours);
   if (recovered || expired) {
     const rearRmse = rmse(episode.rear), frontRmse = rmse(episode.front);
     const offRearRmse = rmse(episode.offRear), offFrontRmse = rmse(episode.offFront);

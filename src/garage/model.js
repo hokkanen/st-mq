@@ -3,12 +3,12 @@ import { garagePlanningMargins } from './planning-evidence.js';
 import { createGarageRegression, fitGarageRegression } from './model-fit.js';
 import { createGarageValidation, advanceGarageValidation, interruptGarageValidation, summarizeGarageValidation } from './model-validation.js';
 import { garageDoorIntervalUnknown } from './door-state.js';
+import { GARAGE_MODEL_ASSUMPTIONS } from './model-assumptions.js';
+export { GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours } from './model-assumptions.js';
 const HOUR = 3_600_000, finite = Number.isFinite;
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const clone = value => structuredClone(value);
-export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v4-simple-off';
-export const GARAGE_MODEL_ASSUMPTIONS = Object.freeze({ evHeatFraction: .075, normalPowerKw: .5,
-  recoveryTimeHours: 3, recoveryEnergyFactor: 1.25, doorHeat: 'not-credited-reassess-from-sensors' });
+export const GARAGE_ALGORITHM_VERSION = 'committed-garage-v5-protection-limited';
 const REAR = [['coolingPerHour', .03, .001, .3, '1/h']];
 const FRONT = [['coolingPerHour', .04, .001, .4, '1/h']];
 const errorState = () => ({ n: 0, hours: 0, absolute: 0, square: 0, signed: 0 });
@@ -227,7 +227,7 @@ export function knownGarageEvAt(plans, at, decisionAt) {
 }
 export function forecastGarage(model, { now, initial = model.state, steps = [], settings = {}, knownEvPlans = [], protection = false } = {}) {
   garageSettings(settings);
-  if (!finite(now) || steps.length > 600) throw new Error('Garage forecast requires bounded steps and decision time');
+  if (!finite(now) || !Array.isArray(steps)) throw new Error('Garage forecast requires ordered steps and decision time');
   let state = clone(initial), cursor = now, electricityKwh = 0, costEur = 0, uncertaintyKwh = 0;
   const points = [], summary = garageModelSummary(model);
   for (const step of steps) {
@@ -256,7 +256,7 @@ export function garageModelSummary(model) {
     && heldOut.native.rmse < .35 && validation.recoveryEpisodes >= 1;
   return { algorithm: model.algorithm, status: thermalReady ? 'validated-provisional' : 'learning', ready: thermalReady,
     thermalReady, electricalReady, nativeActivity: { ...model.nativeActivity, basis: 'observed-dimensionless-activity-no-watts' },
-    maxPauseHours: thermalReady ? validation.supportedOffHours : 0, validation, trainedIntervals: model.trainedIntervals, heldOut,
+    validatedOffHours: thermalReady ? validation.supportedOffHours : 0, validation, trainedIntervals: model.trainedIntervals, heldOut,
     coefficients: { rear: coefficients(REAR, model.rear), front: coefficients(FRONT, model.front), native: [{ name: 'normalPowerKw', value: predictGarageNative(model).powerKw, unit: 'kW', basis: model.native.active[0] ? 'observed-normal-power' : 'fixed-prior', evidence: model.native.hours }] },
     cooling: Object.fromEntries(['rear', 'front'].map(location => [location,
       { ratePerHour: model[location].values[0], hours: model[location].hours, fitted: model[location].active[0] }])),
@@ -270,7 +270,8 @@ export function garageModelSummary(model) {
     ev: { heatFraction: GARAGE_MODEL_ASSUMPTIONS.evHeatFraction,
       chargers: model.evidence.ev.map((e, i) => ({ id: i + 1, ...e, basis: 'fixed-7.5-percent-heat-assumption' })) },
     limitations: ['Only clean OFF intervals fit the two cooling coefficients; there is no latent building temperature.',
-      'OFF validation freezes its forecast, and completion requires both measured locations to recover with at least three hours of normal heating.',
+      'OFF validation freezes its forecast; measured recovery and the full duration-scaled electricity allowance must complete before validation.',
+      'Recovery electricity is priced over at least three hours and 1.25 times the OFF duration, keeping its extra assumed average input no greater than normal power.',
       'Normal heating and recovery forecasts are fixed envelopes, not measured Mitsubishi heat output.',
       'Charger heat is 7.5% of electricity; it never extends a safe pause.',
       ...(!electricalReady ? ['Euro savings remain provisional because normal and recovery electricity are not fully validated.'] : [])] };

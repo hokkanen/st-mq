@@ -13,21 +13,21 @@ import { Engine } from '../src/app/engine.js';
 const START = Date.parse('2026-01-01T00:00:00Z'), MINUTE = 60_000;
 const LEGACY = 'committed-garage-v1-coupled';
 
-function setup(t, { mismatchedSnapshot = false, mismatchedAccounting = false, existingDebt = true } = {}) {
+function setup(t, { mismatchedSnapshot = false, mismatchedAccounting = false, existingDebt = true, legacy = LEGACY } = {}) {
   let now = START;
   const store = new Store(':memory:');
   const settings = garageSettings({ enabled: true, minOnMs: 30 * MINUTE, protection: { approved: true } });
   const oldSettings = { ...settings, protection: { ...settings.protection, version: 'garage-exposure-v1' } };
   const model = createGarageModel({ seedAt: START - 120 * MINUTE });
-  model.algorithm = LEGACY;
+  model.algorithm = legacy;
   model.state = { rearC: 10, frontC: 9, coreC: 10, differenceC: -1 };
   const first = { at: START - 120 * MINUTE, rearC: 10, frontC: 9, outdoorC: 0, available: true };
   const oldId = store.appendLearningJournal(garageInput('mqtt'), { kind: 'context', at: first.at,
-    key: 'archived-test-seed', algorithmVersion: LEGACY, configVersion: garageDigest(oldSettings),
+    key: 'archived-test-seed', algorithmVersion: legacy, configVersion: garageDigest(oldSettings),
     payload: { settings: oldSettings, value: {}, seed: model } });
-  const archivedRows = structuredClone(store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: LEGACY }));
+  const archivedRows = structuredClone(store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: legacy }));
   store.setState('garage:configuration:mqtt', oldSettings);
-  store.setState('garage:checkpoint:mqtt', { algorithmVersion: LEGACY, model, cursor: oldId });
+  store.setState('garage:checkpoint:mqtt', { algorithmVersion: legacy, model, cursor: oldId });
   const exposure = knownGarageReserve(settings, { at: START, rearC: 8, frontC: 8 });
   if (existingDebt) {
     exposure.version = 'garage-exposure-v1';
@@ -36,12 +36,12 @@ function setup(t, { mismatchedSnapshot = false, mismatchedAccounting = false, ex
   }
   store.setState('garage:exposure:mqtt', exposure);
   const accounting = startGarageAssessment(model, first);
-  accounting.algorithmVersion = LEGACY;
+  accounting.algorithmVersion = legacy;
   accounting.actualState = { rearC: 6, frontC: 4, coreC: 7, differenceC: -2 };
   accounting.actualCostCents = 12; accounting.referenceCostCents = 10; accounting.steps = 5;
   const episode = { id: 'archived-accounting', pauseId: 'archived-pause', status: 'active', phase: 'pause',
     startedAt: first.at, pauseStartedAt: first.at, pauseUntil: START + 15 * MINUTE,
-    algorithmVersion: mismatchedSnapshot || mismatchedAccounting ? GARAGE_ALGORITHM_VERSION : LEGACY,
+    algorithmVersion: mismatchedSnapshot || mismatchedAccounting ? GARAGE_ALGORITHM_VERSION : legacy,
     frozenModel: mismatchedAccounting ? { ...model, algorithm: GARAGE_ALGORITHM_VERSION } : model,
     settings: oldSettings, initialObservation: first,
     initialExposure: createGarageExposure(settings), accounting,
@@ -205,4 +205,20 @@ test('nonfinite exposure created by invalid internal state never passes protecti
     observation: { at: START + MINUTE, rearC: 8, frontC: 7 }, settings });
   assert.equal(assessed.safeToPause, false);
   assert.ok(assessed.reasons.includes('front:exposure-state-invalid'));
+});
+
+
+test('v4 recovery arithmetic remains archived while v5 preserves pipe reserve and starts its own replay epoch', async t => {
+  const legacy = 'committed-garage-v4-simple-off';
+  const f = setup(t, { legacy, existingDebt: false });
+  const saved = f.store.getState('garage:exposure:mqtt');
+  assert.deepEqual(f.runtime.exposure, saved);
+  assert.equal(f.runtime.checkpoint.algorithmVersion, GARAGE_ALGORITHM_VERSION);
+  assert.equal(f.runtime.episode.frozenModel.algorithm, legacy);
+  const accounting = structuredClone(f.runtime.episode.accounting);
+  f.temperatures(6, 4); await f.tick();
+  assert.equal(f.runtime.plan.reason, 'archived-model-recovery');
+  assert.deepEqual(f.runtime.episode.accounting, { ...accounting, qualified: false });
+  assert.deepEqual(f.store.learningJournal({ input: garageInput('mqtt'), algorithmVersion: legacy }), f.archivedRows);
+  assert.deepEqual(replayGarageJournal(f.store, 'mqtt'), f.runtime.checkpoint);
 });

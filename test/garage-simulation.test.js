@@ -4,7 +4,7 @@ import { runScenario } from '../scripts/garage-simulation-audit.js';
 import { runPlanningAudit } from '../scripts/garage-planning-simulation.js';
 import { createPlant, plantInputs, stepPlant, observedPlant, randomSource, pauseSchedule,
   AUDIT_START } from './helpers/garage-plant.js';
-import { createGarageModel, updateGarageModel, replayGarageModel } from '../src/garage/model.js';
+import { createGarageModel, updateGarageModel, replayGarageModel, garageRecoveryHours } from '../src/garage/model.js';
 
 test('independent plant retains separate slow masses through a local door plunge', () => {
   const warm = createPlant({ doors: true }), cold = createPlant({ doors: true });
@@ -49,8 +49,20 @@ test('rare independent episodes remain useful while activity alone cannot qualif
   const activity = runScenario({ name: 'activity', days: 21, cadenceMinutes: 15, parameters: { activityOnly: true } });
   assert.equal(activity.electricalReady, false);
   const noOff = runScenario({ name: 'never-off', days: 21, cadenceMinutes: 15, frequency: 'never' });
-  assert.equal(noOff.ready, false); assert.equal(noOff.maxPauseHours, 0);
+  assert.equal(noOff.ready, false); assert.equal(noOff.validatedOffHours, 0);
   assert.deepEqual(noOff.coefficients.rear, [.03], 'No OFF history leaves the declared cooling prior intact');
+});
+
+test('long OFF audit branches price the full recovery allowance over a proportionate window', () => {
+  const result = runScenario({ days: 21, cadenceMinutes: 15, offDurations: [6, 30] });
+  for (const episode of result.evaluation) {
+    assert.equal(episode.recoveryAllowanceHours, garageRecoveryHours(episode.offHours));
+    assert.ok(episode.recoveryWindowHours >= episode.recoveryAllowanceHours);
+    assert.ok(Math.abs(episode.models.learned.recoveryExtraKwh
+      - result.coefficients.native[0] * episode.offHours * 1.25) < .001);
+    assert.ok(Number.isFinite(episode.models.learned.offEndRearErrorC));
+    assert.ok(Number.isFinite(episode.models.learned.offEndFrontErrorC));
+  }
 });
 
 test('independent noisy journal replay and repeated simulation are deterministic', () => {
@@ -78,7 +90,7 @@ test('default policy chooses only a large opportunity and preserves normal opera
     assert.equal(row.offHours, 0); assert.equal(row.simulatedBillDifferenceEur, 0);
   }
   const selected = report.rows.find(row => row.tariff === 'exceptional-peak' && row.aggressiveness === 50);
-  assert.ok(selected.offHours >= 1 && selected.offHours <= 2);
+  assert.ok(selected.offHours > 2, 'The four-hour tariff opportunity is not capped by the old two-hour policy');
   assert.ok(selected.simulatedBillDifferenceEur > .5);
   assert.ok(selected.minimumFrontC > 3 && selected.minimumRearC > 3);
   assert.ok(selected.endDebtC.coreC < .2 && selected.endDebtC.slabC < .2);

@@ -360,7 +360,6 @@
       "maxSensorAgeMs": 120000,
       "minOnMs": 10800000,
       "minOffMs": 3600000,
-      "maxHorizonHours": 48,
       "stepMinutes": 15,
       "protection": {
         "approved": false,
@@ -380,7 +379,6 @@
       },
       "assumeISave10C": false,
       "minSavingsEur": 0.5,
-      "maxPauseHours": 2,
       "maxPausesPerDay": 1
     }
   },
@@ -646,7 +644,6 @@
       "maxSensorAgeMs": "int(30000,14400000)",
       "minOnMs": "int(0,86400000)",
       "minOffMs": "int(0,10800000)",
-      "maxHorizonHours": "float(2,48)",
       "stepMinutes": "float(5,30)",
       "protection": {
         "approved": "bool",
@@ -666,7 +663,6 @@
       },
       "assumeISave10C": "bool",
       "minSavingsEur": "float(0,100)",
-      "maxPauseHours": "float(0.5,8)",
       "maxPausesPerDay": "int(1,4)"
     }
   },

@@ -2,12 +2,12 @@
  * is an operational approximation, not a certified first-ice prediction. */
 export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
-export const GARAGE_PREFERENCE_VERSION = 'garage-simple-opportunities-v1';
+export const GARAGE_PREFERENCE_VERSION = 'garage-protection-limited-opportunities-v2';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
   enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false, assumeISave10C: false,
-  minSavingsEur: .5, maxPauseHours: 2, maxPausesPerDay: 1,
+  minSavingsEur: .5, maxPausesPerDay: 1,
   maxSensorAgeMs: 120_000, minOnMs: 3 * 3_600_000, minOffMs: 3_600_000,
-  maxHorizonHours: 48, stepMinutes: 15,
+  stepMinutes: 15,
   protection: Object.freeze({ approved: false, version: GARAGE_POLICY_VERSION,
     marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 }),
 });
@@ -19,6 +19,9 @@ function number(input, key, min, max) {
 }
 export function garageSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Garage settings must be an object');
+  // Read saved owner settings without retaining retired pause/horizon ceilings.
+  const { maxPauseHours: _retiredPause, maxHorizonHours: _retiredHorizon, ...current } = input;
+  input = current;
   for (const key of Object.keys(input)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS, key)) throw new Error(`Unknown garage setting: ${key}`);
   if (input.protection != null && (typeof input.protection !== 'object' || Array.isArray(input.protection))) throw new Error('Garage protection must be an object');
   const supplied = input.protection ?? {};
@@ -34,12 +37,12 @@ export function garageSettings(input = {}) {
   const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
   for (const key of ['enabled', 'frontRequired', 'assumeISave10C']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   number(output, 'aggressiveness', 0, 100); number(output, 'baselineC', 8, 16);
-  number(output, 'minSavingsEur', 0, 100); number(output, 'maxPauseHours', .5, 8);
+  number(output, 'minSavingsEur', 0, 100);
   number(output, 'maxPausesPerDay', 1, 4);
   if (!Number.isInteger(output.maxPausesPerDay)) throw new Error('Garage maxPausesPerDay must be a whole number');
   number(output, 'maxSensorAgeMs', 30_000, 4 * 3_600_000);
   number(output, 'minOnMs', 0, 24 * 3_600_000); number(output, 'minOffMs', 0, 3 * 3_600_000);
-  number(output, 'maxHorizonHours', 2, 48); number(output, 'stepMinutes', 5, 30);
+  number(output, 'stepMinutes', 5, 30);
   const policy = output.protection;
   if (typeof policy.approved !== 'boolean') throw new Error('Garage protection approval must be boolean');
   if (policy.version !== GARAGE_POLICY_VERSION) throw new Error('Unsupported garage protection policy version');

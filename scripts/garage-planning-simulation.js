@@ -68,7 +68,7 @@ export function runPlanningAudit({ days = 43, cadenceMinutes = 5, parameters = {
   return { fixtureVersion: 'independent-garage-plant-v1', algorithm: model.algorithm,
     protectionVersion: garageSettings().protection.version, restorationDelayMs,
     scope: 'Open-loop software simulation of a frozen plan with 24h extra recovery at 7c/kWh; residual mass debt remains explicit. No installed performance or realized savings claim.',
-    training: { days, cadenceMinutes, ready: trained.ready, electricalReady: trained.electricalReady, maxPauseHours: trained.maxPauseHours },
+    training: { days, cadenceMinutes, ready: trained.ready, electricalReady: trained.electricalReady, validatedOffHours: trained.validatedOffHours },
     defaults: garageSettings(), runtimeMs: round(performance.now() - started), rows };
 }
 /** Causal bootstrap: the planner's own choices are the only source of OFF data.
@@ -106,7 +106,7 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
         planned = planGarage({ now: at, model, exposure, observation, prices, forecast, settings, restorationDelayMs });
         const summary = garageModelSummary(model);
         opportunities.push({ day: round(hour / 24), ready: summary.ready, electricalReady: summary.electricalReady,
-          maxPauseHours: round(summary.maxPauseHours), completedEpisodes: summary.validation.completedEpisodes,
+          validatedOffHours: round(summary.validatedOffHours), completedEpisodes: summary.validation.completedEpisodes,
           reason: planned.reason, learningTrial: planned.learningTrial ?? false,
           plannedOffHours: round(planned.steps.reduce((sum, step) => sum + (step.available === false ? (step.end - step.start) / HOUR : 0), 0)),
           timingBenefitEur: round(planned.timingBenefitEur), evidence: planned.evidence ?? null });
@@ -121,7 +121,7 @@ export function runBootstrapAudit({ days = 42, cadenceMinutes = 5, parameters = 
   return { algorithm: model.algorithm, days, cadenceMinutes, seed, parameters, peakCents, baseCents,
     protectionVersion: settings.protection.version, protectionCadenceMinutes: 1, restorationDelayMs,
     nativeSamples: model.native.samples, totalOffHours: round(totalOffHours),
-    ready: summary.ready, electricalReady: summary.electricalReady, maxPauseHours: round(summary.maxPauseHours),
+    ready: summary.ready, electricalReady: summary.electricalReady, validatedOffHours: round(summary.validatedOffHours),
     validation: summary.validation, stateBytes: Buffer.byteLength(JSON.stringify(model)),
     runtimeMs: round(performance.now() - started), opportunities };
 }

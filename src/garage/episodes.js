@@ -1,5 +1,5 @@
 import { predictGarageStep, GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS,
-  qualifiedGaragePower, garageChargingClean } from './model.js';
+  garageRecoveryHours, qualifiedGaragePower, garageChargingClean } from './model.js';
 import { garageDoorIntervalUnknown } from './door-state.js';
 
 const HOUR = 3_600_000, finite = Number.isFinite;
@@ -12,7 +12,7 @@ export function startGarageAssessment(model, observation) {
     actualState: structuredClone(initial), referenceState: structuredClone(initial),
     actualCostCents: 0, referenceCostCents: 0, actualKwh: 0, referenceKwh: 0, uncertaintyCents: 0,
     coveredMs: 0, missingMs: 0, recordedMs: 0, steps: 0, qualified: true, provisional: true,
-    recoveryAllowanceKwh: 0, recoveryAccountedKwh: 0, recoveryHours: 0 };
+    offHours: 0, recoveryAllowanceKwh: 0, recoveryAccountedKwh: 0, recoveryHours: 0 };
 }
 export function updateGarageAssessment(previous, model, observation, { recordedKwh = null, priceCtPerKwh = null, priceSegments = null } = {}) {
   const next = structuredClone(previous), duration = observation.at - next.at;
@@ -50,10 +50,11 @@ export function updateGarageAssessment(previous, model, observation, { recordedK
       const observed = recorded || qualifiedGaragePower(actual);
       let energy = recorded ? recordedKwh * (segment.end - segment.start) / duration : execution.electricityKwh;
       if (actual.available === false) {
+        next.offHours += hours;
         next.recoveryAllowanceKwh += Math.max(0, reference.electricityKwh - energy) * GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor;
       } else {
         const repayment = Math.min(Math.max(0, next.recoveryAllowanceKwh - next.recoveryAccountedKwh),
-          next.recoveryAllowanceKwh * hours / GARAGE_MODEL_ASSUMPTIONS.recoveryTimeHours);
+          next.recoveryAllowanceKwh * hours / garageRecoveryHours(next.offHours));
         next.recoveryHours += hours; next.recoveryAccountedKwh += repayment;
         // Qualified actual input already includes recovery. Unmetered costs
         // explicitly repay the same allowance used when selecting the pause.
@@ -92,6 +93,6 @@ export function completeGarageAssessment(assessment) {
     electricityBasis: assessment.recordedMs === assessment.coveredMs ? 'qualified-recorded-electricity'
       : assessment.recordedMs ? 'recorded-and-modeled-electricity' : 'modeled-native-electricity',
     serviceBasis: 'both external locations recovered within 0.25 C of frozen normal reference; runtime requires sustained normal heating and pipe reserve recovery',
-    recoveryEnergyBasis: 'observed-electricity-when-qualified-otherwise-fixed-recovery-allowance',
+    recoveryEnergyBasis: 'observed-electricity-when-qualified-otherwise-duration-scaled-recovery-allowance',
     stage: 'completed', selectionBasis: 'cycles-completed-in-range' };
 }

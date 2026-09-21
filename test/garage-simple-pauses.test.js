@@ -285,3 +285,41 @@ test('sustained normal recovery cannot close on stale inputs, unaccepted baselin
     assert.equal(f.runtime.checkpoint.model.normalReference.initialized, true);
   }
 });
+
+test('a healthy pause beyond seven days retains its evidence until actual restoration', t => {
+  const model = candidate().model, f = runtimeFixture(t, {}, model);
+  const first = { at: NOW, rearC: 10, frontC: 9, outdoorC: 8, available: false,
+    baselineAccepted: true, priceCtPerKwh: 100, priceStartAt: NOW - HOUR, priceEndAt: NOW + HOUR };
+  f.runtime.startEpisode('long-pause-reporting', { pauseUntil: NOW + 24 * HOUR, recoveryHours: 270 }, first, NOW);
+  f.native.native.power = 'off'; f.native.phase = 'paused';
+  const episode = f.runtime.episode;
+  episode.startedAt = NOW - 8 * 24 * HOUR;
+  episode.accounting.offHours = 8 * 24;
+  episode.accounting.at = NOW - MINUTE;
+  episode.accounting.previous = { ...first, at: NOW - MINUTE };
+  f.runtime.advanceEpisode(first, [], NOW);
+  assert.equal(f.runtime.episode.phase, 'pause');
+  assert.equal(f.runtime.episode.accounting.qualified, true);
+  assert.notEqual(f.runtime.episode.reason, 'recovery-evidence-timeout');
+});
+
+test('long-pause changed-weather recovery cannot close at the old eight-hour fallback', t => {
+  const model = candidate().model, f = runtimeFixture(t, {}, model);
+  f.runtime.startEpisode('long-pause-recovery', { pauseUntil: NOW, recoveryHours: 30 },
+    { at: NOW, rearC: 10, frontC: 9, outdoorC: 0, available: true }, NOW);
+  f.runtime.episode.phase = 'recovery'; f.runtime.episode.accounting.qualified = false;
+  f.runtime.episode.accounting.offHours = 24;
+  f.runtime.protection = { requiredFresh: true };
+  for (let minute = 0; minute <= 30 * 60; minute++) {
+    const at = NOW + minute * MINUTE; f.at(at);
+    f.runtime.exposure = knownGarageReserve(f.config.garage, { at, rearC: 7, frontC: 6 });
+    f.runtime.advanceEpisode({ at, rearAt: at, frontAt: at, rearC: 7, frontC: 6, outdoorC: -10,
+      available: true, baselineAccepted: true }, [], at);
+    if (minute < 30 * 60) assert.ok(f.runtime.episode);
+  }
+  assert.equal(f.runtime.episode, null);
+  const completed = f.store.cycles({ input: 'garage:mqtt' })[0];
+  assert.equal(completed.status, 'incomplete'); assert.equal(completed.assessment, null);
+  assert.equal(completed.reason, 'sustained-normal-operation-reference-reset');
+  assert.deepEqual(replayGarageJournal(f.store, 'mqtt'), f.runtime.checkpoint);
+});

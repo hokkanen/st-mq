@@ -127,7 +127,8 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(status.garage.adapter.automaticControl, false);
   assert.equal(status.garage.adapter.liveControlSupported, false);
   assert.equal(status.garage.settings.assumeISave10C, true, 'Saved owner assumption remains distinct from native verification');
-  assert.equal(status.garage.settings.maxPauseHours, 2);
+  assert.equal(Object.hasOwn(status.garage.settings, 'maxPauseHours'), false);
+  assert.equal(Object.hasOwn(status.garage.settings, 'maxHorizonHours'), false);
   assert.equal(status.garage.preferences?.available ?? false, false);
   assert.equal(status.garage.adapter.baselineVerified, undefined);
   assert.equal(status.garage.adapter.native, undefined);

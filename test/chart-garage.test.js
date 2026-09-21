@@ -191,5 +191,5 @@ test('all Garage input and coefficient axes are selectable without adding them t
     assert.equal(result.meta.garageHistory.basis, 'original-garage-inputs-and-versioned-read-only-replay');
   }
   assert.equal(Object.keys(GARAGE_COEFFICIENT_INFO).length, 3);
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v4-simple-off');
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v5-protection-limited');
 });

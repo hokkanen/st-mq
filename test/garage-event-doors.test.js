@@ -122,16 +122,17 @@ test('interrupted door evidence cannot train or validate and replay keeps the or
   assert.equal(checkpoint.algorithmVersion, GARAGE_ALGORITHM_VERSION);
 });
 
-test('configured unknown and open doors preserve previously validated pause durations', () => {
+test('configured unknown and open doors preserve recorded validation evidence', () => {
   const model = createGarageModel({ seedAt: START });
-  const summary = { thermalReady: true, electricalReady: true, maxPauseHours: 2 };
+  model.normalReference.initialized = true;
+  const summary = { thermalReady: true, electricalReady: true, validatedOffHours: 2 };
   for (const doorFront of [null, true]) {
     const evidence = garagePlanningEvidence(model, summary, { now: START,
-      observation: sample(0, { doorFront }) });
-    assert.equal(evidence.maxPauseHours, 2);
-    assert.equal(evidence.reason, 'validated-episode-duration');
+      observation: sample(0, { doorFront, available: true, baselineAccepted: true }) });
+    assert.equal(evidence.validatedOffHours, 2);
+    assert.equal(evidence.eligible, true, 'Door admission is separate from recorded model evidence');
   }
-  assert.equal(garagePlanningEvidence(model, summary, { now: START, observation: sample(0) }).maxPauseHours, 2);
+  assert.equal(garagePlanningEvidence(model, summary, { now: START, observation: sample(0) }).validatedOffHours, 2);
 });
 
 test('a door gap with recovered endpoints preserves cost observations but ends the savings qualification', () => {

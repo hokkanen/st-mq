@@ -56,13 +56,16 @@ by their combined elapsed time; it does not imply that the same hours were
 observed in both systems. Missing periods are never scaled up.
 
 The Garage heating configuration follows Home's control, pause and learning
-structure. Savings & protection lists explicit minimum benefit, OFF duration,
+structure. Savings & protection lists explicit minimum benefit, minimum planned OFF time,
 normal-heating dwell, daily limit and reference-pipe assumptions. Garage learning
 has four matching sections: **Learning outcomes · Calculated**, **Model inputs ·
 Recorded & modeled**, **Model coefficients · Current values**, and **Planning &
 safeguards · Decisions & limits**. Rows distinguish learned cooling, observed normal
 power, fixed assumptions and unavailable readings without a completion percentage.
 There are two adjustable thermal coefficients, rear/front cooling per hour.
+**Validated OFF evidence** reports the duration covered by clean episode checks.
+It is never labeled a maximum pause: longer forecasts receive extra uncertainty
+margins, and temperatures plus the pipe reserve determine the safe duration.
 
 The Mitsubishi Heat-pump settings fold includes **Assume i-save 10°C**. Its room
 setting is marked **Assumed i-save** while expanded native readbacks remain

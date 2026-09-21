@@ -271,3 +271,27 @@ active validation as incomplete, and retains learned cooling rates. The same
 context event replays deterministically; new normal-temperature evidence must
 qualify before another economic pause. Brief charging disturbances, changed
 baseline/source and unqualified electricity never fabricate completed savings.
+
+## Garage protection-limited OFF epoch
+
+`committed-garage-v5-protection-limited` and planning policy
+`garage-protection-limited-opportunities-v2` remove fixed OFF duration ceilings.
+Completed experiment durations describe forecast evidence; uncertainty continues
+increasing beyond that evidence and feeds the unchanged copper-pipe protection.
+Planning uses contiguous published price/weather coverage, without a separate
+configured maximum horizon. Renewable driver permission remains short, and an
+active episode cannot extend its originally authorized endpoint.
+
+Recovery electricity retains the explicit 125% allowance, priced and accounted
+for over at least three hours and at least 1.25 times the actual OFF duration.
+Whole-episode validation waits for the same recovery allowance; elapsed OFF time
+alone never expires an experiment. Incomplete-recovery reporting timeouts start
+after restoration, and the warm-native fallback also respects the scaled
+recovery window. The retained episode and journal state stays bounded.
+
+The v4 learner and frozen assessments are archival at Git revision `ccf0070`.
+The first v5 journal entry saves a fresh seed and algorithm boundary; v4 records
+are never reinterpreted using the changed recovery arithmetic. Existing pipe
+states, original observations and unresolved native restoration survive. Old
+frozen episodes follow archived recovery without new savings claims or OFF
+renewal. Home learning, charging and CSV interpretation are unchanged.

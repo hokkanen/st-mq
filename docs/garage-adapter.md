@@ -108,8 +108,12 @@ These are tests of the host consumer; the injected receiver does not implement
 CN105 decoding or prove that a real device enforces a lease.
 
 The runtime calls `plannerTick({now, valid, plan, recoveryReady, demand})` with a
-stable plan/episode ID, bounded `pauseFrom`/`pauseUntil`, and an independently
-bounded permission deadline. Only that method can
+stable plan/episode ID, finite `pauseFrom`/`pauseUntil`, and an independently
+bounded short permission deadline. There is no fixed maximum for the total
+continuous episode: ST-MQ chooses its endpoint from temperatures, pipe reserve,
+uncertainty, economics and available forecast coverage. The Pill retains only
+the compact active episode and current permission, so a longer pause does not
+accumulate device-side samples or commands. Only that method can
 start or renew. `safetyTick` can revoke permission and request release, but cannot
 renew, and there is no networking renewal timer. Commands carry current device,
 boot, adapter session, host ownership, episode, monotonic command sequence,
@@ -229,7 +233,7 @@ persistence failures, causal native confirmation, relative clocks, counter
 resets/gaps/quantization, source selection and read-only MQTT wiring. Runtime
 integration uses a saved explicit synthetic seed to exercise endogenous starts,
 renewals, sensor expiry, persistence failure, authority/close behavior and
-successive pause IDs within one frozen assessment with residual front debt. These tests
+rejection of another pause until the original event and its recovery are resolved. These tests
 do not establish installed pipe safety, baseline preservation, native-meter
 accuracy or realized savings.
 

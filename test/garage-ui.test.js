@@ -358,6 +358,23 @@ test('future and active pause windows use their selected endpoints, with no preh
   }
 });
 
+test('validated OFF evidence is distinct from the planned minimum and has no pause ceiling', () => {
+  const display = garageDisplay({ settings: garageSettings(), learning: {
+    ...garageModelSummary(createGarageModel()), thermalReady: true, validatedOffHours: 1.5,
+  }, plan: { pauseFrom: now, pauseUntil: now + 30 * 3600_000 } });
+  const evidence = display.outcomeDetails.find(row => row.key === 'thermal-pause-duration');
+  assert.equal(evidence.title, 'Validated OFF evidence');
+  assert.equal(evidence.value, '1.5 h');
+  assert.match(evidence.detail, /does not impose a maximum pause/);
+  const minimum = display.planningDetails.find(row => row.key === 'pause-duration-limits');
+  assert.equal(minimum.title, 'Minimum planned OFF time');
+  assert.equal(minimum.value, '1 h');
+  assert.match(minimum.detail, /no fixed maximum pause/);
+  assert.match(minimum.detail, /Protection can always end a pause before the planned minimum/);
+  assert.notEqual(display.planningDetails.find(row => row.key === 'pause-window').value, 'None');
+  assert.match(display.planningDetails.find(row => row.key === 'restore-policy').detail, /does not cap its total length/);
+});
+
 test('Garage rendering fills the learning contexts and keeps reconstruction inside evidence', () => {
   const nodes = new Map(['garage-learning-context', 'garage-input-context', 'garage-coefficient-context'].map(id => [id, { textContent: '' }]));
   renderGarage({ getElementById: id => nodes.get(id) }, { garage: { learning: garageModelSummary(createGarageModel()) }, now });

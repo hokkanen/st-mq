@@ -20,7 +20,7 @@ const sentences = values => values.map(value => text(value).trim().replace(/[.\s
 const opportunity = reason => ({
   'automatic-control-disabled': 'Automatic control is disabled',
   'normal-heating-preference': 'Normal heating selected',
-  'bounded-learning-trial': 'A worthwhile short pause can test the initial cooling estimates',
+  'protection-limited-learning-opportunity': 'Initial cooling estimates use extra uncertainty margins; pipe protection limits the pause',
   'continue-authorized-economic-episode': 'Continue the current pause within its original endpoint',
   'garage-door-open-below-2c': 'An open door below 2°C outdoors prevents a new pause',
   'garage-door-state-unknown': 'Waiting for fresh garage-door readings',
@@ -34,17 +34,17 @@ const opportunity = reason => ({
   'normal-heating-recovery': 'Waiting for both locations and pipe reserves to recover',
   'minimum-normal-heating-time': 'Waiting for the minimum period of normal heating',
   'no-native-heating-demand': 'No current heating demand supports a savings pause',
-  'insufficient-validated-thermal-evidence': 'Waiting for validated temperature evidence',
+  'insufficient-normal-heating-evidence': 'Waiting for a settled normal-heating reference and accepted pump state',
   'learning-episode-recovering': 'Waiting for the current learning episode to recover',
   'learning-trial-recovery-interval': 'Waiting between learning trials',
   'benefit-below-warmth-or-prediction-resolution': 'Expected timing benefit does not cover warmth and prediction uncertainty',
-  'credible-price-timing-opportunity': 'Price timing supports a pause within validated limits',
+  'credible-price-timing-opportunity': 'Price savings and the forecast pipe reserve support this pause',
   'prepare-for-later-price-opportunity': 'Normal heating continues until a later price opportunity',
 })[reason] ?? text(reason ?? 'Normal heating').replace(/^./, value => value.toUpperCase());
 const opportunitySummary = reason => ({
   'automatic-control-disabled': 'Automatic control disabled',
   'normal-heating-preference': 'Normal heating selected',
-  'insufficient-validated-thermal-evidence': 'Awaiting temperature evidence',
+  'insufficient-normal-heating-evidence': 'Awaiting normal-heating evidence',
   'learning-episode-recovering': 'Awaiting recovery',
   'learning-trial-recovery-interval': 'Between learning trials',
   'benefit-below-warmth-or-prediction-resolution': 'Insufficient timing benefit',
@@ -78,10 +78,10 @@ function garageCoefficientRows(learning) {
       electricity.basis === 'observed-normal-power' ? `${number(electricity.hours, 'h')} qualified normal-heating electricity.` : 'Estimated savings remain assumption-based until dedicated pump electricity is qualified.'),
     learningRow('charger-heat-fraction', 'Charging heat fraction', finite(assumptions.evHeatFraction) ? number(assumptions.evHeatFraction * 100, '%') : 'Unavailable',
       'Fixed assumptions', 'Assumed', '7.5% of recorded charging electricity is attributed to garage heat. This is an estimate, not measured vehicle heat. Expected charging never extends a safe pause.'),
-    learningRow('recovery-time', 'Recovery time', number(assumptions.recoveryTimeHours, 'h'), 'Fixed assumptions', 'Assumed',
-      'Time scale used for the recovery forecast after normal heating resumes. The next pause also waits for observed recovery at both locations.'),
+    learningRow('recovery-time', 'Recovery temperature time scale', number(assumptions.recoveryTimeHours, 'h'), 'Fixed assumptions', 'Assumed',
+      'Time scale used only for the illustrative temperature forecast after normal heating resumes. The electricity allowance uses a longer period for long pauses. Actual recovery at both locations and their pipe reserves determines readiness for another pause.'),
     learningRow('recovery-energy-factor', 'Recovery electricity allowance', number(assumptions.recoveryEnergyFactor, '×'), 'Fixed assumptions', 'Assumed',
-      'Allows for additional electricity when heat is restored. The full recovery allowance is priced before a pause can count as worthwhile.'));
+      'Allows for additional electricity when heat is restored. Its pricing period is at least three hours and at least 1.25 times the OFF duration, also respecting the configured minimum normal-heating time. The full allowance is priced before a pause can count as worthwhile. Recovery is not assumed complete when the temperature forecast’s three-hour time scale elapses.'));
   return { details, rows: details.map(row => [row.title, `${row.value} · ${row.provenance}. ${row.detail}${row.evidence ? ` ${row.evidence}` : ''}`]) };
 }
 
@@ -90,13 +90,13 @@ function garageLearningRows(garage, policy) {
   const planReason = plan.reason ?? plan.reasons?.[0] ?? garage.reason;
   const reference = learning.normalReference;
   const thermal = learning.thermalReady, electrical = learning.electricalReady;
-  const duration = finite(learning.maxPauseHours) && learning.maxPauseHours > 0 ? number(learning.maxPauseHours, 'h')
-    : finite(learning.maxPauseHours) ? 'Not yet established' : 'Unavailable';
+  const duration = finite(learning.validatedOffHours) && learning.validatedOffHours > 0 ? number(learning.validatedOffHours, 'h')
+    : finite(learning.validatedOffHours) ? 'Not yet established' : 'Unavailable';
   const outcomes = [
     learningRow('temperature-prediction', 'Cooling prediction', thermal === true ? 'Validated' : thermal === false ? 'Awaiting validation' : 'Unavailable',
       'Pause readiness', 'Calculated', 'Complete cooling and recovery episodes test the two local cooling forecasts. The pipe reserve and fresh measurements still limit each actual pause.'),
-    learningRow('thermal-pause-duration', 'Supported pause duration', duration, 'Pause readiness', 'Episode checks',
-      'Longest OFF duration supported by the retained clean cooling and recovery evidence. This is a ceiling, not a requested pause.'),
+    learningRow('thermal-pause-duration', 'Validated OFF evidence', duration, 'Forecast evidence', 'Episode checks',
+      'OFF duration covered by retained clean cooling and recovery checks. Longer forecasts receive larger uncertainty margins; this evidence does not impose a maximum pause.'),
     learningRow('electricity-prediction', 'Savings estimate basis', electrical === true ? 'Qualified electricity' : learning.electricity ?
       learning.electricity.basis === 'observed-normal-power' ? 'Recorded average + recovery allowance' : 'Assumed electricity + recovery allowance' : 'Unavailable',
       'Savings estimate', electrical === true ? 'Recorded & modeled' : 'Estimated',
@@ -111,7 +111,7 @@ function garageLearningRows(garage, policy) {
   const evidenceDetails = [];
   if (validation) {
     evidenceDetails.push(learningRow('complete-clean-episodes', 'Complete clean episodes', number(validation.completedEpisodes), 'Episode evidence', 'Recorded',
-      'Complete OFF and recovery periods provide evidence for pause duration. Disturbed periods do not qualify clean validation.',
+      'Complete OFF and recovery periods test the cooling forecast over their observed duration. Disturbed periods do not qualify clean validation.',
       `${number(validation.trainingEpisodes)} training · ${number(validation.validationEpisodes)} validation episodes.`));
     for (const location of ['rear', 'front']) {
       const cap = location === 'rear' ? 'Rear' : 'Front';
@@ -159,8 +159,8 @@ function garageLearningRows(garage, policy) {
       'An opening rechecks protection using the local readings. Unknown configured doors or outdoor temperature block a new pause, as does an open door below 2°C outdoors.'),
     learningRow('minimum-savings', 'Minimum estimated benefit', finite(settings.minSavingsEur) ? `€${number(settings.minSavingsEur)}` : 'Unavailable',
       'Pause limits', 'Configured', 'A pause must exceed this saving estimate after recovery electricity and prediction uncertainty allowances. Small price differences are left to normal heating.'),
-    learningRow('pause-duration-limits', 'Pause duration', finite(settings.minOffMs) && finite(settings.maxPauseHours) ? `${number(settings.minOffMs / 3_600_000)}–${number(settings.maxPauseHours)} h` : 'Unavailable',
-      'Pause limits', 'Configured', 'Pauses must fit these configured limits and current thermal support. A short initial learning pause can establish support. Protection can always end a pause earlier.'),
+    learningRow('pause-duration-limits', 'Minimum planned OFF time', number(finite(settings.minOffMs) ? settings.minOffMs / 3_600_000 : null, 'h'),
+      'Pause limits', 'Configured', 'There is no fixed maximum pause. Temperatures, forecast pipe reserve, uncertainty, available price and weather data, and remaining savings determine the endpoint. Protection can always end a pause before the planned minimum.'),
     learningRow('daily-pause-limit', 'Maximum pauses per day', number(settings.maxPausesPerDay), 'Pause limits', 'Configured',
       'Only the larger opportunities are selected, keeping additional pump starts infrequent.',
       finite(garage.planningLimits?.pausesToday) ? `${number(garage.planningLimits.pausesToday)} starts recorded today, including unconfirmed attempts.` : undefined),
@@ -168,15 +168,15 @@ function garageLearningRows(garage, policy) {
       'Pause limits', 'Configured', 'Fresh normal-heating evidence is required for at least this long, including after startup or a reading gap. After a pause, both local temperatures and pipe reserves must also recover.',
       finite(garage.planningLimits?.normalHeatingReadyAt) ? `Current continuous normal-heating interval reaches its minimum at ${clock(garage.planningLimits.normalHeatingReadyAt)}. All other checks still apply.` : 'Waiting for a fresh continuous normal-heating interval.'),
     learningRow('charging-policy', 'Charging', 'Wait before a new pause', 'Pause limits', 'Fixed policy',
-      'A new savings pause waits until charging has stopped because charging heat can reduce the pump’s own demand. Charging that starts during a pause never extends its permitted OFF duration.'),
+      'A new savings pause waits until charging has stopped because charging heat can reduce the pump’s own demand. Future charging heat receives no credit when predicting how long a pause is safe.'),
     learningRow('protection-policy', 'Freezing protection', policy.approved === true ? 'Owner-approved' : policy.approved === false ? 'Not approved' : 'Approval unknown',
       'Safeguards', 'Configured', 'The rear and front reference pipes must retain their configured margin through the remaining permission and useful-heating delay. Missing fresh evidence requests normal heating.'),
     learningRow('restore-policy', 'Return to normal heat', 'Short local lease + recovery check', 'Safeguards', 'Device + observed temperatures',
-      'The adapter restores native ON when its short OFF permission expires. ON readback and useful warmth are separate checks. A failed adapter or serial path can prevent restoration.'),
+      'The adapter restores native ON when its short renewable OFF permission expires. Renewals can maintain one continuous pause of any thermally permitted duration; this communication safeguard does not cap its total length. ON readback and useful warmth are separate checks. A failed adapter or serial path can prevent restoration.'),
   ];
   return { outcomeRows: outcomes.map(row => [row.title, `${row.value}. ${row.detail}`]), inputRows: inputDetails.map(row => [row.title, row.detail]),
     outcomeDetails: outcomes, evidenceDetails, inputDetails, planningDetails,
-    outcomeContext: 'Two cooling rates describe how the garage cools with heating off. Complete cooling and recovery checks establish the supported pause duration.',
+    outcomeContext: 'Two cooling rates describe how the garage cools with heating off. Complete cooling and recovery checks measure forecast accuracy. Temperatures and the pipe reserve limit each pause, with extra margins beyond observed evidence.',
     inputContext: 'Recorded temperatures, door events and pump state support the model. Charging heat and unmetered electricity remain explicit assumptions. Missing readings remain unknown.',
     coefficientContext: 'Only the rear and front cooling rates are fitted. The electricity and recovery estimates below stay visible as separate assumptions.' };
 }
@@ -247,7 +247,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const settingGroups = {
     heating: [
       ['Normal Mitsubishi setting', settings.assumeISave10C === true ? '10 °C · Assumed i-save' : number(settings.baselineC, '°C'), 'Existing pump setting. Change the i-save assumption in Mitsubishi Heat-pump settings.'],
-      ['Savings selection', finite(settings.aggressiveness) ? settings.aggressiveness === 0 ? 'Normal heating' : 'Larger opportunities' : 'Unavailable', 'Normal heating stays available when savings are disabled. Otherwise only pauses meeting the minimum benefit, duration and recovery limits are considered.'],
+      ['Savings selection', finite(settings.aggressiveness) ? settings.aggressiveness === 0 ? 'Normal heating' : 'Larger opportunities' : 'Unavailable', 'Normal heating stays available when savings are disabled. Otherwise only pauses meeting the minimum benefit and planned OFF time, with current pipe protection and recovery checks are considered.'],
     ],
     protection: [
       ['Protection margin', number(policy.marginC, '°C'), 'Heat reserve is calculated above this temperature. Heating is requested early to allow time for warming.'],

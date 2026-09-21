@@ -12,18 +12,21 @@ The Garage card opens Heating configuration. Its controls, Pause savings,
 Savings & protection and Garage learning follow the structure of Home heating.
 The learning disclosure has four sections:
 
-- **Learning outcomes · Calculated:** supported cooling duration, prediction
+- **Learning outcomes · Calculated:** validated cooling evidence, prediction
   errors, normal rear/front warmth and electricity estimate basis.
 - **Model inputs · Recorded & modeled:** external temperatures, native availability,
   reported electricity/activity, door evidence and fixed charger heat attribution.
 - **Model coefficients · Current values:** rear/front cooling rates and the few
   fixed electricity/recovery assumptions, with their evidence.
 - **Planning & safeguards · Decisions & limits:** current opportunity, minimum
-  saving, dwell/duration limits, daily count and independent protection.
+  saving, minimum OFF time, pause spacing, daily count and independent protection.
 
 Permanent engineering settings use private configuration and Apply configuration.
 Defaults are `enabled:false`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
-`maxPauseHours:2`, `minOnMs:10800000` (three hours) and `maxPausesPerDay:1`.
+`minOnMs:10800000` (three hours) and `maxPausesPerDay:1`. There is no fixed
+maximum pause or artificial planning-horizon cutoff. Local temperatures, the
+predicted pipe reserve and uncertainty, price/weather coverage and remaining
+savings determine how long heating can stay OFF.
 The daily limit counts starts in the Finnish calendar day, including unsuccessful
 attempts. A new process must observe the normal-heating dwell again. A reporting
 interruption or OFF state resets that dwell. The retained `aggressiveness` setting
@@ -88,13 +91,14 @@ other's reserve. See [protection assumptions](garage-protection-defaults.md).
 
 Permissions are revalidated every minute and bounded by fresh external temperature
 evidence, outstanding possible OFF permission and the driver’s useful-heating
-response allowance. The independent safety loop can revoke permission but never
+response allowance. The Pill's short renewable OFF permission protects against
+communication loss; it does not limit the total continuous pause. The independent safety loop can revoke permission but never
 renew it. Persistence precedes OFF publication. Shutdown, lost authority, stale
 inputs and restart retain restoration obligations; restart never resumes OFF.
 
 ## Learning, recovery and reporting
 
-`committed-garage-v4-simple-off` learns only two effective cooling coefficients,
+`committed-garage-v5-protection-limited` learns only two effective cooling coefficients,
 from clean OFF intervals. Charger heat is **7.5% of qualifying charger energy**
 (or power), shown separately. It never schedules charging for warmth or credits
 future charging when judging safe OFF time. Current charging suppresses a new
@@ -105,22 +109,26 @@ Normal electricity uses a qualified observed mean when available, otherwise an
 explicit **0.5 kW assumption**. Compressor activity/frequency is never converted
 to watts, and electrical input does not establish delivered thermal heat. The
 planner repays **125% of estimated avoided electricity** at subsequent prices,
-spread over at least three hours, and deducts prediction uncertainty. This is a
+spread over at least three hours and at least 1.25 times the OFF duration, and
+deducts prediction uncertainty. This is a
 conservative accounting assumption, not a learned COP or a verified savings claim.
 Flat or small price differences keep normal heating available.
 
-The first worthwhile opportunity can be a bounded one-hour trial after normal
-reference learning. Longer pauses require completed training and held-out
-cooling/recovery evidence. All opportunities remain capped at two hours by default.
+Once normal reference learning qualifies, the first worthwhile opportunity may
+use the initial cooling estimates with explicit uncertainty margins. Completed
+training and held-out cooling/recovery episodes improve the forecast evidence.
+The observed validation duration is shown as evidence, not a permission ceiling;
+forecasts beyond it carry increasing uncertainty. The one-hour planned minimum
+avoids frequent short cycles. Protection can always restore heating sooner.
 Every event has one contiguous OFF interval and a fixed latest endpoint. No new
 pause can start during its recovery. Both actual external temperatures, sustained
 normal availability and both pipe reserves determine recovery; no hidden building
 core is estimated. A missing-accounting recovery closes without claiming savings.
 
-The first v4 journal entry saves its own seed. Live learning, reconstruction and
+The first v5 journal entry saves its own seed. Live learning, reconstruction and
 coefficient charts share the ordered update function and recorded configuration.
 Previous algorithms are archival; their frozen forecasts and costs are never
-reinterpreted as v4. Existing protection and measured restoration obligations
+reinterpreted as v5. Existing protection and measured restoration obligations
 survive the version boundary. Sensor corrections remain source events and never
 rewrite original observations. See [reconstruction contract](reconstruction-and-versioning.md).
 
@@ -132,11 +140,13 @@ it. **Heating savings** keeps Home / Garage / Total and preserves missing or
 negative results. See [reporting](garage-reporting.md), [model details](garage-model.md)
 and [independent simulation](garage-simulation-audit.md).
 
-If changed weather makes the frozen pre-pause temperatures unreachable, eight
-continuous hours of fresh accepted native ON with both actual locations and both
-certain pipe references above the protection margin can close recovery as
-**incomplete**, with no savings claim. This also respects a longer configured
-minimum ON time. Closing and a normal-reference reset are committed atomically.
+If changed weather makes the frozen pre-pause temperatures unreachable, recovery
+can close as **incomplete**, with no savings claim, after continuous fresh accepted
+native ON with both actual locations and both certain pipe references above the
+protection margin. That continuous interval must cover the longest of eight hours,
+the configured minimum ON time, the originally planned recovery-pricing period,
+and the recovery allowance for the actual OFF duration (at least three hours and
+1.25 times OFF hours). Longer pauses therefore retain their full recovery obligation. Closing and a normal-reference reset are committed atomically.
 The reset clears reference/electricity observers and their previous input, retires
 active validation as incomplete, and retains learned cooling rates. The same
 context event replays deterministically; new normal-temperature evidence must

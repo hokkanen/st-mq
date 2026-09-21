@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { garageSettings } from '../src/garage/settings.js';
 import { createGarageModel, updateGarageModel, replayGarageModel, predictGarageStep, forecastGarage,
-  garageModelSummary, normalGarageTemperature, knownGarageEvAt, garageAssumedEvHeat } from '../src/garage/model.js';
+  garageModelSummary, normalGarageTemperature, knownGarageEvAt, garageAssumedEvHeat, garageRecoveryHours } from '../src/garage/model.js';
+import { startGarageAssessment, updateGarageAssessment, completeGarageAssessment } from '../src/garage/episodes.js';
 const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
 const settings = garageSettings({ enabled: true, maxSensorAgeMs: 4 * HOUR, protection: { approved: true } });
 const observation = (hour, extra = {}) => ({ at: start + hour * HOUR, rearC: 7, frontC: 6.7, outdoorC: 0,
@@ -203,4 +204,43 @@ test('a native bounce hidden between rear reports excludes fitting and whole-epi
   model = updateGarageModel(model, observation(.1, { available: true, rearAt: start }), settings);
   model = updateGarageModel(model, observation(.25, { available: false, rearC: 6.9 }), settings);
   assert.equal(model.rear.samples, 0); assert.equal(model.validation.active.clean, false);
+});
+
+test('finite contiguous forecasts continue beyond 600 observations without a duration ceiling', () => {
+  const model = createGarageModel();
+  model.state = { rearC: 10, frontC: 10, differenceC: 0 };
+  const steps = Array.from({ length: 800 }, (_, i) => ({ start: start + i * HOUR / 4,
+    end: start + (i + 1) * HOUR / 4, outdoorC: 8, available: false }));
+  const result = forecastGarage(model, { now: start, steps });
+  assert.equal(result.points.length, 800);
+  assert.equal(result.points.at(-1).end, start + 200 * HOUR);
+  assert.ok(result.state.rearC >= 8 && result.state.rearC < 8.01);
+  assert.equal(result.electricityKwh, 0);
+  assert.ok(result.points.at(-1).rearLowerC < result.points[599].rearLowerC);
+  assert.throws(() => forecastGarage(model, { now: start, steps: [{ ...steps[0], end: start + 5 * HOUR }] }), /bounded UTC intervals/);
+});
+
+test('a long pause cannot repay all recovery electricity inside a short cheap window or double-charge recorded input', () => {
+  const model = createGarageModel({ seedAt: start });
+  const initial = { at: start, rearC: 10, frontC: 10, outdoorC: 10, available: false };
+  assert.equal(garageRecoveryHours(1), 3);
+  assert.equal(garageRecoveryHours(24), 30);
+  for (const recorded of [false, true]) {
+    let account = startGarageAssessment(model, initial);
+    for (let i = 1; i <= 54 * 4; i++) {
+      const hours = i / 4, wasOn = hours > 24;
+      account = updateGarageAssessment(account, model,
+        { ...initial, at: start + hours * HOUR, available: hours >= 24 },
+        { priceCtPerKwh: wasOn ? 5 : 300, recordedKwh: recorded ? wasOn ? .125 : 0 : null });
+      if (hours === 27) {
+        assert.equal(account.offHours, 24);
+        assert.equal(account.recoveryAllowanceKwh, 15);
+        assert.equal(account.recoveryAccountedKwh, 1.5);
+        assert.equal(completeGarageAssessment(account), null, 'Three warm hours do not erase the remaining recovery allowance');
+      }
+    }
+    assert.equal(account.recoveryAccountedKwh, 15);
+    assert.equal(account.actualKwh, recorded ? 15 : 30, 'Qualified actual input includes any recovery and is charged only once');
+    assert.ok(completeGarageAssessment(account));
+  }
 });

@@ -32,7 +32,8 @@ function experiment({ cadenceMinutes = 5, days = 8, offHours = .5, activityOnly 
 }
 
 test('simple OFF learning has an explicit epoch and refuse previous learning semantics', () => {
-  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v4-simple-off');
+  assert.equal(GARAGE_ALGORITHM_VERSION, 'committed-garage-v5-protection-limited');
+  assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v4-simple-off' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v3-event-doors' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v1-coupled' }, row(1)), /Unsupported/);
   assert.throws(() => updateGarageModel({ ...createGarageModel(), algorithm: 'committed-garage-v2-sparse' }, row(1)), /Unsupported/);
@@ -54,7 +55,7 @@ test('thousands of thermostat rows cannot fit OFF cooling or fabricate additiona
   const model = steady(1), summary = garageModelSummary(model);
   assert.deepEqual(model.rear.values, [.03]); assert.deepEqual(model.front.values, [.04]);
   assert.deepEqual(model.rear.active, [false]); assert.deepEqual(model.front.active, [false]);
-  assert.equal(summary.ready, false); assert.equal(summary.maxPauseHours, 0);
+  assert.equal(summary.ready, false); assert.equal(summary.validatedOffHours, 0);
   assert.equal(summary.coefficients.rear[0].basis, 'fixed-prior');
   assert.equal(summary.coefficients.front[0].basis, 'fixed-prior');
   assert.equal(summary.coefficients.native.length, 1);
@@ -83,23 +84,23 @@ test('a single twenty-minute episode crossing the old daily split never validate
   assert.equal(summary.ready, false); assert.equal(summary.electricalReady, false);
 });
 
-test('whole later episodes qualify only comparable pause durations with exact deterministic replay', () => {
+test('whole later episodes record validated duration evidence with exact deterministic replay', () => {
   const { model, entries } = experiment(), summary = garageModelSummary(model);
   assert.ok(summary.validation.trainingEpisodes >= 2);
   assert.ok(summary.validation.validationEpisodes >= 1);
   assert.equal(summary.thermalReady, true);
-  assert.ok(summary.maxPauseHours > .49 && summary.maxPauseHours < .51);
+  assert.ok(summary.validatedOffHours > .49 && summary.validatedOffHours < .51);
   assert.deepEqual(model.validation.episodes.slice(0, 3).map(e => e.role), ['training', 'training', 'validation']);
   assert.deepEqual(replayGarageModel(createGarageModel({ seedAt: AUDIT_START }), entries), model);
   assert.ok(JSON.stringify(model).length < 32_000);
 });
 
-test('door-disturbed observations remain physical state but cannot authorize longer pauses', () => {
+test('door-disturbed observations remain physical state but cannot establish validated duration evidence', () => {
   const { model } = experiment({ door: true });
   assert.ok(model.validation.episodes.length >= 3);
   assert.ok(model.validation.episodes.every(e => !e.clean));
   assert.equal(garageModelSummary(model).thermalReady, false);
-  assert.equal(garageModelSummary(model).maxPauseHours, 0);
+  assert.equal(garageModelSummary(model).validatedOffHours, 0);
 });
 
 test('thermal observations without electrical measurements never qualify economic electricity', () => {
@@ -117,7 +118,7 @@ test('a clean later failed rollout revokes older thermal and energy validation',
   model.validation.episodes.push({ ...latest, id: latest.id + 1, role: 'validation', complete: true,
     clean: true, metered: true, thermalPassed: false, electricalPassed: false, rearRmse: 2, frontRmse: 2 });
   const summary = garageModelSummary(model);
-  assert.equal(summary.thermalReady, false); assert.equal(summary.electricalReady, false); assert.equal(summary.maxPauseHours, 0);
+  assert.equal(summary.thermalReady, false); assert.equal(summary.electricalReady, false); assert.equal(summary.validatedOffHours, 0);
 });
 
 test('an episode freezes its coefficients and advance state before later observations arrive', () => {
@@ -186,14 +187,61 @@ test('observed boolean activity predicts dimensionless duty independently of mod
   assert.equal(garageModelSummary(model).electricalReady, false);
 });
 
-test('a long interrupted OFF period expires once without creating fresh training episodes or throwing', () => {
+test('a long continuously observed OFF period stays one frozen episode beyond 48 hours', () => {
   let model = steady(15, 24);
   for (let i = 1; i <= 55 * 4; i++) model = updateGarageModel(model,
     row(24 + i / 4, { available: false, powerKw: 0 }), settings);
   assert.equal(model.validation.nextId, 1);
+  assert.equal(model.validation.episodes.length, 0);
+  assert.ok(model.validation.active.offHours > 54);
+  assert.equal(model.validation.active.offEndedAt, null);
+  assert.equal(garageModelSummary(model).ready, false);
+});
+
+test('a 60-hour holdout stays frozen through 75 hours of recovery with bounded state and exact replay', () => {
+  const seed = createGarageModel({ seedAt: AUDIT_START });
+  seed.validation.nextId = 2;
+  const entries = [];
+  let model = seed, frozen, activeBytes;
+  for (let i = 0; i <= 135 * 4; i++) {
+    const hours = i / 4;
+    const observation = row(hours, { outdoorC: 7, available: hours >= 60, powerKw: hours >= 60 ? .6 : 0 });
+    entries.push({ observation, settings });
+    model = updateGarageModel(model, observation, settings);
+    if (hours === 1) frozen = structuredClone(model.validation.active.forecast);
+    if (hours === 20) activeBytes = JSON.stringify(model).length;
+    if (hours === 60 || hours === 72 || hours === 134.75) {
+      assert.equal(model.validation.nextId, 3);
+      assert.equal(model.validation.episodes.length, 0, 'No OFF or recovery duration truncates the experiment');
+      assert.equal(model.validation.active.role, 'validation');
+      assert.deepEqual(model.validation.active.forecast, frozen);
+      assert.equal(model.rear.samples, 0, 'Held-out evidence never leaks into cooling fitting');
+      assert.ok(JSON.stringify(model).length < activeBytes + 1000, 'The live experiment stores sufficient statistics, not a growing trajectory');
+    }
+  }
+  assert.equal(model.validation.active, null);
+  assert.equal(model.validation.episodes.length, 1);
+  assert.equal(model.validation.episodes[0].offHours, 60);
+  assert.equal(model.validation.episodes[0].recoveryHours, 75);
+  assert.equal(model.validation.episodes[0].complete, true);
+  assert.deepEqual(replayGarageModel(seed, entries), model);
+});
+
+test('failed short-pause recovery times out only after observed normal heating', () => {
+  let model = createGarageModel({ seedAt: AUDIT_START });
+  for (let i = 0; i <= 13 * 4; i++) {
+    const hours = i / 4;
+    model = updateGarageModel(model, row(hours, { available: hours >= 1,
+      rearC: hours ? 6.8 : 7, frontC: hours ? 6.5 : 6.7 }), settings);
+    if (hours === 4) {
+      assert.ok(model.validation.active);
+      assert.equal(model.validation.episodes.length, 0);
+    }
+  }
+  assert.equal(model.validation.active, null);
   assert.equal(model.validation.episodes.length, 1);
   assert.equal(model.validation.episodes[0].complete, false);
-  assert.equal(garageModelSummary(model).ready, false);
+  assert.equal(model.validation.episodes[0].recoveryHours, 12);
 });
 
 test('adapter source-clock boundaries preserve completed rare episodes without fitting across reboot', () => {

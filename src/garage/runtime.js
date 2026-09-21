@@ -5,7 +5,7 @@ import { temporaryUpdate } from '../app/temporary.js';
 import { garageSettings, GARAGE_POLICY_VERSION } from './settings.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting } from './native-settings.js';
 import { garagePausePermission, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
-import { GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS, createGarageModel, garageModelSummary } from './model.js';
+import { GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours, createGarageModel, garageModelSummary } from './model.js';
 import { confirmedGarageDoor, garagePauseStartReason } from './door-state.js';
 import { createGarageExposure, upgradeGarageExposure, updateGarageExposure, assessGarageProtection, validGarageExposure } from './protection.js';
 import { planGarage } from './planner.js';
@@ -47,7 +47,8 @@ function sustainedNormalRecovery(episode, observation, native, protection, expos
     && now - episode.normalRecoveryLastAt <= settings.maxSensorAgeMs;
   episode.normalRecoverySince = warm ? continuous ? episode.normalRecoverySince ?? now : now : null;
   episode.normalRecoveryLastAt = now;
-  return warm && now - episode.normalRecoverySince >= Math.max(8 * HOUR, settings.minOnMs);
+  return warm && now - episode.normalRecoverySince >= Math.max(8 * HOUR, settings.minOnMs,
+    garageRecoveryHours(episode.accounting?.offHours ?? 0) * HOUR, (episode.plan?.recoveryHours ?? 0) * HOUR);
 }
 
 /** Garage owns no broker or native timer. Only planner ticks authorize adapter
@@ -769,7 +770,8 @@ export class GarageRuntime {
       && sustainedNormalRecovery(episode, observation, native, this.protection, this.exposure, this.settings, now)) {
       this.finishEpisode('incomplete', 'sustained-normal-operation-reference-reset', null, { resetNormalReference: true }); return;
     }
-    if (now - episode.startedAt > 7 * 24 * HOUR) {
+    if (episode.phase === 'recovery' && finite(episode.recoveryStartedAt)
+      && now - episode.recoveryStartedAt > Math.max(7 * 24, garageRecoveryHours(episode.accounting.offHours ?? 0)) * HOUR) {
       // A reporting timeout never erases physical debt or permits another pause.
       episode.accounting.qualified = false; episode.reason = 'recovery-evidence-timeout';
     }

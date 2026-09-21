@@ -2,29 +2,31 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { learningOverview, garageLearningOverview, settingsReloadScope } from '../chart/dashboard-status.js';
 
-test('garage overview uses whole episodes and supported duration instead of short-step prediction counts', () => {
-  for (const input of [undefined, null, {}, { validation: { completedEpisodes: -1 }, maxPauseHours: '12' }]) {
+test('garage overview uses whole episodes and observed duration instead of short-step prediction counts', () => {
+  for (const input of [undefined, null, {}, { validation: { completedEpisodes: -1 }, validatedOffHours: '12' }]) {
     const overview = garageLearningOverview(input);
     assert.equal(overview.status, 'unavailable');
     assert.equal(overview.completedEpisodes, null);
-    assert.equal(overview.validatedPauseHours, null);
+    assert.equal(overview.validatedOffHours, null);
   }
   const learning = { status: 'learning', trainedIntervals: 0, thermalReady: false, electricalReady: false,
-    validation: { completedEpisodes: 0 }, maxPauseHours: 0 };
+    validation: { completedEpisodes: 0 }, validatedOffHours: 0 };
   const initial = garageLearningOverview(learning);
   assert.equal(initial.status, 'initial');
-  assert.equal(initial.completedEpisodes, 0); assert.equal(initial.validatedPauseHours, 0);
+  assert.equal(initial.completedEpisodes, 0); assert.equal(initial.validatedOffHours, 0);
   learning.trainedIntervals = 24;
   learning.heldOut = { advanceRear: { n: 10_000 } };
   assert.equal(garageLearningOverview(learning).status, 'learning');
-  assert.equal(garageLearningOverview(learning).validatedPauseHours, 0);
+  assert.equal(garageLearningOverview(learning).validatedOffHours, 0);
   learning.validation.completedEpisodes = 3;
-  learning.thermalReady = true; learning.maxPauseHours = .75;
+  learning.thermalReady = true; learning.validatedOffHours = .75;
   learning.status = 'validated-provisional';
   const thermalOnly = garageLearningOverview(learning);
   assert.equal(thermalOnly.completedEpisodes, 3);
-  assert.equal(thermalOnly.validatedPauseHours, .75);
-  assert.match(thermalOnly.summary, /pauses up to 0.75 h/);
+  assert.equal(thermalOnly.validatedOffHours, .75);
+  assert.match(thermalOnly.summary, /Cooling checks cover 0.75 h OFF/);
+  assert.match(thermalOnly.summary, /Longer pauses use extra uncertainty margins and must satisfy pipe protection/);
+  assert.doesNotMatch(thermalOnly.summary, /pauses up to|maximum pause|ceiling/);
   assert.match(thermalOnly.summary, /Electricity and recovery-energy predictions still need validation/);
   learning.electricalReady = true;
   assert.match(garageLearningOverview(learning).summary, /checks have also passed\. Savings remain estimates/);
@@ -36,13 +38,13 @@ test('garage overview uses whole episodes and supported duration instead of shor
 
 test('garage overview never infers current validation from an old status label or missing readiness', () => {
   const learning = { status: 'validated-provisional', trainedIntervals: 20_000,
-    maxPauseHours: 8, heldOut: { advanceRear: { n: 8_000 } } };
+    validatedOffHours: 8, heldOut: { advanceRear: { n: 8_000 } } };
   const unknown = garageLearningOverview(learning);
   assert.equal(unknown.status, 'learning');
-  assert.equal(unknown.validatedPauseHours, null);
+  assert.equal(unknown.validatedOffHours, null);
   assert.doesNotMatch(unknown.summary, /passed|up to 8/);
   learning.thermalReady = false;
-  assert.equal(garageLearningOverview(learning).validatedPauseHours, 0);
+  assert.equal(garageLearningOverview(learning).validatedOffHours, 0);
   learning.thermalReady = true;
   assert.match(garageLearningOverview(learning).summary, /validation is not reported yet/);
 });
@@ -54,9 +56,9 @@ test('replica overviews identify saved evidence without presenting live control 
   assert.equal(home.usableSamples, 120);
   assert.match(home.summary, /Live action readiness and cycle assessments are unavailable/);
   const garage = garageLearningOverview({ reconstruction: 'snapshot', status: 'validated-provisional',
-    thermalReady: true, electricalReady: true, maxPauseHours: 2, validation: { completedEpisodes: 3 } });
+    thermalReady: true, electricalReady: true, validatedOffHours: 2, validation: { completedEpisodes: 3 } });
   assert.equal(garage.title, home.title);
-  assert.equal(garage.validatedPauseHours, 2);
+  assert.equal(garage.validatedOffHours, 2);
   assert.match(garage.summary, /Live pause eligibility is unavailable/);
 });
 

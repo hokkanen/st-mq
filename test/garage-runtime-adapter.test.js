@@ -27,7 +27,7 @@ function syntheticSeed(settings) {
   model.native.values = [.5];
   return assignGaragePlanningEvidence(model);
 }
-function setup(t) {
+function setup(t, { expensiveHours = 2, totalHours = 12, forecastOutdoorC = 0 } = {}) {
   let now = BASE, owner = true, stateSequence = 0;
   const settings = garageSettings({ enabled: true, minOnMs: 0, frontRequired: true, aggressiveness: 100, protection: { approved: true } });
   const store = new Store(':memory:');
@@ -64,9 +64,9 @@ function setup(t) {
       result: { commandId: command.commandId, episodeId: command.episodeId, sequence: command.sequence,
         action: command.action, status: command.action === 'release' ? 'native-confirmed' : 'accepted' }, ...patch });
   }
-  const prices = [100, 100, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1].map((value, i) => ({
+  const prices = Array.from({ length: totalHours }, (_, i) => i < expensiveHours ? 100 : 1).map((value, i) => ({
     start: BASE + i * HOUR, end: BASE + (i + 1) * HOUR, allInCentsPerKWh: value }));
-  const forecast = [{ start: BASE, end: BASE + 12 * HOUR, outdoorC: 0, issuedAt: BASE }];
+  const forecast = [{ start: BASE, end: BASE + totalHours * HOUR, outdoorC: forecastOutdoorC, issuedAt: BASE }];
   async function tick() { runtime.tick({ now, prices, forecast }); await runtime.dispatch; await flush(); }
   temperatures(); adapter.setConnected(true); state();
   t.after(async () => { await runtime.close({ restore: false }); await adapter.close({ restore: false }); store.close(); });
@@ -172,4 +172,24 @@ test('recovery blocks another pause and preserves frozen accounting and unrecove
   assert.equal(f.runtime.episode.pauseId, first.episodeId);
   assert.deepEqual(f.runtime.episode.frozenModel, frozen);
   assert.ok(f.runtime.status().episode.heatDebt.frontC > .25, 'new permission does not erase front recovery debt');
+});
+
+
+test('a multi-day endpoint uses short host permissions and still restores on sensor expiry', async t => {
+  const f = setup(t, { expensiveHours: 60, totalHours: 140, forecastOutdoorC: 5 });
+  await f.tick();
+  const first = f.commands.at(-1);
+  assert.equal(first.action, 'start');
+  assert.equal(first.endpointAt, BASE + 60 * HOUR);
+  assert.ok(first.requestedExpiryAt <= BASE + 3 * MINUTE);
+  f.at(BASE + MINUTE); f.temperatures(); f.accepted(); await f.tick();
+  const renewal = f.commands.at(-1);
+  assert.equal(renewal.action, 'renew');
+  assert.equal(renewal.endpointAt, first.endpointAt);
+  assert.equal(renewal.episodeId, first.episodeId);
+  assert.ok(renewal.requestedExpiryAt <= f.now() + 3 * MINUTE);
+  f.at(BASE + 3 * MINUTE); f.runtime.lastPlannerAt = f.now();
+  f.accepted(renewal); await flush();
+  assert.equal(f.commands.at(-1).action, 'release');
+  assert.equal(f.adapter.status().restorePending, true);
 });

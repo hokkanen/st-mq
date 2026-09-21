@@ -1,25 +1,24 @@
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
 
-/** Duration support belongs to completed experiments, not sensor row counts.
- * Small worthwhile trials can collect the first evidence without granting a
- * long pause from an untested prior. The caller still enforces both budgets. */
+/** Completed experiments describe forecast support, not permission duration.
+ * Admission still requires a known normal baseline and resolved recovery.
+ * Extrapolation grows the temperature uncertainty used by pipe protection. */
 export function garagePlanningEvidence(model, summary, { observation, now = observation?.at ?? model.at, activeEpisode = null } = {}) {
-  const economicHours = summary.thermalReady ? summary.maxPauseHours ?? 0 : 0;
+  const validatedOffHours = summary.validatedOffHours ?? 0;
   const active = activeEpisode != null;
   const recovering = !active && (Boolean(model.validation?.active) || observation?.recovering === true);
   const lastFailure = (model.validation?.episodes ?? []).filter(row => row.complete === false || row.clean === true && row.thermalPassed === false).at(-1);
   const retryCooldown = !active && lastFailure && (!finite(now) || !finite(lastFailure.endedAt) || now - lastFailure.endedAt < 6 * HOUR);
   const charging = [1, 2].some(id => observation?.[`ev${id}Kw`] > .1 || observation?.[`ev${id}Active`] === true);
-  const trialEligible = model.normalReference?.initialized === true && !recovering && !charging && !retryCooldown
+  const eligible = model.normalReference?.initialized === true && !recovering && !charging && !retryCooldown
     && (observation?.baselineAccepted === true || observation?.baselineVerified === true)
     && (active || observation?.available === true);
-  const trialHours = Math.min(2, Math.max(1, economicHours > 0 ? economicHours * 1.25 : 1));
   return { thermalReady: summary.thermalReady === true, electricalReady: summary.electricalReady === true,
-    economicHours, trialEligible, trialHours, maxPauseHours: recovering || retryCooldown ? 0 : Math.max(economicHours, trialEligible ? trialHours : 0),
-    completedEpisodes: summary.validation?.completedEpisodes ?? 0,
+    validatedOffHours, eligible, completedEpisodes: summary.validation?.completedEpisodes ?? 0,
     reason: retryCooldown ? 'learning-retry-cooldown' : recovering ? 'learning-episode-recovering'
-      : economicHours > 0 ? 'validated-episode-duration' : trialEligible ? 'bounded-learning-trial' : 'insufficient-validated-thermal-evidence' };
+      : !eligible ? 'insufficient-normal-heating-evidence'
+        : summary.thermalReady ? 'validated-thermal-evidence' : 'protection-limited-learning-opportunity' };
 }
 
 /** Whole-trajectory errors have units of degrees C at their observed horizon.

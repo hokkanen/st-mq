@@ -21,58 +21,67 @@ function outlook(values) {
 }
 const offHours = plan => (plan.steps ?? []).reduce((hours, row) => hours + (row.available ? 0 : (row.end - row.start) / HOUR), 0);
 
-test('a worthwhile bootstrap trial is one hour even when the price outlook is much longer', () => {
+test('an initial worthwhile opportunity may exceed two hours when pipe protection supports it', () => {
   const value = model(); value.validation.episodes = [];
   const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
-    model: value, observation, settings, ...outlook([300, 5, 5, 5, 5, 5, 5, 5]) });
+    model: value, observation, settings, ...outlook([300, 300, 300, 300, ...Array(20).fill(5)]) });
   assert.equal(plan.learningTrial, true); assert.equal(plan.nextAction, 'pause');
-  assert.equal(offHours(plan), 1); assert.ok(plan.scoreEur > settings.minSavingsEur);
+  assert.ok(offHours(plan) > 2); assert.ok(plan.scoreEur > settings.minSavingsEur);
+  assert.equal(plan.evidence.validatedOffHours, 0); assert.equal(plan.evidence.eligible, true);
   const ordinary = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
     model: value, observation, settings, ...outlook([40, 5, 5, 5, 5, 5, 5, 5]) });
   assert.equal(offHours(ordinary), 0, 'Learning alone never justifies a small saving');
 });
 
-test('growing a pause requires independent completed training and held-out support', () => {
+test('completed experiments improve duration evidence without imposing a permission ceiling', () => {
   const value = model(), complete = structuredClone(value.validation.episodes);
   for (const episodes of [[], complete.slice(0, 1), complete.slice(0, 2)]) {
     value.validation.episodes = episodes;
     const evidence = garagePlanningEvidence(value, garageModelSummary(value), { observation });
-    assert.equal(evidence.economicHours, 0); assert.equal(evidence.trialHours, 1);
+    assert.equal(evidence.eligible, true); assert.equal(evidence.validatedOffHours, 0);
+    assert.equal(evidence.reason, 'protection-limited-learning-opportunity');
+    for (const oldLimit of ['economicHours', 'trialHours', 'maxPauseHours']) assert.equal(Object.hasOwn(evidence, oldLimit), false);
   }
   value.validation.episodes = complete.map(row => ({ ...row, offHours: 1, trainingSupportHours: 1 }));
-  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation }).trialHours, 1.25);
+  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation }).validatedOffHours, 1);
   value.validation.episodes = complete;
-  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation }).trialHours, 2);
+  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation }).validatedOffHours, 2);
+  const plan = planGarage({ now, restorationDelayMs: 120_000, exposure: knownGarageReserve(settings, { at: now }),
+    model: value, observation, settings, ...outlook([300, 300, 300, 300, ...Array(20).fill(5)]) });
+  assert.ok(offHours(plan) > plan.evidence.validatedOffHours);
 });
 
 test('recovery and failed-trial cooldown prevent starting a new experiment', () => {
   const value = model();
   value.validation.active = { role: 'training', phase: 'recovery' };
-  assert.equal(garagePlanningEvidence(value, { thermalReady: true, maxPauseHours: 2 }, { observation }).maxPauseHours, 0);
+  assert.equal(garagePlanningEvidence(value, { thermalReady: true, validatedOffHours: 2 }, { observation }).eligible, false);
   value.validation.active = null;
-  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: { ...observation, recovering: true } }).maxPauseHours, 0);
+  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: { ...observation, recovering: true } }).eligible, false);
   value.validation.episodes.push({ ...value.validation.episodes[2], id: 3, endedAt: now - HOUR,
     complete: false, thermalPassed: false });
   const blocked = garagePlanningEvidence(value, garageModelSummary(value), { observation });
-  assert.equal(blocked.maxPauseHours, 0); assert.equal(blocked.reason, 'learning-retry-cooldown');
-  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation, now: now + 6 * HOUR }).trialHours, 1);
+  assert.equal(blocked.eligible, false); assert.equal(blocked.reason, 'learning-retry-cooldown');
+  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation, now: now + 6 * HOUR }).eligible, true);
 });
 
-test('unknown baseline or charging prevents prior-only trial eligibility; owner assumption is explicit', () => {
+test('unknown baseline or charging prevents prior-only eligibility; owner assumption is explicit', () => {
   const value = model(); value.validation.episodes = [];
   for (const patch of [{ ev1Active: true }, { ev2Kw: 5 }, { baselineVerified: false }, { available: false }]) {
-    assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: { ...observation, ...patch } }).maxPauseHours, 0);
+    assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: { ...observation, ...patch } }).eligible, false);
   }
   const assumed = { ...observation, baselineVerified: false, baselineAccepted: true };
-  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: assumed }).maxPauseHours, 1);
+  assert.equal(garagePlanningEvidence(value, garageModelSummary(value), { observation: assumed }).eligible, true);
+  value.normalReference.initialized = false;
+  const unknown = garagePlanningEvidence(value, garageModelSummary(value), { observation });
+  assert.equal(unknown.eligible, false); assert.equal(unknown.reason, 'insufficient-normal-heating-evidence');
 });
 
-test('thermal evidence supports up to its validated duration without pretending that electricity is measured', () => {
+test('thermal evidence remains distinct from electricity qualification and duration permission', () => {
   const value = model(), summary = garageModelSummary(value);
   assert.equal(summary.thermalReady, true); assert.equal(summary.electricalReady, true);
   const evidence = garagePlanningEvidence(value, { ...summary, electricalReady: false }, { observation });
-  assert.equal(evidence.economicHours, 2); assert.equal(evidence.electricalReady, false);
-  assert.equal(evidence.maxPauseHours, 2);
+  assert.equal(evidence.validatedOffHours, 2); assert.equal(evidence.electricalReady, false);
+  assert.equal(evidence.eligible, true); assert.equal(Object.hasOwn(evidence, 'maxPauseHours'), false);
 });
 
 test('forecast margins use frozen trajectory errors and keep growing beyond support', () => {

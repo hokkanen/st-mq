@@ -75,7 +75,9 @@ export function runScenario(options = {}, api = currentModel) {
         offRear: 0, offFront: 0, offN: 0, recoveredAtHours: null }]));
     let actualEnergyKwh = 0, actualNormalEnergyKwh = 0, actualNormalRecoveryKwh = 0, actualRecoveryHours = null;
     const threshold = { rearC: plant.state.rearC - .2, frontC: plant.state.frontC - .2 };
-    for (let minute = 0; minute < (offHours + 24) * 60; minute += 5) {
+    const recoveryAllowanceHours = api.garageRecoveryHours(offHours);
+    const recoveryWindowHours = Math.max(24, recoveryAllowanceHours);
+    for (let minute = 0; minute < (offHours + recoveryWindowHours) * 60; minute += 5) {
       const hour = endHour + minute / 60, available = minute >= offHours * 60;
       const input = plantInputs(branch, hour, { available, disturbance: false });
       const forecastInput = { outdoorC: input.outdoorC, available, ev1Kw: 0, ev2Kw: 0,
@@ -85,8 +87,11 @@ export function runScenario(options = {}, api = currentModel) {
         states[key] = prediction.state; metrics[key].energyKwh += prediction.electricityKwh;
         // The planner accounts for extra recovery explicitly; the illustrative
         // temperature envelope alone does not estimate that electricity.
-        if (available && minute < (offHours + 3) * 60)
-          metrics[key].energyKwh += api.predictGarageNative(fitted, states[key], { available: true }).powerKw * offHours * 1.25 * (5 / 60) / 3;
+        if (available && minute < (offHours + recoveryAllowanceHours) * 60) {
+          const hours = Math.min(5 / 60, offHours + recoveryAllowanceHours - minute / 60);
+          metrics[key].energyKwh += api.predictGarageNative(fitted, states[key], { available: true }).powerKw
+            * offHours * api.GARAGE_MODEL_ASSUMPTIONS.recoveryEnergyFactor * hours / recoveryAllowanceHours;
+        }
         const normal = api.predictGarageStep(fitted, normalStates[key], { ...forecastInput, available: true, restart: false }, 5 / 60);
         normalStates[key] = normal.state;
         if (available) metrics[key].normalRecoveryKwh += normal.electricityKwh;
@@ -115,7 +120,7 @@ export function runScenario(options = {}, api = currentModel) {
         actualRecoveryHours = round((minute + 5) / 60 - offHours);
     }
     const actualRecoveryExtraKwh = actualEnergyKwh - actualNormalRecoveryKwh;
-    evaluation.push({ offHours, recoveryWindowHours: 24, actualEnergyKwh: round(actualEnergyKwh), actualRecoveryHours,
+    evaluation.push({ offHours, recoveryWindowHours, recoveryAllowanceHours, actualEnergyKwh: round(actualEnergyKwh), actualRecoveryHours,
       actualNormalEnergyKwh: round(actualNormalEnergyKwh), actualRecoveryExtraKwh: round(actualRecoveryExtraKwh),
       remainingMassDebtC: { coreC: round(normalBranch.state.coreC - branch.state.coreC),
         slabC: round(normalBranch.state.slabC - branch.state.slabC) },
@@ -129,7 +134,7 @@ export function runScenario(options = {}, api = currentModel) {
   }
   return { name, algorithm: model.algorithm, cadenceMinutes, days, frequency, seed, parameters, observedRows, offEpisodes,
     ready: summary.ready, electricalReady: summary.electricalReady ?? null, electricityBasis: summary.electricity?.basis ?? null,
-    maxPauseHours: summary.maxPauseHours ?? summary.validation?.maxPauseHours ?? null,
+    validatedOffHours: summary.validatedOffHours ?? null,
     episodeValidation: summary.episodes ?? summary.validation ?? null,
     coefficients: { rear: model.rear.values.map(round), front: model.front.values.map(round), native: model.native.values.map(round) },
     stateBytes: Buffer.byteLength(JSON.stringify(model)), runtimeMs: round(performance.now() - started), evaluation,
