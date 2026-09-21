@@ -613,7 +613,6 @@ details details { margin-inline-start: 24px; }
 .equipment-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .equipment-heading h3 { font-size: 13px; font-weight: 550; margin: 0; }
 .equipment-heading > span { font-size: 11px; }
-.home-h66-summary { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 16px; }
 .equipment-value { min-width: 0; }
 .equipment-value > span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
 .equipment-value > strong { display: block; font-weight: 500; font-size: 17px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -622,7 +621,6 @@ details details { margin-inline-start: 24px; }
 .equipment-notes { margin-top: 18px; }
 .equipment-notes p { display: flex; gap: 8px; margin: 5px 0; font-size: 11px; }
 .equipment-notes p > span:first-child { color: var(--muted); flex: 0 0 84px; }
-.home-h66-summary .equipment-alarm { grid-column: 1 / -1; font-size: 12px; color: var(--stale); }
 .dashboard-disclosure { margin-top: 20px; }
 .dashboard-disclosure > summary { display: flex; align-items: center; gap: 12px; padding: 16px 0 0; font-size: 12px; list-style: none; }
 .dashboard-disclosure > summary::-webkit-details-marker { display: none; }
@@ -717,7 +715,6 @@ details details { margin-inline-start: 24px; }
 .configuration-example > summary { font-size: 12px; cursor: pointer; }
 .configuration-example pre { padding: 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (min-width: 801px) and (max-width: 1050px) {
-  .home-h66-summary { gap: 10px; }
   .equipment-value > strong { font-size: 15px; }
 }
 @media (max-width: 800px) {
@@ -1073,6 +1070,27 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .zone-section-heading > h4 { min-width: 0; margin: 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .065em; text-transform: uppercase; }
 .zone-section-heading > .equipment-device-status { font-size: 10px; }
 .zone-content .zone-control-help { margin: 8px 0 12px; line-height: 1.65; }
+.zone-section-heading > .home-control-availability { margin: 0; font-size: 10px; }
+.home-heating-state { display: grid; gap: 10px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+.home-state-reading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); align-items: baseline; gap: 12px; font-size: 12px; line-height: 1.55; }
+.home-state-reading > span { color: var(--muted); }
+.home-state-reading > strong { min-width: 0; font-size: inherit; font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+.home-heating-state .equipment-alarm { margin: 0; font-size: 12px; color: var(--stale); }
+.home-control-subtitle { margin: 18px 0 0; font-size: 12px; font-weight: 550; }
+#heating-test-details > .equipment-fold { margin-top: 14px; border-top: 1px solid var(--border); }
+#heating-test-message:empty { display: none; }
+.home-preferences > summary { gap: 8px; }
+.home-preferences > summary > small { text-align: right; font-variant-numeric: tabular-nums; }
+.home-preferences-body { padding: 10px 0 0; }
+.home-policy-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 22px; margin: 0 0 18px; }
+.home-policy-values > div { min-width: 0; }
+.home-policy-values dt { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.home-policy-values dd { margin: 5px 0 0; }
+.home-policy-values dd > strong { display: block; font-size: 15px; font-weight: 500; line-height: 1.45; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.home-policy-values dd > small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.home-policy-values .home-comfort-reference { grid-column: 1 / -1; }
+.home-preferences-body > p { font-size: 11px; line-height: 1.65; margin: 8px 0; }
+.home-preferences-body > .home-preferences-edit { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
 .zone-content .heating-mode-buttons { margin: 12px 0 0; }
 .heating-mode-buttons .heating-button-state { flex: none; color: currentColor; font-size: 12px; line-height: 1; }
 .heating-mode-buttons .heating-button-state:empty { display: none; }

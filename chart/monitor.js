@@ -202,9 +202,9 @@ function renderHeatingTests(s) {
     button.dataset.modeState = state.toLowerCase();
     button.querySelector('.heating-button-state').textContent = state ? '✓' : '';
   }
-  $('heating-test-help').textContent = 'Use the controls below to temporarily adjust heating and heat-pump parameters. '
-    + 'If price control is not paused, your changes revert on the next controller update, normally within 1 minute. '
-    + 'During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.';
+  $('heating-test-help').textContent = s.override?.expiresAt > s.now
+    ? `Changes are held until ${time(s.override.expiresAt)} or Resume now, then the previous settings return.`
+    : 'Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.';
   $('heating-preheat-help').hidden = true;
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
     : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable ROOM setting and qualified floor-valve control when configured.';
@@ -411,11 +411,11 @@ function renderH66(s) {
     const row = summary.find(row => row.key === key);
     let detail = root.querySelector(`[data-h66-summary=${key}]`);
     if (!detail) {
-      detail = document.createElement('div'); detail.className = 'equipment-value'; detail.dataset.h66Summary = key;
+      detail = document.createElement('div'); detail.className = 'home-state-reading'; detail.dataset.h66Summary = key;
       detail.append(document.createElement('span'), document.createElement('strong')); root.append(detail);
     }
     const [title, value] = detail.children;
-    title.textContent = 'Heating mode';
+    title.textContent = 'Heat-pump mode';
     value.classList.toggle('muted', !row.available);
     setStatusDetail(value, { key: `home-h66-${key}`, label: row.available ? row.value : 'Unavailable',
       title: title.textContent, detail: row.detail });
@@ -553,6 +553,7 @@ function render(s) {
   $('home-aggressiveness').textContent = homePolicy.aggressiveness;
   $('home-preheat-setting').textContent = homePolicy.preheat;
   $('home-maximum-rise').textContent = homePolicy.maximumRise;
+  $('home-comfort-limits').textContent = s.decision.comfort?.maxDropApplies === false ? 'Away · drop limit inactive' : homePolicy.limits;
   $('drop').textContent = `${s.settings.comfort.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   renderLearning(s);

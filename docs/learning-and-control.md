@@ -59,7 +59,14 @@ The combined parameter's expandable row explains the shared thermal response.
 The **Installed heat-pump model** row holds the source equations, worked example,
 manufacturer link and limitations, using the same calculation disclosure as other parameters.
 
-Each dashboard **Heating configuration** includes its learning summary above the pause controls. Home reports
+Each dashboard includes its learning summary alongside the heating and pause controls.
+Home shows current heat-pump, tariff and circulation status first, followed by
+temporary heating controls and **Away & pause**. **Comfort & preferences** holds
+the normal-temperature reference, occupied drop/rise limits, savings preference
+and ROOM increase; its closed summary shows the configured room limits. Permanent
+preferences still use configuration and **Apply configuration**. **Home learning**
+follows these controls, with the reconstruction explanation under **Learning outcomes →
+Validation & evidence → Reconstructing the model**. Home reports
 counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
 inferred. The **Home learning** and **Garage learning** summaries each open learning details,
@@ -171,6 +178,25 @@ capped at 0.2°C. Polling the same data again cannot move it. Missing or invalid
 observations, away periods and meaningful fireplace influence clear pending
 adaptation evidence; a 48-hour gap between qualifying periods also expires it.
 Passive summer warmth and ongoing cooling cannot establish a new reference.
+
+## Model reconstruction
+
+The model can be reconstructed exactly at a committed journal boundary when its
+complete learning journal, saved seed and configuration, selected fireplace and
+sensor-correction revisions, and matching algorithm and software are retained.
+Replay uses the same ordered updates as live learning. It restores the model
+checkpoint, including coefficients, estimated building and slab state, comfort
+references and learning evidence. Selecting corrected source events instead
+produces a corrected model; it need not match the model used before that correction.
+
+Keep a consistent backup of the full SQLite database and the corresponding
+software version. A temperature or telemetry CSV export alone is insufficient.
+Discarded raw polls and missing history cannot be recreated. Exact replay of every
+past control decision is outside this scope: transient provider inputs and complete
+controller snapshots are not archived. Recorded commands and outcomes remain
+useful evidence, but replay cannot prove physical receipt of a command, recreate
+an unrecorded outcome or make estimated savings into measured savings. See the
+[reconstruction contract](reconstruction-and-versioning.md) for the exact scope.
 
 ## Planning and recovery
 

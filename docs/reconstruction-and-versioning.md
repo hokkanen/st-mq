@@ -8,11 +8,25 @@ it does not add a general archive for reproducing every historical control choic
 
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching
-learning algorithm, replay must produce the same model checkpoint. Live learning and reconstruction
-must use the same ordered entry function. Checkpoints are replaceable caches with
-integrity digests and journal cursors; they are not the only source of model history.
-Original discarded polls are not required once their resolved learning inputs have
-been committed. Imported CSV provenance and interpretation remain unchanged.
+learning algorithm and software, replay must produce the same model checkpoint
+at the same committed journal boundary. This includes learned coefficients,
+estimated building and slab state, comfort references and learning evidence.
+Live learning and reconstruction must use the same ordered entry function.
+Checkpoints are replaceable caches with integrity digests and journal cursors;
+they are not the only source of model history.
+
+Preserve a consistent backup of the full SQLite database and the corresponding
+software version. The journal contains resolved learning inputs, configuration and
+seed information; fireplace and sensor-correction events preserve the selected
+interpretation. A temperature or telemetry CSV export alone does not contain this
+complete record and cannot guarantee exact reconstruction. Imported CSV provenance
+and interpretation remain unchanged. Original discarded polls cannot be recovered,
+but are not required once their resolved learning inputs have been committed.
+
+Replaying the same correction revisions reproduces the same interpretation.
+Selecting a later correction intentionally reconstructs a corrected model, which
+can differ from the model used at the time. The source events preserve earlier
+revisions without rewriting the original measurements.
 
 This guarantee is conditional on retaining those inputs and the corresponding
 software. Corrupt or lost source history cannot always be repaired by replay, and
@@ -25,7 +39,10 @@ Existing control plans, observations, command attempts and available acknowledge
 remain useful evidence. Exact replay of every past choice is outside this contract:
 we do not capture every transient provider response, scheduler state or complete
 runtime snapshot. A recorded command attempt is not proof that the heat pump received
-or applied it. Readback and measured behavior must remain distinct from intent.
+or applied it. Recorded observations, forecasts and outcomes remain evidence in
+their own right; model replay does not recreate missing physical outcomes or turn
+estimated savings into measured savings. Readback and measured behavior must remain
+distinct from intent.
 
 ## Manual source corrections
 

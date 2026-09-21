@@ -83,32 +83,57 @@
           <div class="zone-content equipment-area" data-controller-only>
             <section id="home-manual-controls" class="zone-section zone-configuration" aria-labelledby="heating-configuration-title">
               <div id="heating-test-details">
-                <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating configuration</h4></div>
-                <div id="home-h66-summary" class="home-h66-summary">
-                  <div class="equipment-value" data-h66-summary="mode"><span>Heating mode</span><strong>Unavailable</strong></div>
-                  <div class="equipment-value"><span>Comfort reference</span><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></div>
-                  <div class="equipment-value"><span>Maximum drop</span><strong id="drop">—</strong><small id="drop-note">When you are home</small></div>
+                <div class="zone-section-heading"><h4 id="heating-configuration-title">Heating control</h4><p id="heating-test-status" class="muted home-control-availability"></p></div>
+                <div id="home-h66-summary" class="home-heating-state" role="group" aria-label="Current heating state">
+                  <div class="home-state-reading" data-h66-summary="mode"><span>Heat-pump mode</span><strong>Unavailable</strong></div>
+                  <div class="home-state-reading"><span>Tariff control</span><strong id="tariff-control-state">—</strong></div>
+                  <div class="home-state-reading"><span>Hot-water circulation</span><strong id="dhwr">—</strong></div>
                 </div>
-                <div class="equipment-notes" aria-label="Configured home policy">
-                  <p><span>Savings aggressiveness</span><span id="home-aggressiveness">—</span></p>
-                  <p><span>Preheat ROOM increase</span><span id="home-preheat-setting">—</span></p>
-                  <p><span>Maximum occupied rise</span><span id="home-maximum-rise">—</span></p>
-                </div>
-                <p class="muted zone-control-help">Higher savings aggressiveness accepts more temperature variation within the hard room limits. Change permanent preferences in configuration, then use Apply configuration. ROOM is a heat-pump demand setting; preheating does not target that air temperature.</p>
-                <div class="equipment-notes">
-                  <p><span>Tariff control</span><span id="tariff-control-state">—</span></p>
-                  <p><span>Recirculation</span><span id="dhwr">—</span></p>
-                </div>
-                <p id="heating-test-help" class="muted zone-control-help">Use the controls below to temporarily adjust heating and heat-pump parameters. If price control is not paused, your changes revert on the next controller update, normally within 1 minute. During a pause, they stay until it ends or you select Resume now, then the previous settings are restored.</p>
-                <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="heating-configuration-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
+                <h5 id="home-temporary-heating-title" class="home-control-subtitle">Temporary heating</h5>
+                <p id="heating-test-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.</p>
+                <div id="heating-test-buttons" class="heating-test-buttons heating-mode-buttons" role="group" aria-labelledby="home-temporary-heating-title" aria-describedby="heating-test-help home-hold-warning heating-test-status">
                   <button id="test-normal" class="secondary-button" type="button" data-heating-command="normal" aria-pressed="false" disabled><span>Normal heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   <button id="test-preheat" class="secondary-button" type="button" data-heating-command="preheat" aria-pressed="false" aria-describedby="heating-preheat-help" disabled><span>Preheat</span><span class="heating-button-state" aria-hidden="true"></span></button>
                   <button id="test-reduction" class="secondary-button" type="button" data-heating-command="reduction" aria-pressed="false" disabled><span>Reduced heating</span><span class="heating-button-state" aria-hidden="true"></span></button>
                 </div>
                 <p id="home-hold-warning" class="heating-hold-warning" role="status" hidden></p>
                 <p id="heating-preheat-help" class="muted zone-control-help" hidden></p>
-                <p id="heating-test-status" class="muted"></p>
                 <p id="heating-test-message" class="temporary-status" role="status" aria-live="polite"></p>
+                <details id="temporary-details" class="equipment-fold temporary-panel">
+                  <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
+                  <form id="temporary-form" class="temporary-form">
+                    <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
+                    <div class="temporary-field">
+                      <label for="away-until">Away until</label>
+                      <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
+                      <p id="away-status" class="temporary-status">At home.</p>
+                      <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
+                    </div>
+                    <div class="temporary-field">
+                      <label for="pause-until">Pause until</label>
+                      <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
+                      <p id="override-status" class="temporary-status">Price control is not paused.</p>
+                      <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
+                    </div>
+                    <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
+                    <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
+                  </form>
+                </details>
+                <details id="home-preferences-details" class="equipment-fold home-preferences">
+                  <summary><span>Comfort &amp; preferences</span><small id="home-comfort-limits">Configured limits</small></summary>
+                  <div class="home-preferences-body">
+                    <dl class="home-policy-values">
+                      <div class="home-comfort-reference"><dt>Comfort reference</dt><dd><strong id="reference">—</strong><small id="reference-source">Learning normal temperature</small></dd></div>
+                      <div><dt>Maximum drop</dt><dd><strong id="drop">—</strong><small id="drop-note">When you are home</small></dd></div>
+                      <div><dt>Maximum rise</dt><dd><strong id="home-maximum-rise">—</strong><small>When you are home</small></dd></div>
+                      <div><dt>Savings aggressiveness</dt><dd><strong id="home-aggressiveness">—</strong></dd></div>
+                      <div><dt>Preheat request</dt><dd><strong id="home-preheat-setting">—</strong></dd></div>
+                    </dl>
+                    <p class="muted">Room limits apply around each room’s normal temperature. Higher savings aggressiveness accepts more variation within those limits.</p>
+                    <p class="muted">ROOM increases heat-pump demand; it is not a room-air target.</p>
+                    <p class="muted home-preferences-edit">Edit permanent preferences in configuration, then use Apply configuration in Data &amp; settings.</p>
+                  </div>
+                </details>
               </div>
               <details id="learning-panel-details" class="dashboard-disclosure learning-groups learning-model-details">
                 <summary>
@@ -130,6 +155,12 @@
                       <div id="learning-evidence"></div>
                       <p id="learning-history" class="learning-note"></p>
                       <p id="savings" class="learning-note"></p>
+                      <details id="learning-reconstruction-details" class="learning-support">
+                        <summary>Reconstructing the model</summary>
+                        <p class="learning-note"><strong>Exactly reproducible:</strong> the model at a committed learning point, including its coefficients, estimated building reserve and slab state, comfort references and learning evidence.</p>
+                        <p class="learning-note"><strong>Required:</strong> the complete learning journal, its saved configuration and initial seed, the same fireplace and sensor-correction revisions, and matching learning software. Keep a consistent full database backup and the corresponding software version; an observation CSV alone is insufficient. Choosing different corrections deliberately produces a revised model.</p>
+                        <p class="learning-note"><strong>Outside this guarantee:</strong> every past control choice, discarded or missing measurements, physical command delivery and actual heating outcomes or savings. Recorded observations and forecasts remain evidence; replay does not recreate unrecorded events or prove what the equipment did.</p>
+                      </details>
                     </details>
                   </div>
                 </details>
@@ -200,26 +231,6 @@
                     <div id="learning-policy-content"></div>
                   </div>
                 </details>
-              </details>
-              <details id="temporary-details" class="equipment-fold temporary-panel">
-                <summary><span>Away &amp; pause</span><small id="temporary-overview">At home · price control active</small></summary>
-                <form id="temporary-form" class="temporary-form">
-                  <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
-                  <div class="temporary-field">
-                    <label for="away-until">Away until</label>
-                    <div class="temporary-input-row"><input id="away-until" type="datetime-local" step="60" aria-describedby="away-status away-help"><button id="home-now" class="secondary-button" type="button" disabled>Home now</button></div>
-                    <p id="away-status" class="temporary-status">At home.</p>
-                    <p id="away-help" class="muted">Allow longer price-based reductions while away. The temperature-drop limit does not apply until your return; planning includes reheating costs.</p>
-                  </div>
-                  <div class="temporary-field">
-                    <label for="pause-until">Pause until</label>
-                    <div class="temporary-input-row"><input id="pause-until" type="datetime-local" step="60" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Resume now</button></div>
-                    <p id="override-status" class="temporary-status">Price control is not paused.</p>
-                    <p id="pause-help" class="muted">Starting a pause requests Normal heating. Heating and parameter changes made afterwards stay until the pause ends or you select Resume now, then the previous settings are restored. Automatic price control then resumes if enabled; monitoring and learning continue throughout.</p>
-                  </div>
-                  <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
-                  <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
-                </form>
               </details>
             </section>
           </div>

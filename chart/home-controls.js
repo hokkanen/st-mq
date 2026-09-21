@@ -50,5 +50,7 @@ export function homePolicyValues(status = {}) {
     aggressiveness: Number.isFinite(settings.savingsAggressiveness) ? `${settings.savingsAggressiveness} / 100` : 'Unavailable',
     preheat: Number.isFinite(settings.preheatRoomBoostC) ? `ROOM +${settings.preheatRoomBoostC} °C` : 'Unavailable',
     maximumRise: Number.isFinite(comfort.maxRiseC) ? `${comfort.maxRiseC} °C` : 'Unavailable',
+    limits: Number.isFinite(comfort.maxDropC) && Number.isFinite(comfort.maxRiseC)
+      ? `−${comfort.maxDropC} / +${comfort.maxRiseC} °C` : 'Limits unavailable',
   };
 }

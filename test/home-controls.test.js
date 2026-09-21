@@ -53,6 +53,6 @@ test('rate table applies VAT once to new ex-VAT and legacy VAT-inclusive transfe
 
 test('Home policy displays saved fixed settings without creating defaults for missing snapshots', () => {
   assert.deepEqual(homePolicyValues({ settings: { savingsAggressiveness: 0, preheatRoomBoostC: 5,
-    comfort: { maxRiseC: 1.5 } } }), { aggressiveness: '0 / 100', preheat: 'ROOM +5 °C', maximumRise: '1.5 °C' });
-  assert.deepEqual(homePolicyValues({}), { aggressiveness: 'Unavailable', preheat: 'Unavailable', maximumRise: 'Unavailable' });
+    comfort: { maxDropC: 1, maxRiseC: 1.5 } } }), { aggressiveness: '0 / 100', preheat: 'ROOM +5 °C', maximumRise: '1.5 °C', limits: '−1 / +1.5 °C' });
+  assert.deepEqual(homePolicyValues({}), { aggressiveness: 'Unavailable', preheat: 'Unavailable', maximumRise: 'Unavailable', limits: 'Limits unavailable' });
 });
