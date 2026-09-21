@@ -91,7 +91,9 @@ npm run build
 npm start
 ```
 
-`npm run check` runs the offline Node test suite and production build. Browser
+`npm run check` runs the routine offline Node tests and production build.
+`npm run test:extended` adds recovery stress and real SSH/SQLite transport checks;
+`npm run test:all` runs both Node suites. Extended CI runs weekly or manually. Browser
 smoke checks and container checks are separate; see
 [development validation](docs/development-validation.md) for prerequisites,
 commands and the latest checked scope. Provider live checks remain opt-in.

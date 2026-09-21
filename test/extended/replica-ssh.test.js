@@ -8,10 +8,10 @@ import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { Store } from '../src/storage/store.js';
-import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
+import { Store } from '../../src/storage/store.js';
+import { readReplicaPublication, snapshotDigest } from '../../src/replication/publication.js';
 
-const root = fileURLToPath(new URL('..', import.meta.url));
+const root = fileURLToPath(new URL('../..', import.meta.url));
 const delay = milliseconds => new Promise(done => setTimeout(done, milliseconds));
 const executable = async path => { try { await access(path, constants.X_OK); return path; } catch { return null; } };
 
@@ -57,7 +57,7 @@ function portReady(port) {
   });
 }
 
-test('real SSH transport verifies SQLite snapshots and catches up after receiver outage', { timeout: 60000 }, async t => {
+test('real SSH transport verifies SQLite snapshots and catches up after receiver outage', { timeout: 60_000 }, async t => {
   const tools = await prerequisites();
   if (tools.missing.length) {
     const reason = `Real SSH replication test requires ${tools.missing.join(', ')}.`;

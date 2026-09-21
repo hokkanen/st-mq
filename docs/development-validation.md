@@ -11,20 +11,46 @@ npm ci
 npm run check
 ```
 
-CI runs the tests on Node 22 and 24. To require the real replication checks
-instead of silently skipping unavailable prerequisites, install OpenSSH client
-and server tools, prepare the host's SSH privilege-separation directory, and
-build the pinned SQLite tool:
+`npm test` (also `npm run test:unit`) runs the routine offline regression suite
+with at most four test files in parallel and a 60-second test deadline. Pairing
+handover, outage promotion, recovery correctness and rejoin regressions remain
+in this suite. New top-level `test/*.test.js` files are included automatically.
+
+The optional extended Node package runs separately:
+
+```sh
+npm run test:extended
+npm run test:all        # routine followed by extended
+```
+
+Extended tests live in `test/extended/`, with at most two files in parallel and
+a three-minute test deadline. They cover recovery at larger history volumes
+and real SQLite replication through SSH. Cheap mocked transport validation stays
+in the routine suite. These tests use synthetic data and local processes; they
+make no paid model or provider API calls.
+
+Pushes and pull requests run routine tests and builds on Node 22 and 24, plus the
+secret-history audit. The **Extended validation** workflow runs weekly on Monday
+at 03:27 UTC or manually using `workflow_dispatch`; it runs the extended Node
+suite on both versions and the amd64/arm64 container checks. Run it before a
+release and after changes to recovery, replication or packaging. This workflow
+requires replication prerequisites, so a missing tool fails instead of silently
+skipping coverage. Local extended runs report missing tools as skips.
+
+To require real replication locally, install OpenSSH client and server tools,
+prepare the host's SSH privilege-separation directory, and build the pinned
+SQLite tool:
 
 ```sh
 node scripts/build-sqlite-rsync.js --output /tmp/stmq-tools/sqlite3_rsync
-PATH="/tmp/stmq-tools:$PATH" STMQ_REQUIRE_RSYNC_TESTS=1 STMQ_REQUIRE_SSH_TESTS=1 npm test
+PATH="/tmp/stmq-tools:$PATH" STMQ_REQUIRE_RSYNC_TESTS=1 STMQ_REQUIRE_SSH_TESTS=1 npm run test:extended
 ```
 
 The SSH tests create their own keys, server configuration and loopback listener.
 They do not use household SSH credentials. `STMQ_TEST_RSYNC` selects the binary
 for transport tests; `STMQ_SQLITE_RSYNC_PATH` selects it for SSH tests. Putting the
-tool on `PATH` supplies both.
+tool on `PATH` supplies both. Loopback access must be allowed by the test runner's
+sandbox; `listen EPERM` means the fixture could not start its local server.
 
 For sensor bookkeeping performance as recorded history grows, run:
 
@@ -42,13 +68,16 @@ provider downloads even when chart calculations run in a worker.
 
 ## Browser suites
 
-Build first with `npm run build`. All browser scripts create isolated application
-servers and temporary databases. Never point them at a household application.
+Build first with `npm run build`. Browser sweeps are extended/manual checks,
+separate from both Node commands; run the relevant suite for UI changes. All
+browser scripts create isolated application servers and temporary databases.
+Never point them at a household application.
 
 These scripts start their own disposable Chrome processes:
 
 ```sh
 node scripts/browser-equipment-smoke.js
+node scripts/browser-home-controls-smoke.js
 node scripts/browser-garage-smoke.js
 node scripts/browser-fullscreen-smoke.js
 ```
@@ -110,8 +139,50 @@ node scripts/garage-pipe-simulation.js
 The container suite uses temporary mounts and disables container networking.
 It checks the shipped startup command, authentication, assets, restart,
 backup/export/restore, shared files, provider fixtures and replica viewer.
-CI separately builds and runs both amd64 and arm64 images. Running arm64 locally
-requires an arm64 host or working emulation and a matching image.
+The weekly/manual extended workflow builds and runs both amd64 and arm64
+images. Running arm64 locally requires an arm64 host or working emulation and
+a matching image.
+
+## Pairing and browser failure investigation — 21 September 2026
+
+The two failures in `pair-runtime.test.js` both stalled at `check-recovery`.
+A tiny recovery preview reproduced the stall before any substantial history
+replay. On the local Node 26.8.2 runtime, registering the recovery worker's
+`parentPort` message listener before its initial asynchronous SQLite backup
+prevented that backup from completing. The same operation completed on Node 24.
+This was a runtime compatibility defect in the recovery path, not evidence that
+pairing needed longer polling deadlines. The worker now completes initialization
+before attaching its catch-up listener; replies arriving after `ready` remain
+queued until the listener is attached. Existing authority, history-conflict,
+rejoin and replay assertions remain active.
+
+The full-week replay (672 learning windows) and phase-energy import (6,048 rows)
+remain in the extended suite. Routine tests exercise the same assertions with
+80 learning windows and 192 energy rows, still crossing batch boundaries and
+checking live recording, deterministic replay and original-history preservation.
+Recovery fixtures use the same isolated snapshot worker as production pairing,
+avoiding the same Node 26 issue during test setup. Tests pass their cancellation
+signal through to worker operations, and the tiny preview regression has its
+own ten-second deadline.
+
+The browser failures came from assertions that predated intentional UI changes:
+four fitted coefficients replaced an expected five; Home outcome headings were
+being counted as outcome entries; chart inspection now uses its explicit Exit
+control; and the vehicle connection label is Tesla. Checks now assert the actual
+coefficient/outcome keys and the current keyboard behavior. No production UI
+changes were needed. The dedicated Home-controls smoke test already passed.
+Full chart and Garage browser checks passed after updating their assertions.
+The Garage sweep alone generated 509 synthetic screenshots (about 45 MiB), so
+these browser sweeps remain manual checks rather than part of every commit.
+
+Validation after the fixes: the complete routine suite on Node 24.21.0 passed
+2,411 tests in 56.8 seconds; seven optional Home Assistant template tests skipped
+because Python Jinja2 was unavailable. All 25 focused pairing/recovery tests
+passed on Node 26.8.2 in 13.4 seconds. The final extended suite passed all seven
+tests on Node 26.8.2 in 16.2 seconds, including required real SQLite and SSH
+transport checks with no skips. The fresh production build and Home-controls,
+chart and Garage browser suites passed. Containers and live providers were not
+rerun for this change.
 
 ## September 2026 development review
 
@@ -139,8 +210,8 @@ updated obsolete browser fixtures and documentation, and closed background
 workers before provider-test fixture cleanup. Learning algorithms and historical
 CSV interpretation were unchanged.
 
-Remaining limits: arm64 container execution was unavailable on this host; CI
-retains its separate arm64 job. Vite reports an existing main-bundle size warning
+Remaining limits: arm64 container execution was unavailable on this host; the
+extended workflow retains its separate arm64 job. Vite reports an existing main-bundle size warning
 above 500 kB. Live Easee access passed but its returned current measurements were
 stale, which remains distinct from fresh evidence for control. Software fixtures
 and simulations do not establish installed equipment performance or confirm

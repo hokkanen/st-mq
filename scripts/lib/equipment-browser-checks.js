@@ -104,7 +104,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-name').textContent"), 'Caravan');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-device-status').textContent"), 'Available');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=caravan] .equipment-connection-recent').textContent"), /^Reported /);
-    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Charger 2 vehicle');
+    assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Tesla');
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"]').closest('[data-connection-area]').dataset.connectionArea"), 'other');
     assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:teslamate:other\"] .equipment-connection-meta').textContent"), /TeslaMate/);
     await evaluate("document.querySelectorAll('#equipment-connections .equipment-connection-fold, #equipment-connections .equipment-packet-details').forEach(d=>d.open=true);true");

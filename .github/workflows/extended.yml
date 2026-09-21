@@ -1,0 +1,52 @@
+name: Extended validation
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 3 * * 1'
+jobs:
+  extended:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Build verified SQLite replication tool
+        run: |
+          node scripts/build-sqlite-rsync.js --output "$RUNNER_TEMP/sqlite-tools/sqlite3_rsync"
+          echo "$RUNNER_TEMP/sqlite-tools" >> "$GITHUB_PATH"
+      - name: Prepare isolated SSH tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo install -d -m 0755 /run/sshd
+      - run: npm run test:extended
+        env:
+          STMQ_REQUIRE_RSYNC_TESTS: '1'
+          STMQ_REQUIRE_SSH_TESTS: '1'
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: true
+          tags: st-mq:addon-ci-${{ matrix.arch }}
+      - run: bash scripts/test-addon-container.sh st-mq:addon-ci-${{ matrix.arch }} linux/${{ matrix.arch }}

@@ -188,7 +188,8 @@ try {
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is compared in the combined home-temperatures view`);
   for(const key of ['model_indoor_temperature','garage_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is already shown on the right axis`);
-  assert.equal(await evaluate("document.querySelector('#left-axis optgroup[label=\"Model coefficients · Calculated\"]').children.length"), 5);
+  assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify([...document.querySelector('#left-axis optgroup[label="Model coefficients · Calculated"]').children].map(option => option.value))`)),
+    coefficientKeys, 'Only the four fitted Home coefficients have chart choices');
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
     window.recordingFixture={fetch:window.fetch.bind(window),requests:0,fail:false,hold:false};
@@ -536,7 +537,8 @@ try {
   assert.ok(populated.series.auxiliary_power.some(point => point.y > 0));
   assert.equal(await evaluate("document.getElementById('learning-details').open"), false);
   assert.equal(await evaluate("document.getElementById('learning-panel-details').open"), false);
-  assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
+  assert.equal(await evaluate("[...document.querySelectorAll('#learning-metrics > details[data-learning-key]')].map(row => row.dataset.learningKey).join(',')"),
+    'profit,auxProfit,recoveryError,indoorTemperature');
   assert.equal(await evaluate("document.getElementById('h66-test-submit').disabled"), true);
   mkdirSync('var', { recursive: true });
   const capture = async name => {

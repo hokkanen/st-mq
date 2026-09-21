@@ -412,7 +412,8 @@ try {
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-column > article, .controller-panels > article')].map(card => card.id)"),
     ['home-control', 'providers-controls', 'garage-control'],
     'Home and Garage have separate dashboard cards beside Data & settings');
-  assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4,
+  assert.equal(await evaluate("[...document.querySelectorAll('#learning-metrics > details[data-learning-key]')].map(row => row.dataset.learningKey).join(',')"),
+    'profit,auxProfit,recoveryError,indoorTemperature',
     'The existing Home outcome entries are preserved');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#learning-panel-details > details > summary')].map(row => row.textContent.trim())"),
     await evaluate("[...document.querySelectorAll('#garage-learning-details > details > summary')].map(row => row.textContent.trim())"),

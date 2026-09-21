@@ -75,7 +75,8 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('error').hidden"), true);
-  assert.equal(await evaluate("document.getElementById('learning-metrics').children.length"), 4);
+  assert.equal(await evaluate("[...document.querySelectorAll('#learning-metrics > details[data-learning-key]')].map(row => row.dataset.learningKey).join(',')"),
+    'profit,auxProfit,recoveryError,indoorTemperature');
   const actualStatus = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json());
   assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes('A2 ${actualStatus.learning.parameters.auxIntegralA2}')`), true);
   assert.equal(await evaluate(`document.getElementById('coefficient-evidence').textContent.includes('compressor ${actualStatus.learning.adaptive.model.energy.compressorKw.toFixed(2)} kW')`), true);

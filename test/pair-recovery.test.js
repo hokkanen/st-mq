@@ -1,11 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { recoveryPreview, recoverHistory } from '../src/recovery/service.js';
-import { appendLearningRecord, replayLearningJournal, recordLearningContext, LEARNING_WINDOW_MS,
+import { appendLearningRecord, replayLearningJournal, recordLearningContext,
   LEARNING_ALGORITHM, learningVersion } from '../src/app/committed-learning.js';
 import { recordChargingSessionCheck, chargingSessionCheckSummaries } from '../src/app/charging-session-checks.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
@@ -15,35 +14,9 @@ import { withSensorMeasurements } from '../src/app/sensor-samples.js';
 import { importCsv } from '../src/storage/history.js';
 import { Engine } from '../src/app/engine.js';
 
-const start = Date.parse('2026-01-01T00:00:00Z'), HOUR = 3_600_000, W = LEARNING_WINDOW_MS;
-function fixture(t) {
-  const directory = mkdtempSync(join(tmpdir(), 'stmq-recovery-'));
-  const master = new Store(join(directory, 'master.sqlite'));
-  const stores = [master];
-  t.after(() => { for (const store of stores) try { store.close(); } catch {} rmSync(directory, { recursive: true, force: true }); });
-  return { directory, master, async donor() {
-    const path = join(directory, 'donor.sqlite'); await master.backup(path);
-    const store = new Store(path); stores.push(store); return store;
-  }, async snapshot(store) {
-    const path = join(directory, `snapshot-${stores.length}-${readdirSync(directory).length}.sqlite`); await store.backup(path); return path;
-  } };
-}
-function observation(store, at, value = 21, extra = {}) {
-  return store.observation({ source: 'synthetic', device: 'invented-house', signal: 'indoor_temperature',
-    unit: 'degC', value, sourceTime: at, receivedAt: at, ...extra });
-}
-function sample(store, at, extra = {}) {
-  const value = { timestamp: at, windowStart: at - W, windowEnd: at,
-    indoorC: 21, outdoorC: 0, solarRadiationWm2: 0, phase: 'normal', roomBoostC: 0,
-    targetC: 21, regime: 'occupied', quality: [], energyBasis: 'estimated', actualModeKnown: false, ...extra };
-  return appendLearningRecord(store, 'mqtt', 'sample', value, { config: {} });
-}
-async function recover(f, donorPath, options = {}) {
-  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
-  return { preview, ...(await recoverHistory({ store: f.master, donorPath, input: 'mqtt', preview, ...options })) };
-}
+import { fixture, observation, sample, recover, learningCatchup, energyCatchup, start, HOUR, W } from './helpers/recovery-fixture.js';
 
-test('recovery preview is read only and master wins point and partial energy conflicts', async t => {
+test('recovery preview is read only and master wins point and partial energy conflicts', { timeout: 10000 }, async t => {
   const f = fixture(t);
   observation(f.master, start);
   const donor = await f.donor();
@@ -55,11 +28,11 @@ test('recovery preview is read only and master wins point and partial energy con
   observation(donor, start + 4 * HOUR, 9, { signal: 'property_energy_l1', unit: 'kWh',
     raw: { intervalStart: start + 2 * HOUR, intervalEnd: start + 4 * HOUR } });
   const donorPath = await f.snapshot(donor), before = f.master.observations();
-  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
   assert.deepEqual(f.master.observations(), before);
   assert.equal(preview.counts.missing, 1); assert.equal(preview.counts.conflicts, 2);
   assert.deepEqual(readdirSync(join(f.directory, 'work')), [], 'private comparison snapshots are cleaned');
-  const result = await recoverHistory({ store: f.master, donorPath, preview });
+  const result = await recoverHistory({ signal: f.signal, store: f.master, donorPath, preview });
   assert.equal(result.report.status, 'complete'); assert.equal(result.report.imported, 1);
   assert.equal(f.master.observations().find(row => row.sourceTime === start + HOUR).value, 22);
   assert.equal(f.master.observations().filter(row => row.signal === 'property_energy_l1').reduce((sum, row) => sum + row.value, 0), 1);
@@ -68,52 +41,7 @@ test('recovery preview is read only and master wins point and partial energy con
   assert.equal(f.master.observations().filter(row => row.sourceTime === start + 2 * HOUR).length, 1);
 });
 
-test('a missing week feeds chronological learning, catches up live records, and retains the original journal', async t => {
-  const f = fixture(t);
-  recordLearningContext(f.master, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21, roomBoostC: 0 }, start);
-  for (let i = 1; i <= 8; i++) sample(f.master, start + i * W);
-  const beforeModel = replayLearningJournal(f.master, 'mqtt');
-  const donor = await f.donor();
-  for (let i = 9; i <= 8 + 7 * 96; i++) sample(donor, start + i * W, { indoorC: 21 + Math.sin(i / 30) * 0.1 });
-  for (let i = 8 + 7 * 96 + 1; i <= 8 + 7 * 96 + 8; i++) sample(f.master, start + i * W);
-  const old = replayLearningJournal(f.master, 'mqtt', beforeModel);
-  const original = f.master.db.prepare('SELECT * FROM learning_journal ORDER BY id').all();
-  const donorPath = await f.snapshot(donor);
-  let beats = 0, liveWritten = false, published = null;
-  const timer = setInterval(() => { beats++; }, 5); t.after(() => clearInterval(timer));
-  const result = await recover(f, donorPath, { onProgress(progress) {
-    if (progress.phase === 'rebuilding' && !liveWritten) {
-      liveWritten = true; sample(f.master, start + (8 + 7 * 96 + 9) * W);
-      assert.equal(f.master.learningEpoch('mqtt'), 'original', 'old selected history remains active during rebuild');
-      const continuing = replayLearningJournal(f.master, 'mqtt', old);
-      assert.equal(continuing.windowCursor, start + (8 + 7 * 96 + 9) * W);
-    }
-  }, onPublish(value) { published = value; } });
-  assert.ok(beats >= 3, 'background replay leaves the main event loop responsive');
-  assert.equal(liveWritten, true); assert.equal(published.epoch, result.epoch);
-  assert.equal(result.report.model.acceptedSamples, 7 * 96);
-  assert.equal(f.master.learningEpoch('mqtt'), result.epoch);
-  assert.equal(result.checkpoint.windowCursor, start + (8 + 7 * 96 + 9) * W);
-  const archived = f.master.db.prepare(`SELECT id,input,key,kind,at,algorithm_version,config_version,forecast_version,payload
-    FROM learning_journal_entries WHERE epoch='original' AND id<=? ORDER BY id`).all(original.at(-1).id);
-  assert.deepEqual(archived, original, 'master source bytes and IDs remain an honest archival boundary');
-  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), result.checkpoint,
-    'the selected combined journal reconstructs the published model exactly');
-  assert.notDeepEqual(result.checkpoint.samples, old.samples, 'the model has consumed recovered windows');
-  assert.equal(f.master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-  assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(), undefined);
-  const storage = f.master.db.prepare(`SELECT COUNT(*) entries,SUM(payload IS NOT NULL) payloads,
-    SUM(source_entry_id IS NOT NULL) references_count,
-    SUM(COALESCE(length(payload),0)+COALESCE(length(config_version),0)+COALESCE(length(forecast_version),0)) payload_bytes
-    FROM learning_journal_entries`).get();
-  assert.equal(storage.references_count, original.length + 1, 'master prefix and live tail use compact source references');
-  assert.equal(storage.payloads, original.length + 1 + 7 * 96, 'each accepted source payload is saved once');
-  assert.equal(f.master.db.prepare(`SELECT COUNT(*) n FROM learning_journal_entries a
-    JOIN learning_journal_entries b ON a.source_entry_id=b.id WHERE b.source_entry_id IS NOT NULL`).get().n, 0,
-  'references point directly to original input, never chains across recoveries');
-  t.diagnostic(JSON.stringify({ syntheticWeek: true, entries: storage.entries, uniquePayloads: storage.payloads,
-    orderedReferences: storage.references_count, payloadBytes: storage.payload_bytes, databaseBytes: f.master.databaseBytes() }));
-});
+test('recovery catches up live learning across replay batches and retains the original journal', t => learningCatchup(t, 80));
 
 test('recovery remaps observations, coverage, forecast and context provenance instead of mixing local IDs', async t => {
   const f = fixture(t);
@@ -185,9 +113,9 @@ test('authority loss rejects publication and resumed recovery is idempotent', as
   const donor = await f.donor();
   for (let i = 2; i < 100; i++) { observation(donor, start + i * W); sample(donor, start + i * W); }
   const donorPath = await f.snapshot(donor);
-  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
   let current = true;
-  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview, isCurrent: () => current,
+  await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview, isCurrent: () => current,
     onProgress(value) { if (value.phase === 'rebuilding') current = false; } }), /authority changed/);
   assert.equal(f.master.learningEpoch('mqtt'), 'original');
   assert.equal(f.master.getState('recovery:active:mqtt').status, 'failed');
@@ -202,9 +130,9 @@ test('a modified donor invalidates its preview before source import', async t =>
   const f = fixture(t), donor = await f.donor();
   observation(donor, start);
   const donorPath = await f.snapshot(donor);
-  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
   const changed = new Store(donorPath); observation(changed, start + HOUR); changed.close();
-  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview }), /preview is stale/);
+  await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview }), /preview is stale/);
   assert.equal(f.master.observations().length, 0);
 });
 
@@ -250,27 +178,7 @@ test('a recovered charging session retains retry identity and cannot be counted 
   assert.equal(chargingSessionCheckSummaries(f.master).find(row => row.source === 'easee').summary.recordedSessions, 1);
 });
 
-test('a week of phase energy is imported in bounded batches while the master continues recording', async t => {
-  const f = fixture(t), donor = await f.donor();
-  f.master.setState('controller:sentinel', { mode: 'active', currentAction: 'normal' });
-  donor.transaction(() => {
-    for (let i = 1; i <= 7 * 24 * 12; i++) for (let phase = 1; phase <= 3; phase++) {
-      const at = start + i * 5 * 60_000;
-      observation(donor, at, 0.1, { signal: `property_energy_l${phase}`, unit: 'kWh',
-        raw: { intervalStart: at - 5 * 60_000, intervalEnd: at } });
-    }
-  });
-  let beats = 0, writes = 0;
-  const timer = setInterval(() => { beats++; }, 5); t.after(() => clearInterval(timer));
-  const result = await recover(f, await f.snapshot(donor), { onProgress(value) {
-    if (value.phase === 'importing') { f.master.event('synthetic-live-control-tick', { sequence: ++writes }, start + 8 * 24 * HOUR + writes); }
-  } });
-  assert.equal(result.report.imported, 6048);
-  assert.ok(beats > 5); assert.ok(writes > 0);
-  assert.deepEqual(f.master.getState('controller:sentinel'), { mode: 'active', currentAction: 'normal' });
-  const energy = f.master.db.prepare("SELECT COUNT(*) n,SUM(value) kwh FROM observations WHERE unit='kWh'").get();
-  assert.equal(energy.n, 6048); assert.ok(Math.abs(energy.kwh - 604.8) < 1e-8);
-});
+test('phase energy recovery imports bounded batches while the master continues recording', t => energyCatchup(t, 64));
 
 test('recovered CSV history preserves raw source rows, time, units and remapped import provenance', async t => {
   const f = fixture(t), donor = await f.donor();
@@ -327,9 +235,9 @@ test('failed recovery keeps control learning available and resumes ordinary back
   donor.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','accepted-before-failure',?,'load',3)").run(start);
   sample(donor, start + 2 * W);
   const donorPath = await f.snapshot(donor);
-  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
   let current = true;
-  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview, isCurrent: () => current,
+  await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview, isCurrent: () => current,
     onProgress(value) { if (value.phase === 'rebuilding') current = false; } }), /authority changed/);
   assert.equal(f.master.learningEpoch('mqtt'), 'original');
   assert.equal(f.master.getState('fireplace:rebuild:mqtt').status, 'pending');
@@ -412,9 +320,9 @@ test('a sensor reversal during recovery rejects the obsolete candidate and keeps
   const donor = await f.donor();
   for (let i = 3; i <= 100; i++) sample(donor, start + i * W);
   const donorPath = await f.snapshot(donor);
-  const preview = await recoveryPreview({ masterPath: f.master.path, donorPath });
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
   let reverted = false;
-  await assert.rejects(recoverHistory({ store: f.master, donorPath, preview, onProgress(value) {
+  await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview, onProgress(value) {
     if (value.phase === 'rebuilding' && !reverted) {
       reverted = true;
       revertSensorChange(f.master, 'mqtt', { requestId: 'invented-racing-revert', id: change.id }, start + 101 * W);

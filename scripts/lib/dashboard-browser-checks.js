@@ -88,6 +88,10 @@ export async function checkDashboardDisclosures({ evaluate, keyPress, until }) {
       assert.deepEqual(await evaluate("['chart-shortcut', 'garage-chart-shortcut'].map(id => document.getElementById(id).getAttribute('aria-expanded'))"),
         ['true', 'true'], 'Both chart shortcuts reflect the open chart');
       await keyPress('Escape');
+      assert.equal(await evaluate("document.querySelector('.history-panel').dataset.fullscreen"), 'true',
+        'Escape preserves the chart inspection view');
+      await evaluate("document.getElementById('chart-fullscreen').focus()");
+      await keyPress('Enter');
       await until("document.querySelector('.history-panel').dataset.fullscreen === 'false'");
       assert.equal(await evaluate(`document.activeElement === document.getElementById('${id}')`), true,
         `${id} receives focus when the chart closes`);

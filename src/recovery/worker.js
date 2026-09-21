@@ -290,7 +290,7 @@ function failed(error) {
   parentPort.postMessage({ type: 'failed', error: error?.code === 'RECOVERY_INVALID' ? error.message
     : 'Recovery failed; accepted history remains valid and the previous model remains active.' }); cleanup();
 }
-parentPort.on('message', async message => {
+async function handleMessage(message) {
   if (running) return;
   running = true;
   try {
@@ -303,6 +303,11 @@ parentPort.on('message', async message => {
     } else if (message.type === 'close') cleanup();
   } catch (error) { failed(error); }
   finally { running = false; }
-});
+}
+// Startup does not accept catch-up commands. Register the listener afterwards:
+// a referenced idle message port can stall asynchronous SQLite backup on Node 26.8.2.
+// Messages sent after the ready response remain queued until this listener exists.
 running = true;
-start().catch(failed).finally(() => { running = false; });
+await start().catch(failed);
+running = false;
+parentPort.on('message', handleMessage);
