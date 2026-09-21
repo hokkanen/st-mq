@@ -362,16 +362,16 @@
       }
     },
     "garage": {
-      "enabled": false,
+      "enabled": true,
       "aggressiveness": 50,
       "baselineC": 10,
-      "frontRequired": false,
+      "frontRequired": true,
       "maxSensorAgeMs": 120000,
       "minOnMs": 10800000,
       "minOffMs": 3600000,
       "stepMinutes": 15,
       "protection": {
-        "approved": false,
+        "approved": true,
         "version": "garage-thermal-reserve-v1",
         "marginC": 1,
         "pipeOutsideDiameterMm": 21,
@@ -379,14 +379,14 @@
         "heatTransferWPerM2K": 20
       },
       "adapter": {
-        "driver": "fixture",
-        "stateTopic": "",
-        "telemetryTopic": "",
-        "commandTopic": "",
+        "driver": "shelly-cn105",
+        "stateTopic": "heatpump/garage/state",
+        "telemetryTopic": "heatpump/garage/telemetry",
+        "commandTopic": "heatpump/garage/command",
         "maxAgeMs": 120000,
         "electricalSource": "none"
       },
-      "assumeISave10C": false,
+      "assumeISave10C": true,
       "minSavingsEur": 0.5,
       "maxPausesPerDay": 1
     }
