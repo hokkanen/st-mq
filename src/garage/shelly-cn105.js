@@ -13,7 +13,7 @@ export function createShellyCn105Transport({ settings, publish }) {
   if (typeof publish !== 'function') throw new TypeError('Shelly CN105 requires an MQTT publisher');
   const transport = Object.freeze({
     send(command) {
-      if (command.schema !== SHELLY_CN105_CONTRACT || !['claim', 'start', 'renew', 'release'].includes(command.action))
+      if (command.schema !== SHELLY_CN105_CONTRACT || !['claim', 'start', 'renew', 'release', 'manual'].includes(command.action))
         throw new TypeError('Unsupported Shelly CN105 command');
       // QoS 0 and queueQoSZero:false prevent offline replay; native results and
       // protocol challenges handle an uncertain publication outcome.

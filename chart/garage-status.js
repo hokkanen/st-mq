@@ -1,9 +1,10 @@
 import { isReadOnlyReplica } from './replica-status.js';
+import { mitsubishiReadings, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
 import { renderCurrentPrice } from './current-price.js';
-import { garageHeatingConfirmation, garageNativeReadingFresh, setHeatingStatusDetail } from './heating-status.js';
+import { garageHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { finnishDateTime } from './home-controls.js';
 import { confirmPausedHeating, garageHeatingWarning } from './heating-warning.js';
 import { GARAGE_COEFFICIENT_INFO } from '../src/domain/history-series.js';
@@ -277,13 +278,7 @@ export function garageColdBudget(garage = {}, location) {
  * device identifiers, command payloads or private configuration into the DOM. */
 export function garageDisplay(garage = {}, now = Date.now()) {
   const settings = garage.settings ?? {}, protection = garage.protection ?? {}, locations = protection.locations ?? {};
-  const adapter = garage.adapter ?? {}, reported = adapter.native ?? adapter.readbacks ?? {}, health = adapter.health ?? {};
-  const telemetry = adapter.telemetry ?? {};
-  const telemetryValue = (signal, unit) => {
-    const row = telemetry[signal];
-    if (!row?.supported || !finite(row.value)) return 'Unavailable';
-    return `${number(row.value, unit)}${row.usable ? row.accuracyVerified ? ' · verified' : ' · provisional' : row.quality?.includes('stale') ? ' · stale' : ' · unqualified'}`;
-  };
+  const adapter = garage.adapter ?? {}, health = adapter.health ?? {};
   const plan = garage.plan ?? {}, learning = garage.learning ?? {};
   const episode = garage.episode ?? {};
   const rows = [];
@@ -299,12 +294,6 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   }
   rows.push(['Limiting protection location', text(protection.limitingLocation)],
     ['Configured normal Mitsubishi setting', number(settings.baselineC, '°C')],
-    ['Native power', reported.power === null || reported.power === undefined ? 'Unknown' : `${text(native(reported.power))}${!finite(reported.powerAt) ? ' · freshness unknown' : !garageNativeReadingFresh(garage, 'power', now) ? ' · current reading unavailable' : ''}`], ['Native mode', text(native(reported.mode))],
-    ['Native target', number(native(reported.targetC), '°C')],
-    ['Pump indoor temperature', telemetryValue('garage_native_indoor_temperature', '°C')], ['Pump outdoor temperature', telemetryValue('garage_native_outdoor_temperature', '°C')],
-    ['Electrical power', telemetryValue('garage_power', 'W')], ['Native cumulative energy', telemetryValue('garage_native_energy', 'kWh')],
-    ['Compressor frequency', telemetryValue('garage_compressor_frequency', 'Hz')],
-    ['Compressor / fan / defrost', [reported.compressorActive, reported.fanStage, reported.defrost].map(value => value === undefined || value === null ? 'Unknown' : typeof native(value) === 'boolean' ? state(native(value)) : text(native(value))).join(' · ')],
     ['Device online', state(health.deviceOnline)], ['Driver progressing', state(health.driverProgressing)],
     ['Pump communicating', state(health.pumpCommunicating)],
     ['Local lease remaining', finite(adapter.episode?.leaseExpiresAt) ? number(Math.max(0, adapter.episode.leaseExpiresAt - now) / 60_000, 'min') : 'No accepted lease'],
@@ -409,10 +398,11 @@ export function renderGarage(document, status) {
   if (doorStatus) doorStatus.dataset.state = doors.length && closedDoors.length === doors.length && !doors.some(row => row.stale)
     ? 'confirmed' : 'attention';
 
+  const pumpReadings = mitsubishiReadings(garage, now);
   const nativeReading = (field, title, format) => {
     const value = native(reported[field]), at = reported.readbacks?.[field]?.measuredAt
       ?? (field === 'power' ? reported.powerAt : null);
-    const fresh = garageNativeReadingFresh(garage, field, now);
+    const fresh = pumpReadings.find(reading => reading.key === `native-${field}`)?.available === true;
     const last = value === null || value === undefined ? 'Unknown' : format(value);
     const id = `garage-native-${field === 'targetC' ? 'target' : field}`;
     const available = fresh && last !== 'Unknown';
@@ -450,8 +440,13 @@ export function renderGarage(document, status) {
     }
     root.replaceChildren(fragment);
   };
-  set('garage-controller-state', display.status); set('garage-controller-reason', display.reason);
-  list('garage-controller-readings', display.rows.filter(([label]) => !['Native power', 'Native mode', 'Native target'].includes(label)));
+  const connected = adapter.connected === true && adapter.health?.pumpCommunicating === true;
+  set('garage-controller-state', connected ? 'Connected' : adapter.connected ? 'Awaiting readings' : 'Not connected');
+  const connection = document.getElementById('garage-controller-state');
+  if (connection) connection.dataset.state = connected ? 'available' : 'attention';
+  set('garage-controller-reason', display.reason);
+  renderMitsubishiReadings(document, status);
+  list('garage-controller-readings', display.rows);
   const approved = garage.settings?.protection?.approved;
   set('garage-protection-approval', approved === true ? 'Owner-approved' : approved === false ? 'Not approved' : 'Approval unknown');
   for (const [group, rows] of Object.entries(display.settingGroups)) {

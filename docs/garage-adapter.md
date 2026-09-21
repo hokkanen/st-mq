@@ -6,7 +6,7 @@ observations. Select it explicitly with `garage.adapter.driver: "shelly-cn105"`.
 The default `fixture` driver remains an isolated, read-only consumer of the
 `stmq-garage-fixture/v1` host simulation vocabulary.
 
-Production control requires fresh device evidence: armed mode, verified native
+Automatic pause control requires fresh device evidence: armed mode, verified native
 baseline, all essential capabilities and four installed commissioning results
 (`selectivePowerVerified`, `lowHeatVerified`, `expiryVerified`, `restartVerified`).
 Neither a configuration flag nor fixture telemetry bypasses this gate. The
@@ -38,8 +38,9 @@ production driver and a state topic; it does not arm the device. The default
 The electrical selection is `none`, `native-counter` or `native-power`; the two
 energy paths cannot both contribute. Broker connection and credentials use the
 existing private MQTT settings. The normal owner baseline is read from
-`garage.baselineC` and compared with native evidence; the adapter never writes a
-new thermostat target.
+`garage.baselineC` and compared with native evidence; automatic price control
+never writes a new thermostat target. Explicit ordinary setting changes use the
+separate manual interface below.
 
 The fixture-only example is
 [`test/fixtures/garage-provisional-state.json`](../test/fixtures/garage-provisional-state.json).
@@ -56,10 +57,16 @@ Telemetry has the same envelope and an independent sequence. Each field explicit
 declares `supported`, `decodeVerified`, `value`, `unit` and `measuredAt` (UTC epoch
 milliseconds). Supported fields are `indoorTemperature`/`outdoorTemperature`
 (`degC`), `power` (`W`), `energy` (`kWh`), `compressorFrequency` (`Hz`), and
-`compressorActive`/`defrost` (`boolean`). Zero and negative temperatures are valid;
+`compressorActive`/`defrost` (`boolean`). Optional diagnostic fields include
+`actualFan` (`stage`), `preheat`/`standby` (`boolean`), `faultRaw` (hexadecimal,
+null unit) and `energyCounterRaw` (`count`). The raw counter never becomes kWh.
+Zero and negative temperatures are valid;
 missing support is unknown. Omitted fields retain their original clocks until
 they expire. Native temperatures remain optional diagnostic context. They never
-replace either external near-pipe sensor.
+replace either external near-pipe sensor. Public production status omits fields
+that are unsupported, null or explicitly unknown/invalid. Observed values retain
+their last source clock and become stale when communication stops; missing
+measurements do not create permanent unavailable reading rows.
 
 For monitoring before a source has UTC, `observedAgeMs` and field `ageMs` can
 replace the corresponding timestamp. Such timestamps are reconstructed as
@@ -79,8 +86,8 @@ learning journal can avoid fitting an interval across a transition.
 Tests inject `createGarageSimulationTransport(send)` into `createGarageAdapter`.
 The transport is recognized by a module-private object capability, not a JSON
 flag. The production acquisition path never creates or accepts this transport. Its
-separate `createShellyCn105Transport` sends only `claim`, `start`, `renew` and
-`release` to the configured exact command topic with QoS 0, retain false and
+separate `createShellyCn105Transport` sends `claim`, `start`, `renew`,
+`release` and explicit `manual` settings to the configured exact command topic with QoS 0, retain false and
 reconnect queuing disabled. Receipt and native confirmation come from device
 state, independently of MQTT publication success.
 
@@ -147,6 +154,43 @@ The runtime stores adapter obligations under `garage:adapter:<input>`. It owns
 the independent five-second safety check and planner lifecycle. MQTT closure
 accepts `restore:false` for an instance without control authority and never
 queues old OFF work.
+
+## Ordinary Mitsubishi controls
+
+`POST /api/garage/native` accepts exactly `{ "setting": "fan", "value": "auto" }`.
+The available settings are native power (`on`/`off`), mode (`heat`, `cool`, `auto`,
+`dry`, `fan`), target temperature (16–31 °C with the advertised 1 or 0.5 °C step),
+fan (`auto`, `quiet`, numbers 1–4), vertical vane (`auto`, numbers 1–5, `swing`)
+and horizontal vane (`far-left`, `left`, `center`, `right`, `far-right`, `split`,
+`swing`). A setting is enabled only when the driver advertises its capability and
+provides a fresh exact readback. Optional `capabilities.manualOptions` restricts
+individual enum settings to the connected model's supported typed choices. A
+missing entry keeps the generic choices; a malformed, duplicate, empty or
+out-of-contract array disables that setting. Both the UI and command admission
+use this restricted set. An unknown horizontal vane is unavailable.
+The special low-heat target is not an ordinary thermostat target option.
+
+`garage.nativeControls` reports overall availability, reason, busy/pending flags,
+per-setting typed choices/ranges and readbacks, and the separate last native
+result. Ordinary controls require primary ownership, the live production route,
+fresh state and device/driver/pump health, `authority.manualControlAllowed`, an
+unused current challenge, and no foreign owner or pending command. They are
+available independently of economic enablement, active/shadow mode and automatic
+commissioning proof. Device maintenance and commissioning modes block them.
+
+Each request publishes one `action:"manual"` command with a single-key `settings`
+object and current device/boot/session/host identities, increasing sequence and
+a short deadline. The device atomically takes manual ownership when unowned;
+there is no automatic lease claim beforehand. An existing economic pause must
+finish restoration before a setting can change. Pending manual work blocks new
+automatic pauses, and manual changes disqualify overlapping savings assessments.
+
+Publication, acceptance and native confirmation remain separate. Confirmation
+requires the matching command result and a later fresh readback of that exact
+setting, value and adapter session. A missing result becomes uncertain after
+45 seconds; disconnect or restart never replays the request. The compact native
+request/result is persisted separately from economic lease obligations. Ordinary
+power OFF is the owner's selection and creates no automatic restoration lease.
 
 ## Electrical accounting
 

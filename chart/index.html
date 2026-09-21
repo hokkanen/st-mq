@@ -509,7 +509,7 @@
             <section id="garage-equipment-section" class="zone-section zone-equipment" aria-labelledby="garage-equipment-title">
 
 
-              <details id="garage-controller-details" class="equipment-device garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
+              <details id="garage-controller-details" class="equipment-device equipment-heat-pump garage-heating native-heat-pump" aria-labelledby="garage-mitsubishi-title">
                 <summary class="equipment-device-summary">
                   <div class="equipment-device-heading"><h4 id="garage-mitsubishi-title">Mitsubishi air-to-air heat pump</h4><small class="equipment-device-meta">Heat pump · Mitsubishi</small></div>
                   <span class="equipment-device-health"><span id="garage-controller-state" class="equipment-device-status">Monitoring</span></span>
@@ -521,8 +521,29 @@
                 </summary>
                 <div class="equipment-device-body">
                   <p id="garage-pump-reading-info" class="pump-reading-info"></p>
-                  <section id="garage-readings-details" class="equipment-reading-section garage-secondary">
-                    <h5 class="equipment-body-title">More Mitsubishi readings</h5>
+                  <details id="garage-native-control-details" class="equipment-fold" hidden>
+                    <summary>Adjust heat-pump parameters</summary>
+                    <form id="garage-native-form" class="h66-test-form mitsubishi-test-form" aria-describedby="garage-native-status garage-native-message">
+                      <label>Setting<select id="garage-native-setting">
+                        <option value="power">Power</option><option value="mode">Operating mode</option>
+                        <option value="targetC">Room setting</option><option value="fan">Fan setting</option>
+                        <option value="vane">Vertical vane</option><option value="wideVane">Horizontal vane</option>
+                      </select></label>
+                      <label id="garage-native-value-field">Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
+                      <label id="garage-native-temperature-field" hidden>Temperature · °C<input id="garage-native-temperature" type="number" required disabled></label>
+                      <p class="equipment-control-state"><span>Reported now</span><strong id="garage-native-reported">Unavailable</strong></p>
+                      <button id="garage-native-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
+                    </form>
+                    <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
+                    <p id="garage-native-message" class="temporary-status" role="status" aria-live="polite"></p>
+                  </details>
+                  <details id="garage-readings-details" class="equipment-fold" hidden>
+                    <summary>All heat-pump readings</summary>
+                    <p id="garage-native-readings-help" class="muted">Values reported by the heat pump. Select a value for freshness, receipt time and measurement quality.</p>
+                    <div id="garage-native-readings" aria-describedby="garage-native-readings-help"></div>
+                  </details>
+                  <details id="garage-automatic-details" class="equipment-fold">
+                    <summary>Automatic savings &amp; protection</summary>
                     <p id="garage-controller-reason" class="muted"></p>
                     <dl id="garage-controller-readings" class="equipment-readings"></dl>
                     <p class="muted">The two pipe-location sensors protect independently. Pump temperatures are separate equipment readings. Qualified native electricity remains provisional unless checked.</p>
@@ -531,7 +552,7 @@
                       <p id="garage-release-help" class="muted">Ends a savings episode managed by ST-MQ and awaits restoration of normal heating.</p>
                       <p id="garage-release-message" class="temporary-status" role="status" aria-live="polite"></p>
                     </div>
-                  </section>
+                  </details>
                 </div>
               </details>
               <div id="garage-equipment-readings" class="equipment-device-list"></div>

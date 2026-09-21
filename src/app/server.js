@@ -197,6 +197,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.garage.setTemporary(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/garage/heating')
           return await mutate(async (current, input) => { await current.garage.setHeating(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/garage/native')
+          return await mutate(async (current, input) => { await current.garage.setNativeSettings(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/recheck')
           return await mutate(async (current, input) => { await current.recheckEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/switch')

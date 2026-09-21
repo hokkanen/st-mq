@@ -1322,3 +1322,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   .garage-overview, .garage-native-overview, .pump-native-overview { gap: 10px; }
   .zone-summary .equipment-value > strong, .zone-summary .equipment-value > strong.muted { font-size: 15px; }
 }
+
+/* Mitsubishi uses the ground-source pump form and table layout. */
+.mitsubishi-table td > strong { display: block; font-weight: 500; }
+.mitsubishi-table .equipment-reading-qualifier { display: block; margin-top: 3px; font-size: 10px; color: var(--muted); }

@@ -11,6 +11,11 @@ export const GARAGE_FIELDS = Object.freeze({
   compressorFrequency: { signal: 'garage_compressor_frequency', unit: 'Hz', min: 0, max: 300 },
   compressorActive: { signal: 'garage_compressor_active', unit: 'boolean', boolean: true },
   defrost: { signal: 'garage_native_defrost', unit: 'boolean', boolean: true },
+  preheat: { signal: 'garage_native_preheat', unit: 'boolean', boolean: true },
+  standby: { signal: 'garage_native_standby', unit: 'boolean', boolean: true },
+  actualFan: { signal: 'garage_native_actual_fan', unit: 'stage', min: 0, max: 6 },
+  energyCounterRaw: { signal: 'garage_native_energy_raw', unit: 'count', min: 0, max: 65_535 },
+  faultRaw: { signal: 'garage_native_fault_raw', unit: null, string: true },
 });
 const topic = value => typeof value === 'string' && value.length > 0 && value.length <= 1024 && !/[+#\u0000]/.test(value);
 export function garageAdapterSettings(input = {}) {
@@ -65,7 +70,8 @@ export function decodeGarageField(field, definition, { receivedAt, retained = fa
   else if (field.measuredAt > receivedAt) quality.push('future-source-time');
   else if (receivedAt - field.measuredAt >= maxAgeMs) quality.push('stale');
   if (retained) quality.push('retained');
-  const validNumber = definition.boolean ? typeof field?.value === 'boolean'
+  const validNumber = definition.string ? typeof field?.value === 'string' && /^[0-9a-f]{1,128}$/i.test(field.value)
+    : definition.boolean ? typeof field?.value === 'boolean'
     : Number.isFinite(field?.value) && field.value >= definition.min && field.value <= definition.max;
   if (!validNumber) quality.push('invalid-value');
   const usable = !['unknown', 'observed-unverified', 'unsupported', 'invalid', 'stale'].includes(field?.quality)

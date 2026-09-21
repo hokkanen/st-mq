@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { GARAGE_FIXTURE_CONTRACT, SHELLY_CN105_CONTRACT, GARAGE_CONTRACT_STATUS, GARAGE_FIELDS, garageAdapterSettings,
   decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validFixtureState } from './contract.js';
 import { isShellyCn105Transport, SHELLY_CN105_COMMISSIONING } from './shelly-cn105.js';
+import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting, garageNativeOptions } from './native-settings.js';
 import { createGarageElectrical } from './electrical.js';
 import { GARAGE_MAX_PERMISSION_MS, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 
@@ -23,6 +24,10 @@ const commandSummary = command => command ? { action: command.action, status: co
   requestedAt: command.requestedAt, acceptedAt: command.acceptedAt ?? null,
   requestedExpiryAt: command.requestedExpiryAt ?? null, temperatureEvidenceAt: command.temperatureEvidenceAt ?? null,
   nativeConfirmedAt: command.nativeConfirmedAt ?? null, usefulHeatAt: command.usefulHeatAt ?? null } : null;
+const NATIVE_PENDING = ['pending', 'published', 'accepted'];
+const nativeCommandSummary = command => command ? { setting: command.setting, value: command.value,
+  status: command.status, requestedAt: command.requestedAt, acceptedAt: command.acceptedAt ?? null,
+  nativeConfirmedAt: command.nativeConfirmedAt ?? null, reason: command.reason ?? null } : null;
 
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, persisted = null,
@@ -38,6 +43,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   const startedAt = clock();
   let connected = false, reconciled = false, stopped = false, state = null;
   let claimPending = null;
+  let nativeCommand = persisted?.lastNativeCommand ? { ...persisted.lastNativeCommand,
+    ...(NATIVE_PENDING.includes(persisted.lastNativeCommand.status) ? { status: 'uncertain', reason: 'host-restarted' } : {}) } : null;
   let sequence = 0, telemetrySequence = -1, telemetryBoot = null, telemetryDevice = null;
   const usedChallenges = new Map();
   let lastTick = null, latest = {}, lastEvent = null;
@@ -75,6 +82,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       observedHeatingDelayMs,
       restorationRequestedAt, episode: episode ? structuredClone(episode) : null, recoveryLockedUntil,
       lastCommand: commandSummary(lastCommand), commandHistory: commands.map(commandSummary),
+      lastNativeCommand: nativeCommandSummary(nativeCommand),
       acceptedEvidence: state ? { observedAt: state.observedAt, receivedAt: state.receivedAt,
         retained: state.retained, nativePower: state.native.power, restorationPending: state.restorationPending,
         mode: state.mode, health: state.health } : null,
@@ -110,6 +118,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       || (!forRelease || !production) && state.authority.controlAllowed !== true)
       reasons.push('adapter-authority-unavailable');
     if (!forRelease) {
+      if (nativePending(now) || state?.manualPending) reasons.push('manual-setting-pending');
       if (production && !SHELLY_CN105_COMMISSIONING.every(name => state?.commissioning[name] === true))
         reasons.push('installed-commissioning-required');
       const h = health(now);
@@ -174,6 +183,89 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   function consumeChallenge(now) {
     for (const [key, expiry] of usedChallenges) if (expiry <= now) usedChallenges.delete(key);
     usedChallenges.set(`${state.bootId}:${state.sessionId}:${state.challenge.value}`, state.challenge.expiresAt);
+  }
+  function nativePending(now) {
+    return Boolean(nativeCommand && NATIVE_PENDING.includes(nativeCommand.status) && now < nativeCommand.confirmBy);
+  }
+  function nativeBlockers(now) {
+    const reasons = [];
+    if (!live) reasons.push('The installed adapter does not support ordinary Mitsubishi controls.');
+    if (!canControl()) reasons.push('This instance does not own device control.');
+    if (!connected || stopped) reasons.push('The MQTT connection is unavailable.');
+    if (!reconciled || !state || state.retained || state.observedAt > now || now - state.observedAt >= settings.maxAgeMs)
+      reasons.push('A fresh adapter session is required.');
+    const h = health(now);
+    if (!h.deviceOnline || !h.driverProgressing || !h.pumpCommunicating) reasons.push('Fresh driver and heat-pump communication are required.');
+    if (state?.authority.manualControlAllowed !== true) reasons.push('Ordinary Mitsubishi controls are disabled on the adapter.');
+    if (state?.authority.ownerSession && state.authority.ownerSession !== hostSession) reasons.push('Another controller owns the heat pump.');
+    if (['maintenance', 'commissioning'].includes(state?.mode)) reasons.push('The adapter is in maintenance or commissioning.');
+    if (restorePending || state?.restorationPending || state?.lease) reasons.push('Restore the managed pause before changing native settings.');
+    if (nativePending(now) || state?.manualPending || claimPending && now < claimPending.deadlineAt) reasons.push('Wait for the current native command to finish.');
+    if (!identity(state?.challenge?.value) || !finiteTime(state?.challenge?.expiresAt) || state.challenge.expiresAt <= now
+      || usedChallenges.has(`${state?.bootId}:${state?.sessionId}:${state?.challenge?.value}`)) reasons.push('Waiting for a fresh device challenge.');
+    return reasons;
+  }
+  function nativeControls(now = clock()) {
+    const reasons = nativeBlockers(now), pending = nativePending(now);
+    const fields = Object.fromEntries(Object.entries(GARAGE_NATIVE_SETTINGS).map(([key, definition]) => {
+      const field = state?.native[key], choices = state?.manualOptions[key];
+      const supported = state?.manualCapabilities[key] === true && (!definition.values || Array.isArray(choices));
+      const targetStep = state?.targetStep;
+      const usable = field?.value !== null && field?.value !== undefined && freshField(field, now, settings.maxAgeMs)
+        && health(now).pumpCommunicating;
+      const reason = reasons[0] ?? (!supported ? 'This setting is not supported by the connected heat pump.'
+        : key === 'targetC' && ![1, .5].includes(targetStep) ? 'The native temperature step is not established.'
+          : !usable ? 'A fresh native setting readback is required.' : null);
+      return [key, { supported, available: reason === null, reason, value: field?.value ?? null,
+        measuredAt: field?.measuredAt ?? null, usable, ...(definition.values ? { values: choices ? [...choices] : [] }
+          : { min: definition.min, max: definition.max, step: [1, .5].includes(targetStep) ? targetStep : null }) }];
+    }));
+    let result = nativeCommandSummary(nativeCommand);
+    if (result && NATIVE_PENDING.includes(result.status) && !pending) result = { ...result, status: 'uncertain', reason: 'native-readback-timeout' };
+    const available = Object.values(fields).some(field => field.available);
+    return { available, reason: reasons[0] ?? (available ? null : 'No native settings are currently available.'),
+      busy: pending || state?.manualPending === true || Boolean(claimPending && now < claimPending.deadlineAt), pending, result, settings: fields };
+  }
+  function processNativeResult(result, now) {
+    if (!nativeCommand || result?.action !== 'manual' || result.commandId !== nativeCommand.commandId
+      || state.bootId !== nativeCommand.bootId || state.sessionId !== nativeCommand.sessionId
+      || result.sequence !== nativeCommand.sequence || result.ownerSession !== hostSession || !RESULT_STATUSES.includes(result.status)
+      || ['rejected', 'failed', 'superseded'].includes(nativeCommand.status)) return;
+    if (result.status === 'accepted' && nativeCommand.status === 'native-confirmed') return;
+    nativeCommand.status = result.status;
+    if (['accepted', 'native-confirmed'].includes(result.status)) nativeCommand.acceptedAt ??= now;
+    if (result.status === 'native-confirmed') {
+      const field = state.native[nativeCommand.setting];
+      if (state.sequence > nativeCommand.stateSequence && freshField(field, now, settings.maxAgeMs)
+        && field.measuredAt >= nativeCommand.requestedAt && field.value === nativeCommand.value) {
+        nativeCommand.nativeConfirmedAt = field.measuredAt; nativeCommand.reason = null;
+      }
+      else { nativeCommand.status = 'uncertain'; nativeCommand.reason = 'native-readback-does-not-match'; }
+    } else if (['failed', 'rejected', 'uncertain', 'superseded'].includes(result.status)) nativeCommand.reason = `device-${result.status}`;
+  }
+  async function setNativeSetting(input, now = clock()) {
+    const request = validateGarageNativeSetting(input, state?.targetStep);
+    const controls = nativeControls(now), selected = controls.settings[request.setting];
+    if (!selected.available) throw new Error(selected.reason ?? 'The Mitsubishi setting is unavailable.');
+    if (selected.values && !selected.values.includes(request.value)) throw new Error('The connected heat pump does not support this setting value.');
+    const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
+      sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(), sequence: ++sequence,
+      challenge: state.challenge.value, action: 'manual', issuedAt: now,
+      deadlineAt: Math.min(state.challenge.expiresAt, now + 30_000), settings: { [request.setting]: request.value } };
+    const attempt = { ...request, commandId: command.commandId, sequence: command.sequence, requestedAt: now,
+      stateSequence: state.sequence, bootId: state.bootId, sessionId: state.sessionId, status: 'pending', confirmBy: now + 45_000 };
+    nativeCommand = attempt;
+    consumeChallenge(now);
+    // Commit the explicit request before publication; manual OFF is an owner
+    // selection, and must never manufacture an automatic restoration lease.
+    try { changed(); }
+    catch (error) { attempt.status = 'failed'; attempt.reason = 'request-storage-failed'; throw error; }
+    try {
+      await transport.send(Object.freeze(command));
+      if (attempt.status === 'pending') attempt.status = 'published';
+    } catch { if (['pending', 'published'].includes(attempt.status)) { attempt.status = 'uncertain'; attempt.reason = 'publication-uncertain'; } }
+    changed();
+    return nativeCommandSummary(attempt);
   }
   async function claimAuthority(now) {
     if (!live || restorePending || state?.authority.ownerSession || state?.restorationPending || state?.lease
@@ -257,12 +349,17 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     state = { deviceId: value.deviceId, bootId: value.bootId, sessionId: value.sessionId,
       sequence: value.sequence, observedAt: value.observedAt, receivedAt: now, retained: packet.retain === true,
       mode: value.mode, health: Object.fromEntries(['device', 'driver', 'pump'].map(key => [key, cleanField(value.health[key])])),
+      manualPending: value.manualPending === true,
+      manualCapabilities: Object.fromEntries(Object.keys(GARAGE_NATIVE_SETTINGS).map(key => [key, value.capabilities?.manualControls?.[key] === true])),
+      targetStep: [1, .5].includes(value.capabilities?.targetStep) ? value.capabilities.targetStep : null,
+      manualOptions: garageNativeOptions(value.capabilities?.manualOptions),
       commissioning: Object.fromEntries(SHELLY_CN105_COMMISSIONING.map(key => [key, value.commissioning?.[key] === true])),
       capabilities: Object.fromEntries(CAPABILITIES.map(key => [key, value.capabilities?.[key] === true])),
-      native: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vanes'].map(key => {
+      native: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vanes', 'vane', 'wideVane'].map(key => {
         const field = cleanField(value.native[key]);
         const allowed = { power: ['on', 'off'], mode: ['heat', 'cool', 'auto', 'dry', 'fan'],
-          fan: ['auto', 'quiet', 1, 2, 3, 4, 5], vanes: ['fixed', 'swing'] };
+          fan: ['auto', 'quiet', 1, 2, 3, 4, 5], vanes: ['fixed', 'swing'],
+          vane: GARAGE_NATIVE_SETTINGS.vane.values, wideVane: GARAGE_NATIVE_SETTINGS.wideVane.values };
         const valid = key === 'targetC' ? Number.isFinite(field?.value) && field.value >= 0 && field.value <= 40
           : allowed[key].includes(field?.value);
         return [key, field ? { ...field, value: valid ? field.value : null } : null];
@@ -271,7 +368,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         profile: value.baseline?.profile, targetC: value.baseline?.targetC, fan: value.baseline?.fan, vanes: value.baseline?.vanes },
       limits: validLimits ? { maximumMs: limits.maximumMs, renewAfterMs: limits.renewAfterMs,
         minimumOnMs: limits.minimumOnMs, restorationDelayMs: limits.restorationDelayMs } : null,
-      authority: { ownerSession: value.authority?.ownerSession, controlAllowed: value.authority?.controlAllowed === true },
+      authority: { ownerSession: value.authority?.ownerSession, controlAllowed: value.authority?.controlAllowed === true,
+        manualControlAllowed: value.authority?.manualControlAllowed === true },
       challenge: identity(value.challenge?.value) ? { value: value.challenge.value, expiresAt: value.challenge.expiresAt } : null,
       restorationPending: value.restorationPending === true,
       lease: identity(value.lease?.episodeId) && finiteTime(value.lease?.expiresAt) && finiteTime(value.lease?.endpointAt)
@@ -281,6 +379,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (firstState && state.limits) recoveryLockedUntil = Math.max(recoveryLockedUntil, now + state.limits.minimumOnMs);
     if (bootChanged || sessionChanged) {
       claimPending = null;
+      if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
+        nativeCommand.status = 'uncertain'; nativeCommand.reason = 'adapter-session-changed';
+      }
       invalidate(bootChanged ? 'adapter-rebooted' : 'adapter-session-changed', now);
       electrical.reset('adapter-session-changed');
       recoveryLockedUntil = Math.max(recoveryLockedUntil, now + (state.limits?.minimumOnMs ?? 0));
@@ -294,6 +395,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         invalidate(event.type, now);
         recoveryLockedUntil = Math.max(recoveryLockedUntil, event.at + (state.limits?.minimumOnMs ?? 0));
       }
+      processNativeResult(value.result, now);
       processResult(value.result, now);
       if (state.restorationPending) { restorePending = true; obligationAt ??= now; }
       if (episode && !episode.invalidated && state.lease?.episodeId === episode.id) {
@@ -425,7 +527,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   }
   function status(now = clock()) {
     const reasons = blockers(now);
-    const telemetry = Object.fromEntries(Object.entries(latest).map(([signal, row]) => {
+    const telemetry = Object.fromEntries(Object.entries(latest).filter(([, row]) => !production
+      || row.supported && row.value !== null && !row.quality.some(flag => ['unknown', 'unsupported', 'invalid'].includes(flag)))
+      .map(([signal, row]) => {
       const stale = row.sourceTime === null || row.sourceTime > now || now - row.sourceTime >= settings.maxAgeMs || !connected;
       return [signal, { value: row.value, sourceTime: row.sourceTime, receivedAt: row.receivedAt,
         quality: [...new Set([...row.quality, ...(stale ? ['stale'] : [])])], supported: row.supported,
@@ -440,13 +544,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       baselineVerified: !reasons.includes('native-baseline-unverified'), telemetry,
       commissioning: state?.commissioning ? { ...state.commissioning } : null,
       authority: { owned: state?.authority.ownerSession === hostSession, claimPending: claimPending !== null },
-      native: { power: state?.native.power?.value ?? null, powerAt: state?.native.power?.measuredAt ?? null,
-        mode: state?.native.mode?.value ?? null, targetC: state?.native.targetC?.value ?? null,
-        fan: state?.native.fan?.value ?? null, vanes: state?.native.vanes?.value ?? null,
-        readbacks: state?.native ? structuredClone(state.native) : {},
-        compressorActive: telemetry.compressorActive?.usable ? telemetry.compressorActive.value : null,
-        compressorActiveAt: telemetry.compressorActive?.sourceTime ?? null,
-        defrost: telemetry.defrost?.usable ? telemetry.defrost.value : null },
+      native: { ...Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field?.value != null)
+        .map(([key, field]) => [key, field.value])),
+        ...(state?.native.power?.value != null ? { powerAt: state.native.power.measuredAt } : {}),
+        readbacks: structuredClone(Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field?.value != null))),
+        ...(telemetry.compressorActive?.usable ? { compressorActive: telemetry.compressorActive.value,
+          compressorActiveAt: telemetry.compressorActive.sourceTime } : {}),
+        ...(telemetry.defrost?.usable ? { defrost: telemetry.defrost.value } : {}) },
       limits: state?.limits ? { maxLeaseMs: state.limits.maximumMs, renewAfterMs: state.limits.renewAfterMs,
         minimumOnMs: state.limits.minimumOnMs, restorationDelayMs: state.limits.restorationDelayMs } : null,
       configuredBaselineC: baselineC,
@@ -460,11 +564,16 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       recoveryLockedUntil, lastCommand: commandSummary(lastCommand), commandHistory: commands.map(commandSummary),
       faults: [...faults], electrical: electrical.status() };
   }
-  return { topics, receive, plannerTick, safetyTick, release, snapshot, status,
+  return { topics, receive, plannerTick, safetyTick, release, snapshot, status, nativeControls, setNativeSetting,
     setConnected(value) {
       if (stopped || connected === Boolean(value)) return;
       connected = Boolean(value); reconciled = false; claimPending = null;
-      if (!connected) { invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected'); }
+      if (!connected) {
+        invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected');
+        if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
+          nativeCommand.status = 'uncertain'; nativeCommand.reason = 'mqtt-disconnected';
+        }
+      }
       changed();
     },
     subscriptionFailed() { reconciled = false; fault('adapter-subscription-failed'); changed(); },
@@ -479,6 +588,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (restore && canControl()) await release({ reason: 'application-shutdown', now });
       stopped = true; connected = false; reconciled = false;
       if (episode) invalidate('host-stopped', now);
+      if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
+        nativeCommand.status = 'uncertain'; nativeCommand.reason = 'host-stopped';
+      }
       changed();
     },
   };

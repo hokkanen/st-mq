@@ -1,5 +1,6 @@
 import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
+import { createMitsubishiControls } from './mitsubishi.js';
 import { createChargingPanel } from './charging.js';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
@@ -104,6 +105,11 @@ const garageControls = createGarageControls({ document, request: api,
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
   afterRequest: () => refresh(),
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy });
+const mitsubishiControls = createMitsubishiControls({ document, request: api,
+  beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
+  onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
+  afterRequest: () => refresh(),
+  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy });
 const chargingPanel = createChargingPanel({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   afterRequest: () => refresh() });
@@ -157,6 +163,7 @@ function updateTemporaryButtons(updateEquipment = true) {
   $('settings-reload').disabled = busy || !settingsReloadScope(lastStatus).available;
   if (updateEquipment) equipmentPanel.refreshControls();
   garageControls.refreshControls();
+  mitsubishiControls.refreshControls();
 }
 function renderTemporary(s) {
   const saved = temporaryValues(s);
@@ -516,6 +523,7 @@ function renderH66(s) {
 function render(s) {
   lastStatus = s;
   garageControls.update(s);
+  mitsubishiControls.update(s);
   chargingPanel.update(s);
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));

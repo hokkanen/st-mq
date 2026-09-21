@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import moment from 'moment-timezone';
 import { temporaryUpdate } from '../app/temporary.js';
 import { garageSettings, GARAGE_POLICY_VERSION } from './settings.js';
+import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting } from './native-settings.js';
 import { garagePausePermission, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 import { GARAGE_ALGORITHM_VERSION, createGarageModel, garageModelSummary } from './model.js';
 import { confirmedGarageDoor } from './door-state.js';
@@ -162,6 +163,48 @@ export class GarageRuntime {
       selectedMode, requestedMode: manual?.mode ?? null, confirmed,
       holdUntil: manual?.expiresAt ?? null, paused: Boolean(pause), manualChanged: manual?.mode === 'off',
       warning: manual?.mode === 'off' && pause ? 'Price control is paused. Heating stays off until the pause ends, unless freeze protection requires heating.' : null };
+  }
+  nativeControls(now = this.clock()) {
+    const controls = this.adapter?.nativeControls?.(now) ?? { available: false, busy: false, pending: false, result: null,
+      reason: 'The installed adapter does not support ordinary Mitsubishi controls.',
+      settings: Object.fromEntries(Object.keys(GARAGE_NATIVE_SETTINGS).map(key => [key, { supported: false,
+        available: false, value: null, measuredAt: null, usable: false }])) };
+    const reason = !this.canControl() ? 'This instance does not own device control.'
+      : !['mqtt', 'providers'].includes(this.input) ? 'Ordinary Mitsubishi controls require a live connection.'
+        : this.closed ? 'Garage control is closed.'
+          : this.manualBusy || this.dispatch ? 'Wait for the current garage request to finish.' : null;
+    return { ...controls, available: reason === null && controls.available,
+      busy: Boolean(controls.busy || this.manualBusy || this.dispatch), reason: reason ?? controls.reason,
+      settings: Object.fromEntries(Object.entries(controls.settings).map(([key, value]) => [key,
+        reason ? { ...value, available: false, reason } : value])) };
+  }
+  async setNativeSettings(input) {
+    const now = this.clock(), controls = this.nativeControls(now);
+    const request = validateGarageNativeSetting(input, controls.settings.targetC?.step ?? 1);
+    if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.input))
+      throw new Error(controls.reason ?? 'Ordinary Mitsubishi controls are unavailable.');
+    if (controls.busy) throw new Error('Wait for the current garage request to finish.');
+    const choices = controls.settings[request.setting]?.values;
+    if (choices && !choices.includes(request.value)) throw new Error('The connected heat pump does not support this setting value.');
+    // Automatic OFF has a restoration obligation. Finish that handover before
+    // an explicit native selection may take ownership of the pump's settings.
+    if (this.adapter?.status(now).restorePending) {
+      await this.release('native-setting-requested');
+      throw new Error('Wait for the managed pause to restore before changing native settings.');
+    }
+    if (!controls.settings[request.setting]?.available)
+      throw new Error(controls.settings[request.setting]?.reason ?? controls.reason);
+    this.manualBusy = true;
+    try {
+      this.store.event('garage-native-setting-requested', request, now);
+      if (this.manual) { this.manual = null; this.saveManual(); }
+      this.plan = null; this.lastPlannerAt = null;
+      if (this.episode?.accounting) {
+        this.episode.accounting.qualified = false; this.episode.reason = 'manual-native-setting'; this.saveEpisode();
+      }
+      await this.adapter.setNativeSetting(request, now);
+      return this.status();
+    } finally { this.manualBusy = false; }
   }
   async setTemporary(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -704,7 +747,7 @@ export class GarageRuntime {
       temporary: { available: this.settings.enabled && this.canControl() && !this.closed,
         pauseActive: Boolean(pause), pauseUntil: pause?.expiresAt ?? null,
         pauseUntilLocal: pause ? moment.tz(pause.expiresAt, 'Europe/Helsinki').format('YYYY-MM-DDTHH:mm') : null },
-      heatingControls: this.heatingControls(now),
+      heatingControls: this.heatingControls(now), nativeControls: this.nativeControls(now),
       runtimeFault: this.lastError ?? null,
       status: this.settings.enabled ? adapter?.automaticControl ? 'ready' : 'commissioning' : 'monitoring',
       reason: !adapter ? 'adapter-contract-unavailable' : adapter.contractStatus === 'supported-driver'

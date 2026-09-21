@@ -52,7 +52,7 @@ test('Garage and Total presentation keeps provisional missing coverage and count
   assert.equal(timing.amount, '-€0.10'); assert.match(timing.coverageExplanation, /missing evidence is never zero/);
 });
 
-test('Garage monitoring shows independent budgets and actual adapter readbacks, health and unresolved recovery', () => {
+test('Garage automatic details show independent budgets, health and unresolved recovery without duplicate native readings', () => {
   const omittedCredential = randomUUID();
   const status = { settings: { baselineC: 10, aggressiveness: 50, frontRequired: true, protection: { approved: true, marginC: 1 } },
     observations: { rear: { value: 5.7 }, front: { value: 6.2, stale: true } },
@@ -69,8 +69,8 @@ test('Garage monitoring shows independent budgets and actual adapter readbacks, 
   assert.equal(rows['Rear allowance remaining'], '6.3 kJ/m'); assert.match(rows['Front allowance remaining'], /2\.1 kJ\/m.*uncertain/);
   assert.equal(rows['Rear reference estimate'], '5.5 °C');
   assert.equal(rows['Limiting protection location'], 'front'); assert.match(rows['Front air · near door'], /stale/);
-  assert.equal(rows['Pump indoor temperature'], '0 °C · provisional'); assert.equal(rows['Pump outdoor temperature'], '-7 °C · stale');
-  assert.equal(rows['Electrical power'], 'Unavailable'); assert.equal(rows['Device online'], 'Yes'); assert.equal(rows['Driver progressing'], 'No');
+  assert.equal(rows['Pump indoor temperature'], undefined); assert.equal(rows['Pump outdoor temperature'], undefined);
+  assert.equal(rows['Electrical power'], undefined); assert.equal(rows['Device online'], 'Yes'); assert.equal(rows['Driver progressing'], 'No');
   assert.equal(rows['Local lease remaining'], '2 min'); assert.match(rows.Recovery, /Restoration pending/);
   assert.match(display.coefficients[0][1], /0\.022 1\/h · Initial estimate — not validated.*0 intervals with input present/);
   assert(!JSON.stringify(display).includes(omittedCredential));
@@ -429,4 +429,12 @@ test('Garage learning rows separate model values, provenance, episode evidence a
     assert.equal(outdoor.provenance, provenance);
     assert.equal(outdoor.value, '0 °C');
   }
+});
+
+
+test('automatic garage details omit absent native diagnostics instead of unavailable placeholders', () => {
+  const rows=Object.fromEntries(garageDisplay({},now).rows);
+  for(const label of ['Native power','Native mode','Native target','Pump indoor temperature','Pump outdoor temperature',
+    'Electrical power','Native cumulative energy','Compressor frequency','Compressor / fan / defrost'])
+    assert.equal(Object.hasOwn(rows,label),false,label);
 });
