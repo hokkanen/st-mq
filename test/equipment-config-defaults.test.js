@@ -33,6 +33,15 @@ test('public equipment defaults work with broker-only private settings and prese
     assert.equal(door.mqtt.stopPayload, null, 'Installed HA covers advertise no Stop capability');
     assert.equal(door.mqtt.coverStatePath, 'cover_state');
   }
+  const blu = devices.find(row => row.id === 'blu_ht');
+  assert.equal(blu.enabled, true);
+  assert.equal(blu.topic, 'stmq/home/blu_ht/state');
+  assert.equal(blu.temperatureSignal, 'blu_ht_temperature');
+  assert.equal(blu.maxAgeMs, 180_000);
+  assert.equal(blu.mqtt.timestampPath, 'timestamp');
+  assert.equal(blu.mqtt.requestTopic, 'stmq/home/blu_ht/get');
+  assert.equal(blu.readings.find(row => row.key === 'humidity').required, true);
+  assert.equal(blu.readings.find(row => row.key === 'rssi').record, false);
   const dhwr = devices.find(row => row.id === 'dhwr');
   assert.equal(dhwr.enabled, true);
   assert.equal(dhwr.kind, 'power');

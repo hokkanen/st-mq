@@ -117,7 +117,9 @@ own learning/protection model and never enter the Home temperature average.
 No device administrator password is needed by ST-MQ for native MQTT RPC. The local
 administrator login and the MQTT broker login are separate mechanisms. ST-MQ needs
 broker permission to publish native requests and subscribe to device status and
-its temporary reply topic. No additional script on the Shelly is required.
+its temporary reply topic. Native component acquisition needs no additional
+script. A BLU H&T received over Bluetooth on a Plus uses the separate
+[BLU H&T bridge](shelly-blu-ht.md).
 
 Modern devices default to the RPC protocol used by generations 2–4. For original
 Gen1 hardware specify `generation: 1`, its complete native prefix, and the external

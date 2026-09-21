@@ -231,6 +231,42 @@
           "readings": []
         },
         {
+          "id": "blu_ht",
+          "label": "Shelly BLU H&T",
+          "area": "home",
+          "kind": "temperature",
+          "connection": "mqtt:stmq/home/blu_ht/state",
+          "max_age_seconds": 180,
+          "mqtt": {
+            "state_path": "temperature",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/home/blu_ht/get",
+            "request_payload": "status"
+          },
+          "readings": [
+            {
+              "key": "humidity",
+              "label": "Relative humidity",
+              "unit": "%",
+              "path": "humidity",
+              "required": true
+            },
+            {
+              "key": "battery",
+              "label": "Battery",
+              "unit": "%",
+              "path": "battery"
+            },
+            {
+              "key": "rssi",
+              "label": "Bluetooth signal",
+              "unit": "dBm",
+              "path": "rssi",
+              "record": false
+            }
+          ]
+        },
+        {
           "id": "heat_savings",
           "label": "Tariff control",
           "area": "home",
