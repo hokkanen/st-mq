@@ -1,14 +1,15 @@
 # Notes for the separate Shelly Pill task
 
-The separate Pill task has not been implemented or deployed here. No serial
-packets, firmware, supervisor, device configuration or live pump tests were added.
-These are integration findings to carry into its own repository later.
+ST-MQ consumes the separate `shelly-cn105-mqtt` repository's `shelly-cn105/v1`
+contract. See [garage adapter setup](garage-adapter.md) for the explicit production
+driver, exact private MQTT topics and commissioning gates. The default synthetic
+`stmq-garage-fixture/v1` driver cannot publish real commands.
 
-- ST-MQ's consumer currently uses the deliberately synthetic
-  `stmq-garage-fixture/v1` contract in `src/garage/contract.js` and
-  `test/fixtures/garage-provisional-state.json`. This is a requirements/test
-  vocabulary, **not** a protocol to adopt blindly. Its actual published replacement
-  must be reviewed against implementation, schema, client and installed evidence.
+- Production state includes all four installed commissioning results:
+  `selectivePowerVerified`, `lowHeatVerified`, `expiryVerified`, and
+  `restartVerified`. Every result, the baseline and essential capabilities must
+  be verified before ST-MQ claims an armed adapter or requests OFF. The adapter
+  independently enforces its commissioned mode. Monitoring never claims it.
 - The consumer needs native baseline-preserving availability/OFF/release,
   finite episode and lease endpoints, separate host/device sessions, replay-safe
   freshness challenges, sequencing and rejection/acceptance/native-confirmation
@@ -42,5 +43,5 @@ These are integration findings to carry into its own repository later.
 
 The installed Mitsubishi baseline is special low-heat/i-save context, not proof
 that writing an ordinary numeric 10°C target recreates the same native mode.
-Current ST-MQ production wiring is read-only until the real driver and required
-commissioning evidence exist. No ST-MQ setting bypasses that gate.
+The initial installation is read-only until the required installed
+commissioning evidence exists. No ST-MQ setting bypasses that gate.

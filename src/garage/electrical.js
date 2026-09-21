@@ -4,7 +4,9 @@ const MAX_TIMING_INTERVAL_MS = 15 * 60_000;
 
 /** One selected electrical path. Fast telemetry does not imply fast counter
  * updates, and a compressor-frequency reading never becomes electrical power. */
-export function createGarageElectrical({ source = 'none', onEnergy = () => {}, persisted = null } = {}) {
+export function createGarageElectrical({ source = 'none', onEnergy = () => {}, persisted = null,
+  contractVersion = GARAGE_FIXTURE_CONTRACT } = {}) {
+  const provisional = contractVersion === GARAGE_FIXTURE_CONTRACT;
   let previous = null;
   let lastEnd = Number.isSafeInteger(persisted?.lastEnd) ? persisted.lastEnd : null;
   let lastIssue = null;
@@ -38,14 +40,14 @@ export function createGarageElectrical({ source = 'none', onEnergy = () => {}, p
     // A coarse counter can sit unchanged then jump. Wait for a genuine update;
     // do not manufacture a sequence of zero-energy minutes from cached totals.
     if (counter && value === 0) { previous = prior; lastIssue = 'awaiting-counter-update'; return null; }
-    const quality = ['provisional-contract', ...(field.accuracyVerified ? [] : ['meter-accuracy-unverified']),
+    const quality = [...(provisional ? ['provisional-contract'] : []), ...(field.accuracyVerified ? [] : ['meter-accuracy-unverified']),
       ...(counter ? ['counter-time-allocation'] : ['integrated-power-estimate'])];
     const observation = { source: 'garage-adapter', device: 'garage-heat-pump', signal: 'garage_energy', value,
       unit: 'kWh', sourceTime: end, receivedAt: field.receivedAt, quality,
       raw: { intervalStart: start, intervalEnd: end, coveredMs: duration, durationMs: duration,
-        timingEligible: true, accuracyVerified: field.accuracyVerified, provisional: true,
+        timingEligible: true, accuracyVerified: field.accuracyVerified, provisional,
         meterScope: 'garage-heat-pump-only', energyBasis: counter ? 'counter-delta' : 'power-trapezoid',
-        sourceId: `garage-adapter:${source}`, contractVersion: GARAGE_FIXTURE_CONTRACT,
+        sourceId: `garage-adapter:${source}`, contractVersion,
         resolutionKwh: counter ? field.resolution : null, counterUpdateIntervalMs: counter ? field.updateIntervalMs : null,
         timeBasis: 'source-measured', usableForControl: false } };
     // Persisting the interval must succeed before advancing the de-duplication

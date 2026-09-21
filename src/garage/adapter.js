@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { GARAGE_FIXTURE_CONTRACT, GARAGE_CONTRACT_STATUS, GARAGE_FIELDS, garageAdapterSettings,
+import { GARAGE_FIXTURE_CONTRACT, SHELLY_CN105_CONTRACT, GARAGE_CONTRACT_STATUS, GARAGE_FIELDS, garageAdapterSettings,
   decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validFixtureState } from './contract.js';
+import { isShellyCn105Transport, SHELLY_CN105_COMMISSIONING } from './shelly-cn105.js';
 import { createGarageElectrical } from './electrical.js';
 import { GARAGE_MAX_PERMISSION_MS, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 
@@ -25,12 +26,18 @@ const commandSummary = command => command ? { action: command.action, status: co
 
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, persisted = null,
-  simulationTransport = null, hostSession = randomUUID(), baselineC = 10 } = {}) {
+  simulationTransport = null, productionTransport = null, hostSession = randomUUID(), baselineC = 10 } = {}) {
   const settings = garageAdapterSettings(input);
   if (!Number.isFinite(baselineC) || baselineC < 8 || baselineC > 16) throw new RangeError('Garage native baseline must be between 8 and 16 degrees Celsius');
-  const simulated = simulationTransports.has(simulationTransport);
+  const production = settings.driver === 'shelly-cn105';
+  const simulated = !production && simulationTransports.has(simulationTransport);
+  const live = production && isShellyCn105Transport(productionTransport);
+  const transport = live ? productionTransport : simulated ? simulationTransport : null;
+  const contractVersion = production ? SHELLY_CN105_CONTRACT : GARAGE_FIXTURE_CONTRACT;
+  const contractStatus = production ? 'supported-driver' : GARAGE_CONTRACT_STATUS;
   const startedAt = clock();
   let connected = false, reconciled = false, stopped = false, state = null;
+  let claimPending = null;
   let sequence = 0, telemetrySequence = -1, telemetryBoot = null, telemetryDevice = null;
   const usedChallenges = new Map();
   let lastTick = null, latest = {}, lastEvent = null;
@@ -50,7 +57,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   let recoveryLockedUntil = finiteTime(persisted?.recoveryLockedUntil) ? persisted.recoveryLockedUntil : 0;
   let lastCommand = null, commands = [], faults = restorePending ? ['restart-reconciliation-required'] : [];
   let completedEpisodes = (Array.isArray(persisted?.completedEpisodes) ? persisted.completedEpisodes : []).filter(identity).slice(-64);
-  const electrical = createGarageElectrical({ source: settings.electricalSource, onEnergy, persisted: persisted?.electrical });
+  const electrical = createGarageElectrical({ source: settings.electricalSource, onEnergy, persisted: persisted?.electrical, contractVersion });
   const topics = [settings.stateTopic, settings.telemetryTopic].filter(Boolean);
   function outstandingPermissionExpiresAt() {
     if (!restorePending) return null;
@@ -63,7 +70,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return deadlines.length ? Math.max(...deadlines) : null;
   }
   function snapshot() {
-    return { version: 1, contractVersion: GARAGE_FIXTURE_CONTRACT, restorePending, obligationAt,
+    return { version: 1, contractVersion, restorePending, obligationAt,
       outstandingPermissionExpiresAt: outstandingPermissionExpiresAt(),
       observedHeatingDelayMs,
       restorationRequestedAt, episode: episode ? structuredClone(episode) : null, recoveryLockedUntil,
@@ -92,14 +99,19 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   }
   function blockers(now, { forRelease = false } = {}) {
     const reasons = [];
-    if (!simulated) reasons.push('real-adapter-contract-unavailable');
+    if (!transport) reasons.push(production ? 'adapter-command-route-unavailable' : 'real-adapter-contract-unavailable');
     if (!canControl()) reasons.push('control-authority-unavailable');
     if (!connected || stopped) reasons.push('mqtt-unavailable');
     if (!reconciled || !state || state.retained || state.observedAt > now || now - state.observedAt >= settings.maxAgeMs)
       reasons.push('fresh-session-reconciliation-required');
-    if (!state || state.authority.ownerSession !== hostSession || state.authority.controlAllowed !== true)
+    // The production protocol permits the current owner to release its managed
+    // obligation even after the native baseline has revoked OFF authorization.
+    if (!state || state.authority.ownerSession !== hostSession
+      || (!forRelease || !production) && state.authority.controlAllowed !== true)
       reasons.push('adapter-authority-unavailable');
     if (!forRelease) {
+      if (production && !SHELLY_CN105_COMMISSIONING.every(name => state?.commissioning[name] === true))
+        reasons.push('installed-commissioning-required');
       const h = health(now);
       if (!h.deviceOnline) reasons.push('device-offline');
       if (!h.driverProgressing) reasons.push('driver-not-progressing');
@@ -159,6 +171,25 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (command.action !== 'release') invalidate(`pause-${command.status}`, now);
     }
   }
+  function consumeChallenge(now) {
+    for (const [key, expiry] of usedChallenges) if (expiry <= now) usedChallenges.delete(key);
+    usedChallenges.set(`${state.bootId}:${state.sessionId}:${state.challenge.value}`, state.challenge.expiresAt);
+  }
+  async function claimAuthority(now) {
+    if (!live || restorePending || state?.authority.ownerSession || state?.restorationPending || state?.lease
+      || claimPending && now < claimPending.deadlineAt) return;
+    // A claim changes ownership only. It requires the same commissioned,
+    // current baseline as a pause, and never takes ownership from another host.
+    if (blockers(now).some(reason => reason !== 'adapter-authority-unavailable')) return;
+    const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
+      sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(),
+      sequence: ++sequence, challenge: state.challenge.value, action: 'claim', issuedAt: now,
+      deadlineAt: Math.min(state.challenge.expiresAt, now + 30_000) };
+    consumeChallenge(now);
+    claimPending = command;
+    try { await transport.send(Object.freeze(command)); }
+    catch { fault('authority-claim-publication-uncertain'); }
+  }
   async function send(action, now, permission = null) {
     const reasons = blockers(now, { forRelease: action === 'release' });
     if (action !== 'release' && (!finiteTime(permission?.temperatureEvidenceAt)
@@ -170,7 +201,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const deadlineAt = Math.min(state.challenge.expiresAt, now + 30_000,
       action === 'release' ? Infinity : episode.endpointAt);
     if (deadlineAt <= now) return { status: 'blocked', reasons: ['command-deadline-reached'] };
-    const command = { schema: GARAGE_FIXTURE_CONTRACT, deviceId: state.deviceId, bootId: state.bootId,
+    const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, episodeId: episode?.id ?? 'restoration',
       commandId, sequence: ++sequence, challenge, action, issuedAt: now, deadlineAt,
       ...(action === 'release' ? {} : { endpointAt: episode.endpointAt,
@@ -179,12 +210,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
           permission.permissionExpiresAt, permission.temperatureEvidenceAt + GARAGE_MAX_PERMISSION_MS) }) };
     lastCommand = { ...command, requestedAt: now, status: 'pending', stateSequence: state.sequence };
     commands.push(lastCommand); commands = commands.slice(-32);
-    for (const [key, expiry] of usedChallenges) if (expiry <= now) usedChallenges.delete(key);
-    usedChallenges.set(`${state.bootId}:${state.sessionId}:${challenge}`, state.challenge.expiresAt);
+    consumeChallenge(now);
     // The restore obligation is committed before the first possible OFF send.
     if (action === 'release') recordRestoration(); else changed();
     try {
-      await simulationTransport.send(Object.freeze(command));
+      await transport.send(Object.freeze(command));
       if (lastCommand?.commandId === commandId && lastCommand.status === 'pending') lastCommand.status = 'published';
     } catch {
       const attempt = commands.find(row => row.commandId === commandId);
@@ -227,6 +257,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     state = { deviceId: value.deviceId, bootId: value.bootId, sessionId: value.sessionId,
       sequence: value.sequence, observedAt: value.observedAt, receivedAt: now, retained: packet.retain === true,
       mode: value.mode, health: Object.fromEntries(['device', 'driver', 'pump'].map(key => [key, cleanField(value.health[key])])),
+      commissioning: Object.fromEntries(SHELLY_CN105_COMMISSIONING.map(key => [key, value.commissioning?.[key] === true])),
       capabilities: Object.fromEntries(CAPABILITIES.map(key => [key, value.capabilities?.[key] === true])),
       native: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vanes'].map(key => {
         const field = cleanField(value.native[key]);
@@ -249,6 +280,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     reconciled = !packet.retain && value.timeBasis === 'source-measured' && now - value.observedAt < settings.maxAgeMs;
     if (firstState && state.limits) recoveryLockedUntil = Math.max(recoveryLockedUntil, now + state.limits.minimumOnMs);
     if (bootChanged || sessionChanged) {
+      claimPending = null;
       invalidate(bootChanged ? 'adapter-rebooted' : 'adapter-session-changed', now);
       electrical.reset('adapter-session-changed');
       recoveryLockedUntil = Math.max(recoveryLockedUntil, now + (state.limits?.minimumOnMs ?? 0));
@@ -292,6 +324,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       }
     }
     changed();
+    if (state.authority.ownerSession === hostSession || claimPending?.commandId === value.result?.commandId) claimPending = null;
+    // Acquisition receives synchronously; publication errors are contained in
+    // the handshake. No renewals or OFF commands run from this callback.
+    void claimAuthority(now);
   }
   function receiveTelemetry(value, packet, now) {
     if (state && (value.deviceId !== state.deviceId || value.bootId !== state.bootId)) return;
@@ -303,7 +339,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     for (const [key, definition] of Object.entries(GARAGE_FIELDS)) {
       if (!Object.hasOwn(value.fields ?? {}, key)) continue;
       const decoded = decodeGarageField(value.fields[key], definition, { receivedAt: now,
-        retained: packet.retain === true, maxAgeMs: settings.maxAgeMs, bootId: value.bootId });
+        retained: packet.retain === true, maxAgeMs: settings.maxAgeMs, bootId: value.bootId, schema: contractVersion });
       const previous = latest[definition.signal];
       // Republished cache must retain the original field clock. Invalidations
       // still replace old evidence, even when they have no measurement timestamp.
@@ -313,9 +349,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (['garage_power', 'garage_native_energy'].includes(definition.signal)) {
         onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: decoded.signal,
           value: decoded.value, unit: decoded.unit, sourceTime: decoded.sourceTime, receivedAt: now,
-          quality: decoded.quality, raw: { usableForControl: false, contractVersion: GARAGE_FIXTURE_CONTRACT,
+          quality: decoded.quality, raw: { usableForControl: false, contractVersion,
             supported: decoded.supported, timeBasis: decoded.timeBasis, retained: packet.retain === true,
-            accuracyVerified: decoded.accuracyVerified, meterScope: decoded.meterScope, provisional: true } });
+            accuracyVerified: decoded.accuracyVerified, meterScope: decoded.meterScope, provisional: !production } });
         electrical.receive(decoded);
       }
     }
@@ -325,7 +361,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   function receive(topic, payload, packet = {}, now = clock()) {
     if (!topics.includes(topic)) return false;
     if (!connected || stopped || packet.dup) return true;
-    const value = decodeGarageEnvelope(payload, { receivedAt: now });
+    const value = decodeGarageEnvelope(payload, { receivedAt: now, schema: contractVersion });
     if (!value) {
       if (topic === settings.stateTopic) { reconciled = false; invalidate('unsupported-or-invalid-adapter-contract', now); }
       else fault('unsupported-or-invalid-adapter-telemetry');
@@ -396,12 +432,14 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         usable: row.usable && !stale, unit: row.unit, timeBasis: row.timeBasis, accuracyVerified: row.accuracyVerified }];
     }));
     for (const [key, definition] of Object.entries(GARAGE_FIELDS)) if (telemetry[definition.signal]) telemetry[key] = telemetry[definition.signal];
-    return { contractVersion: GARAGE_FIXTURE_CONTRACT, contractStatus: GARAGE_CONTRACT_STATUS,
+    return { contractVersion, contractStatus,
       sourceEpoch: state || telemetryBoot ? createHash('sha256').update(JSON.stringify([
-        GARAGE_FIXTURE_CONTRACT, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource])).digest('hex') : null,
-      liveControlSupported: false, simulation: simulated, connected, mode: state?.mode ?? 'monitoring',
-      automaticControl: simulated && reasons.length === 0, blockedReasons: reasons, health: health(now),
+        contractVersion, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource])).digest('hex') : null,
+      liveControlSupported: live, simulation: simulated, connected, mode: state?.mode ?? 'monitoring',
+      automaticControl: Boolean(transport) && reasons.length === 0, blockedReasons: reasons, health: health(now),
       baselineVerified: !reasons.includes('native-baseline-unverified'), telemetry,
+      commissioning: state?.commissioning ? { ...state.commissioning } : null,
+      authority: { owned: state?.authority.ownerSession === hostSession, claimPending: claimPending !== null },
       native: { power: state?.native.power?.value ?? null, powerAt: state?.native.power?.measuredAt ?? null,
         mode: state?.native.mode?.value ?? null, targetC: state?.native.targetC?.value ?? null,
         fan: state?.native.fan?.value ?? null, vanes: state?.native.vanes?.value ?? null,
@@ -418,14 +456,14 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         leaseExpiresAt: episode.leaseExpiresAt, status: episode.status } : null,
       phase: restorePending ? episode?.status === 'paused' && !episode.invalidated ? 'paused' : 'restoring'
         : state?.mode === 'maintenance' ? 'maintenance' : now < recoveryLockedUntil ? 'recovery'
-          : reasons.length ? simulated ? 'unavailable' : 'monitoring' : 'ready',
+          : reasons.length ? simulated || live && state?.mode === 'armed' ? 'unavailable' : 'monitoring' : 'ready',
       recoveryLockedUntil, lastCommand: commandSummary(lastCommand), commandHistory: commands.map(commandSummary),
       faults: [...faults], electrical: electrical.status() };
   }
   return { topics, receive, plannerTick, safetyTick, release, snapshot, status,
     setConnected(value) {
       if (stopped || connected === Boolean(value)) return;
-      connected = Boolean(value); reconciled = false;
+      connected = Boolean(value); reconciled = false; claimPending = null;
       if (!connected) { invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected'); }
       changed();
     },

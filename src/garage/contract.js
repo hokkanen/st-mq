@@ -1,6 +1,7 @@
-// This is a host-side simulation vocabulary, NOT a published Pill protocol.
-// Adding a real driver requires a separate reviewed contract implementation.
+// The fixture vocabulary is isolated from the separately implemented Pill
+// contract; selecting a production driver never accepts fixture messages.
 export const GARAGE_FIXTURE_CONTRACT = 'stmq-garage-fixture/v1';
+export const SHELLY_CN105_CONTRACT = 'shelly-cn105/v1';
 export const GARAGE_CONTRACT_STATUS = 'provisional-fixture-only';
 export const GARAGE_FIELDS = Object.freeze({
   indoorTemperature: { signal: 'garage_native_indoor_temperature', unit: 'degC', min: -60, max: 70 },
@@ -14,18 +15,24 @@ export const GARAGE_FIELDS = Object.freeze({
 const topic = value => typeof value === 'string' && value.length > 0 && value.length <= 1024 && !/[+#\u0000]/.test(value);
 export function garageAdapterSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Garage adapter settings must be an object');
-  const allowed = new Set(['stateTopic', 'telemetryTopic', 'maxAgeMs', 'electricalSource']);
-  if (Object.keys(input).some(key => !allowed.has(key))) throw new TypeError('Unsupported garage adapter setting; a real control contract is not installed');
-  const result = { stateTopic: '', telemetryTopic: '', maxAgeMs: 120_000, electricalSource: 'none', ...input };
-  for (const key of ['stateTopic', 'telemetryTopic']) if (result[key] !== '' && !topic(result[key])) throw new TypeError(`Garage ${key} must be an exact MQTT topic`);
-  if (result.stateTopic && result.stateTopic === result.telemetryTopic) throw new TypeError('Garage state and telemetry topics must differ');
+  const allowed = new Set(['driver', 'stateTopic', 'telemetryTopic', 'commandTopic', 'maxAgeMs', 'electricalSource']);
+  if (Object.keys(input).some(key => !allowed.has(key))) throw new TypeError('Unsupported garage adapter setting');
+  const result = { driver: 'fixture', stateTopic: '', telemetryTopic: '', commandTopic: '', maxAgeMs: 120_000, electricalSource: 'none', ...input };
+  if (!['fixture', 'shelly-cn105'].includes(result.driver)) throw new TypeError('Unsupported garage adapter driver');
+  const topics = ['stateTopic', 'telemetryTopic', 'commandTopic'].map(key => {
+    if (result[key] !== '' && !topic(result[key])) throw new TypeError(`Garage ${key} must be an exact MQTT topic`);
+    return result[key];
+  }).filter(Boolean);
+  if (new Set(topics).size !== topics.length) throw new TypeError('Garage state, telemetry and command topics must differ');
+  if (result.commandTopic && result.driver !== 'shelly-cn105') throw new TypeError('Unsupported command topic for fixture driver');
+  if (result.commandTopic && !result.stateTopic) throw new TypeError('Garage command topic requires a state topic');
   if (!Number.isSafeInteger(result.maxAgeMs) || result.maxAgeMs < 1000 || result.maxAgeMs > 600_000) throw new RangeError('Garage adapter maximum age must be between 1 and 600 seconds');
   if (!['none', 'native-counter', 'native-power'].includes(result.electricalSource)) throw new TypeError('Unsupported garage electrical source');
   return result;
 }
 export const finiteTime = value => Number.isSafeInteger(value) && value >= 0;
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\u0000-\u001f]/.test(value);
-export function decodeGarageEnvelope(payload, { receivedAt } = {}) {
+export function decodeGarageEnvelope(payload, { receivedAt, schema = GARAGE_FIXTURE_CONTRACT } = {}) {
   if (Buffer.byteLength(payload instanceof Uint8Array ? payload : String(payload ?? '')) > 32_768) return null;
   let value;
   try { value = JSON.parse(Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload)); } catch { return null; }
@@ -36,18 +43,19 @@ export function decodeGarageEnvelope(payload, { receivedAt } = {}) {
     value.observedAt = receivedAt - value.observedAgeMs;
     value.timeBasis = 'receipt-minus-source-age';
   }
-  if (value.schema !== GARAGE_FIXTURE_CONTRACT
+  if (value.schema !== schema
     || !identity(value.deviceId) || !identity(value.bootId) || !finiteTime(value.observedAt)
     || !Number.isSafeInteger(value.sequence) || value.sequence < 0) return null;
   return value;
 }
-export function decodeGarageField(field, definition, { receivedAt, retained = false, maxAgeMs, bootId }) {
+export function decodeGarageField(field, definition, { receivedAt, retained = false, maxAgeMs, bootId, schema = GARAGE_FIXTURE_CONTRACT }) {
   let timeBasis = 'source-measured';
   if (field?.measuredAt == null && finiteTime(field?.ageMs) && field.ageMs <= receivedAt) {
     field = { ...field, measuredAt: receivedAt - field.ageMs };
     timeBasis = 'receipt-minus-source-age';
   }
-  const quality = ['provisional-contract'];
+  const quality = schema === GARAGE_FIXTURE_CONTRACT ? ['provisional-contract'] : [];
+  if (['unknown', 'observed-unverified', 'unsupported', 'invalid', 'stale'].includes(field?.quality)) quality.push(field.quality);
   if (timeBasis !== 'source-measured') quality.push('reconstructed-source-time');
   const supported = field?.supported === true;
   if (!supported) quality.push('unsupported');
@@ -60,7 +68,8 @@ export function decodeGarageField(field, definition, { receivedAt, retained = fa
   const validNumber = definition.boolean ? typeof field?.value === 'boolean'
     : Number.isFinite(field?.value) && field.value >= definition.min && field.value <= definition.max;
   if (!validNumber) quality.push('invalid-value');
-  const usable = supported && field?.decodeVerified === true && field?.unit === definition.unit && validNumber
+  const usable = !['unknown', 'observed-unverified', 'unsupported', 'invalid', 'stale'].includes(field?.quality)
+    && supported && field?.decodeVerified === true && field?.unit === definition.unit && validNumber
     && finiteTime(field.measuredAt) && field.measuredAt <= receivedAt && receivedAt - field.measuredAt < maxAgeMs && !retained;
   return { signal: definition.signal, value: validNumber && supported && field?.unit === definition.unit ? field.value : null,
     unit: definition.unit, sourceTime: finiteTime(field?.measuredAt) ? field.measuredAt : null, receivedAt,

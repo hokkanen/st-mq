@@ -1,0 +1,139 @@
+{
+  "schema": "shelly-cn105/v1",
+  "driverVersion": "host-contract-test",
+  "firmwareVersion": "host-mock",
+  "deviceId": "invented-pill",
+  "bootId": "429cc78e-0",
+  "sessionId": "2eaae2ed-0",
+  "sequence": 10,
+  "observedAt": 1800000060000,
+  "observedAgeMs": 0,
+  "uptimeMs": 60000,
+  "source": "mitsubishi-cn105",
+  "fields": {
+    "indoorTemperature": {
+      "value": 22.5,
+      "measuredAt": 1800000056000,
+      "ageMs": 4000,
+      "supported": true,
+      "unit": "degC",
+      "decodeVerified": true,
+      "quality": "observed-unverified",
+      "raw": {
+        "legacy": 12,
+        "half": 173
+      },
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "outdoorTemperature": {
+      "value": -5.5,
+      "measuredAt": 1800000056000,
+      "ageMs": 4000,
+      "supported": true,
+      "unit": "degC",
+      "decodeVerified": true,
+      "quality": "observed-unverified",
+      "raw": 117,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "power": {
+      "value": 500,
+      "measuredAt": 1800000058000,
+      "ageMs": 2000,
+      "supported": true,
+      "unit": "W",
+      "decodeVerified": false,
+      "quality": "observed-unverified",
+      "raw": 500,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "compressorFrequency": {
+      "value": 35,
+      "measuredAt": 1800000058000,
+      "ageMs": 2000,
+      "supported": true,
+      "unit": "Hz",
+      "decodeVerified": true,
+      "quality": "observed-unverified",
+      "raw": 35,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "compressorActive": {
+      "value": true,
+      "measuredAt": 1800000058000,
+      "ageMs": 2000,
+      "supported": true,
+      "unit": null,
+      "decodeVerified": true,
+      "quality": "observed-unverified",
+      "raw": 1,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "defrost": {
+      "value": true,
+      "measuredAt": 1800000060000,
+      "ageMs": 0,
+      "supported": true,
+      "unit": null,
+      "decodeVerified": true,
+      "quality": "observed-unverified",
+      "raw": 2,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "energyCounterRaw": {
+      "value": 1,
+      "measuredAt": 1800000058000,
+      "ageMs": 2000,
+      "supported": true,
+      "unit": "count",
+      "decodeVerified": false,
+      "quality": "observed-unverified",
+      "raw": 1,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "actualFan": {
+      "value": 3,
+      "measuredAt": 1800000060000,
+      "ageMs": 0,
+      "supported": true,
+      "unit": "stage",
+      "decodeVerified": false,
+      "quality": "observed-unverified",
+      "raw": 3,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "preheat": {
+      "value": false,
+      "measuredAt": 1800000060000,
+      "ageMs": 0,
+      "supported": true,
+      "unit": null,
+      "decodeVerified": false,
+      "quality": "observed-unverified",
+      "raw": 2,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    },
+    "standby": {
+      "value": false,
+      "measuredAt": 1800000060000,
+      "ageMs": 0,
+      "supported": true,
+      "unit": null,
+      "decodeVerified": false,
+      "quality": "observed-unverified",
+      "raw": 2,
+      "accuracyVerified": false,
+      "meterScope": "unverified"
+    }
+  },
+  "_provenance": "Host-only capture from production protocol.js + lease.js + runtime.js with a mock UART, 2026-09-21. Invented identity and UTC; no real pump evidence."
+}

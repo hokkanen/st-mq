@@ -1,30 +1,29 @@
 # Garage adapter boundary
 
-No Shelly Pill implementation or published client contract was available in the
-provided repositories. `stmq-garage-fixture/v1` is therefore a **provisional host
-simulation vocabulary**, not a claim about firmware support. It must not be
-deployed as an imagined Pill protocol. The production MQTT integration receives
-observations only; it has no garage command topic, publisher, arming flag or
-configuration escape hatch. Setting the garage policy to enabled cannot change
-this boundary.
+ST-MQ supports the separate `shelly-cn105-mqtt` adapter's `shelly-cn105/v1`
+contract. The driver runs on stock Shelly Pill firmware and reports native CN105
+observations. Select it explicitly with `garage.adapter.driver: "shelly-cn105"`.
+The default `fixture` driver remains an isolated, read-only consumer of the
+`stmq-garage-fixture/v1` host simulation vocabulary.
 
-Explicit MQTT topics can collect deliberately normalized provisional telemetry
-for read-only inspection. An actual adapter publishing a different schema is
-reported as unsupported. Completing real integration requires reviewing that
-adapter's published contract, adding a separate supported driver and validating
-installed commissioning evidence. None of the tests described here touched a
-Pill, serial port, pump or live broker.
+Production control requires fresh device evidence: armed mode, verified native
+baseline, all essential capabilities and four installed commissioning results
+(`selectivePowerVerified`, `lowHeatVerified`, `expiryVerified`, `restartVerified`).
+Neither a configuration flag nor fixture telemetry bypasses this gate. The
+initial installation remains in monitoring until those real-pump tests pass.
 
 ## Connection and evidence
 
-Private configuration accepts only these adapter fields:
+Private configuration selects exact topics and a driver:
 
 ```json
 {
   "garage": {
     "adapter": {
+      "driver": "shelly-cn105",
       "stateTopic": "invented/garage/state",
       "telemetryTopic": "invented/garage/telemetry",
+      "commandTopic": "invented/garage/command",
       "maxAgeMs": 120000,
       "electricalSource": "none"
     }
@@ -32,16 +31,19 @@ Private configuration accepts only these adapter fields:
 }
 ```
 
-Both topics are optional, exact and distinct. Empty topics mean no subscription.
+All topics are exact and distinct. Empty observation topics mean no subscription.
+Omit `commandTopic` for a telemetry-only connection. A command topic requires the
+production driver and a state topic; it does not arm the device. The default
+`driver: "fixture"` rejects command topics.
 The electrical selection is `none`, `native-counter` or `native-power`; the two
 energy paths cannot both contribute. Broker connection and credentials use the
 existing private MQTT settings. The normal owner baseline is read from
 `garage.baselineC` and compared with native evidence; the adapter never writes a
 new thermostat target.
 
-The fixture state example is
+The fixture-only example is
 [`test/fixtures/garage-provisional-state.json`](../test/fixtures/garage-provisional-state.json).
-Every state has a device, boot, adapter session, monotonic state sequence and
+Both schemas use a device, boot, adapter session, monotonic state sequence and
 source observation timestamp. Device online, driver progressing and pump
 communicating are independently timestamped health fields. The state carries
 native power, optional setting readbacks, a fresh verified baseline profile,
@@ -76,7 +78,19 @@ learning journal can avoid fitting an interval across a transition.
 
 Tests inject `createGarageSimulationTransport(send)` into `createGarageAdapter`.
 The transport is recognized by a module-private object capability, not a JSON
-flag. The production acquisition path never creates or accepts this transport.
+flag. The production acquisition path never creates or accepts this transport. Its
+separate `createShellyCn105Transport` sends only `claim`, `start`, `renew` and
+`release` to the configured exact command topic with QoS 0, retain false and
+reconnect queuing disabled. Receipt and native confirmation come from device
+state, independently of MQTT publication success.
+
+A fresh, fully commissioned and unowned armed adapter receives a `claim` using
+its current one-use challenge and a new host session. ST-MQ waits for ownership
+readback and a new challenge before OFF. It never automatically takes authority
+from a foreign owner, leases while disconnected, or claims in monitoring mode.
+A restarted host waits for the device's owner expiry/reconciliation; an old OFF
+lease is only an unresolved restoration obligation. The device enforces these
+same rules independently.
 These are tests of the host consumer; the injected receiver does not implement
 CN105 decoding or prove that a real device enforces a lease.
 
@@ -156,9 +170,9 @@ their full bounds, coverage, dedicated scope, measurement basis and source
 qualification. An interval persistence failure can retry the same telemetry
 frame without dropping or duplicating its energy.
 
-## Evidence and future Pill work
+## Evidence and installed commissioning
 
-`node --test test/garage-adapter*.test.js test/garage-runtime-adapter.test.js`
+`node --test test/garage-adapter*.test.js test/garage-pill.test.js test/garage-runtime-adapter.test.js`
 covers simulated lease races, stale and
 retained input, health separation, boot/manual recovery, authority loss,
 persistence failures, causal native confirmation, relative clocks, counter
@@ -169,16 +183,13 @@ successive pause IDs within one frozen assessment with residual front debt. Thes
 do not establish installed pipe safety, baseline preservation, native-meter
 accuracy or realized savings.
 
-The future Pill task should publish its actual schema, example client and pinned
-firmware/driver version, authoritative ownership/handshake and replay rules,
-accepted lease bounds, persistence/startup policy, independent health evidence
-and field-specific support/units/cadence. Installed evidence must establish
-selective native power control, preservation of the existing low-heat profile,
-local expiry and offline startup restoration. The local return-to-ON is **Pill
-software**: host/network loss can be covered by a healthy adapter, but a dead or
-unpowered Pill or failed serial path cannot transmit ON. The host must retain
-unresolved recovery when that path fails.
+The separate adapter repository owns firmware/API qualification, CN105 decoding,
+on-device persistence, deployment and installed evidence. ST-MQ's tests cover
+its contract consumer, commissioning gates, MQTT handshake and bounded commands;
+they do not establish the real pump's low-heat preservation or expiry/restart
+recovery. Inspect that repository's commissioning report for actual device tests.
 
-No firmware mechanisms, device discovery or deployment were implemented as part
-of this garage consumer task. These notes are the intended handoff to the
-separate Pill project.
+The local return-to-ON is **Pill software**: host/network loss can be covered by a
+healthy adapter, but a dead or unpowered Pill or failed serial path cannot transmit
+ON. The host retains unresolved recovery when that path fails. Native ON remains
+separate from evidence of useful heat near the two external reference probes.

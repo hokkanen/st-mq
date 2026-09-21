@@ -38,3 +38,48 @@ test('MQTT exposes provisional garage telemetry and both external sensors with n
   assert.equal(adapter, null);
   assert.equal(published.length, 0);
 });
+
+test('Shelly CN105 MQTT route monitors before commissioning, then handshakes and publishes bounded non-retained commands', async () => {
+  const base = 1_800_000_000_000, client = new EventEmitter(), subscribed = [], published = [];
+  let adapter, now = base;
+  client.subscribe = (topic, options, done) => { subscribed.push(topic); done(null, [{ topic, qos: options.qos }]); };
+  client.publish = (topic, payload, options, done) => { published.push({ topic, payload: JSON.parse(payload), options }); done(); };
+  client.end = (_force, _options, done) => done();
+  const store = { event() {}, getState() {}, setState() {} };
+  const engine = { clock: () => now, ingest() {}, garage: { setAdapter(value) { adapter = value; }, adapterChanged() {} } };
+  const settings = { driver: 'shelly-cn105', stateTopic: 'invented/cn105/state',
+    telemetryTopic: 'invented/cn105/telemetry', commandTopic: 'invented/cn105/command' };
+  const capture = await startMqtt({ engine, store, config: { input: 'mqtt', garage: { adapter: settings },
+    connections: { mqtt: { address: 'mqtt://example.invalid' } } }, connect: () => client });
+  try {
+    client.emit('connect');
+    assert.deepEqual(subscribed, [settings.stateTopic, settings.telemetryTopic]);
+    const state = JSON.parse(readFileSync(new URL('./fixtures/garage-provisional-state.json', import.meta.url)));
+    Object.assign(state, { schema: 'shelly-cn105/v1', mode: 'monitoring',
+      authority: { ownerSession: null, controlAllowed: false } });
+    const receive = () => client.emit('message', settings.stateTopic, Buffer.from(JSON.stringify(state)));
+    receive();
+    assert.equal(adapter.status().health.pumpCommunicating, true);
+    assert.equal(adapter.status().automaticControl, false);
+    assert.equal(published.length, 0);
+    state.mode = 'armed'; state.sequence++;
+    state.commissioning = { selectivePowerVerified: true, lowHeatVerified: true, expiryVerified: true, restartVerified: true };
+    receive();
+    const claim = published[0];
+    assert.equal(claim.topic, settings.commandTopic);
+    assert.equal(claim.payload.action, 'claim');
+    assert.deepEqual(claim.options, { qos: 0, retain: false });
+    state.sequence++; state.challenge.value = 'invented-post-claim-challenge';
+    state.authority = { ownerSession: claim.payload.ownerSession, controlAllowed: true };
+    receive();
+    await adapter.plannerTick({ now, valid: true, recoveryReady: true, plan: {
+      id: 'invented-pause', pauseFrom: now, pauseUntil: now + 600_000,
+      temperatureEvidenceAt: now, permissionExpiresAt: now + 180_000 } });
+    assert.equal(published[1].payload.action, 'start');
+    assert.equal(published[1].payload.requestedExpiryAt, base + 180_000);
+    assert.deepEqual(published[1].options, { qos: 0, retain: false });
+    now += 1000; client.emit('offline');
+    assert.equal(adapter.status().automaticControl, false);
+    assert.equal(adapter.status().restorePending, true);
+  } finally { await capture.close({ restore: false }); }
+});

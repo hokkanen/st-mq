@@ -10,6 +10,7 @@ import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createFloorOverride, floorOverrideConfiguration } from '../control/floor-override.js';
 import { createGarageAdapter } from '../garage/adapter.js';
+import { createShellyCn105Transport } from '../garage/shelly-cn105.js';
 import { teslamateConfiguration } from '../app/config.js';
 import { createChargingTeslaCapture } from '../charging/teslamate.js';
 
@@ -196,10 +197,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     settings: config.connections.shelly, publish, canControl, brokerIdentity: { address, username }, topicGroups,
     readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000 }) : null);
   if (shelly) engine.shelly = shelly;
-  // The only installed garage contract is a provisional read-only consumer.
-  // Deliberately do not pass publish or any simulation transport here.
+  // The fixture remains read-only. The explicit production driver requires
+  // installed commissioning evidence and a fresh device ownership handshake.
   const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
     settings: config.garage?.adapter, baselineC: config.garage?.baselineC ?? 10, clock: () => engine.clock(), canControl,
+    productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),
     persisted: store.getState?.(`garage:adapter:${config.input}`),
     onObservation: observation => engine.ingest(observation),
     onEnergy: observation => engine.ingestEnergy?.(observation),
@@ -207,8 +209,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   }) : null;
   if (garage) {
     engine.garage?.setAdapter?.(garage);
-    if (garage.topics.length) topicGroups.push({ id: 'garage-adapter', label: 'Garage adapter · provisional monitoring', source: 'MQTT',
-      topics: garage.topics.map(topic => ({ role: 'Provisional telemetry subscription', topic, direction: 'subscribe' })) });
+    if (garage.topics.length) topicGroups.push({ id: 'garage-adapter',
+      label: config.garage?.adapter?.driver === 'shelly-cn105' ? 'Garage adapter · Shelly CN105' : 'Garage adapter · provisional monitoring', source: 'MQTT',
+      topics: [...garage.topics.map(topic => ({ role: 'Native telemetry subscription', topic, direction: 'subscribe' })),
+        ...(config.garage?.adapter?.commandTopic ? [{ role: 'Commissioned lease commands', topic: config.garage.adapter.commandTopic, direction: 'publish' }] : [])] });
   }
   const requestSnapshot = async () => {
     if (!decoder) return;

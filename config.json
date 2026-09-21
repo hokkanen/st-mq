@@ -371,8 +371,10 @@
         "heatTransferWPerM2K": 20
       },
       "adapter": {
+        "driver": "fixture",
         "stateTopic": "",
         "telemetryTopic": "",
+        "commandTopic": "",
         "maxAgeMs": 120000,
         "electricalSource": "none"
       }
@@ -651,8 +653,10 @@
         "heatTransferWPerM2K": "float(1,100)"
       },
       "adapter": {
+        "driver": "list(fixture|shelly-cn105)",
         "stateTopic": "str?",
         "telemetryTopic": "str?",
+        "commandTopic": "str?",
         "maxAgeMs": "int(1000,600000)",
         "electricalSource": "list(none|native-counter|native-power)"
       }

@@ -696,6 +696,7 @@ export class GarageRuntime {
   }
   status(now = this.clock()) {
     const raw = this.engine.latest;
+    const adapter = this.adapter?.status(now);
     const temperature = signal => raw[signal] ? observationView(raw[signal], now, this.settings.maxSensorAgeMs)
       : { ...observationView(this.engine.lastKnownTemperatures?.[signal], now, this.settings.maxSensorAgeMs), stale: true };
     const pause = this.activePause(now);
@@ -705,14 +706,15 @@ export class GarageRuntime {
         pauseUntilLocal: pause ? moment.tz(pause.expiresAt, 'Europe/Helsinki').format('YYYY-MM-DDTHH:mm') : null },
       heatingControls: this.heatingControls(now),
       runtimeFault: this.lastError ?? null,
-      status: this.settings.enabled ? 'commissioning' : 'monitoring',
-      reason: this.adapter ? 'provisional-adapter-contract' : 'adapter-contract-unavailable',
+      status: this.settings.enabled ? adapter?.automaticControl ? 'ready' : 'commissioning' : 'monitoring',
+      reason: !adapter ? 'adapter-contract-unavailable' : adapter.contractStatus === 'supported-driver'
+        ? adapter.blockedReasons[0] ?? 'native-adapter-ready' : 'provisional-adapter-contract',
       observations: { rear: temperature('garage_temperature'), front: temperature('garage_temperature_2'),
         outdoor: observationView(outdoorObservation(raw.outdoor_temperature), now, 30 * MINUTE) },
       exposure: structuredClone(this.exposure), protection: structuredClone(this.protection ?? null),
       learning: { ...garageModelSummary(this.checkpoint?.model ?? createGarageModel({ seedAt: now, baselineC: this.settings.baselineC })),
         reconstruction: this.learningStatus, journalCursor: this.checkpoint?.cursor ?? 0, algorithmVersion: GARAGE_ALGORITHM_VERSION },
-      adapter: this.adapter?.status(now) ?? { phase: 'unavailable', contractStatus: 'missing', liveControlSupported: false,
+      adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', liveControlSupported: false,
         restorePending: Boolean(this.store.getState(this.keys.adapter)?.restorePending), blockedReasons: ['Adapter contract is not installed'] },
       plan: structuredClone(this.plan), episode: this.episode ? { id: this.episode.id, phase: this.episode.phase,
         startedAt: this.episode.startedAt, restarted: Boolean(this.episode.restarted),
