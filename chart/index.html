@@ -136,7 +136,7 @@
                 <details id="model-inputs-details" class="learning-section section-fold">
                   <summary><span class="learning-section-title">Model inputs</span><small class="learning-section-kind"> · Recorded &amp; modeled</small></summary>
                   <div class="learning-section-body">
-                    <p class="learning-intro">The temperatures, heating inputs and control context saved for learning. Expand an input for its source and meaning.</p>
+                    <p class="learning-intro">The temperatures, heating inputs and control context saved for learning. Expand an input for its source, meaning and calculation where applicable.</p>
                     <div id="model-inputs-content"></div>
                     <details id="sensor-change-details" class="sensor-change-details" hidden>
                       <summary><span>Sensor changes</span><small id="sensor-change-overview">Replacement, move or calibration</small></summary>
@@ -188,9 +188,16 @@
                 <details id="model-coefficients-details" class="learning-section section-fold">
                   <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Current values</small></summary>
                   <div class="learning-section-body">
-                    <p class="learning-intro">Current thermal responses and fixed building assumptions. Each value shows how it was established; fitting alone does not establish readiness.</p>
+                    <p class="learning-intro">Current responses, fixed assumptions and their equations. Each value shows how it was established; validation and planning checks determine whether it can support control.</p>
                     <div id="model-coefficients-content"></div>
-                    <details class="learning-support"><summary>Model basis &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
+                    <details class="learning-support"><summary>Heat balance, calibration &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
+                  </div>
+                </details>
+                <details id="learning-policy-details" class="learning-section section-fold">
+                  <summary><span class="learning-section-title">Planning &amp; safeguards</span><small class="learning-section-kind"> · Decisions &amp; limits</small></summary>
+                  <div class="learning-section-body">
+                    <p class="learning-intro">How forecasts become heating decisions: economic thresholds, room comfort, equipment limits and the scope of reported savings.</p>
+                    <div id="learning-policy-content"></div>
                   </div>
                 </details>
               </details>

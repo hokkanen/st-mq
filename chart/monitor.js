@@ -362,6 +362,7 @@ function renderLearning(s) {
     detail: 'Current model coefficients have not been received yet.',
   }]);
   renderLearningRows($('coefficient-evidence'), display.coefficientEvidenceRows);
+  renderLearningRows($('learning-policy-content'), display.policyRows);
   $('savings').textContent = s.savings?.explanation ?? 'Cycle profit is a model comparison after recovery; electricity bills alone cannot isolate what normal heating would have cost.';
 }
 function updateH66Selector({ useReadback = false } = {}) {

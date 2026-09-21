@@ -431,6 +431,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .learning-support { margin: 10px 0 0; border-top: 1px solid var(--border); }
 .learning-section-body .learning-entry, .learning-section-body .learning-support { margin-inline: 0; }
 .learning-support > summary { display: flex; align-items: center; gap: 12px; padding: 14px 0; font-size: 11px; font-weight: 550; list-style: none; }
+.learning-entry-body > .learning-calculation { min-width: 0; margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+.learning-calculation > summary { display: flex; align-items: center; gap: 12px; padding: 10px 12px; font-size: 11px; font-weight: 550; list-style: none; }
+.learning-calculation > summary::-webkit-details-marker { display: none; }
+.learning-calculation > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 16px; line-height: 1; }
+.learning-calculation[open] > summary::after { transform: rotate(90deg); }
+.learning-calculation > summary:hover { color: var(--accent); }
+.learning-calculation > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 5px; }
+.learning-calculation-body { min-width: 0; padding: 4px 12px 12px; }
+.learning-equation + .learning-equation { margin-top: 14px; }
+.learning-equation-label { margin: 0 0 5px; font-size: 11px; font-weight: 550; line-height: 1.6; }
+.learning-equation-expression { display: block; margin: 0; font: 12px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.learning-equation-legend, .learning-calculation-notes > p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.learning-calculation-notes > p + p { margin-top: 10px; }
+.learning-calculation-reference { display: inline-block; margin-top: 10px; color: var(--accent); font-size: 11px; line-height: 1.6; text-underline-offset: 2px; }
 @container (max-width: 380px) {
   .learning-entry > summary { grid-template-columns: minmax(0, 1fr) 18px; gap: 6px 10px; }
   .learning-entry > summary::after { grid-column: 2; grid-row: 1 / 3; }

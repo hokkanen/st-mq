@@ -1,5 +1,67 @@
 /** Shared learning disclosures. Update text in place so polling never closes a
  * reader's explanation, replaces focused controls or resets a sensor form. */
+function setText(node, value) {
+  const text = value == null ? '' : String(value);
+  if (node.textContent !== text) node.textContent = text;
+  node.hidden = !text;
+}
+
+function updateReference(parent, className, value, document) {
+  let node = parent.querySelector(`.${className}`), href;
+  try {
+    const url = new URL(value?.href);
+    if (url.protocol === 'https:') href = url.href;
+  } catch {}
+  if (!href) { node?.remove(); return; }
+  if (!node) {
+    node = document.createElement('a'); node.className = className;
+    node.target = '_blank'; node.rel = 'noopener noreferrer'; parent.append(node);
+  }
+  if (node.href !== href) node.href = href;
+  setText(node, value.label || href);
+}
+
+function renderCalculation(body, calculation, document) {
+  let fold = body.querySelector('.learning-calculation');
+  if (!calculation) { fold?.remove(); return; }
+  if (!fold) {
+    fold = document.createElement('details'); fold.className = 'learning-calculation';
+    const summary = document.createElement('summary');
+    const content = document.createElement('div'); content.className = 'learning-calculation-body';
+    const equations = document.createElement('div'); equations.className = 'learning-equations';
+    const notes = document.createElement('div'); notes.className = 'learning-calculation-notes';
+    content.append(equations, notes); fold.append(summary, content);
+    body.insertBefore(fold, body.querySelector('.learning-entry-evidence'));
+  }
+  setText(fold.querySelector('summary'), calculation.summary || 'Calculation');
+  const equations = fold.querySelector('.learning-equations');
+  const existing = [...equations.children];
+  for (const [index, equation] of (calculation.equations ?? []).entries()) {
+    let node = existing[index];
+    if (!node) {
+      node = document.createElement('div'); node.className = 'learning-equation';
+      for (const field of ['label', 'expression', 'legend']) {
+        const item = document.createElement(field === 'expression' ? 'code' : 'p');
+        item.className = `learning-equation-${field}`; node.append(item);
+      }
+      equations.append(node);
+    }
+    for (const field of ['label', 'expression', 'legend'])
+      setText(node.querySelector(`.learning-equation-${field}`), equation[field]);
+  }
+  for (const node of existing.slice(calculation.equations?.length ?? 0)) node.remove();
+  const notes = fold.querySelector('.learning-calculation-notes');
+  const paragraphs = [...notes.children];
+  for (const [index, paragraph] of (calculation.paragraphs ?? []).entries()) {
+    const node = paragraphs[index] ?? document.createElement('p');
+    if (!node.parentNode) notes.append(node);
+    setText(node, paragraph);
+  }
+  for (const node of paragraphs.slice(calculation.paragraphs?.length ?? 0)) node.remove();
+  updateReference(fold.querySelector('.learning-calculation-body'), 'learning-calculation-reference',
+    calculation.reference, document);
+}
+
 export function renderLearningRows(root, rows = [], { document = root?.ownerDocument } = {}) {
   if (!root) return;
   const existing = new Map([...root.children].map(node => [node.dataset.learningKey, node]));
@@ -14,18 +76,13 @@ export function renderLearningRows(root, rows = [], { document = root?.ownerDocu
     previous = node;
     return node;
   };
-  const set = (node, value) => {
-    const text = value ?? '';
-    if (node.textContent !== text) node.textContent = text;
-    node.hidden = !text;
-  };
   for (const row of rows) {
     if (row.group && row.group !== group) {
       group = row.group;
       const heading = place(`group:${group}`, () => {
         const node = document.createElement('h3'); node.className = 'learning-row-group'; return node;
       });
-      set(heading, group);
+      setText(heading, group);
     }
     const node = place(row.key, () => {
       const fold = document.createElement('details'); fold.className = 'learning-entry';
@@ -44,16 +101,10 @@ export function renderLearningRows(root, rows = [], { document = root?.ownerDocu
       return fold;
     });
     for (const field of ['title', 'value', 'provenance', 'summary', 'detail', 'evidence'])
-      set(node.querySelector(`.learning-entry-${field}`), row[field]);
-    let reference = node.querySelector('.learning-entry-reference');
-    if (row.reference?.href?.startsWith('https://')) {
-      if (!reference) {
-        reference = document.createElement('a'); reference.className = 'learning-entry-reference';
-        reference.target = '_blank'; reference.rel = 'noopener noreferrer';
-        node.querySelector('.learning-entry-body').append(reference);
-      }
-      reference.href = row.reference.href; set(reference, row.reference.label);
-    } else reference?.remove();
+      setText(node.querySelector(`.learning-entry-${field}`), row[field]);
+    const body = node.querySelector('.learning-entry-body');
+    renderCalculation(body, row.calculation, document);
+    updateReference(body, 'learning-entry-reference', row.reference, document);
     node.classList.toggle('learning-entry-unavailable', row.available === false);
     if (row.modelInput) node.dataset.modelInput = row.modelInput;
   }

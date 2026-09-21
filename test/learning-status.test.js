@@ -48,8 +48,7 @@ test('temperature validation does not imply validated cycle savings or measured 
   assert.match(text, /does not validate full-cycle cost/);
   assert.match(display.coefficients.find(row => row.key === 'reserveTimeHours').detail, /not a measured floor temperature/);
   assert.match(coefficients, /0.20 °C\/h before heating/);
-  assert.match(coefficients, /FMI radiation forecasts with Open-Meteo as backup/);
-  assert.match(coefficients, /modeled radiation/);
+  assert.match(display.inputs.find(row => row.key === 'model_solar_radiation').sources, /FMI radiation forecast, with Open-Meteo as backup/);
   assert.match(text, /requested operation/);
   assert.doesNotMatch(text, /Current model:|Thermal coefficients:/);
 });
@@ -149,6 +148,9 @@ test('unavailable and rejected coefficients are never presented as learned value
   assert.equal(rows[0].value, 'Unavailable');
   assert.equal(rows[1].provenance, 'Initial estimate — not validated');
   assert.equal(rows[2].provenance, 'Legacy model value');
+  const legacy = learningDisplay({ adaptive: { model: { parameters: { normalHeatCPerHour: 0.75, reserveTimeHours: 12 } } } });
+  assert(!legacy.coefficientEvidenceRows.some(row => row.key === 'model-fitting'));
+  assert.equal(legacy.coefficients.find(row => row.key === 'reserveTimeHours').calculation, undefined);
 });
 
 test('initial and partially fitted models do not claim overall temperature readiness', () => {
@@ -324,18 +326,22 @@ test('combined hydronic parameter explains the source conversion and separates f
     savingsAggressiveness: 50, preheatRoomSettingC: 25, comfort: { maxRiseC: 1 } }, preheatValves: {} });
   const combined = display.coefficients.find(row => row.key === 'hydronicCPerKwh');
   assert.equal(combined.value, '0.0798 °C/kWh thermal');
-  assert.match(combined.detail, /9\.40 kW heat \/ COP 4\.24 at 35 °C/);
-  assert.match(combined.detail, /9\.24 kW \/ COP 3\.51 at 45 °C/);
-  assert.match(combined.detail, /7\.66 kW thermal/);
-  assert.match(combined.detail, /cannot identify a brine correction/);
-  assert.match(combined.detail, /30–50 °C/);
-  assert.match(combined.detail, /Missing live brine stays unknown/);
+  const source = display.coefficients.find(row => row.key === 'source-model-confirmed');
+  const sourceNotes = source.calculation.paragraphs.join(' ');
+  assert.match(combined.calculation.equations[0].expression, /d × Q/);
+  assert.doesNotMatch(combined.detail, /9\.40|COP 4\.24/);
+  assert.match(sourceNotes, /9\.40 kW heat and COP 4\.24/);
+  assert.match(sourceNotes, /9\.24 kW heat and COP 3\.51/);
+  assert.match(sourceNotes, /7\.66 kW thermal/);
+  assert.match(sourceNotes, /cannot identify a brine correction/);
+  assert.match(sourceNotes, /30–50 °C/);
+  assert.match(sourceNotes, /Missing brine stays unknown/);
   assert.match(display.evidence.join(' '), /no separately identified thermal model for each room/);
   assert.match(display.evidence.join(' '), /Final DHW refill is not implemented/);
   assert.match(display.evidence.join(' '), /original treatment identity through reduction and recovery/);
   assert.match(display.coefficientEvidence.join(' '), /no annual savings guarantee/);
-  assert.match(combined.detail, /Electricity uses compressor duty/);
-  assert.match(combined.reference.href, /^https:\/\/assets\.danfoss\.com\//);
+  assert.match(source.calculation.equations.find(row => row.label === 'Space-heating electricity').expression, /d × P/);
+  assert.match(source.calculation.reference.href, /^https:\/\/assets\.danfoss\.com\//);
   assert.equal(display.coefficients.filter(row => row.group === 'Thermal responses').length, 4);
   const capacity = display.coefficients.find(row => row.key === 'floor-capacityKwhPerC');
   assert.equal(capacity.value, '2.40 kWh/K');
@@ -346,4 +352,29 @@ test('combined hydronic parameter explains the source conversion and separates f
   assert.match(display.coefficientEvidence.join(' '), /H66 ROOM has no device-side lease/);
   assert.match(display.coefficientEvidence.join(' '), /absolute ROOM setting of 25\.0 °C/);
   assert.match(display.coefficientHistory, /older algorithms are archival gaps/);
+});
+
+test('Home separates outcomes, model equations and planning without repeating grouped rows', () => {
+  const model = initialAdaptiveModel({});
+  const display = learningDisplay({ adaptive: { model, health: { usableSamples: 96 } },
+    readiness: { thermalValidated: false, actionValidated: false }, outcomes: { attempted: 2, completed: 0 },
+  }, { settings: { savingsAggressiveness: 0 }, preheatValves: {} });
+  const groups = [display.metrics, display.inputs, display.coefficients, display.evidenceRows,
+    display.coefficientEvidenceRows, display.policyRows];
+  for (const rows of groups) {
+    assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
+    const runs = rows.filter((row, i) => row.group !== rows[i - 1]?.group).map(row => row.group);
+    assert.equal(new Set(runs).size, runs.length, 'Group headings must remain contiguous during reconciliation');
+  }
+  assert(display.metrics.every(row => row.calculation?.equations.length));
+  assert(display.coefficients.filter(row => row.group === 'Thermal responses').every(row => row.calculation?.equations.length));
+  assert(display.coefficientEvidenceRows.some(row => row.key === 'heat-balance' && row.calculation.equations.length));
+  assert(display.coefficientEvidenceRows.some(row => row.key === 'model-fitting' && row.calculation.equations.length));
+  assert(!display.coefficientEvidenceRows.some(row => row.key === 'Valve override lease'));
+  assert(display.policyRows.some(row => row.key === 'Valve override lease'));
+  assert(!display.evidenceRows.some(row => row.key === 'Room comfort projection'));
+  const economics = display.policyRows.find(row => row.key === 'Worthwhile cycle threshold');
+  assert.match(economics.value, /50 ct/);
+  assert.match(economics.calculation.paragraphs.join(' '), /not an off switch/);
+  assert.doesNotMatch(JSON.stringify(display), /Zero preference disables/);
 });
