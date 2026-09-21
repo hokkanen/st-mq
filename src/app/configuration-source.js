@@ -25,6 +25,28 @@ function currentGarageOptions(options) {
   return { ...options, garage: { ...options.garage, protection: garageSettings({ protection }).protection } };
 }
 
+// The charging loss is fixed. Retired numeric overrides may still be present
+// in private/add-on options, but must not be saved back as editable settings.
+function currentConfigurationOptions(options) {
+  options = currentGarageOptions(options);
+  if (!object(options?.charging?.chargers)) return options;
+  const chargers = { ...options.charging.chargers };
+  for (const id of ['charger1', 'charger2']) {
+    if (!object(chargers[id]) || !Object.hasOwn(chargers[id], 'efficiency')) continue;
+    const { efficiency, ...charger } = chargers[id];
+    if (!Number.isFinite(efficiency) || efficiency < .5 || efficiency > 1)
+      throw new Error(`Invalid configuration field: charging.chargers.${id}.efficiency.`);
+    chargers[id] = charger;
+  }
+  const charging = { ...options.charging, chargers };
+  // Resolve explicit source aliases before public vehicle defaults are merged;
+  // otherwise the default BMW topic would hide a configured publisher topic.
+  if (object(chargers.charger1) && Object.hasOwn(chargers.charger1, 'mqttTopic')
+    && (charging.vehicles === undefined || object(charging.vehicles)) && charging.vehicles?.bmw === undefined)
+    charging.vehicles = { ...charging.vehicles, bmw: { mqttTopic: chargers.charger1.mqttTopic } };
+  return { ...options, charging };
+}
+
 export function mergeOptions(defaults, overrides) {
   if (!object(defaults) || !object(overrides)) throw new Error('Configuration must be a JSON object.');
   const merged = structuredClone(defaults);
@@ -47,7 +69,7 @@ export function parseOptions(text, { allowWrapper = false } = {}) {
 
 export function validateOptionFields(options, schema, path = '') {
   if (!object(options) || !object(schema)) throw new Error(`Invalid configuration section${path ? `: ${path}` : ''}.`);
-  if (path === '') options = currentGarageOptions(options);
+  if (path === '') options = currentConfigurationOptions(options);
   for (const [key, value] of Object.entries(options)) {
     const field = path ? `${path}.${key}` : key;
     if (!Object.hasOwn(schema, key) || forbiddenKeys.has(key)) throw new Error(`Unknown configuration field: ${field}.`);
@@ -101,7 +123,7 @@ function privateOptions(path, required) {
     if (required) throw new Error('STMQ_CONFIG must name an existing configuration file.');
     return {};
   }
-  return currentGarageOptions(parseOptions(readFileSync(path, 'utf8'), { allowWrapper: true }));
+  return currentConfigurationOptions(parseOptions(readFileSync(path, 'utf8'), { allowWrapper: true }));
 }
 
 export function readConfigurationOptions(env, cwd, paths = configurationPaths(env, cwd)) {
@@ -122,7 +144,7 @@ function snapshot(path) {
     if (!stat.isFile() || stat.size > MAX_CONFIGURATION_BYTES) throw new Error('invalid-file');
     const bytes = readFileSync(descriptor);
     if (bytes.length > MAX_CONFIGURATION_BYTES) throw new Error('invalid-file');
-    return { options: currentGarageOptions(parseOptions(bytes.toString('utf8'))), digest: createHash('sha256').update(bytes).digest('hex'),
+    return { options: currentConfigurationOptions(parseOptions(bytes.toString('utf8'))), digest: createHash('sha256').update(bytes).digest('hex'),
       device: stat.dev, inode: stat.ino, size: stat.size, modified: stat.mtimeMs };
   } catch (error) {
     if (error.code === 'ENOENT') return null;
@@ -224,7 +246,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
     const info = await supervisor('GET', 'info');
     if (!object(info?.options)) throw new Error('Supervisor did not return this add-on’s settings.');
     if (typeof info.slug === 'string' && /^[a-zA-Z0-9_-]+$/.test(info.slug)) slug = info.slug;
-    return currentGarageOptions(withoutRetiredEaseeTokens(info.options));
+    return currentConfigurationOptions(withoutRetiredEaseeTokens(info.options));
   }
   const source = {
     publicInfo,
@@ -258,7 +280,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
       const options = mergeOptions(defaults.options, file && !saved ? mergeOptions(current, file.options) : current);
       let resolvedCurrent = current;
       if (containsReferences(current)) {
-        resolvedCurrent = currentGarageOptions(withoutRetiredEaseeTokens(await supervisor('GET', 'options/config')));
+        resolvedCurrent = currentConfigurationOptions(withoutRetiredEaseeTokens(await supervisor('GET', 'options/config')));
         validateHomeAssistantValues(resolvedCurrent);
       }
       const runtimeOptions = mergeOptions(defaults.options, file && !saved ? mergeOptions(resolvedCurrent, file.options) : resolvedCurrent);

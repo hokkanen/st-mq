@@ -27,7 +27,7 @@ test('Tesla-only MQTT opt-in starts without H66 and stores total energy through 
   try {
     assert.equal(app.engine.status().providers.teslamate.reason, 'mqtt-disconnected');
     client.emit('connect');
-    assert.deepEqual(topics, ['stmq/garage/charger1/vehicle', 'teslamate/invented/cars/2/#']);
+    assert.deepEqual(topics, ['stmq/vehicles/bmw', 'teslamate/invented/cars/2/#']);
     assert.equal(app.engine.status().providers.teslamate.reason, 'awaiting-readings');
     const send = (name, value) => client.emit('message', `teslamate/invented/cars/2/${name}`, Buffer.from(String(value)));
     send('charging_state', 'Disconnected'); send('charge_energy_added', 0); send('geofence', 'Home');

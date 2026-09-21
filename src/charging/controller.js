@@ -68,8 +68,9 @@ export function createChargingController({ adapter, initialState = null, saveSta
     : value.enabled === false || value.reason === 53;
   function remember(now) {
     const prior = state.session;
-    state.session = { connected: snapshot.pluggedIn,
-      connectedAt: snapshot.pluggedIn === true ? prior?.connected === true ? prior.connectedAt : now : null,
+    state.session = { connected: typeof snapshot.pluggedIn === 'boolean' ? snapshot.pluggedIn : prior?.connected ?? null,
+      connectedAt: snapshot.pluggedIn === true ? prior?.connected === true ? prior.connectedAt : now
+        : snapshot.pluggedIn === false ? null : prior?.connectedAt ?? null,
       observedAt: now, instruction: currentFingerprint(), enabled: snapshot.enabled,
       stopped: stopped(snapshot), mode: snapshot.mode,
       modeAt: snapshot.modeAt ?? null,

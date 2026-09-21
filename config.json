@@ -68,13 +68,14 @@
     },
     "charging": {
       "chargers": {
-        "charger1": {
-          "mqttTopic": "stmq/garage/charger1/vehicle",
-          "efficiency": 0.9
-        },
-        "charger2": {
-          "mqttTopic": "",
-          "efficiency": 0.9
+        "charger1": {},
+        "charger2": {}
+      },
+      "vehicles": {
+        "bmw": {
+          "label": "BMW",
+          "provider": "bmw-cardata",
+          "mqttTopic": "stmq/vehicles/bmw"
         }
       }
     },
@@ -426,12 +427,17 @@
     "charging": {
       "chargers": {
         "charger1": {
-          "mqttTopic": "str?",
-          "efficiency": "float(0.5,1)?"
+          "mqttTopic": "str?"
         },
         "charger2": {
-          "mqttTopic": "str?",
-          "efficiency": "float(0.5,1)?"
+          "mqttTopic": "str?"
+        }
+      },
+      "vehicles": {
+        "bmw": {
+          "label": "str?",
+          "provider": "list(bmw-cardata)?",
+          "mqttTopic": "str?"
         }
       }
     },

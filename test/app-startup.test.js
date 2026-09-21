@@ -116,7 +116,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
   try {
     fake.emit('connect');
     for (let i = 0; i < 100 && !app.engine.status().providers.outdoor?.lastSuccessAt; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.deepEqual(subscriptions, ['stmq/garage/charger1/vehicle', 'fixture-h66/HP/#']);
+    assert.deepEqual(subscriptions, ['stmq/vehicles/bmw', 'fixture-h66/HP/#']);
     fake.emit('message', 'fixture-h66/HP/8105', Buffer.from('-180'), { retain: true });
     assert.equal(app.store.latestObservation('heating_integral').source, 'husdata-h66');
     const status = app.engine.tick();

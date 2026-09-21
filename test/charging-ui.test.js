@@ -224,8 +224,29 @@ test('delivered energy raises estimated charge while retaining the original vehi
   assert.equal(result.soc, '≈35 %'); assert.equal(result.gridEnergy, '≈20.9 kWh'); assert.equal(result.energyLabel, 'Grid remaining');
   assert.match(result.readingTime, /14 Sept 2026/);
   assert.equal(Object.fromEntries(result.rows)['Delivered since starting charge'], '12 kWh from the grid');
-  assert.equal(Object.fromEntries(result.rows)['Vehicle charge reading'], '20 % · Vehicle MQTT');
+  assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '20 % · Vehicle MQTT · measured 14 Sept 2026, 21:00');
   assert.equal(result.sources, 'Estimated from vehicle charge + delivered energy');
+});
+
+test('last reported charge preserves the source and original time beside the current estimate', () => {
+  const item = active(), measuredAt = now - 3600_000;
+  for (const [id, label, source] of [['bmw', 'BMW', 'bmw-cardata'], ['tesla', 'Tesla', 'teslamate']]) {
+    const result = view({ ...item, vehicle: { state: 'identified', id, label, source },
+      values: { ...item.values, soc: reading(85, 'mqtt', { measuredAt, receivedAt: now }), minimumSoc: reading(95, source) },
+      progress: { deliveredGridKwh: 3.5, remainingGridKwh: 5, estimatedSoc: 89, hasEnergyEstimate: true } });
+    assert.equal(result.soc, '≈89 %'); assert.equal(result.minimum, '95 %');
+    const row = result.rows.find(([name]) => name === 'Last reported charge');
+    assert.equal(row[1], `85 % · ${id === 'bmw' ? 'BMW CarData' : 'TeslaMate'} · measured 15 Sept 2026, 20:00`);
+    assert.match(row[2], /main charge estimate adds measured energy.*not necessarily the session’s starting charge/);
+    assert.doesNotMatch(JSON.stringify(result.rows), /Vehicle charge reading|Vehicle MQTT/);
+  }
+  const received = view({ ...item, values: { ...item.values, soc: reading(85, 'teslamate', { receivedAt: now }) },
+    progress: { estimatedSoc: 89, hasEnergyEstimate: true } });
+  assert.match(Object.fromEntries(received.rows)['Last reported charge'], /received 15 Sept 2026, 21:00 · measurement time unknown$/);
+  const manual = view({ ...item, values: { ...item.values, soc: reading(30, 'manual-fallback') },
+    progress: { estimatedSoc: 39, hasEnergyEstimate: true } });
+  assert.equal(manual.soc, '≈39 %'); assert.equal(Object.fromEntries(manual.rows)['Starting charge (manual)'], '30 %');
+  assert.equal(manual.rows.some(([name]) => name === 'Last reported charge'), false);
 });
 
 test('live allowance is distinct from the configured ceiling and measured draw, including valid zero', () => {
@@ -342,7 +363,8 @@ test('preparing or unavailable history is not described as evidence for zero hou
 test('the explanation fold discloses operational assumptions without exposing irrelevant integration data', () => {
   const item = active(), result = view({ ...item, configuration: { efficiency: .9 }, capabilities: { ...item.capabilities, externalLoadBalancing: true } });
   const explanations = Object.fromEntries(result.explanations);
-  assert.match(explanations['Energy estimate'], /Three-phase.*90 %/);
+  assert.match(explanations['Energy estimate'], /Three-phase.*loss is fixed at 7\.5 % of grid energy \(92\.5 % reaches the battery\)/);
+  assert.doesNotMatch(explanations['Energy estimate'], /90 %/);
   assert.match(explanations['Household forecast'], /older cold-weather readings remain useful/);
   assert.match(explanations['Current reference'], /details are not available yet/);
   assert.match(explanations['Current allocation'], /Equalizer controls/);
@@ -352,6 +374,20 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Manual priority'], /until unplugging/);
   assert(!JSON.stringify(result).includes('ST-MQ'));
   assert(!Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
+});
+
+test('historical replicas describe the recorded energy assumption without rewriting primary losses', () => {
+  const energy = item => Object.fromEntries(view(item).explanations)['Energy estimate'];
+  const historical = { ...active(), readOnly: true, recorded: true, configuration: { efficiency: .9 } };
+  assert.match(energy(historical), /recorded snapshot assumed 10 % charging loss \(90 % efficiency\).*shown as recorded, without recalculation/);
+  assert.doesNotMatch(energy(historical), /fixed at 7\.5 %/);
+  assert.match(energy({ ...historical, configuration: { efficiency: .925 } }), /recorded snapshot assumed 7\.5 % charging loss/);
+  for (const efficiency of [undefined, null, 0, -1, 2, '0.9'])
+    assert.match(energy({ ...historical, configuration: { efficiency } }), /original charging-loss assumption is unavailable/);
+  for (const flags of [{ readOnly: false }, { recorded: false }]) {
+    assert.match(energy({ ...historical, ...flags }), /fixed at 7\.5 %/);
+    assert.doesNotMatch(energy({ ...historical, ...flags }), /90 %/);
+  }
 });
 
 test('monitoring explanations describe vehicle controls without unsupported scheduling or Equalizer instructions', () => {
@@ -531,7 +567,7 @@ test('each charger saves its own SoC fallback and capacity through the same sett
   }
   await submit($('charger2-settings-form'));
   assert.equal($('charger1-enabled').textContent, 'OFF'); assert.equal($('charger1-setting-manualSoc').value, 20);
-  assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { manualSoc: 42, capacityKwh: 59 }]]);
+  assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { manualSoc: 42, capacityKwh: 59, capacityProfile: 'tesla' }]]);
   panel.close();
 });
 
@@ -579,6 +615,146 @@ test('automatic SoC takes priority while preserving a draft to use when automati
   assert.equal(field.value, 85); assert(field.disabled);
   await submit($('charger2-settings-form')); assert.deepEqual(calls, []);
   panel.update(status()); assert.equal(field.value, '75'); assert(!field.disabled); assert(!$('charger2-settings-save').disabled);
+  panel.close();
+});
+
+test('visitor settings remain editable until identification and automatic fields never replace saved defaults', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const visitor = { ...active(), vehicle: { state: 'unidentified' } };
+  const saved = { ...visitor, settings: { ...visitor.settings, manualSoc: 35, minimumSoc: 90, capacityKwh: 61 } };
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(saved); } });
+  panel.update(status(visitor));
+  assert.equal($('charger1-title').textContent, 'Charger 1');
+  assert.equal($('charger1-vehicle').textContent, 'Easee · Vehicle unidentified');
+  for (const [key, value] of Object.entries({ manualSoc: '35', minimumSoc: '90', capacityKwh: '61' })) {
+    const input = $(`charger1-setting-${key}`); assert.equal(input.disabled, false); input.value = value; input.dispatch('input');
+  }
+  await submit($('charger1-settings-form'));
+  assert.deepEqual(calls[0], ['/api/charging/chargers/charger1/settings', { manualSoc: 35, minimumSoc: 90, capacityKwh: 61, capacityProfile: 'generic:charger1' }]);
+  const identifying = { ...saved, vehicle: { state: 'identifying' } };
+  panel.update(status(identifying));
+  assert.equal($('charger1-vehicle').textContent, 'Easee · Identifying vehicle');
+  assert.equal($('charger1-setting-manualSoc').disabled, false);
+  const bmw = { ...saved, vehicle: { state: 'identified', id: 'bmw', label: 'BMW', source: 'bmw-cardata' },
+    values: { ...saved.values, soc: reading(57, 'bmw-cardata', { measuredAt: now }), minimumSoc: reading(83, 'bmw-cardata') } };
+  panel.update(status(bmw));
+  assert.equal($('charger1-vehicle').textContent, 'Easee · BMW identified');
+  assert.equal($('charger1-setting-manualSoc').value, 57); assert.equal($('charger1-setting-manualSoc').disabled, true);
+  assert.equal($('charger1-setting-minimumSoc').value, 83); assert.equal($('charger1-setting-minimumSoc').disabled, true);
+  assert.match($('charger1-setting-manualSoc-help').textContent, /BMW CarData.*Saved fallback: 35%/);
+  assert.equal($('charger1-setting-capacityKwh').value, 61); assert.equal($('charger1-setting-capacityKwh').disabled, false);
+  panel.update(status({ ...saved, vehicle: { state: 'disconnected' }, values: { ...saved.values, connected: reading(false) } }));
+  assert.equal($('charger1-vehicle').textContent, 'Easee · Any vehicle');
+  for (const [key, value] of Object.entries({ manualSoc: 35, minimumSoc: 90, capacityKwh: 61 })) {
+    assert.equal($(`charger1-setting-${key}`).value, value); assert.equal($(`charger1-setting-${key}`).disabled, false);
+  }
+  panel.close();
+});
+
+test('Tesla identified at Charger 1 has one visible charging session and independent Tesla charging card', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => {} });
+  const one = { ...active(), vehicle: { state: 'identified', id: 'tesla', label: 'Tesla', source: 'teslamate' } };
+  const two = charger('charger2', { vehicle: { state: 'elsewhere', id: 'tesla', label: 'Tesla', chargerId: 'charger1' },
+    sessionCost: { totalCents: 523 }, values: { soc: reading(65), minimumSoc: reading(80), connected: reading(false) } });
+  panel.update(status(one, two));
+  assert.equal($('charger1-vehicle').textContent, 'Easee · Tesla identified');
+  assert.equal($('charger2-title').textContent, 'Charger 2'); assert.equal($('charger2-vehicle').textContent, 'Tesla charging');
+  assert.equal($('charger2-event-value').textContent, 'Tesla connected to Charger 1');
+  assert.equal($('charger2-soc').textContent, '—'); assert.equal($('charger2-minimum').textContent, '—');
+  assert.equal($('charger2-cost').textContent, 'No estimate'); assert.equal($('charger2-completion').textContent, 'No estimate');
+  assert.match($('charger2-session-status').textContent, /Charging details are shown there/);
+  assert.equal($('charger2-notice').textContent, 'Session shown at the connected charger');
+  panel.close();
+});
+
+test('Tesla capacity uses its shared profile without submitting a generic visitor draft', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const generic = { ...active(), vehicle: { state: 'unidentified' } };
+  const tesla = { ...generic, vehicle: { state: 'identified', id: 'tesla', label: 'Tesla', source: 'teslamate' },
+    settings: { ...generic.settings, capacityKwh: 57 } };
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status({ ...tesla, settings: { ...tesla.settings, capacityKwh: 58 } }); } });
+  panel.update(status(generic));
+  const capacity = $('charger1-setting-capacityKwh'); capacity.value = '68'; capacity.dispatch('input');
+  panel.update(status(tesla));
+  assert.equal(capacity.value, 57); assert.equal(capacity.disabled, false);
+  assert.match($('charger1-setting-capacityKwh-help').textContent, /Saved usable capacity for Tesla.*generic vehicle default unchanged/);
+  await submit($('charger1-settings-form')); assert.deepEqual(calls, []);
+  capacity.value = '58'; capacity.dispatch('input'); await submit($('charger1-settings-form'));
+  assert.deepEqual(calls, [['/api/charging/chargers/charger1/settings', { capacityKwh: 58, capacityProfile: 'tesla' }]]);
+  panel.update(status(generic)); assert.equal(capacity.value, '68', 'The unsaved visitor draft remains with its original profile');
+  panel.update(status({ ...tesla, settings: { ...tesla.settings, capacityKwh: 58 } }));
+  assert.equal(capacity.value, 58); assert.equal($('charger1-settings-save').disabled, true, 'A saved Tesla draft cannot return as an unsaved edit');
+  panel.close();
+});
+
+test('a capacity save acknowledgement clears only the submitted vehicle profile draft', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let finish;
+  const generic = { ...active(), vehicle: { state: 'unidentified' } };
+  const tesla = { ...generic, vehicle: { state: 'identified', id: 'tesla', label: 'Tesla', source: 'teslamate' },
+    settings: { ...generic.settings, capacityKwh: 57 } };
+  const panel = createChargingPanel({ document, request: (path, payload) => {
+    calls.push([path, payload]); return new Promise(resolve => { finish = resolve; });
+  } });
+  panel.update(status(tesla));
+  const capacity = $('charger1-setting-capacityKwh'); capacity.value = '58'; capacity.dispatch('input');
+  panel.update(status(generic)); capacity.value = '68'; capacity.dispatch('input');
+  const pending = submit($('charger1-settings-form'));
+  assert.deepEqual(calls, [['/api/charging/chargers/charger1/settings', { capacityKwh: 68, capacityProfile: 'generic:charger1' }]]);
+  panel.update(status(tesla)); assert.equal(capacity.value, '58');
+  finish(status(tesla)); await pending;
+  assert.equal(capacity.value, '58', 'Acknowledging the visitor save preserves the unsaved Tesla draft');
+  assert.equal($('charger1-settings-save').disabled, false);
+  panel.update(status({ ...generic, settings: { ...generic.settings, capacityKwh: 68 } }));
+  assert.equal(capacity.value, 68); assert.equal($('charger1-settings-save').disabled, true);
+  panel.close();
+});
+
+test('a stale vehicle capacity rejection preserves drafts for both vehicle profiles', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id); let reject;
+  const generic = { ...active(), vehicle: { state: 'unidentified' } };
+  const tesla = { ...generic, vehicle: { state: 'identified', id: 'tesla', label: 'Tesla', source: 'teslamate' },
+    settings: { ...generic.settings, capacityKwh: 57 } };
+  const panel = createChargingPanel({ document, request: () => new Promise((resolve, fail) => { reject = fail; }) });
+  panel.update(status(generic));
+  const capacity = $('charger1-setting-capacityKwh'); capacity.value = '68'; capacity.dispatch('input');
+  const pending = submit($('charger1-settings-form'));
+  panel.update(status(tesla));
+  reject(new Error('Vehicle changed; review its capacity before saving')); await pending;
+  assert.match($('charger1-settings-message').textContent, /Vehicle changed/);
+  assert.equal(capacity.value, 57); assert.equal($('charger1-settings-save').disabled, true);
+  panel.update(status(generic));
+  assert.equal(capacity.value, '68'); assert.equal($('charger1-settings-save').disabled, false);
+  panel.close();
+});
+
+test('Tesla observation capacity remains shared while identified elsewhere or disconnected', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const two = charger('charger2', { vehicle: { state: 'elsewhere', id: 'tesla', label: 'Tesla', chargerId: 'charger1' } });
+  const panel = createChargingPanel({ document, request: async (path, payload) => {
+    calls.push([path, payload]); return status(charger(), { ...two, settings: { ...two.settings, capacityKwh: 58 } });
+  } });
+  panel.update(status(charger(), two));
+  const capacity = $('charger2-setting-capacityKwh');
+  assert.match($('charger2-setting-capacityKwh-help').textContent, /Saved usable capacity for Tesla, shared wherever Tesla charges/);
+  capacity.value = '58'; capacity.dispatch('input');
+  panel.update(status(charger(), { ...two, vehicle: { state: 'disconnected' } }));
+  assert.equal(capacity.value, '58');
+  await submit($('charger2-settings-form'));
+  assert.deepEqual(calls, [['/api/charging/chargers/charger2/settings', { capacityKwh: 58, capacityProfile: 'tesla' }]]);
+  panel.close();
+});
+
+test('expanded last reported charge explains why the current charging estimate is higher', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => {} });
+  const item = active();
+  panel.update(status({ ...item, vehicle: { state: 'identified', id: 'bmw', label: 'BMW', source: 'bmw-cardata' },
+    values: { ...item.values, soc: reading(85, 'bmw-cardata', { measuredAt: now - 3600_000 }), minimumSoc: reading(95, 'bmw-cardata') },
+    progress: { deliveredGridKwh: 3.5, remainingGridKwh: 5, estimatedSoc: 89, hasEnergyEstimate: true } }));
+  assert.equal($('charger1-soc').textContent, '≈89 %'); assert.equal($('charger1-minimum').textContent, '95 %');
+  const readings = $('charger1-readings');
+  assert.match(readings.textContent, /Last reported charge85 % · BMW CarData · measured 15 Sept 2026, 20:00/);
+  const label = descendants(readings).find(node => node.tagName === 'DT' && node.textContent === 'Last reported charge');
+  assert.match(openDetail(label).textContent, /main charge estimate adds measured energy.*not necessarily the session’s starting charge/);
   panel.close();
 });
 

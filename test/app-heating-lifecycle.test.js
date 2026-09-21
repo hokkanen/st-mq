@@ -25,7 +25,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
       // The shared telemetry connection now listens for Charger 1 SoC even
       // without H66. Keep the command publisher lifecycle assertions separate.
       const subscriber = new EventEmitter(); subscriber.connected = true;
-      subscriber.subscribe = (topic, _options, done) => { assert.equal(topic, 'stmq/garage/charger1/vehicle'); done(); };
+      subscriber.subscribe = (topic, _options, done) => { assert.equal(topic, 'stmq/vehicles/bmw'); done(); };
       subscriber.end = (_force, _options, done) => done();
       return subscriber;
     }

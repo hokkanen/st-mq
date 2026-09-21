@@ -136,13 +136,15 @@ try {
           ? [[null, globalThis.chargingSmokeValues]] : Object.entries(globalThis.chargingSmokeValues);
         for (const [chargerId, state] of states) {
           const manual = ['manual', 'manual-stop', 'handover-pending'].includes(state),
-            controlled = manual || ['single', 'periods', 'paused', 'problem', 'progress', 'full', 'risk', 'waiting', 'provisional',
+            controlled = manual || ['single', 'periods', 'paused', 'problem', 'progress', 'reported-progress', 'full', 'risk', 'waiting', 'provisional',
               'released', 'handover', 'unknown-controlled', 'disconnected-controlled'].includes(state);
           const charger = status.charging.chargers.find(item => item.id === (chargerId ?? (controlled ? 'charger1' : 'charger2')));
-          const observation = value => ({ value, source: 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
+          const observation = value => ({ value, source: charger.id === 'charger1' ? 'bmw-cardata' : 'teslamate', available: true, measuredAt: null, receivedAt: status.now });
           charger.values.soc = { ...observation(62), measuredAt: status.now - 4 * 86400_000 };
           charger.values.minimumSoc = observation(85);
           charger.values.connected = observation(state.startsWith('unknown') ? null : !state.startsWith('disconnected'));
+          charger.vehicle = { state: charger.values.connected.value === true ? 'identified' : 'disconnected',
+            id: charger.id === 'charger1' ? 'bmw' : 'tesla', label: charger.id === 'charger1' ? 'BMW' : 'Tesla' };
           charger.values.scheduledStartAt = observation(status.now + 2 * 3600_000);
           charger.values.charging = observation(state === 'charging');
           charger.values.powerKw = observation(8.2);
@@ -154,10 +156,15 @@ try {
             reason: 'electrical-telemetry-unavailable', feasible: null };
           status.providers.teslamate = { enabled: true, status: 'idle', recording: false, reception: {
             brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: status.now, lastLiveAt: status.now } };
-          status.equipment.topicGroups = [...(status.equipment.topicGroups ?? []).filter(group => !['teslamate', 'charger1-vehicle'].includes(group.id)),
-            { id: 'teslamate', label: 'TeslaMate', topics: [{ role: 'Vehicle subscription', topic: 'teslamate/cars/7/#', direction: 'subscribe' }] },
-            { id: 'charger1-vehicle', label: 'Charger 1 vehicle', source: 'MQTT',
-              topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/charger1/vehicle', direction: 'subscribe' }] }];
+          status.charging.vehicleFeeds = [
+            { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'fixture/vehicles/bmw',
+              reception: { brokerConnected: true, subscriptionStatus: 'subscribed' } },
+            { id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: 'teslamate/cars/7/#',
+              reception: status.providers.teslamate.reception },
+          ];
+          status.equipment.topicGroups = [...(status.equipment.topicGroups ?? []).filter(group => !['teslamate', 'charger1-vehicle', 'vehicle:bmw', 'vehicle:tesla'].includes(group.id)),
+            { id: 'vehicle:tesla', vehicleFeedId: 'tesla', topics: [{ role: 'Vehicle subscription', topic: 'teslamate/cars/7/#', direction: 'subscribe' }] },
+            { id: 'vehicle:bmw', vehicleFeedId: 'bmw', topics: [{ role: 'Timestamped vehicle readings', topic: 'fixture/vehicles/bmw', direction: 'subscribe' }] }];
           status.charging.coordination.assumptions.householdReference = { nights: 8, minimumNights: 6, limited: false,
             temperatureRangeC: [-5, 2], oldestAt: status.now - 220 * 86400_000, legacy: true };
           if (manual) {
@@ -185,7 +192,7 @@ try {
               powerKw: 10.7, shortfallGridKwh: 0 };
             charger.control = { phase: state === 'paused' ? 'paused' : 'waiting', owned: { startAt: state === 'paused' ? periods[1].startAt : periods[0].startAt },
               execution: { periods, deadlineAt: charger.plan.deadlineAt } };
-            if (['progress', 'full'].includes(state)) {
+            if (['progress', 'reported-progress', 'full'].includes(state)) {
               charger.values.soc = { ...observation(40), source: 'manual-fallback' };
               charger.values.charging = observation(true); charger.values.actualCurrentA = observation(16);
               charger.progress = { estimatedSoc: 52, estimatedSocSource: 'starting-charge', hasEnergyEstimate: true,
@@ -193,6 +200,11 @@ try {
               charger.forecast = { feasible: true, finishAt: status.now + 10 * 3600_000 };
               charger.control = { phase: 'active', execution: { periods: [
                 { startAt: status.now - 3600_000, endAt: status.now + 3600_000 }, periods[1] ] } };
+              if (state === 'reported-progress') {
+                charger.values.soc = { ...observation(85), measuredAt: status.now - 3600_000 };
+                charger.values.minimumSoc = observation(95);
+                charger.progress = { ...charger.progress, estimatedSoc: 89, estimatedSocSource: 'vehicle', deliveredGridKwh: 3.5, remainingGridKwh: 5 };
+              }
               if (state === 'full') {
                 charger.values.minimumSoc = observation(100);
                 charger.progress = { ...charger.progress, estimatedSoc: 100, remainingGridKwh: 0 };
@@ -289,11 +301,12 @@ try {
     'Delivered energy and remaining charging cost are visible before opening the fold');
   assert.equal(await evaluate("document.querySelector('#charger2-device > summary').contains(document.getElementById('charger2-reading-time'))"), false,
     'The original reading timestamp remains available inside the equipment body');
-  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-device-status').textContent"), 'Connected');
-  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-connection-name').textContent"), 'Charger 2 vehicle');
-  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"] .equipment-connection-meta').textContent"), 'Vehicle · TeslaMate');
-  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:charger1-vehicle:other\"] .equipment-connection-meta').textContent"), 'Vehicle · MQTT');
-  assert.doesNotMatch(await evaluate("document.querySelector('[data-device-id=\"connection:teslamate:other\"]').textContent"), /No live report yet/);
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:vehicle:tesla:other\"] .equipment-device-status').textContent"), 'Connected');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-name').textContent"), 'Tesla');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:vehicle:tesla:other\"] .equipment-connection-meta').textContent"), 'Vehicle · TeslaMate');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:vehicle:bmw:other\"] .equipment-connection-name').textContent"), 'BMW');
+  assert.equal(await evaluate("document.querySelector('[data-device-id=\"connection:vehicle:bmw:other\"] .equipment-connection-meta').textContent"), 'Vehicle · BMW CarData');
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-device-id=\"connection:vehicle:tesla:other\"]').textContent"), /No live report yet/);
   assert.equal(await evaluate("document.getElementById('charger2-device')===window.originalChargingSmokeNode"), true);
   const chargerMetricSelectors = {
     charge: '#charger2-charge-label', target: '#charger2-target-label', completion: '#charger2-completion-label',
@@ -842,7 +855,7 @@ try {
     ['risk', 'charger1', 'Scheduled'], ['periods', 'charger1', 'Scheduled'],
     ['paused', 'charger1', 'Paused between periods'], ['problem', 'charger1', 'Update unconfirmed'],
     ['scheduled', 'charger2', 'Connected'], ['unavailable', 'charger2', 'Connected'],
-    ['charging', 'charger2', 'Charging'], ['progress', 'charger1', 'Charging'],
+    ['charging', 'charger2', 'Charging'], ['progress', 'charger1', 'Charging'], ['reported-progress', 'charger1', 'Charging'],
   ];
   for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 600 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });

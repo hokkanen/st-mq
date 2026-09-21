@@ -1,6 +1,6 @@
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
-import { DEFAULT_CHARGING_CONFIGURATION } from './config.js';
+import { CHARGING_EFFICIENCY } from '../domain/charging-energy.js';
 import { effectiveSoc } from './soc.js';
 
 const automaticCapabilities = Object.freeze({ capacityKwh: false, soc: true, minimumSoc: false,
@@ -68,7 +68,6 @@ function maximumCurrent(telemetry, source) {
 export function buildCharger({ definition, settings, telemetry = {}, automaticSoc = null, configuration,
   now = Date.now(), control = null, deadlineAt, timezone = TIME_ZONE } = {}) {
   if (!definition?.id || !settings) throw new Error('A charger definition and its settings are required');
-  configuration ??= DEFAULT_CHARGING_CONFIGURATION.chargers[definition.id] ?? { efficiency: .9 };
   const source = telemetry.source ?? definition.provider ?? 'charger';
   const capabilities = { ...definition.capabilities, ...telemetry.capabilities,
     automatic: { ...definition.capabilities?.automatic, ...telemetry.capabilities?.automatic } };
@@ -110,9 +109,9 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
     measuredAt: telemetry.fields?.atHome?.sourceTime, receivedAt: telemetry.fields?.atHome?.receivedAt });
   else if (Object.hasOwn(telemetry, 'atHome') && unwrap(telemetry.atHome) !== true && values.connected.value === true)
     values.connected = chargerValue(null, { reason: 'property-location-unknown' });
-  const requiredGridKwh = values.capacityKwh.value * Math.max(0, values.minimumSoc.value - values.soc.value) / 100 / configuration.efficiency;
+  const requiredGridKwh = values.capacityKwh.value * Math.max(0, values.minimumSoc.value - values.soc.value) / 100 / CHARGING_EFFICIENCY;
   return { id: definition.id, label: definition.label ?? definition.id, provider: definition.provider ?? source,
-    capabilities, settings: structuredClone(settings), configuration: { efficiency: configuration.efficiency }, values, automatic, requiredGridKwh,
+    capabilities, settings: structuredClone(settings), configuration: { efficiency: CHARGING_EFFICIENCY }, values, automatic, requiredGridKwh,
     deadlineAt: finite(deadlineAt) ? deadlineAt : resolveChargingDeadline(now, settings.readyBy, timezone),
     control, telemetry };
 }

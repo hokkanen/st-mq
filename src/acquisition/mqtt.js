@@ -58,7 +58,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     saveState: state => store.setState('charging:teslamate', state) }) : null;
   if (chargingTesla) engine.charging.teslaCapture = chargingTesla;
   const topicGroups = [
-    ...(engine.charging?.mqttRoutes() ?? []).map(route => ({ id: `${route.id}-vehicle`, label: `${route.label} vehicle`, source: 'MQTT', topics: [
+    ...(engine.charging?.mqttRoutes() ?? []).map(route => ({ id: `vehicle:${route.id}`, vehicleFeedId: route.id, label: route.label,
+      source: route.provider === 'bmw-cardata' ? 'BMW CarData' : 'MQTT', topics: [
       { role: 'Timestamped vehicle readings', topic: route.topic, direction: 'subscribe' },
     ] })),
     { id: 'dhwr', label: 'Hot-water circulation commands', source: 'MQTT', topics: [
@@ -73,7 +74,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       role: { indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs', bedroom_temperature: 'Bedroom',
         garage_temperature: 'Garage rear', garage_temperature_2: 'Garage front', outdoor_temperature: 'Outdoor' }[signal], signal, topic, direction: 'subscribe',
     })) }] : []),
-    ...(teslamate ? [{ id: 'teslamate', label: 'TeslaMate', source: 'MQTT', topics: [
+    ...(teslamate ? [{ id: 'vehicle:tesla', vehicleFeedId: 'tesla', label: 'Tesla', source: 'TeslaMate', topics: [
       { role: 'Vehicle subscription', topic: teslamate.topic, direction: 'subscribe' },
     ] }] : []),
   ];

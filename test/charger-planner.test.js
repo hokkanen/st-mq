@@ -13,7 +13,7 @@ const make = (id = 'first', extra = {}) => {
   return buildCharger({ definition: { id, label: id, provider: 'test', capabilities: {
     scheduling: true, currentControl: false, externalLoadBalancing: true,
     automatic: {}, ...capabilities } },
-  settings: { ...settings.chargers.charger1, enabled: true, capacityKwh: 20, ...preferences }, configuration: { efficiency: 1 },
+  settings: { ...settings.chargers.charger1, enabled: true, capacityKwh: 20, ...preferences }, configuration: { efficiency: .925 },
   telemetry: { connected: true, phases: 3, voltageV: 230, currentA: 16, maxCurrentA: 16,
     soc: 0, minimumSoc: 80, ...telemetry }, deadlineAt: now + 6 * HOUR, now, ...remaining });
 };
@@ -41,7 +41,7 @@ test('missing all prices remains provisional and a partial horizon cannot invent
 
 test('adjacent cheap hours remain one unrestricted charging period', () => {
   const result = run([make()]), plan = result.plans.first;
-  assert.equal(plan.requiredGridKwh, 16);
+  assert.equal(plan.requiredGridKwh, 16 / .925);
   assert.equal(plan.state, 'waiting');
   assert.equal(plan.startAt, now + 2 * HOUR);
   assert.equal(plan.feasible, true);
@@ -55,7 +55,7 @@ test('adjacent cheap hours remain one unrestricted charging period', () => {
 test('the single-session optimizer includes fractional starts rounded earlier to native seconds', () => {
   const result = run([make('renamed', { preferences: { capacityKwh: 14 }, telemetry: { minimumSoc: 100 }, deadlineAt: now + 3 * HOUR })],
     { prices: prices([10, 1, 20]) });
-  const exact = now + 2 * HOUR - 14 / 11.04 * HOUR;
+  const exact = now + 2 * HOUR - 14 / .925 / 11.04 * HOUR;
   assert.equal(result.plans.renamed.startAt, Math.floor(exact / 1000) * 1000);
   assert.equal(result.plans.renamed.feasible, true);
 });
@@ -233,7 +233,7 @@ test('separated cheap hours pause between sessions and leave only the final sess
     { startAt: now, endAt: now + HOUR }, { startAt: now + 2 * HOUR, endAt: null },
   ]);
   assert.equal(plan.finalStartAt, now + 2 * HOUR);
-  assert.ok(Math.abs(plan.costCents - (11.04 + 8.96 * 2)) < 1e-7);
+  assert.ok(Math.abs(plan.costCents - (11.04 + (20 / .925 - 11.04) * 2)) < 1e-7);
   assert.ok(plan.savingsCents > 0);
   assert.equal(plan.continueAfterMinimum, true);
   assert.ok(plan.finishAt > plan.finalStartAt && plan.finishAt < now + 3 * HOUR);
@@ -249,7 +249,7 @@ test('split planning values energy price rather than preferring a higher-power e
   const plan = result.plans.first;
   assert.equal(plan.feasible, true);
   assert.equal(plan.periods.length, 2);
-  assert.ok(Math.abs(plan.costCents - (4.14 + 5.86 * 2)) < 1e-7);
+  assert.ok(Math.abs(plan.costCents - (4.14 + (10 / .925 - 4.14) * 2)) < 1e-7);
   assert.equal(plan.periods[0].endAt, now + HOUR);
   assert.equal(plan.periods[1].endAt, null);
 });
@@ -264,7 +264,7 @@ test('equal-cost choices avoid extra pauses and a native period limit keeps a fe
   assert.equal(limited.feasible, true);
   assert.equal(limited.periods.length, 1);
   assert.equal(limited.periods[0].endAt, null);
-  const fragmented = run([make('first', { preferences: { capacityKwh: 41.4 } })],
+  const fragmented = run([make('first', { preferences: { capacityKwh: 41.4 * .925 } })],
     { prices: prices([1, 20, 1, 20, 1, 1]) }).plans.first;
   assert.equal(fragmented.periods.length, 2, 'The two adjacent cheap hours replace a scattered equal-price hour');
   assert.deepEqual(fragmented.periods, [{ startAt: now, endAt: now + HOUR }, { startAt: now + 4 * HOUR, endAt: null }]);
@@ -351,7 +351,7 @@ test('Equalizer allocation caps its charger without constraining independent cha
 
 test('a fractional 45-second gap is removed in the real schedule and energy timing is re-optimized', () => {
   const quarter = HOUR / 4;
-  const result = run([make('first', { preferences: { capacityKwh: 11.04 * (1 - 45 / 3600) },
+  const result = run([make('first', { preferences: { capacityKwh: 11.04 * (1 - 45 / 3600) * .925 },
     telemetry: { minimumSoc: 100 }, deadlineAt: now + HOUR })], {
     prices: [1, 2, 2, 1].map((price, index) => ({ start: now + index * quarter, end: now + (index + 1) * quarter, price })),
   });
@@ -382,12 +382,13 @@ test('extra transitions require meaningful savings and every intermediate span a
   });
 });
 
-test('37 kWh fits an eleven-hour readiness horizon even with a constant three-phase 6 A allowance', () => {
+test('37 battery kWh including fixed charging loss fits an eleven-hour readiness horizon even with a constant three-phase 6 A allowance', () => {
   const result = run([make('first', { preferences: { capacityKwh: 37 }, telemetry: { minimumSoc: 100 },
     deadlineAt: now + 11 * HOUR })], { supply: { availableCurrentA: [6, 6, 6], voltageV: 230 },
     prices: prices(Array(11).fill(10)) });
   assert.equal(result.plans.first.feasible, true);
-  assert.ok(result.plans.first.finishAt < now + 9 * HOUR);
+  assert.ok(Math.abs(result.plans.first.finishAt - (now + 37 / .925 / 4.14 * HOUR)) < 1,
+    'Completion includes the same fixed battery loss as grid demand');
   assert.equal(result.forecasts.first.powerKw, 4.14);
   assert.equal(result.plans.first.provisional, false);
 });
@@ -457,7 +458,7 @@ test('a provisional allowance remains eligible for economical planning even with
 
 test('a known peer target bounds its scheduled reservation by the actual remaining energy', () => {
   const peer = make('second', { capabilities: { scheduling: false, externalLoadBalancing: false },
-    preferences: { capacityKwh: 57 }, configuration: { efficiency: .9 },
+    preferences: { capacityKwh: 57 }, configuration: { efficiency: .925 },
     telemetry: { soc: 80, minimumSoc: 100, currentA: 16, scheduledStartAt: now + 3 * HOUR } });
   const result = run([make(), peer]);
   const forecast = result.forecasts.second;

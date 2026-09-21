@@ -98,11 +98,11 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
   const live = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW - 86_400_000, lastMessageAt: NOW - 86_400_000 });
   assert.equal(live.area, 'other');
   assert.equal(live.id, 'connection:teslamate:other');
-  assert.equal(live.label, 'Charger 2 vehicle');
+  assert.equal(live.label, 'Tesla');
   assert.equal(live.source, 'TeslaMate');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
-  assert.match(live.connectionDetail, /Charger 2.*sleeping or idle/);
+  assert.match(live.connectionDetail, /Vehicle data for charging.*sleeping or idle/);
   assert.doesNotMatch(JSON.stringify(live), /No live report yet/);
   const retained = connection({ brokerConnected: true, subscriptionStatus: 'subscribed', lastRetainedAt: NOW, lastMessageAt: NOW });
   assert.equal(equipmentConnectionSummary(retained).label, 'Connected');
@@ -112,8 +112,8 @@ test('TeslaMate connection follows its vehicle subscription rather than idle cha
   assert.equal(equipmentConnectionSummary(waiting).recent, 'Waiting for the first vehicle report');
   assert.equal(equipmentConnectionSummary(connection({ brokerConnected: false, subscriptionStatus: 'disconnected', lastLiveAt: NOW })).label, 'Disconnected');
   assert.equal(equipmentConnectionSummary(connection({ brokerConnected: true, subscriptionStatus: 'denied' })).label, 'Subscription failed');
-  assert.match(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).connectionDetail, /Configured vehicle feed for Charger 1/);
-  assert.equal(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).label, 'Charger 1 vehicle');
+  assert.doesNotMatch(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).connectionDetail, /Configured vehicle feed for Charger/);
+  assert.equal(connection({ brokerConnected: true, subscriptionStatus: 'subscribed', chargerId: 'charger1' }).label, 'Tesla');
 });
 
 test('BMW vehicle MQTT displays source, real reception and feed problems independently of consumption', () => {
@@ -126,12 +126,13 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
   const connected = { provider: 'bmw-cardata', brokerConnected: true, subscriptionStatus: 'subscribed', subscribed: true };
   const row = mqtt => equipmentConnections(status(mqtt))[0];
   const live = row({ ...connected, lastMessageAt: NOW, lastLiveAt: NOW });
-  assert.equal(live.label, 'Charger 1 vehicle');
+  assert.equal(live.label, 'BMW');
   assert.equal(live.kind, 'vehicle');
   assert.equal(equipmentSource(live), 'BMW CarData');
   assert.equal(equipmentConnectionSummary(live).label, 'Connected');
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
-  assert.match(live.connectionDetail, /Home Assistant.*charge.*target.*capacity/);
+  assert.match(live.connectionDetail, /BMW CarData.*charge.*target.*capacity/);
+  assert.doesNotMatch(live.connectionDetail, /Home Assistant/);
   assert.deepEqual(live.topics.map(item => item.topic), ['fixture/bmw/vehicle']);
   const retained = row({ ...connected, lastMessageAt: NOW, lastRetainedAt: NOW });
   assert.equal(equipmentConnectionSummary(retained).recent, 'Saved broker value only');
@@ -177,4 +178,27 @@ test('floor MQTT cards distinguish commissioning, confirmed preheating, missing 
   assert.match(active[0].connectionDetail, /Output 0: override on; Output 1: override on/);
   assert.equal(equipmentConnectionSummary(active[1]).label, 'Awaiting local-script readback');
   assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).label, 'Release pending');
+});
+
+test('configured vehicle feeds retain independent names before reports and follow a vehicle between chargers', () => {
+  const status = { now: NOW, charging: { chargers: [{ id: 'charger1', label: 'Charger 1' }, { id: 'charger2', label: 'Charger 2' }],
+    vehicleFeeds: [{ id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'fixture/vehicles/bmw',
+      reception: { connected: true, subscriptionStatus: 'subscribed' } },
+    { id: 'tesla', label: 'Tesla', provider: 'teslamate', topic: 'fixture/teslamate/cars/7/#', usedByChargerId: 'charger1',
+      reception: { connected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW } }] },
+    equipment: { topicGroups: [{ id: 'vehicle:bmw', vehicleFeedId: 'bmw', topics: [topic('Timestamped vehicle readings', 'fixture/vehicles/bmw')] },
+      { id: 'vehicle:tesla', vehicleFeedId: 'tesla', topics: [topic('Vehicle subscription', 'fixture/teslamate/cars/7/#')] }] } };
+  const rows = equipmentConnections(status).filter(row => row.kind === 'vehicle');
+  assert.deepEqual(rows.map(row => [row.label, equipmentSource(row)]), [['BMW', 'BMW CarData'], ['Tesla', 'TeslaMate']]);
+  assert.equal(equipmentConnectionSummary(rows[0]).recent, 'Waiting for the first vehicle report');
+  assert.match(rows[1].connectionDetail, /Used by: Charger 1/);
+  assert.doesNotMatch(JSON.stringify(rows), /Configured vehicle feed for Charger|via Home Assistant/);
+  status.charging.vehicleFeeds[1].usedByChargerId = 'charger2';
+  assert.match(equipmentConnections(status)[1].connectionDetail, /Used by: Charger 2/);
+  const synthetic = equipmentConnections({ now: NOW, charging: status.charging }).filter(row => row.kind === 'vehicle');
+  assert.deepEqual(synthetic.map(row => [row.label, row.topics[0].topic]), rows.map(row => [row.label, row.topics[0].topic]));
+  status.charging.vehicleFeeds[0].reception = null;
+  const starting = equipmentConnections(status)[0];
+  assert.equal(starting.label, 'BMW'); assert.equal(equipmentSource(starting), 'BMW CarData');
+  assert.equal(equipmentConnectionSummary(starting).label, 'Awaiting subscription');
 });

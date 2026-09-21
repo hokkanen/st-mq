@@ -250,7 +250,7 @@ export function createTeslaMateCapture({ engine, store, settings = {}, clock = (
       state.cursor = now; lastGapReason = 'not-charging'; return;
     }
     if (!defer && !settling && pendingEnergy.length) {
-      if (assignment === 'bmw') {
+      if (assignment === 'other') {
         for (const interval of pendingEnergy) {
           const result = engine.recorder.recordEnergy({ ...interval, receivedAt: now });
           if (result.reason !== 'duplicate-interval') state.session.estimatedKwh += interval.energies[0];

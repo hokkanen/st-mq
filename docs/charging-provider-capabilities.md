@@ -1,7 +1,8 @@
 # Charging provider capabilities
 
 Checked against the public provider contracts on 2026-09-15. The two charger
-objects have the same fields. An unavailable automatic vehicle value uses its
+objects have the same fields. An unidentified car on the generic Easee uses
+manual values. Once its vehicle is identified, an unavailable automatic field uses its
 saved manual fallback; a missing charger connection or current allowance does
 not gain a manual switch.
 
@@ -21,7 +22,8 @@ not gain a manual switch.
 
 Easee's observations contain electrical limits and charger state; they do not
 provide vehicle battery capacity, percentage or charge target. A timestamped
-vehicle MQTT source can supplement those fields independently. Equalizer current
+vehicle MQTT source can supplement those fields after its vehicle is matched to
+the current plug-in session. Equalizer current
 remains under external control. See the [observation contract](https://developer.easee.com/docs/charger-observation-ids)
 and [operating-mode and phase definitions](https://developer.easee.com/docs/enumerations).
 
@@ -31,12 +33,22 @@ ST-MQ preserves each packet's receipt time and retained-message status. Neither
 capacity. `time_to_full_charge` is an estimate, not a configured stop time. See
 the [TeslaMate MQTT contract](https://docs.teslamate.org/docs/integrations/mqtt/).
 
-The configured TeslaMate subscription supplies Charger 2 directly. Legacy
-`auto` assignment no longer requires an identification probe before charge,
-target or connection can be used. Explicit `easee` assignment remains supported
-for a vehicle on Charger 1; its energy is not counted again as Charger 2.
+The configured TeslaMate subscription represents the Tesla independently of the
+charger. It supplies Charger 2 unless Tesla is positively identified at Easee,
+when its battery inputs are used by Charger 1 and the second session is hidden.
+Explicit `easee` assignment remains supported. Tesla's energy is not counted
+again as Charger 2 when assigned to Easee.
 MQTT subscription/reception health is separate from whether the vehicle is
 awake, charging, or producing sufficient evidence for energy recording.
+
+The [BMW CarData feed](bmw-cardata.md) supplies measured SoC, vehicle target,
+usable capacity, plug status, charging status and a source-timestamped home-location
+result. It does not supply an electricity-consumption stream. Its battery values
+are used only after timestamped plug/charging evidence matches the current Easee
+connection. The installed BMW need not expose charging power or a plug-event ID.
+The last-session AC current/voltage descriptors are not used as live charging power.
+The Tesla probe's negative result means only that Tesla charges elsewhere; it
+never identifies a BMW or replaces visitor inputs.
 
 Native schedule stops and estimated completion times remain distinct. Easee's
 delayed schedule has only a start. ST-MQ's owned occurrence takes precedence over
@@ -59,7 +71,7 @@ an instantaneous low allowance is not held unchanged across the night. See
 
 Charge progress uses the existing recorder's grid-energy intervals, including
 its pending tail, rather than a separate power integrator. Delivered energy,
-efficiency and usable capacity produce a separate estimated SoC and remaining
+fixed 92.5% efficiency and usable capacity produce a separate estimated SoC and remaining
 grid energy. Missing intervals receive no invented credit. TeslaMate's scalar
 power remains receipt-timed telemetry; a charging-session counter does not
 become a battery-capacity measurement. The original vehicle SoC, target and

@@ -76,7 +76,7 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
     return { status: response.status, body: await response.json(), headers: response.headers };
   };
   async function sample(seconds = 5, changes = {}) {
-    energy += power * seconds / 3600 * 0.9; now += seconds * 1000;
+    energy += power * seconds / 3600 * 0.925; now += seconds * 1000;
     if (changes.amps !== undefined) amps = changes.amps;
     if (changes.power !== undefined && changes.power !== power) { power = changes.power; send('charger_power', power); }
     if (changes.teslaAmps !== undefined) send('charger_actual_current', changes.teslaAmps);
@@ -94,7 +94,7 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
 test('shared identification stays read-only until the charging runtime confirms a safe observation window', async t => {
   const f = await fixture(t);
   assert.equal(f.factoryCalls, 1);
-  assert.deepEqual(f.mock.subscriptions, ['stmq/garage/charger1/vehicle', 'teslamate/cars/1/#']);
+  assert.deepEqual(f.mock.subscriptions, ['stmq/vehicles/bmw', 'teslamate/cars/1/#']);
   assert.equal(f.engine.settings.mode, 'shadow');
   await f.baseline();
   assert.deepEqual(f.commands, []);

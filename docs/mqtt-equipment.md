@@ -275,8 +275,11 @@ including native Shelly status, RPC request and temporary reply topics. Generic
 MQTT also exposes last live/retained packet receipt and subscription status, so a
 quiet publisher can be distinguished from a missing broker route. Command payloads,
 broker credentials and native hardware identities are not exposed in diagnostics.
-Additional connection groups list configured H66, legacy temperature, TeslaMate
-and heating command topics. A reading owned by the equipment catalogue appears
+Additional connection groups list configured H66, legacy temperature, independent
+BMW/Tesla vehicle feeds and heating command topics. Vehicle names and providers
+come from configuration, not a charger number or the first arriving packet. The
+BMW feed uses `stmq/vehicles/bmw`; TeslaMate retains its native vehicle subscription.
+Connection health is separate from any current charger association. A reading owned by the equipment catalogue appears
 under its equipment entry instead of being repeated as a legacy temperature feed.
 
 Manual controls show current feedback alongside their actions. Ordinary switch

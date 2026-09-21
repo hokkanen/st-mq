@@ -1,6 +1,7 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
+import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
 const finite = Number.isFinite;
 const number = (value, unit = '') => finite(value) ? `${Number(value.toFixed(1))}${unit ? ` ${unit}` : ''}` : 'Unknown';
@@ -23,12 +24,31 @@ export function chargingTime(value, timezone = 'Europe/Helsinki', now = Date.now
   } catch { return new Date(value).toISOString(); }
 }
 const automatic = field => field?.available === true && !['manual', 'manual-fallback', 'assumed'].includes(field.source);
-const sourceLabel = field => {
+const sourceLabel = (field, vehicle) => {
   if (['manual', 'manual-fallback'].includes(field?.source)) return 'Manual fallback';
   if (field?.assumed || field?.source === 'assumed') return 'Planning assumption';
   if (field?.available !== true) return 'Awaiting a reading';
-  return ({ mqtt: 'Vehicle MQTT', teslamate: 'TeslaMate', easee: 'Easee' })[field.source] ?? 'Automatic';
+  const source = field.provider ?? (field.source === 'mqtt' && vehicle?.state === 'identified'
+    ? vehicle.source ?? ({ bmw: 'bmw-cardata', tesla: 'teslamate' })[vehicle.id] ?? field.source : field.source);
+  return ({ mqtt: 'Vehicle MQTT', 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate', easee: 'Easee' })[source] ?? 'Automatic';
 };
+const automaticFor = (charger, field) => (!charger.vehicle || charger.vehicle.state === 'identified') && automatic(field);
+const capacityProfileFor = charger => charger.id === 'charger2' || charger.vehicle?.state === 'identified' && charger.vehicle.id === 'tesla'
+  ? 'tesla' : `generic:${charger.id}`;
+function vehiclePresentation(charger) {
+  const vehicle = charger.vehicle;
+  const teslaOnly = (charger.provider ?? charger.telemetry?.provider) === 'teslamate';
+  if (vehicle?.state === 'elsewhere') return { label: 'Tesla charging',
+    detail: 'Tesla is shown at the charger it is connected to; this card does not represent another charging session.' };
+  if (vehicle?.state === 'identified') return { label: teslaOnly ? 'Tesla charging' : `${vehicle.label} identified`,
+    detail: `${vehicle.label} is identified for this connection. Available vehicle readings take priority individually; missing values use your saved settings. Identification remains through scheduled pauses and clears when unplugged.` };
+  if (teslaOnly) return { label: 'Tesla charging', detail: 'This card represents Tesla charging when Tesla is not identified at another charger.' };
+  if (vehicle?.state === 'identifying') return { label: 'Identifying vehicle',
+    detail: 'Checking which vehicle is connected. You can enter starting charge, target and usable battery capacity below; these values are used until a vehicle is identified.' };
+  if (charger.values?.connected?.value === true) return { label: 'Vehicle unidentified',
+    detail: 'Use the saved starting charge, target and usable battery capacity below for this vehicle, including visitors. BMW or Tesla readings take over only after identification.' };
+  return { label: 'Any vehicle', detail: 'This charger accepts any vehicle. Saved manual settings are available for visitors; BMW and Tesla readings are used only after identification.' };
+}
 const notices = value => (Array.isArray(value) ? value : value ? [value] : []).map(item => human(item?.message ?? item?.reason ?? item));
 const settingId = (id, key) => `${id}-setting-${key.replaceAll('.', '-')}`;
 const get = (object, path) => path.split('.').reduce((value, key) => value?.[key], object);
@@ -44,11 +64,11 @@ export const chargingFields = [
   { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
     help: 'Plan to reach the target by this time. The final charging period continues until the vehicle finishes.' },
   { key: 'manualSoc', reading: 'soc', label: 'Starting charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
-    help: 'Starting point when the vehicle does not report its charge. Delivered energy updates the estimate from here.' },
+    help: 'Saved starting charge for an unidentified vehicle or a missing vehicle reading. Update it for a visitor or after driving; delivered energy updates the estimate from here.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
-    help: 'The vehicle charge target takes priority when available.' },
+    help: 'Saved target for an unidentified vehicle. An identified vehicle’s reported target takes priority without changing this saved value.' },
   { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.1, automatic: true,
-    help: 'Manual fallback when the vehicle does not report usable capacity.' },
+    help: 'Saved usable capacity for an unidentified vehicle or a missing capacity reading.' },
 ].map(field => ({ type: 'text', ...field }));
 
 export function chargingReadingTime(value, timezone = 'Europe/Helsinki') {
@@ -81,7 +101,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const values = charger.values ?? {}, settings = charger.settings ?? {}, control = charger.control ?? {};
   const plan = charger.plan ?? {}, forecast = charger.forecast ?? {}, soc = values.soc ?? {};
   const time = value => chargingTime(value, timezone, now);
-  const connected = values.connected?.value, charging = connected === true && values.charging?.value === true;
+  const elsewhere = charger.vehicle?.state === 'elsewhere';
+  const connected = elsewhere ? false : values.connected?.value, charging = connected === true && values.charging?.value === true;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && settings.enabled === true;
   const phase = control.phase ?? '', manual = enabled ? control.manual ?? control.manualOverride : null;
   const uncertain = enabled && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase) || Boolean(control.errorCode));
@@ -201,7 +222,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     rows.push(['Other scheduled charging', `${load.label ?? human(load.chargerId)} · ${Number(load.startAt) > now ? `starts ${time(load.startAt)} · ` : ''}${number(load.powerKw, 'kW')} until about ${time(load.endAt)}`]);
   }
   if (showMetrics && hasProgress) rows.push(['Delivered since starting charge', `${number(creditedGridKwh, 'kWh')} from the grid`]);
-  if (showMetrics && estimatedSoc && automatic(soc)) rows.push(['Vehicle charge reading', `${number(soc.value, '%')} · ${sourceLabel(soc)}`]);
+  if (showMetrics && estimatedSoc && automatic(soc)) rows.push(['Last reported charge',
+    `${number(soc.value, '%')} · ${sourceLabel(soc, charger.vehicle)} · ${readingTime.replace(/^Charge /, '')}`,
+    'This is the last charge reported by the vehicle. The main charge estimate adds measured energy delivered after this reference, allowing for charging losses. The reference can be newer than plugging in; it is not necessarily the session’s starting charge.']);
+  else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push(['Starting charge (manual)', number(soc.value, '%'),
+    'This saved starting charge is the reference for the main estimate. Measured energy delivered after this reference advances the estimate, allowing for charging losses. Update the starting value for another vehicle or after driving.']);
   if (showPlan && !released && !charging && finite(plan.costCents) && !uncertain && !revisionPending) {
     rows.push(['Estimated cost to target', `€${(plan.costCents / 100).toFixed(2)}`]);
     if (periods.length > 1 && finite(plan.savingsCents) && plan.savingsCents > 0) rows.push(['Saving from pauses', `€${(plan.savingsCents / 100).toFixed(2)} compared with one continuous period`]);
@@ -235,13 +260,20 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     : activeManual ? 'Resume automatic charging to end manual priority early. A later manual change takes priority again.'
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
       : 'Choose economical charging periods to reach the target by the ready-by time.';
-  const efficiency = charger.configuration?.efficiency;
   const provider = charger.provider ?? charger.telemetry?.provider;
+  const recorded = charger.readOnly === true && charger.recorded === true;
+  const recordedEfficiency = charger.configuration?.efficiency;
+  const energyAssumption = recorded
+    ? finite(recordedEfficiency) && recordedEfficiency > 0 && recordedEfficiency <= 1
+      ? `The recorded snapshot assumed ${number((1 - recordedEfficiency) * 100, '%')} charging loss (${number(recordedEfficiency * 100, '%')} efficiency). Its energy and cost estimates are shown as recorded, without recalculation.`
+      : 'The original charging-loss assumption is unavailable in this recorded snapshot. Its energy and cost estimates are shown as recorded, without recalculation.'
+    : `Charging loss is fixed at ${number(CHARGING_LOSS_FRACTION * 100, '%')} of grid energy (${number(CHARGING_EFFICIENCY * 100, '%')} reaches the battery). Grid energy and cost estimates include these losses.`;
   const explanations = [
-    ['Readings & fallbacks', 'Vehicle charge, target and usable capacity each take priority when available. Otherwise, their saved starting charge, requested target and capacity are used. Automatic readings do not erase those saved values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
+    ['Vehicle identification', vehiclePresentation(charger).detail],
+    ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, saved starting charge, target and capacity are used and remain editable. Update these for a visitor or after driving. Automatic readings do not erase saved values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
     ['Target & completion', 'The displayed target comes from the vehicle when available. A saved target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
     ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy is counted since that reference, not necessarily since plugging in. A new vehicle reading updates the reference and starts that count again. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; a saved starting charge must be updated after driving when no vehicle reading is available.'],
-    ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings.${finite(efficiency) ? ` Charging efficiency is ${number(efficiency * 100, '%')}; grid energy includes those losses.` : ''}`],
+    ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings. ${energyAssumption}`],
   ];
   if (!supported) explanations.push(
     ['Monitoring', 'This integration observes charging and estimates progress. Set charging schedules and current limits in the vehicle or charger controls. This page cannot start, pause or schedule charging, and has no automatic ready-by deadline.'],
@@ -278,9 +310,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
   } else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
   const socSource = estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
-    : automatic(soc) ? sourceLabel(soc) : 'Starting charge';
-  const targetSource = automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc)}` : 'Requested target';
-  return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics,
+    : automatic(soc) ? sourceLabel(soc, charger.vehicle) : 'Starting charge';
+  const targetSource = automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc, charger.vehicle)}` : 'Requested target';
+  const vehicle = vehiclePresentation(charger);
+  if (elsewhere) { state = 'Connected elsewhere'; event = `${charger.vehicle.label ?? 'Tesla'} connected to ${charger.vehicle.chargerLabel ?? human(charger.vehicle.chargerId).replace(/^charger(\d+)$/, 'Charger $1')}`; }
+  return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, vehicle,
     soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
     minimumSource: targetSource, sources: socSource,
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
@@ -357,16 +391,22 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     bind(input, 'input', () => { group.dirty.add(field.key); group.drafts.set(field.key, input.value); refreshControls(); });
   }
   function group(id, descriptors, root, form, save, message, path) {
-    const result = { id, fields: new Map(), dirty: new Set(), drafts: new Map(), save, message, path };
+    const result = { id, fields: new Map(), dirty: new Set(), drafts: new Map(), capacityDrafts: new Map(), save, message, path };
     for (const field of descriptors) createField(result, field, root(field));
     bind(form, 'submit', event => {
       event.preventDefault(); if (form.reportValidity && !form.reportValidity()) return;
       const payload = {}, saved = [];
       for (const [key, { input, field }] of result.fields) {
         if (!result.dirty.has(key) || input.disabled) continue;
-        assign(payload, key, input.value === '' && field.nullable ? null : field.type === 'number' ? Number(input.value) : input.value.trim()); saved.push(key);
+        assign(payload, key, input.value === '' && field.nullable ? null : field.type === 'number' ? Number(input.value) : input.value.trim());
+        saved.push({ key, draft: result.drafts.get(key), profile: result.capacityProfile });
+        if (key === 'capacityKwh') payload.capacityProfile = result.capacityProfile;
       }
-      if (saved.length) return mutate(path, payload, message, 'Settings saved.', () => saved.forEach(key => { result.dirty.delete(key); result.drafts.delete(key); }));
+      if (saved.length) return mutate(path, payload, message, 'Settings saved.', () => saved.forEach(({ key, draft, profile }) => {
+        if (key === 'capacityKwh' && result.capacityProfile !== profile) {
+          if (result.capacityDrafts.get(profile) === draft) result.capacityDrafts.delete(profile);
+        } else if (result.drafts.get(key) === draft) { result.dirty.delete(key); result.drafts.delete(key); }
+      }));
     });
     return result;
   }
@@ -376,7 +416,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     section.setAttribute('aria-labelledby', `${id}-title`);
     const summary = make('summary', '', 'equipment-device-summary', `${id}-device-summary`);
     const heading = make('div', '', 'equipment-device-heading'), title = make('h4', charger.label, '', `${id}-title`);
-    const state = make('span', '', 'equipment-device-status', `${id}-state`); heading.append(title, state); summary.append(heading);
+    const identity = make('div', '', 'charging-identity'), vehicle = make('span', '', 'charging-vehicle', `${id}-vehicle`); identity.append(title, vehicle);
+    const state = make('span', '', 'equipment-device-status', `${id}-state`); heading.append(identity, state); summary.append(heading);
     const overview = make('div', '', 'charging-overview', `${id}-overview`), metrics = {};
     const charge = make('div', '', 'equipment-value charging-charge');
     const current = make('strong', 'Unknown', '', `${id}-soc`), target = make('strong', 'Unknown', '', `${id}-minimum`);
@@ -445,7 +486,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, section, title, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
     bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
     devices.set(id, device); return device;
@@ -459,12 +500,23 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     finally { busy = false; refreshControls(); afterRequest(); }
   }
   function updateFields(group, settings, charger) {
+    const capacityProfile = capacityProfileFor(charger);
+    if (group.capacityProfile !== capacityProfile) {
+      if (group.capacityProfile && group.dirty.has('capacityKwh')) group.capacityDrafts.set(group.capacityProfile, group.drafts.get('capacityKwh'));
+      group.dirty.delete('capacityKwh'); group.drafts.delete('capacityKwh'); group.capacityProfile = capacityProfile;
+      if (group.capacityDrafts.has(capacityProfile)) {
+        group.dirty.add('capacityKwh'); group.drafts.set('capacityKwh', group.capacityDrafts.get(capacityProfile));
+        group.capacityDrafts.delete(capacityProfile);
+      }
+    }
     for (const [key, { field, input, help }] of group.fields) {
-      const reading = charger?.values?.[field.reading ?? key], live = field.automatic && automatic(reading);
+      const reading = charger?.values?.[field.reading ?? key], live = field.automatic && automaticFor(charger, reading);
       input.value = (live ? reading.value : group.dirty.has(key) ? group.drafts.get(key) : get(settings, key)) ?? '';
       const unsupported = field.scheduling && !charger?.capabilities?.scheduling;
-      const detail = live ? `${sourceLabel(reading)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}. ${field.help ?? ''}`
-        : unsupported ? 'Scheduling is unavailable with this integration.' : field.help ?? '';
+      const detail = live ? `${sourceLabel(reading, charger.vehicle)} supplies this value. Saved fallback: ${get(settings, key)}${key === 'capacityKwh' ? ' kWh' : '%'}. ${field.help ?? ''}`
+        : unsupported ? 'Scheduling is unavailable with this integration.'
+          : key === 'capacityKwh' && capacityProfile === 'tesla'
+            ? `Saved usable capacity for Tesla, shared wherever Tesla charges.${charger.id === 'charger2' ? '' : ' Editing it keeps this charger’s generic vehicle default unchanged.'}` : field.help ?? '';
       help.textContent = detail;
       help.hidden = !detail;
     }
@@ -474,7 +526,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     for (const device of devices.values()) {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
-        const unsupported = field.scheduling && !supported, live = field.automatic && automatic(charger.values?.[field.reading ?? key]);
+        const unsupported = field.scheduling && !supported, live = field.automatic && automaticFor(charger, charger.values?.[field.reading ?? key]);
         input.disabled = locked || unsupported || live; label.hidden = unsupported; label.classList.toggle('charging-field-disabled', Boolean(unsupported || live));
       }
       settings.save.disabled = locked || ![...settings.fields].some(([key, { input }]) => settings.dirty.has(key) && !input.disabled);
@@ -499,6 +551,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         formatTime: value => chargingTime(value, charging.timezone ?? 'Europe/Helsinki', next.now) });
       const explanation = Object.fromEntries(view.explanations);
       device.charger = charger; device.title.textContent = charger.label;
+      metricDetail(device.vehicle, { label: `${charger.provider === 'easee' ? 'Easee · ' : ''}${view.vehicle.label}`, title: 'Vehicle at this charger', detail: view.vehicle.detail, key: `${charger.id}:vehicle` });
       device.section.dataset.state = view.state;
       device.section.dataset.connected = String(charger.values?.connected?.value === true);
       metricDetail(device.state, { label: presentation.roleLabel, title: 'Charging control', detail: presentation.roleDetail, key: `${charger.id}:role` });
@@ -506,7 +559,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const timedEvent = presentation.activity.match(/^(Starts|Scheduled start|Proposed start|Last confirmed start|Resumes|Last confirmed resume) (.+)$/);
       device.eventLabel.textContent = timedEvent ? timedEvent[1] === 'Scheduled start' ? 'Starts' : timedEvent[1] : '';
       device.eventLabel.hidden = !timedEvent;
-      const activity = view.showMetrics ? presentation.activity : charger.values?.connected?.value === false ? 'Not connected' : 'Connection unknown';
+      const activity = view.showMetrics || charger.vehicle?.state === 'elsewhere' ? presentation.activity : charger.values?.connected?.value === false ? 'Not connected' : 'Connection unknown';
       metricDetail(device.eventValue, { label: timedEvent ? timedEvent[2].replace(' · update awaiting confirmation', '') : activity,
         title: 'Charging activity', detail: [presentation.activity, view.controlDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:activity` });
       device.event.dataset.state = view.risk ? 'attention' : 'normal';
@@ -515,7 +568,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.sources.textContent = !view.showMetrics ? 'Awaiting data' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
       device.completion.textContent = presentation.completion.value;
       const sourceDetail = !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
-        : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
+        : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. Added energy is counted after the reference reading, which may be newer than plugging in.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
       metricDetail(device.chargeLabel, { label: 'Charge', title: 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
       metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Your saved fallback is in Charging preferences.' : `${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, key: `${charger.id}:target` });
       const completionDetail = presentation.completion.at !== null
@@ -523,7 +576,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         : presentation.completion.detail;
       metricDetail(device.completionLabel, { label: 'Est. target', title: 'Estimated target time', detail: completionDetail, key: `${charger.id}:completion` });
       device.readingTime.textContent = view.readingTime; device.readingTime.hidden = !view.readingTime;
-      device.sessionStatus.textContent = view.showMetrics ? presentation.activity
+      device.sessionStatus.textContent = charger.vehicle?.state === 'elsewhere' ? `${view.event}. Charging details are shown there.` : view.showMetrics ? presentation.activity
         : `${presentation.activity.replace(/\.$/, '')}. Readings and estimates will appear when a vehicle is confirmed connected.`;
       device.deadline.textContent = view.deadline.replace(/^Ready by /, ''); device.deadlineGroup.hidden = !view.deadline;
       device.readiness.textContent = presentation.roleState === 'uncertain' ? '' : view.readiness;
@@ -532,8 +585,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       energyText(device.energyValue, view.showMetrics ? view.gridEnergy : '—');
       const deliveredEnergy = charger.progress?.deliveredGridKwh ?? charger.progress?.creditedGridKwh;
       energyText(device.deliveredValue, view.showMetrics && finite(deliveredEnergy) ? number(deliveredEnergy, 'kWh') : '—');
-      metricDetail(device.deliveredLabel, { label: 'Added energy', title: 'Energy added since starting charge',
-        detail: view.showMetrics && finite(deliveredEnergy) ? 'Measured grid energy since the current starting charge reading, including charging losses. A new vehicle reading resets this reference; this is not a total for the whole connection.' : 'No delivered-energy reading is available for the current starting charge.', key: `${charger.id}:delivered` });
+      metricDetail(device.deliveredLabel, { label: 'Added energy', title: 'Energy added since the charge reference',
+        detail: view.showMetrics && finite(deliveredEnergy) ? 'Measured grid energy since the last vehicle charge reading or manually set starting charge, including charging losses. A new vehicle reading resets this reference; this is not a total for the whole connection.' : 'No delivered-energy reading is available for the current charge reference.', key: `${charger.id}:delivered` });
       metricDetail(device.energyLabel, { label: view.energyLabel === 'Grid remaining' ? 'Remaining' : 'To target', title: view.energyLabel,
         detail: `${view.energyNote}. ${explanation['Energy estimate'] ?? ''}`, key: `${charger.id}:energy` });
       const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });
@@ -554,13 +607,13 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       list(device.periods, view.periodRows.map(([label, text]) => [label, text.replace(' onwards · vehicle finishes naturally', ' onwards')]));
       device.periods.hidden = !view.periodRows.length;
       list(device.explanations, view.explanations);
-      const rows = view.rows.filter(([label]) => !['Estimated cost to target', 'Delivered since starting charge'].includes(label)).map(([label, text]) => {
+      const rows = view.rows.filter(([label]) => !['Estimated cost to target', 'Delivered since starting charge'].includes(label)).map(([label, text, detail]) => {
         if (label === 'Last reported Equalizer allowance') return ['Reported allowance', text.split(' · ')[0], `${text}. ${explanation['Current allocation'] ?? ''}`];
         if (label === 'Forecast charging power') return ['Forecast power', text.replace(' average during planned periods', ''), `${text}. ${explanation['Current allocation'] ?? explanation['Energy estimate'] ?? ''}`];
         if (label === 'Other scheduled charging') return ['Other charging', text.split(' · ')[0], `${text}. ${explanation['Other charging'] ?? ''}`];
         if (label === 'Saving from pauses') return [label, text.split(' compared with ')[0], text];
         if (label === 'Charging limit') return [label, text, 'The configured maximum current per phase. Actual current can be lower when supply is shared or the vehicle limits its draw.'];
-        return [label, text];
+        return [label, text, detail];
       });
       list(device.readings, rows); device.readings.hidden = !rows.length;
       device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;

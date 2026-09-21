@@ -24,7 +24,7 @@ function fixture({ amps = 16, teslaPower = amps * 0.69, read, limit, ...options 
   async function step(seconds = 5, changes = {}) {
     const next = now + seconds * 1000;
     if (changes.progress !== false && charging && power > 0) {
-      energy += power * (next - lastEnergyAt) / 3_600_000 * 0.9; energyAt = next;
+      energy += power * (next - lastEnergyAt) / 3_600_000 * 0.925; energyAt = next;
     }
     lastEnergyAt = next; now = next;
     if (changes.chargerAmps !== undefined) chargerAmps = changes.chargerAmps;
@@ -63,10 +63,15 @@ test('unknown simultaneous charging triggers reduction and matching drop/recover
   assert.equal(f.machine.status().verdict, null, 'A matching dip alone is insufficient');
   await f.restore();
   assert.equal(f.machine.status().verdict, 'easee');
+  const identifiedAt = f.machine.status().identifiedAt;
+  assert(identifiedAt <= f.now && identifiedAt >= f.now - 10_000);
   assert.equal(f.machine.status().active, false);
   assert.equal(f.machine.status().pauseExpected, false);
   await f.step(120);
   assert.equal(f.calls.length, 1, 'No repeated experiment after identification');
+  assert.equal(f.machine.status().identifiedAt, identifiedAt, 'A held verdict keeps the original session evidence time');
+  f.machine.stop();
+  assert.equal(f.machine.status().identifiedAt, null);
 });
 
 test('near minimum actual current selects timed pause without raising load-balancing limits', async () => {
@@ -84,7 +89,7 @@ test('fresh energy progression through restriction and recovery identifies a sep
   const f = fixture(); await f.baseline();
   await f.hold({ chargerAmps: 10 });
   await f.restore();
-  assert.equal(f.machine.status().verdict, 'bmw');
+  assert.equal(f.machine.status().verdict, 'other');
 });
 
 test('explicit pause can retest a known connection and keeps TeslaMate pause session changes transient', async () => {
@@ -123,7 +128,7 @@ test('a separate car can prove continued energy progression while retained power
   await f.step(0, { powerAt: null, currentAt: null });
   for (let i = 0; i < 5; i++) await f.step();
   await f.hold({ chargerAmps: 10 }); await f.restore();
-  assert.equal(f.machine.status().verdict, 'bmw');
+  assert.equal(f.machine.status().verdict, 'other');
   assert.equal(f.snapshot().tesla.powerAt, null);
 });
 

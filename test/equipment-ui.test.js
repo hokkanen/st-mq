@@ -352,16 +352,17 @@ test('vehicle connections identify TeslaMate and update a generic route to the r
   panel.update(initial);
   const connections = descendants(document.getElementById('equipment-connections'));
   const tesla = connections.find(node => node.dataset.deviceId === 'connection:teslamate:other');
-  assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Charger 2 vehicle');
+  assert.equal(tesla.querySelector('.equipment-connection-name').textContent, 'Tesla');
   assert.equal(tesla.querySelector('.equipment-connection-meta').textContent, 'Vehicle · TeslaMate');
   const generic = connections.find(node => node.dataset.deviceId === 'connection:charger1-vehicle:other');
-  assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'Charger 1 vehicle');
+  assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'Vehicle');
   assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · MQTT');
   assert.equal(generic.tagName, 'DETAILS', 'Connection folds still reveal their configured MQTT topics');
   panel.update({ ...initial, charging: { chargers: [{ id: 'charger1', label: 'Charger 1', vehicleMqtt: {
     provider: 'bmw-cardata', brokerConnected: true, subscriptionStatus: 'subscribed', lastMessageAt: now, lastLiveAt: now,
   } }] } });
   assert.equal(generic.querySelector('.equipment-connection-meta').textContent, 'Vehicle · BMW CarData');
+  assert.equal(generic.querySelector('.equipment-connection-name').textContent, 'BMW');
   assert.equal(generic.querySelector('.equipment-device-status').textContent, 'Connected');
   assert.match(generic.querySelector('.equipment-connection-recent').textContent, /^Reported /);
   assert.match(generic.textContent, /fixture\/charger1\/vehicle/);

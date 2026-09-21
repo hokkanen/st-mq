@@ -10,7 +10,7 @@ import { recordedChargingEnergy } from '../src/charging/energy.js';
 
 const now = Date.parse('2026-09-15T00:00:00Z'), HOUR = 3_600_000;
 const value = (number, extra = {}) => ({ value: number, available: true, source: 'test', ...extra });
-const charger = extra => ({ id: 'charger1', requiredGridKwh: 37, configuration: { efficiency: .9 }, telemetry: {},
+const charger = extra => ({ id: 'charger1', requiredGridKwh: 36, configuration: { efficiency: .925 }, telemetry: {},
   values: { connected: value(true), soc: value(40, { source: 'manual-fallback' }), capacityKwh: value(74),
     minimumSoc: value(85), ...extra } });
 const energy = amount => () => ({ gridKwh: amount, coveredMs: HOUR, continuousSince: now, lastMeasuredAt: now + HOUR });
@@ -19,8 +19,8 @@ test('recorded energy advances a separate SoC estimate and applies grid losses o
   const initial = updateChargingProgress(null, charger(), now);
   const input = charger(), original = structuredClone(input);
   const next = updateChargingProgress(initial.state, input, now + HOUR, energy(10));
-  assert.ok(Math.abs(next.estimatedSoc - 52.16216216216216) < 1e-9);
-  assert.ok(Math.abs(next.remainingGridKwh - 27) < 1e-9);
+  assert.ok(Math.abs(next.estimatedSoc - 52.5) < 1e-9);
+  assert.ok(Math.abs(next.remainingGridKwh - 26) < 1e-9);
   assert.equal(next.hasEnergyEstimate, true);
   assert.equal(next.estimatedSocSource, 'starting-charge');
   assert.equal(next.basis.source, 'recorded-charger-energy');
@@ -49,7 +49,7 @@ test('new measured SoC rebases at its original clock; retained unchanged receipt
   assert.ok(updated.estimatedSoc > 55);
 });
 
-test('changing target, capacity or efficiency preserves earned energy; natural final charging can exceed target', () => {
+test('changing target or capacity preserves earned energy and cannot change the fixed loss; natural final charging can exceed target', () => {
   const initial = updateChargingProgress(null, charger(), now);
   const next = updateChargingProgress(initial.state, charger(), now + HOUR, energy(40));
   assert.equal(next.remainingGridKwh, 0);
@@ -57,8 +57,8 @@ test('changing target, capacity or efficiency preserves earned energy; natural f
   const changed = charger({ minimumSoc: value(100), capacityKwh: value(80) }); changed.configuration.efficiency = .8;
   const result = updateChargingProgress(next.state, changed, now + HOUR, energy(40));
   assert.equal(result.deliveredGridKwh, 40);
-  assert.equal(result.estimatedSoc, 80);
-  assert.equal(result.remainingGridKwh, 20);
+  assert.equal(result.estimatedSoc, 86.25);
+  assert.ok(Math.abs(result.remainingGridKwh - 11 / .925) < 1e-9);
   assert.equal(updateChargingProgress(result.state, changed, now + 2 * HOUR, energy(100)).estimatedSoc, 100);
 });
 

@@ -272,8 +272,8 @@ energy intervals. A future solar/battery installation requires revisiting that
 import-power bound.
 
 The charging card derives percentage progress from these existing grid-energy
-intervals and the recorder's pending tail. It applies configured charging
-losses once and preserves the original vehicle reading and timestamp separately.
+intervals and the recorder's pending tail. It applies the fixed 7.5%
+charging loss once and preserves the original vehicle reading and timestamp separately.
 Missing energy coverage stays visible instead of being filled by another power
 integrator. See [charge progress](charging.md#charge-progress) for reference,
 restart and disconnection behavior.

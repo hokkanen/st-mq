@@ -15,7 +15,7 @@ export function createChargerIdentification({ control, clock = Date.now, enabled
   recoveryMs = Math.max(30_000, Math.min(120_000, recoveryMs));
   telemetryMs = Math.max(10_000, Math.min(60_000, telemetryMs));
   let generation = 0, stopped = false, busy = false, latest = null, now = null;
-  let phase = 'idle', reason = null, verdict = null, attempted = false, requested = null;
+  let phase = 'idle', reason = null, verdict = null, identifiedAt = null, attempted = false, requested = null;
   let samples = [], baseline = null, probe = null, connectionKey = null, teslaConnectionKey = null;
   const operations = new Set();
   const fresh = (at, atNow = now) => time(at) && at <= atNow && atNow - at <= telemetryMs;
@@ -41,7 +41,7 @@ export function createChargerIdentification({ control, clock = Date.now, enabled
   const active = () => ['checking', 'applying', 'holding', 'recovering'].includes(phase);
 
   function status() {
-    return { enabled: enabled && !stopped, active: active(), phase, reason, verdict,
+    return { enabled: enabled && !stopped, active: active(), phase, reason, verdict, identifiedAt,
       assignmentPending: enabled && !stopped && !verdict && (active() || bothCharging(latest)),
       strategy: probe?.strategy ?? requested, targetAmps: probe?.amps ?? null,
       expiresAt: probe?.expiresAt ?? null, settlingUntil: probe?.deadline ?? null,
@@ -51,11 +51,11 @@ export function createChargerIdentification({ control, clock = Date.now, enabled
   }
   function reset(nextReason = null) {
     for (const controller of operations) controller.abort();
-    generation++; phase = 'idle'; reason = nextReason; verdict = null; attempted = false;
+    generation++; phase = 'idle'; reason = nextReason; verdict = null; identifiedAt = null; attempted = false;
     requested = null; samples = []; baseline = null; probe = null;
   }
   function finish(nextReason, nextVerdict = null) {
-    if (nextVerdict) verdict = nextVerdict;
+    if (nextVerdict) { verdict = nextVerdict; identifiedAt = now; }
     if (nextVerdict && probe?.strategy === 'pause') probe.graceUntil = Math.min(probe.deadline, now + 30_000);
     phase = nextVerdict ? 'identified' : 'inconclusive'; reason = nextReason;
     attempted = true; samples = []; baseline = null;
@@ -248,7 +248,9 @@ export function createChargerIdentification({ control, clock = Date.now, enabled
       finish('matching-drop-and-recovery', 'easee');
     } else if (probe.unaffected && !probe.matchedDrop && matchingRecovery && liveEnergy(tesla)
       && tesla.energyAt > probe.expiresAt && tesla.energyKwh > probe.low.energy) {
-      finish('independent-charging-through-restriction', 'bmw');
+      // This establishes that Tesla uses another charger. It does not identify
+      // the car on Easee: that could equally be a visitor's vehicle.
+      finish('independent-charging-through-restriction', 'other');
     }
   }
   async function tick(snapshot, at = clock()) {
@@ -281,7 +283,7 @@ export function createChargerIdentification({ control, clock = Date.now, enabled
   }
   function stop() {
     for (const controller of operations) controller.abort();
-    stopped = true; generation++; phase = 'stopped'; reason = 'stopped'; verdict = null; samples = []; baseline = null;
+    stopped = true; generation++; phase = 'stopped'; reason = 'stopped'; verdict = null; identifiedAt = null; samples = []; baseline = null;
   }
   return { tick, status, request, stop };
 }

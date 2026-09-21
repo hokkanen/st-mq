@@ -1,8 +1,10 @@
 # Charging
 
-Both chargers use the same model, planner and dashboard card. Charger 1 uses
-Easee's native delayed-start schedules; Charger 2 observes TeslaMate and currently
-has no command adapter. Unsupported scheduling controls are hidden.
+Both chargers use the same model, planner and dashboard card. Charger 1 is a
+generic Easee charging point for any vehicle and uses native delayed-start
+schedules. Charger 2 represents Tesla charging and currently has no command
+adapter. BMW CarData and TeslaMate are independent vehicle feeds; neither feed
+name identifies a physical charger. Unsupported scheduling controls are hidden.
 Heating mode and charging permission are independent.
 
 ## Dashboard and saved preferences
@@ -56,17 +58,28 @@ Ready-by is an ST-MQ preference, using the same timezone as the rest of ST-MQ
 (`TIME_ZONE`, currently Europe/Helsinki). The chosen time is the deadline;
 there is no additional readiness margin.
 
-Valid automatic capacity, SoC and vehicle charge target each take precedence
-over their saved manual fallback. Automatic SoC has no temporary manual override.
-The fallback number remains saved while automatic readings are in use and is
-shown again if they become unavailable. The card identifies the charge source;
+Charger 1 uses editable manual starting charge, target and usable capacity until
+the connected vehicle is identified. Receiving BMW battery values, or finding
+that Tesla is charging elsewhere, does not identify the car on Easee. Once BMW
+or Tesla is identified in this connection, its available automatic fields each
+take precedence over the corresponding saved manual value; missing fields remain
+editable. Automatic SoC has no temporary manual override. The generic defaults
+remain saved separately and return for an unidentified visitor's car. Ready-by
+is the first setting wherever it is shown. The card identifies the charge source;
 the requested target is a preference, not an uncertain measurement.
 Vehicle MQTT can supply usable capacity; it is never guessed from range or
 charging-session energy. See [BMW CarData through Home Assistant](bmw-cardata.md)
 and the [provider matrix](charging-provider-capabilities.md).
 
-Grid energy includes charging losses:
-`capacity × max(0, minimum − SoC) / 100 / efficiency`.
+Grid energy includes a fixed **7.5% charging loss**, so battery efficiency is
+**92.5%** for both chargers:
+`capacity × max(0, minimum − SoC) / 100 / 0.925`.
+The same 7.5% supplies the garage charging-heat assumption. Metered grid energy
+and its electricity cost stay unchanged; losses are applied only when converting
+between grid energy and battery energy.
+Read-only replicas preserve the primary's published readings, plans and energy
+assumption. Their explanations identify a recorded snapshot's original loss;
+viewing old records does not recalculate their costs or progress.
 Remaining energy covers reaching this minimum; cost includes earlier charging
 in the same connection as well. If the vehicle target is
 unavailable, a manual 80% minimum can coexist with the vehicle continuing toward
@@ -75,10 +88,11 @@ the minimum and deadline.
 
 Connection, current, voltage and native schedules are automatic only. The
 configured TeslaMate feed defaults to Charger 2. With automatic attribution,
-the existing charger-identification result also selects its planning values.
+the positive Tesla charger-identification result also selects its planning values.
 A confirmed Tesla on Easee supplies Charger 1's SoC and target, using the saved
 Tesla vehicle capacity from Charger 2; the other vehicle MQTT feed cannot override
-that assignment. Charger 2 then has no duplicate forecast. The result stays with
+that assignment. Charger 2 then says Tesla is connected to Charger 1 and has no
+duplicate session or forecast. The result stays with
 the connection through planned pauses and restart, and clears on confirmed unplug.
 Home location gates household connection and load accounting. The explicit
 `charger_assignment: "easee"` option still attaches TeslaMate's vehicle values to
@@ -88,44 +102,62 @@ Easee connection gives the existing bounded comparison up to three minutes of
 initial charging before scheduling. Confirmed identification ends that wait early.
 The diagnostic cannot replace a native restriction, run under manual priority,
 or start after the observation window. Its existing one-minute current reduction
-and device-side expiry remain unchanged. Inconclusive evidence keeps the configured
-vehicle assumption; matching power alone never establishes identity.
+and device-side expiry remain unchanged. Inconclusive evidence leaves Charger 1
+unidentified and using manual values; matching power alone never establishes identity.
+
+BMW identification uses the available source-timestamped home-location, plug and
+charging-status facts. Fresh live plug reports, a charging start and a subsequent
+stop must match the current Easee connection and its observed start and stop.
+No extra stop is commanded solely for BMW identification. Location alone,
+retained replay, periodic republication and old connection reports are insufficient.
+Missing BMW power or plug-event-ID descriptors do not block this method. Conflicting
+BMW/Tesla evidence leaves the connection unidentified. Matches are scoped to the
+plug-in session, survive ordinary charging pauses and restart, and clear on
+unplugging. See [the BMW feed contract](bmw-cardata.md).
 
 ## Deployment configuration and vehicle MQTT
 
-MQTT topics and charging efficiency are deployment configuration, outside the
-charger settings UI. In the existing configuration file:
+MQTT topics are deployment configuration, outside the charger settings UI.
+Charging loss is fixed and cannot be changed in deployment or dashboard settings.
+In the existing configuration file:
 
 ```json
 {
   "charging": {
     "chargers": {
-      "charger1": {
-        "mqttTopic": "stmq/garage/charger1/vehicle",
-        "efficiency": 0.9
-      },
-      "charger2": {
-        "mqttTopic": "",
-        "efficiency": 0.9
+      "charger1": {},
+      "charger2": {}
+    },
+    "vehicles": {
+      "bmw": {
+        "label": "BMW",
+        "provider": "bmw-cardata",
+        "mqttTopic": "stmq/vehicles/bmw"
       }
     }
   }
 }
 ```
 
-These are also the defaults when omitted. Each configured topic must be distinct
-and concrete, without MQTT wildcards. Set it to an empty string to disable the
-extra feed, including in Home Assistant add-on options. Standalone configuration
+These are also the defaults when omitted. Vehicle topics are distinct and
+concrete, without MQTT wildcards. Set the BMW topic to an empty string to disable
+that feed, including in Home Assistant add-on options. Standalone configuration
 also accepts `null`; Home Assistant options require the empty-string spelling.
 Configuration reload recreates the acquisition/runtime; changing a topic
-invalidates the stored automatic reading associated with the previous topic.
+invalidates the stored vehicle readings associated with the previous topic.
 Saved UI preferences are independent of deployment configuration.
 
-The dedicated topic identifies its charger; no vehicle/source identity fields
-are required. Publishers, including the BMW CarData automation, send retained JSON at QoS 1:
+Explicit legacy charger `mqttTopic` options are accepted as source aliases, not
+as vehicle identification. New installations use `charging.vehicles`. TeslaMate
+keeps its own native `teslamate/.../cars/.../#` subscription; ST-MQ does not rename
+or republish another application's topics.
+
+The dedicated BMW topic identifies the vehicle feed. Its publisher sends retained
+JSON at QoS 1, with independent fact clocks detailed in the BMW documentation:
 
 ```json
 {
+  "provider": "bmw-cardata",
   "readingId": "example-reading-42",
   "soc": 63,
   "usableCapacityKwh": 74,
@@ -145,11 +177,13 @@ Old valid MQTT readings remain usable with their source timestamps preserved.
 TeslaMate scalar topics preserve receipt clocks separately because they carry no
 measurement timestamps. WiCAN firmware and hardware setup remain for later.
 
-The **TeslaMate** connection entry reports MQTT subscription and actual reception
+The **BMW** and **Tesla** entries under Data & settings → MQTT show configured
+vehicle names even before their first report. They report subscription and reception
 separately from charging or energy-recorder health. A sleeping or idle vehicle
 does not imply MQTT disconnection. Live and retained packets are distinguished;
 repeated unchanged values can confirm reception without refreshing a vehicle
-measurement's displayed age.
+measurement's displayed age. A current charger association is shown separately.
+BMW supplies vehicle facts, not consumption, and is excluded from Electricity consumption.
 
 ## Charge progress
 
@@ -157,12 +191,12 @@ The displayed estimate uses the same recorded grid-energy intervals as the
 history charts, including the recorder's durable pending interval. It does not
 run a second power integrator or treat a command as delivered energy:
 
-`estimated SoC = starting SoC + delivered grid kWh × efficiency / capacity × 100`.
+`estimated SoC = starting SoC + delivered grid kWh × 0.925 / capacity × 100`.
 
 The vehicle's raw percentage and original timestamp stay unchanged. A genuinely
 new charge reading rebases the estimate, counting only energy after that
 reference and within the current connection. Unchanged receipt-only messages and
-retained replays do not erase progress. Capacity, target and efficiency edits
+retained replays do not erase progress. Capacity and target edits
 recalculate the estimate without discarding already delivered energy.
 
 The estimate is marked **≈** and identifies whether it started from vehicle

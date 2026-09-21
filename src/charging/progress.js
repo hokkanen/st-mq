@@ -1,3 +1,5 @@
+import { CHARGING_EFFICIENCY } from '../domain/charging-energy.js';
+
 const finite = Number.isFinite;
 const observedTime = value => finite(value) && value >= 0 ? value : null;
 
@@ -7,7 +9,7 @@ export function restoreChargingProgress(previous) {
 
 /** Keep the raw vehicle reading intact. A separate estimate advances from that
  * reading (or starting charge) using the recorder's existing grid energy.
- * Capacity, target and efficiency changes preserve delivered energy. */
+ * Capacity and target changes preserve delivered energy. */
 export function updateChargingProgress(previous, charger, now, readEnergy = () => null) {
   if (!charger?.id || !finite(now)) throw new Error('Charging progress requires a charger and numeric UTC time');
   const soc = charger.values.soc, connection = charger.values.connected;
@@ -29,7 +31,7 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
     energy = readEnergy({ id: charger.id, start: reference.at, end: now });
     if (finite(energy?.gridKwh)) state.creditKwh = Math.max(state.creditKwh, energy.gridKwh);
   } else { state.reference = null; state.creditKwh = 0; }
-  const capacity = charger.values.capacityKwh.value, efficiency = charger.configuration.efficiency;
+  const capacity = charger.values.capacityKwh.value, efficiency = CHARGING_EFFICIENCY;
   const estimatedSoc = Math.min(100, reference.soc + state.creditKwh * efficiency / capacity * 100);
   const rawRequiredGridKwh = Math.max(0, charger.requiredGridKwh ?? 0);
   const remainingGridKwh = Math.max(0, capacity * (charger.values.minimumSoc.value - estimatedSoc) / 100 / efficiency);

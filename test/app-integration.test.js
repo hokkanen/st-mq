@@ -106,7 +106,7 @@ test('MQTT requests snapshots on reconnect, preserves retained uncertainty and l
   };
   const reader = await startMqtt({ engine, store, config: { ...config, deviceId: 'test-h66', connections: { mqtt: { address: 'mqtt://example.invalid', user: 'private-user', pw: 'private-password' } } }, connect: () => fake });
   fake.emit('connect'); fake.emit('connect'); fake.emit('offline'); fake.emit('connect');
-  assert.deepEqual(subscriptions, ['stmq/garage/charger1/vehicle', 'test-h66/HP/#', 'stmq/garage/charger1/vehicle', 'test-h66/HP/#']);
+  assert.deepEqual(subscriptions, ['stmq/vehicles/bmw', 'test-h66/HP/#', 'stmq/vehicles/bmw', 'test-h66/HP/#']);
   assert.equal(publications.length, 2);
   fake.emit('message', 'test-h66/HP/0001', Buffer.from('31.2'), { retain: true });
   const observation = store.latestObservation('return_temperature');

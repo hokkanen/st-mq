@@ -124,10 +124,12 @@ test('charging deployment settings import and reload through Supervisor using em
   } } });
   const app = await f.launch();
   assert.deepEqual(app.engine.charging.configuration.chargers, {
-    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 },
-    charger2: { mqttTopic: null, efficiency: .9 },
+    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .925 },
+    charger2: { mqttTopic: null, efficiency: .925 },
   });
+  assert.equal(app.engine.charging.configuration.vehicles.bmw.mqttTopic, 'synthetic/first/vehicle');
   assert.equal(f.saved.charging.chargers.charger2.mqttTopic, '', 'Supervisor stores an empty string, never null');
+  assert.equal(Object.hasOwn(f.saved.charging.chargers.charger1, 'efficiency'), false, 'Retired loss overrides are not saved as editable options');
   assert.equal(f.posts, 1);
   assert.equal(existsSync(f.paths.importPath), false);
   await app.engine.charging.setChargerSettings('charger1', { manualSoc: 55 });
@@ -136,14 +138,33 @@ test('charging deployment settings import and reload through Supervisor using em
   } } });
   assert.equal((await f.reload()).status, 200);
   assert.deepEqual(app.engine.charging.configuration.chargers, {
-    charger1: { mqttTopic: null, efficiency: .85 },
-    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .95 },
+    charger1: { mqttTopic: null, efficiency: .925 },
+    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .925 },
   });
   assert.equal(f.saved.charging.chargers.charger1.mqttTopic, '');
+  assert.equal(app.engine.charging.configuration.vehicles.bmw.mqttTopic, null);
   assert.equal(f.posts, 2);
   assert.equal(existsSync(f.paths.importPath), false);
   assert.equal(app.engine.charging.settings.chargers.charger1.manualSoc, 55);
   assert.equal(app.engine.charging.settings.chargers.charger1.enabled, false);
+});
+
+test('vehicle feed deployment config stays separate from charger preferences through Supervisor reload', async t => {
+  const f = fixture(t);
+  f.writeImport({ charging: { vehicles: { bmw: {
+    label: 'BMW', provider: 'bmw-cardata', mqttTopic: 'synthetic/vehicles/bmw',
+  } } } });
+  const app = await f.launch();
+  await app.engine.charging.setChargerSettings('charger1', { manualSoc: 37, capacityKwh: 48 });
+  assert.deepEqual(app.engine.charging.mqttRoutes().map(({ id, topic }) => ({ id, topic })),
+    [{ id: 'bmw', topic: 'synthetic/vehicles/bmw' }]);
+  assert.equal(app.engine.charging.configuration.chargers.charger1.mqttTopic, null);
+  f.writeImport({ charging: { vehicles: { bmw: { mqttTopic: '' } } } });
+  assert.equal((await f.reload()).status, 200);
+  assert.deepEqual(app.engine.charging.mqttRoutes(), []);
+  assert.equal(f.saved.charging.vehicles.bmw.mqttTopic, '');
+  assert.equal(app.engine.charging.settings.chargers.charger1.manualSoc, 37);
+  assert.equal(app.engine.charging.settings.chargers.charger1.capacityKwh, 48);
 });
 
 test('ingress import saves Supervisor, applies runtime/token, then cleans up; token rotates and removes live', async t => {

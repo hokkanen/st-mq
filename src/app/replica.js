@@ -53,6 +53,8 @@ function chargingSnapshot(snapshot) {
   if (!saved) return null;
   const snapshotAt = snapshot.publication.sourceAt;
   const settings = migrateChargingSettings(saved.settings ?? {});
+  const reception = value => ({ ...value, connected: null, brokerConnected: null, subscribed: null,
+    subscriptionStatus: 'read-only-snapshot', reason: 'read-only-snapshot', readOnly: true, recorded: true, snapshotAt });
   const chargers = CHARGER_DEFINITIONS.map(definition => {
     const id = definition.id;
     const record = saved.chargers?.[id] ?? (id === 'charger1' ? saved : {});
@@ -62,19 +64,27 @@ function chargingSnapshot(snapshot) {
     const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
       enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
       reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded primary status; live charger health is unavailable on this read-only replica.` };
-    const charger = buildCharger({ definition, settings: settings.chargers[id], timezone: TIME_ZONE,
-      telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc, configuration: recorded?.configuration,
-      now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control });
+    // A published view already contains the primary's selected vehicle, battery
+    // facts and energy assumption. Rebuilding it with this viewer's code would
+    // reinterpret historical decisions and discard independently stored feeds.
+    const charger = recorded?.values ? structuredClone(recorded) : {
+      ...buildCharger({ definition, settings: settings.chargers[id], timezone: TIME_ZONE,
+        telemetry: recorded?.telemetry ?? {}, automaticSoc: record.automaticSoc,
+        now: snapshotAt, deadlineAt: record.plan?.deadlineAt, control }),
+      configuration: recorded?.configuration ?? { efficiency: null },
+      requiredGridKwh: recorded?.requiredGridKwh ?? record.plan?.requiredGridKwh ?? null,
+    };
     return { ...charger,
       referenceGridKwh: recorded?.referenceGridKwh ?? charger.requiredGridKwh,
-      requiredGridKwh: recorded?.requiredGridKwh ?? charger.requiredGridKwh,
       progress: recorded?.progress ?? null,
       readOnly: true, recorded: true, snapshotAt, control,
-      automaticSoc: record.automaticSoc ?? null,
-      plan: record.plan ?? null, forecast: recorded?.forecast ?? null,
-      mqtt: { connected: null, subscribed: null, reason: 'read-only-snapshot' }, error: null };
+      automaticSoc: recorded?.automaticSoc ?? record.automaticSoc ?? null,
+      plan: record.plan ?? recorded?.plan ?? null, forecast: recorded?.forecast ?? null,
+      mqtt: reception(recorded?.mqtt), vehicleMqtt: recorded?.vehicleMqtt ? reception(recorded.vehicleMqtt) : null,
+      error: null };
   });
   return { readOnly: true, recorded: true, snapshotAt, timezone: TIME_ZONE, settings, chargers,
+    vehicleFeeds: (saved.view?.vehicleFeeds ?? []).map(feed => ({ ...feed, reception: reception(feed.reception) })),
     coordination: saved.view?.coordination ?? null, error: null };
 }
 

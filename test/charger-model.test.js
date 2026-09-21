@@ -53,7 +53,7 @@ test('each charger uses valid automatic capacity and target before identical man
     assert.equal(charger.values.capacityKwh.value, 65);
     assert.equal(charger.values.capacityKwh.source, 'vehicle');
     assert.equal(charger.values.minimumSoc.value, 90);
-    assert.equal(charger.requiredGridKwh, 65 * .4 / .9);
+    assert.equal(charger.requiredGridKwh, 65 * .4 / .925);
     const fallback = make(index, { telemetry: { capacityKwh: -1, minimumSoc: 101, soc: null } });
     assert.equal(fallback.values.capacityKwh.value, config.chargers[fallback.id].capacityKwh);
     assert.equal(fallback.values.minimumSoc.value, 80);
@@ -80,11 +80,11 @@ test('automatic SoC always wins and the remembered fallback remains available wi
   assert.equal(fallback.values.soc.source, 'manual-fallback');
 });
 
-test('grid energy uses charger configuration efficiency and keeps it out of editable preferences', () => {
+test('grid energy applies fixed 7.5% loss even with a retired configuration override', () => {
   const charger = make(0, { configuration: { efficiency: .8, mqttTopic: 'garage/vehicle' },
     telemetry: { capacityKwh: 60, soc: 40, minimumSoc: 80 } });
-  assert.equal(charger.requiredGridKwh, 30);
-  assert.equal(charger.configuration.efficiency, .8);
+  assert.equal(charger.requiredGridKwh, 24 / .925);
+  assert.equal(charger.configuration.efficiency, .925);
   assert.equal(Object.hasOwn(charger.settings, 'efficiency'), false);
   assert.equal(Object.hasOwn(charger.settings, 'mqttTopic'), false);
 });

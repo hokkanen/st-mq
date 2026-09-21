@@ -380,7 +380,7 @@ test('unknown overlap buffers ordinary intervals in memory, then records them on
   assert.equal(checkpoint.suppression, null);
   for (const word of ['baseline', 'verdict', 'pendingEnergy', 'targetAmps', 'identification'])
     assert(!JSON.stringify(checkpoint).includes(word));
-  Object.assign(status, { assignmentPending: false, verdict: 'bmw', phase: 'identified' });
+  Object.assign(status, { assignmentPending: false, verdict: 'other', phase: 'identified' });
   f.tick(); f.tick();
   assert(Math.abs(f.energy() - 11 * 60 / 3600) < 1e-10);
   assert.equal(f.capture.status().reason, 'recording');
@@ -412,7 +412,7 @@ test('owned pause preserves a session through stopped, online, changed since and
   f.at(90_000); f.send('charging_state', 'Charging'); f.send('state', 'charging');
   f.send('since', new Date(f.now).toISOString()); f.send('charger_power', 11); f.send('charge_energy_added', 0.02);
   f.at(100_000); f.send('healthy', true); f.property(25); f.easee(11);
-  Object.assign(status, { active: false, pauseExpected: false, settlingUntil: null, verdict: 'bmw', assignmentPending: false });
+  Object.assign(status, { active: false, pauseExpected: false, settlingUntil: null, verdict: 'other', assignmentPending: false });
   f.tick(); assert.equal(f.checks().length, 0);
   f.at(110_000); f.send('charge_energy_added', 0.05); f.send('charging_state', 'Complete');
   f.at(160_000); f.tick();
@@ -471,7 +471,7 @@ test('deferred energy survives a failed flush in RAM and retry commits it exactl
   f.at(30_000); f.send('healthy', true); f.send('charge_energy_added', 0.08); f.tick();
   const original = f.store.observation.bind(f.store);
   f.store.observation = () => { throw new Error('invented write failure'); };
-  Object.assign(status, { verdict: 'bmw', assignmentPending: false });
+  Object.assign(status, { verdict: 'other', assignmentPending: false });
   assert.throws(() => f.tick(), /invented write failure/);
   f.store.observation = original;
   assert.equal(f.store.getState('teslamate:acquisition:1').session.estimatedKwh, 0);
@@ -487,7 +487,7 @@ test('unresolved buffering is bounded and a lost verdict never continues countin
   }
   assert.equal(f.energy(), 0);
   assert.equal(f.store.getState('teslamate:acquisition:1').session.complete, false);
-  Object.assign(status, { verdict: 'bmw', assignmentPending: false }); f.tick();
+  Object.assign(status, { verdict: 'other', assignmentPending: false }); f.tick();
   const before = f.energy(); assert(before < 11 * 60 / 3600, 'Expired unresolved coverage was discarded');
   Object.assign(status, { verdict: null, assignmentPending: true });
   f.at(285_000); f.send('healthy', true); f.send('charge_energy_added', 0.8); f.tick();
@@ -513,7 +513,7 @@ test('a transient zero during an owned pause never doubles a continuing Tesla co
   f.at(25_000); f.send('charger_power', 0); f.send('charging_state', 'Stopped'); f.send('charge_energy_added', 0);
   f.at(90_000); f.send('healthy', true); f.send('charging_state', 'Charging'); f.send('charger_power', 11);
   f.send('charge_energy_added', 0.12);
-  Object.assign(status, { active: false, pauseExpected: false, verdict: 'bmw', assignmentPending: false });
+  Object.assign(status, { active: false, pauseExpected: false, verdict: 'other', assignmentPending: false });
   f.at(100_000); f.property(25); f.easee(11); f.tick();
   f.send('charging_state', 'Complete'); f.at(150_000); f.tick();
   assert.equal(f.checks().length, 1);

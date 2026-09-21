@@ -63,7 +63,7 @@ test('charging API persists preferences across engines and obeys authentication 
   await restarted.charging.close();
 });
 
-test('configured MQTT routes keep original SoC timestamps and automatically replace saved fallbacks', async t => {
+test('independent MQTT vehicle routes keep source timestamps without overriding unassigned charger defaults', async t => {
   const { store, engine, config, cleanup, advance } = fixture(t, { chargers: { charger2: { mqttTopic: 'stmq/garage/charger2/vehicle' } } }), client = new EventEmitter(), subscriptions = [];
   client.subscribe = (topic, options, done) => { subscriptions.push({ topic, qos: options.qos }); done(null, [{ topic, qos: options.qos }]); };
   client.unsubscribe = (_topic, done) => done();
@@ -71,24 +71,24 @@ test('configured MQTT routes keep original SoC timestamps and automatically repl
   const capture = await startMqtt({ engine, store, config, connect: () => client });
   cleanup.push(() => capture.close({ restore: false }));
   client.emit('connect');
-  assert(subscriptions.some(row => row.topic === engine.charging.configuration.chargers.charger1.mqttTopic && row.qos === 1));
-  const reading = { vehicleId: 'charger1-vehicle', sourceId: 'vehicle-telemetry', readingId: 'sample-1', soc: 64,
+  assert(subscriptions.some(row => row.topic === engine.charging.configuration.vehicles.bmw.mqttTopic && row.qos === 1));
+  const reading = { provider: 'bmw-cardata', vehicleId: 'charger1-vehicle', sourceId: 'vehicle-telemetry', readingId: 'sample-1', soc: 64,
     measuredAt: engine.clock() - 24 * 3_600_000 };
-  const sendSoc = (value, topic = engine.charging.configuration.chargers.charger1.mqttTopic) => client.emit('message', topic, Buffer.from(JSON.stringify(value)), { retain: true });
+  const sendSoc = (value, topic = engine.charging.configuration.vehicles.bmw.mqttTopic) => client.emit('message', topic, Buffer.from(JSON.stringify(value)), { retain: true });
   sendSoc(reading);
-  assert.equal(chargerView(engine.charging).values.soc.value, 64);
+  assert.equal(chargerView(engine.charging).values.soc.value, 20);
   advance(1000); client.emit('offline'); client.emit('connect'); sendSoc(reading);
-  assert.equal(engine.charging.chargers.charger1.automaticSoc.measuredAt, reading.measuredAt);
-  assert.equal(engine.charging.chargers.charger1.automaticSoc.receivedAt, engine.clock() - 1000);
+  assert.equal(engine.charging.vehicleFeeds.bmw.reading.measuredAt, reading.measuredAt);
+  assert.equal(engine.charging.vehicleFeeds.bmw.reading.receivedAt, engine.clock() - 1000);
   await engine.charging.setChargerSettings('charger1', { manualSoc: 44 });
   sendSoc({ ...reading, readingId: 'sample-2', measuredAt: engine.clock(), soc: 65 });
-  assert.equal(chargerView(engine.charging).values.soc.value, 65, 'Automatic SoC always wins');
+  assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Unknown vehicle retains the editable fallback');
   assert.equal(engine.charging.settings.chargers.charger1.manualSoc, 44, 'Fallback remains saved');
   await assert.rejects(engine.charging.setChargerSettings('charger1', { mqtt: { topic: 'new/topic' } }), /Unknown/);
   assert(subscriptions.some(row => row.topic === 'stmq/garage/charger2/vehicle' && row.qos === 1));
   sendSoc({ readingId: 'second-car', measuredAt: engine.clock(), soc: 48 }, 'stmq/garage/charger2/vehicle');
-  assert.equal(chargerView(engine.charging, 'charger2').values.soc.value, 48, 'Dedicated topic needs no vehicle identity');
-  assert.equal(chargerView(engine.charging).values.soc.value, 65, 'Each topic updates only its charger');
+  assert.equal(chargerView(engine.charging, 'charger2').values.soc.value, 20, 'A generic extra feed cannot identify the Tesla');
+  assert.equal(chargerView(engine.charging).values.soc.value, 44, 'Vehicle topics cannot attach themselves to a charger');
   advance(1000);
   const send = (field, value) => client.emit('message', `teslamate/cars/7/${field}`, Buffer.from(String(value)));
   for (const [field, value] of Object.entries({ battery_level: 40, charge_limit_soc: 80, charge_current_request: 13,

@@ -1,71 +1,109 @@
-# BMW CarData through Home Assistant
+# BMW CarData vehicle feed
 
-Home Assistant publishes measured BMW inputs to the existing Charger 1 vehicle
-topic, `stmq/garage/charger1/vehicle`, as retained JSON with QoS 1. This is a
-telemetry feed: the automation never starts, stops or wakes a vehicle. The normal
-charging controller selects Tesla telemetry when Tesla is identified at Easee.
+Home Assistant publishes BMW vehicle facts to `stmq/vehicles/bmw` as retained
+JSON with QoS 1. This topic belongs to the vehicle, independently of the charging
+point. The automation supplies telemetry and never operates a vehicle or charger.
+TeslaMate keeps its native vehicle topics; neither source is named after Charger 1
+or Charger 2.
 
-Under **Data & settings → MQTT**, the vehicle connection identifies **BMW
-CarData** and shows broker/subscription health, the latest live or retained
-report, and its incoming topic. The publisher's `provider: "bmw-cardata"` field
-identifies the source explicitly; other vehicle MQTT feeds remain generic.
-Repeated reports confirm MQTT reception without renewing battery measurement
-timestamps. Invalid reports need attention while the last accepted readings
-remain available. This source supplies vehicle data and is not listed under
-**Electricity consumption**.
+Under **Data & settings → MQTT**, **BMW** has the subtitle **Vehicle · BMW CarData**.
+The configured identity remains visible before the first message. Broker and
+subscription health, live/retained reception and topics are shown separately from
+the current charger association. Invalid reports need attention; repeat messages
+do not renew measurement timestamps. BMW is not an electricity-consumption source.
 
-The automation builder is
-[`scripts/lib/bmw-cardata-automation.js`](../scripts/lib/bmw-cardata-automation.js).
-Supply three Home Assistant sensor entity IDs from the same BMW CarData vehicle:
+## Battery and identity facts
 
-| Input | CarData descriptor | Meaning |
-| --- | --- | --- |
-| `socEntity` | `vehicle.powertrain.electric.battery.stateOfCharge.displayed` | Measured dashboard battery percentage |
-| `targetEntity` | `vehicle.powertrain.electric.battery.stateOfCharge.target` | Vehicle charge target |
-| `capacityEntity` | `vehicle.drivetrain.batteryManagement.maxEnergy` | Current usable energy capacity, kWh |
+The builder is [`scripts/lib/bmw-cardata-automation.js`](../scripts/lib/bmw-cardata-automation.js).
+Supply entities belonging to the same vehicle:
 
-Use measured SoC rather than CarData's predicted SoC sensor: STMQ already accounts
-for recorded charging energy. `batterySizeMax` is a separate nominal-size field;
-the installed feed uses the available `maxEnergy` measurement. The upstream
-[CarData integration](https://github.com/kvanbiesen/bmw-cardata-ha) also gives
-`maxEnergy` priority for capacity-based prediction.
+| Builder argument | CarData descriptor or Home Assistant entity |
+| --- | --- |
+| `socEntity` | `vehicle.powertrain.electric.battery.stateOfCharge.displayed` |
+| `targetEntity` | `vehicle.powertrain.electric.battery.stateOfCharge.target` |
+| `capacityEntity` | `vehicle.drivetrain.batteryManagement.maxEnergy` |
+| `plugEntity` | `vehicle.body.chargingPort.status` |
+| `chargingEntity` | `vehicle.drivetrain.electricEngine.charging.status` |
+| `latitudeEntity` | `vehicle.cabin.infotainment.navigation.currentLocation.latitude` |
+| `longitudeEntity` | `vehicle.cabin.infotainment.navigation.currentLocation.longitude` |
+| `locationEntity` | Optional BMW `device_tracker` trigger; not a source clock |
 
-For example, create an automation configuration with invented sensor names:
+Use measured SoC, not CarData's predicted SoC. ST-MQ already estimates progress
+from recorded charging energy. Capacity comes from `maxEnergy`, not a range
+estimate or charging-session counter. AC current and voltage descriptors describing
+the last charging process are not treated as live charging power.
 
-```js
-import { bmwCardataAutomation } from './scripts/lib/bmw-cardata-automation.js';
-const automation = bmwCardataAutomation({
-  socEntity: 'sensor.example_battery_soc',
-  targetEntity: 'sensor.example_charge_target',
-  capacityEntity: 'sensor.example_usable_capacity',
-});
-```
+Battery fields retain their existing names: `soc`, `chargeLimitSoc` and
+`usableCapacityKwh`. Identity adds `pluggedIn`, `charging` and `atHome`, each a
+boolean or explicit `null` when unknown. Every identity fact has its own
+`fields[name].measuredAt` and `fields[name].readingId`. Target and capacity also
+retain independent clocks. The top-level provider is `bmw-cardata`.
 
-Install the returned configuration as a Home Assistant automation. Check the
-rendered condition and payload through Home Assistant's template API first, then
-read back the installed automation and verify a publication through MQTT.
-The automation uses Home Assistant's standard
-[`mqtt.publish`](https://www.home-assistant.io/integrations/mqtt/#examples)
-action and [automation triggers](https://www.home-assistant.io/docs/automation/trigger/).
-It publishes when any source changes, at Home Assistant startup, on the default
-MQTT birth message, and every five minutes for recovery after a broker outage.
-Repeating a publication keeps the original measurement identity and timestamps.
+The original BMW `timestamp` attribute supplies the clock, never automation time.
+Identity can be published and accepted even when SoC is unavailable. Unknown
+identity facts clear previous facts; they do not become false or silently preserve
+an earlier true. Sparse battery fields retain the last accepted measurement and
+its age. Malformed, future or older observations cannot manufacture fresh evidence.
 
-Each sensor's CarData `timestamp` attribute is preserved. SoC supplies the
-top-level `measuredAt` and `readingId`; target and capacity carry their own values
-under `fields.chargeLimitSoc` and `fields.usableCapacityKwh`, each with
-`measuredAt` and `readingId`. Independently newer target/capacity readings can
-update while SoC is unchanged, without resetting session progress or renewing
-SoC's age. Replayed and older optional fields cannot replace newer ones.
+## Home location
 
-Unknown source timestamps remain unknown. Unavailable or invalid SoC suppresses
-publication. Invalid optional readings are omitted, retaining the last accepted
-value and its original age in STMQ rather than substituting zero. Existing
-manual fallbacks remain available if a measurement has never been received.
+CarData's location tracker can restore coordinates without exposing their BMW
+timestamps. Enable the underlying latitude/longitude sensors and use their
+`timestamp` attributes. Both must be valid and their clocks at most 60 seconds
+apart. `atHome` uses the older coordinate clock. A restored tracker or unavailable
+coordinate sensor alone produces unknown location.
 
-The household installation was configured and its enabled state, rendered
-payload and live QoS 1 MQTT delivery verified on 2026-09-20. Private entity
-mapping, readbacks and deployment evidence stay outside Git under
-`~/.config/st-mq/bmw-cardata/` (directory `0700`, files `0600`). Credentials are
-read only from the owner-provided private token file and never embedded in the
-automation or repository.
+The builder accepts private `homeLatitude`, `homeLongitude` and
+`homeRadiusMeters` arguments. With no explicit home point it uses Home Assistant's
+`zone.home` configuration. Check that the chosen point actually describes the
+charging property; weather coordinates and a default Home Assistant zone may be
+different. Only `atHome` and its clock go to MQTT, never coordinates or private
+zone/device identifiers.
+
+## Association with Charger 1
+
+Charger 1 stays generic and uses editable manual battery values until BMW or Tesla
+is positively associated with its current plug-in session. Receiving BMW battery
+data does not establish that association. The Tesla diagnostic's negative result
+means only that Tesla charges elsewhere.
+
+BMW matching combines timestamped home context with a live plug event and a
+charging start followed by a stop near the current Easee connection. Both charging
+transitions must correspond to charging and stopping observed at Easee. A BMW
+starting to charge elsewhere at home is insufficient on its own. Without the
+matching stop, Charger 1 continues to use manual battery values.
+Initial unrestricted charging can be observed briefly when a BMW at-home candidate
+is available; manual priority and existing native restrictions are preserved.
+Identification does not command an additional stop; it observes a pause or stop
+that occurs as part of ordinary charging control.
+No BMW charging-power field or plug-event identifier is required. Cached/retained
+true values, or unchanged true values republished with newer timestamps, cannot
+create new plug events. Conflicting vehicle evidence keeps manual inputs active.
+
+A confirmed match is scoped to the charger connection, survives scheduled pauses
+and restart, and clears on unplug. A consumed plug event cannot identify the next
+car. Available automatic battery fields take precedence individually without
+overwriting saved generic defaults. Missing fields remain editable. Tesla on
+Easee appears in Charger 1, while Charger 2 indicates that association instead of
+displaying a duplicate session.
+
+## Installing or updating the publisher
+
+Build the automation with privately discovered entity IDs and the verified home
+reference. Validate the generated template through Home Assistant's template API,
+save the automation, read it back, and verify live and retained MQTT publication.
+The automation uses standard [`mqtt.publish`](https://www.home-assistant.io/integrations/mqtt/#examples)
+and [automation triggers](https://www.home-assistant.io/docs/automation/trigger/).
+It reacts to entity changes, Home Assistant startup, MQTT birth and a five-minute
+recovery interval. Periodic publication preserves all original field clocks.
+
+The application source configuration is `charging.vehicles.bmw.mqttTopic`, with
+`stmq/vehicles/bmw` as its default. When moving from the old
+`stmq/garage/charger1/vehicle` topic, switch both publisher and subscriber, verify
+the new route, then clear the retired retained message. Do not duplicate BMW
+publications under charger-specific topics.
+
+Private mappings, automation readbacks and deployment evidence belong outside Git
+under `~/.config/st-mq/bmw-cardata/` (directory `0700`, files `0600`). Credentials
+are read from the owner-provided token file, never placed in generated automation
+payloads or repository files.

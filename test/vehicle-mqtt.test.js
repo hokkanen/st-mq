@@ -19,7 +19,8 @@ async function fixture(t) {
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await reader.close(); await engine.charging.close(); });
   const topic = engine.charging.mqttRoutes()[0].topic;
-  const view = () => engine.charging.status().chargers.find(item => item.id === 'charger1');
+  const view = () => ({ mqtt: engine.charging.status().vehicleFeeds.find(item => item.id === 'bmw').reception,
+    automaticSoc: engine.charging.vehicleFeeds.bmw.reading });
   const payload = { provider: 'bmw-cardata', soc: 51, chargeLimitSoc: 80, usableCapacityKwh: 72,
     measuredAt: initial - 3600_000, readingId: 'invented-reading' };
   const send = (value = payload, packet = {}) => client.emit('message', topic, Buffer.from(JSON.stringify(value)), packet);

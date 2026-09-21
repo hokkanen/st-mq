@@ -16,8 +16,9 @@ preheat/reduction/recovery planning, a monitoring dashboard and H66 readback/con
 configured transport and active mode, the controller can operate heating and
 supported H66 settings. Explicit manual MQTT and timed H66 tests are also available.
 Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated contract
-setup are integrated. Charger 1 can also use opt-in native Easee schedules;
-Charger 2 remains observation-only. Heating mode and charging permission are
+setup are integrated. Charger 1 accepts any car, using manual battery values until
+BMW or Tesla is identified, and can use opt-in native Easee schedules. Charger 2
+represents Tesla charging and remains observation-only. Heating mode and charging permission are
 independent. See [charging controls and estimates](docs/charging.md).
 ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses

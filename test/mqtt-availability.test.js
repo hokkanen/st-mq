@@ -39,7 +39,7 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
   }, providerOptions: fixture.providerOptions });
   try {
     client.emit('connect');
-    assert.deepEqual(client.subscriptions, ['stmq/garage/charger1/vehicle', 'invented/indoor', 'invented/garage']);
+    assert.deepEqual(client.subscriptions, ['stmq/vehicles/bmw', 'invented/indoor', 'invented/garage']);
     assert.equal(client.publications.length, 0, 'Standalone temperature acquisition sends no H66 commands');
     client.emit('message', 'invented/indoor', Buffer.from('20.25'));
     client.emit('message', 'invented/garage', Buffer.from('10.5'));
@@ -126,7 +126,7 @@ test('Downstairs and Bedroom MQTT temperatures are recorded independently across
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   t.after(async () => { await reader.close(); store.close(); });
   client.emit('connect');
-  assert.deepEqual(client.subscriptions, ['stmq/garage/charger1/vehicle', 'invented/downstairs', 'invented/bedroom']);
+  assert.deepEqual(client.subscriptions, ['stmq/vehicles/bmw', 'invented/downstairs', 'invented/bedroom']);
   client.emit('message', 'invented/downstairs', Buffer.from('20.5'));
   client.emit('message', 'invented/bedroom', Buffer.from('{"value":66.2,"unit":"F"}'));
   assert.equal(engine.recorder.latestCommitted('downstairs_temperature').value, 20.5);

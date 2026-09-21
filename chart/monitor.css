@@ -1193,11 +1193,11 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   --charging-gap: 8px;
   --charging-value-size: clamp(17px, 5cqw, calc(25px - var(--charging-compact, 0) * 4px));
   /* Compact = 1 for desktop or paired cards, 0 for the original mobile spacing. */
-  height: calc(332px - var(--charging-compact, 0) * 40px);
-  min-height: calc(332px - var(--charging-compact, 0) * 40px);
+  height: calc(364px - var(--charging-compact, 0) * 40px);
+  min-height: calc(364px - var(--charging-compact, 0) * 40px);
   padding: calc(16px - var(--charging-compact, 0) * 4px) 14px;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: calc(24px - var(--charging-compact, 0) * 2px) 48px
+  grid-template-rows: calc(56px - var(--charging-compact, 0) * 2px) 48px
     calc(76px - var(--charging-compact, 0) * 6px) calc(70px - var(--charging-compact, 0) * 10px)
     42px calc(20px - var(--charging-compact, 0) * 4px);
   gap: calc(4px - var(--charging-compact, 0) * 2px);
@@ -1208,6 +1208,8 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .charging-device > .equipment-device-body { padding: 0 14px 18px; }
 .charging-device .equipment-device-heading { flex-wrap: nowrap; align-items: center; gap: 8px; }
 .charging-device .equipment-device-heading h4 { font-size: 14px; }
+.charging-identity { min-width: 0; }
+.charging-vehicle { display: block; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .charging-device .equipment-device-status { padding: 3px 7px; border-radius: 5px; background: var(--surface-soft); font-size: 10px; line-height: 1.4; text-align: right; }
 .charging-device .equipment-device-status[data-state="controlled"] { color: var(--accent); }
 .charging-device .equipment-device-status[data-state="uncertain"] { color: var(--stale); }
@@ -1259,6 +1261,7 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .charging-reading-time { margin-bottom: 16px; }
 .charging-schedule-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 12px; margin: 0 0 12px; font-size: 11px; color: var(--muted); }
 .charging-device .charging-facts, .charging-device .charging-periods { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 18px; font-size: 11px; margin: 0 0 14px; }
+.charging-device .charging-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
 .charging-facts dd, .charging-periods dd { text-align: right; }
 .charging-master { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 13px; }
 .charging-master button { width: 68px; min-height: 36px; margin: 0; }

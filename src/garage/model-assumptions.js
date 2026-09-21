@@ -1,4 +1,6 @@
-export const GARAGE_MODEL_ASSUMPTIONS = Object.freeze({ evHeatFraction: .075, normalPowerKw: .5,
+import { CHARGING_LOSS_FRACTION } from '../domain/charging-energy.js';
+
+export const GARAGE_MODEL_ASSUMPTIONS = Object.freeze({ evHeatFraction: CHARGING_LOSS_FRACTION, normalPowerKw: .5,
   recoveryTimeHours: 3, recoveryEnergyFactor: 1.25, doorHeat: 'not-credited-reassess-from-sensors' });
 
 /** Price extra recovery over enough time that its assumed average input never

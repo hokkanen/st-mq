@@ -300,18 +300,27 @@ test('public charging defaults preserve runtime defaults and standalone topic ch
     charger2: { mqttTopic: 'synthetic/second/vehicle' },
   } } }));
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.equal(config.charging.vehicles.bmw.mqttTopic, 'synthetic/first/vehicle', 'An explicit source alias wins over public BMW defaults');
   assert.deepEqual(config.charging.chargers, {
-    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .85 },
-    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .9 },
+    charger1: { mqttTopic: 'synthetic/first/vehicle', efficiency: .925 },
+    charger2: { mqttTopic: 'synthetic/second/vehicle', efficiency: .925 },
   });
   assert.deepEqual(config.connections, {}, 'Machine charging settings do not enable provider connections in simulation');
   writeFileSync(path, JSON.stringify({ charging: { chargers: {
     charger1: { mqttTopic: null }, charger2: { mqttTopic: '', efficiency: .95 },
   } } }));
   const next = (await configurationSource(config).prepare()).config;
+  assert.equal(next.charging.vehicles.bmw.mqttTopic, null, 'A disabled source alias is not re-enabled by public defaults');
   assert.deepEqual(next.charging.chargers, {
-    charger1: { mqttTopic: null, efficiency: .9 }, charger2: { mqttTopic: null, efficiency: .95 },
+    charger1: { mqttTopic: null, efficiency: .925 }, charger2: { mqttTopic: null, efficiency: .925 },
   });
+  writeFileSync(path, JSON.stringify({ charging: { vehicles: {
+    bmw: { label: 'BMW', provider: 'bmw-cardata', mqttTopic: 'synthetic/vehicles/bmw' },
+  } } }));
+  const independent = (await configurationSource(next).prepare()).config.charging;
+  assert.equal(independent.vehicles.bmw.mqttTopic, 'synthetic/vehicles/bmw');
+  assert.equal(independent.chargers.charger1.mqttTopic, null);
+  assert.deepEqual(chargingConfiguration(independent), independent, 'Normalized source configuration remains independent on reload');
 });
 
 test('live MQTT can run without H66 and threshold configuration keeps native defaults separate from readings', t => {

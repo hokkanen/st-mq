@@ -357,12 +357,13 @@ export function equipmentConnectionSummary(device) {
   return { label, state, recent };
 }
 
-function vehicleConnection({ reception = {}, enabled = true, chargerLabel, source, detail }) {
+function vehicleConnection({ reception = {}, enabled = true, label, source, detail, usedBy }) {
+  reception ??= {};
   const connected = reception.brokerConnected ?? reception.connected;
   const subscribed = reception.subscribed === true || reception.subscriptionStatus === 'subscribed';
   const failed = ['failed', 'denied', 'error'].includes(reception.subscriptionStatus);
   const { lastLiveAt, lastRetainedAt, lastMessageAt, invalidReason } = reception;
-  return { label: `${chargerLabel} vehicle`, kind: 'vehicle', source, mqttStatus: reception,
+  return { label, kind: 'vehicle', source, mqttStatus: reception,
     lastReportAt: lastLiveAt,
     connectionState: enabled === false ? { label: 'Not enabled', state: 'pending' }
       : connected === false ? { label: 'Disconnected', state: 'attention' }
@@ -372,7 +373,7 @@ function vehicleConnection({ reception = {}, enabled = true, chargerLabel, sourc
               : { label: 'Awaiting subscription', state: 'pending' },
     recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}`
       : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
-    connectionDetail: `Configured vehicle feed for ${chargerLabel}. ${detail}`,
+    connectionDetail: `Vehicle data for charging. Used automatically when this vehicle is identified at a charger. ${detail}${usedBy ? ` Used by: ${usedBy}.` : ''}`,
     packetDetail: [invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : '',
       Number.isFinite(lastLiveAt) ? `Latest live report: ${clock.format(lastLiveAt)}.`
         : Number.isFinite(lastRetainedAt) ? `Saved broker reading received ${clock.format(lastRetainedAt)}; no live vehicle report received yet.`
@@ -392,6 +393,14 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
   for (const group of [...(status.shelly?.topicGroups ?? []), ...(status.equipment?.topicGroups ?? [])]) {
     const prior = groups.get(group.id);
     groups.set(group.id, { ...group, topics: [...(prior?.topics ?? []), ...(group.topics ?? [])] });
+  }
+  const vehicleFeeds = status.charging?.vehicleFeeds ?? [];
+  const vehicleFeedFor = group => vehicleFeeds.find(feed => feed.id === group.vehicleFeedId || group.id === `vehicle:${feed.id}`
+    || feed.topic && group.topics.some(topic => topic.topic === feed.topic)
+    || group.id === 'teslamate' && feed.provider === 'teslamate');
+  for (const feed of vehicleFeeds) if (feed.topic && ![...groups.values()].some(group => vehicleFeedFor(group) === feed)) {
+    groups.set(`vehicle:${feed.id}`, { id: `vehicle:${feed.id}`, vehicleFeedId: feed.id,
+      topics: [{ role: feed.provider === 'teslamate' ? 'Vehicle subscription' : 'Timestamped vehicle readings', topic: feed.topic, direction: 'subscribe' }] });
   }
   if (status.dhwr?.commandTopic) {
     const prior = groups.get('dhwr');
@@ -425,12 +434,17 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
                 : { label: 'Awaiting pump reports', state: 'pending' },
           connectionDetail: 'Heat-pump readings, status requests and native parameter commands.',
           packetDetail: `Broker connection: ${native.brokerConnected === true ? 'connected' : native.brokerConnected === false ? 'disconnected' : 'unknown'}.` });
+      } else if (vehicleFeedFor(group)) {
+        const feed = vehicleFeedFor(group);
+        const source = ({ 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate' })[feed.provider] ?? 'MQTT';
+        const usedBy = status.charging?.chargers?.find(charger => charger.id === feed.usedByChargerId)?.label;
+        Object.assign(row, vehicleConnection({ label: feed.label, source, enabled: feed.enabled, reception: feed.reception, usedBy,
+          detail: feed.provider === 'teslamate' ? 'A sleeping or idle vehicle can remain quiet while MQTT stays connected.'
+            : 'Vehicle readings keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.' }));
       } else if (group.id === 'teslamate') {
         const provider = status.providers?.teslamate ?? {};
         const reception = provider.reception ?? status.charging?.chargers?.find(charger => charger.id === 'charger2')?.mqtt ?? {};
-        const chargerLabel = status.charging?.chargers?.find(charger => charger.id === reception.chargerId)?.label
-          ?? (reception.chargerId === 'charger1' ? 'Charger 1' : 'Charger 2');
-        Object.assign(row, vehicleConnection({ enabled: provider.enabled, source: 'TeslaMate', chargerLabel,
+        Object.assign(row, vehicleConnection({ enabled: provider.enabled, source: 'TeslaMate', label: 'Tesla',
           reception: { ...reception, connected: reception.connected ?? provider.connected,
             lastMessageAt: reception.lastMessageAt ?? provider.lastMessageAt },
           detail: 'A sleeping or idle vehicle can remain quiet while MQTT stays connected.' }));
@@ -439,9 +453,9 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const charger = status.charging?.chargers?.find(charger => charger.id === id);
         const reception = charger?.vehicleMqtt ?? charger?.mqtt ?? {};
         const bmw = reception.provider === 'bmw-cardata';
-        Object.assign(row, vehicleConnection({ reception, chargerLabel: charger?.label ?? group.label?.replace(/ vehicle$/, '') ?? pretty(id),
+        Object.assign(row, vehicleConnection({ reception, label: bmw ? 'BMW' : 'Vehicle',
           source: bmw ? 'BMW CarData' : 'MQTT',
-          detail: bmw ? 'BMW CarData through Home Assistant supplies charge, charge target and usable battery capacity. MQTT reception is separate from each measurement’s original timestamp.'
+          detail: bmw ? 'BMW CarData supplies charge, charge target and usable battery capacity. MQTT reception is separate from each measurement’s original timestamp.'
             : 'Vehicle readings received over MQTT keep their original measurement timestamps. A quiet vehicle does not mean the MQTT connection is lost.' }));
       } else if (group.id === 'dhwr' || group.id === 'heating') {
         row.kind = 'control'; row.connectionState = { label: 'Commands configured', state: 'pending' };

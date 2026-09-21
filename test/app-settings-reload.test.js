@@ -122,7 +122,7 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   assert.equal(mqtt.clients.length, 2);
   const replacement = mqtt.clients[1];
   assert.equal(replacement.address, 'mqtt://second.invalid');
-  assert.deepEqual(replacement.subscriptions, ['stmq/garage/charger1/vehicle', 'invented/second']);
+  assert.deepEqual(replacement.subscriptions, ['stmq/vehicles/bmw', 'invented/second']);
   assert.equal(app.engine.config.acquisition.easeeIntervalMs, 20_000);
   old.emit('message', 'invented/first', Buffer.from('29'), { retain: false });
   assert.equal(app.engine.latest.indoor_temperature, undefined);
@@ -171,7 +171,7 @@ test('changing the H66 device starts with empty live readings and uses only the 
   const response = await post();
   assert.equal(response.status, 200);
   assert.equal(first.endCalls, 1);
-  assert.deepEqual(mqtt.clients[1].subscriptions, ['stmq/garage/charger1/vehicle', 'invented-second/HP/#']);
+  assert.deepEqual(mqtt.clients[1].subscriptions, ['stmq/vehicles/bmw', 'invented-second/HP/#']);
   assert.equal(app.engine.latest.return_temperature, undefined);
   assert.equal(app.engine.outdoorCandidates['husdata-h66'], undefined);
   assert.deepEqual(app.engine.status().h66.readings, {});
