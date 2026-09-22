@@ -43,6 +43,22 @@ Before native schedule mutations and during their readback, the adapter forces
 fresh REST observation reads rather than relying on the stream cache. Original
 measurement timestamps and the existing freshness guards still apply.
 
+Live changes in Charger 1's mode (109) and pilot state (100) are saved as
+transition evidence before waking the controller. This preserves short
+connection changes even when the latest cached state has already changed back.
+Enabled state (31), no-current reason (96) and online state (250) also trigger
+prompt reconciliation, with closely spaced updates coalesced into one wakeup.
+Equalizer and current updates do not trigger these control wakeups; periodic
+reconciliation and REST fallback remain available for recovery.
+
+A transition requires a known previous value, a strictly newer changed source
+observation after the current subscriptions became ready, and a source age no
+older than fifteen minutes. Initial snapshots, reconnect replay, unchanged
+values, conflicting clocks and REST cache reconciliation cannot manufacture
+live transition evidence. The stream callback carries only parsed observation
+values and source/receipt clocks; command authority, fresh REST preflight and
+readback remain unchanged.
+
 ## API contract checked on 2026-09-15
 
 The official public OpenAPI definitions were read for these endpoints:
@@ -130,8 +146,11 @@ not create manual priority. A disabled charger, authorization request or fault
 remains unavailable; no enable, authorization, start/stop or current command is
 issued. Final release remains open even after its estimated completion/deadline.
 
-Observation sampling detects state changes, not app taps that leave the same state
-or changes completed between observations. A charge-now override that leaves
+Streamed events preserve reported changes between routine polls. App taps that
+leave the same state and transitions Easee does not report remain invisible;
+even a one-second unplug requires the provider to emit both connection changes.
+Charger transitions alone do not identify BMW without its corroborating vehicle
+evidence. A charge-now override that leaves
 scheduling state unchanged and never produces a charging observation (for example,
 while continuously Equalizer-limited) can remain unidentifiable. Easee documentation
 does not explicitly guarantee mid-session pause behavior for every overridden
@@ -201,4 +220,6 @@ handovers, and the transport's restricted write allowlist. Fixtures use invented
 synthetic tokens; these checks require no Easee account or hardware.
 `test/charging-easee-stream.test.js` verifies routine shared-cache reads and
 forced REST observation preflight/readback without weakening schedule ownership
-or device freshness checks.
+or device freshness checks. `test/easee-stream.test.js` also verifies individual
+short mode/pilot transitions, startup and reconnect suppression, REST isolation,
+source-clock bounds and callback failure handling.

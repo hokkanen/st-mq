@@ -15,6 +15,7 @@ import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 import { updateSessionCost } from './session-cost.js';
 import { updateTargetState, targetSelection, selectTargetMode } from './target.js';
+import { acceptEaseeTransition } from './stream-evidence.js';
 
 const MINUTE = 60_000;
 const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 1;
@@ -60,6 +61,8 @@ export class ChargingRuntime {
     this.settings = migrateChargingSettings(saved.settings ?? {});
     this.teslaDisconnectedFromEaseeAt = saved.teslaDisconnectedFromEaseeAt ?? null;
     this.configuration = chargingConfiguration(config.charging);
+    this.streamAssociation = digest(config.connections?.easee?.charger_id ?? null);
+    this.streamPending = new Set(); this.streamPersistencePending = false;
     this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).map(([id, definition]) => {
       const previous = saved.vehicleFeeds?.[id];
       const reading = previous?.reading?.association === definition.mqttTopic ? previous.reading : null;
@@ -72,13 +75,17 @@ export class ChargingRuntime {
       mqttTopic: this.configuration.chargers.charger2.mqttTopic, mqtt: initialMqtt(), reading: null };
     this.chargers = Object.fromEntries(definitions.map(definition => {
       const previous = saved.chargers?.[definition.id] ?? (definition.id === 'charger1' ? saved : {});
+      const streamMatches = previous.streamAssociation === this.streamAssociation;
       return [definition.id, { definition, plan: previous.plan ?? null,
         sessionCost: previous.sessionCost ?? null,
         vehicleMatch: previous.vehicleMatch?.id === 'bmw' && !this.vehicleFeeds.bmw.reading
           ? null : previous.vehicleMatch ?? null,
         vehicleEvidence: previous.vehicleEvidence ?? null,
         targetState: this.vehicleFeeds.bmw.reading ? previous.targetState ?? null : null,
-        vehicleDisconnect: this.vehicleFeeds.bmw.reading ? previous.vehicleDisconnect ?? null : null,
+        vehicleDisconnect: previous.vehicleDisconnect?.source === 'easee-stream'
+          ? streamMatches ? previous.vehicleDisconnect : null
+          : this.vehicleFeeds.bmw.reading ? previous.vehicleDisconnect ?? null : null,
+        streamEvidence: streamMatches ? previous.streamEvidence ?? null : null,
         progress: restoreChargingProgress(previous.progress), supplyEstimate: previous.supplyEstimate ?? null,
         wasPluggedIn: previous.progress?.connected,
         lastReconcileAt: null }];
@@ -104,7 +111,8 @@ export class ChargingRuntime {
     const view = this.status();
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
-        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect }]));
+        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect,
+        streamAssociation: this.streamAssociation, streamEvidence: item.streamEvidence }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       { reading: item.reading, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId }]));
     this.store.setState(this.key, { version: 4, settings: this.settings, chargers, vehicleFeeds, teslaDisconnectedFromEaseeAt: this.teslaDisconnectedFromEaseeAt, view });
@@ -137,7 +145,13 @@ export class ChargingRuntime {
       const createController = adapter?.createController ?? createChargingController;
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
         saveState: state => this.store.setState(this.ownershipKey(id), state), clock: this.clock,
-        canControl: () => !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
+        canControl: () => {
+          const control = item.controller?.status(), boundary = item.vehicleDisconnect;
+          return !this.closed && !this.streamPersistencePending && this.canControl()
+            && (boundary?.source !== 'easee-stream' || boundary.readingId === control?.vehicleDisconnect?.readingId
+              || control?.session?.connectedAt !== boundary.endedConnectedAt && !control?.vehicleDisconnect?.awaitingConnection)
+            && ['mqtt', 'providers'].includes(this.config.input);
+        },
         getMaximumAmps: scheduleCeiling,
         getPlan: snapshot => {
           this.updatePlan();
@@ -169,6 +183,59 @@ export class ChargingRuntime {
       if (generation === item.adapterGeneration) item.adapterPending = false;
     });
     return item.adapterFlight;
+  }
+  receiveEaseeObservation(observation) {
+    if (this.closed || !this.canControl()) return false;
+    const item = this.chargers.charger1;
+    if (!item || item.definition.provider !== 'easee') return false;
+    const session = item.controller?.status()?.session;
+    const accepted = acceptEaseeTransition(item.streamEvidence, observation, {
+      now: this.clock(), connectedAt: session?.connectedAt, lastDisconnectedAt: session?.lastDisconnectedAt });
+    if (!accepted) return false;
+    // Keep failed writes in memory for retry: the stream has already consumed
+    // this event and cannot be asked to deliver it again. Authority stays blocked
+    // until the boundary and evidence are durable.
+    this.streamPersistencePending = true;
+    item.streamEvidence = accepted.evidence;
+    const boundary = accepted.evidence.boundary;
+    if (boundary && (!item.vehicleDisconnect || boundary.measuredAt >= item.vehicleDisconnect.measuredAt)) {
+      if (item.vehicleDisconnect?.readingId !== boundary.readingId) {
+        if (item.vehicleMatch?.id === 'tesla') this.teslaDisconnectedFromEaseeAt = boundary.receivedAt;
+        item.vehicleMatch = null; item.vehicleEvidence = null; item.targetState = null;
+        item.plan = null; item.progress = null; item.sessionCost = null; item.wasPluggedIn = false;
+      }
+      item.vehicleDisconnect = structuredClone(boundary);
+    }
+    this.streamPending.add('charger1');
+    this.flushStreamEvidence();
+    this.scheduleStreamReconcile();
+    return true;
+  }
+  flushStreamEvidence() {
+    if (!this.streamPersistencePending) return true;
+    try {
+      this.persist(); this.streamPersistencePending = false;
+      return true;
+    } catch { this.error = 'charging-stream-save-unavailable'; return false; }
+  }
+  scheduleStreamReconcile(delay = 100) {
+    if (this.closed || this.streamTimer || this.streamFlight) return;
+    this.streamTimer = setTimeout(() => {
+      this.streamTimer = null;
+      this.streamFlight = (async () => {
+        if (!this.flushStreamEvidence()) return;
+        const pending = [...this.streamPending]; this.streamPending.clear();
+        for (const id of pending) {
+          try { await this.reconcile(id); }
+          catch { this.charger(id).error = 'charging-reconciliation-unavailable'; }
+        }
+      })().finally(() => {
+        this.streamFlight = null;
+        if (this.streamPersistencePending || this.streamPending.size)
+          this.scheduleStreamReconcile(this.streamPersistencePending ? 1000 : 100);
+      });
+    }, delay);
+    this.streamTimer.unref?.();
   }
   setMqttStatus(status, id) {
     for (const item of id ? [this.vehicleFeeds[id] ?? this.vehicleFeeds[id === 'charger1' ? 'bmw' : 'legacy-charger2']].filter(Boolean) : Object.values(this.vehicleFeeds)) {
@@ -253,6 +320,13 @@ export class ChargingRuntime {
     }
     const tesla = this.teslaCapture?.snapshot() ?? {};
     const easee = this.chargers.charger1, control = easee?.controller?.status();
+    // Until the controller consumes a saved unplug, its latest snapshot may
+    // still describe the old car. Never attach vehicle values to that episode.
+    const pendingStreamBoundary = easee?.vehicleDisconnect?.source === 'easee-stream'
+      && (control?.session?.connectedAt === easee.vehicleDisconnect.endedConnectedAt
+        || control?.vehicleDisconnect?.awaitingConnection);
+    if (pendingStreamBoundary && result.charger1) result.charger1.connected = {
+      value: false, available: true, source: 'easee-stream', measuredAt: easee.vehicleDisconnect.measuredAt };
     const connected = result.charger1?.connected?.value;
     const connectedAt = control?.session?.connectedAt;
     const bmw = this.vehicleFeeds.bmw;
@@ -266,6 +340,10 @@ export class ChargingRuntime {
         if (easee.vehicleMatch?.connectedAt !== connectedAt) easee.vehicleMatch = null;
         if (easee.vehicleEvidence?.connectedAt !== connectedAt) easee.vehicleEvidence = { connectedAt, chargingTimes: [], stoppedTimes: [] };
         const evidenceStart = connectionEvidenceStart(connectedAt, control.session.lastDisconnectedAt);
+        for (const key of ['chargingTimes', 'stoppedTimes']) easee.vehicleEvidence[key] = [...new Set([
+          ...(easee.vehicleEvidence[key] ?? []), ...(easee.streamEvidence?.[key] ?? []),
+        ])].filter(at => Number.isSafeInteger(at) && at >= evidenceStart && at <= now
+          && now - at <= 15 * MINUTE).sort((a, b) => a - b).slice(-32);
         const sourceAt = result.charger1.charging?.measuredAt ?? control?.snapshot?.readAt;
         if (result.charger1.charging?.value === true && Number.isSafeInteger(sourceAt) && sourceAt >= evidenceStart
           && sourceAt <= now && now - sourceAt <= 5 * MINUTE) easee.vehicleEvidence.chargingTimes = [...new Set([
@@ -582,6 +660,7 @@ export class ChargingRuntime {
   }
   tick({ now = this.clock(), prices, weather, force = false } = {}) {
     if (this.closed) return;
+    if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
     if (Array.isArray(weather) && digest(weather) !== digest(this.weather)) { this.weather = weather; this.historyAt = null; }
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     try {
@@ -596,6 +675,7 @@ export class ChargingRuntime {
     const item = this.charger(id);
     if (item.adapterPending) await item.adapterFlight;
     if (!item.controller || this.closed) return;
+    if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
     const controller = item.controller, settings = this.settings.chargers[id];
     item.lastReconcileAt = this.clock();
     // The native schedule ceiling follows the reported fixed charger limit;
@@ -604,7 +684,8 @@ export class ChargingRuntime {
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
       timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
-        reconnected: bmwReconnectEvent(item.vehicleDisconnect, this.vehicleFeeds.bmw.reading, { now: this.clock() }) } : null });
+        reconnected: item.vehicleDisconnect.source === 'easee-stream' ? item.vehicleDisconnect.reconnected
+          : bmwReconnectEvent(item.vehicleDisconnect, this.vehicleFeeds.bmw.reading, { now: this.clock() }) } : null });
     if (this.closed || controller !== item.controller) return;
     item.error = null;
     try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
@@ -692,7 +773,7 @@ export class ChargingRuntime {
     return { timezone: TIME_ZONE, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null };
   }
   async close() {
-    this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer);
+    this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
     await this.historyService?.close();
     await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }

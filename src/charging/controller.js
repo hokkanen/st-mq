@@ -4,6 +4,7 @@ import { delayedScheduleFor, effectiveScheduleFingerprint, manualScheduleWindow,
 
 const copy = value => structuredClone(value);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
+const boundaryId = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
 // Inactive cached recurrences are not instructions to this charging session.
 const activeFingerprint = effectiveScheduleFingerprint;
 const ownedFingerprint = owned => owned?.activeFingerprint ?? (owned?.schedule ? activeFingerprint(owned.schedule) : null);
@@ -70,14 +71,20 @@ export function createChargingController({ adapter, initialState = null, saveSta
     : value.enabled === false || value.reason === 53;
   async function observeVehicleDisconnect(now) {
     const event = desired.vehicleDisconnect;
-    if (event?.source !== 'bmw-cardata' || typeof event.readingId !== 'string' || !event.readingId.length
+    if (!['bmw-cardata', 'easee-stream'].includes(event?.source) || !boundaryId(event.readingId)
       || !isTime(event.measuredAt) || !isTime(event.receivedAt) || !isTime(event.endedConnectedAt)
       || event.measuredAt > now || event.receivedAt > now) return;
     const prior = copy(state);
     const known = state.vehicleDisconnect;
-    if (known?.readingId !== event.readingId) {
-      if (state.session?.connectedAt !== event.endedConnectedAt
-        || event.measuredAt <= (state.session.lastDisconnectedAt ?? -1)) return;
+    if (known?.source !== event.source || known?.readingId !== event.readingId) {
+      // Several live stream edges may arrive before a fresh controller read.
+      // A later disconnect supersedes the pending reconnect for that same old
+      // connection, even though its durable session is already closed.
+      const pendingStreamBoundary = event.source === 'easee-stream' && known?.awaitingConnection
+        && known.endedConnectedAt === event.endedConnectedAt && state.session?.connectedAt === null
+        && event.measuredAt > known.measuredAt;
+      if (state.session?.connectedAt !== event.endedConnectedAt && !pendingStreamBoundary
+        || event.measuredAt <= (state.session?.lastDisconnectedAt ?? -1)) return;
       state.vehicleDisconnect = { source: event.source, readingId: event.readingId,
         measuredAt: event.measuredAt, receivedAt: event.receivedAt, endedConnectedAt: event.endedConnectedAt,
         cleanupPending: true, awaitingConnection: true };
@@ -86,12 +93,16 @@ export function createChargingController({ adapter, initialState = null, saveSta
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
       if (state.manual && !['window', 'schedule', 'stop'].includes(state.manual.kind)) state.manual = null;
-    } else if (known.endedConnectedAt !== event.endedConnectedAt) return;
+    } else if (known.endedConnectedAt !== event.endedConnectedAt || known.measuredAt !== event.measuredAt
+      || known.receivedAt !== event.receivedAt) return;
     const reconnected = event.reconnected, boundary = state.vehicleDisconnect;
     if (boundary.awaitingConnection && reconnected?.retained === false
-      && typeof reconnected.readingId === 'string' && reconnected.readingId.length
+      && boundaryId(reconnected.readingId) && reconnected.readingId !== boundary.readingId
       && isTime(reconnected.measuredAt) && isTime(reconnected.receivedAt)
-      && reconnected.measuredAt > boundary.measuredAt && reconnected.receivedAt > boundary.receivedAt
+      && reconnected.measuredAt > boundary.measuredAt
+      // Stream source events may arrive together or out of order. Their source
+      // clocks establish the edge order; BMW delivery keeps its stricter rule.
+      && (boundary.source === 'easee-stream' || reconnected.receivedAt > boundary.receivedAt)
       && reconnected.measuredAt <= now && reconnected.receivedAt <= now
       && (!boundary.reconnected || reconnected.measuredAt > boundary.reconnected.measuredAt))
       boundary.reconnected = { readingId: reconnected.readingId, measuredAt: reconnected.measuredAt,
@@ -393,7 +404,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
           operation = 'command-failed'; await clearCurrent('delayed', expectedGeneration);
         }
         await phase('disconnected', state.vehicleDisconnect?.awaitingConnection
-          ? 'The previously identified vehicle unplugged. Waiting for fresh connection evidence before starting a new charging session.'
+          ? 'The previous vehicle disconnected. Waiting for fresh connection evidence before starting a new charging session.'
           : snapshot.pluggedIn === false ? 'Connect a vehicle to plan automatic charging.'
             : 'Waiting for Easee to confirm whether a vehicle is connected.'); return status();
       }

@@ -67,6 +67,19 @@ function sameValue(left, right) {
     || typeof right === 'boolean' && typeof left === 'number' && left === Number(right);
 }
 
+function cacheObservation(device, id, at, row) {
+  const previous = device.get(id);
+  if (previous && at < previous.at) return;
+  if (previous && at === previous.at) {
+    if (!sameValue(previous.row.value, row.value)
+      || previous.row.unit != null && row.unit != null && previous.row.unit !== row.unit) previous.conflict = true;
+    if (previous.row.unit == null && row.unit != null) previous.row.unit = row.unit;
+    return;
+  }
+  const knownUnit = row.unit ?? previous?.row.unit;
+  device.set(id, { at, row: { ...row, ...(knownUnit != null ? { unit: knownUnit } : {}) }, conflict: false });
+}
+
 function observationTime(timestamp) {
   if (typeof timestamp === 'number') return Number.isSafeInteger(timestamp) ? timestamp : NaN;
   // Only accept timestamp strings with an explicit timezone, never local dates
@@ -81,7 +94,7 @@ function observationTime(timestamp) {
  * snapshot is cached provider state, not a new measurement or history replay.
  */
 export function createEaseeStream({ products = [], getAccessToken, clock = Date.now,
-  connectionFactory = defaultConnectionFactory, onDisconnect = () => {}, onReady = () => {},
+  connectionFactory = defaultConnectionFactory, onDisconnect = () => {}, onReady = () => {}, onObservation = () => {},
   timeoutMs = 30_000, closeTimeoutMs = 5_000, serverTimeoutMs = 30_000, keepAliveMs = 15_000,
   retryMinMs = 1_000, retryMaxMs = 60_000, random = Math.random,
   setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
@@ -148,8 +161,8 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
     const { mid, id, timestamp, unit } = observation;
     if (!configured.get(mid)?.has(id)) return;
     if (!fromStream && !context.seen.get(mid)?.has(id)) return;
-    const at = observationTime(timestamp);
-    if (!Number.isFinite(at) || at < 0 || at > clock()) return;
+    const at = observationTime(timestamp), receivedAt = clock();
+    if (!Number.isFinite(at) || at < 0 || at > receivedAt) return;
     const value = observationValue(id, observation.value, observation.dataType);
     if (value === undefined || unit != null && (typeof unit !== 'string' || unit.length > 16)) return;
     if (fromStream) {
@@ -158,19 +171,29 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       context.seen.set(mid, seen);
     }
     const device = cache.get(mid) ?? new Map();
-    const previous = device.get(id);
-    if (previous && at < previous.at) return;
-    const knownUnit = unit ?? previous?.row.unit;
     const row = { id, value, timestamp: typeof timestamp === 'number' ? new Date(at).toISOString() : timestamp,
-      ...(knownUnit != null ? { unit: knownUnit } : {}) };
-    if (previous && at === previous.at) {
-      if (!sameValue(previous.row.value, value)
-        || previous.row.unit != null && row.unit != null && previous.row.unit !== row.unit) previous.conflict = true;
-      if (previous.row.unit == null && row.unit != null) previous.row.unit = row.unit;
-      return;
-    }
-    device.set(id, { at, row, conflict: false });
+      ...(unit != null ? { unit } : {}) };
+    cacheObservation(device, id, at, row);
     cache.set(mid, device);
+    // REST may already hold a newer state. Keep the stream's ordered baseline
+    // separately so those reads cannot hide an actually delivered short edge.
+    const liveDevice = context.live.get(mid) ?? new Map(), previousLive = liveDevice.get(id);
+    if (fromStream) {
+      cacheObservation(liveDevice, id, at, row);
+      context.live.set(mid, liveDevice);
+    } else if (previousLive?.at === at && (!sameValue(previousLive.row.value, value)
+      || previousLive.row.unit != null && unit != null && previousLive.row.unit !== unit)) previousLive.conflict = true;
+    const live = liveDevice.get(id), shared = device.get(id);
+    if (live?.at === at && shared?.at === at && shared.conflict) live.conflict = true;
+    // Subscription snapshots may arrive after acknowledgement. The first
+    // field value is only a baseline, and pre-readiness source clocks cannot
+    // become live transitions when delivered late or replayed on reconnect.
+    if (fromStream && context.usable && previousLive && at > previousLive.at && !previousLive.conflict
+      && live?.at === at && !live.conflict && at > context.readyAt && receivedAt - at <= 15 * 60_000
+      && !sameValue(previousLive.row.value, value)) {
+      try { Promise.resolve(onObservation(mid, { id, value, measuredAt: at, receivedAt,
+        previousValue: previousLive.row.value, previousMeasuredAt: previousLive.at })).catch(() => {}); } catch {}
+    }
   }
 
   async function stop(connection) {
@@ -189,7 +212,7 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       lifetime.signal.addEventListener('abort', abort, { once: true });
       let resolveLoss, minimumDelay = 0, tokenFailureStatus = null;
       const loss = new Promise(resolve => { resolveLoss = resolve; });
-      const context = { active: true, usable: false, controller, connection: null, lastToken: null, seen: new Map() };
+      const context = { active: true, usable: false, readyAt: null, controller, connection: null, lastToken: null, seen: new Map(), live: new Map() };
       current = context;
       const lost = error => {
         invalidate(context);
@@ -239,6 +262,7 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
           await stage(perform(() => connection.invoke('SubscribeWithCurrentState', id, true)));
         }
         if (closed || !context.active) throw failure('easee-stream-aborted');
+        context.readyAt = clock();
         context.usable = true;
         state = 'connected';
         failures = 0;

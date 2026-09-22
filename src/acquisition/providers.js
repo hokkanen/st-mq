@@ -176,6 +176,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     retryState: store.getState('providers:health')?.easee,
     fallbackIntervalMs: config.acquisition?.easeeIntervalMs ?? 15_000,
     onStreamDisconnect: ids => interruptElectricity(ids),
+    onChargerObservation: observation => engine.charging?.receiveEaseeObservation(observation),
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   if (connections.easee?.charger_id && devices.chargerScheduleControl)
     engine.charging?.setAdapter('charger1', devices.chargerScheduleControl());

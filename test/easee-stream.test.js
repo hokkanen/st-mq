@@ -122,6 +122,173 @@ test('one connection isolates product observations and returns independent snaps
   assert.equal(connection.options.keepAliveMs, 15_000);
 });
 
+const transitionProducts = [{ id: 'invented-charger', ids: [31, 96, 100, 109, 250] }];
+
+test('live stream callback preserves each one-second and sixteen-second mode and pilot transition', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts,
+    onObservation: (device, row) => observations.push({ device, row }) });
+  const connection = await f.start();
+  connection.update('invented-charger', 109, '2', START, { dataType: 4 });
+  connection.update('invented-charger', 100, 'B', START, { dataType: 6 });
+  await f.timers.advance(1000);
+  connection.update('invented-charger', 109, '1', f.timers.now, { dataType: 4, privateField: 'synthetic-hidden' });
+  connection.update('invented-charger', 100, 'A', f.timers.now, { dataType: 6 });
+  await f.timers.advance(16_000);
+  connection.update('invented-charger', 109, '2', f.timers.now, { dataType: 4 });
+  connection.update('invented-charger', 100, 'B', f.timers.now, { dataType: 6 });
+  assert.deepEqual(observations, [
+    { device: 'invented-charger', row: { id: 109, value: 1, measuredAt: START + 1000, receivedAt: START + 1000,
+      previousValue: 2, previousMeasuredAt: START } },
+    { device: 'invented-charger', row: { id: 100, value: 'A', measuredAt: START + 1000, receivedAt: START + 1000,
+      previousValue: 'B', previousMeasuredAt: START } },
+    { device: 'invented-charger', row: { id: 109, value: 2, measuredAt: START + 17_000, receivedAt: START + 17_000,
+      previousValue: 1, previousMeasuredAt: START + 1000 } },
+    { device: 'invented-charger', row: { id: 100, value: 'B', measuredAt: START + 17_000, receivedAt: START + 17_000,
+      previousValue: 'A', previousMeasuredAt: START + 1000 } },
+  ]);
+  assert.doesNotMatch(JSON.stringify(observations.map(item => item.row)), /mid|private|token|unit|dataType|timestamp/i);
+  observations[0].row.value = 99;
+  assert.equal(f.stream.snapshot('invented-charger', [109])[0].value, 2, 'Callback rows cannot mutate the cache');
+});
+
+test('initial snapshots and delayed pre-readiness clocks supply baselines without emitting live transitions', async t => {
+  const subscription = deferred(), observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row),
+    prepare: connection => { connection.invokeResult = subscription.promise; } });
+  const connection = await f.start();
+  connection.update('invented-charger', 109, 2, START);
+  await f.timers.advance(500);
+  connection.update('invented-charger', 109, 1, START + 200);
+  subscription.resolve(); await flush();
+  assert.equal(f.stream.status().connected, true);
+  connection.update('invented-charger', 109, 2, START + 400);
+  connection.update('invented-charger', 100, 'B', START + 500);
+  assert.equal(observations.length, 0);
+  await f.timers.advance(1);
+  connection.update('invented-charger', 109, 3, f.timers.now);
+  connection.update('invented-charger', 31, true, f.timers.now, { dataType: 2 });
+  assert.deepEqual(observations.map(row => [row.id, row.previousValue, row.value]), [[109, 2, 3]]);
+});
+
+test('repeated values, out-of-order rows and conflicting equal-time states cannot emit a transition', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const connection = await f.start();
+  connection.update('invented-charger', 31, true, START);
+  await f.timers.advance(1000);
+  connection.update('invented-charger', 31, '1', f.timers.now);
+  connection.update('invented-charger', 31, false, START + 500);
+  connection.update('invented-charger', 31, false, f.timers.now);
+  assert.equal(f.stream.snapshot('invented-charger', [31]), null);
+  assert.equal(observations.length, 0);
+  await f.timers.advance(1);
+  connection.update('invented-charger', 31, false, f.timers.now);
+  assert.equal(observations.length, 0, 'An ambiguous previous state cannot prove a changed edge');
+  await f.timers.advance(1);
+  connection.update('invented-charger', 31, true, f.timers.now);
+  assert.deepEqual(observations.map(row => [row.previousValue, row.value]), [[false, true]]);
+});
+
+test('REST reconciliation never emits but cannot suppress the corresponding first live edge', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const connection = await f.start();
+  connection.update('invented-charger', 109, 2, START);
+  await f.timers.advance(1000);
+  f.stream.reconcile('invented-charger', [{ id: 109, value: 1, timestamp: f.timers.now }]);
+  assert.equal(observations.length, 0);
+  connection.update('invented-charger', 109, 1, f.timers.now);
+  assert.deepEqual(observations.map(row => [row.previousValue, row.value]), [[2, 1]]);
+  await f.timers.advance(1);
+  connection.update('invented-charger', 109, 1, f.timers.now);
+  assert.equal(observations.length, 1);
+  await f.timers.advance(1);
+  connection.update('invented-charger', 109, 2, f.timers.now);
+  assert.equal(observations.length, 2);
+  assert.equal(observations[1].previousMeasuredAt, START + 1001);
+});
+
+test('a newer REST snapshot cannot hide delayed live disconnect and reconnect edges', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const connection = await f.start(); connection.update('invented-charger', 109, 3, START);
+  await f.timers.advance(17_000);
+  f.stream.reconcile('invented-charger', [{ id: 109, value: 1, timestamp: START + 1000 }]);
+  f.stream.reconcile('invented-charger', [{ id: 109, value: 3, timestamp: START + 17_000 }]);
+  assert.equal(observations.length, 0);
+  connection.update('invented-charger', 109, 1, START + 1000);
+  assert.equal(f.stream.snapshot('invented-charger', [109])[0].value, 3, 'Late live edges do not rewind the REST-merged cache');
+  connection.update('invented-charger', 109, 3, START + 17_000);
+  assert.deepEqual(observations, [
+    { id: 109, value: 1, measuredAt: START + 1000, receivedAt: START + 17_000,
+      previousValue: 3, previousMeasuredAt: START },
+    { id: 109, value: 3, measuredAt: START + 17_000, receivedAt: START + 17_000,
+      previousValue: 1, previousMeasuredAt: START + 1000 },
+  ]);
+});
+
+test('same-clock REST and stream disagreements invalidate live transition provenance', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const connection = await f.start(); connection.update('invented-charger', 109, 2, START);
+  await f.timers.advance(1000);
+  f.stream.reconcile('invented-charger', [{ id: 109, value: 1, timestamp: f.timers.now }]);
+  connection.update('invented-charger', 109, 3, f.timers.now);
+  assert.equal(f.stream.snapshot('invented-charger', [109]), null); assert.equal(observations.length, 0);
+  await f.timers.advance(1); connection.update('invented-charger', 109, 2, f.timers.now);
+  assert.equal(observations.length, 0, 'The contradictory previous source clock cannot prove an edge');
+  await f.timers.advance(1); connection.update('invented-charger', 109, 3, f.timers.now);
+  assert.deepEqual(observations.map(row => [row.previousValue, row.value]), [[2, 3]]);
+});
+
+test('reconnect resets field baselines and rejects late old-generation or snapshot replay transitions', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const first = await f.start(); first.update('invented-charger', 109, 2, START);
+  first.lose(); await f.timers.advance(100);
+  const second = f.connections[1];
+  first.update('invented-charger', 109, 1, f.timers.now);
+  second.update('invented-charger', 109, 1, START);
+  second.update('invented-charger', 109, 2, START + 99);
+  assert.equal(observations.length, 0);
+  await f.timers.advance(1);
+  second.update('invented-charger', 109, 1, f.timers.now);
+  assert.deepEqual(observations.map(row => [row.previousValue, row.value]), [[2, 1]]);
+});
+
+test('unknown, future and more-than-fifteen-minute-old source clocks never emit fresh transitions', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const connection = await f.start(); connection.update('invented-charger', 109, 2, START);
+  await f.timers.advance(16 * 60_000);
+  for (const timestamp of [null, 'unknown', f.timers.now + 1])
+    connection.update('invented-charger', 109, 1, timestamp);
+  connection.update('invented-charger', 109, 1, START + 59_999);
+  assert.equal(observations.length, 0);
+  assert.equal(f.stream.snapshot('invented-charger', [109])[0].value, 1,
+    'Suppressing stale transition callbacks does not change the existing cache contract');
+  connection.update('invented-charger', 109, 2, f.timers.now);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].measuredAt, f.timers.now);
+});
+
+test('throwing or rejecting observation callbacks cannot break the cache, readiness, or later transitions', async t => {
+  let calls = 0;
+  const f = fixture(t, { products: transitionProducts, onObservation: () => {
+    calls++;
+    if (calls === 1) throw new Error('synthetic callback failure');
+    return Promise.reject(new Error('synthetic asynchronous callback failure'));
+  } });
+  const connection = await f.start(); connection.update('invented-charger', 109, 2, START);
+  await f.timers.advance(1); connection.update('invented-charger', 109, 1, f.timers.now);
+  await f.timers.advance(1); connection.update('invented-charger', 109, 2, f.timers.now);
+  await flush();
+  assert.equal(calls, 2); assert.equal(f.stream.status().connected, true);
+  assert.equal(f.stream.snapshot('invented-charger', [109])[0].value, 2);
+  assert.doesNotMatch(JSON.stringify(f.stream.status()), /callback|synthetic/i);
+});
+
 test('source timestamps survive cache reads and late, malformed or future updates cannot refresh them', async t => {
   const f = fixture(t), connection = await f.start();
   const observed = new Date(START - 60_000).toISOString();

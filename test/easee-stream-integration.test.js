@@ -491,3 +491,35 @@ test('same-time REST and stream disagreement remains unusable until a newer meas
   assert.equal(nextPower.sourceTime, f.now);
   assert(!nextPower.quality.includes('conflicting_duplicate'));
 });
+
+test('only meaningful charger transitions reach charging runtime, without private device routing data', async t => {
+  const received = [];
+  let allowed = true;
+  const f = deviceFixture(t, { onChargerObservation: event => received.push(event), canControl: () => allowed });
+  f.devices.startStreaming();
+  const event = (id, value) => ({ id, value, measuredAt: START + 1000, receivedAt: START + 1100,
+    previousValue: 3, previousMeasuredAt: START });
+  for (const id of [31, 96, 100, 109, 250]) f.stream.options.onObservation(CHARGER, event(id, 1));
+  assert.deepEqual(received.map(row => row.id), [31, 96, 100, 109, 250]);
+  assert(received.every(row => !Object.hasOwn(row, 'deviceId') && !Object.hasOwn(row, 'mid')));
+  for (const id of [31, 32, 33, 250]) f.stream.options.onObservation(EQUALIZER, event(id, 10));
+  for (const id of [120, 183, 194]) f.stream.options.onObservation(CHARGER, event(id, 10));
+  assert.equal(received.length, 5);
+  allowed = false;
+  f.stream.options.onObservation(CHARGER, event(109, 1));
+  allowed = true;
+  await f.devices.close();
+  f.stream.options.onObservation(CHARGER, event(109, 1));
+  assert.equal(received.length, 5);
+});
+
+test('provider routes live charger state into charging runtime', async t => {
+  const f = providerFixture(t), received = [];
+  f.engine.charging = { receiveEaseeObservation: event => received.push(event) };
+  const event = { id: 109, value: 1, measuredAt: START + 1000, receivedAt: START + 1000,
+    previousValue: 3, previousMeasuredAt: START };
+  f.stream.options.onObservation(CHARGER, event);
+  assert.deepEqual(received, [event]);
+  f.stream.options.onObservation(EQUALIZER, { ...event, id: 31 });
+  assert.equal(received.length, 1);
+});

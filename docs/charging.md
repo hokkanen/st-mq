@@ -131,6 +131,17 @@ charging-start evidence cannot identify another connection. This adds no charger
 commands or probe; see [the BMW feed contract](bmw-cardata.md#association-with-charger-1)
 for the evidence requirements.
 
+Charger 1 preserves live streamed Easee mode and pilot transitions with their
+source timestamps, so a reported unplug/replug does not disappear when both
+changes occur between routine polls. These connection boundaries survive
+restart. Changes to enabled state, no-current reason and online state also wake
+reconciliation promptly; closely spaced updates share a wakeup, and periodic
+checks remain available for recovery. Initial subscription snapshots, reconnect
+replays and repeated unchanged values do not create new transition evidence.
+A one-second physical unplug cannot be guaranteed detectable if Easee does not
+report both transitions. Streamed charger events still need the BMW evidence
+above to establish vehicle identity.
+
 A fresh live unplug event from an already identified BMW also ends that charger
 connection when the unplug/replug gap falls between Easee polls. This boundary is
 saved separately from the raw Easee readings and survives restart. It resets the

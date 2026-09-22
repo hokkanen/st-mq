@@ -286,7 +286,7 @@ function identificationSnapshot(payload, now) {
  * configured devices. No provider is contacted until a returned method is invoked.
  */
 export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true,
-  streamFactory = createEaseeStream, onStreamDisconnect = () => {}, retryState,
+  streamFactory = createEaseeStream, onStreamDisconnect = () => {}, onChargerObservation = () => {}, retryState,
   fallbackIntervalMs = 15_000 } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const easee = { ...connections.easee };
@@ -346,6 +346,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     if (closed || streaming || !electricalDevices.length || typeof streamFactory !== 'function') return;
     streaming = true;
     stream = streamFactory({ clock, getAccessToken: streamAccessToken, onDisconnect: disconnectStream,
+      onObservation: (deviceId, observation) => {
+        // Equalizer 31 is current, while charger 31 is enablement. Never route
+        // electrical samples or private provider identifiers into session events.
+        if (!closed && canControl() && deviceId === easee.charger_id
+          && [31, 96, 100, 109, 250].includes(observation.id)) onChargerObservation(observation);
+      },
       products: electricalDevices.map(device => ({ id: device.id,
         ids: [...new Set([...device.ids, ...(device.prefix === 'ev1' ? [...CHARGING_OBSERVATION_IDS, ...IDENTIFICATION_IDS] : [])])] })) });
     stream.start();
