@@ -116,6 +116,14 @@ stop must match the current Easee connection and its observed start and stop.
 Matching live plug/start evidence keeps the label **BMW identification pending** while
 stop confirmation is pending, for up to ten minutes from connection; manual
 battery values remain in use until confirmation.
+A fresh live unplug event from an already identified BMW also ends that charger
+connection when the unplug/replug gap falls between Easee polls. This boundary is
+saved separately from the raw Easee readings and survives restart. It resets the
+old planning episode and clears only the exact old schedule still owned by ST-MQ;
+manual restrictions retain priority. A fresh Easee connection event or subsequent
+live BMW plug event allows a new observation window, and the new connection still
+needs matching charging-start and stop evidence before vehicle readings apply.
+
 No extra stop is commanded solely for BMW identification. Location alone,
 retained replay, periodic republication and old connection reports are insufficient.
 Missing BMW power or plug-event-ID descriptors do not block this method. Conflicting

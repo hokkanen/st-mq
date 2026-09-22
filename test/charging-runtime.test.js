@@ -947,3 +947,61 @@ test('temporary incomplete charger connection readings preserve the physical con
   f.setNow(initialNow + 120_000); adapter.setObservation({ pluggedIn: true, controlKnown: true });
   await runtime.reconcile(); assert.equal(chargerView(runtime).control.session.connectedAt, connectedAt);
 });
+
+test('a matched BMW quick unplug ends the old schedule even when every Easee poll remains connected', async t => {
+  const f = fixture(), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  const topic = runtime.configuration.vehicles.bmw.mqttTopic;
+  const fact = (key, value, at) => runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', [key]: value,
+    fields: { [key]: { measuredAt: at, readingId: `${key}-${at}` } } }));
+  adapter.setObservation({ mode: 3, modeAt: initialNow });
+  await runtime.setAdapter('charger1', adapter);
+  runtime.receiveSoc(topic, packet(60, initialNow, 'initial-bmw', { chargeLimitSoc: 85,
+    atHome: true, pluggedIn: true, charging: true, fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>
+      [key, { measuredAt: initialNow, readingId: `${key}-initial` }])) }));
+  await runtime.reconcile();
+  f.setNow(initialNow + 60_000); adapter.setObservation({ mode: 2, modeAt: f.clock() });
+  fact('charging', false, f.clock()); await runtime.reconcile();
+  assert.equal(chargerView(runtime).vehicle.id, 'bmw');
+  runtime.tick({ prices }); await runtime.setChargerSettings('charger1', { enabled: true, capacityKwh: 20, manualSoc: 60, minimumSoc: 85 });
+  await runtime.setTarget('charger1', { connectedAt: initialNow, mode: 'full' });
+  const old = chargerView(runtime);
+  assert.equal(old.control.phase, 'waiting'); assert(old.control.owned);
+  const clearCount = adapter.calls.filter(call => call.kind === 'clear').length;
+
+  const unplugAt = initialNow + 5 * 60_000;
+  f.setNow(unplugAt); fact('pluggedIn', false, unplugAt);
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.snapshot.pluggedIn, true, 'Raw Easee never reports the short unplug');
+  assert.equal(chargerView(runtime).control.session.connected, false, 'The known BMW unplug supplies the missing boundary');
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, unplugAt);
+  assert.equal(runtime.chargers.charger1.vehicleDisconnect.measuredAt, unplugAt);
+  assert.equal(chargerView(runtime).targetSelection, null);
+  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 1);
+
+  const replugAt = unplugAt + 16_000;
+  f.setNow(replugAt); adapter.setObservation({ mode: 2, modeAt: replugAt - 7000 });
+  fact('pluggedIn', true, replugAt); await runtime.reconcile();
+  const replugged = chargerView(runtime);
+  assert.equal(replugged.control.session.connectedAt, replugAt);
+  assert.equal(replugged.control.phase, 'identifying');
+  assert.equal(replugged.control.owned, null);
+  assert.equal(replugged.vehicle.id, null, 'A new connection must still identify its vehicle');
+  assert.equal(runtime.chargers.charger1.targetState.override, null);
+
+  const startAt = replugAt + 2000;
+  f.setNow(startAt); adapter.setObservation({ mode: 3, modeAt: startAt });
+  fact('charging', true, startAt); await runtime.reconcile();
+  assert.equal(chargerView(runtime).vehicle.state, 'identifying');
+  f.setNow(replugAt + 180_000); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'pause-unconfirmed');
+  const stopAt = f.clock() + 20_000;
+  f.setNow(stopAt); adapter.setObservation({ mode: 2, modeAt: stopAt });
+  fact('charging', false, stopAt); await runtime.reconcile();
+  assert.equal(chargerView(runtime).vehicle.id, 'bmw');
+  assert.equal(chargerView(runtime).control.phase, 'waiting');
+  assert.equal(chargerView(runtime).values.minimumSoc.value, 85);
+  assert.equal(chargerView(runtime).targetSelection.mode, 'automatic');
+  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 1);
+});

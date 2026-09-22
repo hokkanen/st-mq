@@ -90,6 +90,14 @@ No BMW charging-power field or plug-event identifier is required. Cached/retaine
 true values, or unchanged true values republished with newer timestamps, cannot
 create new plug events. Conflicting vehicle evidence keeps manual inputs active.
 
+A fresh live unplug event from an already identified BMW also ends that charger
+connection when the unplug/replug gap falls between Easee polls. This boundary is
+saved separately from the raw Easee readings and survives restart. It resets the
+old planning episode and clears only the exact old schedule still owned by ST-MQ;
+manual restrictions retain priority. A fresh Easee connection event or subsequent
+live BMW plug event allows a new observation window, and the new connection still
+needs matching charging-start and stop evidence before vehicle readings apply.
+
 A confirmed match is scoped to the charger connection, survives scheduled pauses
 and restart, and clears on unplug. A consumed plug event cannot identify the next
 car. Available automatic battery fields take precedence individually without

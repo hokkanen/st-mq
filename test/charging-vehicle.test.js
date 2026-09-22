@@ -543,3 +543,19 @@ test('confirmed target holds and choices survive a telemetry gap but clear on di
   assert.equal(restarted.chargers.charger1.targetState, null);
   assert.equal(view(restarted).values.minimumSoc.source, 'manual-fallback');
 });
+
+test('a failed BMW unplug save cannot queue a phantom charger disconnect', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts()); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); f.store.fail = true;
+  const unplug = { provider: 'bmw-cardata', pluggedIn: false,
+    fields: { pluggedIn: { measuredAt: START + 2 * MINUTE, readingId: 'failed-unplug' } } };
+  assert.throws(() => publish(runtime, unplug), /database unavailable/);
+  assert.equal(runtime.chargers.charger1.vehicleDisconnect, null);
+  assert.equal(view(runtime).vehicle.id, 'bmw');
+  f.store.fail = false; publish(runtime, unplug);
+  assert.equal(runtime.chargers.charger1.vehicleDisconnect.endedConnectedAt, START);
+  assert.equal(view(runtime).vehicle.id, null);
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.deepEqual(restarted.chargers.charger1.vehicleDisconnect, runtime.chargers.charger1.vehicleDisconnect);
+});

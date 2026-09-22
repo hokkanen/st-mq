@@ -92,6 +92,44 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
   return changed ? { accepted: true, reading, reason: null } : reject(battery.reason ?? 'duplicate-reading');
 }
 
+const eventId = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
+function freshBoundaryEvent(event, now) {
+  return time(now) && eventId(event?.readingId) && time(event.measuredAt) && event.measuredAt >= 0
+    && time(event.receivedAt) && event.receivedAt >= 0 && event.measuredAt <= now && event.receivedAt <= now
+    && now - event.measuredAt <= 15 * MINUTE && now - event.receivedAt <= 15 * MINUTE;
+}
+
+/** A known BMW leaving can close its old connection even when charger polling
+ * misses the unplug. It cannot identify the vehicle on a subsequent connection. */
+export function bmwDisconnectEvent(previousReading, reading, { match, connectedAt, now = Date.now() } = {}) {
+  const previous = previousReading?.fields?.pluggedIn, current = reading?.fields?.pluggedIn;
+  const event = current?.negativeEvent;
+  if (match?.id !== 'bmw' || !time(connectedAt) || match.connectedAt !== connectedAt
+    || !time(match.matchedAt) || match.matchedAt > now
+    || previousReading?.provider !== 'bmw-cardata' || reading?.provider !== 'bmw-cardata'
+    || previousReading.association !== reading.association
+    || previousReading.pluggedIn !== true || reading.pluggedIn !== false
+    || event?.retained !== false || current.retained !== false || !freshBoundaryEvent(event, now)
+    || event.readingId !== current.readingId || event.measuredAt !== current.measuredAt || event.receivedAt !== current.receivedAt
+    || event.readingId === previous?.readingId || event.readingId === previous?.negativeEvent?.readingId
+    || !time(previous?.measuredAt) || event.measuredAt <= previous.measuredAt
+    || !time(previous?.receivedAt) || event.receivedAt < previous.receivedAt || event.receivedAt < match.matchedAt) return null;
+  return { source: 'bmw-cardata', readingId: event.readingId, measuredAt: event.measuredAt,
+    receivedAt: event.receivedAt, endedConnectedAt: connectedAt };
+}
+
+/** Reconnection only dates the next charger connection after a known departure;
+ * independent charging evidence must still identify the vehicle using it. */
+export function bmwReconnectEvent(boundary, reading, { now = Date.now() } = {}) {
+  const event = reading?.fields?.pluggedIn?.positiveEvent;
+  if (boundary?.source !== 'bmw-cardata' || !time(boundary.endedConnectedAt) || !freshBoundaryEvent(boundary, now)
+    || reading?.provider !== 'bmw-cardata' || reading.pluggedIn !== true
+    || event?.retained !== false || !freshBoundaryEvent(event, now)
+    || event.readingId === boundary.readingId || event.measuredAt <= boundary.measuredAt
+    || event.receivedAt <= boundary.receivedAt) return null;
+  return { readingId: event.readingId, measuredAt: event.measuredAt, receivedAt: event.receivedAt, retained: false };
+}
+
 // A possible BMW session and a confirmed one share the same live connection,
 // home and charging-start evidence. Only confirmation requires a matching stop.
 function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId } = {}) {

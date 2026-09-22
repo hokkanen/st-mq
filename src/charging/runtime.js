@@ -1,5 +1,5 @@
 import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession, pendingBmwSession } from './vehicle.js';
+import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -60,6 +60,7 @@ export class ChargingRuntime {
           ? null : previous.vehicleMatch ?? null,
         vehicleEvidence: previous.vehicleEvidence ?? null,
         targetState: this.vehicleFeeds.bmw.reading ? previous.targetState ?? null : null,
+        vehicleDisconnect: this.vehicleFeeds.bmw.reading ? previous.vehicleDisconnect ?? null : null,
         progress: restoreChargingProgress(previous.progress), supplyEstimate: previous.supplyEstimate ?? null,
         wasPluggedIn: previous.progress?.connected,
         lastReconcileAt: null }];
@@ -85,7 +86,7 @@ export class ChargingRuntime {
     const view = this.status();
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
-        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState }]));
+        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       { reading: item.reading, consumedPlugId: item.consumedPlugId }]));
     this.store.setState(this.key, { version: 4, settings: this.settings, chargers, vehicleFeeds, teslaDisconnectedFromEaseeAt: this.teslaDisconnectedFromEaseeAt, view });
@@ -176,13 +177,22 @@ export class ChargingRuntime {
     if (result.accepted) {
       const previous = item.reading, previousTeslaDisconnect = this.teslaDisconnectedFromEaseeAt;
       const matches = Object.fromEntries(Object.entries(this.chargers).map(([id, charger]) => [id,
-        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, targetState: charger.targetState })]));
+        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, targetState: charger.targetState, vehicleDisconnect: charger.vehicleDisconnect })]));
       const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, feed]) => [id, feed.consumedPlugId]));
+      const easee = this.chargers.charger1;
+      const boundary = route.id === 'bmw' ? bmwDisconnectEvent(previous, result.reading, {
+        match: easee?.vehicleMatch, connectedAt: easee?.controller?.status()?.session?.connectedAt, now }) : null;
+      const episode = boundary ? { plan: easee.plan, progress: easee.progress, sessionCost: easee.sessionCost,
+        wasPluggedIn: easee.wasPluggedIn } : null;
       try {
         // Synchronize the connection before advancing this accepted target. Views
         // may seed a saved reading, but cannot turn a replay into live evidence.
         const telemetry = this.telemetry(now);
         item.reading = result.reading;
+        if (boundary) {
+          easee.vehicleDisconnect = boundary;
+          easee.plan = null; easee.progress = null; easee.sessionCost = null; easee.wasPluggedIn = false;
+        }
         const charger = this.chargers.charger1, session = charger?.controller?.status()?.session;
         if (route.id === 'bmw' && telemetry.charger1?.connected?.value !== false
           && Number.isSafeInteger(session?.connectedAt)) charger.targetState = updateTargetState(charger.targetState, {
@@ -192,10 +202,14 @@ export class ChargingRuntime {
       } catch (error) {
         item.reading = previous; this.teslaDisconnectedFromEaseeAt = previousTeslaDisconnect;
         for (const [id, state] of Object.entries(matches)) Object.assign(this.chargers[id], state);
+        if (episode) Object.assign(easee, episode);
         for (const [id, value] of Object.entries(consumed)) this.vehicleFeeds[id].consumedPlugId = value;
         throw error;
       }
-      this.tick({ now });
+      const reconnect = route.id === 'bmw'
+        && previous?.fields?.pluggedIn?.positiveEvent?.readingId !== result.reading.fields?.pluggedIn?.positiveEvent?.readingId
+        && bmwReconnectEvent(easee?.vehicleDisconnect, result.reading, { now });
+      this.tick({ now, force: Boolean(boundary || reconnect) });
     }
     return true;
   }
@@ -494,7 +508,9 @@ export class ChargingRuntime {
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume });
+      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume,
+      vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
+        reconnected: bmwReconnectEvent(item.vehicleDisconnect, this.vehicleFeeds.bmw.reading, { now: this.clock() }) } : null });
     if (this.closed || controller !== item.controller) return;
     item.error = null;
     try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }

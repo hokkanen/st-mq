@@ -66,26 +66,74 @@ export function createChargingController({ adapter, initialState = null, saveSta
   }
   const stopped = value => typeof value.stopped === 'boolean' ? value.stopped
     : value.enabled === false || value.reason === 53;
-  function remember(now) {
+  async function observeVehicleDisconnect(now) {
+    const event = desired.vehicleDisconnect;
+    if (event?.source !== 'bmw-cardata' || typeof event.readingId !== 'string' || !event.readingId.length
+      || !isTime(event.measuredAt) || !isTime(event.receivedAt) || !isTime(event.endedConnectedAt)
+      || event.measuredAt > now || event.receivedAt > now) return;
+    const prior = copy(state);
+    const known = state.vehicleDisconnect;
+    if (known?.readingId !== event.readingId) {
+      if (state.session?.connectedAt !== event.endedConnectedAt
+        || event.measuredAt <= (state.session.lastDisconnectedAt ?? -1)) return;
+      state.vehicleDisconnect = { source: event.source, readingId: event.readingId,
+        measuredAt: event.measuredAt, receivedAt: event.receivedAt, endedConnectedAt: event.endedConnectedAt,
+        cleanupPending: true, awaitingConnection: true };
+      state.session = { ...state.session, connected: false, connectedAt: null,
+        lastDisconnectedAt: event.measuredAt, waitingForScheduleAt: null, delayedReleaseAt: null };
+      state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
+      delete state.lastMissedTransition;
+      if (state.manual && !['window', 'schedule', 'stop'].includes(state.manual.kind)) state.manual = null;
+    } else if (known.endedConnectedAt !== event.endedConnectedAt) return;
+    const reconnected = event.reconnected, boundary = state.vehicleDisconnect;
+    if (boundary.awaitingConnection && reconnected?.retained === false
+      && typeof reconnected.readingId === 'string' && reconnected.readingId.length
+      && isTime(reconnected.measuredAt) && isTime(reconnected.receivedAt)
+      && reconnected.measuredAt > boundary.measuredAt && reconnected.receivedAt > boundary.receivedAt
+      && reconnected.measuredAt <= now && reconnected.receivedAt <= now
+      && (!boundary.reconnected || reconnected.measuredAt > boundary.reconnected.measuredAt))
+      boundary.reconnected = { readingId: reconnected.readingId, measuredAt: reconnected.measuredAt,
+        receivedAt: reconnected.receivedAt, retained: false };
+    if (JSON.stringify(prior.vehicleDisconnect) === JSON.stringify(state.vehicleDisconnect)) return;
+    try { await persist(); } catch (error) { state = prior; throw error; }
+  }
+  function observedConnection(now) {
+    const boundary = state.vehicleDisconnect;
+    if (!boundary?.awaitingConnection || snapshot.pluggedIn !== true) return snapshot.pluggedIn;
+    // A change-reported connected value can survive a quick unplug/replug.
+    // Keep that raw Easee reading intact, but do not reuse it as a new session.
+    if (snapshot.online !== true || !snapshot.controlKnown || !isTime(snapshot.readAt)
+      || snapshot.readAt < boundary.receivedAt || snapshot.readAt > now) return null;
+    const pilot = snapshot.observations?.[100];
+    const positiveTimes = [[2, 3, 4, 6, 7, 8].includes(snapshot.mode) ? snapshot.modeAt : null,
+      ['B', 'C', 'D'].includes(pilot?.value) ? pilot.at : null];
+    const disconnectedAt = Math.max(boundary.measuredAt, state.session?.lastDisconnectedAt ?? 0);
+    const freshEasee = positiveTimes.some(at => isTime(at) && at > disconnectedAt && at <= now);
+    const freshVehicle = boundary.reconnected && boundary.reconnected.measuredAt > disconnectedAt
+      && snapshot.readAt >= boundary.reconnected.receivedAt;
+    return freshEasee || freshVehicle ? true : null;
+  }
+  function remember(now, connection = observedConnection(now)) {
     const prior = state.session;
     const previousDisconnect = prior?.lastDisconnectedAt ?? (prior?.connected === false ? prior.observedAt ?? null : null);
     const disconnectedAt = isTime(snapshot.disconnectedAt) && snapshot.disconnectedAt <= now ? snapshot.disconnectedAt : now;
-    state.session = { connected: typeof snapshot.pluggedIn === 'boolean' ? snapshot.pluggedIn : prior?.connected ?? null,
-      connectedAt: snapshot.pluggedIn === true ? prior?.connected === true ? prior.connectedAt : now
-        : snapshot.pluggedIn === false ? null : prior?.connectedAt ?? null,
+    state.session = { connected: typeof connection === 'boolean' ? connection : prior?.connected ?? null,
+      connectedAt: connection === true ? prior?.connected === true ? prior.connectedAt : now
+        : connection === false ? null : prior?.connectedAt ?? null,
       // Identification may arrive before the first connected poll, but never
       // borrow events from before the last source-reported disconnect. Missing
       // source clocks fall back conservatively to receipt time; older cached
       // events cannot rewind the boundary, including across restart.
-      lastDisconnectedAt: snapshot.pluggedIn === false ? Math.max(previousDisconnect ?? 0, disconnectedAt) : previousDisconnect,
+      lastDisconnectedAt: connection === false ? Math.max(previousDisconnect ?? 0, disconnectedAt) : previousDisconnect,
       observedAt: now, instruction: currentFingerprint(), enabled: snapshot.enabled,
       stopped: stopped(snapshot), mode: snapshot.mode,
       modeAt: snapshot.modeAt ?? null,
-      waitingForScheduleAt: snapshot.schedule.enabled !== 'none' && snapshot.pluggedIn === true
+      waitingForScheduleAt: snapshot.schedule.enabled !== 'none' && connection === true
         && snapshot.reason === 54 && snapshot.mode !== 3 ? now
         : prior?.instruction === currentFingerprint() ? prior.waitingForScheduleAt ?? null : null,
       delayedReleaseAt: snapshot.schedule.enabled === 'delayed' ? prior?.instruction === currentFingerprint()
         ? prior.delayedReleaseAt : nextLocalOccurrence(snapshot.schedule.delayed.startTime, snapshot.schedule.delayed.timezone, now) : null };
+    if (connection === true && state.vehicleDisconnect?.awaitingConnection) state.vehicleDisconnect.awaitingConnection = false;
   }
   function rememberOwnInstruction(now) {
     if (state.session) {
@@ -98,7 +146,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     // Readable scheduling state is useful even without a connected vehicle.
     // Offline cached data cannot establish a manual change or a disconnect.
     if (snapshot.online !== true) return;
-    const prior = state.session;
+    const prior = state.session, connection = observedConnection(now);
     if (prior) {
       const scheduleChanged = prior.instruction !== currentFingerprint();
       const nativeExpiry = snapshot.schedule.enabled === 'none' && isTime(prior.delayedReleaseAt) && now >= prior.delayedReleaseAt;
@@ -138,18 +186,19 @@ export function createChargingController({ adapter, initialState = null, saveSta
     } else if (snapshot.schedule.enabled !== 'none' && !ownsCurrent()) {
       yieldSchedule(now);
     }
-    if (snapshot.controlKnown && snapshot.pluggedIn === false) {
+    if (snapshot.controlKnown && connection === false) {
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
-      if (state.manual && !['window', 'schedule'].includes(state.manual.kind)) state.manual = null;
-      if (state.owned && now >= state.owned.startAt) state.owned = null;
-    } else if (snapshot.pluggedIn === true) {
+      if (state.manual && !['window', 'schedule'].includes(state.manual.kind)
+        && !(state.vehicleDisconnect?.awaitingConnection && state.manual.kind === 'stop' && stopped(snapshot))) state.manual = null;
+      if (state.owned && now >= state.owned.startAt && !state.vehicleDisconnect?.cleanupPending) state.owned = null;
+    } else if (connection === true) {
       state.disconnected = false;
       if (prior?.connected === false) state.released = false;
     }
     // An unrestricted first observation is a baseline. A pre-existing foreign
     // restriction retains its owner's priority until a known end or resumption.
-    remember(now);
+    remember(now, connection);
   }
   function executionFor(plan) {
     if (!Array.isArray(plan?.periods) || !plan.periods.length) return null;
@@ -198,6 +247,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     state.lastReadAt = snapshot.readAt;
     if (snapshot.schedule.enabled !== 'none') throw Object.assign(new Error('Schedule handover mismatch'), { code: 'readback-mismatch' });
     state.pending = null; state.owned = null;
+    if (state.vehicleDisconnect?.cleanupPending) state.vehicleDisconnect.cleanupPending = false;
     rememberOwnInstruction(clock());
   }
   async function reconcile(expectedGeneration, refreshed = false) {
@@ -208,6 +258,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
       return status();
     }
     try {
+      await observeVehicleDisconnect(now);
+      if (expectedGeneration !== generation || closed) return status();
       snapshot = await adapter.read(); now = clock(); state.lastReadAt = snapshot.readAt;
       if (expectedGeneration !== generation || closed) return status();
       // A timeout can follow a successful cloud write. Recover durable intent
@@ -277,6 +329,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
           : 'Enable or resume the charger in Easee before automatic charging can schedule it.', state.manual?.kind === 'stop' ? null : 'charger-stopped');
         return status();
       }
+      if (state.vehicleDisconnect?.cleanupPending) {
+        state.execution = null; state.released = false; state.provisional = false;
+        if (state.manual?.kind === 'stop') state.manual = null;
+      }
       recordMissedTransition(now);
       // Zero power, target completion and passed deadlines never reset release.
       if (state.execution && now >= state.execution.finalStartAt
@@ -298,12 +354,20 @@ export function createChargingController({ adapter, initialState = null, saveSta
           state.released = false;
         } else { await phase('yielded', prior.reason); return status(); }
       }
-      if (snapshot.pluggedIn !== true) {
+      if (state.vehicleDisconnect?.cleanupPending) {
+        if (ownsCurrent()) {
+          operation = 'command-failed'; await clearCurrent('delayed', expectedGeneration);
+        } else state.vehicleDisconnect.cleanupPending = false;
+        state.execution = null; state.released = false; state.provisional = false;
+      }
+      if (snapshot.pluggedIn !== true || state.vehicleDisconnect?.awaitingConnection) {
         if (snapshot.pluggedIn === false && ownsCurrent()) {
           operation = 'command-failed'; await clearCurrent('delayed', expectedGeneration);
         }
-        await phase('disconnected', snapshot.pluggedIn === false ? 'Connect a vehicle to plan automatic charging.'
-          : 'Waiting for Easee to confirm whether a vehicle is connected.'); return status();
+        await phase('disconnected', state.vehicleDisconnect?.awaitingConnection
+          ? 'The previously identified vehicle unplugged. Waiting for fresh connection evidence before starting a new charging session.'
+          : snapshot.pluggedIn === false ? 'Connect a vehicle to plan automatic charging.'
+            : 'Waiting for Easee to confirm whether a vehicle is connected.'); return status();
       }
       if (state.released && !state.provisional) {
         // Take over a pre-existing stopping schedule without interrupting a
