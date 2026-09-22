@@ -24,11 +24,11 @@ still update actual air and protection immediately.
 Only observed rear/front temperatures form the state. Missing front remains
 missing. A normal reference is learned from both locations during sustained
 accepted native baseline operation: eight hours available plus a stable two-hour
-trend, with no pause, recovery, door or charger disturbance. Native baseline can
-be verified or explicitly owner-assumed; those sources remain distinct. A sensor
-boundary or changed baseline has a documented new seed/context; source changes
-interrupt continuity. Native reported 16°C does not overwrite the external 10°C
-assumption or measured local temperatures.
+trend, with no pause, recovery, door or charger disturbance. The native baseline
+requires independent verification. A sensor boundary or changed baseline has a
+documented new seed/context; source changes interrupt continuity. The saved room
+target, native thermostat readback and measured local temperatures remain
+distinct; an external temperature offset does not verify a low-heat baseline.
 
 The ON trajectory approaches the observed normal references with a fixed
 three-hour time constant. This is illustrative continuation, not modeled delivered

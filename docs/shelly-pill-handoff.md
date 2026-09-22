@@ -41,7 +41,19 @@ driver, exact private MQTT topics and commissioning gates. The default synthetic
   remain host inputs. Do not move optimization, thermal-reserve policy or EV scheduling
   into the Pill. Both vehicle doors are at the front; door2 is not a rear door.
 
-The installed Mitsubishi baseline is special low-heat/i-save context, not proof
-that writing an ordinary numeric 10°C target recreates the same native mode.
-The initial installation is read-only until the required installed
-commissioning evidence exists. No ST-MQ setting bypasses that gate.
+ST-MQ also supports the Pill's external temperature control for permanent room
+settings down to 5°C. The pump must already be ON in HEAT mode. ST-MQ explicitly
+commands the native 16°C target, then feeds the independent Garage rear
+temperature plus `16 − requested room setting`:
+a 5°C setting adds 11°C. This uses neither Mitsubishi i-save nor an owner
+assumption about mode persistence.
+
+The driver must advertise the capability and enable its local feature flag.
+Remote values are 8–39.5°C in 0.5°C steps, based on original usable reports less
+than 90 seconds old. The host stops renewing stale evidence; local expiry must
+return to the native 16°C fallback. A saved target resumes after host restart
+only with fresh independent source evidence and native setup. Serial clearing
+of the override must finish before ordinary native settings or a managed pause
+proceed. This host support does not establish physical frost protection or new
+low-heat commissioning evidence. Economic pauses continue to require the
+independently verified native baseline and installed restoration evidence.

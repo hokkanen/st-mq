@@ -442,8 +442,12 @@ still restores heating on communication loss without limiting the total pause. S
 [protection parameters](docs/garage-protection-defaults.md) for assumptions and
 reporting/restoration deadlines.
 The `shelly-cn105` Pill integration supports native controls and commissioned
-selective pause leases. An explicit owner i-save assumption can replace low-heat
-verification on a supporting driver; local arming and restoration proof still apply. Provider input in shadow mode observes
+selective pause leases. **Room setting** supports permanent targets down to 5°C
+using the independent Garage rear sensor and the Pill's external temperature
+feature: native heating stays at 16°C and the reported external value adds
+`16 − room setting`. Stale source evidence returns to native 16°C. Driver
+capability and its local feature flag are required; economic pauses still need
+independently verified baseline and restoration evidence. Provider input in shadow mode observes
 and plans; active mode can use a configured command transport.
 
 | Data | Primary → backup | Normal collection interval |

@@ -106,7 +106,6 @@
       "enabled": false,
       "aggressiveness": 50,
       "baselineC": 10,
-      "assumeISave10C": true,
 
       "minSavingsEur": 0.5,
       "maxPausesPerDay": 1,
@@ -558,7 +557,6 @@
       "enabled": "bool",
       "aggressiveness": "float(0,100)",
       "baselineC": "float(8,16)",
-      "assumeISave10C": "bool",
 
       "minSavingsEur": "float(0,100)",
       "maxPausesPerDay": "int(1,4)",

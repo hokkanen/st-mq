@@ -28,11 +28,32 @@ const NATIVE_PENDING = ['pending', 'published', 'accepted'];
 const nativeCommandSummary = command => command ? { setting: command.setting, value: command.value,
   status: command.status, requestedAt: command.requestedAt, acceptedAt: command.acceptedAt ?? null,
   nativeConfirmedAt: command.nativeConfirmedAt ?? null, reason: command.reason ?? null } : null;
+const externalCommandSummary = command => command ? { temperatureC: command.temperatureC,
+  measuredAt: command.measuredAt ?? null, requestedExpiryAt: command.requestedExpiryAt ?? null,
+  status: command.status, requestedAt: command.requestedAt, acceptedAt: command.acceptedAt ?? null,
+  acknowledgedAt: command.acknowledgedAt ?? null, reason: command.reason ?? null } : null;
+const validExternalTemperature = value => typeof value === 'number' && Number.isFinite(value)
+  && value >= 8 && value <= 39.5 && Number.isInteger(value * 2);
+function cleanExternalState(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !['internal', 'arming', 'active', 'clearing', 'unresolved'].includes(value.phase)
+    || !['enabled', 'acknowledged', 'restorationPending', 'rearmRequired'].every(key => typeof value[key] === 'boolean')
+    || !(value.temperatureC === null || validExternalTemperature(value.temperatureC))
+    || !(value.measuredAt === null || Number.isSafeInteger(value.measuredAt) && value.measuredAt >= 1e12)
+    || !Number.isFinite(value.expiresInMs) || value.expiresInMs < 0 || value.expiresInMs > 90_000
+    || value.refreshMs !== 10_000 || value.maxSourceAgeMs !== 90_000
+    || !(value.reason === null || typeof value.reason === 'string' && value.reason.length <= 128)) return null;
+  const numeric = ['arming', 'active'].includes(value.phase);
+  if (numeric ? value.temperatureC === null || value.measuredAt === null || !value.restorationPending
+    : value.temperatureC !== null || value.measuredAt !== null || value.expiresInMs !== 0) return null;
+  if (value.phase === 'internal' ? value.restorationPending : !value.restorationPending) return null;
+  return Object.fromEntries(['enabled', 'phase', 'temperatureC', 'measuredAt', 'expiresInMs', 'refreshMs',
+    'maxSourceAgeMs', 'acknowledged', 'restorationPending', 'rearmRequired', 'reason'].map(key => [key, value[key]]));
+}
 
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, persisted = null,
-  simulationTransport = null, productionTransport = null, hostSession = randomUUID(), baselineC = 10,
-  assumeISave10C = false } = {}) {
+  simulationTransport = null, productionTransport = null, hostSession = randomUUID(), baselineC = 10 } = {}) {
   const settings = garageAdapterSettings(input);
   if (!Number.isFinite(baselineC) || baselineC < 8 || baselineC > 16) throw new RangeError('Garage native baseline must be between 8 and 16 degrees Celsius');
   const production = settings.driver === 'shelly-cn105';
@@ -41,14 +62,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   const transport = live ? productionTransport : simulated ? simulationTransport : null;
   const contractVersion = production ? SHELLY_CN105_CONTRACT : GARAGE_FIXTURE_CONTRACT;
   const contractStatus = production ? 'supported-driver' : GARAGE_CONTRACT_STATUS;
-  if (typeof assumeISave10C !== 'boolean' && typeof assumeISave10C !== 'function')
-    throw new TypeError('The i-save assumption must be a boolean or preference reader');
-  const ownerAssumesISave = () => (typeof assumeISave10C === 'function' ? assumeISave10C() : assumeISave10C) === true;
   const startedAt = clock();
   let connected = false, reconciled = false, stopped = false, state = null;
   let claimPending = null;
   let nativeCommand = persisted?.lastNativeCommand ? { ...persisted.lastNativeCommand,
     ...(NATIVE_PENDING.includes(persisted.lastNativeCommand.status) ? { status: 'uncertain', reason: 'host-restarted' } : {}) } : null;
+  let externalCommand = persisted?.lastExternalCommand ? { ...persisted.lastExternalCommand,
+    ...(NATIVE_PENDING.includes(persisted.lastExternalCommand.status) ? { status: 'uncertain', reason: 'host-restarted' } : {}) } : null;
+  let externalNeedsClear = persisted?.externalNeedsClear === true;
+  let lastExternalSample = null, manualPermissionObserved = false;
   let sequence = 0, telemetrySequence = -1, telemetryBoot = null, telemetryDevice = null;
   const usedChallenges = new Map();
   let lastTick = null, latest = {}, lastEvent = null;
@@ -87,6 +109,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       restorationRequestedAt, episode: episode ? structuredClone(episode) : null, recoveryLockedUntil,
       lastCommand: commandSummary(lastCommand), commandHistory: commands.map(commandSummary),
       lastNativeCommand: nativeCommandSummary(nativeCommand),
+      lastExternalCommand: externalCommandSummary(externalCommand), externalNeedsClear,
       acceptedEvidence: state ? { observedAt: state.observedAt, receivedAt: state.receivedAt,
         retained: state.retained, nativePower: state.native.power, restorationPending: state.restorationPending,
         mode: state.mode, health: state.health } : null,
@@ -110,19 +133,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     return { deviceOnline: check('device'), driverProgressing: check('driver'), pumpCommunicating: check('pump') };
   }
   function baselineAssessment(now) {
-    const assumed = ownerAssumesISave();
     const profileFresh = connected && reconciled && !state?.retained
       && freshField(state?.baseline, now, settings.maxAgeMs)
       && state.baseline.profile === 'existing-low-heat'
       && state.baseline.fan === 'auto' && state.baseline.vanes === 'fixed';
     const verified = profileFresh && state.baseline.verified === true && state.baseline.targetC === baselineC;
-    // A matched native signature establishes unchanged settings, not the hidden
-    // i-save thermostat behavior. Only the explicit owner preference supplies
-    // that assumption; driver commissioning evidence remains unchanged.
-    const acceptedAssumption = assumed && profileFresh && state.baseline.targetC === 10
-      && (state.baseline.candidateMatched === true || state.baseline.verified === true);
-    return { assumed, verified: Boolean(verified), accepted: Boolean(verified || acceptedAssumption),
-      targetC: assumed ? 10 : baselineC, source: assumed ? 'owner-assumed' : verified ? 'device-verified' : 'configured',
+    return { verified: Boolean(verified), accepted: Boolean(verified),
+      targetC: baselineC, source: verified ? 'device-verified' : 'configured',
       nativeTargetC: state?.native.targetC?.value ?? null };
   }
   function blockers(now, { forRelease = false } = {}) {
@@ -130,6 +147,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const baseline = baselineAssessment(now);
     if (!transport) reasons.push(production ? 'adapter-command-route-unavailable' : 'real-adapter-contract-unavailable');
     if (!canControl()) reasons.push('control-authority-unavailable');
+    if (externalBusy(now)) reasons.push('external-temperature-busy');
     if (!connected || stopped) reasons.push('mqtt-unavailable');
     if (!reconciled || !state || state.retained || state.observedAt > now || now - state.observedAt >= settings.maxAgeMs)
       reasons.push('fresh-session-reconciliation-required');
@@ -140,22 +158,17 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       reasons.push('adapter-authority-unavailable');
     if (!forRelease) {
       if (nativePending(now) || state?.manualPending) reasons.push('manual-setting-pending');
-      if (production && !SHELLY_CN105_COMMISSIONING.every(name => state?.commissioning[name] === true
-        || name === 'lowHeatVerified' && baseline.assumed))
+      if (production && !SHELLY_CN105_COMMISSIONING.every(name => state?.commissioning[name] === true))
         reasons.push('installed-commissioning-required');
-      if (production && baseline.assumed && state?.commissioning.lowHeatVerified !== true
-        && state?.capabilities.assumeISave10C !== true)
-        reasons.push('assumed-isave-driver-support-required');
       const h = health(now);
       if (!h.deviceOnline) reasons.push('device-offline');
       if (!h.driverProgressing) reasons.push('driver-not-progressing');
       if (!h.pumpCommunicating) reasons.push('pump-not-communicating');
       if (state?.mode !== 'armed') reasons.push(`adapter-${state?.mode ?? 'unavailable'}`);
-      if (!CAPABILITIES.every(name => state?.capabilities[name] === true
-        || name === 'preserveNativeBaseline' && baseline.assumed && state?.capabilities.assumeISave10C === true))
+      if (!CAPABILITIES.every(name => state?.capabilities[name] === true))
         reasons.push('essential-capability-unverified');
       if (!baseline.accepted) reasons.push('native-baseline-unverified');
-      if (state && [['mode', 'heat'], ...(baseline.assumed ? [] : [['targetC', baselineC]]),
+      if (state && [['mode', 'heat'], ['targetC', baselineC],
         ['fan', 'auto'], ['vanes', 'fixed']].some(([key, expected]) =>
         state.native[key]?.value !== null && state.native[key]?.value !== undefined
         && freshField(state.native[key], now, settings.maxAgeMs) && state.native[key].value !== expected))
@@ -213,7 +226,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   function nativePending(now) {
     return Boolean(nativeCommand && NATIVE_PENDING.includes(nativeCommand.status) && now < nativeCommand.confirmBy);
   }
-  function nativeBlockers(now) {
+  function nativeBlockers(now, { afterExternalClear = false } = {}) {
     const reasons = [];
     if (!live) reasons.push('The installed adapter does not support ordinary Mitsubishi controls.');
     if (!canControl()) reasons.push('This instance does not own device control.');
@@ -222,17 +235,19 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       reasons.push('A fresh adapter session is required.');
     const h = health(now);
     if (!h.deviceOnline || !h.driverProgressing || !h.pumpCommunicating) reasons.push('Fresh driver and heat-pump communication are required.');
-    if (state?.authority.manualControlAllowed !== true) reasons.push('Ordinary Mitsubishi controls are disabled on the adapter.');
+    if (state?.authority.manualControlAllowed !== true
+      && !(afterExternalClear && externalBusy(now) && manualPermissionObserved)) reasons.push('Ordinary Mitsubishi controls are disabled on the adapter.');
     if (state?.authority.ownerSession && state.authority.ownerSession !== hostSession) reasons.push('Another controller owns the heat pump.');
     if (['maintenance', 'commissioning'].includes(state?.mode)) reasons.push('The adapter is in maintenance or commissioning.');
     if (restorePending || state?.restorationPending || state?.lease) reasons.push('Restore the managed pause before changing native settings.');
+    if (!afterExternalClear && externalBusy(now)) reasons.push('Clear external temperature control before changing native settings.');
     if (nativePending(now) || state?.manualPending || claimPending && now < claimPending.deadlineAt) reasons.push('Wait for the current native command to finish.');
     if (!identity(state?.challenge?.value) || !finiteTime(state?.challenge?.expiresAt) || state.challenge.expiresAt <= now
       || usedChallenges.has(`${state?.bootId}:${state?.sessionId}:${state?.challenge?.value}`)) reasons.push('Waiting for a fresh device challenge.');
     return reasons;
   }
-  function nativeControls(now = clock()) {
-    const reasons = nativeBlockers(now), pending = nativePending(now);
+  function nativeControls(now = clock(), options = {}) {
+    const reasons = nativeBlockers(now, options), pending = nativePending(now);
     const fields = Object.fromEntries(Object.entries(GARAGE_NATIVE_SETTINGS).map(([key, definition]) => {
       const field = state?.native[key], choices = state?.manualOptions[key];
       const supported = state?.manualCapabilities[key] === true && (!definition.values || Array.isArray(choices));
@@ -293,10 +308,133 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     changed();
     return nativeCommandSummary(attempt);
   }
+  function externalPending(now) {
+    return Boolean(externalCommand && NATIVE_PENDING.includes(externalCommand.status) && now < externalCommand.confirmBy);
+  }
+  function externalBusy(now) {
+    return externalNeedsClear || externalPending(now) || state?.invalidExternalTemperature === true || Boolean(state?.externalTemperature
+      && (state.externalTemperature.phase !== 'internal' || state.externalTemperature.restorationPending));
+  }
+  function externalBlockers(now, { clear = false, configure = false } = {}) {
+    const reasons = [], external = state?.externalTemperature;
+    if (!live || !external) reasons.push('The installed adapter does not support external temperature control.');
+    if (!canControl()) reasons.push('This instance does not own device control.');
+    if (!connected || stopped) reasons.push('The MQTT connection is unavailable.');
+    if (!reconciled || !state || state.retained || state.observedAt > now || now - state.observedAt >= settings.maxAgeMs)
+      reasons.push('A fresh adapter session is required.');
+    if (state?.authority.ownerSession && state.authority.ownerSession !== hostSession) reasons.push('Another controller owns the heat pump.');
+    if (!clear) {
+      if (state?.capabilities.externalTemperature !== true || external?.enabled !== true)
+        reasons.push('External temperature control is disabled on the adapter.');
+      const h = health(now);
+      if (!h.deviceOnline || !h.driverProgressing || !h.pumpCommunicating) reasons.push('Fresh driver and heat-pump communication are required.');
+      if (['maintenance', 'commissioning'].includes(state?.mode)) reasons.push('The adapter is in maintenance or commissioning.');
+      if (restorePending || state?.restorationPending || state?.lease) reasons.push('Restore the managed pause before using external temperature control.');
+      if (['arming', 'paused', 'recovering', 'unresolved'].includes(state?.driverPhase)) reasons.push('Wait for managed heat-pump recovery.');
+      if (!configure) {
+        if (external?.rearmRequired) reasons.push('Clear external temperature control before rearming.');
+        if (['clearing', 'unresolved'].includes(external?.phase)) reasons.push('Wait for external temperature cleanup.');
+        if (externalNeedsClear && !['acknowledged', 'rejected'].includes(externalCommand?.status)) reasons.push('Clear the uncertain external temperature request.');
+        const power = state?.native.power;
+        if (power?.value !== 'on' || state?.native.mode?.value !== 'heat'
+          || !['power', 'mode', 'targetC', 'fan', 'vane'].every(key => freshField(state?.native[key], now, 30_001)
+            && state.native[key].value !== null && state.native[key].measuredAt === power?.measuredAt))
+          reasons.push('Fresh native HEAT and ON settings are required.');
+        if (state?.manualPending) reasons.push('Wait for the current native command to finish.');
+      }
+    }
+    if (!configure) {
+      if (nativePending(now) || externalPending(now) || claimPending && now < claimPending.deadlineAt)
+        reasons.push('Wait for the current device command to finish.');
+      if (!identity(state?.challenge?.value) || !finiteTime(state?.challenge?.expiresAt) || state.challenge.expiresAt <= now
+        || usedChallenges.has(`${state?.bootId}:${state?.sessionId}:${state?.challenge?.value}`)) reasons.push('Waiting for a fresh device challenge.');
+    }
+    return reasons;
+  }
+  function externalTemperature(now = clock()) {
+    const lifecycle = state?.externalTemperature;
+    const reasons = externalBlockers(now), clearReasons = externalBlockers(now, { clear: true });
+    const configureReasons = externalBlockers(now, { configure: true });
+    const pending = externalPending(now);
+    let result = externalCommandSummary(externalCommand);
+    if (result && NATIVE_PENDING.includes(result.status) && !pending)
+      result = { ...result, status: 'uncertain', reason: 'external-result-timeout' };
+    return { ...(lifecycle ?? {}), supported: live && lifecycle !== null && lifecycle !== undefined,
+      enabled: state?.capabilities.externalTemperature === true && lifecycle?.enabled === true,
+      available: reasons.length === 0, clearAvailable: clearReasons.length === 0,
+      configurable: configureReasons.length === 0, configureReason: configureReasons[0] ?? null,
+      reason: reasons[0] ?? lifecycle?.reason ?? null, clearReason: clearReasons[0] ?? null,
+      driverReason: lifecycle?.reason ?? null, busy: externalBusy(now), pending, result,
+      needsClear: externalNeedsClear,
+      sourceEpoch: state ? createHash('sha256').update(JSON.stringify([state.deviceId, state.bootId, state.sessionId])).digest('hex') : null,
+      expiresInMs: lifecycle ? Math.max(0, lifecycle.expiresInMs - Math.max(0, now - state.observedAt)) : 0 };
+  }
+  function processExternalResult(result, now) {
+    if (!externalCommand || result?.action !== 'remote-temperature' || result.commandId !== externalCommand.commandId
+      || result.ownerSession !== hostSession || result.sequence !== externalCommand.sequence
+      || state.bootId !== externalCommand.bootId || state.sessionId !== externalCommand.sessionId
+      || state.sequence <= externalCommand.stateSequence || state.observedAt < externalCommand.requestedAt
+      || !['accepted', 'acknowledged', 'rejected', 'uncertain', 'superseded', 'failed'].includes(result.status)
+      || ['rejected', 'failed', 'superseded'].includes(externalCommand.status)) return;
+    if (['accepted', 'acknowledged'].includes(result.status) && externalCommand.status === 'acknowledged') return;
+    externalCommand.status = result.status;
+    externalCommand.reason = typeof result.reason === 'string' ? result.reason : null;
+    if (['accepted', 'acknowledged'].includes(result.status)) externalCommand.acceptedAt ??= now;
+    if (result.status === 'rejected') {
+      lastExternalSample = externalCommand.previousSample ?? null;
+      if (state.externalTemperature?.phase === 'internal') externalNeedsClear = false;
+    }
+    if (result.status === 'acknowledged') {
+      const external = state.externalTemperature;
+      const matches = externalCommand.temperatureC === null
+        ? external?.phase === 'internal' && !external.restorationPending && !external.rearmRequired
+        : external?.phase === 'active' && external.acknowledged && external.restorationPending
+          && external.temperatureC === externalCommand.temperatureC && external.measuredAt === externalCommand.measuredAt
+          && external.expiresInMs > 0;
+      if (!matches) { externalCommand.status = 'uncertain'; externalCommand.reason = 'external-state-does-not-match'; }
+      else {
+        externalCommand.acknowledgedAt = now;
+        if (externalCommand.temperatureC === null) externalNeedsClear = false;
+      }
+    }
+  }
+  async function setExternalTemperature(input, now = clock()) {
+    const clear = input?.temperatureC === null;
+    const keys = clear ? ['temperatureC'] : ['temperatureC', 'measuredAt', 'requestedExpiryAt'];
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== keys.length
+      || !keys.every(key => Object.hasOwn(input, key))) throw new Error('Supply one external temperature sample or an explicit clear.');
+    if (!Number.isSafeInteger(now) || now < 1e12) throw new Error('A valid current UTC time is required.');
+    if (!clear && (!validExternalTemperature(input.temperatureC)
+      || !Number.isSafeInteger(input.measuredAt) || input.measuredAt < 1e12 || input.measuredAt > now + 5000
+      || now - input.measuredAt >= 90_000 || !Number.isSafeInteger(input.requestedExpiryAt) || input.requestedExpiryAt <= now))
+      throw new Error('Use an external temperature from 8 to 39.5°C in half degrees and its original measurement younger than 90 seconds.');
+    const reasons = externalBlockers(now, { clear });
+    if (reasons.length) throw new Error(reasons[0]);
+    if (!clear && lastExternalSample && (input.measuredAt < lastExternalSample.measuredAt
+      || input.measuredAt === lastExternalSample.measuredAt
+        && (input.temperatureC !== lastExternalSample.temperatureC || state.externalTemperature?.phase === 'internal')))
+      throw new Error('A newer original sensor measurement is required.');
+    const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
+      sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(), sequence: ++sequence,
+      challenge: state.challenge.value, action: 'remote-temperature', issuedAt: now,
+      deadlineAt: Math.min(state.challenge.expiresAt, now + 30_000), ...input };
+    const attempt = { ...input, commandId: command.commandId, sequence: command.sequence, requestedAt: now,
+      stateSequence: state.sequence, bootId: state.bootId, sessionId: state.sessionId, status: 'pending', confirmBy: now + 45_000,
+      previousSample: lastExternalSample };
+    externalCommand = attempt;
+    if (!clear) { externalNeedsClear = true; lastExternalSample = { ...input }; }
+    consumeChallenge(now);
+    try { changed(); }
+    catch (error) { attempt.status = 'failed'; attempt.reason = 'request-storage-failed'; throw error; }
+    try {
+      await transport.send(Object.freeze(command));
+      if (attempt.status === 'pending') attempt.status = 'published';
+    } catch { if (['pending', 'published'].includes(attempt.status)) { attempt.status = 'uncertain'; attempt.reason = 'publication-uncertain'; } }
+    changed();
+    return externalCommandSummary(attempt);
+  }
   async function claimAuthority(now) {
-    const needsAssumedClaim = state?.authority.ownerSession === hostSession && !state.authority.controlAllowed
-      && ownerAssumesISave() && state.capabilities.assumeISave10C === true;
-    if (!live || restorePending || state?.authority.ownerSession && !needsAssumedClaim || state?.restorationPending || state?.lease
+    if (!live || restorePending || state?.authority.ownerSession || state?.restorationPending || state?.lease
       || claimPending && now < claimPending.deadlineAt) return;
     // A claim changes ownership only. It requires the same commissioned,
     // current baseline as a pause, and never takes ownership from another host.
@@ -304,7 +442,6 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, commandId: randomUUID(),
       sequence: ++sequence, challenge: state.challenge.value, action: 'claim', issuedAt: now,
-      ...(ownerAssumesISave() && state.capabilities.assumeISave10C === true ? { assumeISave10C: true } : {}),
       deadlineAt: Math.min(state.challenge.expiresAt, now + 30_000) };
     consumeChallenge(now);
     claimPending = command;
@@ -325,7 +462,6 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const command = { schema: contractVersion, deviceId: state.deviceId, bootId: state.bootId,
       sessionId: state.sessionId, ownerSession: hostSession, episodeId: episode?.id ?? 'restoration',
       commandId, sequence: ++sequence, challenge, action, issuedAt: now, deadlineAt,
-      ...(state.capabilities.assumeISave10C === true ? { assumeISave10C: ownerAssumesISave() } : {}),
       ...(action === 'release' ? {} : { endpointAt: episode.endpointAt,
         temperatureEvidenceAt: permission.temperatureEvidenceAt,
         requestedExpiryAt: Math.min(now + state.limits.maximumMs, episode.endpointAt,
@@ -379,12 +515,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     state = { deviceId: value.deviceId, bootId: value.bootId, sessionId: value.sessionId,
       sequence: value.sequence, observedAt: value.observedAt, receivedAt: now, retained: packet.retain === true,
       mode: value.mode, health: Object.fromEntries(['device', 'driver', 'pump'].map(key => [key, cleanField(value.health[key])])),
+      driverPhase: value.phase,
       manualPending: value.manualPending === true,
+      externalTemperature: cleanExternalState(value.externalTemperature),
+      invalidExternalTemperature: value.externalTemperature !== undefined && cleanExternalState(value.externalTemperature) === null,
       manualCapabilities: Object.fromEntries(Object.keys(GARAGE_NATIVE_SETTINGS).map(key => [key, value.capabilities?.manualControls?.[key] === true])),
       targetStep: [1, .5].includes(value.capabilities?.targetStep) ? value.capabilities.targetStep : null,
       manualOptions: garageNativeOptions(value.capabilities?.manualOptions),
       commissioning: Object.fromEntries(SHELLY_CN105_COMMISSIONING.map(key => [key, value.commissioning?.[key] === true])),
-      capabilities: Object.fromEntries([...CAPABILITIES, 'assumeISave10C'].map(key => [key, value.capabilities?.[key] === true])),
+      capabilities: Object.fromEntries([...CAPABILITIES, 'externalTemperature'].map(key => [key, value.capabilities?.[key] === true])),
       native: Object.fromEntries(['power', 'mode', 'targetC', 'fan', 'vanes', 'vane', 'wideVane'].map(key => {
         const field = cleanField(value.native[key]);
         const allowed = { power: ['on', 'off'], mode: ['heat', 'cool', 'auto', 'dry', 'fan'],
@@ -410,6 +549,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (firstState && state.limits) recoveryLockedUntil = Math.max(recoveryLockedUntil, now + state.limits.minimumOnMs);
     if (bootChanged || sessionChanged) {
       claimPending = null;
+      lastExternalSample = null; manualPermissionObserved = false;
+      if (externalCommand && NATIVE_PENDING.includes(externalCommand.status)) {
+        externalCommand.status = 'uncertain'; externalCommand.reason = 'adapter-session-changed';
+      }
       if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
         nativeCommand.status = 'uncertain'; nativeCommand.reason = 'adapter-session-changed';
       }
@@ -419,6 +562,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     if (finiteTime(value.recoveryLockedUntil)) recoveryLockedUntil = Math.max(recoveryLockedUntil, value.recoveryLockedUntil);
     if (reconciled && !packet.retain) {
+      if (state.authority.manualControlAllowed) manualPermissionObserved = true;
       const event = value.event;
       if (['manual-on', 'watchdog-recovery'].includes(event?.type) && finiteTime(event.at) && event.at <= now
         && event.at >= startedAt && `${event.type}:${event.at}` !== lastEvent) {
@@ -427,6 +571,10 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         recoveryLockedUntil = Math.max(recoveryLockedUntil, event.at + (state.limits?.minimumOnMs ?? 0));
       }
       processNativeResult(value.result, now);
+      processExternalResult(value.result, now);
+      if (externalCommand?.temperatureC !== null && ['acknowledged', 'rejected'].includes(externalCommand?.status)
+        && state.externalTemperature?.phase === 'internal' && !state.externalTemperature.restorationPending
+        && state.observedAt > (externalCommand.acknowledgedAt ?? externalCommand.requestedAt)) externalNeedsClear = false;
       processResult(value.result, now);
       if (state.restorationPending) { restorePending = true; obligationAt ??= now; }
       if (episode && !episode.invalidated && state.lease?.episodeId === episode.id) {
@@ -570,13 +718,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     for (const [key, definition] of Object.entries(GARAGE_FIELDS)) if (telemetry[definition.signal]) telemetry[key] = telemetry[definition.signal];
     return { contractVersion, contractStatus,
       sourceEpoch: state || telemetryBoot ? createHash('sha256').update(JSON.stringify([
-        contractVersion, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource,
-        baseline.assumed])).digest('hex') : null,
+        contractVersion, state?.deviceId ?? telemetryDevice, state?.bootId ?? telemetryBoot, settings.electricalSource])).digest('hex') : null,
       liveControlSupported: live, simulation: simulated, connected, mode: state?.mode ?? 'monitoring',
       automaticControl: Boolean(transport) && reasons.length === 0, blockedReasons: reasons, health: health(now),
-      baselineVerified: baseline.verified, baselineAccepted: baseline.accepted, assumeISave10C: baseline.assumed,
+      baselineVerified: baseline.verified, baselineAccepted: baseline.accepted,
+      externalTemperature: externalTemperature(now),
       normalHeating: { targetC: baseline.targetC, source: baseline.source, verified: baseline.verified,
-        nativeTargetC: baseline.nativeTargetC, driverSupportsAssumption: state?.capabilities.assumeISave10C === true }, telemetry,
+        nativeTargetC: baseline.nativeTargetC }, telemetry,
       commissioning: state?.commissioning ? { ...state.commissioning } : null,
       authority: { owned: state?.authority.ownerSession === hostSession, claimPending: claimPending !== null },
       native: { ...Object.fromEntries(Object.entries(state?.native ?? {}).filter(([, field]) => field?.value != null)
@@ -600,6 +748,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       faults: [...faults], electrical: electrical.status() };
   }
   return { topics, receive, plannerTick, safetyTick, release, snapshot, status, nativeControls, setNativeSetting,
+    externalTemperature, setExternalTemperature,
     setConnected(value) {
       if (stopped || connected === Boolean(value)) return;
       connected = Boolean(value); reconciled = false; claimPending = null;
@@ -607,6 +756,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected');
         if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
           nativeCommand.status = 'uncertain'; nativeCommand.reason = 'mqtt-disconnected';
+        }
+        if (externalCommand && NATIVE_PENDING.includes(externalCommand.status)) {
+          externalCommand.status = 'uncertain'; externalCommand.reason = 'mqtt-disconnected';
         }
       }
       changed();
@@ -620,11 +772,16 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     },
     async close({ restore = true, now = clock() } = {}) {
       if (stopped) return;
+      if (restore && canControl() && externalBusy(now) && externalTemperature(now).clearAvailable)
+        await setExternalTemperature({ temperatureC: null }, now);
       if (restore && canControl()) await release({ reason: 'application-shutdown', now });
       stopped = true; connected = false; reconciled = false;
       if (episode) invalidate('host-stopped', now);
       if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
         nativeCommand.status = 'uncertain'; nativeCommand.reason = 'host-stopped';
+      }
+      if (externalCommand && NATIVE_PENDING.includes(externalCommand.status)) {
+        externalCommand.status = 'uncertain'; externalCommand.reason = 'host-stopped';
       }
       changed();
     },

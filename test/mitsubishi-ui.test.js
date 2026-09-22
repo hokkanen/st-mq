@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { mitsubishiReadings, mitsubishiControl, mitsubishiResult, createMitsubishiControls } from '../chart/mitsubishi.js';
+import { mitsubishiReadings, mitsubishiControl, mitsubishiResult, mitsubishiRoomTemperature, createMitsubishiControls } from '../chart/mitsubishi.js';
 
 const now = Date.parse('2026-09-21T12:00:00Z');
 function fixture() {
@@ -84,9 +84,9 @@ function panelFixture() {
     setAttribute(key,value){this.attributes.set(key,value);} removeAttribute(key){this.attributes.delete(key);}
     addEventListener(event,handler){this.listeners.set(event,handler);} removeEventListener(event){this.listeners.delete(event);}
   }
-  const ids=['form','setting','value','temperature','submit','message','temperature-field','value-field','status','control-details'];
+  const ids=['form','setting','value','temperature','submit','message','temperature-field','value-field','status','control-details','temperature-help'];
   const nodes=new Map(ids.map(id=>[`garage-native-${id}`,new Node()]));
-  for (const id of ['garage-assume-isave', 'garage-assume-isave-status']) nodes.set(id, new Node());
+  nodes.set('garage-room-temperature-status', new Node());
   const setting=nodes.get('garage-native-setting');setting.value='power';
   for(const field of ['power','mode','targetC','fan','vane','wideVane']){const option=new Node();option.value=field;setting.append(option);}
   const document={getElementById:id=>nodes.get(id),createElement:()=>new Node()};
@@ -158,44 +158,72 @@ test('explicitly unknown diagnostic values stay absent even when an older source
 });
 
 
-test('i-save checkbox saves only an owner assumption and preserves native readback and verification', async () => {
-  const f = panelFixture(), checkbox = f.nodes.get('garage-assume-isave');
-  const original = { ...f.status, garage: { ...f.status.garage, preferences: { available: true },
-    settings: { ...f.status.garage.settings, assumeISave10C: false },
-    adapter: { ...f.status.garage.adapter, baselineVerified: false,
-      native: { ...f.status.garage.adapter.native, targetC: 16 } } } };
-  f.panel.update(original); assert.equal(checkbox.disabled, false); assert.equal(checkbox.checked, false);
-  checkbox.checked = true;
-  let done; f.reply(() => new Promise(resolve => { done = resolve; }));
-  const pending = checkbox.listeners.get('change')();
-  assert.equal(checkbox.disabled, true); await checkbox.listeners.get('change')();
-  assert.deepEqual(f.calls, [['/api/garage/preferences', { assumeISave10C: true }]]);
-  const assumed = { ...original, garage: { ...original.garage, settings: { ...original.garage.settings, assumeISave10C: true } } };
-  done(assumed); await pending;
-  assert.equal(checkbox.checked, true); assert.equal(checkbox.disabled, false);
-  assert.equal(assumed.garage.adapter.baselineVerified, false);
-  assert.equal(assumed.garage.adapter.native.targetC, 16);
-  assert.match(f.nodes.get('garage-assume-isave-status').textContent, /assumed.*readings remain unchanged/);
-  for (const role of ['replica', 'protected', 'transition']) {
-    f.panel.update({ ...assumed, role }); checkbox.checked = false;
-    await checkbox.listeners.get('change')(); assert.equal(checkbox.disabled, true);
-  }
-  f.panel.update({ ...assumed, readOnly: true });
-  await checkbox.listeners.get('change')(); assert.equal(checkbox.disabled, true); assert.equal(f.calls.length, 1);
-  f.panel.close(); assert.equal(checkbox.listeners.size, 0);
+test('room setting permits 5°C only when advertised and preserves the saved target across fallback', async () => {
+  const f = panelFixture(), status = structuredClone(f.status);
+  Object.assign(status.garage.adapter.native, { targetC: 16 });
+  status.garage.adapter.native.readbacks.targetC.value = 16;
+  Object.assign(status.garage.nativeControls.settings.targetC, { min: 5, value: 5, usable: false });
+  status.garage.roomTemperature = { targetC: 5, phase: 'waiting', reason: 'rear-temperature-stale',
+    sourceC: null, measuredAt: null, offsetC: 11, suppliedC: null, nativeTargetC: 16, acknowledged: false };
+  f.panel.update(status); f.change('targetC');
+  assert.equal(f.nodes.get('garage-native-temperature').min, 5);
+  assert.equal(f.nodes.get('garage-native-temperature').value, '5');
+  assert.equal(f.nodes.get('garage-native-temperature-help').hidden, false);
+  assert.match(f.nodes.get('garage-room-temperature-status').textContent, /5 °C saved.*fallback/);
+  for (const value of ['4.5', '31.5', '5.25']) { f.nodes.get('garage-native-temperature').value = value; await f.submit(); }
+  assert.equal(f.calls.length, 0);
+  f.nodes.get('garage-native-temperature').value = '5';
+  f.reply({ ...status, garage: { ...status.garage, nativeControls: { ...status.garage.nativeControls,
+    result: { setting: 'targetC', value: 5, status: 'saved' } } } });
+  await f.submit();
+  assert.deepEqual(f.calls, [['/api/garage/native', { setting: 'targetC', value: 5 }]]);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Saved; preparing external temperature control/);
+  assert.equal(mitsubishiReadings(status.garage, now).find(row => row.key === 'native-targetC').value, '16 °C');
+  assert.equal(f.nodes.get('garage-native-temperature').value, '5');
+  f.change('fan');
+  assert.equal(f.nodes.get('garage-native-temperature-help').hidden, true);
+  assert.match(f.nodes.get('garage-native-status').textContent, /ends external temperature control/);
 });
 
-test('failed i-save preference save restores the last accepted checkbox value and remains retryable', async () => {
-  const f = panelFixture(), checkbox = f.nodes.get('garage-assume-isave');
-  const status = { ...f.status, garage: { ...f.status.garage, preferences: { available: true },
-    settings: { assumeISave10C: false } } };
-  f.panel.update(status); checkbox.checked = true;
-  f.reply(() => { throw new Error('Saving preference failed'); });
-  await checkbox.listeners.get('change')();
-  assert.equal(checkbox.checked, false); assert.equal(checkbox.disabled, false);
-  assert.match(f.nodes.get('garage-assume-isave-status').textContent, /Saving preference failed/);
-  assert(f.nodes.get('garage-assume-isave-status').classes.has('form-error'));
-  f.panel.update({ ...status, garage: { ...status.garage, nativeControls: { available: false, settings: {} } } });
-  assert.equal(f.nodes.get('garage-native-control-details').hidden, false, 'Owner assumption remains configurable without native writable fields');
-  assert.equal(f.nodes.get('garage-native-form').hidden, true);
+test('room control status distinguishes acknowledgement, preparation and fallback without rewriting native evidence', () => {
+  const garage = fixture().garage;
+  garage.roomTemperature = { targetC: 5, phase: 'active', sourceC: 5.25, measuredAt: now,
+    offsetC: 11, suppliedC: 16.25, nativeTargetC: 16, acknowledged: true };
+  const before = structuredClone(garage), room = mitsubishiRoomTemperature(garage);
+  assert.equal(room.value, '5 °C'); assert.equal(room.basis, 'External sensor · active');
+  assert.match(room.detail, /native pump target of 16 °C/);
+  assert.match(room.detail, /adds 11 °C/); assert.match(room.detail, /Garage rear: 5.25 °C/);
+  assert.match(room.detail, /Supplied temperature: 16.25 °C/);
+  assert.match(room.detail, /Missing or stale sensor readings/);
+  assert.deepEqual(garage, before);
+  for (const [phase, basis] of [['preparing', 'preparing'], ['clearing', 'clearing'], ['waiting', 'fallback'], ['blocked', 'fallback']]) {
+    garage.roomTemperature.phase = phase;
+    garage.roomTemperature.reason = 'rear-temperature-unavailable';
+    const pending = mitsubishiRoomTemperature(garage);
+    assert.equal(pending.active, false); assert.equal(pending.basis, `External sensor · ${basis}`);
+    assert.match(pending.detail, /Rear temperature unavailable/);
+  }
+  garage.roomTemperature.phase = 'active'; garage.roomTemperature.acknowledged = false;
+  assert.equal(mitsubishiRoomTemperature(garage).basis, 'External sensor · preparing');
+  garage.roomTemperature.targetC = null; assert.equal(mitsubishiRoomTemperature(garage), null);
+  assert.equal(mitsubishiRoomTemperature({}), null);
+  assert.match(mitsubishiResult({ setting: 'targetC', value: 5, status: 'acknowledged' }), /acknowledged by the driver/);
+  assert.doesNotMatch(mitsubishiResult({ setting: 'targetC', value: 5, status: 'acknowledged' }), /Confirmed by the pump/);
+});
+
+test('external room targets remain visible but cannot be submitted from read-only replicas', async () => {
+  const f = panelFixture(), status = structuredClone(f.status);
+  Object.assign(status.garage.nativeControls.settings.targetC, { min: 5, value: 5 });
+  status.garage.roomTemperature = { targetC: 5, phase: 'active', acknowledged: true, offsetC: 11 };
+  for (const role of ['replica', 'protected', 'transition']) {
+    f.panel.update({ ...status, role }); f.change('targetC'); await f.submit();
+    assert.equal(f.nodes.get('garage-native-temperature').value, '5');
+    assert.equal(f.nodes.get('garage-native-submit').disabled, true);
+    assert.match(f.nodes.get('garage-native-status').textContent, /read-only/);
+  }
+  f.panel.update({ ...status, readOnly: true }); await f.submit();
+  assert.equal(f.calls.length, 0);
+  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /assume-isave|Assume i-save/);
+  assert.match(html, /Garage rear sensor.*pump stays at 16 °C/);
 });

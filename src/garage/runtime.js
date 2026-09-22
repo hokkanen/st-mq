@@ -4,6 +4,7 @@ import moment from 'moment-timezone';
 import { temporaryUpdate } from '../app/temporary.js';
 import { garageSettings, GARAGE_POLICY_VERSION } from './settings.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting } from './native-settings.js';
+import { GarageRoomTemperature, GARAGE_ROOM_MIN_C, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS } from './room-temperature.js';
 import { garagePausePermission, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 import { GARAGE_ALGORITHM_VERSION, GARAGE_MODEL_ASSUMPTIONS, garageRecoveryHours, createGarageModel, garageModelSummary } from './model.js';
 import { confirmedGarageDoor, garagePauseStartReason } from './door-state.js';
@@ -58,15 +59,16 @@ export class GarageRuntime {
     this.engine = engine; this.store = store; this.config = config; this.clock = clock; this.canControl = canControl;
     const { adapter: _adapter, ...owner } = config.garage ?? {};
     this.settings = garageSettings(owner); this.input = config.input;
-    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'preferences'].map(name => [name, `garage:${name}:${this.input}`]));
+    this.keys = Object.fromEntries(['checkpoint', 'exposure', 'episode', 'adapter', 'temporary', 'manual', 'roomTemperature'].map(name => [name, `garage:${name}:${this.input}`]));
     this.context = garageCorrectionContext(store, this.input);
     const readState = key => { try { return store.getState(key); } catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
       this.corruptState = true; return null;
     } };
-    const preferences = readState(this.keys.preferences);
-    if (typeof preferences?.assumeISave10C === 'boolean')
-      this.settings = garageSettings({ ...this.settings, assumeISave10C: preferences.assumeISave10C });
+    const room = readState(this.keys.roomTemperature);
+    this.roomTemperature = new GarageRoomTemperature({ now: clock(), targetC:
+      finite(room?.targetC) && room.targetC >= GARAGE_ROOM_MIN_C && room.targetC < 16
+        && Number.isInteger(room.targetC * 2) ? room.targetC : null });
     const savedExposure = readState(this.keys.exposure);
     try {
       if (savedExposure != null && (typeof savedExposure !== 'object' || Array.isArray(savedExposure)))
@@ -180,10 +182,23 @@ export class GarageRuntime {
       warning: manual?.mode === 'off' && pause ? 'Price control is paused. Heating stays off until the pause ends, unless freeze protection requires heating.' : null };
   }
   nativeControls(now = this.clock()) {
-    const controls = this.adapter?.nativeControls?.(now) ?? { available: false, busy: false, pending: false, result: null,
+    const external = this.adapter?.externalTemperature?.(now);
+    const room = this.roomTemperature;
+    const handover = room.targetC !== null || room.mustClear || external?.restorationPending || external?.phase && external.phase !== 'internal';
+    const controls = this.adapter?.nativeControls?.(now, { afterExternalClear: Boolean(handover) }) ?? { available: false, busy: false, pending: false, result: null,
       reason: 'The installed adapter does not support ordinary Mitsubishi controls.',
       settings: Object.fromEntries(Object.keys(GARAGE_NATIVE_SETTINGS).map(key => [key, { supported: false,
         available: false, value: null, measuredAt: null, usable: false }])) };
+    const target = controls.settings.targetC;
+    if (target?.supported && external?.configurable && [1, .5].includes(target.step)) {
+      controls.settings.targetC = { ...target, min: GARAGE_ROOM_MIN_C,
+        available: true, reason: null };
+      controls.available = true;
+    }
+    if (room.targetC !== null && target) {
+      controls.settings.targetC = { ...controls.settings.targetC, value: room.targetC };
+    }
+    if (room.targetC !== null || room.ordinary) controls.result = this.roomTemperatureStatus(now).result;
     const reason = !this.canControl() ? 'This instance does not own device control.'
       : !['mqtt', 'providers'].includes(this.input) ? 'Ordinary Mitsubishi controls require a live connection.'
         : this.closed ? 'Garage control is closed.'
@@ -195,7 +210,15 @@ export class GarageRuntime {
   }
   async setNativeSettings(input) {
     const now = this.clock(), controls = this.nativeControls(now);
-    const request = validateGarageNativeSetting(input, controls.settings.targetC?.step ?? 1);
+    const lower = input?.setting === 'targetC' && finite(input.value) && input.value < 16;
+    // Native bounds stay unchanged. Only this owner-facing room intent can use
+    // the external sensor path below the ordinary Mitsubishi range.
+    const request = validateGarageNativeSetting(lower ? { ...input, value: 16 } : input, controls.settings.targetC?.step ?? 1);
+    if (lower) {
+      if (input.value < GARAGE_ROOM_MIN_C || !Number.isInteger(input.value / (controls.settings.targetC?.step ?? 1))
+        || controls.settings.targetC?.min !== GARAGE_ROOM_MIN_C) throw new Error('The external room setting is outside its supported values.');
+      request.value = input.value;
+    }
     if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.input))
       throw new Error(controls.reason ?? 'Ordinary Mitsubishi controls are unavailable.');
     if (controls.busy) throw new Error('Wait for the current garage request to finish.');
@@ -217,9 +240,17 @@ export class GarageRuntime {
       if (this.episode?.accounting) {
         this.episode.accounting.qualified = false; this.episode.reason = 'manual-native-setting'; this.saveEpisode();
       }
-      await this.adapter.setNativeSetting(request, now);
+      const external = this.adapter?.externalTemperature?.(now);
+      if (lower) {
+        this.saveRoomTarget(request.value, now);
+        this.roomTemperature.select(request.value, now);
+      } else if (this.roomTemperature.targetC !== null || this.roomTemperature.mustClear
+        || external?.restorationPending || external?.phase && external.phase !== 'internal') {
+        this.saveRoomTarget(null, now);
+        this.roomTemperature.cancel(request, now);
+      } else await this.adapter.setNativeSetting(request, now);
       return this.status();
-    } finally { this.manualBusy = false; }
+    } finally { this.manualBusy = false; void this.roomTemperatureTick(); }
   }
   async setTemporary(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -279,36 +310,41 @@ export class GarageRuntime {
     } finally { this.manualBusy = false; }
   }
   setAdapter(adapter) { this.adapter = adapter; }
-  preferencesStatus() {
-    const reason = !this.canControl() ? 'This instance does not own garage settings.'
-      : !['mqtt', 'providers', 'simulated'].includes(this.input) ? 'Garage preferences require a live connection.'
-        : this.closed ? 'Garage control is closed.' : null;
-    const busy = Boolean(this.manualBusy || this.dispatch);
-    return { available: reason === null && !busy, busy, reason };
+  roomTemperatureStatus(now = this.clock()) {
+    const observation = this.engine.latest.garage_temperature;
+    const status = this.roomTemperature.status(observation);
+    const external = this.adapter?.externalTemperature?.(now);
+    if (status.acknowledged && (!this.canControl() || this.closed
+      || !usable(observation, now, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS)
+      || external?.phase !== 'active' || !external.acknowledged || !(external.expiresInMs > 0)
+      || this.adapter?.status(now).health?.pumpCommunicating !== true)) {
+      status.acknowledged = false; status.phase = 'waiting';
+      status.reason = 'External control is no longer confirmed. Waiting for fresh sensor and device state.';
+      if (status.result) status.result = { ...status.result, status: 'saved', reason: status.reason };
+    }
+    return status;
   }
-  async setPreferences(input) {
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1
-      || typeof input.assumeISave10C !== 'boolean') throw new Error('Choose whether to assume i-save 10°C.');
-    const controls = this.preferencesStatus();
-    if (!controls.available) throw new Error(controls.reason ?? 'Wait for the current garage request to finish.');
-    if (input.assumeISave10C === this.settings.assumeISave10C) return this.status();
-    const previous = this.settings, checkpoint = this.checkpoint;
-    this.manualBusy = true;
+  roomTemperatureTick() {
+    if (this.closed || this.roomDispatch || this.manualBusy || this.dispatch) return;
+    const now = this.clock(), observation = this.engine.latest.garage_temperature;
+    this.roomDispatch = Promise.resolve().then(() => this.roomTemperature.tick({ adapter: this.adapter,
+      observation, now, canControl: this.canControl() && ['mqtt', 'providers'].includes(this.input),
+      sourceUsable: usable(observation, now, GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS) === true,
+    })).catch(() => {
+      this.roomTemperature.phase = 'blocked';
+      this.roomTemperature.reason = 'External temperature control could not complete. Waiting for fresh device state.';
+    }).finally(() => { this.roomDispatch = null; });
+    return this.roomDispatch;
+  }
+  saveRoomTarget(targetC, now) {
+    const checkpoint = this.checkpoint;
     try {
-      this.settings = garageSettings({ ...previous, assumeISave10C: input.assumeISave10C });
-      try {
-        this.store.transaction(() => {
-          this.append('context', { ownerAssumptionChanged: true, assumeISave10C: input.assumeISave10C },
-            `owner-assumption:${randomUUID()}`);
-          this.store.setState(this.keys.preferences, { assumeISave10C: input.assumeISave10C });
-          this.store.setState(`garage:configuration:${this.input}`, this.settings);
-          this.store.event('garage-isave-assumption-changed', { assumeISave10C: input.assumeISave10C }, this.clock());
-        });
-      } catch (error) { this.settings = previous; this.checkpoint = checkpoint; throw error; }
-      // Changing an assumption never continues an already admitted OFF lease.
-      await this.release('owner-assumption-changed');
-      return this.status();
-    } finally { this.manualBusy = false; }
+      this.store.transaction(() => {
+        this.store.setState(this.keys.roomTemperature, { targetC });
+        this.append('context', { normalReferenceReset: true, roomTargetC: targetC }, `room-target:${randomUUID()}`, now);
+        this.store.event('garage-room-target-changed', { targetC }, now);
+      });
+    } catch (error) { this.checkpoint = checkpoint; throw error; }
   }
   pauseStartsToday(now = this.clock()) {
     const day = moment.tz(now, 'Europe/Helsinki').startOf('day');
@@ -422,8 +458,8 @@ export class GarageRuntime {
         : nativeState.power === 'off' || nativeState.power === false ? false : null,
       baselineVerified: native?.baselineVerified === true,
       baselineAccepted: native?.baselineAccepted === true || native?.baselineVerified === true,
-      baselineBasis: native?.baselineVerified === true ? 'verified' : native?.baselineAccepted === true ? 'owner-assumed' : 'unavailable',
-      sourceEpoch: garageDigest({ adapter: native?.sourceEpoch ?? null,
+      baselineBasis: native?.baselineVerified === true ? 'verified' : 'unavailable',
+      sourceEpoch: garageDigest({ adapter: native?.sourceEpoch ?? null, roomTargetC: this.roomTemperature.targetC,
         rear: [rear?.source ?? null, rear?.device ?? null, rear?.raw?.temperatureRouteSignature ?? null],
         front: [front?.source ?? null, front?.device ?? null, front?.raw?.temperatureRouteSignature ?? null], outdoor: outdoor?.source ?? null }),
       managedPause: Boolean(native?.episode && native.phase === 'paused'),
@@ -523,6 +559,7 @@ export class GarageRuntime {
   safetyTick() {
     if (this.closed) return;
     const now = this.clock();
+    void this.roomTemperatureTick();
     try {
       const observation = this.read(now);
       // Retain short disturbances seen by the safety loop until the next
@@ -813,7 +850,6 @@ export class GarageRuntime {
     if (!preserveManual && this.manual) { this.manual = null; this.saveManual(); }
     this.plan = null; this.lastPlannerAt = null;
     if (this.episode) {
-      if (reason === 'owner-assumption-changed') this.episode.accounting.qualified = false;
       this.episode.phase = 'recovery';
       try { this.saveEpisode(); } catch { /* An existing restore obligation still needs its ON request. */ }
     }
@@ -827,7 +863,8 @@ export class GarageRuntime {
     const temperature = signal => raw[signal] ? observationView(raw[signal], now, this.settings.maxSensorAgeMs)
       : { ...observationView(this.engine.lastKnownTemperatures?.[signal], now, this.settings.maxSensorAgeMs), stale: true };
     const pause = this.activePause(now);
-    return { settings: structuredClone(this.settings), preferences: this.preferencesStatus(),
+    return { settings: structuredClone(this.settings),
+      roomTemperature: this.roomTemperatureStatus(now),
       planningLimits: { pausesToday: this.pauseStartsToday(now), maxPausesPerDay: this.settings.maxPausesPerDay,
         doorStartBelowC: 2, recoveryRequired: Boolean(this.episode?.phase === 'recovery'),
         normalHeatingSince: this.normalHeatingSince ?? null,
@@ -860,6 +897,10 @@ export class GarageRuntime {
     if (this.closed) return;
     this.closed = true;
     clearTimeout(this.controlTimer);
+    await this.roomDispatch;
+    if (restore && this.canControl() && this.adapter?.externalTemperature?.(this.clock())?.clearAvailable
+      && (this.roomTemperature.targetC !== null || this.adapter.externalTemperature(this.clock()).restorationPending))
+      await this.adapter.setExternalTemperature({ temperatureC: null }, this.clock()).catch(() => {});
     if (restore && this.canControl()) await this.release('application-shutdown').catch(() => {});
     await this.dispatch?.catch(() => {});
     const worker = this.worker; this.worker = null;

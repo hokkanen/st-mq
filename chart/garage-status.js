@@ -1,5 +1,5 @@
 import { isReadOnlyReplica } from './replica-status.js';
-import { mitsubishiReadings, renderMitsubishiReadings } from './mitsubishi.js';
+import { mitsubishiReadings, mitsubishiRoomTemperature, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
 import { equipmentReadingRows } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
@@ -218,6 +218,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const adapter = garage.adapter ?? {}, health = adapter.health ?? {};
   const plan = garage.plan ?? {}, learning = garage.learning ?? {};
   const episode = garage.episode ?? {};
+  const room = mitsubishiRoomTemperature(garage);
   const rows = [];
   for (const location of ['rear', 'front']) {
     const label = location === 'rear' ? 'Rear air · near pipe' : 'Front air · near door';
@@ -230,7 +231,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
     if (finite(local.interventionAt)) rows.push([`${location === 'rear' ? 'Rear' : 'Front'} intervention by`, clock(local.interventionAt)]);
   }
   rows.push(['Limiting protection location', text(protection.limitingLocation)],
-    ['Normal heating setting basis', settings.assumeISave10C === true ? '10 °C · Assumed i-save' : adapter.baselineVerified === true ? 'Verified native baseline' : 'Native baseline not verified'],
+    ['Normal heating setting basis', room ? `${room.value} saved · ${room.basis}` : adapter.baselineVerified === true ? 'Verified native baseline' : 'Native baseline not verified'],
     ['Device online', state(health.deviceOnline)], ['Driver progressing', state(health.driverProgressing)],
     ['Pump communicating', state(health.pumpCommunicating)],
     ['Local lease remaining', finite(adapter.episode?.leaseExpiresAt) ? number(Math.max(0, adapter.episode.leaseExpiresAt - now) / 60_000, 'min') : 'No accepted lease'],
@@ -246,7 +247,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const policy = settings.protection ?? {};
   const settingGroups = {
     heating: [
-      ['Normal Mitsubishi setting', settings.assumeISave10C === true ? '10 °C · Assumed i-save' : number(settings.baselineC, '°C'), 'Existing pump setting. Change the i-save assumption in Mitsubishi Heat-pump settings.'],
+      ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : number(settings.baselineC, '°C'), 'Change the permanent room setting in Mitsubishi Heat-pump settings. Below 16 °C uses the Garage rear sensor with a native 16 °C target.'],
       ['Savings selection', finite(settings.aggressiveness) ? settings.aggressiveness === 0 ? 'Normal heating' : 'Larger opportunities' : 'Unavailable', 'Normal heating stays available when savings are disabled. Otherwise only pauses meeting the minimum benefit and planned OFF time, with current pipe protection and recovery checks are considered.'],
     ],
     protection: [
@@ -352,16 +353,16 @@ export function renderGarage(document, status) {
   const power = nativeReading('power', 'Mitsubishi power', text);
   const mode = nativeReading('mode', 'Mitsubishi mode', text);
   const target = nativeReading('targetC', 'Native Mitsubishi target', value => number(value, '°C'));
-  const assumed = garage.settings?.assumeISave10C === true;
-  if (assumed) {
-    set('garage-native-target', '10 °C');
+  const room = mitsubishiRoomTemperature(garage);
+  if (room) {
+    set('garage-native-target', room.value);
     const node = document.getElementById('garage-native-target');
     node?.classList.toggle('stale', false); node?.classList.toggle('muted', false);
-    target.detail = `Assumed i-save setting: 10 °C. Assumes this remains active across OFF/ON; native readings cannot confirm it.\n\n${target.detail}`;
+    target.detail = `${room.detail}\n\n${target.detail}`;
   }
-  set('garage-native-target-basis', assumed ? 'Assumed i-save' : '');
+  set('garage-native-target-basis', room?.basis ?? '');
   const targetBasis = document.getElementById('garage-native-target-basis');
-  if (targetBasis) targetBasis.hidden = !assumed;
+  if (targetBasis) targetBasis.hidden = !room;
   detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings', [power, mode, target].map(reading => reading.detail).join('\n\n'));
   const controls = garage.heatingControls ?? {}, action = garage.plan?.nextAction;
   const held = controls.paused && controls.holdUntil > now;

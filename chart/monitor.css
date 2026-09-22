@@ -1362,8 +1362,3 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 /* Mitsubishi uses the ground-source pump form and table layout. */
 .mitsubishi-table td > strong { display: block; font-weight: 500; }
 .mitsubishi-table .equipment-reading-qualifier { display: block; margin-top: 3px; font-size: 10px; color: var(--muted); }
-
-.mitsubishi-assumption { padding: 0 0 .8rem; margin-bottom: .8rem; border-bottom: 1px solid var(--border); }
-.mitsubishi-assumption-choice { display: flex; flex-direction: row; align-items: center; gap: .6rem; font-weight: 600; }
-.mitsubishi-assumption-choice input[type="checkbox"] { width: 1.05rem; height: 1.05rem; min-height: 1.05rem; flex: 0 0 auto; padding: 0; margin: 0; accent-color: var(--accent); }
-.mitsubishi-assumption p { margin: .45rem 0 0; }

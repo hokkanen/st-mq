@@ -4,7 +4,7 @@ export const GARAGE_POLICY_VERSION = 'garage-thermal-reserve-v1';
 export const GARAGE_HEAT_TRANSFER_SAFETY_FACTOR = 2;
 export const GARAGE_PREFERENCE_VERSION = 'garage-protection-limited-opportunities-v2';
 export const DEFAULT_GARAGE_SETTINGS = Object.freeze({
-  enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false, assumeISave10C: false,
+  enabled: false, aggressiveness: 50, baselineC: 10, frontRequired: false,
   minSavingsEur: .5, maxPausesPerDay: 1,
   maxSensorAgeMs: 120_000, minOnMs: 3 * 3_600_000, minOffMs: 3_600_000,
   stepMinutes: 15,
@@ -19,8 +19,9 @@ function number(input, key, min, max) {
 }
 export function garageSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Garage settings must be an object');
-  // Read saved owner settings without retaining retired pause/horizon ceilings.
-  const { maxPauseHours: _retiredPause, maxHorizonHours: _retiredHorizon, ...current } = input;
+  // Read saved owner settings without retaining retired controls.
+  const { maxPauseHours: _retiredPause, maxHorizonHours: _retiredHorizon,
+    assumeISave10C: _retiredISave, ...current } = input;
   input = current;
   for (const key of Object.keys(input)) if (!Object.hasOwn(DEFAULT_GARAGE_SETTINGS, key)) throw new Error(`Unknown garage setting: ${key}`);
   if (input.protection != null && (typeof input.protection !== 'object' || Array.isArray(input.protection))) throw new Error('Garage protection must be an object');
@@ -35,7 +36,7 @@ export function garageSettings(input = {}) {
   for (const key of Object.keys(protection)) if (Object.hasOwn(supplied, key)) protection[key] = supplied[key];
   if (legacy) { protection.version = GARAGE_POLICY_VERSION; protection.approved = false; }
   const output = { ...DEFAULT_GARAGE_SETTINGS, ...input, protection };
-  for (const key of ['enabled', 'frontRequired', 'assumeISave10C']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
+  for (const key of ['enabled', 'frontRequired']) if (typeof output[key] !== 'boolean') throw new Error(`Garage ${key} must be boolean`);
   number(output, 'aggressiveness', 0, 100); number(output, 'baselineC', 8, 16);
   number(output, 'minSavingsEur', 0, 100);
   number(output, 'maxPausesPerDay', 1, 4);

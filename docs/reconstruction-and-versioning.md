@@ -255,11 +255,13 @@ Both measured locations and pipe reserves must recover, with continuous normal
 availability; the established eight-hour accepted-native fallback may close
 changed-weather recovery as incomplete, without savings. Gaps reset that dwell.
 
-Changing the owner i-save assumption records a context event and stored preference
-atomically and releases owned OFF permission. Normalized samples preserve whether
-the accepted baseline was verified or owner-assumed. Matching configuration and
-source epochs drive the same ordered update in live learning, background replay
-and charts; changing the assumption cannot rewrite historical verification.
+Permanent external room targets are control intent, separate from observed
+native readbacks and verified economic-pause baseline evidence. Changing a room
+target cannot rewrite historical verification, temperatures or savings. Matching
+configuration and source epochs continue to drive the same ordered update in
+live learning, background replay and charts. Restart resumes a saved low target
+only after fresh independent source evidence and native setup; cached remote
+temperature commands are never treated as new observations.
 
 If changed weather makes the frozen pre-pause temperatures unreachable, eight
 continuous hours of fresh accepted native ON with both actual locations and both

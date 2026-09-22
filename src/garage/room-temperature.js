@@ -1,0 +1,174 @@
+export const GARAGE_ROOM_MIN_C = 5;
+export const GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS = 90_000;
+const pending = result => ['pending', 'published', 'accepted'].includes(result?.status);
+const failed = result => ['rejected', 'failed', 'uncertain', 'superseded'].includes(result?.status);
+const nativeSignature = native => JSON.stringify(['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane']
+  .map(key => native?.[key] ?? null));
+
+/** Saved room intent is separate from short-lived sensor permission. No sample,
+ * command envelope or native confirmation survives a host/driver session. */
+export class GarageRoomTemperature {
+  constructor({ targetC = null, now = Date.now() } = {}) {
+    this.targetC = targetC;
+    this.startedAt = now;
+    this.minimumMeasuredAt = now;
+    this.generation = 0;
+    this.reset();
+  }
+  reset() {
+    this.mustClear = this.targetC !== null;
+    this.clearSentAt = null;
+    this.prepared = false;
+    this.preparation = null;
+    this.signature = null;
+    this.inhibited = null;
+    this.phase = this.targetC === null ? 'disabled' : 'preparing';
+    this.reason = null;
+    this.suppliedC = null;
+    this.acknowledged = false;
+  }
+  select(targetC, now) {
+    this.targetC = targetC;
+    this.requestedAt = now;
+    this.generation++;
+    this.reset();
+    this.mustClear = true;
+    this.ordinary = null;
+  }
+  cancel(request, now) {
+    this.select(null, now);
+    this.ordinary = request;
+    this.phase = 'clearing';
+  }
+  status(observation) {
+    return { targetC: this.targetC, phase: this.phase, reason: this.reason,
+      sourceC: Number.isFinite(observation?.value) ? observation.value : null,
+      measuredAt: observation?.sourceTime ?? null, offsetC: this.targetC === null ? 0 : 16 - this.targetC,
+      suppliedC: this.suppliedC, nativeTargetC: 16, acknowledged: this.acknowledged,
+      result: this.ordinary ? { ...this.ordinary, status: 'pending', requestedAt: this.requestedAt,
+        reason: this.reason } : this.targetC === null ? null : { setting: 'targetC', value: this.targetC,
+        status: this.acknowledged ? 'acknowledged' : 'saved', requestedAt: this.requestedAt ?? null,
+        reason: this.reason } };
+  }
+  async tick({ adapter, observation, now, canControl, sourceUsable }) {
+    if (!adapter || !canControl) {
+      this.acknowledged = false;
+      if (this.targetC !== null || this.mustClear) {
+        this.phase = 'waiting'; this.reason = 'This instance does not have a live device control connection.';
+      }
+      return;
+    }
+    const external = adapter.externalTemperature?.(now);
+    if (this.targetC === null && !this.mustClear && !this.ordinary) return;
+    const generation = this.generation;
+    const current = () => generation === this.generation;
+    this.acknowledged = false;
+    if (!external?.supported) {
+      this.phase = 'blocked'; this.reason = 'The Pill external-temperature feature is unavailable.'; return;
+    }
+    const epoch = external.sourceEpoch ?? JSON.stringify([external.bootId, external.sessionId]);
+    if (this.epoch !== epoch) {
+      this.epoch = epoch;
+      this.reset(); this.mustClear = true;
+      this.minimumMeasuredAt = now;
+      this.lastMeasuredAt = null;
+    }
+    const active = external.phase !== 'internal' || external.restorationPending;
+    if (external.rearmRequired && !this.mustClear) this.inhibited = 'The pump setting or external control changed. Apply the room setting again to resume.';
+    if (!external.pending && ['uncertain', 'failed', 'superseded'].includes(external.result?.status)) this.mustClear = true;
+    if (this.prepared && nativeSignature(adapter.status(now).native) !== this.signature)
+      this.inhibited = 'The pump settings changed. Apply the room setting again to resume.';
+    const fresh = sourceUsable && observation?.source !== 'garage-adapter'
+      && Number.isSafeInteger(observation?.sourceTime) && observation.sourceTime >= this.startedAt
+      && observation.sourceTime <= now && now - observation.sourceTime < GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS;
+    const supplied = fresh && this.targetC !== null ? Math.round((observation.value + 16 - this.targetC) * 2) / 2 : null;
+    const inRange = Number.isFinite(supplied) && supplied >= 8 && supplied <= 39.5;
+    const source = fresh ? JSON.stringify([observation.source, observation.device, observation.raw?.temperatureRouteSignature]) : null;
+    if (this.source && source && this.source !== source) {
+      this.mustClear = true; this.prepared = false; this.preparation = null;
+      this.minimumMeasuredAt = now;
+    }
+    if (source) this.source = source;
+    const fallback = this.inhibited ?? (!external.enabled ? 'External temperature is disabled on the Pill.'
+      : !fresh ? 'Waiting for a fresh Garage rear temperature. The pump uses its internal sensor after clearing.'
+        : !inRange ? 'The adjusted sensor value is outside the Pill range. The pump uses its internal sensor after clearing.' : null);
+    if (this.mustClear || fallback && active || this.targetC === null && active) {
+      this.phase = 'clearing'; this.reason = fallback;
+      if (this.clearSentAt !== null && !active && !external.rearmRequired
+        && external.result?.temperatureC === null && external.result?.status === 'acknowledged'
+        && external.result.requestedAt >= this.clearSentAt) {
+        this.mustClear = false; this.clearSentAt = null;
+        this.minimumMeasuredAt = Math.max(this.minimumMeasuredAt, now);
+        this.lastMeasuredAt = null;
+      } else {
+        this.reason ??= external.clearReason;
+        if (external.clearAvailable && !pending(external.result)) {
+          const result = await adapter.setExternalTemperature({ temperatureC: null }, now);
+          if (current()) this.clearSentAt = result.requestedAt ?? now;
+        }
+        return;
+      }
+    }
+    if (!current()) return;
+    if (this.targetC === null) {
+      if (this.ordinary) {
+        const request = this.ordinary;
+        const control = adapter.nativeControls(now).settings[request.setting];
+        if (!control?.available) { this.reason = control?.reason; return; }
+        this.ordinary = null;
+        await adapter.setNativeSetting(request, now);
+      }
+      this.phase = 'disabled'; this.reason = null; return;
+    }
+    if (fallback && (this.inhibited || !external.enabled)) {
+      this.phase = 'blocked'; this.reason = fallback; return;
+    }
+    const native = adapter.status(now).native;
+    if (native?.power !== 'on' || native?.mode !== 'heat') {
+      this.phase = 'waiting'; this.reason = 'Select HEAT and turn the pump on before applying a lower room setting.'; return;
+    }
+    if (!this.prepared) {
+      this.phase = 'preparing'; this.reason = 'Selecting native 16°C before external control.';
+      const controls = adapter.nativeControls(now);
+      if (this.preparation) {
+        const result = controls.result;
+        if (result?.setting === 'targetC' && result.value === 16 && result.requestedAt === this.preparation.requestedAt) {
+          if (result.status === 'native-confirmed') {
+            this.prepared = true; this.signature = nativeSignature(native);
+          } else if (failed(result)) {
+            this.inhibited = 'Selecting native 16°C was not confirmed. Apply the room setting again to retry.';
+            this.phase = 'blocked'; this.reason = this.inhibited;
+          }
+        }
+        if (!this.prepared) return;
+      } else {
+        if (!controls.settings.targetC?.available) { this.reason = controls.settings.targetC?.reason; return; }
+        const result = await adapter.setNativeSetting({ setting: 'targetC', value: 16 }, now);
+        if (current()) this.preparation = result;
+        return;
+      }
+    }
+    if (fallback) { this.phase = 'waiting'; this.reason = fallback; return; }
+    if (external.phase === 'active' && external.acknowledged && external.temperatureC === supplied
+      && external.measuredAt === observation.sourceTime && external.expiresInMs > 0) {
+      this.phase = 'active'; this.reason = null; this.suppliedC = supplied; this.acknowledged = true; return;
+    }
+    // Clearing/expiry consumes a source timestamp. Only a genuinely newer sensor
+    // measurement may begin the next permission; polling cannot renew its age.
+    if (observation.sourceTime <= this.minimumMeasuredAt
+      || observation.sourceTime <= (this.lastMeasuredAt ?? -Infinity) && !active) {
+      this.phase = 'waiting'; this.reason = 'Waiting for a new Garage rear measurement.'; return;
+    }
+    if (!external.available || external.pending) {
+      this.phase = active ? 'preparing' : 'waiting'; this.reason = external.reason; return;
+    }
+    if (this.lastMeasuredAt === observation.sourceTime && this.lastSuppliedC === supplied
+      && external.result?.status !== 'rejected') return;
+    const result = await adapter.setExternalTemperature({ temperatureC: supplied,
+      measuredAt: observation.sourceTime, requestedExpiryAt: observation.sourceTime + GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS }, now);
+    if (current()) {
+      this.lastMeasuredAt = observation.sourceTime; this.lastSuppliedC = supplied;
+      this.suppliedC = supplied; this.phase = 'preparing'; this.reason = result.reason ?? null;
+    }
+  }
+}

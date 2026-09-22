@@ -1,7 +1,7 @@
 # Garage heating
 
-Garage chooses occasional worthwhile heat-pump OFF periods. It never preheats or
-raises the room setting. Two simple cooling rates predict the rear and front air;
+Garage supports a permanent room setting and occasional worthwhile heat-pump OFF
+periods. Economic control never preheats or raises the room setting. Two simple cooling rates predict the rear and front air;
 two independent copper-pipe reference temperatures limit the pause. After each
 pause, normal heating and observed recovery must complete before another starts.
 Home heating, charging schedules and their savings accounting remain separate.
@@ -49,22 +49,33 @@ interruption or OFF state resets that dwell. The retained `aggressiveness` setti
 is only an enable preference: zero disables economic pauses; every positive value
 uses the same explicit opportunity thresholds.
 
-The **Assume i-save 10°C** checkbox in Heat-pump settings is stored immediately
-on the owning instance. It records the owner's assumption that i-save stays at
-10°C through OFF/ON. It does not activate i-save or command a thermostat change.
-The room setting reads **10°C · Assumed i-save**; the detailed native reading
-continues to show what CN105 actually reported, including 16°C. Verification
-remains false unless independently established. Clearing the checkbox releases
-an owned pause and restores strict baseline requirements.
+**Room setting** in Heat-pump settings accepts a permanent target down to **5°C**
+when the installed Pill supports external temperature control and its local
+feature flag is enabled. Targets below 16°C use the independent Garage rear
+sensor, `garage_temperature`. The pump must already be ON in HEAT mode. ST-MQ
+explicitly commands the native 16°C target and feeds the Pill
+`rear temperature + (16 − room setting)`; a 5°C setting adds
+11°C. The room setting and native 16°C readback are displayed separately. This
+does not use Mitsubishi i-save or assume that a special mode survives OFF/ON.
+
+Remote temperature values use the driver's 8–39.5°C range and 0.5°C steps. Only
+original, usable sensor reports less than 90 seconds old can renew the feed;
+repeated or retained reports do not refresh them. When the source becomes stale,
+the feed expires and the pump falls back to its native 16°C thermostat setting.
+The saved room setting resumes after a host restart only once fresh source
+evidence and native setup are established again. The override is cleared through
+the serial path before ordinary native settings or a managed pause can proceed.
+This control path does not establish physical frost protection or qualify the
+installation's low-heat behavior.
 
 The `shelly-cn105` driver supports ordinary Mitsubishi settings and selective
 pause leases. Automatic pauses additionally require local arming, fresh matching
 native mode/fan/vanes, selective power, local expiry and restart-restoration
 commissioning, healthy communications, active host authority and approved
-protection. The checkbox can replace the low-heat verification requirement only
-when the installed driver advertises assumption support. An older driver stays
-blocked until updated. Driver configuration, deployment and live commissioning
-are separate from editing ST-MQ. See [adapter contract](garage-adapter.md).
+protection. Economic pauses still require the independently verified native
+baseline; external temperature control does not supply that commissioning
+evidence. Driver configuration, deployment and live commissioning are separate
+from editing ST-MQ. See [adapter contract](garage-adapter.md).
 
 **Pause savings** suspends economic control until its Finnish local deadline.
 **Normal heating** and **Heating off** are explicit manual selections. During
@@ -76,8 +87,8 @@ pump's own thermostat to work, not a claim that it is producing heat.
 
 Authenticated mutations return the full dashboard status:
 `POST /api/garage/temporary`, `POST /api/garage/heating`,
-`POST /api/garage/native`, and `POST /api/garage/preferences` with exactly
-`{ "assumeISave10C": true }` or false. Replicas cannot change settings or command
+and `POST /api/garage/native`. Room setting uses
+`{ "setting": "targetC", "value": 5 }`. Replicas cannot change settings or command
 the pump. UI polling never renews an OFF permission.
 
 ## Sensors, doors and protection

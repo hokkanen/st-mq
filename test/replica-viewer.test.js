@@ -85,9 +85,8 @@ function recordLearningModels(publication, { recordedAt = publication.sourceAt, 
   store.setState('adaptive:mqtt', checkpoint);
   const garageSeed = createGarageModel({ seedAt: recordedAt });
   garageSeed.rear.values[0] = .026;
-  const settings = garageSettings({ enabled: true, assumeISave10C: true });
+  const settings = garageSettings({ enabled: true });
   store.setState('garage:configuration:mqtt', settings);
-  store.setState('garage:preferences:mqtt', { assumeISave10C: true });
   const entry = appendGarageEntry(store, 'mqtt', 'context', {}, settings, recordedAt, { seed: garageSeed });
   const garage = applyGarageEntry(null, entry);
   if (!matching) garage.algorithmVersion = 'invented-unsupported-garage-algorithm';
@@ -126,10 +125,9 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(status.liveWrites, false);
   assert.equal(status.garage.adapter.automaticControl, false);
   assert.equal(status.garage.adapter.liveControlSupported, false);
-  assert.equal(status.garage.settings.assumeISave10C, true, 'Saved owner assumption remains distinct from native verification');
+  assert.equal(Object.hasOwn(status.garage.settings, 'assumeISave10C'), false);
   assert.equal(Object.hasOwn(status.garage.settings, 'maxPauseHours'), false);
   assert.equal(Object.hasOwn(status.garage.settings, 'maxHorizonHours'), false);
-  assert.equal(status.garage.preferences?.available ?? false, false);
   assert.equal(status.garage.adapter.baselineVerified, undefined);
   assert.equal(status.garage.adapter.native, undefined);
   assert.equal(status.garage.plan, undefined, 'A viewer never advertises a new savings opportunity');
@@ -145,12 +143,11 @@ test('replica exposes both saved models without sample histories, live readiness
   assert.equal(garageDisplayValue.planningDetails.find(row => row.key === 'pause-window').value, 'None');
   const target = { textContent: '', classList: { toggle() {} } }, basis = { textContent: '', hidden: true };
   renderGarage({ getElementById: id => ({ 'garage-native-target': target, 'garage-native-target-basis': basis })[id] }, status);
-  assert.equal(target.textContent, '10 °C');
-  assert.equal(basis.textContent, 'Assumed i-save');
-  assert.equal(basis.hidden, false);
-  for (const path of ['/api/garage/preferences', '/api/garage/native', '/api/garage/heating', '/api/garage/release', '/api/garage/temporary'])
+  assert.equal(target.textContent, '—', 'Missing native readback cannot invent a room setting');
+  assert.equal(basis.hidden, true);
+  for (const path of ['/api/garage/native', '/api/garage/heating', '/api/garage/release', '/api/garage/temporary'])
     assert.equal((await request(path, { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ assumeISave10C: false }) })).status, 405, `${path} remains read-only`);
+      body: JSON.stringify({ setting: 'targetC', value: 5 }) })).status, 405, `${path} remains read-only`);
   assert.equal(app.engine, undefined);
   assert.equal((await request('/api/override', { method: 'POST' })).status, 405);
   now += 7 * 86_400_000;

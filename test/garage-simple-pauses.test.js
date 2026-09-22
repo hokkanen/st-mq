@@ -99,35 +99,6 @@ function runtimeFixture(t, extra = {}, seed = null) {
   return { runtime, store, config, engine, calls, native, reports, at: value => { now = value; }, owner: value => { owner = value; } };
 }
 
-test('owner assumption is durable and journaled without inventing a thermostat command or verified reading', async t => {
-  const f = runtimeFixture(t), before = structuredClone(f.native);
-  await f.runtime.setPreferences({ assumeISave10C: true });
-  assert.deepEqual(f.native, before);
-  assert.deepEqual(f.store.getState(f.runtime.keys.preferences), { assumeISave10C: true });
-  assert.deepEqual(replayGarageJournal(f.store, 'mqtt'), f.runtime.checkpoint);
-  assert.equal(f.calls[0].reason, 'owner-assumption-changed');
-  const restarted = new GarageRuntime({ store: f.store, engine: f.engine, config: f.config, clock: () => NOW });
-  assert.equal(restarted.settings.assumeISave10C, true);
-  await restarted.close({ restore: false });
-  for (const value of [{ assumeISave10C: 'true' }, { assumeISave10C: true, extra: 1 }, {}])
-    await assert.rejects(f.runtime.setPreferences(value));
-  f.owner(false); await assert.rejects(f.runtime.setPreferences({ assumeISave10C: false }), /own/);
-});
-
-test('failed preference persistence rolls back settings, checkpoint and journal', async t => {
-  const f = runtimeFixture(t), before = structuredClone(f.runtime.checkpoint), original = f.store.setState;
-  f.store.setState = function (key, value) {
-    if (key === f.runtime.keys.preferences) throw new Error('test storage failure');
-    return original.call(this, key, value);
-  };
-  await assert.rejects(f.runtime.setPreferences({ assumeISave10C: true }), /storage failure/);
-  f.store.setState = original;
-  assert.equal(f.runtime.settings.assumeISave10C, false);
-  assert.deepEqual(f.runtime.checkpoint, before);
-  assert.deepEqual(replayGarageJournal(f.store, 'mqtt'), before);
-  assert.equal(f.calls.length, 0);
-});
-
 test('minimum normal heating requires continuous fresh ON evidence and restarts on a gap', t => {
   const f = runtimeFixture(t); f.runtime.safetyTick();
   assert.equal(f.runtime.normalHeatingSince, NOW);

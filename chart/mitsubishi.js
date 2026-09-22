@@ -41,6 +41,27 @@ export function mitsubishiValue(setting, value, unit = mitsubishiSettings[settin
   return `${formatted}${unit && unit !== 'boolean' && unit !== 'raw' ? ` ${unit === 'degC' ? '°C' : unit}` : ''}`;
 }
 
+/** A saved room target and its current control basis are separate from pump readback. */
+export function mitsubishiRoomTemperature(garage = {}) {
+  const control = garage.roomTemperature;
+  if (!Number.isFinite(control?.targetC)) return null;
+  const active = control.phase === 'active' && control.acknowledged === true;
+  const basis = active ? 'External sensor · active'
+    : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · preparing'
+      : control.phase === 'clearing' ? 'External sensor · clearing' : 'External sensor · fallback';
+  const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 16);
+  const progress = active ? 'The driver has acknowledged the external temperature; the saved room setting is active.'
+    : control.phase === 'preparing' || control.phase === 'active' ? 'Preparing external temperature control; the saved room setting is not yet confirmed active.'
+      : control.phase === 'clearing' ? 'Clearing the supplied temperature and waiting for internal-sensor acknowledgement before the next control step.'
+        : `External temperature control is unavailable. Check the control status below; internal temperature control at ${nativeTarget} is the fallback after native setup.`;
+  const detail = [`Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. ${progress}`,
+    `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; ST-MQ adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
+    `Garage rear: ${mitsubishiValue('targetC', control.sourceC)}.${clock(control.measuredAt) ? ` Measured ${clock(control.measuredAt)}.` : ''} Supplied temperature: ${mitsubishiValue('targetC', control.suppliedC)}.`,
+    control.reason ? `Control status: ${words(control.reason)}.` : '',
+    `Missing or stale sensor readings stop the external input; the driver falls back to internal temperature control at ${nativeTarget}. A room setting of 16 °C or higher, or another heat-pump setting change, ends external temperature control.`].filter(Boolean).join('\n\n');
+  return { value: mitsubishiValue('targetC', control.targetC), basis, detail, active, progress };
+}
+
 /** Present reported settings and diagnostic measurements without promoting
  * provisional telemetry to control evidence or interpreting raw units. */
 export function mitsubishiReadings(garage = {}, now = Date.now()) {
@@ -139,6 +160,8 @@ export function mitsubishiResult(result) {
   if (!result) return '';
   const setting = mitsubishiSettings[result.setting]?.label ?? 'Heat-pump setting';
   const request = `${setting}: ${mitsubishiValue(result.setting, result.value)}.`;
+  if (result.status === 'saved') return `${request} Saved; preparing external temperature control.`;
+  if (result.status === 'acknowledged') return `${request} External temperature acknowledged by the driver.`;
   if (result.status === 'native-confirmed') return `${request} Confirmed by the pump${clock(result.nativeConfirmedAt) ? ` at ${clock(result.nativeConfirmedAt)}` : ''}.`;
   if (['pending', 'published', 'accepted'].includes(result.status)) return `${request} Requested; waiting for fresh pump confirmation.`;
   if (result.status === 'uncertain') return `${request} Outcome uncertain. Check the reported pump setting before retrying.`;
@@ -151,12 +174,10 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
   const $ = id => document.getElementById(id), form = $('garage-native-form'), setting = $('garage-native-setting');
   const select = $('garage-native-value'), input = $('garage-native-temperature'), submit = $('garage-native-submit');
   const message = $('garage-native-message');
-  const assumption = $('garage-assume-isave'), assumptionMessage = $('garage-assume-isave-status');
   let status = null, busy = false, closed = false, edited = false, optionSignature = null, settingSignature = null, requestError = null;
   const refreshControls = () => {
     if (!form) return;
     const control = mitsubishiControl(status, setting.value), locked = closed || busy || blocked();
-    if (assumption) assumption.disabled = locked || status?.readOnly === true || isReadOnlyReplica(status) || status?.garage?.preferences?.available !== true;
     setting.disabled = locked;
     select.disabled = locked || !control.available || setting.value === 'targetC';
     input.disabled = locked || !control.available || setting.value !== 'targetC';
@@ -170,9 +191,10 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
       return capability?.supported === true && scalar(capability.value);
     });
     const fold = $('garage-native-control-details');
-    if (fold) fold.hidden = !known.length && !status?.garage?.preferences;
+    if (fold) fold.hidden = !known.length;
     form.hidden = !known.length;
-    if (assumption && !busy) assumption.checked = status?.garage?.settings?.assumeISave10C === true;
+    const room = mitsubishiRoomTemperature(status?.garage), roomStatus = $('garage-room-temperature-status');
+    if (roomStatus) { roomStatus.hidden = !room; roomStatus.textContent = room ? `${room.value} saved. ${room.progress}` : ''; }
     if (settingSignature !== JSON.stringify(known)) {
       const previous = setting.value;
       setting.replaceChildren();
@@ -184,6 +206,8 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     }
     if (!known.length) { refreshControls(); return; }
     const key = setting.value, control = mitsubishiControl(status, key), numeric = key === 'targetC';
+    const temperatureHelp = $('garage-native-temperature-help');
+    if (temperatureHelp) temperatureHelp.hidden = !numeric || !(control.min < 16 || room);
     const values = (control.values ?? []).filter(scalar), signature = JSON.stringify([key, values]);
     $('garage-native-temperature-field').hidden = !numeric; $('garage-native-value-field').hidden = numeric;
     input.min = control.min ?? ''; input.max = control.max ?? ''; input.step = control.step ?? 'any';
@@ -196,14 +220,17 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
       select.value = previous; optionSignature = signature;
     }
     if (!edited || useReadback) {
-      input.value = numeric && control.usable === true && Number.isFinite(control.value) ? String(control.value) : '';
+      input.value = numeric && (control.usable === true || room) && Number.isFinite(control.value) ? String(control.value) : '';
       select.value = control.usable === true && values.some(value => value === control.value) ? JSON.stringify(control.value) : '';
     }
     const reading = mitsubishiReadings(status?.garage, status?.now).find(row => row.key === `native-${key}`);
     setStatusDetail($('garage-native-reported'), { key: `mitsubishi-selected-${key}`, title: mitsubishiSettings[key].label,
       label: reading?.value ?? 'Unavailable', detail: reading?.detail ?? 'Waiting for a current native readback.' });
     $('garage-native-status').textContent = control.available
-      ? 'Changes the selected pump setting. Wait for fresh pump confirmation. Automatic savings remain separate.' : /\s/.test(control.reason) ? control.reason : words(control.reason);
+      ? numeric && control.min < 16 ? 'Saves the room setting permanently. Below 16 °C, wait for external temperature control to become active.'
+        : room ? 'Changing this setting ends external temperature control after the supplied temperature is cleared.'
+          : 'Changes the selected pump setting. Wait for fresh pump confirmation. Automatic savings remain separate.'
+      : /\s/.test(control.reason) ? control.reason : words(control.reason);
     if (!busy && !requestError) { message.textContent = mitsubishiResult(status?.garage?.nativeControls?.result);
       message.classList.toggle('form-error', ['rejected', 'uncertain', 'failed'].includes(status?.garage?.nativeControls?.result?.status)); }
     refreshControls();
@@ -236,23 +263,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     finally { busy = false; onBusy(false); render(); }
     await afterRequest();
   };
-  const changeAssumption = async () => {
-    if (closed || busy || blocked() || status?.readOnly === true || isReadOnlyReplica(status) || status?.garage?.preferences?.available !== true) return;
-    const value = assumption.checked;
-    busy = true; beforeRequest(); onBusy(true); refreshControls();
-    assumptionMessage.textContent = 'Saving i-save assumption…'; assumptionMessage.classList.remove('form-error');
-    try {
-      status = await request('/api/garage/preferences', { assumeISave10C: value });
-      onStatus(status); assumptionMessage.textContent = value ? '10°C i-save is assumed. Native readings remain unchanged.' : 'i-save assumption removed.';
-    } catch (error) { assumptionMessage.textContent = error.message; assumptionMessage.classList.add('form-error'); }
-    finally { busy = false; onBusy(false); render(); }
-    await afterRequest();
-  };
   form?.addEventListener('submit', send); setting?.addEventListener('change', change);
-  assumption?.addEventListener('change', changeAssumption);
   select?.addEventListener('change', edit); input?.addEventListener('input', edit); refreshControls();
   return { update(value) { status = value; render(); }, refreshControls,
     close() { closed = true; form?.removeEventListener('submit', send); setting?.removeEventListener('change', change);
-      assumption?.removeEventListener('change', changeAssumption);
       select?.removeEventListener('change', edit); input?.removeEventListener('input', edit); refreshControls(); } };
 }

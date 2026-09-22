@@ -8,15 +8,9 @@ The default `fixture` driver remains an isolated, read-only consumer of the
 
 Automatic pause control requires fresh device evidence: armed mode, matching native
 profile, essential capabilities and installed selective-power, local-expiry and
-restart-restoration results. Low-heat verification normally remains required.
-With the explicit owner **Assume i-save 10°C** preference and driver capability
-`assumeISave10C`, the owner may assume that low-heat profile survives OFF/ON.
-Every managed claim/start/renew sends the assumption explicitly. This does not
-falsify `lowHeatVerified` or `baseline.verified`, grant missing restoration proof,
-arm a device, or create measured electricity. Restart clears the driver's owner
-assumption; fresh authority must establish it again. Old drivers without this
-capability stay blocked. No driver deployment or physical commissioning is implied
-by enabling the checkbox in ST-MQ.
+restart-restoration results. Low-heat and baseline verification remain required.
+Permanent external temperature control is a separate ordinary control feature;
+it does not replace commissioning evidence or authorize economic pauses.
 
 ## Connection and evidence
 
@@ -93,7 +87,7 @@ Tests inject `createGarageSimulationTransport(send)` into `createGarageAdapter`.
 The transport is recognized by a module-private object capability, not a JSON
 flag. The production acquisition path never creates or accepts this transport. Its
 separate `createShellyCn105Transport` sends `claim`, `start`, `renew`,
-`release` and explicit `manual` settings to the configured exact command topic with QoS 0, retain false and
+`release`, explicit `manual` settings and external temperature commands to the configured exact command topic with QoS 0, retain false and
 reconnect queuing disabled. Receipt and native confirmation come from device
 state, independently of MQTT publication success.
 
@@ -169,7 +163,7 @@ queues old OFF work.
 
 `POST /api/garage/native` accepts exactly `{ "setting": "fan", "value": "auto" }`.
 The available settings are native power (`on`/`off`), mode (`heat`, `cool`, `auto`,
-`dry`, `fan`), target temperature (16–31 °C with the advertised 1 or 0.5 °C step),
+`dry`, `fan`), native target temperature (16–31 °C with the advertised 1 or 0.5 °C step),
 fan (`auto`, `quiet`, numbers 1–4), vertical vane (`auto`, numbers 1–5, `swing`)
 and horizontal vane (`far-left`, `left`, `center`, `right`, `far-right`, `split`,
 `swing`). A setting is enabled only when the driver advertises its capability and
@@ -178,7 +172,10 @@ individual enum settings to the connected model's supported typed choices. A
 missing entry keeps the generic choices; a malformed, duplicate, empty or
 out-of-contract array disables that setting. Both the UI and command admission
 use this restricted set. An unknown horizontal vane is unavailable.
-The special low-heat target is not an ordinary thermostat target option.
+**Room setting** extends the target selector down to 5°C when the driver's
+external temperature capability and local feature flag are enabled. This is an
+ST-MQ room target; the native Mitsubishi thermostat remains at 16°C. The special
+Mitsubishi i-save mode is not used or inferred.
 
 `garage.nativeControls` reports overall availability, reason, busy/pending flags,
 per-setting typed choices/ranges and readbacks, and the separate last native
@@ -201,6 +198,38 @@ setting, value and adapter session. A missing result becomes uncertain after
 45 seconds; disconnect or restart never replays the request. The compact native
 request/result is persisted separately from economic lease obligations. Ordinary
 power OFF is the owner's selection and creates no automatic restoration lease.
+
+## Permanent external room temperature
+
+A room setting below 16°C uses only the independent Garage rear sensor,
+`garage_temperature`. The pump must already be ON in HEAT mode; ST-MQ explicitly
+commands the native 16°C target before feeding `rear temperature + (16 − room setting)`.
+For a 5°C setting the offset is +11°C. The requested room target, original source
+reading, offset, remote value and actual native readback remain distinct status
+values. Both driver capability and the Pill's local feature flag are required.
+
+The remote temperature protocol accepts 8–39.5°C in 0.5°C steps. Host renewals
+use the original source timestamp and require a usable independent report less
+than 90 seconds old. Retained, future or stale evidence cannot authorize the
+feed, and repeated timestamps do not extend source freshness. Loss of fresh
+evidence ends the feed and leaves native 16°C heating as
+the fallback. This relies on the driver enforcing its local expiry and on a
+working Pill and serial path.
+
+The room target is durable intent. Restart does not replay a cached remote
+temperature: the host must obtain fresh source evidence and reestablish native
+setup before resuming. Native changes and managed pauses wait for serial clearing
+of the external override; MQTT publication alone does not prove it cleared.
+External control does not establish physical frost protection, low-heat
+commissioning or a new economic-pause baseline. Installed qualification remains
+the responsibility of the separate adapter and installation work.
+
+Before the installation's first low-temperature use, select ordinary HEAT at
+16°C with the original Mitsubishi remote. Coordinate any later use of the
+remote's i-save button with ST-MQ: a native target readback does not prove that a
+hidden i-save state has ended or that the pump is regulating the actual room at
+the requested temperature. The host's explicit target command and serial
+acknowledgement still require thermal qualification on the installed pump.
 
 ## Electrical accounting
 
