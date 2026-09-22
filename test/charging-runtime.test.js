@@ -33,7 +33,8 @@ function fakeAdapter(clock) {
   const snapshot = () => ({ schedule: structuredClone(schedule), fingerprint: scheduleFingerprint(schedule),
     controlFingerprint: 'unchanged-control', controlKnown: true, ...observed, reason: schedule.enabled === 'none' ? 0 : 54,
     readAt: clock(), limits: structuredClone(limits),
-    observations: observed.powerMeasuredAt === undefined ? {} : { 120: { at: observed.powerMeasuredAt } },
+    observations: { ...(observed.powerMeasuredAt === undefined ? {} : { 120: { at: observed.powerMeasuredAt } }),
+      ...(observed.modeAt === undefined ? {} : { 109: { at: observed.modeAt } }) },
     supply: { availableCurrentA: [...limits.equalizerAvailableA], propertyCurrentA: [0, 0, 0],
       chargerCurrentA: [0, 0, 0], voltageV: [230, 230, 230], observedAt: clock() } });
   return {
@@ -62,6 +63,67 @@ const preferences = chargingSettings({ chargers: { charger1: { enabled: true, ca
 const prices = [20, 1, 1, 20].map((price, index) => ({ start: initialNow + index * HOUR, end: initialNow + (index + 1) * HOUR, price }));
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
+
+test('BMW live plug and charging evidence received before the first Easee poll identifies after the matching stop', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const topic = runtime.configuration.vehicles.bmw.mqttTopic;
+  const measuredAt = initialNow - 5_000;
+  f.setNow(initialNow - 3_000);
+  runtime.receiveSoc(topic, packet(60, measuredAt, 'bmw-start', {
+    atHome: true, pluggedIn: true, charging: true,
+    fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>
+      [key, { measuredAt, readingId: `${key}-start` }])),
+  }));
+  f.setNow(initialNow);
+  const adapter = fakeAdapter(f.clock);
+  adapter.setObservation({ mode: 3, modeAt: measuredAt });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.connectedAt, initialNow);
+  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [measuredAt]);
+  assert.equal(chargerView(runtime).vehicle.state, 'unidentified', 'A start alone still cannot identify BMW');
+  f.setNow(initialNow + 60_000);
+  const stoppedAt = initialNow + 55_000;
+  adapter.setObservation({ mode: 2, modeAt: stoppedAt }); await runtime.reconcile();
+  runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: stoppedAt, readingId: 'bmw-stop' } } }));
+  assert.equal(chargerView(runtime).vehicle.id, 'bmw');
+  assert.equal(chargerView(runtime).values.soc.value, 60);
+  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.stoppedTimes, [stoppedAt]);
+  assert.equal(adapter.calls.some(call => call.kind !== 'read'), false);
+});
+
+test('BMW polling tolerance cannot borrow an earlier connection across disconnect, unknown telemetry and restart', async t => {
+  const f = fixture(), original = f.create(); t.after(() => original.close());
+  const adapter = fakeAdapter(f.clock), topic = original.configuration.vehicles.bmw.mqttTopic;
+  adapter.setObservation({ mode: 3, modeAt: initialNow });
+  await original.setAdapter('charger1', adapter); await original.reconcile();
+  original.receiveSoc(topic, packet(60, initialNow, 'previous-connection', {
+    atHome: true, pluggedIn: true, charging: true,
+    fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>
+      [key, { measuredAt: initialNow, readingId: `${key}-previous` }])),
+  }));
+  f.setNow(initialNow + 30_000);
+  adapter.setObservation({ pluggedIn: false, mode: 1, modeAt: f.clock() }); await original.reconcile();
+  assert.equal(chargerView(original).control.session.lastDisconnectedAt, f.clock());
+  await original.close();
+  f.setNow(initialNow + 40_000);
+  adapter.setObservation({ pluggedIn: null, mode: null, controlKnown: false });
+  const runtime = f.create(); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, initialNow + 30_000);
+  f.setNow(initialNow + 60_000);
+  adapter.setObservation({ pluggedIn: true, mode: 3, modeAt: initialNow, controlKnown: true }); await runtime.reconcile();
+  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [], 'Cached mode from the previous connection is excluded');
+  adapter.setObservation({ modeAt: initialNow + 55_000 }); await runtime.reconcile();
+  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [initialNow + 55_000]);
+  f.setNow(initialNow + 90_000);
+  adapter.setObservation({ mode: 2, modeAt: initialNow + 85_000 }); await runtime.reconcile();
+  runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: initialNow + 85_000, readingId: 'later-stop' } } }));
+  assert.equal(chargerView(runtime).vehicle.state, 'unidentified', 'Unconsumed BMW events before the disconnect cannot match the new car');
+  assert.equal(runtime.vehicleFeeds.bmw.consumedPlugId, null);
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, initialNow + 30_000);
+});
 
 test('runtime preferences, automatic readings and saved SoC fallbacks survive restart', async () => {
   const f = fixture(), runtime = f.create();

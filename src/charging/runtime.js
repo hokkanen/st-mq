@@ -1,5 +1,5 @@
 import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, matchBmwSession } from './vehicle.js';
+import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -221,18 +221,19 @@ export class ChargingRuntime {
       else if (connected === true && Number.isSafeInteger(connectedAt)) {
         if (easee.vehicleMatch?.connectedAt !== connectedAt) easee.vehicleMatch = null;
         if (easee.vehicleEvidence?.connectedAt !== connectedAt) easee.vehicleEvidence = { connectedAt, chargingTimes: [], stoppedTimes: [] };
+        const evidenceStart = connectionEvidenceStart(connectedAt, control.session.lastDisconnectedAt);
         const sourceAt = result.charger1.charging?.measuredAt ?? control?.snapshot?.readAt;
-        if (result.charger1.charging?.value === true && Number.isSafeInteger(sourceAt) && sourceAt >= connectedAt
-          && now - sourceAt <= 5 * MINUTE) easee.vehicleEvidence.chargingTimes = [...new Set([
+        if (result.charger1.charging?.value === true && Number.isSafeInteger(sourceAt) && sourceAt >= evidenceStart
+          && sourceAt <= now && now - sourceAt <= 5 * MINUTE) easee.vehicleEvidence.chargingTimes = [...new Set([
             ...(easee.vehicleEvidence.chargingTimes ?? []).filter(at => now - at <= 15 * MINUTE), sourceAt])].slice(-32);
         if (result.charger1.charging?.value === false && easee.vehicleEvidence.chargingTimes.length
-          && Number.isSafeInteger(sourceAt) && sourceAt >= connectedAt && sourceAt <= now && now - sourceAt <= 5 * MINUTE)
+          && Number.isSafeInteger(sourceAt) && sourceAt >= evidenceStart && sourceAt <= now && now - sourceAt <= 5 * MINUTE)
           easee.vehicleEvidence.stoppedTimes = [...new Set([...(easee.vehicleEvidence.stoppedTimes ?? []).filter(at => now - at <= 15 * MINUTE), sourceAt])].slice(-32);
         const teslaPositive = tesla.connected && tesla.pluggedIn && tesla.atHome
           && (tesla.assignment === 'easee' || tesla.assignment === 'auto' && identification?.verdict === 'easee'
             && Number.isSafeInteger(identification.identifiedAt) && identification.identifiedAt >= connectedAt
             && identification.identifiedAt > (easee.vehicleEvidence.teslaRejectedAt ?? -Infinity));
-        const bmwPositive = matchBmwSession(bmw?.reading, { connectedAt,
+        const bmwPositive = matchBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
           chargingAt: easee.vehicleEvidence.chargingTimes, stoppedAt: easee.vehicleEvidence.stoppedTimes, now, consumedPlugId: bmw?.consumedPlugId });
         // Opposing vehicle evidence leaves this generic charger unidentified.
         if ((teslaPositive || easee.vehicleMatch?.id === 'tesla')

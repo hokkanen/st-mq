@@ -28,6 +28,7 @@ async function fixture(t, { enabled = true, read, assignment = 'auto' } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-identification-runtime-'));
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory), input: 'providers',
     acquisition: { easeeIntervalMs: 5000 },
+    garage: { adapter: {} },
     connections: { mqtt: { address: 'mqtt://invented.invalid' }, easee: { charger_id: 'invented-charger' },
       teslamate: teslamateConfiguration({ enabled: true, charger_identification: enabled, charger_assignment: assignment }) } };
   const store = new Store(':memory:');

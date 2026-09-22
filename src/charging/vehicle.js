@@ -4,6 +4,13 @@ const facts = ['pluggedIn', 'charging', 'atHome'];
 const MINUTE = 60_000;
 const time = Number.isSafeInteger;
 
+// A charger connection is dated when polling first sees it. Source events and
+// MQTT delivery can precede that poll; a known disconnect bounds the tolerance.
+export function connectionEvidenceStart(connectedAt, lastDisconnectedAt) {
+  return time(connectedAt) ? Math.max(0, connectedAt - 90_000,
+    time(lastDisconnectedAt) ? lastDisconnectedAt + 1 : 0) : null;
+}
+
 /** Independent vehicle facts keep their source clocks and original MQTT delivery
  * provenance. Repeating a retained sample live cannot create a connection event. */
 export function acceptVehicleReading(previous, payload, { now = Date.now(), association = 'vehicle-mqtt', retained = false, provider } = {}) {
@@ -81,15 +88,16 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
 /** Correlate both a charging start and a later actual pause to one connection.
  * Two cars charging at home at similar times is insufficient on its own. No
  * extra pause is commanded here; unavailable natural stop evidence stays manual. */
-export function matchBmwSession(reading, { connectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId } = {}) {
+export function matchBmwSession(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId } = {}) {
   const field = key => reading?.fields?.[key];
   const plug = field('pluggedIn')?.positiveEvent;
   const start = field('charging')?.positiveEvent;
   const stop = field('charging')?.negativeEvent;
+  const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
   const event = observed => observed?.retained === false
     && time(observed.measuredAt) && time(observed.receivedAt)
-    && observed.measuredAt >= connectedAt - 90_000 && observed.measuredAt <= connectedAt + 10 * MINUTE
-    && observed.receivedAt >= connectedAt && observed.receivedAt <= now
+    && observed.measuredAt >= evidenceStart && observed.measuredAt <= connectedAt + 10 * MINUTE
+    && observed.receivedAt >= evidenceStart && observed.receivedAt <= now
     && observed.measuredAt <= now && now - observed.measuredAt <= 15 * MINUTE;
   const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];
   const stoppedTimes = Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt];
@@ -100,6 +108,6 @@ export function matchBmwSession(reading, { connectedAt, chargingAt, stoppedAt, n
     && now - home.measuredAt <= 24 * 60 * MINUTE
     && event(plug) && event(start) && event(stop) && stop.measuredAt > start.measuredAt
     && plug.readingId !== consumedPlugId
-    && chargingTimes.some(at => time(at) && at <= now && Math.abs(start.measuredAt - at) <= 2 * MINUTE
+    && chargingTimes.some(at => time(at) && at >= evidenceStart && at <= now && Math.abs(start.measuredAt - at) <= 2 * MINUTE
       && stoppedTimes.some(end => time(end) && end <= now && end > at && Math.abs(stop.measuredAt - end) <= 2 * MINUTE));
 }

@@ -43,6 +43,27 @@ test('BMW matching requires fresh live source events, home context and correspon
   assert.equal(matchBmwSession(repeatedLive.reading, options), false, 'Repeating cached measurements live cannot manufacture a new plug event');
 });
 
+test('BMW pre-poll evidence is bounded and remains subject to disconnect and replay safeguards', () => {
+  const startedAt = START - 90_000, stoppedAt = START + 30_000;
+  const initial = accepted(facts(startedAt), null, false, startedAt).reading;
+  const reading = accepted({ provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: stoppedAt, readingId: 'stop' } } }, initial, false, stoppedAt).reading;
+  const options = { connectedAt: START, chargingAt: startedAt, stoppedAt, now: stoppedAt };
+  assert.equal(matchBmwSession(reading, options), true);
+  assert.equal(matchBmwSession(reading, { ...options, connectedAt: START + 1 }), false,
+    'Events more than 90 seconds before the first poll are excluded');
+  assert.equal(matchBmwSession(reading, { ...options, lastDisconnectedAt: startedAt - 1 }), true);
+  assert.equal(matchBmwSession(reading, { ...options, lastDisconnectedAt: startedAt }), false,
+    'Source events at or before the most recent disconnected poll belong outside this connection');
+  assert.equal(matchBmwSession(reading, { ...options, consumedPlugId: initial.fields.pluggedIn.positiveEvent.readingId }), false);
+  const retained = structuredClone(reading); retained.fields.pluggedIn.positiveEvent.retained = true;
+  assert.equal(matchBmwSession(retained, options), false);
+  const earlyReceipt = structuredClone(reading); earlyReceipt.fields.pluggedIn.positiveEvent.receivedAt = startedAt - 1;
+  assert.equal(matchBmwSession(earlyReceipt, options), false, 'The receipt-time tolerance is also bounded');
+  assert.equal(matchBmwSession(reading, { ...options, chargingAt: startedAt - 1 }), false,
+    'Easee evidence must be within the same connection window');
+});
+
 function fixture() {
   let now = START, connected = true, charging = true, sessionAt = START, verdict = null, identifiedAt = null;
   const tesla = { connected: true, pluggedIn: true, atHome: true, assignment: 'auto', batteryLevel: 75, chargeLimitSoc: 90 };
