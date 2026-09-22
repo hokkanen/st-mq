@@ -66,7 +66,12 @@ take precedence over the corresponding saved manual value; missing fields remain
 editable. Automatic SoC has no temporary manual override. The generic defaults
 remain saved separately and return for an unidentified visitor's car. Ready-by
 is the first setting wherever it is shown. The card identifies the charge source;
-the requested target is a preference, not an uncertain measurement.
+the requested target is a preference, not an uncertain measurement. If BMW
+repeatedly alternates X → 100% → X within fifteen minutes, its planning target
+holds the latest value below 100% for that connection, with the raw report and
+conflict visible on the card. **Plan for 100% this connection** provides an
+explicit planning override; it does not set the car’s charge limit. The choice
+and filter reset on unplug. See [target conflict handling](bmw-cardata.md#conflicting-charge-targets).
 Vehicle MQTT can supply usable capacity; it is never guessed from range or
 charging-session energy. See [BMW CarData through Home Assistant](bmw-cardata.md)
 and the [provider matrix](charging-provider-capabilities.md).
@@ -108,6 +113,9 @@ unidentified and using manual values; matching power alone never establishes ide
 BMW identification uses the available source-timestamped home-location, plug and
 charging-status facts. Fresh live plug reports, a charging start and a subsequent
 stop must match the current Easee connection and its observed start and stop.
+Matching live plug/start evidence keeps the label **BMW identification pending** while
+stop confirmation is pending, for up to ten minutes from connection; manual
+battery values remain in use until confirmation.
 No extra stop is commanded solely for BMW identification. Location alone,
 retained replay, periodic republication and old connection reports are insufficient.
 Missing BMW power or plug-event-ID descriptors do not block this method. Conflicting
@@ -368,6 +376,7 @@ Authenticated POST endpoints retain the primary-controller authority gate:
 | `/api/charging/settings` | Partial `{ "chargers": { ... } }` patch |
 | `/api/charging/chargers/:id/settings` | Partial `enabled`, `readyBy`, `capacityKwh`, `minimumSoc`, `manualSoc` preferences |
 | `/api/charging/chargers/:id/resume` | `{}` |
+| `/api/charging/chargers/:id/target` | `{ "connectedAt": <displayed session timestamp>, "mode": "full" }` or `"mode": "automatic"`; identified BMW only, current connection only |
 
 Unknown IDs/fields and invalid values are rejected. Unsupported scheduling is
 both disabled in the UI and rejected by the server. Read-only replicas render

@@ -28,6 +28,8 @@ const sourceLabel = (field, vehicle) => {
   if (['manual', 'manual-fallback'].includes(field?.source)) return 'Manual fallback';
   if (field?.assumed || field?.source === 'assumed') return 'Planning assumption';
   if (field?.available !== true) return 'Awaiting a reading';
+  if (field.source === 'bmw-target-filter') return 'Held BMW target';
+  if (field.source === 'session-target') return 'Session planning choice';
   const source = field.provider ?? (field.source === 'mqtt' && vehicle?.state === 'identified'
     ? vehicle.source ?? ({ bmw: 'bmw-cardata', tesla: 'teslamate' })[vehicle.id] ?? field.source : field.source);
   return ({ mqtt: 'Vehicle MQTT', 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate', easee: 'Easee' })[source] ?? 'Automatic';
@@ -35,6 +37,9 @@ const sourceLabel = (field, vehicle) => {
 const automaticFor = (charger, field) => (!charger.vehicle || charger.vehicle.state === 'identified') && automatic(field);
 const capacityProfileFor = charger => charger.id === 'charger2' || charger.vehicle?.state === 'identified' && charger.vehicle.id === 'tesla'
   ? 'tesla' : `generic:${charger.id}`;
+const sessionTargetFor = charger => charger.vehicle?.state === 'identified' && charger.vehicle.id === 'bmw'
+  && charger.values?.connected?.value === true && Number.isSafeInteger(charger.targetSelection?.connectedAt)
+  ? charger.targetSelection : null;
 function vehiclePresentation(charger) {
   const vehicle = charger.vehicle;
   const teslaOnly = (charger.provider ?? charger.telemetry?.provider) === 'teslamate';
@@ -42,6 +47,8 @@ function vehiclePresentation(charger) {
     detail: 'Tesla is shown at the charger it is connected to; this card does not represent another charging session.' };
   if (vehicle?.state === 'identified') return { label: teslaOnly ? 'Tesla charging' : `${vehicle.label} identified`,
     detail: `${vehicle.label} is identified for this connection. Available vehicle readings take priority individually; missing values use your saved settings. Identification remains through scheduled pauses and clears when unplugged.` };
+  if (vehicle?.reason === 'awaiting-stop-confirmation' && charger.values?.connected?.value === true)
+    return { label: 'BMW identification pending', detail: 'BMW is a candidate for this connection. Waiting for matching charging-stop readings from BMW and Easee before confirming it. Saved vehicle settings remain in use.' };
   if (teslaOnly) return { label: 'Tesla charging', detail: 'This card represents Tesla charging when Tesla is not identified at another charger.' };
   if (vehicle?.state === 'identifying') return { label: 'Identifying vehicle',
     detail: 'Checking which vehicle is connected. You can enter starting charge, target and usable battery capacity below; these values are used until a vehicle is identified.' };
@@ -311,12 +318,31 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   } else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
   const socSource = estimatedSoc ? automatic(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from starting charge + delivered energy'
     : automatic(soc) ? sourceLabel(soc, charger.vehicle) : 'Starting charge';
-  const targetSource = automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc, charger.vehicle)}` : 'Requested target';
+  const targetSource = values.minimumSoc?.source === 'session-target' ? 'Planning target for this connection'
+    : values.minimumSoc?.source === 'bmw-target-filter' ? 'BMW target held after conflicting reports'
+      : automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc, charger.vehicle)}` : 'Requested target';
+  const targetSelection = sessionTargetFor(charger);
+  const targetNotice = targetSelection?.conflict
+    ? `BMW target reports conflict. Planning for ${number(targetSelection.selected?.value, '%')}; latest report: ${number(targetSelection.raw?.value, '%')}.`
+    : targetSelection?.mode === 'full' ? 'Planning for 100% for this connection.' : '';
+  const targetDetail = targetSelection ? [targetNotice,
+    targetSelection.mode === 'full'
+      ? `Planning choice: 100%${validTime(targetSelection.selected?.receivedAt)
+        ? `, chosen ${chargingReadingTime(targetSelection.selected.receivedAt, timezone)}` : '; choice time unknown'}.`
+      : `Selected planning target: ${number(targetSelection.selected?.value, '%')}${validTime(targetSelection.selected?.measuredAt)
+        ? `, measured ${chargingReadingTime(targetSelection.selected.measuredAt, timezone)}`
+        : validTime(targetSelection.selected?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.selected.receivedAt, timezone)}; measurement time unknown` : '; measurement time unknown'}.`,
+    `Latest BMW target report: ${number(targetSelection.raw?.value, '%')}${validTime(targetSelection.raw?.measuredAt)
+      ? `, measured ${chargingReadingTime(targetSelection.raw.measuredAt, timezone)}`
+      : validTime(targetSelection.raw?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.raw.receivedAt, timezone)}; measurement time unknown` : '; measurement time unknown'}.`,
+    targetSelection.conflict ? 'In automatic mode, planning uses the latest BMW target below 100% after repeated conflicting reports.' : '',
+    'This choice changes planning only. For a full charge, also set 100% in the car. Unplugging restores automatic target selection.',
+  ].filter(Boolean).join('\n\n') : '';
   const vehicle = vehiclePresentation(charger);
   if (elsewhere) { state = 'Connected elsewhere'; event = `${charger.vehicle.label ?? 'Tesla'} connected to ${charger.vehicle.chargerLabel ?? human(charger.vehicle.chargerId).replace(/^charger(\d+)$/, 'Charger $1')}`; }
   return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, vehicle,
     soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
-    minimumSource: targetSource, sources: socSource,
+    minimumSource: targetSource, sources: socSource, targetSelection, targetNotice, targetDetail,
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
     priority: activeManual && showMetrics ? resumption : '',
     energyLabel: hasProgress ? 'Grid remaining' : 'Grid to target',
@@ -426,7 +452,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     charge.append(chargeLabel, current, sources);
     const arrow = make('span', '→', 'charging-progress-arrow'); arrow.setAttribute('aria-hidden', 'true');
     const targetMetric = make('div', '', 'equipment-value charging-target');
-    const targetLabel = make('span', 'Target', '', `${id}-target-label`); targetMetric.append(targetLabel, target);
+    const targetLabel = make('span', 'Target', '', `${id}-target-label`);
+    const targetSource = make('small', '', '', `${id}-target-source`); targetMetric.append(targetLabel, target, targetSource);
     const completionMetric = make('div', '', 'equipment-value charging-completion');
     const completion = make('strong', 'No estimate', '', `${id}-completion`);
     const completionLabel = make('span', 'Est. target', '', `${id}-completion-label`); completionMetric.append(completionLabel, completion);
@@ -441,7 +468,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     deadlineGroup.append(make('span', 'Ready by'), deadline); timing.append(event, deadlineGroup);
     const readiness = make('p', '', 'charging-readiness', `${id}-readiness`);
     const priority = make('p', '', 'charging-priority', `${id}-priority`);
-    summary.append(timing, overview);
+    const targetNotice = make('div', '', 'charging-notice charging-target-notice', `${id}-target-notice`); targetNotice.setAttribute('role', 'status');
+    summary.append(timing, overview, targetNotice);
     const problem = make('p', '', 'charging-problem', `${id}-problem`); problem.setAttribute('role', 'status');
     const body = make('div', '', 'equipment-device-body charging-settings', `${id}-settings-details`);
     const facts = make('div', '', 'charging-fact-overview');
@@ -482,20 +510,33 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const message = make('p', '', 'temporary-status', `${id}-settings-message`); message.setAttribute('role', 'status');
     form.append(primaryFields, save); preferences.append(form, message);
     const settings = group(id, chargingFields, () => primaryFields, form, save, message, `${prefix}/settings`);
+    const targetControls = make('div', '', '', `${id}-target-controls`);
+    const targetHelp = make('p', '', 'charging-form-help', `${id}-target-help`);
+    const targetToggle = make('button', '', 'secondary-button', `${id}-target-toggle`); targetToggle.type = 'button';
+    targetToggle.setAttribute('aria-describedby', targetHelp.id);
+    targetControls.append(targetHelp, targetToggle); settings.fields.get('minimumSoc').label.append(targetControls);
+    const targetMessage = make('p', '', 'temporary-status', `${id}-target-message`); targetMessage.setAttribute('role', 'status');
+    preferences.append(targetMessage);
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, targetNotice, targetControls, targetHelp, targetToggle, targetMessage, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, toggle, resume, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(toggle, 'click', () => mutate(`${prefix}/settings`, { enabled: !device.charger.settings.enabled }, controlMessage, 'Control preference saved.'));
     bind(resume, 'click', () => mutate(`${prefix}/resume`, {}, controlMessage, 'Automatic control requested.'));
+    bind(targetToggle, 'click', () => {
+      if (targetToggle.disabled || !device.targetAction) return;
+      const action = { ...device.targetAction };
+      return mutate(`${prefix}/target`, action, targetMessage, () => device.targetAction?.connectedAt === action.connectedAt
+        ? 'Planning target updated for this connection.' : 'The connection changed. Review the current target.');
+    });
     devices.set(id, device); return device;
   }
   async function mutate(path, payload, message, success, saved = () => {}) {
     if (busy || !writable()) return;
     busy = true; message.textContent = 'Saving…'; message.classList.remove('form-error'); refreshControls();
     try {
-      beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result); message.textContent = success;
+      beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result); message.textContent = typeof success === 'function' ? success() : success;
     } catch (error) { message.textContent = error.message ?? 'Could not save charging settings.'; message.classList.add('form-error'); }
     finally { busy = false; refreshControls(); afterRequest(); }
   }
@@ -534,6 +575,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const view = chargerDisplay(charger);
       device.resume.hidden = !supported || !charger.settings.enabled || !view.yielded;
       device.resume.disabled = locked || device.resume.hidden;
+      device.targetToggle.disabled = locked || charger.readOnly === true || !device.targetAction;
     }
   }
   function update(next) {
@@ -566,11 +608,26 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.overview.hidden = false;
       device.metrics.soc.value.textContent = view.showMetrics ? view.soc : '—'; device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : '—';
       device.sources.textContent = !view.showMetrics ? 'Awaiting data' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
+      device.targetSource.textContent = view.targetSelection?.mode === 'full' ? 'This connection'
+        : view.targetSelection?.conflict ? 'Held BMW target' : '';
+      device.targetSource.hidden = !device.targetSource.textContent;
+      device.targetNotice.textContent = view.targetNotice; device.targetNotice.hidden = !view.targetNotice;
+      device.targetNotice.dataset.state = view.targetSelection?.conflict ? 'attention' : 'quiet';
+      const targetSelection = view.targetSelection;
+      if (device.targetAction?.connectedAt !== targetSelection?.connectedAt) {
+        device.targetMessage.textContent = ''; device.targetMessage.classList.remove('form-error');
+      }
+      device.targetAction = targetSelection ? { connectedAt: targetSelection.connectedAt, mode: targetSelection.mode === 'full' ? 'automatic' : 'full' } : null;
+      device.targetControls.hidden = !targetSelection;
+      device.targetToggle.textContent = targetSelection?.mode === 'full' ? 'Use automatic target again' : 'Plan for 100% this connection';
+      device.targetHelp.textContent = targetSelection?.mode === 'full'
+        ? 'Planning for 100% until unplugging. This does not change the car’s charge limit; set 100% in the car too for a full charge.'
+        : 'This changes the plan for this connection only. For a full charge, also set 100% in the car.';
       device.completion.textContent = presentation.completion.value;
       const sourceDetail = !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
         : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. Added energy is counted after the reference reading, which may be newer than plugging in.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
       metricDetail(device.chargeLabel, { label: 'Charge', title: 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
-      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Your saved fallback is in Charging preferences.' : `${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, key: `${charger.id}:target` });
+      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Your saved fallback is in Charging preferences.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
       const completionDetail = presentation.completion.at !== null
         ? 'Forecast time to reach the displayed target at the expected charging power. Charging can continue after the target is reached.'
         : presentation.completion.detail;

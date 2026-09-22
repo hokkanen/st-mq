@@ -80,7 +80,8 @@ test('BMW live plug and charging evidence received before the first Easee poll i
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.session.connectedAt, initialNow);
   assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [measuredAt]);
-  assert.equal(chargerView(runtime).vehicle.state, 'unidentified', 'A start alone still cannot identify BMW');
+  assert.equal(chargerView(runtime).vehicle.state, 'identifying', 'A start remains pending until stop confirmation');
+  assert.equal(chargerView(runtime).vehicle.id, null);
   f.setNow(initialNow + 60_000);
   const stoppedAt = initialNow + 55_000;
   adapter.setObservation({ mode: 2, modeAt: stoppedAt }); await runtime.reconcile();

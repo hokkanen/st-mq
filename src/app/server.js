@@ -179,11 +179,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'POST' && url.pathname === '/api/charging/settings')
           return await mutate(async (current, input) => { await current.charging.setSettings(input); return json(200, status()); });
-        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|resume)$/);
+        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|resume|target)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {
             const [, id, action] = chargerAction;
-            const method = { settings: 'setChargerSettings', resume: 'resume' }[action];
+            const method = { settings: 'setChargerSettings', resume: 'resume', target: 'setTarget' }[action];
             await current.charging[method](id, input); return json(200, status());
           });
         if (req.method === 'POST' && url.pathname === '/api/garage/release')

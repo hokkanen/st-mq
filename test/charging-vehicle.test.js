@@ -156,7 +156,8 @@ test('visitor keeps manual defaults until positive BMW correlation, then each av
   assert.equal(view(runtime).vehicle.state, 'unidentified'); assert.equal(view(runtime).values.soc.value, 25);
   publish(runtime, facts(START - MINUTE, { pluggedIn: false, charging: false }));
   publish(runtime, facts(START, { usableCapacityKwh: 72 }));
-  assert.equal(view(runtime).vehicle.state, 'unidentified', 'Simultaneous charging starts alone do not identify BMW');
+  assert.equal(view(runtime).vehicle.state, 'identifying', 'Simultaneous starts remain pending until a corresponding stop');
+  assert.equal(view(runtime).vehicle.reason, 'awaiting-stop-confirmation');
   pauseBmw(runtime, f);
   const identified = view(runtime);
   assert.equal(identified.vehicle.id, 'bmw'); assert.equal(identified.vehicle.state, 'identified');
@@ -335,7 +336,8 @@ test('a failed identity persistence cannot consume an event or leave a phantom m
   const pause = { provider: 'bmw-cardata', charging: false,
     fields: { charging: { measuredAt: START + MINUTE, readingId: 'pause' } } };
   f.store.fail = true; assert.throws(() => publish(runtime, pause), /database unavailable/);
-  assert.equal(view(runtime).vehicle.state, 'unidentified'); assert.deepEqual(runtime.vehicleFeeds.bmw.reading, original);
+  assert.equal(view(runtime).vehicle.state, 'identifying'); assert.equal(view(runtime).vehicle.id, null);
+  assert.deepEqual(runtime.vehicleFeeds.bmw.reading, original);
   assert.equal(runtime.vehicleFeeds.bmw.consumedPlugId, null);
   f.store.fail = false; publish(runtime, pause); assert.equal(view(runtime).vehicle.id, 'bmw');
 });
@@ -408,4 +410,136 @@ test('capacity edits reject a changed vehicle profile and always use Tesla capac
   await runtime.setChargerSettings('charger2', { capacityKwh: 61, capacityProfile: 'tesla' });
   assert.equal(runtime.settings.chargers.charger2.capacityKwh, 61);
   await assert.rejects(runtime.setChargerSettings('charger1', { capacityProfile: 'generic:charger1' }), /requires a capacity setting/);
+});
+
+
+const publishTarget = (runtime, value, at, packet) => publish(runtime, {
+  provider: 'bmw-cardata', chargeLimitSoc: value,
+  fields: { chargeLimitSoc: { measuredAt: at, readingId: `target-${at}` } },
+}, packet);
+
+test('BMW target conflicts use the latest lower target without altering raw telemetry or its clocks', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  assert.equal(view(runtime).targetSelection.conflict, false);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 100, START + 2 * MINUTE);
+  assert.equal(view(runtime).values.minimumSoc.value, 100, 'A single change to full remains legitimate');
+  f.setNow(START + 3 * MINUTE); publishTarget(runtime, 85, START + 3 * MINUTE);
+  const confirmed = view(runtime);
+  assert.equal(confirmed.targetSelection.conflict, true);
+  assert.equal(confirmed.values.minimumSoc.value, 85);
+  const selectedAt = confirmed.values.minimumSoc.measuredAt;
+  f.setNow(START + 4 * MINUTE); publishTarget(runtime, 100, START + 4 * MINUTE);
+  const held = view(runtime);
+  assert.equal(held.values.minimumSoc.value, 85);
+  assert.equal(held.values.minimumSoc.source, 'bmw-target-filter');
+  assert.equal(held.values.minimumSoc.measuredAt, selectedAt);
+  assert.equal(held.automatic.minimumSoc.value, 100);
+  assert.equal(held.automaticSoc.chargeLimitSoc, 100);
+  assert.equal(held.targetSelection.raw.measuredAt, START + 4 * MINUTE);
+  assert.equal(held.values.soc.value, 60);
+  assert.equal(runtime.settings.chargers.charger1.minimumSoc, 80);
+  assert(held.requiredGridKwh < 74 * .4 / .925, 'Energy estimate uses 85%, not the conflicting 100%');
+  f.setNow(START + 5 * MINUTE); publishTarget(runtime, 90, START + 5 * MINUTE);
+  assert.equal(view(runtime).values.minimumSoc.value, 90, 'A newly selected lower target replaces the previous lower value');
+  f.setNow(START + 6 * MINUTE); publishTarget(runtime, 100, START + 6 * MINUTE);
+  assert.equal(view(runtime).values.minimumSoc.value, 90);
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(view(restarted).values.minimumSoc.value, 90);
+  assert.equal(view(restarted).targetSelection.raw.value, 100);
+  f.setConnection(false); restarted.tick();
+  assert.equal(restarted.chargers.charger1.targetState, null);
+  f.setNow(START + 7 * MINUTE); f.setConnection(true); restarted.tick();
+  assert.equal(view(restarted).targetSelection, null, 'The next unknown car cannot inherit BMW selection');
+  assert.equal(restarted.chargers.charger1.targetState.conflict, false);
+});
+
+test('a full-charge planning choice is explicit, durable, and guarded by the displayed BMW connection', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  await assert.rejects(runtime.setTarget('charger1', { connectedAt: START, mode: 'full' }), /connection changed/);
+  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  await assert.rejects(runtime.setTarget('charger1', { connectedAt: START - 1, mode: 'full' }), /connection changed/);
+  for (const input of [{ connectedAt: START, mode: 'lower' }, { connectedAt: START, mode: 'full', value: 85 }, { mode: 'full' }])
+    await assert.rejects(runtime.setTarget('charger1', input), /Choose automatic or full/);
+  f.setNow(START + 2 * MINUTE); await runtime.setTarget('charger1', { connectedAt: START, mode: 'full' });
+  assert.equal(view(runtime).values.minimumSoc.value, 100);
+  assert.equal(view(runtime).values.minimumSoc.source, 'session-target');
+  assert.equal(view(runtime).values.minimumSoc.measuredAt, null);
+  assert.equal(view(runtime).values.minimumSoc.receivedAt, START + 2 * MINUTE);
+  assert.equal(view(runtime).automatic.minimumSoc.value, 85);
+  assert.equal(runtime.settings.chargers.charger1.minimumSoc, 80);
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(view(restarted).targetSelection.mode, 'full');
+  assert.equal(view(restarted).values.minimumSoc.value, 100);
+  await restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' });
+  assert.equal(view(restarted).values.minimumSoc.value, 85);
+  assert.equal(view(restarted).values.minimumSoc.source, 'bmw-cardata');
+  await restarted.setTarget('charger1', { connectedAt: START, mode: 'full' });
+  f.setConnection(false); restarted.tick();
+  await assert.rejects(restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' }), /connection changed/);
+  f.setNow(START + 3 * MINUTE); f.setConnection(true); restarted.tick();
+  assert.equal(restarted.chargers.charger1.targetState.override, null);
+});
+
+test('failed target persistence rolls back evidence and explicit session choices', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 100, START + 2 * MINUTE);
+  const before = structuredClone(runtime.chargers.charger1.targetState);
+  f.store.fail = true; f.setNow(START + 3 * MINUTE);
+  assert.throws(() => publishTarget(runtime, 85, START + 3 * MINUTE), /database unavailable/);
+  assert.deepEqual(runtime.chargers.charger1.targetState, before);
+  assert.equal(view(runtime).targetSelection.conflict, false);
+  assert.equal(runtime.vehicleFeeds.bmw.reading.chargeLimitSoc, 100);
+  await assert.rejects(runtime.setTarget('charger1', { connectedAt: START, mode: 'full' }), /database unavailable/);
+  assert.deepEqual(runtime.chargers.charger1.targetState, before);
+  f.store.fail = false;
+});
+
+test('a retained target cycle cannot activate the conflict filter through views or later live republication', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 100, START + 2 * MINUTE, { retain: true });
+  view(runtime); view(runtime);
+  publishTarget(runtime, 100, START + 2 * MINUTE);
+  f.setNow(START + 3 * MINUTE); publishTarget(runtime, 85, START + 3 * MINUTE);
+  assert.equal(view(runtime).targetSelection.conflict, false);
+  f.setNow(START + 4 * MINUTE); publishTarget(runtime, 100, START + 4 * MINUTE);
+  assert.equal(view(runtime).values.minimumSoc.value, 100);
+});
+
+test('pending BMW stop confirmation remains identifying with manual values, then expires honestly', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts());
+  f.setNow(START + 4 * MINUTE); f.setCharging(false); runtime.tick();
+  assert.equal(view(runtime).vehicle.state, 'identifying');
+  assert.equal(view(runtime).vehicle.reason, 'awaiting-stop-confirmation');
+  assert.equal(view(runtime).values.soc.source, 'manual-fallback');
+  f.setNow(START + 10 * MINUTE); runtime.tick();
+  assert.equal(view(runtime).vehicle.state, 'unidentified');
+  assert.equal(view(runtime).vehicle.reason, 'vehicle-not-identified');
+});
+
+test('confirmed target holds and choices survive a telemetry gap but clear on direct BMW unplug evidence', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 85 })); pauseBmw(runtime, f);
+  for (const [minutes, target] of [[2, 100], [3, 85], [4, 100]]) {
+    f.setNow(START + minutes * MINUTE); publishTarget(runtime, target, START + minutes * MINUTE);
+  }
+  assert.equal(view(runtime).values.minimumSoc.value, 85);
+  await runtime.setTarget('charger1', { connectedAt: START, mode: 'full' });
+  f.setConnection(null, START); runtime.tick();
+  assert.equal(view(runtime).vehicle.id, 'bmw');
+  assert.equal(view(runtime).targetSelection.conflict, true);
+  assert.equal(view(runtime).targetSelection.mode, 'full');
+  const restarted = f.create(); t.after(() => restarted.close());
+  assert.equal(view(restarted).targetSelection.conflict, true);
+  assert.equal(view(restarted).values.minimumSoc.value, 100);
+  await assert.rejects(restarted.setTarget('charger1', { connectedAt: START, mode: 'automatic' }), /connection changed/);
+  f.setNow(START + 5 * MINUTE);
+  publish(restarted, { provider: 'bmw-cardata', pluggedIn: false,
+    fields: { pluggedIn: { measuredAt: START + 5 * MINUTE, readingId: 'unplug-during-gap' } } });
+  assert.equal(view(restarted).targetSelection, null);
+  assert.equal(restarted.chargers.charger1.targetState, null);
+  assert.equal(view(restarted).values.minimumSoc.source, 'manual-fallback');
 });

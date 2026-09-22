@@ -1,5 +1,5 @@
 import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession } from './vehicle.js';
+import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession, pendingBmwSession } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -14,6 +14,7 @@ import { recordedChargingEnergy } from './energy.js';
 import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 import { updateSessionCost } from './session-cost.js';
+import { updateTargetState, targetSelection, selectTargetMode } from './target.js';
 
 const MINUTE = 60_000;
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
@@ -58,6 +59,7 @@ export class ChargingRuntime {
         vehicleMatch: previous.vehicleMatch?.id === 'bmw' && !this.vehicleFeeds.bmw.reading
           ? null : previous.vehicleMatch ?? null,
         vehicleEvidence: previous.vehicleEvidence ?? null,
+        targetState: this.vehicleFeeds.bmw.reading ? previous.targetState ?? null : null,
         progress: restoreChargingProgress(previous.progress), supplyEstimate: previous.supplyEstimate ?? null,
         wasPluggedIn: previous.progress?.connected,
         lastReconcileAt: null }];
@@ -83,7 +85,7 @@ export class ChargingRuntime {
     const view = this.status();
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
-        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence }]));
+        sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       { reading: item.reading, consumedPlugId: item.consumedPlugId }]));
     this.store.setState(this.key, { version: 4, settings: this.settings, chargers, vehicleFeeds, teslaDisconnectedFromEaseeAt: this.teslaDisconnectedFromEaseeAt, view });
@@ -174,10 +176,20 @@ export class ChargingRuntime {
     if (result.accepted) {
       const previous = item.reading, previousTeslaDisconnect = this.teslaDisconnectedFromEaseeAt;
       const matches = Object.fromEntries(Object.entries(this.chargers).map(([id, charger]) => [id,
-        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence })]));
+        structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, targetState: charger.targetState })]));
       const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, feed]) => [id, feed.consumedPlugId]));
-      item.reading = result.reading;
-      try { this.persist(); } catch (error) {
+      try {
+        // Synchronize the connection before advancing this accepted target. Views
+        // may seed a saved reading, but cannot turn a replay into live evidence.
+        const telemetry = this.telemetry(now);
+        item.reading = result.reading;
+        const charger = this.chargers.charger1, session = charger?.controller?.status()?.session;
+        if (route.id === 'bmw' && telemetry.charger1?.connected?.value !== false
+          && Number.isSafeInteger(session?.connectedAt)) charger.targetState = updateTargetState(charger.targetState, {
+          connectedAt: session.connectedAt, evidenceStart: connectionEvidenceStart(session.connectedAt, session.lastDisconnectedAt),
+          reading: result.reading, now, live: packet.retain !== true });
+        this.persist();
+      } catch (error) {
         item.reading = previous; this.teslaDisconnectedFromEaseeAt = previousTeslaDisconnect;
         for (const [id, state] of Object.entries(matches)) Object.assign(this.chargers[id], state);
         for (const [id, value] of Object.entries(consumed)) this.vehicleFeeds[id].consumedPlugId = value;
@@ -255,10 +267,21 @@ export class ChargingRuntime {
         easee.vehicleMatch = null;
       const match = connected !== false && easee.vehicleMatch?.connectedAt === connectedAt ? easee.vehicleMatch : null;
       const source = match?.id === 'bmw' ? 'bmw-cardata' : match?.id === 'tesla' ? 'teslamate' : null;
+      const pendingBmw = connected === true && !match && !easee.vehicleEvidence?.ambiguous
+        && pendingBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control?.session?.lastDisconnectedAt,
+          chargingAt: easee.vehicleEvidence?.chargingTimes, stoppedAt: easee.vehicleEvidence?.stoppedTimes,
+          now, consumedPlugId: bmw?.consumedPlugId });
+      const identifying = !easee.vehicleEvidence?.ambiguous && (control?.phase === 'identifying' || pendingBmw);
+      if (connected === false || bmw?.reading?.pluggedIn === false || bmw?.reading?.atHome === false
+        || match?.id === 'tesla' || easee.vehicleEvidence?.ambiguous) easee.targetState = null;
+      else if (Number.isSafeInteger(connectedAt)) easee.targetState = updateTargetState(easee.targetState, {
+        connectedAt, evidenceStart: connectionEvidenceStart(connectedAt, control?.session?.lastDisconnectedAt),
+        reading: bmw?.reading, now, live: false });
       result.charger1.vehicle = match
         ? { state: 'identified', id: match.id, label: match.id === 'bmw' ? bmw.label : 'Tesla', source, reason: 'matched-charging-session', chargerId: 'charger1' }
-        : { state: connected === false ? 'disconnected' : control?.phase === 'identifying' ? 'identifying' : 'unidentified',
-          id: null, label: null, source: null, reason: easee.vehicleEvidence?.ambiguous ? 'conflicting-vehicle-evidence' : 'vehicle-not-identified' };
+        : { state: connected === false ? 'disconnected' : identifying ? 'identifying' : 'unidentified',
+          id: null, label: null, source: null, reason: easee.vehicleEvidence?.ambiguous ? 'conflicting-vehicle-evidence'
+            : pendingBmw ? 'awaiting-stop-confirmation' : 'vehicle-not-identified' };
       if (match?.id === 'tesla') {
         const vehicle = teslamateChargerTelemetry(tesla, { now });
         for (const key of ['capacityKwh', 'soc', 'minimumSoc']) if (vehicle[key]?.available) result.charger1[key] = vehicle[key];
@@ -300,7 +323,10 @@ export class ChargingRuntime {
       const settings = telemetry[id]?.assignedVehicleSource === 'teslamate'
         ? { ...savedSettings, capacityKwh: this.settings.chargers.charger2.capacityKwh } : savedSettings;
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
+      const selectedTarget = telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
+        ? targetSelection(item.targetState, { reading: this.vehicleFeeds.bmw.reading }) : null;
       const charger = buildCharger({ definition, settings, telemetry: telemetry[id], timezone: TIME_ZONE,
+        targetSelection: selectedTarget,
         automaticSoc: telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
           ? { ...this.vehicleFeeds.bmw.reading, source: 'bmw-cardata' } : null,
         configuration: this.configuration.chargers[id], now, control,
@@ -520,6 +546,21 @@ export class ChargingRuntime {
       if (capacityProfile !== currentProfile) throw new Error('Vehicle changed; review its capacity before saving');
     }
     await this.setSettings({ chargers: { [id]: settings } });
+  }
+  async setTarget(id, input) {
+    const item = this.charger(id);
+    if (!object(input) || Object.keys(input).some(key => !['connectedAt', 'mode'].includes(key))
+      || !Number.isSafeInteger(input.connectedAt) || !['automatic', 'full'].includes(input.mode))
+      throw new Error('Choose automatic or full for the displayed charging connection');
+    const view = this.views().find(charger => charger.id === id);
+    if (view.values.connected.value !== true || view.vehicle?.state !== 'identified' || view.vehicle.id !== 'bmw'
+      || !view.targetSelection || view.targetSelection.connectedAt !== input.connectedAt)
+      throw new Error('Vehicle connection changed; review its target before saving');
+    const previous = item.targetState;
+    item.targetState = selectTargetMode(previous, input.mode, this.clock());
+    try { this.persist(); } catch (error) { item.targetState = previous; throw error; }
+    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    await this.reconcile(id);
   }
   async resume(id, input) {
     this.charger(id);

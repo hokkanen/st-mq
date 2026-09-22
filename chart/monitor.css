@@ -1233,6 +1233,11 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
   cursor: pointer;
 }
 .charging-device > .equipment-device-summary::after { display: none; }
+.charging-device > .equipment-device-summary:has(> .charging-target-notice:not([hidden])) {
+  grid-template-rows: calc(56px - var(--charging-compact, 0) * 2px) 48px
+    calc(76px - var(--charging-compact, 0) * 6px) auto calc(70px - var(--charging-compact, 0) * 10px)
+    42px calc(20px - var(--charging-compact, 0) * 4px);
+}
 .charging-device > .equipment-device-body { padding: 0 14px 18px; }
 .charging-device .equipment-device-heading { flex-wrap: nowrap; align-items: center; gap: 8px; }
 .charging-device .equipment-device-heading h4 { font-size: 14px; }

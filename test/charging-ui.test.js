@@ -19,6 +19,14 @@ const status = (...chargers) => ({ role: 'primary', now, charging: { settings: s
 const view = item => chargerDisplay(item, { now });
 const active = () => { const item = charger(); return { ...item, settings: { ...item.settings, enabled: true },
   values: { ...item.values, connected: reading(true) }, plan: { startAt, finishAt: deadlineAt, deadlineAt } }; };
+function bmwTarget({ mode = 'automatic', conflict = true, connectedAt = now - 60_000, rawValue = 100 } = {}) {
+  const item = active(), source = mode === 'full' ? 'session-target' : conflict ? 'bmw-target-filter' : 'bmw-cardata';
+  const selected = { value: mode === 'full' ? 100 : 95, source, measuredAt: now - 30_000, receivedAt: now, readingId: 'target-selected' };
+  return { ...item, vehicle: { state: 'identified', id: 'bmw', label: 'BMW', source: 'bmw-cardata' },
+    values: { ...item.values, minimumSoc: reading(selected.value, source, { ...selected, provider: 'bmw-cardata' }) },
+    targetSelection: { connectedAt, mode, conflict, selected, lower: { ...selected, value: 95 },
+      raw: { value: rawValue, measuredAt: now, receivedAt: now, readingId: 'target-raw' } } };
+}
 
 test('garage keeps cold budgets in settings and renders shared charger cards above more equipment', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
@@ -649,6 +657,136 @@ test('visitor settings remain editable until identification and automatic fields
     assert.equal($(`charger1-setting-${key}`).value, value); assert.equal($(`charger1-setting-${key}`).disabled, false);
   }
   panel.close();
+});
+
+test('BMW target conflict is visible beside the target with raw measurement details and accurate source labels', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = bmwTarget(); panel.update(status(item));
+  assert.equal($('charger1-minimum').textContent, '95 %');
+  assert.equal($('charger1-target-source').textContent, 'Held BMW target');
+  const notice = $('charger1-target-notice');
+  assert.equal(notice.hidden, false); assert.equal(notice.parentElement, $('charger1-device-summary'));
+  assert.match(notice.textContent, /reports conflict.*Planning for 95 %.*latest report: 100 %/);
+  assert.equal(notice.querySelector('button'), null, 'The conflict is inline, without opening a tooltip');
+  assert.equal($('charger1-device').open, undefined, 'The notice is visible in the collapsed summary');
+  assert.match($('charger1-setting-minimumSoc-help').textContent, /^Held BMW target supplies/);
+  const field = $('charger1-setting-minimumSoc').parentElement;
+  assert.equal($('charger1-target-controls').parentElement, field);
+  assert.equal(field.querySelector('label').querySelector('button'), null, 'The planning button is outside the input label');
+  const popup = openDetail($('charger1-target-label'));
+  assert.match(popup.textContent, /Selected planning target: 95 %, measured 15 Sept 2026, 20:59/);
+  assert.match(popup.textContent, /Latest BMW target report: 100 %, measured 15 Sept 2026, 21:00/);
+  assert.match(popup.textContent, /changes planning only.*set 100% in the car/s);
+  assert.match(view(item).minimumSource, /held after conflicting reports/);
+  panel.update(status(bmwTarget({ mode: 'full' })));
+  assert.equal($('charger1-minimum').textContent, '100 %');
+  assert.equal($('charger1-target-source').textContent, 'This connection');
+  assert.match($('charger1-setting-minimumSoc-help').textContent, /^Session planning choice supplies/);
+  assert.match($('charger1-target-notice').textContent, /reports conflict.*Planning for 100 %/);
+  assert.match(view(bmwTarget({ mode: 'full' })).targetDetail, /Planning choice: 100%, chosen 15 Sept 2026, 21:00/);
+  assert.match(view(bmwTarget({ mode: 'full' })).targetDetail, /In automatic mode, planning uses/);
+  panel.close();
+});
+
+test('BMW full-charge planning choice and automatic restore send only the displayed connection and mode', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const item = bmwTarget();
+  const panel = createChargingPanel({ document, request: async (path, payload) => {
+    calls.push([path, payload]); return status(bmwTarget({ mode: payload.mode }));
+  } });
+  panel.update(status(item));
+  const toggle = $('charger1-target-toggle');
+  assert.equal(toggle.textContent, 'Plan for 100% this connection');
+  assert.equal(toggle.type, 'button'); assert.equal(toggle.disabled, false);
+  assert.match($('charger1-target-help').textContent, /this connection only.*set 100% in the car/);
+  await toggle.listeners.get('click')();
+  assert.deepEqual(calls[0], ['/api/charging/chargers/charger1/target', { connectedAt: item.targetSelection.connectedAt, mode: 'full' }]);
+  assert.equal(toggle.textContent, 'Use automatic target again');
+  assert.match($('charger1-target-help').textContent, /until unplugging.*does not change the car’s charge limit/);
+  assert.match($('charger1-target-message').textContent, /Planning target updated/);
+  await toggle.listeners.get('click')();
+  assert.deepEqual(calls[1], ['/api/charging/chargers/charger1/target', { connectedAt: item.targetSelection.connectedAt, mode: 'automatic' }]);
+  assert.equal($('charger1-minimum').textContent, '95 %');
+  assert.equal(item.settings.minimumSoc, DEFAULT_CHARGING_SETTINGS.chargers.charger1.minimumSoc);
+  panel.close();
+});
+
+test('BMW target actions respect read-only snapshots and serialize with other charging mutations', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let finish;
+  const panel = createChargingPanel({ document, request: (path, payload) => {
+    calls.push([path, payload]); return new Promise(resolve => { finish = resolve; });
+  } });
+  for (const locked of [
+    { ...status(bmwTarget()), readOnly: true },
+    { ...status(bmwTarget()), role: 'replica' },
+    { ...status(bmwTarget()), charging: { ...status(bmwTarget()).charging, readOnly: true } },
+    status({ ...bmwTarget(), readOnly: true }),
+  ]) {
+    panel.update(locked); assert.equal($('charger1-target-toggle').disabled, true);
+    await $('charger1-target-toggle').listeners.get('click')();
+  }
+  assert.deepEqual(calls, []);
+  panel.update(status(bmwTarget()));
+  const pending = $('charger1-target-toggle').listeners.get('click')();
+  assert.equal($('charger1-target-toggle').disabled, true); assert.equal($('charger1-enabled').disabled, true);
+  await $('charger1-target-toggle').listeners.get('click')(); await $('charger1-enabled').listeners.get('click')();
+  assert.equal(calls.length, 1);
+  finish(status(bmwTarget({ mode: 'full' }))); await pending;
+  assert.equal($('charger1-target-toggle').disabled, false); panel.close();
+});
+
+test('BMW session target controls clear on unplug and never carry a full-charge choice to a new vehicle connection', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(); } });
+  const full = bmwTarget({ mode: 'full' }); panel.update(status(full));
+  assert.equal($('charger1-target-toggle').textContent, 'Use automatic target again');
+  $('charger1-target-message').textContent = 'Planning target updated for this connection.';
+  for (const patch of [
+    { vehicle: { state: 'disconnected' }, values: { ...full.values, connected: reading(false) } },
+    { vehicle: { state: 'unidentified' } },
+    { vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' } },
+  ]) {
+    panel.update(status({ ...full, ...patch }));
+    assert.equal($('charger1-target-controls').hidden, true); assert.equal($('charger1-target-notice').hidden, true);
+    assert.equal($('charger1-target-toggle').disabled, true);
+    await $('charger1-target-toggle').listeners.get('click')();
+    assert.equal($('charger1-target-message').textContent, '');
+  }
+  assert.deepEqual(calls, []);
+  panel.update(status(bmwTarget({ connectedAt: now, conflict: false, rawValue: 95 })));
+  assert.equal($('charger1-target-controls').hidden, false);
+  assert.equal($('charger1-target-toggle').textContent, 'Plan for 100% this connection');
+  assert.equal($('charger1-target-notice').hidden, true); assert.equal($('charger1-minimum').textContent, '95 %');
+  panel.close();
+});
+
+test('a rejected target action reports the connection race without applying its choice to the new session', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let reject;
+  const first = bmwTarget(), next = bmwTarget({ connectedAt: now, conflict: false, rawValue: 95 });
+  const panel = createChargingPanel({ document, request: (path, payload) => {
+    calls.push([path, payload]); return new Promise((resolve, fail) => { reject = fail; });
+  } });
+  panel.update(status(first)); const pending = $('charger1-target-toggle').listeners.get('click')();
+  panel.update(status(next)); reject(new Error('The connection changed. Review its target before saving.')); await pending;
+  assert.deepEqual(calls, [['/api/charging/chargers/charger1/target', { connectedAt: first.targetSelection.connectedAt, mode: 'full' }]]);
+  assert.match($('charger1-target-message').textContent, /connection changed/);
+  assert.equal($('charger1-target-message').getAttribute('role'), 'status');
+  assert($('charger1-target-message').className.includes('form-error'));
+  assert.equal($('charger1-minimum').textContent, '95 %');
+  assert.equal($('charger1-target-toggle').textContent, 'Plan for 100% this connection');
+  panel.close();
+});
+
+test('BMW awaiting-stop identification explains the pending evidence while leaving saved target editable', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  panel.update(status({ ...active(), vehicle: { state: 'unidentified', reason: 'awaiting-stop-confirmation' } }));
+  assert.match($('charger1-vehicle').textContent, /BMW identification pending/);
+  const popup = openDetail($('charger1-vehicle'));
+  assert.match(popup.textContent, /matching charging-stop readings from BMW and Easee.*Saved vehicle settings remain in use/s);
+  assert.equal($('charger1-setting-minimumSoc').disabled, false);
+  assert.equal($('charger1-target-controls').hidden, true); panel.close();
 });
 
 test('Tesla identified at Charger 1 has one visible charging session and independent Tesla charging card', () => {

@@ -92,10 +92,9 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
   return changed ? { accepted: true, reading, reason: null } : reject(battery.reason ?? 'duplicate-reading');
 }
 
-/** Correlate both a charging start and a later actual pause to one connection.
- * Two cars charging at home at similar times is insufficient on its own. No
- * extra pause is commanded here; unavailable natural stop evidence stays manual. */
-export function matchBmwSession(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId } = {}) {
+// A possible BMW session and a confirmed one share the same live connection,
+// home and charging-start evidence. Only confirmation requires a matching stop.
+function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt, now = Date.now(), consumedPlugId } = {}) {
   const field = key => reading?.fields?.[key];
   const plug = field('pluggedIn')?.positiveEvent;
   const start = field('charging')?.positiveEvent;
@@ -108,13 +107,33 @@ export function matchBmwSession(reading, { connectedAt, lastDisconnectedAt, char
     && observed.measuredAt <= now && now - observed.measuredAt <= 15 * MINUTE;
   const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];
   const stoppedTimes = Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt];
-  if (!time(connectedAt) || !chargingTimes.some(time) || !stoppedTimes.some(time)
-    || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean') return false;
+  if (!time(connectedAt) || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean') return null;
   const home = field('atHome');
-  return reading.atHome === true && reading.pluggedIn === true && time(home?.measuredAt) && home.measuredAt <= now
-    && now - home.measuredAt <= 24 * 60 * MINUTE
-    && event(plug) && event(start) && event(stop) && stop.measuredAt > start.measuredAt
-    && plug.readingId !== consumedPlugId
-    && chargingTimes.some(at => time(at) && at >= evidenceStart && at <= now && Math.abs(start.measuredAt - at) <= 2 * MINUTE
-      && stoppedTimes.some(end => time(end) && end <= now && end > at && Math.abs(stop.measuredAt - end) <= 2 * MINUTE));
+  if (reading.atHome !== true || reading.pluggedIn !== true || !time(home?.measuredAt) || home.measuredAt > now
+    || now - home.measuredAt > 24 * 60 * MINUTE || !event(plug) || !event(start)
+    || plug.readingId === consumedPlugId) return null;
+  const starts = chargingTimes.filter(at => time(at) && at >= evidenceStart && at <= now
+    && Math.abs(start.measuredAt - at) <= 2 * MINUTE);
+  return starts.length ? { connectedAt, now, start, stop: event(stop) ? stop : null, starts, stoppedTimes } : null;
+}
+
+function matchingBmwStop(evidence) {
+  if (!evidence?.stop || evidence.stop.measuredAt <= evidence.start.measuredAt) return false;
+  return evidence.starts.some(at => evidence.stoppedTimes.some(end => time(end) && end <= evidence.now
+    && end > at && Math.abs(evidence.stop.measuredAt - end) <= 2 * MINUTE));
+}
+
+/** Correlate both a charging start and a later actual pause to one connection.
+ * Two cars charging at home at similar times is insufficient on its own. No
+ * extra pause is commanded here; unavailable natural stop evidence stays manual. */
+export function matchBmwSession(reading, options = {}) {
+  return matchingBmwStop(bmwSessionEvidence(reading, options));
+}
+
+/** Keep plausible live evidence visible while the matching pause is delayed.
+ * This is only a bounded status hint, never a vehicle identity or control grant. */
+export function pendingBmwSession(reading, options = {}) {
+  const evidence = bmwSessionEvidence(reading, options);
+  return Boolean(evidence && evidence.now >= evidence.connectedAt
+    && evidence.now < evidence.connectedAt + 10 * MINUTE && !matchingBmwStop(evidence));
 }

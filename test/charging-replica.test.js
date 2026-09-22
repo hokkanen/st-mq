@@ -101,16 +101,22 @@ test('replica preserves independent vehicle identification, selected values and 
     automaticSoc, now: snapshotAt, telemetry: { connected: true, charging: true } });
   charger.vehicle = { state: 'identified', id: 'bmw', label: 'BMW', source: 'bmw-cardata', chargerId: 'charger1' };
   charger.automaticSoc = automaticSoc;
+  charger.targetSelection = { connectedAt: snapshotAt - 5 * 60_000, mode: 'automatic', conflict: true,
+    raw: { value: 100, measuredAt: snapshotAt - 1000, receivedAt: snapshotAt - 500, readingId: 'raw-target' },
+    selected: { value: 95, source: 'bmw-target-filter', measuredAt: snapshotAt - 60_000, receivedAt: snapshotAt - 30_000, readingId: 'held-target' } };
+  charger.automaticSoc.chargeLimitSoc = 100;
+  charger.automatic.minimumSoc.value = 100;
+  charger.values.minimumSoc = { ...charger.values.minimumSoc, ...charger.targetSelection.selected };
   charger.sessionCost = { totalCents: 123, incurredCents: 73, remainingCents: 50 };
   charger.progress = { estimatedSoc: 89, creditedGridKwh: 3.5, hasEnergyEstimate: true };
   charger.vehicleMqtt = { provider: 'bmw-cardata', brokerConnected: true, subscribed: true, lastLiveAt: snapshotAt - 30_000 };
   const feed = { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'stmq/vehicles/bmw',
     usedByChargerId: 'charger1', reception: charger.vehicleMqtt };
-  const { app, digest, originalDigest, advance } = await fixture(t, { version: 4, settings,
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 4, settings,
     vehicleFeeds: { bmw: { reading: automaticSoc } }, chargers: { charger1: {}, charger2: {} },
     view: { chargers: [charger], vehicleFeeds: [feed] } });
   const charging = app.status().charging, actual = charging.chargers[0];
-  for (const key of ['vehicle', 'values', 'automatic', 'automaticSoc', 'sessionCost', 'progress', 'configuration'])
+  for (const key of ['vehicle', 'values', 'automatic', 'automaticSoc', 'targetSelection', 'sessionCost', 'progress', 'configuration'])
     assert.deepEqual(actual[key], charger[key], `${key} remains the primary's published value`);
   assert.equal(actual.vehicleMqtt.brokerConnected, null);
   assert.equal(actual.vehicleMqtt.subscribed, null);
@@ -120,6 +126,10 @@ test('replica preserves independent vehicle identification, selected values and 
   assert.equal(charging.vehicleFeeds[0].topic, feed.topic);
   assert.equal(charging.vehicleFeeds[0].reception.brokerConnected, null);
   advance(); assert.deepEqual(app.status().charging, charging);
+  const denied = await fetch(`${root}/api/charging/chargers/charger1/target`, { method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ connectedAt: charger.targetSelection.connectedAt, mode: 'full' }) });
+  assert.equal(denied.status, 405);
   assert.equal(digest(), originalDigest);
 });
 

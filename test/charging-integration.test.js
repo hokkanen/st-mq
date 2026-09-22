@@ -98,3 +98,44 @@ test('independent MQTT vehicle routes keep source timestamps without overriding 
   assert.equal(chargerView(engine.charging, 'charger2').values.currentA.value, 13);
   assert(chargerView(engine.charging, 'charger2').forecast.startAt > engine.clock());
 });
+
+test('session target API authenticates, enforces controller authority and rejects a replaced connection', async t => {
+  const { store, engine, advance } = fixture(t);
+  const runtime = engine.charging, connectedAt = engine.clock();
+  let primary = true, charging = true, sessionAt = connectedAt;
+  const token = 'synthetic-target-api-authorization';
+  const item = runtime.chargers.charger1;
+  item.adapter = { normalize: () => ({ connected: { value: true, available: true },
+    charging: { value: charging, available: true, measuredAt: engine.clock() } }) };
+  item.controller = { status: () => ({ session: { connectedAt: sessionAt }, phase: 'off' }), async update() {}, close() {} };
+  const publish = packet => runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, JSON.stringify(packet));
+  publish({ provider: 'bmw-cardata', soc: 40, chargeLimitSoc: 85, measuredAt: connectedAt, readingId: 'api-battery',
+    atHome: true, pluggedIn: true, charging: true, fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>
+      [key, { measuredAt: connectedAt, readingId: `api-${key}` }])) });
+  advance(60_000); charging = false;
+  publish({ provider: 'bmw-cardata', charging: false, fields: { charging: { measuredAt: engine.clock(), readingId: 'api-stop' } } });
+  assert.equal(chargerView(runtime).vehicle.id, 'bmw');
+  const server = createAppServer({ engine, store, token,
+    controlAuthority: { canControl: () => primary, status: () => ({}) } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/charging/chargers/charger1/target`;
+  const post = (body, authenticated = true) => fetch(url, { method: 'POST',
+    headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+  assert.equal((await post({ connectedAt, mode: 'full' }, false)).status, 401);
+  primary = false;
+  assert.equal((await post({ connectedAt, mode: 'full' })).status, 409);
+  primary = true;
+  assert.equal((await post({ connectedAt, mode: 'invalid' })).status, 400);
+  const response = await post({ connectedAt, mode: 'full' });
+  assert.equal(response.status, 200);
+  const chosen = (await response.json()).charging.chargers[0];
+  assert.equal(chosen.values.minimumSoc.value, 100);
+  assert.equal(chosen.targetSelection.mode, 'full');
+  assert.equal(chosen.targetSelection.raw.value, 85);
+  assert.equal((await post({ connectedAt, mode: 'automatic' })).status, 200);
+  assert.equal(chargerView(runtime).values.minimumSoc.value, 85);
+  advance(60_000); sessionAt = engine.clock();
+  assert.equal((await post({ connectedAt, mode: 'full' })).status, 400);
+  assert.equal(chargerView(runtime).targetSelection, null);
+});
