@@ -247,7 +247,7 @@ export function garageDisplay(garage = {}, now = Date.now()) {
   const policy = settings.protection ?? {};
   const settingGroups = {
     heating: [
-      ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : number(settings.baselineC, '°C'), 'Change the permanent room setting in Mitsubishi Heat-pump settings. Below 16 °C uses the Garage rear sensor with a native 16 °C target.'],
+      ['Normal room setting', room ? `${room.value} saved · ${room.basis}` : number(settings.baselineC, '°C'), 'Change the permanent room setting in Mitsubishi Heat-pump settings. Below 16 °C uses the Garage rear sensor with a native 17 °C target.'],
       ['Savings selection', finite(settings.aggressiveness) ? settings.aggressiveness === 0 ? 'Normal heating' : 'Larger opportunities' : 'Unavailable', 'Normal heating stays available when savings are disabled. Otherwise only pauses meeting the minimum benefit and planned OFF time, with current pipe protection and recovery checks are considered.'],
     ],
     protection: [

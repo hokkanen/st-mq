@@ -53,15 +53,19 @@ uses the same explicit opportunity thresholds.
 when the installed Pill supports external temperature control and its local
 feature flag is enabled. Targets below 16°C use the independent Garage rear
 sensor, `garage_temperature`. The pump must already be ON in HEAT mode. ST-MQ
-explicitly commands the native 16°C target and feeds the Pill
-`rear temperature + (16 − room setting)`; a 5°C setting adds
-11°C. The room setting and native 16°C readback are displayed separately. This
+explicitly commands and confirms the native 17°C target and feeds the Pill
+`rear temperature + (17 − room setting)`; a 5°C setting adds
+12°C. The room setting and native 17°C readback are displayed separately. This
 does not use Mitsubishi i-save or assume that a special mode survives OFF/ON.
 
 Remote temperature values use the driver's 8–39.5°C range and 0.5°C steps. Only
 original, usable sensor reports less than 90 seconds old can renew the feed;
-repeated or retained reports do not refresh them. When the source becomes stale,
-the feed expires and the pump falls back to its native 16°C thermostat setting.
+repeated or retained reports do not refresh them. Each external enable or renewal
+also requires ON, HEAT and 17°C readbacks using the existing 30-second freshness
+requirement. A failed native check stops renewals and lets the existing lease
+expire, without new checks or native writes between renewals. The Pill driver is
+unchanged. Missing or stale source evidence ends the feed. The pump's internal
+sensor then controls using its current native settings, HEAT at 17°C if unchanged.
 The saved room setting resumes after a host restart only once fresh source
 evidence and native setup are established again. The override is cleared through
 the serial path before ordinary native settings or a managed pause can proceed.

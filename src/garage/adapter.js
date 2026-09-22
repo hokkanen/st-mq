@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { GARAGE_FIXTURE_CONTRACT, SHELLY_CN105_CONTRACT, GARAGE_CONTRACT_STATUS, GARAGE_FIELDS, garageAdapterSettings,
   decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validFixtureState } from './contract.js';
 import { isShellyCn105Transport, SHELLY_CN105_COMMISSIONING } from './shelly-cn105.js';
-import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting, garageNativeOptions } from './native-settings.js';
+import { GARAGE_NATIVE_SETTINGS, GARAGE_EXTERNAL_NATIVE_TARGET_C, validateGarageNativeSetting, garageNativeOptions } from './native-settings.js';
 import { createGarageElectrical } from './electrical.js';
 import { GARAGE_MAX_PERMISSION_MS, GARAGE_REVALIDATE_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from './permission.js';
 
@@ -410,6 +410,15 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       throw new Error('Use an external temperature from 8 to 39.5°C in half degrees and its original measurement younger than 90 seconds.');
     const reasons = externalBlockers(now, { clear });
     if (reasons.length) throw new Error(reasons[0]);
+    // Check the expected native target only when admitting a numeric sample.
+    // The existing blockers already require fresh, matching ON/HEAT readbacks.
+    // Refusal leaves the previous source deadline and device challenge intact;
+    // no extra polls, target writes or clear commands are sent by this guard.
+    if (!clear && state.native.targetC.value !== GARAGE_EXTERNAL_NATIVE_TARGET_C) {
+      const error = new Error(`External temperature requires a confirmed native ${GARAGE_EXTERNAL_NATIVE_TARGET_C}°C target. Waiting without renewing the existing lease.`);
+      error.code = 'external-native-target-required';
+      throw error;
+    }
     if (!clear && lastExternalSample && (input.measuredAt < lastExternalSample.measuredAt
       || input.measuredAt === lastExternalSample.measuredAt
         && (input.temperatureC !== lastExternalSample.temperatureC || state.externalTemperature?.phase === 'internal')))

@@ -69,11 +69,14 @@ margins, and temperatures plus the pipe reserve determine the safe duration.
 
 The Mitsubishi Heat-pump settings fold includes a permanent **Room setting**
 down to 5°C when external temperature control is available. Below 16°C the
-requested room setting is distinct from the actual native 16°C readback. Status
+requested room setting is distinct from the actual native 17°C readback. Status
 shows the Garage rear sensor, offset, remote temperature and active or fallback
 state; it never infers Mitsubishi i-save. The owning instance persists the target;
-replicas are read-only. Stale source evidence leaves the native 16°C fallback and
-cannot be presented as an active low-temperature feed. Native frequency
+replicas are read-only. Enabling or renewing the external feed requires fresh
+ON, HEAT and 17°C readbacks; a failed check stops renewals and lets the current
+lease expire. Missing or stale source evidence also ends the feed. Internal-sensor
+control uses the pump's current native settings, 17°C if unchanged from setup;
+blocked renewals cannot be presented as an active low-temperature feed. Native frequency
 and activity are not reported as watts. Known charger power has a separate 7.5%
 heat assumption; missing input stays unknown. Future opportunities display their
 planned start and end even before a live OFF lease exists.

@@ -9,12 +9,13 @@ function fixture(targetC = 5) {
   let now = BASE;
   const controller = new GarageRoomTemperature({ targetC, now });
   const sent = [];
-  const native = { power: 'on', mode: 'heat', targetC: 16, fan: 'auto', vane: 3 };
+  const native = { power: 'on', mode: 'heat', targetC: 17, fan: 'auto', vane: 3 };
+  const readNative = values => Object.assign(native, values);
   const external = { supported: true, enabled: true, configurable: true, available: true,
     clearAvailable: true, busy: false, pending: false, phase: 'internal', restorationPending: false,
     acknowledged: true, rearmRequired: false, sourceEpoch: 'invented-session', result: null };
   const controls = { available: true, busy: false, result: null, settings: {
-    targetC: { supported: true, usable: true, available: true, value: 16, min: 16, max: 31, step: 1 },
+    targetC: { supported: true, usable: true, available: true, value: 17, min: 16, max: 31, step: 1 },
     power: { supported: true, usable: true, available: true, value: 'on', values: ['on', 'off'] },
     mode: { supported: true, usable: true, available: true, value: 'heat', values: ['heat', 'cool'] },
   } };
@@ -23,6 +24,11 @@ function fixture(targetC = 5) {
     nativeControls: () => structuredClone(controls),
     status: () => ({ native: { ...native }, blockedReasons: [], electrical: {}, health: {} }),
     async setExternalTemperature(input, at) {
+      if (input.temperatureC !== null && native.targetC !== 17) {
+        const error = new Error('External temperature requires a confirmed native 17°C target.');
+        error.code = 'external-native-target-required';
+        throw error;
+      }
       sent.push({ ...input, requestedAt: at });
       external.result = { ...input, requestedAt: at, status: 'published' }; external.pending = true;
       return { ...external.result };
@@ -54,20 +60,20 @@ function fixture(targetC = 5) {
   async function start() {
     await tick(); assert.equal(sent.at(-1).temperatureC, null); ack();
     advance(); measure(); await tick(); assert.equal(sent.at(-1).setting, 'targetC'); ack();
-    advance(); measure(); await tick(); assert.equal(sent.at(-1).temperatureC, observation.value + 16 - targetC); ack();
+    advance(); measure(); await tick(); assert.equal(sent.at(-1).temperatureC, observation.value + 17 - targetC); ack();
     await tick(); assert.equal(controller.status(observation).phase, 'active');
   }
-  return { controller, adapter, sent, native, external, controls, tick, ack, advance, measure, start,
+  return { controller, adapter, sent, native, readNative, external, controls, tick, ack, advance, measure, start,
     now: () => now, observation: () => observation };
 }
 
-test('5°C selects and confirms native16 even when readback is16, then supplies independent room+11', async () => {
+test('5°C selects and confirms native17 even when readback is17, then supplies independent room+12', async () => {
   const f = fixture(); await f.start();
   assert.deepEqual(f.sent.map(c => [c.setting ?? 'external', c.value ?? c.temperatureC]),
-    [['external', null], ['targetC', 16], ['external', 16]]);
+    [['external', null], ['targetC', 17], ['external', 17]]);
   assert.equal(f.sent[2].measuredAt, f.observation().sourceTime);
   assert.equal(f.sent[2].requestedExpiryAt, f.observation().sourceTime + 90_000);
-  assert.equal(f.controller.status(f.observation()).offsetC, 11);
+  assert.equal(f.controller.status(f.observation()).offsetC, 12);
   assert.equal(f.controller.status(f.observation()).acknowledged, true);
 });
 
@@ -75,13 +81,13 @@ test('new original measurements refresh active control, repeated polling cannot 
   const f = fixture(); await f.start(); const count = f.sent.length;
   f.advance(20_000); await f.tick(); assert.equal(f.sent.length, count);
   f.measure(4.8); await f.tick(); assert.equal(f.sent.length, count + 1);
-  assert.equal(f.sent.at(-1).temperatureC, 16, 'round to the driver half-degree input');
+  assert.equal(f.sent.at(-1).temperatureC, 17, 'round to the driver half-degree input');
   assert.equal(f.sent.at(-1).measuredAt, f.observation().sourceTime);
   f.ack(); f.advance(90_000); await f.tick();
   assert.equal(f.sent.at(-1).temperatureC, null); assert.equal(f.controller.phase, 'clearing');
   f.ack(); await f.tick(); assert.equal(f.controller.phase, 'waiting');
   const cleared = f.sent.length; await f.tick(); assert.equal(f.sent.length, cleared);
-  f.advance(); f.measure(5); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 16);
+  f.advance(); f.measure(5); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 17);
 });
 
 test('invalid, echoed, stale and out-of-range inputs clear rather than clamp or freshen readings', async () => {
@@ -95,12 +101,12 @@ test('invalid, echoed, stale and out-of-range inputs clear rather than clamp or 
   }
 });
 
-test('changing low target clears and selects16 again, then requires a new source timestamp', async () => {
+test('changing low target clears and selects17 again, then requires a new source timestamp', async () => {
   const f = fixture(); await f.start();
   f.controller.select(10, f.now()); await f.tick(); f.ack(); f.advance(); await f.tick();
   assert.equal(f.sent.at(-1).setting, 'targetC'); f.ack();
   await f.tick(); assert.equal(f.controller.phase, 'waiting');
-  f.advance(); f.measure(7); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 13);
+  f.advance(); f.measure(7); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 14);
 });
 
 test('ordinary power and native targets wait for acknowledged internal-sensor handover', async () => {
@@ -114,9 +120,68 @@ test('ordinary power and native targets wait for acknowledged internal-sensor ha
   }
 });
 
-test('visible native changes stop external feed until an explicit new room selection', async () => {
-  const f = fixture(); await f.start(); f.advance(); f.native.targetC = 17;
-  await f.tick(); assert.equal(f.sent.at(-1).temperatureC, null); f.ack(); await f.tick();
+test('native readback changes between renewals leave the admitted sample untouched', async () => {
+  const f = fixture(); await f.start();
+  const commands = structuredClone(f.sent), status = f.controller.status(f.observation());
+  for (const values of [{ targetC: 16 }, { power: 'off' }, { mode: 'cool' }, { targetC: null }, { fan: 3 }]) {
+    f.advance(); f.readNative(values); await f.tick();
+    assert.deepEqual(f.sent, commands, JSON.stringify(values));
+    assert.equal(f.controller.phase, 'active');
+    assert.equal(f.controller.inhibited, null);
+    assert.equal(f.controller.status(f.observation()).acknowledged, status.acknowledged);
+  }
+});
+
+test('a native target admission failure withholds renewal without clearing or requiring manual reapplication', async t => {
+  const cases = [
+    ['ambiguous 16°C', f => f.readNative({ targetC: 16 })],
+    ['unknown target', f => f.readNative({ targetC: null })],
+    ['native context unavailable', f => { f.external.available = false; f.external.reason = 'Fresh native HEAT and ON settings are required.'; }],
+  ];
+  for (const [name, change] of cases) await t.test(name, async () => {
+    const f = fixture(); await f.start(); const commands = structuredClone(f.sent);
+    const expiry = f.sent.at(-1).requestedExpiryAt;
+    f.advance(20_000); f.measure(4); change(f); await f.tick();
+    assert.deepEqual(f.sent, commands, 'invalid renewal must send neither a numeric value nor a clear or native command');
+    assert.equal(f.controller.phase, 'waiting');
+    assert.equal(f.controller.inhibited, null, 'baseline mismatch is not a manual-reapply latch');
+    assert.match(f.controller.reason, /17|fresh|ON|HEAT/i);
+    f.advance(); await f.tick(); assert.deepEqual(f.sent, commands);
+    assert.equal(f.external.measuredAt + 90_000, expiry, 'the active lease retains its original measurement deadline');
+    f.advance(); f.readNative({ power: 'on', mode: 'heat', targetC: 17 }); f.external.available = true; f.measure(4); await f.tick();
+    assert.equal(f.sent.length, commands.length + 1, 'a later new measurement can resume with valid native evidence');
+    assert.equal(f.sent.at(-1).temperatureC, 16);
+    assert.equal(f.sent.at(-1).requestedExpiryAt, f.observation().sourceTime + 90_000);
+  });
+});
+
+test('native confirmation is checked again before the first numeric sample is admitted', async () => {
+  const f = fixture(); await f.tick(); f.ack(); f.advance(); f.measure(); await f.tick(); f.ack();
+  f.advance(); f.measure(); f.readNative({ targetC: 16 }); await f.tick();
+  assert.equal(f.sent.length, 2);
+  assert.equal(f.controller.phase, 'waiting');
+  assert.equal(f.controller.prepared, true, 'command confirmation alone does not authorize external input');
+  f.advance(); f.readNative({ targetC: 17 }); f.measure(); await f.tick();
+  assert.equal(f.sent.length, 3); assert.equal(f.sent.at(-1).temperatureC, 17);
+});
+
+test('a mismatched baseline cannot extend the original lease even as fresh room measurements arrive', async () => {
+  const f = fixture(); await f.start(); const commands = structuredClone(f.sent);
+  const expiry = f.sent.at(-1).requestedExpiryAt;
+  f.advance(20_000); f.readNative({ targetC: 16 }); f.measure(4); await f.tick();
+  f.advance(expiry - f.now()); f.readNative(); f.measure(4); await f.tick();
+  assert.deepEqual(f.sent, commands);
+  assert.equal(f.external.measuredAt + 90_000, f.now(), 'the driver permission expires on its original deadline');
+  Object.assign(f.external, { phase: 'internal', temperatureC: null, measuredAt: null,
+    expiresInMs: 0, restorationPending: false, acknowledged: false });
+  await f.tick(); assert.deepEqual(f.sent, commands);
+  assert.equal(f.controller.phase, 'waiting');
+});
+
+test('a driver rearm requirement still requires an explicit new room selection', async () => {
+  const f = fixture(); await f.start(); f.advance(); f.external.rearmRequired = true;
+  await f.tick(); assert.equal(f.sent.at(-1).temperatureC, null);
+  f.external.rearmRequired = false; f.ack(); await f.tick();
   assert.equal(f.controller.phase, 'blocked'); const count = f.sent.length;
   f.advance(); f.measure(5); await f.tick(); assert.equal(f.sent.length, count);
   f.controller.select(5, f.now()); await f.tick(); assert.equal(f.sent.length, count + 1);
@@ -128,7 +193,7 @@ test('restart and driver session changes discard prior native setup and never re
   await f.tick(); assert.equal(f.sent.at(-1).temperatureC, null); f.ack(); await f.tick();
   assert.equal(f.sent.at(-1).setting, 'targetC'); f.ack(); await f.tick();
   assert.equal(f.controller.phase, 'waiting');
-  f.advance(); f.measure(); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 16);
+  f.advance(); f.measure(); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 17);
 });
 
 test('unknown capability, disabled input and lost ownership never publish numeric input', async () => {
@@ -139,7 +204,7 @@ test('unknown capability, disabled input and lost ownership never publish numeri
   }
 });
 
-test('a failed native16 confirmation inhibits repeated writes and external activation', async () => {
+test('a failed native17 confirmation inhibits repeated writes and external activation', async () => {
   const f = fixture(); await f.tick(); f.ack(); f.advance(); f.measure(); await f.tick();
   f.controls.result.status = 'uncertain'; await f.tick();
   assert.equal(f.controller.phase, 'blocked'); const count = f.sent.length;
@@ -153,7 +218,7 @@ test('an uncertain external publication is cleared before a new measurement can 
   await f.tick(); assert.equal(f.sent.at(-1).temperatureC, null);
   f.ack(); f.external.available = true; await f.tick();
   assert.equal(f.controller.phase, 'waiting');
-  f.advance(); f.measure(6); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 17);
+  f.advance(); f.measure(6); await f.tick(); assert.equal(f.sent.at(-1).temperatureC, 18);
 });
 
 test('loss of host authority withdraws active status and sends no further commands', async () => {
@@ -164,7 +229,7 @@ test('loss of host authority withdraws active status and sends no further comman
   assert.equal(f.sent.length, count);
 });
 
-test('missing startup sensor data still establishes the native16 fallback without sending a number', async () => {
+test('missing startup sensor data still establishes the native17 fallback without sending a number', async () => {
   const f = fixture(); await f.tick(false); f.ack(); f.advance(); await f.tick(false);
   assert.equal(f.sent.at(-1).setting, 'targetC'); f.ack(); await f.tick(false);
   assert.equal(f.controller.phase, 'waiting');

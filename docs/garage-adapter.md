@@ -174,7 +174,7 @@ out-of-contract array disables that setting. Both the UI and command admission
 use this restricted set. An unknown horizontal vane is unavailable.
 **Room setting** extends the target selector down to 5°C when the driver's
 external temperature capability and local feature flag are enabled. This is an
-ST-MQ room target; the native Mitsubishi thermostat remains at 16°C. The special
+ST-MQ room target; ST-MQ selects a native Mitsubishi thermostat target of 17°C. The special
 Mitsubishi i-save mode is not used or inferred.
 
 `garage.nativeControls` reports overall availability, reason, busy/pending flags,
@@ -203,18 +203,28 @@ power OFF is the owner's selection and creates no automatic restoration lease.
 
 A room setting below 16°C uses only the independent Garage rear sensor,
 `garage_temperature`. The pump must already be ON in HEAT mode; ST-MQ explicitly
-commands the native 16°C target before feeding `rear temperature + (16 − room setting)`.
-For a 5°C setting the offset is +11°C. The requested room target, original source
+commands and confirms the native 17°C target before feeding `rear temperature + (17 − room setting)`.
+For a 5°C setting the offset is +12°C. The requested room target, original source
 reading, offset, remote value and actual native readback remain distinct status
 values. Both driver capability and the Pill's local feature flag are required.
+
+Before each external-temperature enable or renewal, ST-MQ requires fresh native
+ON, HEAT and 17°C readbacks using the existing 30-second freshness requirement.
+The 17°C target distinguishes this control baseline from the installed pump's
+ambiguous 10°C i-save / 16°C readback. If the check fails, ST-MQ stops renewing;
+it does not rewrite native settings or add checks between renewals, and the
+existing external-temperature lease expires. The Pill driver is unchanged,
+including its existing local cleanup behavior. Ordinary targets of 16°C and above
+still use native control.
 
 The remote temperature protocol accepts 8–39.5°C in 0.5°C steps. Host renewals
 use the original source timestamp and require a usable independent report less
 than 90 seconds old. Retained, future or stale evidence cannot authorize the
 feed, and repeated timestamps do not extend source freshness. Loss of fresh
-evidence ends the feed and leaves native 16°C heating as
-the fallback. This relies on the driver enforcing its local expiry and on a
-working Pill and serial path.
+evidence ends the feed. Internal-sensor control uses the pump's current native
+settings; when unchanged from setup, that is HEAT at 17°C. This relies on the
+driver enforcing its local expiry and on a working Pill and serial path. The
+90-second source lifetime is unchanged; no additional lease timer is introduced.
 
 The room target is durable intent. Restart does not replay a cached remote
 temperature: the host must obtain fresh source evidence and reestablish native
@@ -224,12 +234,13 @@ External control does not establish physical frost protection, low-heat
 commissioning or a new economic-pause baseline. Installed qualification remains
 the responsibility of the separate adapter and installation work.
 
-Before the installation's first low-temperature use, select ordinary HEAT at
-16°C with the original Mitsubishi remote. Coordinate any later use of the
-remote's i-save button with ST-MQ: a native target readback does not prove that a
-hidden i-save state has ended or that the pump is regulating the actual room at
-the requested temperature. The host's explicit target command and serial
-acknowledgement still require thermal qualification on the installed pump.
+Before low-temperature use, enable the Pill's external-temperature feature and
+put the pump ON in HEAT mode. Selecting the low room setting in ST-MQ clears
+external input, explicitly commands 17°C and waits for confirmation before
+feeding the sensor offset. The setup and renewal checks address the known
+i-save readback ambiguity; the command and serial acknowledgement still require
+thermal qualification on the installed pump and do not prove regulation at the
+requested room temperature.
 
 ## Electrical accounting
 

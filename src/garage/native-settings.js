@@ -9,6 +9,10 @@ export const GARAGE_NATIVE_SETTINGS = Object.freeze({
   wideVane: { values: ['far-left', 'left', 'center', 'right', 'far-right', 'split', 'swing'] },
 });
 
+// Unlike 16°C, the installed pump's 17°C readback is distinguishable from
+// remote-selected i-save 10°C. This is the native basis for external sensing.
+export const GARAGE_EXTERNAL_NATIVE_TARGET_C = 17;
+
 export function validateGarageNativeSetting(input, targetStep = 1) {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 2
     || typeof input.setting !== 'string' || !Object.hasOwn(input, 'setting') || !Object.hasOwn(input, 'value')

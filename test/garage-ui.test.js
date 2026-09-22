@@ -320,7 +320,7 @@ test('Garage separates validation, sources and planning with honest missing and 
   const model = createGarageModel();
   const garage = { observations: { rear: { value: 0, stale: false }, front: { value: 1, stale: true },
       charging: { ev1: { known: true, powerKw: 0, heatKw: 0 }, ev2: { known: false } } },
-    settings: garageSettings(), roomTemperature: { targetC: 5, phase: 'active', acknowledged: true, offsetC: 11 }, learning: garageModelSummary(model) };
+    settings: garageSettings(), roomTemperature: { targetC: 5, phase: 'active', acknowledged: true, offsetC: 12 }, learning: garageModelSummary(model) };
   const before = structuredClone(garage), display = garageDisplay(garage);
   const inputs = Object.fromEntries(display.inputDetails.map(row => [row.key, row]));
   assert.equal(inputs['rear-air-temperature'].value, '0 °C');
@@ -384,18 +384,18 @@ test('Garage rendering fills the learning contexts and keeps reconstruction insi
   assert.equal(garageDisplay({ learning: { reconstruction: 'snapshot' } }).evidenceDetails.find(row => row.key === 'recorded-history-reconstruction').value, 'Recorded primary snapshot');
 });
 
-test('saved external room setting identifies active and fallback control while native 16°C remains unchanged', () => {
+test('saved external room setting identifies active and fallback control while native 17°C remains unchanged', () => {
   const nodes = new Map(['garage-native-target', 'garage-native-target-basis'].map(id => [id,
     { textContent: '', hidden: true, classList: { toggle() {} } }]));
-  const garage = { settings: {}, roomTemperature: { targetC: 5, phase: 'active', acknowledged: true, offsetC: 11 },
+  const garage = { settings: {}, roomTemperature: { targetC: 5, phase: 'active', acknowledged: true, offsetC: 12 },
     adapter: { connected: true, health: { deviceOnline: true, pumpCommunicating: true }, baselineVerified: false, baselineAccepted: true,
-      native: { targetC: 16, readbacks: { targetC: { measuredAt: now } } } } };
+      native: { targetC: 17, readbacks: { targetC: { measuredAt: now } } } } };
   const document = { getElementById: id => nodes.get(id) };
   renderGarage(document, { now, garage });
   assert.equal(nodes.get('garage-native-target').textContent, '5 °C');
   assert.equal(nodes.get('garage-native-target-basis').textContent, 'External sensor · active');
   assert.equal(nodes.get('garage-native-target-basis').hidden, false);
-  assert.equal(garage.adapter.native.targetC, 16);
+  assert.equal(garage.adapter.native.targetC, 17);
   const rows = Object.fromEntries(garageDisplay(garage).rows);
   assert.equal(rows['Native baseline independently verified'], 'No');
   assert.equal(rows['Native baseline accepted for control'], 'Yes');
@@ -405,7 +405,7 @@ test('saved external room setting identifies active and fallback control while n
   assert.equal(nodes.get('garage-native-target-basis').textContent, 'External sensor · fallback');
   garage.roomTemperature = { targetC: null, phase: 'disabled' };
   renderGarage(document, { now, garage });
-  assert.equal(nodes.get('garage-native-target').textContent, '16 °C');
+  assert.equal(nodes.get('garage-native-target').textContent, '17 °C');
   assert.equal(nodes.get('garage-native-target-basis').hidden, true);
 });
 

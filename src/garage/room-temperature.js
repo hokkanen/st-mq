@@ -1,9 +1,9 @@
+import { GARAGE_EXTERNAL_NATIVE_TARGET_C } from './native-settings.js';
+
 export const GARAGE_ROOM_MIN_C = 5;
 export const GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS = 90_000;
 const pending = result => ['pending', 'published', 'accepted'].includes(result?.status);
 const failed = result => ['rejected', 'failed', 'uncertain', 'superseded'].includes(result?.status);
-const nativeSignature = native => JSON.stringify(['power', 'mode', 'targetC', 'fan', 'vane', 'wideVane']
-  .map(key => native?.[key] ?? null));
 
 /** Saved room intent is separate from short-lived sensor permission. No sample,
  * command envelope or native confirmation survives a host/driver session. */
@@ -20,7 +20,6 @@ export class GarageRoomTemperature {
     this.clearSentAt = null;
     this.prepared = false;
     this.preparation = null;
-    this.signature = null;
     this.inhibited = null;
     this.phase = this.targetC === null ? 'disabled' : 'preparing';
     this.reason = null;
@@ -43,8 +42,8 @@ export class GarageRoomTemperature {
   status(observation) {
     return { targetC: this.targetC, phase: this.phase, reason: this.reason,
       sourceC: Number.isFinite(observation?.value) ? observation.value : null,
-      measuredAt: observation?.sourceTime ?? null, offsetC: this.targetC === null ? 0 : 16 - this.targetC,
-      suppliedC: this.suppliedC, nativeTargetC: 16, acknowledged: this.acknowledged,
+      measuredAt: observation?.sourceTime ?? null, offsetC: this.targetC === null ? 0 : GARAGE_EXTERNAL_NATIVE_TARGET_C - this.targetC,
+      suppliedC: this.suppliedC, nativeTargetC: GARAGE_EXTERNAL_NATIVE_TARGET_C, acknowledged: this.acknowledged,
       result: this.ordinary ? { ...this.ordinary, status: 'pending', requestedAt: this.requestedAt,
         reason: this.reason } : this.targetC === null ? null : { setting: 'targetC', value: this.targetC,
         status: this.acknowledged ? 'acknowledged' : 'saved', requestedAt: this.requestedAt ?? null,
@@ -76,12 +75,10 @@ export class GarageRoomTemperature {
     const active = external.phase !== 'internal' || external.restorationPending;
     if (external.rearmRequired && !this.mustClear) this.inhibited = 'The pump setting or external control changed. Apply the room setting again to resume.';
     if (!external.pending && ['uncertain', 'failed', 'superseded'].includes(external.result?.status)) this.mustClear = true;
-    if (this.prepared && nativeSignature(adapter.status(now).native) !== this.signature)
-      this.inhibited = 'The pump settings changed. Apply the room setting again to resume.';
     const fresh = sourceUsable && observation?.source !== 'garage-adapter'
       && Number.isSafeInteger(observation?.sourceTime) && observation.sourceTime >= this.startedAt
       && observation.sourceTime <= now && now - observation.sourceTime < GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS;
-    const supplied = fresh && this.targetC !== null ? Math.round((observation.value + 16 - this.targetC) * 2) / 2 : null;
+    const supplied = fresh && this.targetC !== null ? Math.round((observation.value + GARAGE_EXTERNAL_NATIVE_TARGET_C - this.targetC) * 2) / 2 : null;
     const inRange = Number.isFinite(supplied) && supplied >= 8 && supplied <= 39.5;
     const source = fresh ? JSON.stringify([observation.source, observation.device, observation.raw?.temperatureRouteSignature]) : null;
     if (this.source && source && this.source !== source) {
@@ -123,27 +120,27 @@ export class GarageRoomTemperature {
     if (fallback && (this.inhibited || !external.enabled)) {
       this.phase = 'blocked'; this.reason = fallback; return;
     }
-    const native = adapter.status(now).native;
-    if (native?.power !== 'on' || native?.mode !== 'heat') {
-      this.phase = 'waiting'; this.reason = 'Select HEAT and turn the pump on before applying a lower room setting.'; return;
-    }
     if (!this.prepared) {
-      this.phase = 'preparing'; this.reason = 'Selecting native 16°C before external control.';
+      const native = adapter.status(now).native;
+      if (native?.power !== 'on' || native?.mode !== 'heat') {
+        this.phase = 'waiting'; this.reason = 'Select HEAT and turn the pump on before applying a lower room setting.'; return;
+      }
+      this.phase = 'preparing'; this.reason = `Selecting native ${GARAGE_EXTERNAL_NATIVE_TARGET_C}°C before external control.`;
       const controls = adapter.nativeControls(now);
       if (this.preparation) {
         const result = controls.result;
-        if (result?.setting === 'targetC' && result.value === 16 && result.requestedAt === this.preparation.requestedAt) {
+        if (result?.setting === 'targetC' && result.value === GARAGE_EXTERNAL_NATIVE_TARGET_C && result.requestedAt === this.preparation.requestedAt) {
           if (result.status === 'native-confirmed') {
-            this.prepared = true; this.signature = nativeSignature(native);
+            this.prepared = true;
           } else if (failed(result)) {
-            this.inhibited = 'Selecting native 16°C was not confirmed. Apply the room setting again to retry.';
+            this.inhibited = `Selecting native ${GARAGE_EXTERNAL_NATIVE_TARGET_C}°C was not confirmed. Apply the room setting again to retry.`;
             this.phase = 'blocked'; this.reason = this.inhibited;
           }
         }
         if (!this.prepared) return;
       } else {
         if (!controls.settings.targetC?.available) { this.reason = controls.settings.targetC?.reason; return; }
-        const result = await adapter.setNativeSetting({ setting: 'targetC', value: 16 }, now);
+        const result = await adapter.setNativeSetting({ setting: 'targetC', value: GARAGE_EXTERNAL_NATIVE_TARGET_C }, now);
         if (current()) this.preparation = result;
         return;
       }
@@ -160,12 +157,21 @@ export class GarageRoomTemperature {
       this.phase = 'waiting'; this.reason = 'Waiting for a new Garage rear measurement.'; return;
     }
     if (!external.available || external.pending) {
-      this.phase = active ? 'preparing' : 'waiting'; this.reason = external.reason; return;
+      this.phase = external.pending ? 'preparing' : 'waiting'; this.reason = external.reason; return;
     }
     if (this.lastMeasuredAt === observation.sourceTime && this.lastSuppliedC === supplied
       && external.result?.status !== 'rejected') return;
-    const result = await adapter.setExternalTemperature({ temperatureC: supplied,
-      measuredAt: observation.sourceTime, requestedExpiryAt: observation.sourceTime + GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS }, now);
+    let result;
+    try {
+      // The adapter validates fresh ON/HEAT/17°C here, at sample admission.
+      // It leaves a failed renewal's existing permission to expire locally.
+      result = await adapter.setExternalTemperature({ temperatureC: supplied,
+        measuredAt: observation.sourceTime, requestedExpiryAt: observation.sourceTime + GARAGE_EXTERNAL_SOURCE_MAX_AGE_MS }, now);
+    } catch (error) {
+      if (error.code !== 'external-native-target-required') throw error;
+      if (current()) { this.phase = 'waiting'; this.reason = error.message; }
+      return;
+    }
     if (current()) {
       this.lastMeasuredAt = observation.sourceTime; this.lastSuppliedC = supplied;
       this.suppliedC = supplied; this.phase = 'preparing'; this.reason = result.reason ?? null;

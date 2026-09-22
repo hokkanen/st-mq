@@ -543,7 +543,7 @@
                       <p class="equipment-control-state"><span>Reported now</span><strong id="garage-native-reported">Unavailable</strong></p>
                       <button id="garage-native-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
                     </form>
-                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, the permanent room setting uses the Garage rear sensor while the pump stays at 16 °C. For 5 °C, ST-MQ supplies the rear temperature plus 11 °C. Missing or stale readings fall back to internal temperature control at 16 °C. Setting 16 °C or higher returns to normal pump control.</p>
+                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, the permanent room setting uses the Garage rear sensor with the pump set to 17 °C. For 5 °C, ST-MQ supplies the rear temperature plus 12 °C. Each renewal requires fresh ON, HEAT and 17 °C readings. Missing or changed readings stop renewals; the pump returns to its internal sensor when the current permission expires. Setting 16 °C or higher returns to normal pump control.</p>
                     <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
                     <p id="garage-native-message" class="temporary-status" role="status" aria-live="polite"></p>
                   </details>

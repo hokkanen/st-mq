@@ -21,7 +21,7 @@ function fixture(t, options = {}) {
     const value = { ...structuredClone(TEMPLATE), sequence: ++sequence, observedAt: now, mode: 'monitoring',
       authority: { ownerSession: null, controlAllowed: false, manualControlAllowed: true },
       challenge: { value: `challenge-${sequence}`, expiresAt: now + 30_000 },
-      native: Object.fromEntries(Object.entries({ power: 'on', mode: 'heat', targetC: 16, fan: 'auto', vane: 3, vanes: 'fixed' })
+      native: Object.fromEntries(Object.entries({ power: 'on', mode: 'heat', targetC: 17, fan: 'auto', vane: 3, vanes: 'fixed' })
         .map(([key, value]) => [key, { value, measuredAt: now, ageMs: 0 }])),
       externalTemperature: { ...INTERNAL }, result: null, ...patch };
     for (const field of Object.values(value.health)) { field.measuredAt = now; field.ageMs = 0; }
@@ -173,4 +173,41 @@ test('a transient busy rejection during active control allows the same unadmitte
   await f.adapter.setExternalTemperature(next);
   assert.equal(f.published.at(-1).command.measuredAt, next.measuredAt);
   assert.equal(f.published.at(-1).command.temperatureC, 22);
+});
+
+test('native17 is checked at numeric admission without consuming a failed attempt or clearing its existing lease', async t => {
+  const f = fixture(t);
+  const initial = f.state();
+  f.state({ native: { ...initial.native, targetC: { value: 16, measuredAt: f.now() } } });
+  const before = f.adapter.snapshot();
+  await assert.rejects(f.adapter.setExternalTemperature(f.sample()), { code: 'external-native-target-required' });
+  assert.equal(f.published.length, 0);
+  assert.deepEqual(f.adapter.snapshot(), before, 'target refusal does not create a command or cleanup obligation');
+  f.state(); await f.adapter.setExternalTemperature(f.sample()); f.advance();
+  const active = f.result('acknowledged');
+  const wrongTarget = f.state({ externalTemperature: active.externalTemperature,
+    native: { ...active.native, targetC: { value: 16, measuredAt: f.now() } } });
+  const expiry = f.adapter.externalTemperature().expiresInMs;
+  const snapshot = f.adapter.snapshot();
+  await assert.rejects(f.adapter.setExternalTemperature(f.sample({ temperatureC: 22 })), /17°C/);
+  assert.equal(f.published.length, 1, 'no numeric sample, clear or target rewrite is sent');
+  assert.equal(f.adapter.externalTemperature().expiresInMs, expiry);
+  assert.deepEqual(f.adapter.snapshot(), snapshot);
+  await f.adapter.setExternalTemperature({ temperatureC: null });
+  assert.equal(f.published[1].command.challenge, wrongTarget.challenge.value, 'explicit clear can still use the unconsumed challenge');
+});
+
+test('numeric enable and renewal preserve the existing 30-second native freshness boundary', async t => {
+  for (const age of [30_000, 30_001]) {
+    const f = fixture(t); const original = f.state();
+    f.advance(age); f.state({ native: original.native });
+    if (age === 30_000) {
+      await f.adapter.setExternalTemperature(f.sample());
+      assert.equal(f.published.length, 1);
+      assert.equal(f.published[0].command.requestedExpiryAt, f.now() + 90_000);
+    } else {
+      await assert.rejects(f.adapter.setExternalTemperature(f.sample()), /Fresh native HEAT and ON/);
+      assert.equal(f.published.length, 0);
+    }
+  }
 });

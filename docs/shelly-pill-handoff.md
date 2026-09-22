@@ -43,15 +43,20 @@ driver, exact private MQTT topics and commissioning gates. The default synthetic
 
 ST-MQ also supports the Pill's external temperature control for permanent room
 settings down to 5°C. The pump must already be ON in HEAT mode. ST-MQ explicitly
-commands the native 16°C target, then feeds the independent Garage rear
-temperature plus `16 − requested room setting`:
-a 5°C setting adds 11°C. This uses neither Mitsubishi i-save nor an owner
+commands and confirms the native 17°C target, then feeds the independent Garage rear
+temperature plus `17 − requested room setting`:
+a 5°C setting adds 12°C. This uses neither Mitsubishi i-save nor an owner
 assumption about mode persistence.
 
 The driver must advertise the capability and enable its local feature flag.
 Remote values are 8–39.5°C in 0.5°C steps, based on original usable reports less
-than 90 seconds old. The host stops renewing stale evidence; local expiry must
-return to the native 16°C fallback. A saved target resumes after host restart
+than 90 seconds old. Each external enable or renewal requires ON, HEAT and 17°C
+readbacks under the existing 30-second freshness requirement. A failed native
+check stops host renewals and lets the existing lease expire, with no additional
+host checks or native writes between renewals. This guard requires no Pill driver
+changes or new lease limits; existing local cleanup behavior remains intact.
+Missing or stale source evidence ends the feed; internal-sensor control uses
+current native settings, HEAT at 17°C if unchanged. A saved target resumes after host restart
 only with fresh independent source evidence and native setup. Serial clearing
 of the override must finish before ordinary native settings or a managed pause
 proceed. This host support does not establish physical frost protection or new

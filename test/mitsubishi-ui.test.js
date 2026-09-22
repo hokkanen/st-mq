@@ -160,16 +160,16 @@ test('explicitly unknown diagnostic values stay absent even when an older source
 
 test('room setting permits 5°C only when advertised and preserves the saved target across fallback', async () => {
   const f = panelFixture(), status = structuredClone(f.status);
-  Object.assign(status.garage.adapter.native, { targetC: 16 });
-  status.garage.adapter.native.readbacks.targetC.value = 16;
+  Object.assign(status.garage.adapter.native, { targetC: 17 });
+  status.garage.adapter.native.readbacks.targetC.value = 17;
   Object.assign(status.garage.nativeControls.settings.targetC, { min: 5, value: 5, usable: false });
   status.garage.roomTemperature = { targetC: 5, phase: 'waiting', reason: 'rear-temperature-stale',
-    sourceC: null, measuredAt: null, offsetC: 11, suppliedC: null, nativeTargetC: 16, acknowledged: false };
+    sourceC: null, measuredAt: null, offsetC: 12, suppliedC: null, nativeTargetC: 17, acknowledged: false };
   f.panel.update(status); f.change('targetC');
   assert.equal(f.nodes.get('garage-native-temperature').min, 5);
   assert.equal(f.nodes.get('garage-native-temperature').value, '5');
   assert.equal(f.nodes.get('garage-native-temperature-help').hidden, false);
-  assert.match(f.nodes.get('garage-room-temperature-status').textContent, /5 °C saved.*fallback/);
+  assert.match(f.nodes.get('garage-room-temperature-status').textContent, /5 °C saved.*External temperature control is unavailable/);
   for (const value of ['4.5', '31.5', '5.25']) { f.nodes.get('garage-native-temperature').value = value; await f.submit(); }
   assert.equal(f.calls.length, 0);
   f.nodes.get('garage-native-temperature').value = '5';
@@ -178,7 +178,7 @@ test('room setting permits 5°C only when advertised and preserves the saved tar
   await f.submit();
   assert.deepEqual(f.calls, [['/api/garage/native', { setting: 'targetC', value: 5 }]]);
   assert.match(f.nodes.get('garage-native-message').textContent, /Saved; preparing external temperature control/);
-  assert.equal(mitsubishiReadings(status.garage, now).find(row => row.key === 'native-targetC').value, '16 °C');
+  assert.equal(mitsubishiReadings(status.garage, now).find(row => row.key === 'native-targetC').value, '17 °C');
   assert.equal(f.nodes.get('garage-native-temperature').value, '5');
   f.change('fan');
   assert.equal(f.nodes.get('garage-native-temperature-help').hidden, true);
@@ -188,13 +188,16 @@ test('room setting permits 5°C only when advertised and preserves the saved tar
 test('room control status distinguishes acknowledgement, preparation and fallback without rewriting native evidence', () => {
   const garage = fixture().garage;
   garage.roomTemperature = { targetC: 5, phase: 'active', sourceC: 5.25, measuredAt: now,
-    offsetC: 11, suppliedC: 16.25, nativeTargetC: 16, acknowledged: true };
+    offsetC: 12, suppliedC: 17.25, nativeTargetC: 17, acknowledged: true };
   const before = structuredClone(garage), room = mitsubishiRoomTemperature(garage);
   assert.equal(room.value, '5 °C'); assert.equal(room.basis, 'External sensor · active');
-  assert.match(room.detail, /native pump target of 16 °C/);
-  assert.match(room.detail, /adds 11 °C/); assert.match(room.detail, /Garage rear: 5.25 °C/);
-  assert.match(room.detail, /Supplied temperature: 16.25 °C/);
+  assert.match(room.detail, /native pump target of 17 °C/);
+  assert.match(room.detail, /adds 12 °C/); assert.match(room.detail, /Garage rear: 5.25 °C/);
+  assert.match(room.detail, /Supplied temperature: 17.25 °C/);
   assert.match(room.detail, /Missing or stale sensor readings/);
+  assert.match(room.detail, /Before enabling or renewing.*ON, HEAT and 17 °C/);
+  assert.match(room.detail, /If that check fails, renewals stop and the current permission expires/);
+  assert.match(room.detail, /Internal temperature control then uses the pump's current settings/);
   assert.deepEqual(garage, before);
   for (const [phase, basis] of [['preparing', 'preparing'], ['clearing', 'clearing'], ['waiting', 'fallback'], ['blocked', 'fallback']]) {
     garage.roomTemperature.phase = phase;
@@ -214,7 +217,7 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
 test('external room targets remain visible but cannot be submitted from read-only replicas', async () => {
   const f = panelFixture(), status = structuredClone(f.status);
   Object.assign(status.garage.nativeControls.settings.targetC, { min: 5, value: 5 });
-  status.garage.roomTemperature = { targetC: 5, phase: 'active', acknowledged: true, offsetC: 11 };
+  status.garage.roomTemperature = { targetC: 5, phase: 'active', acknowledged: true, offsetC: 12 };
   for (const role of ['replica', 'protected', 'transition']) {
     f.panel.update({ ...status, role }); f.change('targetC'); await f.submit();
     assert.equal(f.nodes.get('garage-native-temperature').value, '5');
@@ -224,6 +227,6 @@ test('external room targets remain visible but cannot be submitted from read-onl
   f.panel.update({ ...status, readOnly: true }); await f.submit();
   assert.equal(f.calls.length, 0);
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(html, /assume-isave|Assume i-save/);
-  assert.match(html, /Garage rear sensor.*pump stays at 16 °C/);
+  assert.doesNotMatch(html, /assume-isave|Assume i-save|Assumes i-save|controller’s assumption/);
+  assert.match(html, /Garage rear sensor.*pump set to 17 °C/);
 });

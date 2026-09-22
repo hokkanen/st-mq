@@ -49,16 +49,17 @@ export function mitsubishiRoomTemperature(garage = {}) {
   const basis = active ? 'External sensor · active'
     : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · preparing'
       : control.phase === 'clearing' ? 'External sensor · clearing' : 'External sensor · fallback';
-  const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 16);
+  const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 17);
   const progress = active ? 'The driver has acknowledged the external temperature; the saved room setting is active.'
     : control.phase === 'preparing' || control.phase === 'active' ? 'Preparing external temperature control; the saved room setting is not yet confirmed active.'
       : control.phase === 'clearing' ? 'Clearing the supplied temperature and waiting for internal-sensor acknowledgement before the next control step.'
-        : `External temperature control is unavailable. Check the control status below; internal temperature control at ${nativeTarget} is the fallback after native setup.`;
+        : 'External temperature control is unavailable. Check the control status below; the driver returns to its internal temperature sensor when the current permission expires.';
   const detail = [`Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. ${progress}`,
     `Garage rear is the room sensor. External control uses a native pump target of ${nativeTarget}; ST-MQ adds ${mitsubishiValue('targetC', control.offsetC)} to the rear reading to obtain the lower room setting.`,
     `Garage rear: ${mitsubishiValue('targetC', control.sourceC)}.${clock(control.measuredAt) ? ` Measured ${clock(control.measuredAt)}.` : ''} Supplied temperature: ${mitsubishiValue('targetC', control.suppliedC)}.`,
     control.reason ? `Control status: ${words(control.reason)}.` : '',
-    `Missing or stale sensor readings stop the external input; the driver falls back to internal temperature control at ${nativeTarget}. A room setting of 16 °C or higher, or another heat-pump setting change, ends external temperature control.`].filter(Boolean).join('\n\n');
+    `Before enabling or renewing external control, ST-MQ confirms fresh pump readings show ON, HEAT and ${nativeTarget}. If that check fails, renewals stop and the current permission expires. Internal temperature control then uses the pump's current settings.`,
+    `Missing or stale sensor readings also stop external control. A room setting of 16 °C or higher, or another heat-pump setting change, ends external temperature control.`].filter(Boolean).join('\n\n');
   return { value: mitsubishiValue('targetC', control.targetC), basis, detail, active, progress };
 }
 

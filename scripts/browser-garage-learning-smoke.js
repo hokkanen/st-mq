@@ -107,15 +107,15 @@ try {
       const status = await response.json(), at = status.now;
       status.garage.adapter = { ...status.garage.adapter, connected: true, baselineVerified: false,
         health: { deviceOnline: true, pumpCommunicating: true },
-        native: { power: 'on', powerAt: at, mode: 'heat', targetC: 16,
+        native: { power: 'on', powerAt: at, mode: 'heat', targetC: 17,
           readbacks: Object.fromEntries(['power', 'mode', 'targetC'].map(field => [field, { measuredAt: at }])) } };
       const targetC = globalThis.garageSmokeTarget, phase = globalThis.garageSmokePhase;
       status.garage.roomTemperature = { targetC, phase, acknowledged: phase === 'active',
         sourceC: phase === 'waiting' ? null : 0, measuredAt: phase === 'waiting' ? null : at,
-        offsetC: targetC === null ? 0 : 16 - targetC, suppliedC: phase === 'active' ? 16 - targetC : null,
-        nativeTargetC: 16, reason: phase === 'waiting' ? 'rear-temperature-stale' : null };
+        offsetC: targetC === null ? 0 : 17 - targetC, suppliedC: phase === 'active' ? 17 - targetC : null,
+        nativeTargetC: 17, reason: phase === 'waiting' ? 'rear-temperature-stale' : null };
       status.garage.nativeControls = { available: true, busy: false, pending: false,
-        settings: { targetC: { supported: true, available: true, usable: true, value: targetC ?? 16, min: 5, max: 31, step: .5 } },
+        settings: { targetC: { supported: true, available: true, usable: true, value: targetC ?? 17, min: 5, max: 31, step: .5 } },
         result: targetC === null ? null : { setting: 'targetC', value: targetC, status: phase === 'active' ? 'acknowledged' : 'saved' } };
       if (globalThis.garageSmokeMissing) {
         status.garage.observations.rear = { value: null };
@@ -168,7 +168,8 @@ try {
   await evaluate("document.getElementById('garage-equipment-details').open=true; document.getElementById('garage-controller-details').open=true; document.getElementById('garage-native-control-details').open=true");
   await until("document.getElementById('garage-native-submit').disabled === false");
   assert.equal(await evaluate("document.getElementById('garage-assume-isave')"), null);
-  assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '16 °C');
+  assert.doesNotMatch(await evaluate('document.body.textContent'), /Assume i-save|Assumes i-save|controller’s assumption/);
+  assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '17 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').min"), '5');
   await evaluate("document.getElementById('garage-native-temperature').value='5'; document.getElementById('garage-native-temperature').dispatchEvent(new Event('input')); document.getElementById('garage-native-form').requestSubmit()");
   await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · preparing'");
@@ -177,15 +178,15 @@ try {
   await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · active'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').value"), '5');
-  assert.match(await evaluate("document.querySelector('#garage-native-readings [data-reading=native-targetC]').textContent"), /16 °C/);
-  assert.match(await evaluate("document.getElementById('garage-native-reported').textContent"), /16 °C/);
+  assert.match(await evaluate("document.querySelector('#garage-native-readings [data-reading=native-targetC]').textContent"), /17 °C/);
+  assert.match(await evaluate("document.getElementById('garage-native-reported').textContent"), /17 °C/);
   await evaluate("document.querySelector('#garage-pump-reading-info .status-detail-trigger').click()");
-  assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /adds 11 °C/);
+  assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /adds 12 °C/);
   await evaluate("document.querySelector('.status-detail-close').click()");
   await evaluate("globalThis.garageSmokePhase='waiting'; globalThis.refreshGarageSmoke()");
   await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · fallback'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
-  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"), /internal temperature control at 16 °C/);
+  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"), /internal temperature sensor when the current permission expires/);
   await evaluate("globalThis.garageSmokePhase='active'; globalThis.garageSmokeReadOnly=true; globalThis.refreshGarageSmoke()");
   await until("document.getElementById('garage-native-submit').disabled === true");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
@@ -221,7 +222,7 @@ try {
   console.log(JSON.stringify({ result: 'garage-learning-browser-smoke-passed', artifacts,
     checks: ['four matching Home/Garage learning sections', 'configuration before learning', 'keyboard entry and section controls',
       'polling preserves focus and open rows', 'missing versus zero inputs', 'two cooling rates and explicit assumptions',
-      '5°C target via existing setting form', 'external active/preparing/fallback with actual16 visible', 'read-only setting gate',
+      '5°C target via existing setting form', 'external active/preparing/fallback with actual17 visible', 'read-only setting gate',
       '320,390,1440px layouts in both themes', 'no browser exceptions'] }));
   await send('Page.close');
 } finally {
