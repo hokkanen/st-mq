@@ -95,3 +95,23 @@ person, revoke/rotate them with the provider. Do not rewrite unrelated refs or
 claim an exposure is removed from other clones/caches without evidence.
 
 See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scope.
+
+## Configuration design
+
+- Keep `config.json.options` as the shared defaults and the existing private or
+  Supervisor source as sparse installation overrides. Add another configuration
+  layer or format only when a concrete requirement justifies it.
+- Keep credentials and private identifiers in private configuration. Non-secret
+  installation choices may also go there; common MQTT topics and equipment
+  definitions belong in public defaults. Do not copy defaults into private files
+  or examples just because a feature adds settings.
+- Put new settings in their owning section beside related settings, and keep
+  `options` and `schema` in the same section and field order. Use the section map
+  in [docs/configuration.md](docs/configuration.md); update it for new sections.
+  Preserve existing field paths unless a behavior change needs a migration.
+- Public Garage enablement and protection approval default to false. Test the
+  explicit private opt-in independently; owner approval is installation state,
+  not evidence of adapter readiness.
+- Feature tests must explicitly configure the synthetic integrations relevant
+  to their scenario instead of inheriting unrelated public device subscriptions.
+  Keep separate coverage for intended public defaults and sparse override merging.

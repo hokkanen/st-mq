@@ -9,11 +9,13 @@ import { Engine } from '../src/app/engine.js';
 import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
 function setup(t, input = 'simulated') {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-app-test-'));
   const store = new Store(join(directory, 'test.sqlite'));
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input };
+  config.garage.adapter = isolatedGarageAdapter();
   let at = Date.parse('2026-09-06T03:45:00Z'); // 06:45 Finnish time
   const engine = new Engine({ store, config, clock: () => at });
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });

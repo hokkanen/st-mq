@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
+import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
@@ -111,6 +112,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
   fake.end = (force, options, done) => { closed++; done(); };
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } };
+  config.garage.adapter = isolatedGarageAdapter();
   const app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions,
     mqttOptions: { connect: (_address, options) => identityConnection(options) ? idleIdentityClient() : fake } });
   try {

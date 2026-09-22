@@ -9,6 +9,7 @@ import { loadConfig } from '../src/app/config.js';
 import { Store } from '../src/storage/store.js';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
+import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
 test('live test transport stays idle until a POST and shutdown records an unconfirmed pending command before closing storage', { timeout: 15_000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-lifecycle-'));
@@ -18,6 +19,7 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory),
     input: 'providers', dbPath: join(directory, 'st-mq.sqlite'), legacyDbPath: join(directory, 'st-mq.sqlite'),
     connections: { ...fixture.connections, mqtt: connection } };
+  config.garage.adapter = isolatedGarageAdapter();
   const clients = [], packets = [], published = new EventEmitter();
   const connect = (address, options) => {
     if (identityConnection(options)) return idleIdentityClient();

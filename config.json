@@ -16,9 +16,11 @@
   "panel_icon": "mdi:home-lightning-bolt",
   "panel_title": "ST-MQ",
   "ports": {
+
     "1234/tcp": 1234
   },
   "ports_description": {
+
     "1234/tcp": "Direct web access; enabled only when a web token is configured"
   },
   "webui": "http://[HOST]:[PORT:1234]",
@@ -28,90 +30,46 @@
   ],
   "backup": "cold",
   "timeout": 30,
+  "host_network": true,
+  "privileged": [
+    "NET_ADMIN",
+    "NET_RAW"
+  ],
+
   "options": {
-    "geoloc": {
-      "country_code": "fi",
-      "latitude": "",
-      "longitude": ""
-    },
-    "mqtt": {
-      "address": "mqtt://core-mosquitto",
-      "user": "",
-      "pw": "",
-      "dhwr_topic": "stmq/home/dhwr/command/switch",
-      "indoor_temperature_topic": "",
-      "downstairs_temperature_topic": "",
-      "bedroom_temperature_topic": "",
-      "temperature_report_interval_minutes": 70,
-      "temperature_report_grace_seconds": 300,
-      "garage_temperature_topic": "",
-      "garage_temperature_2_topic": ""
-    },
-    "entsoe": {
-      "token": ""
-    },
-    "easee": {
-      "user": "",
-      "pw": "",
-      "charger_id": "",
-      "equalizer_id": "",
-      "charger_voltage_ids": []
-    },
-    "teslamate": {
-      "enabled": true,
-      "car_id": "1",
-      "home_geofence": "Home",
-      "namespace": "",
-      "charger_assignment": "auto",
-      "charger_identification": true,
-      "max_age_seconds": 180
-    },
-    "charging": {
-      "chargers": {
-        "charger1": {},
-        "charger2": {}
-      },
-      "vehicles": {
-        "bmw": {
-          "label": "BMW",
-          "provider": "bmw-cardata",
-          "mqttTopic": "stmq/vehicles/bmw"
-        }
-      }
-    },
-    "electricity": {
-      "margin_ct_per_kwh_ex_vat": 0.33,
-      "tax_ct_per_kwh_ex_vat": 2.325,
-      "vat_percent": 25.5,
-      "transfer_tariff": "day-night",
-      "day_transfer_ct_per_kwh_ex_vat": 2.66,
-      "night_transfer_ct_per_kwh_ex_vat": 1.56,
-      "winter_day_transfer_ct_per_kwh_ex_vat": 3.32,
-      "other_transfer_ct_per_kwh_ex_vat": 1.65,
-      "effective_date": ""
-    },
+
     "controller": {
       "input": "simulated",
       "mode": "shadow",
+      "role": "primary",
       "web_token": "",
-      "h66_device": "",
+
       "max_drop_c": 1.5,
+      "max_rise_c": 1.5,
+      "savings_aggressiveness": 50,
+      "preheat_room_boost_c": 5,
       "indoor_sensor_weights": {},
+
+      "h66_device": "",
       "h66_verification_file": "",
+      "heat_pump_model_confirmed": false,
       "aux_integral_a2": -990,
       "aux_hysteresis_c": 30,
       "compressor_integral_a1": -100,
       "compressor_hysteresis_c": 10,
       "a2_basis": "absolute",
+
       "heat_pump_compressor_kw": 3,
       "auxiliary_rated_kw": 9,
       "circulation_kw": 0.08,
       "dhwr_kw": 0.025,
       "dhwr_duration_minutes": 10,
+
       "max_reduction_hours": 4,
       "max_away_reduction_hours": 12,
       "max_unobserved_reduction_hours": 0.5,
       "max_preheat_hours": 2,
+
       "learning_trials": true,
       "trial_budget_cents_per_day": 100,
       "max_trial_cost_cents": 50,
@@ -119,20 +77,17 @@
       "recovery_compressor_only": true,
       "recovery_hold_minutes": 60,
       "recovery_comfort_margin_c": 0.5,
-      "role": "primary",
-      "max_rise_c": 1.5,
-      "savings_aggressiveness": 50,
-      "preheat_room_boost_c": 5,
-      "heat_pump_model_confirmed": false,
+
       "floor_thermal_priors": {
         "capacity_kwh_per_c": 3.2,
+        "native_capacity_kwh_per_c": 8.832,
         "exchange_kw_per_c": 0.266667,
         "ground_loss_kw_per_c": 0.013596,
         "ground_c": 10,
         "open_allocation_fraction": 0.4,
-        "closed_allocation_fraction": 0.05,
-        "native_capacity_kwh_per_c": 8.832
+        "closed_allocation_fraction": 0.05
       },
+
       "floor_preheat": {
         "enabled": false,
         "commissioned": false,
@@ -146,6 +101,311 @@
         "lease_seconds": 900
       }
     },
+
+    "garage": {
+      "enabled": false,
+      "aggressiveness": 50,
+      "baselineC": 10,
+      "assumeISave10C": true,
+
+      "minSavingsEur": 0.5,
+      "maxPausesPerDay": 1,
+      "minOnMs": 10800000,
+      "minOffMs": 3600000,
+      "stepMinutes": 15,
+
+      "frontRequired": true,
+      "maxSensorAgeMs": 120000,
+
+      "protection": {
+        "approved": false,
+        "version": "garage-thermal-reserve-v1",
+        "marginC": 1,
+        "pipeOutsideDiameterMm": 21,
+        "pipeWallMm": 1,
+        "heatTransferWPerM2K": 20
+      },
+
+      "adapter": {
+        "driver": "shelly-cn105",
+        "stateTopic": "heatpump/garage/state",
+        "telemetryTopic": "heatpump/garage/telemetry",
+        "commandTopic": "heatpump/garage/command",
+        "maxAgeMs": 120000,
+        "electricalSource": "none"
+      }
+    },
+
+    "charging": {
+      "chargers": {
+        "charger1": {},
+        "charger2": {}
+      },
+      "vehicles": {
+        "bmw": {
+          "label": "BMW",
+          "provider": "bmw-cardata",
+          "mqttTopic": "stmq/vehicles/bmw"
+        }
+      }
+    },
+
+    "electricity": {
+      "margin_ct_per_kwh_ex_vat": 0.33,
+      "tax_ct_per_kwh_ex_vat": 2.325,
+      "vat_percent": 25.5,
+      "transfer_tariff": "day-night",
+      "day_transfer_ct_per_kwh_ex_vat": 2.66,
+      "night_transfer_ct_per_kwh_ex_vat": 1.56,
+      "winter_day_transfer_ct_per_kwh_ex_vat": 3.32,
+      "other_transfer_ct_per_kwh_ex_vat": 1.65,
+      "effective_date": ""
+    },
+
+    "geoloc": {
+      "country_code": "fi",
+      "latitude": "",
+      "longitude": ""
+    },
+
+    "mqtt": {
+      "address": "mqtt://core-mosquitto",
+      "user": "",
+      "pw": "",
+      "dhwr_topic": "stmq/home/dhwr/command/switch",
+      "temperature_report_interval_minutes": 70,
+      "temperature_report_grace_seconds": 300,
+      "indoor_temperature_topic": "",
+      "downstairs_temperature_topic": "",
+      "bedroom_temperature_topic": "",
+      "garage_temperature_topic": "",
+      "garage_temperature_2_topic": ""
+    },
+
+    "entsoe": {
+      "token": ""
+    },
+
+    "easee": {
+      "user": "",
+      "pw": "",
+      "charger_id": "",
+      "equalizer_id": "",
+      "charger_voltage_ids": []
+    },
+
+    "teslamate": {
+      "enabled": true,
+      "car_id": "1",
+      "home_geofence": "Home",
+      "namespace": "",
+      "charger_assignment": "auto",
+      "charger_identification": true,
+      "max_age_seconds": 180
+    },
+
+    "equipment": {
+      "poll_seconds": 30,
+      "max_age_seconds": 120,
+      "devices": [
+        {
+          "id": "upstairs",
+          "label": "Upstairs",
+          "area": "home",
+          "kind": "temperature",
+          "enabled": true,
+          "connection": "mqtt:stmq/home/smoke1/status/temperature",
+          "signal": "indoor_temperature",
+          "max_age_seconds": 4500,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "downstairs",
+          "label": "Downstairs",
+          "area": "home",
+          "kind": "temperature",
+          "enabled": true,
+          "connection": "mqtt:stmq/home/smoke3/status/temperature",
+          "signal": "downstairs_temperature",
+          "max_age_seconds": 4500,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "bedroom",
+          "label": "Bedroom",
+          "area": "home",
+          "kind": "temperature",
+          "enabled": true,
+          "connection": "mqtt:stmq/home/smoke2/status/temperature",
+          "signal": "bedroom_temperature",
+          "max_age_seconds": 4500,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "heat_savings",
+          "label": "Tariff control",
+          "area": "home",
+          "kind": "switch",
+          "enabled": true,
+          "connection": "shelly:stmq/home/tariff",
+          "tariff_control": true,
+          "reduction_on": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "dhwr",
+          "label": "Hot-water circulation",
+          "area": "home",
+          "kind": "power",
+          "enabled": true,
+          "connection": "mqtt:stmq/home/dhwr/status/power",
+          "max_age_seconds": 0,
+          "record": false,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "garage",
+          "label": "Garage temperatures",
+          "area": "garage",
+          "kind": "temperature",
+          "enabled": true,
+          "connection": "shelly:stmq/garage/temperatures",
+          "temperature_id": 100,
+          "signal": "garage_temperature",
+          "max_age_seconds": 120,
+          "mqtt": {},
+          "readings": [
+            {
+              "key": "temperature_2",
+              "label": "Garage front",
+              "signal": "garage_temperature_2",
+              "unit": "degC",
+              "required": false,
+              "component": "temperature:101"
+            }
+          ]
+        },
+        {
+          "id": "blu_ht",
+          "label": "Caravan air",
+          "area": "garage",
+          "kind": "temperature",
+          "connection": "mqtt:stmq/home/blu_ht/state",
+          "signal": "caravan_temperature",
+          "max_age_seconds": 180,
+          "mqtt": {
+            "state_path": "temperature",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/home/blu_ht/get",
+            "request_payload": "status"
+          },
+          "readings": [
+            {
+              "key": "humidity",
+              "label": "Relative humidity",
+              "signal": "caravan_humidity",
+              "unit": "%",
+              "required": true,
+              "path": "humidity"
+            },
+            {
+              "key": "battery",
+              "label": "Battery",
+              "unit": "%",
+              "record": false,
+              "path": "battery"
+            },
+            {
+              "key": "rssi",
+              "label": "Bluetooth signal",
+              "unit": "dBm",
+              "record": false,
+              "path": "rssi"
+            }
+          ]
+        },
+        {
+          "id": "caravan",
+          "label": "Caravan energy",
+          "area": "garage",
+          "kind": "metered_switch",
+          "enabled": true,
+          "connection": "shelly:stmq/garage/caravan",
+          "switch_control": true,
+          "mqtt": {},
+          "readings": []
+        },
+        {
+          "id": "garage_door1",
+          "label": "Door 1",
+          "area": "garage",
+          "kind": "door",
+          "enabled": true,
+          "connection": "mqtt:stmq/garage/door1/status/contact",
+          "cover_control": true,
+          "mqtt": {
+            "command_topic": "stmq/garage/door1/command/cover",
+            "open_payload": "open",
+            "close_payload": "closed",
+            "state_path": "value",
+            "cover_state_path": "cover_state",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/garage/door1/command",
+            "request_payload": "status_update",
+            "availability_topic": "stmq/garage/door1/availability",
+            "bridge_availability_topic": "homeassistant/status"
+          },
+          "readings": []
+        },
+        {
+          "id": "garage_door2",
+          "label": "Door 2",
+          "area": "garage",
+          "kind": "door",
+          "enabled": true,
+          "connection": "mqtt:stmq/garage/door2/status/contact",
+          "cover_control": true,
+          "mqtt": {
+            "command_topic": "stmq/garage/door2/command/cover",
+            "open_payload": "open",
+            "close_payload": "closed",
+            "state_path": "value",
+            "cover_state_path": "cover_state",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/garage/door2/command",
+            "request_payload": "status_update",
+            "availability_topic": "stmq/garage/door2/availability",
+            "bridge_availability_topic": "homeassistant/status"
+          },
+          "readings": []
+        },
+        {
+          "id": "caravan_dehumidifier",
+          "label": "Caravan dehumidifier",
+          "area": "garage",
+          "kind": "dehumidifier",
+          "enabled": true,
+          "connection": "mqtt:stmq/garage/caravan_dehumidifier/state",
+          "signal": "caravan_dehumidifier_running_state",
+          "dehumidifier_control": true,
+          "max_age_seconds": 180,
+          "mqtt": {
+            "command_topic": "stmq/garage/caravan_dehumidifier/set",
+            "timestamp_path": "timestamp",
+            "request_topic": "stmq/garage/caravan_dehumidifier/get",
+            "request_payload": "{}",
+            "availability_topic": "stmq/garage/caravan_dehumidifier/availability"
+          },
+          "readings": []
+        }
+      ]
+    },
+
     "acquisition": {
       "easee_poll_seconds": 15,
       "weather_poll_minutes": 30,
@@ -156,24 +416,12 @@
       "electricity_max_gap_seconds": 60,
       "electricity_telemetry_max_age_seconds": 1020
     },
+
     "recording": {
       "max_interval_minutes": 5,
       "annual_budget_gb": 10
     },
-    "replication": {
-      "enabled": false,
-      "directory": "",
-      "ssh_host": "",
-      "remote_directory": "",
-      "receiver_path": "",
-      "node_path": "node",
-      "rsync_path": "sqlite3_rsync",
-      "remote_rsync_path": "sqlite3_rsync",
-      "interval_seconds": 60,
-      "timeout_seconds": 3600,
-      "stale_seconds": 180,
-      "ssh_config": ""
-    },
+
     "pairing": {
       "enabled": false,
       "pair_id": "",
@@ -190,207 +438,22 @@
       "vip_helper": "/usr/local/bin/st-mq-vip",
       "vip_socket": ""
     },
-    "equipment": {
-      "poll_seconds": 30,
-      "max_age_seconds": 120,
-      "devices": [
-        {
-          "id": "upstairs",
-          "label": "Upstairs",
-          "area": "home",
-          "kind": "temperature",
-          "connection": "mqtt:stmq/home/smoke1/status/temperature",
-          "signal": "indoor_temperature",
-          "max_age_seconds": 4500,
-          "enabled": true,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "downstairs",
-          "label": "Downstairs",
-          "area": "home",
-          "kind": "temperature",
-          "connection": "mqtt:stmq/home/smoke3/status/temperature",
-          "signal": "downstairs_temperature",
-          "max_age_seconds": 4500,
-          "enabled": true,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "bedroom",
-          "label": "Bedroom",
-          "area": "home",
-          "kind": "temperature",
-          "connection": "mqtt:stmq/home/smoke2/status/temperature",
-          "signal": "bedroom_temperature",
-          "max_age_seconds": 4500,
-          "enabled": true,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "heat_savings",
-          "label": "Tariff control",
-          "area": "home",
-          "kind": "switch",
-          "connection": "shelly:stmq/home/tariff",
-          "tariff_control": true,
-          "reduction_on": true,
-          "enabled": true,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "dhwr",
-          "label": "Hot-water circulation",
-          "area": "home",
-          "kind": "power",
-          "connection": "mqtt:stmq/home/dhwr/status/power",
-          "enabled": true,
-          "max_age_seconds": 0,
-          "record": false,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "garage",
-          "label": "Garage temperatures",
-          "area": "garage",
-          "kind": "temperature",
-          "connection": "shelly:stmq/garage/temperatures",
-          "signal": "garage_temperature",
-          "temperature_id": 100,
-          "enabled": true,
-          "readings": [
-            {
-              "key": "temperature_2",
-              "label": "Garage front",
-              "signal": "garage_temperature_2",
-              "unit": "degC",
-              "component": "temperature:101",
-              "required": false
-            }
-          ],
-          "mqtt": {},
-          "max_age_seconds": 120
-        },
-        {
-          "id": "blu_ht",
-          "label": "Caravan air",
-          "area": "garage",
-          "kind": "temperature",
-          "connection": "mqtt:stmq/home/blu_ht/state",
-          "max_age_seconds": 180,
-          "mqtt": {
-            "state_path": "temperature",
-            "timestamp_path": "timestamp",
-            "request_topic": "stmq/home/blu_ht/get",
-            "request_payload": "status"
-          },
-          "readings": [
-            {
-              "key": "humidity",
-              "label": "Relative humidity",
-              "unit": "%",
-              "path": "humidity",
-              "required": true,
-              "signal": "caravan_humidity"
-            },
-            {
-              "key": "battery",
-              "label": "Battery",
-              "unit": "%",
-              "path": "battery",
-              "record": false
-            },
-            {
-              "key": "rssi",
-              "label": "Bluetooth signal",
-              "unit": "dBm",
-              "path": "rssi",
-              "record": false
-            }
-          ],
-          "signal": "caravan_temperature"
-        },
-        {
-          "id": "caravan",
-          "label": "Caravan energy",
-          "area": "garage",
-          "kind": "metered_switch",
-          "connection": "shelly:stmq/garage/caravan",
-          "switch_control": true,
-          "enabled": true,
-          "mqtt": {},
-          "readings": []
-        },
-        {
-          "id": "garage_door1",
-          "label": "Door 1",
-          "area": "garage",
-          "kind": "door",
-          "connection": "mqtt:stmq/garage/door1/status/contact",
-          "enabled": true,
-          "mqtt": {
-            "state_path": "value",
-            "timestamp_path": "timestamp",
-            "request_topic": "stmq/garage/door1/command",
-            "request_payload": "status_update",
-            "availability_topic": "stmq/garage/door1/availability",
-            "bridge_availability_topic": "homeassistant/status",
-            "command_topic": "stmq/garage/door1/command/cover",
-            "open_payload": "open",
-            "close_payload": "closed",
-            "cover_state_path": "cover_state"
-          },
-          "readings": [],
-          "cover_control": true
-        },
-        {
-          "id": "garage_door2",
-          "label": "Door 2",
-          "area": "garage",
-          "kind": "door",
-          "connection": "mqtt:stmq/garage/door2/status/contact",
-          "enabled": true,
-          "mqtt": {
-            "state_path": "value",
-            "timestamp_path": "timestamp",
-            "request_topic": "stmq/garage/door2/command",
-            "request_payload": "status_update",
-            "availability_topic": "stmq/garage/door2/availability",
-            "bridge_availability_topic": "homeassistant/status",
-            "command_topic": "stmq/garage/door2/command/cover",
-            "open_payload": "open",
-            "close_payload": "closed",
-            "cover_state_path": "cover_state"
-          },
-          "readings": [],
-          "cover_control": true
-        },
-        {
-          "id": "caravan_dehumidifier",
-          "label": "Caravan dehumidifier",
-          "area": "garage",
-          "kind": "dehumidifier",
-          "connection": "mqtt:stmq/garage/caravan_dehumidifier/state",
-          "signal": "caravan_dehumidifier_running_state",
-          "enabled": true,
-          "dehumidifier_control": true,
-          "max_age_seconds": 180,
-          "mqtt": {
-            "timestamp_path": "timestamp",
-            "command_topic": "stmq/garage/caravan_dehumidifier/set",
-            "request_topic": "stmq/garage/caravan_dehumidifier/get",
-            "request_payload": "{}",
-            "availability_topic": "stmq/garage/caravan_dehumidifier/availability"
-          },
-          "readings": []
-        }
-      ]
+
+    "replication": {
+      "enabled": false,
+      "directory": "",
+      "ssh_host": "",
+      "remote_directory": "",
+      "receiver_path": "",
+      "node_path": "node",
+      "rsync_path": "sqlite3_rsync",
+      "remote_rsync_path": "sqlite3_rsync",
+      "interval_seconds": 60,
+      "timeout_seconds": 3600,
+      "stale_seconds": 180,
+      "ssh_config": ""
     },
+
     "shelly": {
       "poll_seconds": 30,
       "max_age_seconds": 120,
@@ -418,78 +481,113 @@
         "switch_id": 0,
         "nominal_voltage": 230
       }
-    },
-    "garage": {
-      "enabled": true,
-      "aggressiveness": 50,
-      "baselineC": 10,
-      "frontRequired": true,
-      "maxSensorAgeMs": 120000,
-      "minOnMs": 10800000,
-      "minOffMs": 3600000,
-      "stepMinutes": 15,
-      "protection": {
-        "approved": true,
-        "version": "garage-thermal-reserve-v1",
-        "marginC": 1,
-        "pipeOutsideDiameterMm": 21,
-        "pipeWallMm": 1,
-        "heatTransferWPerM2K": 20
-      },
-      "adapter": {
-        "driver": "shelly-cn105",
-        "stateTopic": "heatpump/garage/state",
-        "telemetryTopic": "heatpump/garage/telemetry",
-        "commandTopic": "heatpump/garage/command",
-        "maxAgeMs": 120000,
-        "electricalSource": "none"
-      },
-      "assumeISave10C": true,
-      "minSavingsEur": 0.5,
-      "maxPausesPerDay": 1
     }
   },
+
   "schema": {
-    "geoloc": {
-      "country_code": "str",
-      "latitude": "str?",
-      "longitude": "str?"
+
+    "controller": {
+      "input": "list(simulated|offline|mqtt|providers)",
+      "mode": "list(monitoring|shadow|active)",
+      "role": "list(primary|replica)",
+      "web_token": "password",
+
+      "max_drop_c": "float(0,2)",
+      "max_rise_c": "float(0.25,2)",
+      "savings_aggressiveness": "int(0,100)",
+      "preheat_room_boost_c": "int(1,5)",
+      "indoor_sensor_weights": {
+        "indoor_temperature": "float(0,)?",
+        "downstairs_temperature": "float(0,)?",
+        "bedroom_temperature": "float(0,)?"
+      },
+
+      "h66_device": "str?",
+      "h66_verification_file": "str?",
+      "heat_pump_model_confirmed": "bool",
+      "aux_integral_a2": "int(-5000,-1)",
+      "aux_hysteresis_c": "float(1,50)",
+      "compressor_integral_a1": "int(-1000,-1)?",
+      "compressor_hysteresis_c": "float(1,50)?",
+      "a2_basis": "list(absolute|offset)",
+
+      "heat_pump_compressor_kw": "float(0.1,20)",
+      "auxiliary_rated_kw": "float(0.1,20)",
+      "circulation_kw": "float(0,1)",
+      "dhwr_kw": "float(0,1)",
+      "dhwr_duration_minutes": "float(1,60)",
+
+      "max_reduction_hours": "float(0.25,12)",
+      "max_away_reduction_hours": "float(0.25,24)",
+      "max_unobserved_reduction_hours": "float(0.25,2)",
+      "max_preheat_hours": "float(0.25,6)",
+
+      "learning_trials": "bool",
+      "trial_budget_cents_per_day": "int(0,1000)",
+      "max_trial_cost_cents": "int(0,1000)",
+      "recovery_timeout_hours": "int(4,168)",
+      "recovery_compressor_only": "bool",
+      "recovery_hold_minutes": "int(1,240)",
+      "recovery_comfort_margin_c": "float(0,1)",
+
+      "floor_thermal_priors": {
+        "capacity_kwh_per_c": "float(0.1,100)?",
+        "native_capacity_kwh_per_c": "float(0.1,100)?",
+        "exchange_kw_per_c": "float(0.001,100)?",
+        "ground_loss_kw_per_c": "float(0,10)?",
+        "ground_c": "float(-5,25)?",
+        "open_allocation_fraction": "float(0,1)?",
+        "closed_allocation_fraction": "float(0,1)?"
+      },
+
+      "floor_preheat": {
+        "enabled": "bool",
+        "commissioned": "bool",
+        "storage": {
+          "topic_prefix": "str?"
+        },
+        "living": {
+          "topic_prefix": "str?"
+        },
+        "renew_seconds": "int(30,450)",
+        "lease_seconds": "int(60,900)"
+      }
     },
-    "mqtt": {
-      "address": "str",
-      "user": "str",
-      "pw": "password",
-      "dhwr_topic": "str",
-      "indoor_temperature_topic": "str?",
-      "downstairs_temperature_topic": "str?",
-      "bedroom_temperature_topic": "str?",
-      "temperature_report_interval_minutes": "float(0,1440)",
-      "temperature_report_grace_seconds": "float(0,900)",
-      "garage_temperature_topic": "str?",
-      "garage_temperature_2_topic": "str?"
-    },
-    "entsoe": {
-      "token": "password?",
-      "domain": "str?"
-    },
-    "easee": {
-      "user": "str?",
-      "pw": "password?",
-      "charger_id": "str?",
-      "equalizer_id": "str?",
-      "charger_voltage_ids": [
-        "int(190,199)"
-      ]
-    },
-    "teslamate": {
+
+    "garage": {
       "enabled": "bool",
-      "car_id": "str",
-      "home_geofence": "str",
-      "namespace": "str?",
-      "charger_assignment": "list(auto|bmw|easee)",
-      "charger_identification": "bool",
-      "max_age_seconds": "int(30,600)"
+      "aggressiveness": "float(0,100)",
+      "baselineC": "float(8,16)",
+      "assumeISave10C": "bool",
+
+      "minSavingsEur": "float(0,100)",
+      "maxPausesPerDay": "int(1,4)",
+      "minOnMs": "int(0,86400000)",
+      "minOffMs": "int(0,10800000)",
+      "stepMinutes": "float(5,30)",
+
+      "frontRequired": "bool",
+      "maxSensorAgeMs": "int(30000,14400000)",
+
+      "protection": {
+        "approved": "bool",
+        "version": "list(garage-thermal-reserve-v1)",
+        "marginC": "float(0.1,5)",
+        "pipeOutsideDiameterMm": "float(6,100)",
+        "pipeWallMm": "float(0.3,10)",
+        "heatTransferWPerM2K": "float(1,100)"
+      },
+
+      "adapter": {
+        "driver": "list(fixture|shelly-cn105)",
+        "stateTopic": "str?",
+        "telemetryTopic": "str?",
+        "commandTopic": "str?",
+        "maxAgeMs": "int(1000,600000)",
+        "electricalSource": "list(none|native-counter|native-power)"
+      }
     },
+
     "charging": {
       "chargers": {
         "charger1": {
@@ -507,6 +605,7 @@
         }
       }
     },
+
     "electricity": {
       "margin_ct_per_kwh_ex_vat": "float(-20,100)",
       "tax_ct_per_kwh_ex_vat": "float(0,100)",
@@ -518,66 +617,112 @@
       "other_transfer_ct_per_kwh_ex_vat": "float(0,100)",
       "effective_date": "str?"
     },
-    "controller": {
-      "input": "list(simulated|offline|mqtt|providers)",
-      "mode": "list(monitoring|shadow|active)",
-      "web_token": "password",
-      "h66_device": "str?",
-      "max_drop_c": "float(0,2)",
-      "indoor_sensor_weights": {
-        "indoor_temperature": "float(0,)?",
-        "downstairs_temperature": "float(0,)?",
-        "bedroom_temperature": "float(0,)?"
-      },
-      "h66_verification_file": "str?",
-      "aux_integral_a2": "int(-5000,-1)",
-      "aux_hysteresis_c": "float(1,50)",
-      "compressor_integral_a1": "int(-1000,-1)?",
-      "compressor_hysteresis_c": "float(1,50)?",
-      "a2_basis": "list(absolute|offset)",
-      "heat_pump_compressor_kw": "float(0.1,20)",
-      "auxiliary_rated_kw": "float(0.1,20)",
-      "circulation_kw": "float(0,1)",
-      "dhwr_kw": "float(0,1)",
-      "dhwr_duration_minutes": "float(1,60)",
-      "max_reduction_hours": "float(0.25,12)",
-      "max_away_reduction_hours": "float(0.25,24)",
-      "max_unobserved_reduction_hours": "float(0.25,2)",
-      "max_preheat_hours": "float(0.25,6)",
-      "learning_trials": "bool",
-      "trial_budget_cents_per_day": "int(0,1000)",
-      "max_trial_cost_cents": "int(0,1000)",
-      "recovery_timeout_hours": "int(4,168)",
-      "recovery_compressor_only": "bool",
-      "recovery_hold_minutes": "int(1,240)",
-      "recovery_comfort_margin_c": "float(0,1)",
-      "role": "list(primary|replica)",
-      "max_rise_c": "float(0.25,2)",
-      "savings_aggressiveness": "int(0,100)",
-      "preheat_room_boost_c": "int(1,5)",
-      "heat_pump_model_confirmed": "bool",
-      "floor_thermal_priors": {
-        "capacity_kwh_per_c": "float(0.1,100)?",
-        "native_capacity_kwh_per_c": "float(0.1,100)?",
-        "exchange_kw_per_c": "float(0.001,100)?",
-        "ground_loss_kw_per_c": "float(0,10)?",
-        "ground_c": "float(-5,25)?",
-        "open_allocation_fraction": "float(0,1)?",
-        "closed_allocation_fraction": "float(0,1)?"
-      },
-      "floor_preheat": {
-        "enabled": "bool",
-        "commissioned": "bool",
-        "storage": {
-          "topic_prefix": "str?"
-        },
-        "living": {
-          "topic_prefix": "str?"
-        },
-        "renew_seconds": "int(30,450)",
-        "lease_seconds": "int(60,900)"
-      }
+
+    "geoloc": {
+      "country_code": "str",
+      "latitude": "str?",
+      "longitude": "str?"
     },
+
+    "mqtt": {
+      "address": "str",
+      "user": "str",
+      "pw": "password",
+      "dhwr_topic": "str",
+      "temperature_report_interval_minutes": "float(0,1440)",
+      "temperature_report_grace_seconds": "float(0,900)",
+      "indoor_temperature_topic": "str?",
+      "downstairs_temperature_topic": "str?",
+      "bedroom_temperature_topic": "str?",
+      "garage_temperature_topic": "str?",
+      "garage_temperature_2_topic": "str?"
+    },
+
+    "entsoe": {
+      "token": "password?",
+      "domain": "str?"
+    },
+
+    "easee": {
+      "user": "str?",
+      "pw": "password?",
+      "charger_id": "str?",
+      "equalizer_id": "str?",
+      "charger_voltage_ids": [
+        "int(190,199)"
+      ]
+    },
+
+    "teslamate": {
+      "enabled": "bool",
+      "car_id": "str",
+      "home_geofence": "str",
+      "namespace": "str?",
+      "charger_assignment": "list(auto|bmw|easee)",
+      "charger_identification": "bool",
+      "max_age_seconds": "int(30,600)"
+    },
+
+    "equipment": {
+      "poll_seconds": "int(5,300)",
+      "max_age_seconds": "int(30,3600)",
+      "devices": [
+        {
+          "id": "str",
+          "label": "str?",
+          "area": "list(home|garage)",
+          "kind": "list(temperature|switch|metered_switch|door|power|dehumidifier)",
+          "enabled": "bool?",
+          "connection": "str",
+          "generation": "int(1,4)?",
+          "switch_id": "int(0,255)?",
+          "temperature_id": "int(0,255)?",
+          "signal": "str?",
+          "switch_control": "bool?",
+          "tariff_control": "bool?",
+          "reduction_on": "bool?",
+          "cover_control": "bool?",
+          "dehumidifier_control": "bool?",
+          "max_age_seconds": "int(0,86400)?",
+          "record": "bool?",
+          "mqtt": {
+            "command_topic": "str?",
+            "on_payload": "str?",
+            "off_payload": "str?",
+            "open_payload": "str?",
+            "close_payload": "str?",
+            "stop_payload": "str?",
+            "state_path": "str?",
+            "cover_state_path": "str?",
+            "timestamp_path": "str?",
+            "request_topic": "str?",
+            "request_payload": "str?",
+            "availability_topic": "str?",
+            "bridge_availability_topic": "str?",
+            "online_payload": "str?",
+            "offline_payload": "str?",
+            "heartbeat_topic": "str?",
+            "heartbeat_seconds": "int(0,86400)?"
+          },
+          "readings": [
+            {
+              "key": "str",
+              "label": "str?",
+              "signal": "str?",
+              "unit": "str?",
+              "required": "bool?",
+              "record": "bool?",
+              "path": "str?",
+              "topic": "str?",
+              "component": "str?",
+              "scale": "float?",
+              "offset": "float?"
+            }
+          ]
+        }
+      ]
+    },
+
     "acquisition": {
       "easee_poll_seconds": "float(10,3600)",
       "weather_poll_minutes": "float(5,360)",
@@ -588,24 +733,12 @@
       "electricity_max_gap_seconds": "float(15,300)",
       "electricity_telemetry_max_age_seconds": "float(15,3600)"
     },
+
     "recording": {
       "max_interval_minutes": "float(0.25,60)",
       "annual_budget_gb": "float(0.01,10000)"
     },
-    "replication": {
-      "enabled": "bool",
-      "directory": "str?",
-      "ssh_host": "str?",
-      "remote_directory": "str?",
-      "receiver_path": "str?",
-      "node_path": "str",
-      "rsync_path": "str",
-      "remote_rsync_path": "str",
-      "interval_seconds": "int(10,86400)",
-      "timeout_seconds": "int(30,86400)",
-      "stale_seconds": "int(30,604800)",
-      "ssh_config": "str?"
-    },
+
     "pairing": {
       "enabled": "bool",
       "pair_id": "str?",
@@ -622,6 +755,22 @@
       "vip_helper": "str",
       "vip_socket": "str?"
     },
+
+    "replication": {
+      "enabled": "bool",
+      "directory": "str?",
+      "ssh_host": "str?",
+      "remote_directory": "str?",
+      "receiver_path": "str?",
+      "node_path": "str",
+      "rsync_path": "str",
+      "remote_rsync_path": "str",
+      "interval_seconds": "int(10,86400)",
+      "timeout_seconds": "int(30,86400)",
+      "stale_seconds": "int(30,604800)",
+      "ssh_config": "str?"
+    },
+
     "shelly": {
       "poll_seconds": "int(5,300)",
       "max_age_seconds": "int(30,900)",
@@ -649,99 +798,6 @@
         "switch_id": "int(0,3)",
         "nominal_voltage": "int(100,260)"
       }
-    },
-    "equipment": {
-      "poll_seconds": "int(5,300)",
-      "max_age_seconds": "int(30,3600)",
-      "devices": [
-        {
-          "id": "str",
-          "label": "str?",
-          "area": "list(home|garage)",
-          "kind": "list(temperature|switch|metered_switch|door|power|dehumidifier)",
-          "connection": "str",
-          "enabled": "bool?",
-          "signal": "str?",
-          "generation": "int(1,4)?",
-          "switch_id": "int(0,255)?",
-          "temperature_id": "int(0,255)?",
-          "switch_control": "bool?",
-          "tariff_control": "bool?",
-          "reduction_on": "bool?",
-          "max_age_seconds": "int(0,86400)?",
-          "record": "bool?",
-          "readings": [
-            {
-              "key": "str",
-              "label": "str?",
-              "signal": "str?",
-              "unit": "str?",
-              "path": "str?",
-              "topic": "str?",
-              "component": "str?",
-              "required": "bool?",
-              "record": "bool?",
-              "scale": "float?",
-              "offset": "float?"
-            }
-          ],
-          "mqtt": {
-            "command_topic": "str?",
-            "on_payload": "str?",
-            "off_payload": "str?",
-            "state_path": "str?",
-            "timestamp_path": "str?",
-            "availability_topic": "str?",
-            "bridge_availability_topic": "str?",
-            "online_payload": "str?",
-            "offline_payload": "str?",
-            "heartbeat_topic": "str?",
-            "request_topic": "str?",
-            "request_payload": "str?",
-            "heartbeat_seconds": "int(0,86400)?",
-            "open_payload": "str?",
-            "close_payload": "str?",
-            "stop_payload": "str?",
-            "cover_state_path": "str?"
-          },
-          "cover_control": "bool?",
-          "dehumidifier_control": "bool?"
-        }
-      ]
-    },
-    "garage": {
-      "enabled": "bool",
-      "aggressiveness": "float(0,100)",
-      "baselineC": "float(8,16)",
-      "frontRequired": "bool",
-      "maxSensorAgeMs": "int(30000,14400000)",
-      "minOnMs": "int(0,86400000)",
-      "minOffMs": "int(0,10800000)",
-      "stepMinutes": "float(5,30)",
-      "protection": {
-        "approved": "bool",
-        "version": "list(garage-thermal-reserve-v1)",
-        "marginC": "float(0.1,5)",
-        "pipeOutsideDiameterMm": "float(6,100)",
-        "pipeWallMm": "float(0.3,10)",
-        "heatTransferWPerM2K": "float(1,100)"
-      },
-      "adapter": {
-        "driver": "list(fixture|shelly-cn105)",
-        "stateTopic": "str?",
-        "telemetryTopic": "str?",
-        "commandTopic": "str?",
-        "maxAgeMs": "int(1000,600000)",
-        "electricalSource": "list(none|native-counter|native-power)"
-      },
-      "assumeISave10C": "bool",
-      "minSavingsEur": "float(0,100)",
-      "maxPausesPerDay": "int(1,4)"
     }
-  },
-  "host_network": true,
-  "privileged": [
-    "NET_ADMIN",
-    "NET_RAW"
-  ]
+  }
 }

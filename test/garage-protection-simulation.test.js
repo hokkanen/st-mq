@@ -73,6 +73,7 @@ test('public defaults and schema agree with the unapproved thermal reserve model
   assert.deepEqual(defaults.protection, { approved: false, version: GARAGE_POLICY_VERSION,
     marginC: 1, pipeOutsideDiameterMm: 21, pipeWallMm: 1, heatTransferWPerM2K: 20 });
   const document = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  assert.equal(document.options.garage.enabled, false);
   assert.deepEqual(document.options.garage.protection, defaults.protection);
   assert.doesNotThrow(() => validateOptionFields({ garage: defaults }, document.schema));
 });

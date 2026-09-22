@@ -7,6 +7,7 @@ import { loadConfig } from '../src/app/config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
 const INITIAL = Date.parse('2026-09-13T10:00:00Z'), TOPIC = 'stmq/home/dhwr/status/power';
 const device = { id: 'dhwr', label: 'Hot-water circulation', kind: 'power', connection: `mqtt:${TOPIC}`, record: false, max_age_seconds: 0 };
@@ -101,6 +102,7 @@ test('DHWR power remains a monitoring-only watts feed and permits explicit JSON 
 test('provider MQTT acquisition loads the default DHWR topic and exposes live feedback without any pump publications', async t => {
   const store = new Store(':memory:'), client = new EventEmitter(), subscriptions = [], publications = [];
   const config = loadConfig({ HOME: '/missing-synthetic-home', STMQ_INPUT: 'providers' }, '/missing-synthetic-repository');
+  config.garage.adapter = isolatedGarageAdapter();
   const dhwr = config.connections.equipment.devices.find(row => row.id === 'dhwr');
   config.connections = { mqtt: { address: 'mqtt://synthetic.invalid', dhwr_topic: config.connections.mqtt.dhwr_topic },
     equipment: { ...config.connections.equipment, devices: [dhwr], ownedSignals: dhwr.ownedSignals } };

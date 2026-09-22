@@ -6,13 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
+import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
 async function setup(t, options = {}, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-settings-reload-'));
   const path = join(directory, 'options.json');
   // Keep legacy topic/H66 reload fixtures independent of the public equipment
-  // catalogue; equipment route lifecycle has its own integration tests.
+  // catalogue and garage adapter; those routes have their own integration tests.
   const write = value => writeFileSync(path, JSON.stringify({ equipment: { devices: [] },
+    garage: { adapter: isolatedGarageAdapter() },
     teslamate: { enabled: false, charger_identification: false }, ...value }));
   write(options);
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);

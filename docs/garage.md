@@ -21,11 +21,27 @@ The learning disclosure has four sections:
 - **Planning & safeguards · Decisions & limits:** current opportunity, minimum
   saving, minimum OFF time, pause spacing, daily count and independent protection.
 
-Permanent engineering settings use private configuration and Apply configuration.
-Defaults are `enabled:false`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
-`minOnMs:10800000` (three hours) and `maxPausesPerDay:1`. There is no fixed
-maximum pause or artificial planning-horizon cutoff. Local temperatures, the
-predicted pipe reserve and uncertainty, price/weather coverage and remaining
+Permanent installation choices use sparse private overrides and **Apply
+configuration**; shared engineering defaults and standard MQTT topics stay in
+`config.json.options.garage`. See the [configuration guide](configuration.md) for
+a minimal override. Public defaults are `enabled:false`,
+`protection.approved:false`, `minSavingsEur:0.50`, `minOffMs:3600000` (one hour),
+`minOnMs:10800000` (three hours) and `maxPausesPerDay:1`.
+
+`enabled` opts the installation into automatic Garage control.
+`protection.approved` records the owner's review and approval of the protection
+assumptions for that installation. Both may be set to `true` in private overrides;
+the unapproved public default does not prohibit an owner's explicit approval.
+Approval does not verify the assumptions or establish adapter readiness. With
+approval false, available observations still update the reference reserve and
+support learning where the evidence qualifies, but heating-OFF permissions and
+actionable savings pauses are blocked. This is not a full automatic-planning
+preview. Fresh sensors and every other control requirement still apply after
+approval. The public MQTT topics alone establish no Pill availability or
+commissioning.
+
+There is no fixed maximum pause or artificial planning-horizon cutoff. Local
+temperatures, the predicted pipe reserve and uncertainty, price/weather coverage and remaining
 savings determine how long heating can stay OFF.
 The daily limit counts starts in the Finnish calendar day, including unsuccessful
 attempts. A new process must observe the normal-heating dwell again. A reporting

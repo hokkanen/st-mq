@@ -547,10 +547,18 @@ a rejected key. The suite uses no MQTT and sends no equipment commands.
 
 ## Permanent configuration and prices
 
-`config.json` is public: its `options` object is the common application defaults,
-and its metadata and `schema` describe the Home Assistant add-on. Put permanent
-private overrides in a **plain JSON options object**, without the manifest's
-outer `options` wrapper. A small file is expected; it need not repeat defaults.
+`config.json` is public: its `options` object contains shared application
+defaults, including standard MQTT topics and equipment definitions. Its metadata
+and `schema` describe the Home Assistant add-on. Keep installation credentials,
+private identifiers and your own overrides in `secrets.json`, using a **plain JSON
+options object** without the manifest's outer `options` wrapper. Despite its name,
+this file can also hold non-secret choices such as Garage enablement and approval.
+
+Keep `secrets.json` small: include only the fields you need to supply or override,
+with related fields under their existing section. Do not copy entire default
+sections or repeat unchanged MQTT topics. Shared defaults can evolve without
+adding fields to your file. See the [configuration guide](docs/configuration.md)
+for the section map, a minimal Garage example and rules for adding settings.
 
 On Ubuntu, edit `~/.config/st-mq/secrets.json` (or
 `$XDG_CONFIG_HOME/st-mq/secrets.json`). `STMQ_CONFIG` selects another private file,
