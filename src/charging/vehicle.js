@@ -64,15 +64,22 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
     const meta = value.fields?.[key], at = socMeasurementTime(meta?.measuredAt);
     if (!meta || (value[key] === null ? at !== null && !time(at) : !time(at)) || at > now + 5 * MINUTE || typeof meta.readingId !== 'string'
       || !meta.readingId.length || meta.readingId.length > 128) return reject('invalid-field-metadata');
+    // Correcting the home zone can change its derived fact without a new GPS
+    // sample. Accept that live revision with its original measurement age;
+    // unordered retained data cannot roll it back or renew connection events.
+    const rederivedHome = key === 'atHome' && !retained && lastKnown && time(at)
+      && at === lastKnown.measuredAt && typeof value[key] === 'boolean'
+      && value[key] !== lastKnown.value && meta.readingId !== lastKnown.readingId;
+    if (key === 'atHome' && retained && lastKnown && time(at) && at === lastKnown.measuredAt) continue;
     if (prior && (meta.readingId === prior.readingId
       || retained && prior.retained === false && at === null
       || time(at) && time(prior.measuredAt) && (at < prior.measuredAt
-        || at === prior.measuredAt && value[key] !== false && value[key] !== null))) continue;
+        || at === prior.measuredAt && value[key] !== false && value[key] !== null && !rederivedHome))) continue;
     // Unavailability clears the current value, not its source watermark. A
     // replay after an unknown gap must keep the original event provenance.
     if (value[key] !== null && lastKnown && time(at) && time(lastKnown.measuredAt)
       && (at < lastKnown.measuredAt || at === lastKnown.measuredAt
-        && value[key] !== false && (value[key] !== lastKnown.value || meta.readingId !== lastKnown.readingId))) continue;
+        && value[key] !== false && !rederivedHome && (value[key] !== lastKnown.value || meta.readingId !== lastKnown.readingId))) continue;
     reading[key] = value[key];
     const observed = { measuredAt: at, readingId: meta.readingId, receivedAt: now, retained };
     const positiveEvent = value[key] === true && lastKnown?.value !== true ? observed : lastKnown?.positiveEvent ?? null;

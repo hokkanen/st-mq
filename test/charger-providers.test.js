@@ -66,6 +66,22 @@ test('Easee preserves observation provenance and withdraws stale or offline stat
   assert.equal(easeeChargerTelemetry({ ...snapshot, online: false }, { now }).connected.value, null);
 });
 
+test('Easee disconnect boundaries use only timestamped negative source observations', () => {
+  const mode = { id: 109, value: 1, timestamp: new Date(now - 60_000).toISOString() };
+  const pilot = { id: 100, value: 'A', timestamp: new Date(now - 30_000).toISOString() };
+  for (const at of [now, now + 120_000]) {
+    const snapshot = chargingSnapshot([mode, pilot], schedule, at);
+    assert.equal(snapshot.pluggedIn, false);
+    assert.equal(snapshot.disconnectedAt, now - 30_000, 'Repeated polls preserve the source event time');
+  }
+  assert.equal(chargingSnapshot([mode], schedule, now).disconnectedAt, now - 60_000);
+  assert.equal(chargingSnapshot([pilot], schedule, now).disconnectedAt, now - 30_000);
+  assert.equal(chargingSnapshot([mode, { ...pilot, timestamp: new Date(now + 1).toISOString() }], schedule, now).disconnectedAt, now - 60_000);
+  assert.equal(chargingSnapshot([{ ...mode, timestamp: new Date(now + 1).toISOString() }], schedule, now).disconnectedAt, null);
+  assert.equal(chargingSnapshot([{ ...pilot, timestamp: null }], schedule, now).disconnectedAt, null);
+  assert.equal(chargingSnapshot([{ ...mode, value: 3 }, { ...pilot, value: 'C' }], schedule, now).disconnectedAt, null);
+});
+
 test('Easee uses property AC voltage and assumes three phases before a vehicle is connected', () => {
   const snapshot = chargingSnapshot(easeeRows({ 100: 'A', 109: 1, 110: null }), schedule, now, null,
     { supply: { voltageV: [228, 230, 232], chargerCurrentA: [0, 0, 0] } });

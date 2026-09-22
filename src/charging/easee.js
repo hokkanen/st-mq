@@ -189,8 +189,13 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
   const scheduleState = normalizeScheduleState(scheduling), mode = numeric(pick(109).value), reason = numeric(pick(96).value);
   const pilot = pick(100).value, online = bool(250), enabled = bool(31);
   const pluggedIn = mode === 1 || pilot === 'A' ? false : [2, 3, 4, 6, 7, 8].includes(mode) || ['B', 'C', 'D'].includes(pilot) ? true : null;
+  // These are change-reported source events. Re-reading an old disconnected
+  // state cannot move its physical boundary to the HTTP receipt time.
+  const disconnectTimes = [mode === 1 ? pick(109).at : null, pilot === 'A' ? pick(100).at : null]
+    .filter(at => Number.isSafeInteger(at) && at >= 0 && at <= now);
   const result = { schedule: scheduleState, fingerprint: scheduleFingerprint(scheduleState), readAt: now,
     online, enabled, pluggedIn, mode, reason, powerKw: numeric(pick(120).value),
+    disconnectedAt: disconnectTimes.length ? Math.max(...disconnectTimes) : null,
     externalLoadBalancing, supply, outputPhase: numeric(pick(110).value),
     observations: Object.fromEntries(CHARGING_OBSERVATION_IDS.map(id => [id, pick(id)])),
     modeAt: pick(109).at, reasonAt: pick(96).at, powerAt: pick(120).at,

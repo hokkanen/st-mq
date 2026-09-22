@@ -92,37 +92,89 @@ test('BMW live plug and charging evidence received before the first Easee poll i
   assert.equal(adapter.calls.some(call => call.kind !== 'read'), false);
 });
 
-test('BMW polling tolerance cannot borrow an earlier connection across disconnect, unknown telemetry and restart', async t => {
+test('cached disconnected polls arriving after BMW plugs in preserve its source-time connection evidence across restart', async t => {
   const f = fixture(), original = f.create(); t.after(() => original.close());
   const adapter = fakeAdapter(f.clock), topic = original.configuration.vehicles.bmw.mqttTopic;
-  adapter.setObservation({ mode: 3, modeAt: initialNow });
+  const disconnectedAt = initialNow - 60_000;
+  adapter.setObservation({ pluggedIn: false, mode: 1, modeAt: disconnectedAt, disconnectedAt });
+  f.setNow(initialNow - 5_000);
   await original.setAdapter('charger1', adapter); await original.reconcile();
-  original.receiveSoc(topic, packet(60, initialNow, 'previous-connection', {
+  f.setNow(initialNow + 1_000);
+  original.receiveSoc(topic, packet(60, initialNow, 'bmw-before-cloud', {
     atHome: true, pluggedIn: true, charging: true,
     fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>
-      [key, { measuredAt: initialNow, readingId: `${key}-previous` }])),
+      [key, { measuredAt: initialNow, readingId: `${key}-before-cloud` }])),
   }));
-  f.setNow(initialNow + 30_000);
-  adapter.setObservation({ pluggedIn: false, mode: 1, modeAt: f.clock() }); await original.reconcile();
-  assert.equal(chargerView(original).control.session.lastDisconnectedAt, f.clock());
+  f.setNow(initialNow + 4_000); await original.reconcile();
+  assert.equal(chargerView(original).control.session.lastDisconnectedAt, disconnectedAt);
   await original.close();
-  f.setNow(initialNow + 40_000);
-  adapter.setObservation({ pluggedIn: null, mode: null, controlKnown: false });
+  f.setNow(initialNow + 30_000);
   const runtime = f.create(); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
-  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, initialNow + 30_000);
-  f.setNow(initialNow + 60_000);
-  adapter.setObservation({ pluggedIn: true, mode: 3, modeAt: initialNow, controlKnown: true }); await runtime.reconcile();
-  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [], 'Cached mode from the previous connection is excluded');
-  adapter.setObservation({ modeAt: initialNow + 55_000 }); await runtime.reconcile();
-  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [initialNow + 55_000]);
-  f.setNow(initialNow + 90_000);
-  adapter.setObservation({ mode: 2, modeAt: initialNow + 85_000 }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, disconnectedAt);
+  f.setNow(initialNow + 64_000);
+  adapter.setObservation({ pluggedIn: true, mode: 3, modeAt: initialNow + 3_000, disconnectedAt: null });
+  await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.connectedAt, f.clock());
+  assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [initialNow + 3_000]);
+  f.setNow(initialNow + 120_000);
+  const stoppedAt = initialNow + 115_000;
+  adapter.setObservation({ mode: 2, modeAt: stoppedAt }); await runtime.reconcile();
   runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', charging: false,
-    fields: { charging: { measuredAt: initialNow + 85_000, readingId: 'later-stop' } } }));
-  assert.equal(chargerView(runtime).vehicle.state, 'unidentified', 'Unconsumed BMW events before the disconnect cannot match the new car');
-  assert.equal(runtime.vehicleFeeds.bmw.consumedPlugId, null);
-  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, initialNow + 30_000);
+    fields: { charging: { measuredAt: stoppedAt, readingId: 'bmw-after-cloud-stop' } } }));
+  assert.equal(chargerView(runtime).vehicle.id, 'bmw');
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, disconnectedAt);
+  assert.equal(adapter.calls.some(call => call.kind !== 'read'), false);
+});
+
+test('disconnect boundaries fall back conservatively for unknown or future clocks and never rewind', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const adapter = fakeAdapter(f.clock);
+  adapter.setObservation({ pluggedIn: false, mode: 1, disconnectedAt: initialNow + 60_000 });
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, initialNow, 'A future source clock falls back to receipt');
+  f.setNow(initialNow + 10_000);
+  adapter.setObservation({ disconnectedAt: initialNow - 60_000 }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, initialNow, 'An older cached event cannot undo the fallback');
+  f.setNow(initialNow + 20_000);
+  adapter.setObservation({ disconnectedAt: null }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, f.clock(), 'A missing source clock also falls back to receipt');
+});
+
+test('BMW polling tolerance cannot borrow an earlier connection across disconnect, unknown telemetry and restart', async t => {
+  for (const timestamped of [false, true]) await t.test(timestamped ? 'source clock' : 'receipt fallback', async t => {
+    const f = fixture(), original = f.create(); t.after(() => original.close());
+    const adapter = fakeAdapter(f.clock), topic = original.configuration.vehicles.bmw.mqttTopic;
+    const disconnectedAt = initialNow + (timestamped ? 20_000 : 30_000);
+    adapter.setObservation({ mode: 3, modeAt: initialNow });
+    await original.setAdapter('charger1', adapter); await original.reconcile();
+    original.receiveSoc(topic, packet(60, initialNow, 'previous-connection', {
+      atHome: true, pluggedIn: true, charging: true,
+      fields: Object.fromEntries(['atHome', 'pluggedIn', 'charging'].map(key =>
+        [key, { measuredAt: initialNow, readingId: `${key}-previous` }])),
+    }));
+    f.setNow(initialNow + 30_000);
+    adapter.setObservation({ pluggedIn: false, mode: 1, modeAt: disconnectedAt, disconnectedAt: timestamped ? disconnectedAt : null }); await original.reconcile();
+    assert.equal(chargerView(original).control.session.lastDisconnectedAt, disconnectedAt);
+    await original.close();
+    f.setNow(initialNow + 40_000);
+    adapter.setObservation({ pluggedIn: null, mode: null, controlKnown: false });
+    const runtime = f.create(); t.after(() => runtime.close());
+    await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+    assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, disconnectedAt);
+    f.setNow(initialNow + 60_000);
+    adapter.setObservation({ pluggedIn: true, mode: 3, modeAt: initialNow, controlKnown: true }); await runtime.reconcile();
+    assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [], 'Cached mode from the previous connection is excluded');
+    adapter.setObservation({ modeAt: initialNow + 55_000 }); await runtime.reconcile();
+    assert.deepEqual(runtime.chargers.charger1.vehicleEvidence.chargingTimes, [initialNow + 55_000]);
+    f.setNow(initialNow + 90_000);
+    adapter.setObservation({ mode: 2, modeAt: initialNow + 85_000 }); await runtime.reconcile();
+    runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', charging: false,
+      fields: { charging: { measuredAt: initialNow + 85_000, readingId: 'later-stop' } } }));
+    assert.equal(chargerView(runtime).vehicle.state, 'unidentified', 'Unconsumed BMW events before the disconnect cannot match the new car');
+    assert.equal(runtime.vehicleFeeds.bmw.consumedPlugId, null);
+    assert.equal(chargerView(runtime).control.session.lastDisconnectedAt, disconnectedAt);
+  });
 });
 
 test('runtime preferences, automatic readings and saved SoC fallbacks survive restart', async () => {

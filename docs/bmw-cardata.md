@@ -57,8 +57,10 @@ The builder accepts private `homeLatitude`, `homeLongitude` and
 `homeRadiusMeters` arguments. With no explicit home point it uses Home Assistant's
 `zone.home` configuration. Check that the chosen point actually describes the
 charging property; weather coordinates and a default Home Assistant zone may be
-different. Only `atHome` and its clock go to MQTT, never coordinates or private
-zone/device identifiers.
+different. A home-zone correction can revise the live `atHome` fact while keeping
+the original GPS measurement time. Replayed retained values cannot reverse that
+revision, and it does not create a plug or charging event. Only `atHome` and its
+clock go to MQTT, never coordinates or private zone/device identifiers.
 
 ## Association with Charger 1
 
@@ -71,8 +73,10 @@ BMW matching combines timestamped home context with a live plug event and a
 charging start followed by a stop near the current Easee connection. Both charging
 transitions must correspond to charging and stopping observed at Easee. Source
 events and live MQTT delivery may precede the first connected Easee poll by up to
-90 seconds, but must follow the last observed disconnect. This permits ordinary
-polling delay without reusing evidence from an earlier connection. A BMW starting
+90 seconds, but must follow the last source-reported disconnect. Repeated polls
+of that disconnected state preserve its source time; a missing source clock uses
+the receipt time conservatively. This permits ordinary polling delay without
+reusing evidence from an earlier connection. A BMW starting
 to charge elsewhere at home is insufficient on its own. Without the
 matching stop, Charger 1 continues to use manual battery values.
 Initial unrestricted charging can be observed briefly when a BMW at-home candidate

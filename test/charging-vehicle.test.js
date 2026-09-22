@@ -27,6 +27,63 @@ test('independent identity updates preserve battery and field measurement clocks
   assert.equal(initialIdentityOnly.soc, undefined); assert.equal(initialIdentityOnly.pluggedIn, true);
 });
 
+test('a live home-zone correction can identify the measured session without refreshing GPS or battery age', () => {
+  const initial = accepted(facts(START, { atHome: false })).reading;
+  const stoppedAt = START + 30_000;
+  const stopped = accepted({ provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: stoppedAt, readingId: 'charging-stopped' } } }, initial, false, stoppedAt).reading;
+  const options = { connectedAt: START, chargingAt: START, stoppedAt, now: START + MINUTE };
+  assert.equal(matchBmwSession(stopped, options), false);
+  const corrected = accepted({ provider: 'bmw-cardata', atHome: true,
+    fields: { atHome: { measuredAt: START, readingId: 'home-corrected' } } }, stopped, false, options.now);
+  assert.equal(corrected.accepted, true); assert.equal(corrected.reading.atHome, true);
+  assert.equal(corrected.reading.fields.atHome.measuredAt, START);
+  assert.equal(corrected.reading.measuredAt, START); assert.equal(corrected.reading.receivedAt, START);
+  for (const key of ['pluggedIn', 'charging']) assert.deepEqual(corrected.reading.fields[key], stopped.fields[key]);
+  assert.equal(matchBmwSession(corrected.reading, options), true);
+});
+
+test('same-clock home corrections reject retained rollback, duplicates and older or invalid GPS clocks', () => {
+  const home = (value, readingId, measuredAt = START) => ({ provider: 'bmw-cardata', atHome: value,
+    fields: { atHome: { measuredAt, readingId } } });
+  const initial = accepted(home(false, 'home-away'), null, true).reading;
+  const now = START + MINUTE;
+  const corrected = accepted(home(true, 'home-corrected'), initial, false, now).reading;
+  assert.equal(corrected.atHome, true, 'A live correction can replace the initial retained home calculation');
+  for (const [packet, retained] of [[home(false, 'home-away'), true], [home(true, 'home-corrected'), false],
+    [home(false, 'home-corrected'), false], [home(false, 'home-older', START - 1), false]]) {
+    const replayed = accepted(packet, corrected, retained, now + MINUTE);
+    assert.equal(replayed.accepted, false); assert.deepEqual(replayed.reading, corrected);
+  }
+  const future = accepted(home(false, 'home-future', now + 6 * MINUTE), corrected, false, now);
+  assert.equal(future.accepted, false); assert.equal(future.reason, 'invalid-field-metadata');
+  const away = accepted(home(false, 'home-away-again'), corrected, false, now + MINUTE);
+  assert.equal(away.accepted, true); assert.equal(away.reading.atHome, false);
+  assert.equal(accepted(home(true, 'home-corrected'), away.reading, true, now + MINUTE).accepted, false);
+});
+
+test('home recomputation cannot manufacture plug or charging events or refresh stale home measurements', () => {
+  const initial = accepted(facts(START, { atHome: false, pluggedIn: false, charging: false })).reading;
+  const packet = facts();
+  for (const field of Object.values(packet.fields)) field.readingId += '-revised';
+  const corrected = accepted(packet, initial, false, START + MINUTE).reading;
+  assert.equal(corrected.atHome, true);
+  for (const key of ['pluggedIn', 'charging']) {
+    assert.equal(corrected[key], false); assert.deepEqual(corrected.fields[key], initial.fields[key]);
+  }
+  const staleAt = START - 25 * 60 * MINUTE;
+  const oldHome = accepted({ provider: 'bmw-cardata', atHome: false,
+    fields: { atHome: { measuredAt: staleAt, readingId: 'old-away' } } }).reading;
+  const staleCorrection = accepted({ provider: 'bmw-cardata', atHome: true,
+    fields: { atHome: { measuredAt: staleAt, readingId: 'old-home-corrected' } } }, oldHome, false, START).reading;
+  assert.equal(staleCorrection.fields.atHome.measuredAt, staleAt);
+  const stoppedAt = START + 30_000;
+  const stopped = accepted({ provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: stoppedAt, readingId: 'stop' } } }, accepted(facts()).reading, false, stoppedAt).reading;
+  assert.equal(matchBmwSession({ ...stopped, fields: { ...stopped.fields, atHome: staleCorrection.fields.atHome } },
+    { connectedAt: START, chargingAt: START, stoppedAt, now: START + MINUTE }), false);
+});
+
 test('BMW matching requires fresh live source events, home context and corresponding Easee charging', () => {
   const reading = accepted({ provider: 'bmw-cardata', charging: false, fields: { charging: { measuredAt: START + 30_000, readingId: 'stop' } } }, accepted(facts()).reading, false, START + MINUTE).reading;
   const options = { connectedAt: START, chargingAt: START, stoppedAt: START + 30_000, now: START + MINUTE };

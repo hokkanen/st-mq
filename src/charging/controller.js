@@ -68,14 +68,16 @@ export function createChargingController({ adapter, initialState = null, saveSta
     : value.enabled === false || value.reason === 53;
   function remember(now) {
     const prior = state.session;
+    const previousDisconnect = prior?.lastDisconnectedAt ?? (prior?.connected === false ? prior.observedAt ?? null : null);
+    const disconnectedAt = isTime(snapshot.disconnectedAt) && snapshot.disconnectedAt <= now ? snapshot.disconnectedAt : now;
     state.session = { connected: typeof snapshot.pluggedIn === 'boolean' ? snapshot.pluggedIn : prior?.connected ?? null,
       connectedAt: snapshot.pluggedIn === true ? prior?.connected === true ? prior.connectedAt : now
         : snapshot.pluggedIn === false ? null : prior?.connectedAt ?? null,
       // Identification may arrive before the first connected poll, but never
-      // borrow events from before the last observed disconnect. Keep this
-      // boundary through unknown telemetry and subsequent connected polls.
-      lastDisconnectedAt: snapshot.pluggedIn === false ? now
-        : prior?.lastDisconnectedAt ?? (prior?.connected === false ? prior.observedAt ?? null : null),
+      // borrow events from before the last source-reported disconnect. Missing
+      // source clocks fall back conservatively to receipt time; older cached
+      // events cannot rewind the boundary, including across restart.
+      lastDisconnectedAt: snapshot.pluggedIn === false ? Math.max(previousDisconnect ?? 0, disconnectedAt) : previousDisconnect,
       observedAt: now, instruction: currentFingerprint(), enabled: snapshot.enabled,
       stopped: stopped(snapshot), mode: snapshot.mode,
       modeAt: snapshot.modeAt ?? null,
