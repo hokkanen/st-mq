@@ -175,3 +175,67 @@ export function pendingBmwSession(reading, options = {}) {
   return Boolean(evidence && evidence.now >= evidence.connectedAt
     && evidence.now < evidence.connectedAt + 10 * MINUTE && !matchingBmwStop(evidence));
 }
+
+const CONTROLLED_EDGE_TOLERANCE = 30_000;
+
+// Inlet and home values supply context; the live charging edge supplies the
+// current-session evidence for both a pending hint and a controlled-pause match.
+function controlledBmwStart(reading, { connectedAt, lastDisconnectedAt, chargingAt, stoppedAt,
+  now = Date.now(), consumedChargingId } = {}) {
+  const evidenceStart = connectionEvidenceStart(connectedAt, lastDisconnectedAt);
+  const sourceTime = at => time(at) && at >= evidenceStart && at <= now
+    && at <= connectedAt + 10 * MINUTE && now - at <= 15 * MINUTE;
+  const event = observed => observed?.retained === false && eventId(observed.readingId)
+    && sourceTime(observed.measuredAt) && time(observed.receivedAt)
+    && observed.receivedAt >= evidenceStart && observed.receivedAt <= now
+    && now - observed.receivedAt <= 15 * MINUTE;
+  const context = key => reading?.[key] === true && time(reading.fields?.[key]?.measuredAt)
+    && reading.fields[key].measuredAt >= 0 && reading.fields[key].measuredAt <= now
+    && now - reading.fields[key].measuredAt <= 24 * 60 * MINUTE;
+  if (!time(now) || !time(connectedAt) || connectedAt < 0 || connectedAt > now
+    || reading?.provider !== 'bmw-cardata' || typeof reading.charging !== 'boolean'
+    || !context('atHome') || !context('pluggedIn')) return null;
+  const start = reading.fields?.charging?.positiveEvent, stop = reading.fields?.charging?.negativeEvent;
+  if (!event(start) || start.readingId === consumedChargingId) return null;
+  const chargingTimes = Array.isArray(chargingAt) ? chargingAt : [chargingAt];
+  const stoppedTimes = Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt];
+  const starts = chargingTimes.filter(at => sourceTime(at)
+    && Math.abs(start.measuredAt - at) <= CONTROLLED_EDGE_TOLERANCE);
+  return starts.length ? { connectedAt, now, start, stop, starts, stoppedTimes, sourceTime, event } : null;
+}
+
+function controlledPauseMatch(reading, evidence, pause) {
+  if (!evidence || reading.charging !== false) return null;
+  const { connectedAt, now, start, stop, starts, stoppedTimes, sourceTime, event } = evidence;
+  if (pause?.ownedCurrent !== true || pause.manual !== false || pause.charging !== false || pause.reason !== 54
+    || !time(pause.confirmedAt) || pause.confirmedAt < connectedAt || pause.confirmedAt > now
+    || !time(pause.startAt) || pause.startAt <= now || !sourceTime(pause.reasonAt)) return null;
+  // The optional witness is persisted at the guarded pre-write check. Older
+  // ownership without it must bracket the response using confirmation itself.
+  const boundary = pause.requestedAt ?? pause.confirmedAt;
+  if (!time(boundary) || boundary < connectedAt || boundary > pause.confirmedAt || pause.reasonAt <= boundary
+    || !event(stop) || start.measuredAt >= boundary || stop.measuredAt <= boundary
+    || stop.receivedAt < start.receivedAt) return null;
+  const matched = starts.some(at => at < boundary
+    && stoppedTimes.some(end => sourceTime(end) && end > boundary
+      && Math.abs(stop.measuredAt - end) <= CONTROLLED_EDGE_TOLERANCE
+      && Math.abs(pause.reasonAt - end) <= CONTROLLED_EDGE_TOLERANCE));
+  return matched ? { chargingReadingId: start.readingId, stopReadingId: stop.readingId,
+    confirmedAt: pause.confirmedAt } : null;
+}
+
+/** A confirmed native pause can correlate charging even when the vehicle's
+ * inlet state did not change. A guarded request witness, or confirmation when
+ * no witness exists, brackets the observed response without inventing a send
+ * time. Existing ownership and raw charger facts come from the runtime. */
+export function matchBmwControlledPause(reading, options = {}) {
+  return controlledPauseMatch(reading, controlledBmwStart(reading, options), options.pause);
+}
+
+/** A tightly matched live start remains a candidate while pause evidence is
+ * pending. The ten-minute display bound grants no identity or control rights. */
+export function pendingBmwControlledPause(reading, options = {}) {
+  const evidence = controlledBmwStart(reading, options);
+  return Boolean(evidence && evidence.now < evidence.connectedAt + 10 * MINUTE
+    && !controlledPauseMatch(reading, evidence, options.pause));
+}

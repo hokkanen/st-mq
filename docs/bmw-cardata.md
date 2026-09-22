@@ -69,7 +69,7 @@ is positively associated with its current plug-in session. Receiving BMW battery
 data does not establish that association. The Tesla diagnostic's negative result
 means only that Tesla charges elsewhere.
 
-BMW matching combines timestamped home context with a live plug event and a
+The usual BMW match combines timestamped home context with a live plug event and a
 charging start followed by a stop near the current Easee connection. Both charging
 transitions must correspond to charging and stopping observed at Easee. Source
 events and live MQTT delivery may precede the first connected Easee poll by up to
@@ -78,14 +78,31 @@ of that disconnected state preserve its source time; a missing source clock uses
 the receipt time conservatively. This permits ordinary polling delay without
 reusing evidence from an earlier connection. A BMW starting
 to charge elsewhere at home is insufficient on its own. Without the
-matching stop, Charger 1 continues to use manual battery values. With matching
-live plug and start evidence, its card shows **BMW identification pending** while awaiting
-stop confirmation, for at most ten minutes from the connection. Missing or
+matching stop, Charger 1 continues to use manual battery values. Matching live
+start evidence with valid home and plug context can show **BMW identification pending**
+while awaiting stop confirmation, even if the plug report is unchanged, for at
+most ten minutes from the connection. Missing or
 conflicting evidence then leaves it **Vehicle unidentified**.
 Initial unrestricted charging can be observed briefly when a BMW at-home candidate
 is available; manual priority and existing native restrictions are preserved.
 Identification does not command an additional stop; it observes a pause or stop
 that occurs as part of ordinary charging control.
+
+BMW can also keep reporting `CONNECTED` without a new vehicle plug transition.
+An alternative match uses home and plugged-in context no older than 24 hours,
+plus a planned pause already controlled by ST-MQ. Fresh live BMW charging-start
+and stop events must each match Easee within 30 seconds. Both starts must precede
+the pause boundary; both stops and Easee's fresh scheduling-stop reason (54) must
+follow it. When available, the boundary is the durable request-intent time saved
+after control checks pass, immediately before requesting the schedule, while Easee
+was observed charging. This records intent without claiming an exact dispatch
+time. Without that evidence, the stricter schedule-confirmation time applies.
+In either case, the schedule must be confirmed, still exactly match ST-MQ's owned
+delay and have its start in the future; reason 54 must also match the stop time.
+Manual priority or conflicting Tesla evidence prevents this match. This path
+adds no charger commands or identification probe, and its charging-start event
+cannot be reused for another connection.
+
 No BMW charging-power field or plug-event identifier is required. Cached/retained
 true values, or unchanged true values republished with newer timestamps, cannot
 create new plug events. Conflicting vehicle evidence keeps manual inputs active.
@@ -99,8 +116,8 @@ live BMW plug event allows a new observation window, and the new connection stil
 needs matching charging-start and stop evidence before vehicle readings apply.
 
 A confirmed match is scoped to the charger connection, survives scheduled pauses
-and restart, and clears on unplug. A consumed plug event cannot identify the next
-car. Available automatic battery fields take precedence individually without
+and restart, and clears on unplug. Consumed plug or charging-start events cannot
+identify the next car. Available automatic battery fields take precedence individually without
 overwriting saved generic defaults. Missing fields remain editable. Tesla on
 Easee appears in Charger 1, while Charger 2 indicates that association instead of
 displaying a duplicate session.

@@ -1,5 +1,5 @@
 import { mergeChargingSettings, migrateChargingSettings, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, connectionEvidenceStart, matchBmwSession, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -47,7 +47,8 @@ export class ChargingRuntime {
       const previous = saved.vehicleFeeds?.[id];
       const reading = previous?.reading?.association === definition.mqttTopic ? previous.reading : null;
       return [id, { ...definition, id, mqtt: initialMqtt(),
-        reading, consumedPlugId: reading ? previous?.consumedPlugId ?? null : null }];
+        reading, consumedPlugId: reading ? previous?.consumedPlugId ?? null : null,
+        consumedChargingId: reading ? previous?.consumedChargingId ?? null : null }];
     }));
     if (this.configuration.chargers.charger2.mqttTopic) this.vehicleFeeds['legacy-charger2'] = {
       id: 'legacy-charger2', label: 'Additional vehicle', provider: null,
@@ -88,7 +89,7 @@ export class ChargingRuntime {
       { plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
         sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
-      { reading: item.reading, consumedPlugId: item.consumedPlugId }]));
+      { reading: item.reading, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId }]));
     this.store.setState(this.key, { version: 4, settings: this.settings, chargers, vehicleFeeds, teslaDisconnectedFromEaseeAt: this.teslaDisconnectedFromEaseeAt, view });
   }
   mqttRoutes() {
@@ -178,7 +179,7 @@ export class ChargingRuntime {
       const previous = item.reading, previousTeslaDisconnect = this.teslaDisconnectedFromEaseeAt;
       const matches = Object.fromEntries(Object.entries(this.chargers).map(([id, charger]) => [id,
         structuredClone({ vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence, targetState: charger.targetState, vehicleDisconnect: charger.vehicleDisconnect })]));
-      const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, feed]) => [id, feed.consumedPlugId]));
+      const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, feed]) => [id, { consumedPlugId: feed.consumedPlugId, consumedChargingId: feed.consumedChargingId }]));
       const easee = this.chargers.charger1;
       const boundary = route.id === 'bmw' ? bmwDisconnectEvent(previous, result.reading, {
         match: easee?.vehicleMatch, connectedAt: easee?.controller?.status()?.session?.connectedAt, now }) : null;
@@ -203,7 +204,7 @@ export class ChargingRuntime {
         item.reading = previous; this.teslaDisconnectedFromEaseeAt = previousTeslaDisconnect;
         for (const [id, state] of Object.entries(matches)) Object.assign(this.chargers[id], state);
         if (episode) Object.assign(easee, episode);
-        for (const [id, value] of Object.entries(consumed)) this.vehicleFeeds[id].consumedPlugId = value;
+        for (const [id, value] of Object.entries(consumed)) Object.assign(this.vehicleFeeds[id], value);
         throw error;
       }
       const reconnect = route.id === 'bmw'
@@ -259,14 +260,27 @@ export class ChargingRuntime {
           && (tesla.assignment === 'easee' || tesla.assignment === 'auto' && identification?.verdict === 'easee'
             && Number.isSafeInteger(identification.identifiedAt) && identification.identifiedAt >= connectedAt
             && identification.identifiedAt > (easee.vehicleEvidence.teslaRejectedAt ?? -Infinity));
-        const bmwPositive = matchBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
+        const bmwPlugMatch = matchBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
           chargingAt: easee.vehicleEvidence.chargingTimes, stoppedAt: easee.vehicleEvidence.stoppedTimes, now, consumedPlugId: bmw?.consumedPlugId });
+        const owned = control.owned, snapshot = control.snapshot;
+        const bmwPauseMatch = matchBmwControlledPause(bmw?.reading, {
+          connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
+          chargingAt: easee.vehicleEvidence.chargingTimes, stoppedAt: easee.vehicleEvidence.stoppedTimes,
+          now, consumedChargingId: bmw?.consumedChargingId,
+          pause: { ownedCurrent: Boolean(owned && snapshot?.online === true && result.charger1.providerConnected !== false
+            && (owned.activeFingerprint ? owned.activeFingerprint === effectiveScheduleFingerprint(snapshot.schedule)
+              : owned.fingerprint === snapshot.fingerprint)),
+            confirmedAt: owned?.confirmedAt, requestedAt: owned?.requestedAt, startAt: owned?.startAt, manual: Boolean(control.manual),
+            reason: snapshot?.reason, reasonAt: snapshot?.reasonAt, charging: result.charger1.charging?.value } });
+        const bmwPositive = bmwPlugMatch || Boolean(bmwPauseMatch);
         // Opposing vehicle evidence leaves this generic charger unidentified.
         if ((teslaPositive || easee.vehicleMatch?.id === 'tesla')
           && (bmwPositive || easee.vehicleMatch?.id === 'bmw')) { easee.vehicleMatch = null; easee.vehicleEvidence.ambiguous = true; }
         else if (!easee.vehicleMatch && !easee.vehicleEvidence.ambiguous && (teslaPositive || bmwPositive)) {
-          easee.vehicleMatch = { id: teslaPositive ? 'tesla' : 'bmw', connectedAt, matchedAt: now };
-          if (bmwPositive) bmw.consumedPlugId = bmw.reading.fields.pluggedIn.event.readingId;
+          easee.vehicleMatch = { id: teslaPositive ? 'tesla' : 'bmw', connectedAt, matchedAt: now,
+            ...(bmwPauseMatch && !bmwPlugMatch ? { reason: 'matched-controlled-pause' } : {}) };
+          if (bmwPlugMatch) bmw.consumedPlugId = bmw.reading.fields.pluggedIn.event.readingId;
+          if (bmwPauseMatch) bmw.consumedChargingId = bmwPauseMatch.chargingReadingId;
         }
       }
       // A gap in charger telemetry preserves identity, but direct vehicle
@@ -282,9 +296,12 @@ export class ChargingRuntime {
       const match = connected !== false && easee.vehicleMatch?.connectedAt === connectedAt ? easee.vehicleMatch : null;
       const source = match?.id === 'bmw' ? 'bmw-cardata' : match?.id === 'tesla' ? 'teslamate' : null;
       const pendingBmw = connected === true && !match && !easee.vehicleEvidence?.ambiguous
-        && pendingBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control?.session?.lastDisconnectedAt,
+        && (pendingBmwSession(bmw?.reading, { connectedAt, lastDisconnectedAt: control?.session?.lastDisconnectedAt,
           chargingAt: easee.vehicleEvidence?.chargingTimes, stoppedAt: easee.vehicleEvidence?.stoppedTimes,
-          now, consumedPlugId: bmw?.consumedPlugId });
+          now, consumedPlugId: bmw?.consumedPlugId })
+          || !control?.manual && pendingBmwControlledPause(bmw?.reading, {
+            connectedAt, lastDisconnectedAt: control?.session?.lastDisconnectedAt,
+            chargingAt: easee.vehicleEvidence?.chargingTimes, now, consumedChargingId: bmw?.consumedChargingId }));
       const identifying = !easee.vehicleEvidence?.ambiguous && (control?.phase === 'identifying' || pendingBmw);
       if (connected === false || bmw?.reading?.pluggedIn === false || bmw?.reading?.atHome === false
         || match?.id === 'tesla' || easee.vehicleEvidence?.ambiguous) easee.targetState = null;
@@ -292,7 +309,7 @@ export class ChargingRuntime {
         connectedAt, evidenceStart: connectionEvidenceStart(connectedAt, control?.session?.lastDisconnectedAt),
         reading: bmw?.reading, now, live: false });
       result.charger1.vehicle = match
-        ? { state: 'identified', id: match.id, label: match.id === 'bmw' ? bmw.label : 'Tesla', source, reason: 'matched-charging-session', chargerId: 'charger1' }
+        ? { state: 'identified', id: match.id, label: match.id === 'bmw' ? bmw.label : 'Tesla', source, reason: match.reason ?? 'matched-charging-session', chargerId: 'charger1' }
         : { state: connected === false ? 'disconnected' : identifying ? 'identifying' : 'unidentified',
           id: null, label: null, source: null, reason: easee.vehicleEvidence?.ambiguous ? 'conflicting-vehicle-evidence'
             : pendingBmw ? 'awaiting-stop-confirmation' : 'vehicle-not-identified' };

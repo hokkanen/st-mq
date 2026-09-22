@@ -111,11 +111,26 @@ and device-side expiry remain unchanged. Inconclusive evidence leaves Charger 1
 unidentified and using manual values; matching power alone never establishes identity.
 
 BMW identification uses the available source-timestamped home-location, plug and
-charging-status facts. Fresh live plug reports, a charging start and a subsequent
-stop must match the current Easee connection and its observed start and stop.
-Matching live plug/start evidence keeps the label **BMW identification pending** while
-stop confirmation is pending, for up to ten minutes from connection; manual
-battery values remain in use until confirmation.
+charging-status facts. Its usual match requires a fresh live plug report, a
+charging start and a subsequent stop corresponding to the current Easee connection.
+Matching live start evidence with valid home and plug context can show
+**BMW identification pending** while awaiting stop confirmation, including when
+the plug report is unchanged, for up to ten minutes from connection. Manual
+battery values remain in use until a match is confirmed.
+
+If BMW keeps reporting `CONNECTED` without a new plug transition, identification
+can instead use its home/plug context and a planned pause already controlled by
+ST-MQ. Fresh live BMW starts and stops must match Easee within 30 seconds and fall
+before and after the recorded pause boundary. This can use saved request-intent
+timing captured after control checks pass while Easee was charging; otherwise it uses
+the stricter schedule-confirmation time. The schedule must still be confirmed,
+and the exact owned delay must remain active with a future start and a fresh
+Easee scheduling-stop reason after the boundary;
+manual priority and conflicting Tesla evidence prevent this match. Consumed
+charging-start evidence cannot identify another connection. This adds no charger
+commands or probe; see [the BMW feed contract](bmw-cardata.md#association-with-charger-1)
+for the evidence requirements.
+
 A fresh live unplug event from an already identified BMW also ends that charger
 connection when the unplug/replug gap falls between Easee polls. This boundary is
 saved separately from the raw Easee readings and survives restart. It resets the

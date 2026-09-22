@@ -322,7 +322,8 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
         return snapshot;
       } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },
-    async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true, allowChargingPause = false } = {}) {
+    async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal,
+      canMutate = () => true, allowChargingPause = false, beforeWrite = () => {} } = {}) {
       const before = await adapter.read({ signal });
       if (before.fingerprint !== expectedFingerprint || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
         throw failure('state-changed', 'Easee changed before the schedule write.');
@@ -331,6 +332,10 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
       if (!before.controlKnown || before.manualStop || before.authorizationBlocked || before.faulted)
         throw failure('access-denied', 'The charger is not available for an automatic schedule.');
       const delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock());
+      // Let the controller durably record this guarded observation before the
+      // request. A failed save must leave the native charger untouched.
+      await beforeWrite(before);
+      if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
       try {
         await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: canMutate }, true);

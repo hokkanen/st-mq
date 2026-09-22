@@ -44,6 +44,7 @@ function fakeAdapter(clock) {
     setLimits(value) { Object.assign(limits, value); },
     async read() { calls.push({ kind: 'read' }); return snapshot(); },
     async installDelayed(input) {
+      await input.beforeWrite?.(snapshot());
       assert.equal(input.canMutate(), true);
       assert.equal(input.startAt % 1000, 0);
       calls.push({ kind: 'install', startAt: input.startAt, maximumAmps: input.maximumAmps });
@@ -1004,4 +1005,73 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   assert.equal(chargerView(runtime).values.minimumSoc.value, 85);
   assert.equal(chargerView(runtime).targetSelection.mode, 'automatic');
   assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 1);
+});
+
+for (const immediate of [false, true]) test(`an unchanged BMW plug report identifies through a ${immediate ? 'fast' : 'delayed'} response to this connection’s owned pause`, async t => {
+  const settings = chargingSettings({ chargers: { charger1: { enabled: true, capacityKwh: 20, manualSoc: 60, minimumSoc: 85 } } });
+  const f = fixture({ 'charging:mqtt': { settings } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  const topic = runtime.configuration.vehicles.bmw.mqttTopic;
+  const old = initialNow - HOUR;
+  runtime.receiveSoc(topic, packet(60, old, 'old-battery', { chargeLimitSoc: 85, pluggedIn: true, charging: false, atHome: true,
+    fields: Object.fromEntries(['pluggedIn', 'charging', 'atHome'].map(key => [key, { measuredAt: old, readingId: `${key}-old` }])) }), { retain: true });
+  const plugBefore = structuredClone(runtime.vehicleFeeds.bmw.reading.fields.pluggedIn);
+  const bmwStartAt = initialNow + 8000;
+  f.setNow(bmwStartAt);
+  runtime.receiveSoc(topic, JSON.stringify({ provider: 'bmw-cardata', charging: true,
+    fields: { charging: { measuredAt: bmwStartAt, readingId: 'fresh-bmw-start' } } }));
+  adapter.setObservation({ mode: 3, modeAt: initialNow });
+  runtime.tick({ prices }); await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  const connectedAt = chargerView(runtime).control.session.connectedAt;
+  assert.equal(chargerView(runtime).control.phase, 'identifying');
+  assert.equal(chargerView(runtime).vehicle.id, null);
+  if (immediate) {
+    const install = adapter.installDelayed;
+    adapter.installDelayed = async input => {
+      await input.beforeWrite?.(await adapter.read());
+      f.setNow(f.clock() + 10_000);
+      adapter.setObservation({ mode: 2, modeAt: f.clock(), reasonAt: f.clock() - 1000 });
+      const result = await install({ ...input, beforeWrite: undefined });
+      f.setNow(f.clock() + 30_000);
+      return { ...result, readAt: f.clock() };
+    };
+  }
+  f.setNow(connectedAt + 180_000); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, immediate ? 'waiting' : 'pause-unconfirmed');
+  assert.equal(chargerView(runtime).vehicle.state, 'identifying');
+  assert.equal(chargerView(runtime).vehicle.reason, 'awaiting-stop-confirmation');
+  const owned = chargerView(runtime).control.owned;
+  assert.equal(owned.requestedAt, connectedAt + 180_000);
+  const stopAt = owned.requestedAt + 10_000, bmwStopAt = stopAt + 18_000;
+  assert.equal(stopAt < owned.confirmedAt, immediate, 'The fast response precedes confirmation readback');
+  f.setNow(Math.max(f.clock(), bmwStopAt)); adapter.setObservation({ mode: 2, modeAt: stopAt, reasonAt: stopAt - 1000 });
+  const stopMessage = JSON.stringify({ provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: bmwStopAt, readingId: 'fresh-bmw-stop' } } });
+  if (immediate) {
+    f.store.fail = true;
+    assert.throws(() => runtime.receiveSoc(topic, stopMessage), /database temporarily locked/);
+    f.store.fail = false;
+    assert.equal(runtime.chargers.charger1.vehicleMatch, null);
+    assert.equal(runtime.vehicleFeeds.bmw.consumedChargingId, null, 'Failed persistence rolls back the consumed start');
+  }
+  runtime.receiveSoc(topic, stopMessage);
+  if (!immediate) assert.equal(chargerView(runtime).vehicle.id, null, 'BMW stopping alone is not enough before Easee confirms the owned restriction');
+  await runtime.reconcile();
+  const matched = chargerView(runtime);
+  assert.equal(matched.vehicle.id, 'bmw');
+  assert.equal(matched.vehicle.reason, 'matched-controlled-pause');
+  assert.equal(matched.values.minimumSoc.value, 85);
+  assert.equal(runtime.vehicleFeeds.bmw.consumedChargingId, 'fresh-bmw-start');
+  assert.equal(runtime.vehicleFeeds.bmw.consumedPlugId, null, 'The old plug is context, not a manufactured new event');
+  assert.deepEqual(runtime.vehicleFeeds.bmw.reading.fields.pluggedIn, plugBefore);
+  await runtime.close();
+  const restarted = f.create(); t.after(() => restarted.close());
+  await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
+  assert.equal(chargerView(restarted).vehicle.id, 'bmw');
+  assert.equal(chargerView(restarted).vehicle.reason, 'matched-controlled-pause');
+  assert.equal(restarted.vehicleFeeds.bmw.consumedChargingId, 'fresh-bmw-start');
+  adapter.setObservation({ pluggedIn: false, mode: 1, modeAt: f.clock() }); await restarted.reconcile();
+  f.setNow(f.clock() + 65_000); adapter.setObservation({ pluggedIn: true, mode: 2, modeAt: f.clock() }); await restarted.reconcile();
+  assert.equal(chargerView(restarted).vehicle.id, null, 'The consumed charging sequence cannot identify another connection');
 });

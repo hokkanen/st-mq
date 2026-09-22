@@ -59,6 +59,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
   function confirmedOwned(now, pending) {
     return { planId: pending.planId, startAt: pending.startAt, fingerprint: snapshot.fingerprint,
       activeFingerprint: currentFingerprint(), schedule: copy(snapshot.schedule), confirmedAt: now,
+      ...(isTime(pending.pauseRequestedAt) && pending.pauseRequestedAt <= now ? { requestedAt: pending.pauseRequestedAt } : {}),
       ...(pending.periods ? { periods: copy(pending.periods), finalStartAt: pending.finalStartAt } : {}) };
   }
   function normalExpiry(now) {
@@ -448,7 +449,17 @@ export function createChargingController({ adapter, initialState = null, saveSta
       snapshot = await adapter.installDelayed({ startAt: plan.startAt, timezone: desired.timezone, maximumAmps,
         allowChargingPause: pauseRequested,
         expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
-        canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true });
+        canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true,
+        beforeWrite: async before => {
+          if (before.mode !== 3) return;
+          // The guarded read still saw charging. Persist the request-intent
+          // boundary before POST, so a fast stop and lost readback can retain
+          // their provenance. This is not the exact network send time.
+          const prior = state.pending, witnessed = { ...pending, pauseRequestedAt: clock() };
+          state.pending = witnessed;
+          try { await persist(); } catch (error) { state.pending = prior; throw error; }
+          pending.pauseRequestedAt = witnessed.pauseRequestedAt;
+        } });
       state.lastReadAt = snapshot.readAt;
       if (currentFingerprint() !== expectedActiveFingerprint) throw Object.assign(new Error('Schedule readback mismatch'), { code: 'readback-mismatch' });
       state.owned = confirmedOwned(clock(), pending); state.execution = execution ? copy(execution) : null; state.pending = null;

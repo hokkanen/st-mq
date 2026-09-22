@@ -31,7 +31,7 @@ function harness() {
   };
   h.adapter = createEaseeScheduleAdapter({ request: h.request, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed });
   h.restart = () => { h.controller?.close(); h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved,
-    saveState: value => { h.saved = structuredClone(value); }, clock: () => h.now, canControl: () => h.allowed }); };
+    saveState: value => { h.saveHook?.(value); h.saved = structuredClone(value); }, clock: () => h.now, canControl: () => h.allowed }); };
   h.restart();
   h.update = extra => h.controller.update({ enabled: true, plan: { id: 'plan-one', startAt: NOW + 3 * 3600_000 },
     timezone: 'Europe/Helsinki', maximumAmps: 16, ...extra });
@@ -764,4 +764,66 @@ test('a feasible final period clears provisional status and is never price-pause
   assert.equal(result.released, true);
   result = await h.update();
   assert.equal(result.phase, 'released'); assert.equal(h.writes.length, 0);
+});
+
+
+test('a guarded charging witness survives an immediate pause and keeps request intent distinct from confirmation', async () => {
+  const h = harness(); h.mode = 3;
+  let scheduleReads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules') && ++scheduleReads === 2) h.now += 1000; };
+  h.writeHook = () => {
+    assert.equal(h.saved.pending.pauseRequestedAt, NOW + 1000, 'The witness is durable before POST');
+    assert.equal(h.saved.owned, null, 'Request intent is not confirmed ownership');
+    h.now += 10_000; h.mode = 2; h.reason = 54;
+  };
+  let result = await h.update();
+  assert.equal(result.owned.requestedAt, NOW + 1000);
+  assert.equal(result.owned.confirmedAt, NOW + 11_000);
+  assert.equal(result.snapshot.mode, 2, 'The first readback can already show the physical pause');
+  assert.equal(h.writes.length, 1);
+  h.now += 30_000; h.restart(); result = await h.update();
+  assert.equal(result.owned.requestedAt, NOW + 1000);
+  assert.equal(result.owned.confirmedAt, NOW + 11_000);
+  assert.equal(h.writes.length, 1, 'Restart preserves the observed request without another command');
+});
+
+test('lost pause confirmation recovers the persisted prewrite witness after restart', async () => {
+  const h = harness(); h.mode = 3;
+  h.writeHook = () => { h.now += 10_000; h.mode = 2; h.reason = 54; };
+  const install = h.adapter.installDelayed;
+  h.adapter.installDelayed = async options => { await install(options); throw new Error('lost response'); };
+  let result = await h.update();
+  assert.equal(result.phase, 'unconfirmed'); assert.equal(result.owned, null);
+  assert.equal(h.saved.pending.pauseRequestedAt, NOW);
+  h.adapter.installDelayed = install; h.now += 60_000; h.restart();
+  result = await h.update();
+  assert.equal(result.owned.requestedAt, NOW);
+  assert.equal(result.owned.confirmedAt, NOW + 70_000);
+  assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+});
+
+test('charging that stopped before the guarded read is scheduled without a pause witness', async () => {
+  const h = harness(); h.mode = 3;
+  let scheduleReads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules') && ++scheduleReads === 2) {
+    h.now += 1000; h.mode = 2; h.reason = 50;
+  } };
+  h.writeHook = () => {
+    assert.equal(h.saved.pending.pauseRequestedAt, undefined);
+    h.now += 1000; h.reason = 54;
+  };
+  const result = await h.update();
+  assert.equal(result.owned.requestedAt, undefined);
+  assert.equal(result.owned.confirmedAt, NOW + 2000);
+  assert.equal(h.writes.length, 1, 'Lacking identification evidence must not prevent normal scheduling');
+});
+
+test('failure to persist a guarded pause witness prevents the schedule POST and rolls back the witness', async () => {
+  const h = harness(); h.mode = 3;
+  h.saveHook = value => { if (value.pending?.pauseRequestedAt !== undefined) throw new Error('database unavailable'); };
+  const result = await h.update();
+  assert.equal(result.phase, 'unconfirmed'); assert.equal(result.owned, null);
+  assert.equal(result.pending.pauseRequestedAt, undefined);
+  assert.equal(h.saved.pending.pauseRequestedAt, undefined);
+  assert.equal(h.writes.length, 0); assert.equal(h.schedules.enabled, 'none');
 });
