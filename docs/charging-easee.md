@@ -23,6 +23,15 @@ uses fresh connection state before any write. The existing Easee authentication,
 token persistence, rate budget and controller authority checks protect requests.
 The HTTP transport separately opts in to narrowly validated scheduling writes.
 
+Routine charger and Equalizer observation reads share the acquisition SignalR
+cache, with REST backup when required readings are unavailable. One connection
+serves the configured Charger 1 and Equalizer; this does not add multiple Easee
+chargers. Streaming and REST share the same token refresh and persistence.
+Schedules, hourly Equalizer configuration and all commands remain on REST.
+Before native schedule mutations and during their readback, the adapter forces
+fresh REST observation reads rather than relying on the stream cache. Original
+measurement timestamps and the existing freshness guards still apply.
+
 ## API contract checked on 2026-09-15
 
 The official public OpenAPI definitions were read for these endpoints:
@@ -65,7 +74,7 @@ Equalizer limiting, do not establish that the requested schedule took effect.
 
 ## Ownership and manual controls
 
-Before each mutation the adapter rereads the schedule and control observations,
+Before each mutation the adapter rereads the schedule and control observations over REST,
 then compares them with the expected state. It persists the write intent before
 dispatch and confirms the result by reading back. A successful HTTP response
 alone is not presented as an installed plan. A failed or interrupted write is
@@ -110,7 +119,7 @@ not create manual priority. A disabled charger, authorization request or fault
 remains unavailable; no enable, authorization, start/stop or current command is
 issued. Final release remains open even after its estimated completion/deadline.
 
-Polling detects observed state changes, not app taps that leave the same state
+Observation sampling detects state changes, not app taps that leave the same state
 or changes completed between observations. A charge-now override that leaves
 scheduling state unchanged and never produces a charging observation (for example,
 while continuously Equalizer-limited) can remain unidentifiable. Easee documentation
@@ -155,7 +164,7 @@ observations 183–185 provide its phase currents. A coherent observation estima
 the supply budget as Equalizer allowance plus property draw minus Charger 1
 draw. Positive allowance reports and source readings within 20 minutes are
 required to establish new evidence; original event clocks remain distinct from
-a successful API poll. Confirmed idle current can remain unchanged.
+stream receipt or a successful REST read. Confirmed idle current can remain unchanged.
 
 Up to 12 independent samples from the preceding 24 hours survive restart.
 Uncapped observations provide a robust central estimate; observations clipped
@@ -179,3 +188,6 @@ readiness-cycle expiry and acknowledgement races, disconnected observation,
 mid-session pauses, final release, latency, Charge now, stops, uncertain
 handovers, and the transport's restricted write allowlist. Fixtures use invented device names and
 synthetic tokens; these checks require no Easee account or hardware.
+`test/charging-easee-stream.test.js` verifies routine shared-cache reads and
+forced REST observation preflight/readback without weakening schedule ownership
+or device freshness checks.

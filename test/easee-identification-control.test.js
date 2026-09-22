@@ -91,7 +91,7 @@ test('one-minute limits and pause use the same auth without returning the comman
   const controller = new AbortController();
   const devices = providers({ json: async () => snapshot(now), async text(url, options) {
     writes.push({ url, options });
-    assert.equal(options.signal, controller.signal);
+    assert.equal(options.signal.aborted, false);
     assert.equal(options.headers.Authorization, 'Bearer synthetic-access');
     return 'private-command-response';
   } }, () => now);
@@ -103,6 +103,8 @@ test('one-minute limits and pause use the same auth without returning the comman
     assert.equal(writes.at(-1).url, commandUrl);
     now += 61_000;
   }
+  controller.abort();
+  assert(writes.every(write => write.options.signal.aborted), 'Caller cancellation propagates through the provider lifetime signal');
 });
 
 test('limits re-read control ownership and refuse increases, stale samples, idle or competing limits', async () => {

@@ -16,20 +16,36 @@ units, quality flags and import provenance remain supported.
 | Source | Default acquisition | Important distinction |
 | --- | --- | --- |
 | H66 | Continuous MQTT publications, plus GETALL every 60 seconds | GETALL republishes the gateway's known values; receipt time is not proof of a new sensor measurement. |
-| Easee charger and Equalizer | REST every 15 seconds; one batched observations request per configured device | The endpoint returns last-reported observations. Polling faster does not force new measurements. |
+| Easee charger and Equalizer | SignalR observations, sampled as complete cached snapshots every 15 seconds; REST backup and 15-minute reconciliation | Each field retains its last-reported source time. Sampling faster does not force new measurements. |
 | TeslaMate | MQTT on the existing broker; integration checked every five seconds | Changed fields arrive separately. Live health and increasing session energy can confirm unchanged retained charging power. |
 | Indoor/garage sensors | Configured local MQTT topics | The publisher determines its measurement frequency; retained messages are marked explicitly. |
 | FMI outdoor observations, Open-Meteo backup | Every five minutes | A successful fetch can contain the same older station or model timestamp. |
 | FMI/Open-Meteo forecast | Every 30 minutes | Actual forecasts update on provider/model schedules; unchanged content is referenced rather than copied. |
 | ENTSO-E/Elering prices | Hourly, with 15-minute checks when the available horizon is shorter than the next 24 hours | Native hourly/quarter-hour delivery intervals remain unchanged. Missing current-day coverage and failed requests have separate backoff. |
 
-Two Easee devices at 15 seconds require 40 observations requests in five minutes.
-The shared request gate allows at most 90 such requests per rolling five minutes,
-leaving margin below the documented limit of 100. Authentication retries consume
-that same observations allowance. HTTP 429 delays and ordinary failure backoff
-are respected; devices are not polled in overlapping batches. No charger settings
-are changed by this acquisition path. The documented AMQP stream requires partner
-access, so this implementation uses REST.
+One SignalR connection subscribes to the configured Charger 1 and Equalizer,
+requesting their current observations when it connects and subscribing again
+after reconnect. The cache keeps each field's original measurement timestamp.
+Acquisition samples a complete usable snapshot every 15 seconds, so unchanged
+power still contributes to the existing bounded integration. Individual incoming
+fields do not create partial electrical samples or new history channels.
+
+When the stream is unavailable or a required reading is missing, that device uses
+one batched REST observations request at the normal acquisition cadence. Healthy
+streaming reconciles with REST every 15 minutes. Reconciliation can update fields
+already received on the current stream connection; it cannot establish stream
+readiness or fill fields that the stream has never supplied. Schedules,
+configuration and commands retain their REST routes.
+This supports the existing one Easee charger and one Equalizer configuration.
+
+Streaming and REST share token loading, refresh and persistence. Two devices
+falling back to REST every 15 seconds require 40 observations requests in five
+minutes. The shared REST request gate allows at most 90 requests per rolling five
+minutes, leaving margin below the documented limit of 100. Authentication retries
+consume the same allowance. HTTP 429 delays and ordinary failure backoff are
+respected; devices are not polled in overlapping batches. No charger settings are
+changed by this acquisition path. Provider diagnostics identify live streaming,
+REST backup or a mixture; working backup does not itself require attention.
 
 Provider references:
 
@@ -37,7 +53,8 @@ Provider references:
 - [Easee observations endpoint](https://developer.easee.com/reference/getobservations)
 - [Easee charger observation IDs](https://developer.easee.com/docs/charger-observation-ids)
 - [Easee Equalizer observation IDs](https://developer.easee.com/docs/equalizer-observations)
-- [Easee AMQP requirements](https://developer.easee.com/docs/amqp-connect)
+- [Easee streaming guidance](https://developer.easee.com/docs/introduction)
+- [Established Easee SignalR client and subscriptions](https://github.com/nordicopen/pyeasee/blob/master/pyeasee/easee.py)
 - [TeslaMate MQTT fields and geofence topic](https://docs.teslamate.org/docs/integrations/mqtt/)
 - [FMI time-series access](https://en.ilmatieteenlaitos.fi/open-data-manual-time-series-data)
 - [FMI model updates](https://en.ilmatieteenlaitos.fi/numerical-weather-prediction)
@@ -123,8 +140,11 @@ their mapping is unsuitable for phase allocation or VI-only power estimation.
 
 Current, voltage and power snapshots remain acquisition-only. Current snapshots
 can appear in live status, but are not new historical or training signals.
-Restart state does not authorize integration over a long outage: the default
-maximum gap between usable polls is 60 seconds. Direct total-power measurements
+Stream loss clears electrical continuity and records a gap, even if reconnect
+finishes before the next acquisition. Restart also requires a new starting
+snapshot; it cannot bridge the interval without an active stream. Recovered
+state never fills the missing interval. The default maximum gap between usable
+samples is 60 seconds. Direct total-power measurements
 and all currents/voltages on the VI fallback path expire after five minutes.
 Independently confirmed device telemetry has a separate 17-minute default,
 following [Easee's documented online-detection window](https://developer.easee.com/changelog/ocpp-15).
@@ -137,16 +157,16 @@ within the same measurement basis and recovery leave explicit gaps;
 there is no unbounded last-value hold. Pump/phase zero transitions bypass the
 numerical change threshold.
 
-An isolated transient Easee download failure retries after the configured poll
+An isolated transient Easee REST backup failure retries after the configured poll
 interval (15 seconds by default). Repeated failures double that delay up to
-30 minutes. Previously the generic provider retry started at five minutes,
-turning a single failed request into a five-minute hole in both charger and
-Equalizer acquisition. Authentication errors retain their 30-minute cooldown;
+30 minutes. Authentication errors retain their 30-minute cooldown;
 rate limits and other HTTP client errors retain the normal provider backoff,
 and an explicit `Retry-After` is always respected, including across restart.
 The strictest failed device determines a shared account cooldown. The failed
 device's actual missing interval remains missing; a successfully read sibling
 continues while consecutive polls remain within the integration gap limit.
+Stream recovery can resume cached acquisition during a REST cooldown without
+issuing requests that bypass that cooldown.
 
 The newest chart tail can separately lag by the recording interval (five minutes
 by default) while the recorder accumulates its pending energy batch. The normal

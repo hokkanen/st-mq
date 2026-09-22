@@ -395,6 +395,63 @@ test('Easee describes old readings without reporting different measurement times
   assert.doesNotMatch(result.detail, /download failed|No successful download|Next try/);
 });
 
+test('Easee names stream and REST acquisition without warning on working backup', () => {
+  for (const [state, transport, detail] of [
+    ['connected', 'stream', /Last acquisition used the live stream\./],
+    ['retrying', 'rest', /Live stream reconnecting\. Last acquisition used REST backup\./],
+    ['connected', 'mixed', /Last acquisition combined live stream readings and REST backup\./],
+  ]) {
+    const health = { status: 'ok', lastSuccessAt: now, qualityIssues: [], transport,
+      stream: { state, connected: state === 'connected' } };
+    const display = describeProvider('easee', health, options);
+    assert.equal(display.state, 'Available');
+    assert.equal(display.attention, false);
+    assert.match(display.detail, /Last successful acquisition 10:00\./);
+    assert.match(display.detail, detail);
+    const [group] = dashboardProviders({ providers: { easee: health } }, options);
+    assert.equal(group.display.state, 'Available');
+    assert.equal(group.sourceStates[0].tone, 'available');
+    assert.match(group.display.detail, detail);
+  }
+});
+
+test('Easee stream connectivity does not hide stale property readings or failed backup', () => {
+  for (const transport of ['stream', 'rest', 'mixed']) {
+    const stale = describeProvider('easee', { status: 'degraded', lastSuccessAt: now,
+      transport, stream: { state: 'connected', connected: true }, qualityIssues: ['property_stale'],
+      staleSourceTimes: { property_stale: now - 3_600_000 } }, options);
+    assert.equal(stale.attention, true);
+    assert.equal(stale.state, 'Needs attention');
+    assert.match(stale.detail, /Property current readings: oldest source reading is 1 h old/);
+  }
+  const failed = describeProvider('easee', { status: 'error', lastSuccessAt: now - 60_000,
+    transport: 'rest', stream: { state: 'retrying', connected: false }, error: 'HTTP-429',
+    nextAttemptAt: now + 300_000 }, options);
+  assert.equal(failed.attention, true);
+  assert.match(failed.detail, /Rate limited \(HTTP 429\)/);
+  assert.match(failed.detail, /Next try 10:05/);
+});
+
+test('Easee stream lifecycle and transport metadata only produce known display text', () => {
+  const secret = 'https://provider.example/?token=private-secret';
+  for (const [state, detail] of [
+    ['idle', 'Live stream has not started.'], ['connecting', 'Connecting to the live stream.'],
+    ['subscribing', 'Live stream connected; preparing readings.'], ['closed', 'Live stream stopped.'],
+  ]) {
+    const display = describeProvider('easee', { status: 'waiting', transport: secret,
+      stream: { state, error: secret, products: secret, retryAt: secret } }, options);
+    assert.equal(display.attention, false);
+    assert.match(display.detail, /No successful acquisition recorded/);
+    assert(display.detail.includes(detail));
+    assert.doesNotMatch(JSON.stringify(display), /private-secret|provider\.example|https:/);
+  }
+  for (const state of [secret, 'constructor', '__proto__', {}, null]) {
+    const display = describeProvider('easee', { status: 'ok', lastSuccessAt: now,
+      stream: { state, connected: true }, transport: secret }, options);
+    assert.equal(display.detail, 'Last successful download 10:00.');
+  }
+});
+
 test('Easee ignores timestamp mismatch and charger age in cached degraded statuses', () => {
   for (const qualityIssues of [['asynchronous_snapshot'], ['charger_stale'], ['charger_stale', 'asynchronous_snapshot']]) {
     for (const status of ['ok', 'degraded']) {

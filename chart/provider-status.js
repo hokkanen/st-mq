@@ -379,14 +379,30 @@ const currentFlags = flags => Array.isArray(flags) ? [...new Set(flags.filter(fl
 const scopedCurrentFlags = (flags, key) => currentFlags(flags).map(flag =>
   flag === 'stale' ? `${key}_stale` : flag);
 
+function easeeStreamDetail(health) {
+  const connection = {
+    idle: 'Live stream has not started.', connecting: 'Connecting to the live stream.',
+    subscribing: 'Live stream connected; preparing readings.', connected: 'Live stream connected.',
+    retrying: 'Live stream reconnecting.', closed: 'Live stream stopped.',
+  };
+  const state = health.stream?.state;
+  if (typeof state !== 'string' || !Object.hasOwn(connection, state)) return null;
+  const acquisition = health.transport === 'stream' ? 'Last acquisition used the live stream.'
+    : health.transport === 'rest' ? 'Last acquisition used REST backup.'
+      : health.transport === 'mixed' ? 'Last acquisition combined live stream readings and REST backup.' : null;
+  return [connection[state], acquisition].filter(Boolean).join(' ');
+}
+
 function describeEasee(health, { now, formatTime }) {
   const groups = ['charger', 'property'].filter(key => Object.hasOwn(health.currentReadings ?? {}, key)
     && health.currentReadings[key] && typeof health.currentReadings[key] === 'object');
   const scope = key => key === 'charger' ? 'Charger 1 readings' : 'Property readings';
   const sharedScope = groups.length === 1 ? scope(groups[0]) : 'Charger 1 and property readings';
   const success = health.lastSuccessAt ?? health.lastSuccess;
+  const streamDetail = easeeStreamDetail(health), acquisition = streamDetail ? 'acquisition' : 'download';
   const sentences = [Number.isFinite(success)
-    ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.'];
+    ? `Last successful ${acquisition} ${formatTime(success)}.` : `No successful ${acquisition} recorded.`];
+  if (streamDetail) sentences.push(streamDetail);
   const sentence = (subject, text) => sentences.push(`${subject}: ${text.replace(/^./, value => value.toUpperCase())}`);
   const addIssues = (flags, subject) => {
     for (const flag of currentFlags(flags)) {

@@ -11,7 +11,8 @@
 // https://developer.easee.com/docs/load-balancing
 // https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
-import { createEaseeScheduleAdapter } from '../charging/easee.js';
+import { CHARGING_OBSERVATION_IDS, createEaseeScheduleAdapter } from '../charging/easee.js';
+import { createEaseeStream } from './easee-stream.js';
 import { ProviderError, providerFailureCode } from './http.js';
 
 const CURRENT_DEVICES = [
@@ -284,13 +285,71 @@ function identificationSnapshot(payload, now) {
  * Each call returns normalized observation arrays, including null error records for
  * configured devices. No provider is contacted until a returned method is invoked.
  */
-export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true } = {}) {
+export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true,
+  streamFactory = createEaseeStream, onStreamDisconnect = () => {}, retryState,
+  fallbackIntervalMs = 15_000 } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const easee = { ...connections.easee };
   let tokens = { accessToken: easee.access_token ?? '', refreshToken: easee.refresh_token ?? '' };
   let loadFlight = null; let refreshFlight = null; let saveFlight = null; let dirtyTokens = false;
   const requestTimes = [];
-  let blockedUntil = 0;
+  const savedRetryAt = Number.isFinite(retryState?.nextAttemptAt) && retryState.nextAttemptAt <= clock() + 86400_000
+    ? Math.max(clock(), retryState.nextAttemptAt) : 0;
+  let blockedUntil = retryState?.error === 'HTTP-429' ? savedRetryAt : 0;
+  let authBlockedUntil = /^HTTP-(401|403|429)$/.test(retryState?.error ?? '') ? savedRetryAt : 0;
+  let authFailure = authBlockedUntil ? { status: Number(retryState.error.slice(5)) } : null;
+  const observationRetries = new Map();
+  if (savedRetryAt > clock() && retryState?.error) {
+    const status = /^HTTP-[1-5]\d{2}$/.test(retryState.error) ? Number(retryState.error.slice(5)) : null;
+    for (const key of ['charger_id', 'equalizer_id']) if (supplied(easee[key]))
+      observationRetries.set(easee[key], { until: savedRetryAt, failures: 1,
+        code: providerFailureCode({ code: retryState.error, status }), status });
+  }
+  const lifetime = new AbortController();
+  let closed = false, stream = null, streaming = false, electricityEpoch = 0;
+  const streamedElectricity = new Set(), transports = new Map(), reconcileAt = new Map();
+  const electricalDevices = [['charger_id', 'ev1'], ['equalizer_id', 'property']]
+    .filter(([key]) => supplied(easee[key])).map(([key, prefix]) => {
+      const voltageIds = easee.charger_voltage_ids;
+      const verified = prefix === 'ev1' && Array.isArray(voltageIds) && voltageIds.length === 3
+        && new Set(voltageIds).size === 3 && voltageIds.every(id => Number.isInteger(id) && id >= 190 && id <= 199);
+      const fields = ELECTRICITY_FIELDS[prefix].map(([id, name, unit]) =>
+        [verified && unit === 'V' ? voltageIds[Number(name.at(-1)) - 1] : id, name, unit]);
+      return { id: easee[key], prefix, fields, verified, requiredIds: [...fields.map(row => row[0]), 250],
+        ids: [...fields.map(row => row[0]), 250, ...(prefix === 'ev1' ? [...CHARGER_TELEMETRY.map(row => row[0]), 129, 223] : [])] };
+    });
+
+  function disconnectStream() {
+    electricityEpoch++;
+    const affected = [...streamedElectricity];
+    streamedElectricity.clear();
+    if (!closed && affected.length) onStreamDisconnect(affected);
+  }
+
+  function openSignal(signal) {
+    if (closed || signal?.aborted) throw new ProviderError('provider-request-aborted');
+    return signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+  }
+
+  async function streamAccessToken({ rejectedToken, signal } = {}) {
+    if (!canControl()) throw new ProviderError('provider-request-aborted');
+    signal = openSignal(signal);
+    await loadTokens();
+    await persistTokens();
+    if (!supplied(tokens.accessToken) || rejectedToken !== undefined)
+      await refreshTokens({ attemptedToken: rejectedToken ?? tokens.accessToken, signal });
+    openSignal(signal);
+    return tokens.accessToken;
+  }
+
+  function startStreaming() {
+    if (closed || streaming || !electricalDevices.length || typeof streamFactory !== 'function') return;
+    streaming = true;
+    stream = streamFactory({ clock, getAccessToken: streamAccessToken, onDisconnect: disconnectStream,
+      products: electricalDevices.map(device => ({ id: device.id,
+        ids: [...new Set([...device.ids, ...(device.prefix === 'ev1' ? [...CHARGING_OBSERVATION_IDS, ...IDENTIFICATION_IDS] : [])])] })) });
+    stream.start();
+  }
 
   function admitRequest() {
     const now = clock();
@@ -357,6 +416,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     if (refreshFlight) return refreshFlight;
     // Another concurrent request may already have replaced the token that failed.
     if (supplied(tokens.accessToken) && tokens.accessToken !== attemptedToken) return;
+    if (authBlockedUntil > clock()) throw new ProviderError('provider-request-failed', authFailure?.status ?? null, authBlockedUntil - clock());
     refreshFlight = (async () => {
       if (supplied(tokens.refreshToken)) {
         try {
@@ -377,10 +437,20 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       });
       await saveTokens(payload);
     })();
-    try { await refreshFlight; } finally { refreshFlight = null; }
+    try {
+      await refreshFlight;
+      authBlockedUntil = 0; authFailure = null;
+    } catch (error) {
+      authFailure = { status: httpStatus(error) };
+      const delay = [400, 401, 403].includes(authFailure.status) || error?.code === 'EASEE_CONFIGURATION' ? 30 * 60_000 : 5 * 60_000;
+      authBlockedUntil = clock() + Math.max(delay, Math.min(86400_000, error.retryAfterMs ?? 0));
+      error.retryAfterMs = authBlockedUntil - clock();
+      throw error;
+    } finally { refreshFlight = null; }
   }
   async function easeeAuthenticated(url, options, responseText = false) {
-    const { signal } = options;
+    const signal = openSignal(options.signal);
+    options = { ...options, signal };
     await loadTokens();
     await persistTokens();
     if (!supplied(tokens.accessToken)) await refreshTokens({ attemptedToken: tokens.accessToken, signal });
@@ -397,12 +467,68 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   async function easeeRequest(device, ids, signal) {
     return easeeAuthenticated(`${API}/state/${encodeURIComponent(device)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
   }
+  async function observationResult(device, ids, { signal, forceRest = false, requiredIds = ids, reconcile = false,
+    validate = () => {} } = {}) {
+    openSignal(signal);
+    const epoch = electricityEpoch;
+    const cached = forceRest ? null : stream?.snapshot(device, ids, { requiredIds });
+    if (cached && (!reconcile || (reconcileAt.get(device) ?? 0) > clock())) return { payload: cached, transport: 'stream', usesStream: true };
+    // A small periodic REST reconciliation detects a silently incomplete feed.
+    // Healthy streaming remains usable if this optional check fails or is limited.
+    if (reconcile) reconcileAt.set(device, clock() + 15 * 60_000);
+    try {
+      const retry = streaming ? observationRetries.get(device) : null;
+      if (retry?.until > clock()) throw new ProviderError(retry.code, retry.status, retry.until - clock());
+      const payload = await easeeRequest(device, ids, signal);
+      openSignal(signal);
+      validate(payload);
+      if (epoch === electricityEpoch) stream?.reconcile?.(device, payload);
+      reconcileAt.set(device, clock() + 15 * 60_000);
+      observationRetries.delete(device);
+      if (cached && epoch === electricityEpoch) {
+        // REST and streaming can arrive in either order. A reconciliation must
+        // not replace a newer streamed measurement with an older cloud snapshot.
+        const latest = stream?.snapshot(device, ids, { requiredIds });
+        const rows = Array.isArray(payload) ? payload : payload?.observations;
+        if (latest && Array.isArray(rows)) {
+          const seen = new Set(latest.map(row => row.id));
+          return { payload: [...latest, ...rows.filter(row => !seen.has(number(row?.id)))], transport: 'rest', usesStream: true };
+        }
+        // A same-time conflict remains explicit for the existing field parsers.
+        if (Array.isArray(rows)) return { payload: [...cached, ...rows], transport: 'rest', usesStream: true };
+      }
+      return { payload, transport: 'rest' };
+    } catch (error) {
+      const previous = observationRetries.get(device);
+      if (streaming && (!previous || previous.until <= clock())) {
+        const status = httpStatus(error), failures = Math.min(10, (previous?.failures ?? 0) + 1);
+        const delay = status === 429 && error.retryAfterMs > 0 ? error.retryAfterMs
+          : [401, 403].includes(status) ? 30 * 60_000
+          : Math.min(30 * 60_000, (status && status < 500 ? 5 * 60_000 : fallbackIntervalMs) * 2 ** (failures - 1));
+        observationRetries.set(device, { failures, status, code: providerFailureCode(error),
+          until: clock() + Math.max(delay, Math.min(86400_000, error.retryAfterMs ?? 0)) });
+      }
+      if (!forceRest && cached && epoch === electricityEpoch) {
+        openSignal(signal);
+        const latest = stream?.snapshot(device, ids, { requiredIds });
+        if (latest) return { payload: latest, transport: 'stream', usesStream: true };
+      }
+      throw error;
+    }
+  }
+  async function readObservations(device, ids, options = {}) {
+    // Optional firmware diagnostics and session events need not exist yet.
+    const optional = new Set([110, 114, 129, 130, 132, 136, 150, 223,
+      ...(!supplied(easee.equalizer_id) ? [230, 231, 232] : [])]);
+    const requiredIds = ids.filter(id => !optional.has(id));
+    return (await observationResult(device, ids, { requiredIds, ...options })).payload;
+  }
   let identificationFlight = false;
   let identificationUntil = 0;
   const identificationControl = {
-    async read({ signal } = {}) {
+    async read({ signal, forceRest = false } = {}) {
       if (!supplied(easee.charger_id)) throw new Error('Easee charger identification is not configured');
-      const payload = await easeeRequest(easee.charger_id, IDENTIFICATION_IDS, signal);
+      const payload = await readObservations(easee.charger_id, IDENTIFICATION_IDS, { signal, forceRest });
       return identificationSnapshot(payload, clock());
     },
     async limit({ amps, minutes, signal, canMutate = () => true, requireUnscheduled = false } = {}) {
@@ -417,7 +543,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       try {
         // Re-read immediately before mutation, so a competing controller's newly
         // applied cap is not knowingly replaced by an expiring diagnostic limit.
-        const snapshot = await identificationControl.read({ signal });
+        const snapshot = await identificationControl.read({ signal, forceRest: true });
         if (!canMutate()) throw new Error('Charging schedule has priority over vehicle identification');
         const active = snapshot.currents.filter(value => value !== null && value > 1);
         if (!snapshot.safeToProbe || !snapshot.baselineUsable || !active.length || amps >= Math.min(...active))
@@ -445,26 +571,51 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       }
     },
   };
-  const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated,
+  const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
     chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl });
 
   return {
+    startStreaming,
+    electricityEpoch() { return electricityEpoch; },
+    canSampleStream() {
+      return Boolean(stream && electricalDevices.length && electricalDevices.some(device =>
+        stream.snapshot(device.id, device.ids, { requiredIds: device.requiredIds }) !== null));
+    },
+    streamStatus() { return stream?.status() ?? null; },
+    acquisitionTransport() {
+      if (!streaming || !transports.size) return null;
+      const sources = new Set(transports.values());
+      return sources.size > 1 ? 'mixed' : [...sources][0];
+    },
+    async close() {
+      if (closed) return;
+      disconnectStream();
+      closed = true;
+      lifetime.abort();
+      await stream?.close();
+    },
     chargerIdentificationControl() { return identificationControl; },
     chargerScheduleControl() { return scheduleControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);
-      const jobs = [['charger_id', 'ev1'], ['equalizer_id', 'property']].filter(([key]) => supplied(easee[key]));
-      const results = await Promise.allSettled(jobs.map(async ([key, prefix]) => {
-        const voltageIds = easee.charger_voltage_ids;
-        const verified = prefix === 'ev1' && Array.isArray(voltageIds) && voltageIds.length === 3
-          && new Set(voltageIds).size === 3 && voltageIds.every(id => Number.isInteger(id) && id >= 190 && id <= 199);
-        const fields = ELECTRICITY_FIELDS[prefix].map(([id, name, unit]) =>
-          [verified && unit === 'V' ? voltageIds[Number(name.at(-1)) - 1] : id, name, unit]);
-        const ids = [...fields.map(row => row[0]), 250, ...(prefix === 'ev1' ? [...CHARGER_TELEMETRY.map(row => row[0]), 129, 223] : [])];
-        return electricalObservations(await easeeRequest(easee[key], ids, signal), easee[key], prefix, fields, now, verified);
+      const results = await Promise.allSettled(electricalDevices.map(async ({ id, prefix, fields, verified, ids, requiredIds }) => {
+        const epoch = electricityEpoch;
+        const validate = payload => {
+          const rows = electricalObservations(payload, id, prefix, fields, now, verified);
+          if (stream?.snapshot(id, ids, { requiredIds }) && rows.some(row => row.value === null
+            || row.sourceTime === null || row.sourceTime > now))
+            throw new ProviderError('invalid-provider-observations');
+        };
+        const { payload, transport, usesStream } = await observationResult(id, ids, { signal, requiredIds, reconcile: streaming, validate });
+        if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
+        const rows = electricalObservations(payload, id, prefix, fields, now, verified);
+        transports.set(id, transport);
+        if (usesStream) streamedElectricity.add(id);
+        else streamedElectricity.delete(id);
+        return rows;
       }));
-      return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : ELECTRICITY_FIELDS[jobs[index][1]].map(([id, name, unit]) => ({
-        ...baseObservation({ source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][1]}_${name}`, unit, now,
+      return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : electricalDevices[index].fields.map(([id, name, unit]) => ({
+        ...baseObservation({ source: 'easee', device: electricalDevices[index].id, signal: `${electricalDevices[index].prefix}_${name}`, unit, now,
           quality: failureFlags(result.reason) }),
         raw: { observationId: id, acquisitionOnly: true, auditOnly: name.endsWith('_counter'),
           error: providerFailureCode(result.reason), retryAfterMs: result.reason?.retryAfterMs },
@@ -475,7 +626,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       validNow(now);
       const jobs = CURRENT_DEVICES.filter(([key]) => supplied(easee[key]));
       const results = await Promise.allSettled(jobs.map(async ([key, ids, prefix]) =>
-        currentObservations(await easeeRequest(easee[key], ids, signal), easee[key], ids, prefix, now)));
+        currentObservations(await readObservations(easee[key], ids, { signal }), easee[key], ids, prefix, now)));
       const rows = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : jobs[index][1].map((id, phase) => ({ ...baseObservation({
         source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][2]}_l${phase + 1}`, unit: 'A', now,
         quality: ['current_snapshot_not_energy', ...failureFlags(result.reason)], retryAfterMs: result.reason?.retryAfterMs,

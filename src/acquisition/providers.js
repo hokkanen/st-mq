@@ -163,15 +163,19 @@ function cacheWeather(previous, result, snapshotId, now) {
  * of its last good data; it cannot postpone control or another provider's poll. */
 export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
-  temperatureProvider, automatic = true, canControl = () => true } = {}) {
+  temperatureProvider, automatic = true, canControl = () => true, streamFactory } = {}) {
   const connections = config.connections ?? {};
   const identifyCharger = connections.teslamate?.enabled === true
     && connections.teslamate?.chargerIdentification === true && connections.teslamate?.chargerAssignment === 'auto';
   http ??= createHttp({ allowChargerIdentification: identifyCharger, allowChargerScheduling: true, canControl });
   const location = configuredLocation(connections);
+  const ownsDevices = !devices;
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // selects a usable H66 reading before either weather source.
-  devices ??= createDeviceProviders({ connections, http, clock, canControl,
+  devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory,
+    retryState: store.getState('providers:health')?.easee,
+    fallbackIntervalMs: config.acquisition?.easeeIntervalMs ?? 15_000,
+    onStreamDisconnect: ids => interruptElectricity(ids),
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   if (connections.easee?.charger_id && devices.chargerScheduleControl)
     engine.charging?.setAdapter('charger1', devices.chargerScheduleControl());
@@ -268,6 +272,54 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   }
   store.setState('providers:health', health);
   let closed = false, timer;
+  const interruptedDevices = new Set();
+
+  function streamHealth() {
+    const stream = devices.streamStatus?.();
+    if (stream) {
+      health.easee.stream = stream;
+      health.easee.transport = devices.acquisitionTransport?.() ?? null;
+    }
+  }
+
+  function interruptElectricity(ids) {
+    if (closed || !canControl()) return false;
+    for (const id of ids) interruptedDevices.add(id);
+    ids = [...interruptedDevices];
+    // This RAM projection must become unavailable even if the durable gap write
+    // fails. The pending boundary is retried before any subsequent integration.
+    if (engine.electricitySnapshot) for (const group of ['charger', 'property'])
+      if (ids.includes(engine.electricitySnapshot[group]?.device)) engine.electricitySnapshot[group] = null;
+    const before = electricity.checkpoint(), checkpoint = structuredClone(before), at = clock();
+    try { store.transaction(() => {
+      for (const [key, previous] of Object.entries(checkpoint.devices)) {
+        if (!ids.includes(previous.device)) continue;
+        engine.recorder?.energyGap?.({ source: 'easee', device: previous.device, prefix: previous.prefix,
+          start: Math.min(previous.at, at), end: Math.max(previous.at, at), quality: ['acquisition-failed'] });
+        delete checkpoint.devices[key];
+        checkpoint.availability[key] = false;
+      }
+      electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint });
+      store.setState('electricity:acquisition', checkpoint);
+      streamHealth();
+      store.setState('providers:health', health);
+    }); } catch {
+      electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: before });
+      engine.recorder?.reload?.();
+      return false;
+    }
+    interruptedDevices.clear();
+    return true;
+  }
+
+  if (ownsDevices && canControl()) {
+    devices.startStreaming?.();
+    if (devices.streamStatus?.()) {
+      // A process restart interrupts an unobserved stream interval even when the
+      // saved head is less than a minute old. Counter audit heads remain intact.
+      interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
+    }
+  }
 
   async function poll(name) {
     const job = definitions[name], state = health[name], at = clock();
@@ -275,6 +327,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     store.setState('providers:health', health);
     let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false, electricityCommitted = false;
     try {
+      if (name === 'easee' && interruptedDevices.size && !interruptElectricity([]))
+        throw new Error('Electrical interruption could not be saved');
       // Forecast and current weather share provider hosts. A server's rate
       // limit or access denial applies to both routes, while a missing station
       // reading alone must not disable a working forecast.
@@ -283,8 +337,11 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
           && blocked.nextAttemptAt > (state.sourceBackoff[source]?.nextAttemptAt ?? 0)) state.sourceBackoff[source] = { ...blocked };
       }
       const skipSources = Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
+      const epoch = name === 'easee' ? devices.electricityEpoch?.() : undefined;
       const result = await job.run({ now: at, signal: cancellation.signal, skipSources });
       if (closed || !canControl()) return;
+      if (name === 'easee' && epoch !== devices.electricityEpoch?.())
+        throw Object.assign(new Error('Electrical acquisition was interrupted'), { code: 'provider-request-aborted' });
       noteAcquisition(state, result?.acquisition, clock());
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
       // SQLite rollback must also restore the in-memory view used by decisions.
@@ -406,6 +463,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       .map(attempt => state.sourceBackoff[attempt.source]?.nextAttemptAt - clock());
     if (failure && sourceDelays.length && sourceDelays.every(value => value > 0)) delay = Math.max(delay, Math.min(...sourceDelays));
     state.nextAttemptAt = clock() + delay;
+    if (name === 'easee') streamHealth();
     store.setState('providers:health', health);
     if (electricityCommitted) {
       try { engine.teslamate?.tick(clock()); }
@@ -417,7 +475,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   function runDue() {
     if (closed || !canControl()) return Promise.resolve([]);
     for (const [name, job] of Object.entries(definitions)) {
-      if (!job.enabled || pending.has(name) || health[name].nextAttemptAt > clock()) continue;
+      const streamRecovered = name === 'easee' && health[name].error && devices.canSampleStream?.()
+        && clock() - (health[name].lastAttemptAt ?? -Infinity) >= job.period;
+      if (!job.enabled || pending.has(name) || health[name].nextAttemptAt > clock() && !streamRecovered) continue;
       const flight = poll(name).finally(() => pending.delete(name));
       pending.set(name, flight);
     }
@@ -439,11 +499,13 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     runIdentification,
     async close() {
       if (closed) return;
+      if (ownsDevices && devices.streamStatus?.())
+        interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
       closed = true; clearInterval(timer); clearInterval(identificationTimer);
       identification?.stop();
       if (engine.chargerIdentification === identification) engine.chargerIdentification = null;
       cancellation.abort(); http.close?.();
-      await Promise.allSettled([...pending.values()]);
+      await Promise.allSettled([...pending.values(), ...(ownsDevices ? [devices.close?.()] : [])]);
     },
   };
 }

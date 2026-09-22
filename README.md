@@ -453,7 +453,7 @@ and plans; active mode can use a configured command transport.
 | Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
 | Indoor temperatures | Configured local MQTT room sensors | 70-minute maximum reporting interval plus five minutes of grace |
 | Garage temperatures | One configured Shelly or MQTT connection | Shelly polled every 30 seconds; either connection expires after two minutes |
-| Property/charger electrical observations | Easee REST | 15 seconds, one batched request per device |
+| Property/charger electrical observations | Easee SignalR stream → REST backup | Complete cached snapshots sampled every 15 seconds; REST reconciliation every 15 minutes |
 | Portable-charger total energy | TeslaMate MQTT | Changed fields and live health; integration checked every 5 seconds |
 
 These are collection schedules, not guarantees that each provider publishes a new
@@ -505,11 +505,21 @@ supply a documented forecast issuance timestamp, so that field remains unknown;
 its generation duration is not treated as an issuance time.
 Still-fresh near-term forecast blocks retain their original snapshot provenance.
 
+One Easee stream serves the configured Charger 1 and Equalizer. It subscribes to
+their current state and subsequent observations, using the same persisted tokens
+as REST. Missing required stream readings use batched REST backup at the normal
+acquisition cadence; healthy streaming keeps a 15-minute REST reconciliation.
+Schedules, configuration and commands still use REST. Multiple Easee chargers
+are not added by this transport change.
+
 Easee readings retain original source ages. Reported active power is integrated
-between polls and allocated to three estimated phase energies; raw currents and
+between sampled snapshots and allocated to three estimated phase energies; raw currents and
 voltages remain acquisition-only. The property cumulative-import counter and the
 finalized Charger 1 / Charger 2 session references support diagnostics without
 correcting or calibrating those estimates. Charger lifetime counters are not retained.
+Stream loss and restart break energy continuity explicitly; reconnecting does not
+fill missing intervals or make cached device values fresh. Provider diagnostics
+name the live stream and REST backup while retaining reading-quality warnings.
 Charger voltage terminal mapping requires explicit verification before voltage
 weights are used. Easee acquisition can refresh authentication tokens. Separately
 enabling **Automatic charging** on Charger 1 permits native scheduling writes,

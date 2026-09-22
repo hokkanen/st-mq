@@ -264,20 +264,22 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
 }
 
 /** Inject existing authenticated/rate-limited transport; raw account data stays local. */
-export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, clock = Date.now, canControl = () => false }) {
+export function createEaseeScheduleAdapter({ request, readObservations, chargerId, equalizerId, clock = Date.now, canControl = () => false }) {
   const base = `https://api.easee.com/api/chargers/${encodeURIComponent(chargerId)}/schedules`;
+  readObservations ??= (deviceId, ids, { signal } = {}) => request(
+    `https://api.easee.com/state/${encodeURIComponent(deviceId)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
   let allocationA = null, allocationReadAt = -Infinity, allocationConfirmedAt = -Infinity;
   const adapter = {
     normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options }); },
-    async read({ signal } = {}) {
+    async read({ signal, forceRest = false } = {}) {
       if (!chargerId) throw new Error('Charger 1 Easee connection is not configured');
       let now = clock();
       let scheduling, observations, property;
       try {
         [scheduling, observations, property] = await Promise.all([
           request(base, { method: 'GET', signal }),
-          request(`https://api.easee.com/state/${encodeURIComponent(chargerId)}/observations?ids=${CHARGING_OBSERVATION_IDS.join(',')}`, { method: 'GET', signal }),
-          equalizerId ? request(`https://api.easee.com/state/${encodeURIComponent(equalizerId)}/observations?ids=31,32,33,34,35,36`, { method: 'GET', signal }).catch(() => null) : null,
+          readObservations(chargerId, CHARGING_OBSERVATION_IDS, { signal, forceRest }),
+          equalizerId ? readObservations(equalizerId, [31, 32, 33, 34, 35, 36], { signal, forceRest }).catch(() => null) : null,
         ]);
       } catch { throw failure('read-failed', 'Easee state could not be read.'); }
       if (equalizerId && now - allocationReadAt >= 3600_000) {
@@ -324,7 +326,9 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
     },
     async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal,
       canMutate = () => true, allowChargingPause = false, beforeWrite = () => {} } = {}) {
-      const before = await adapter.read({ signal });
+      // A stream snapshot may precede a competing instruction. Keep the final
+      // command guard and readback on freshly fetched device observations.
+      const before = await adapter.read({ signal, forceRest: true });
       if (before.fingerprint !== expectedFingerprint || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
         throw failure('state-changed', 'Easee changed before the schedule write.');
       if (before.mode === 3 && !allowChargingPause) throw failure('state-changed', 'Charging began before the schedule write.');
@@ -344,12 +348,12 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
         if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
         throw failure('command-failed', 'Easee did not confirm accepting the schedule command.');
       }
-      try { return await adapter.read({ signal }); }
+      try { return await adapter.read({ signal, forceRest: true }); }
       catch { throw failure('readback-failed', 'The new Easee schedule could not be read back.'); }
     },
     async clear({ kind = 'delayed', expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true } = {}) {
       if (!['delayed', 'daily', 'weekly'].includes(kind)) throw new Error('This Easee schedule requires manual release in the Easee app');
-      const before = await adapter.read({ signal });
+      const before = await adapter.read({ signal, forceRest: true });
       if (before.fingerprint !== expectedFingerprint || before.schedule.enabled !== kind
         || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
         throw failure('state-changed', 'Easee changed before schedule handover.');
@@ -360,7 +364,7 @@ export function createEaseeScheduleAdapter({ request, chargerId, equalizerId, cl
         if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
         throw failure('command-failed', 'Easee did not confirm accepting schedule handover.');
       }
-      try { return await adapter.read({ signal }); }
+      try { return await adapter.read({ signal, forceRest: true }); }
       catch { throw failure('readback-failed', 'Easee schedule handover could not be read back.'); }
     },
   };
