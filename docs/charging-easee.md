@@ -2,20 +2,31 @@
 
 The controller installs native one-off starts. For a split plan, it installs the
 next delayed start at each intermediate period's end, pausing until that start.
-The final period stays enabled until the vehicle finishes; no final stop is
-installed. These transitions require a running application and working Easee
+No final stop is installed at the target or deadline. New prices may replace an
+active period with a cheaper feasible plan as described below. These transitions
+require a running application and working Easee
 connection. A missed pause may cost more, but cannot leave an automatic final
 stop waiting on the charger. The Easee app shows the current native instruction;
 the dashboard shows the complete proposed periods and their confirmation state.
 
 The planner avoids pauses and intermediate periods shorter than 15 minutes and
 prefers fewer periods unless the extra period improves estimated cost by more
-than 1 cent. Intermediate periods retain their confirmed end while updated
-remaining energy and power forecasts can revise later periods. Completion and
-readiness are recalculated against the periods actually retained for execution.
-An immediate allowance caused by missing inputs or insufficient predicted time
-remains provisional: it can be rescheduled when the forecast improves. A genuine
-final release stays open for the remainder of the connection.
+than 1 cent. Intermediate periods normally retain their confirmed end while
+updated remaining energy and power forecasts can revise later periods. New or
+revised remaining price intervals can also replace an active period, including
+final release, while the target is unmet and the original ready-by time is still
+ahead. The replacement must meet that deadline and save more than 1 cent on the
+remaining charge, crediting energy already delivered. An immediate pause requires
+at least 15 minutes of the current charging period and a gap of at least 15
+minutes. It uses the same native delayed start and pause confirmation as other
+period transitions; manual instructions retain priority.
+
+Repeated price data, including after restart, and metadata-only updates do not
+trigger reconsideration. Ordinary telemetry and setting changes do not themselves
+interrupt final release. Completion and readiness are recalculated against the
+periods actually retained for execution. An immediate allowance caused by missing
+inputs or insufficient predicted time remains provisional: it can be rescheduled
+when the forecast improves.
 
 New vehicle planning waits for a confirmed connection. Disconnect relinquishes
 an owned future delay, while readiness-cycle manual priority survives. Replanning
@@ -131,7 +142,7 @@ confirmed instruction from the latest unconfirmed command. Invalid proposed
 starts expose the actual limit/time/DST cause and next action. A pre-write race
 gets one bounded fresh-read retry; clock time is refreshed after asynchronous
 reads and planning. Persisted execution periods survive loss of native one-off
-state, so intermediate release is not mistaken for the final unrestricted one.
+state, so intermediate release is not mistaken for the final period.
 A confirmed-pause watermark prevents false missed-pause notices after restart.
 The most recent entirely unconfirmed gap is retained as a compact session notice;
 no late stop is issued to make up for it, and disconnect clears the notice.

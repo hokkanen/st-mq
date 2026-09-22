@@ -319,11 +319,11 @@ a 1 cent cost preference for simplicity; otherwise fewer periods win. A feasible
 continuous candidate remains available. The final period is always open-ended.
 If tomorrow's prices are unpublished, the planner chooses the cheapest feasible
 periods in the contiguous published horizon. Unknown rates are not treated as
-free. New prices replan a still-pending start. If the published period cannot
+free. New or revised remaining prices recalculate pending and active automatic
+plans, including an already-started final period. If the published period cannot
 supply enough energy, ordinary insufficient-time fallback remains provisional.
-Once that final release is reached, the connected session is not
-automatically delayed again. An overdue connected deadline does not silently
-advance to tomorrow; an expiring manual readiness cycle is a separate handback.
+An overdue connected deadline does not silently advance to tomorrow; an expiring
+manual readiness cycle is a separate handback.
 
 Confirmed Easee delays are installed one at a time. At an intermediate period's
 end, the next native delay requests a pause until its next start. **These period
@@ -335,17 +335,27 @@ continued. The notice survives restart for that connection. No final stop is
 preinstalled. The full proposed periods
 are shown here; the Easee app shows the currently installed instruction.
 
-An active confirmed period keeps its planned end. Future periods can be revised
-using delivered energy, prices, household forecast and peer schedules. The
-current readiness forecast evaluates retained execution periods, so a new
-proposal does not claim a finish that the installed instruction cannot deliver.
-A failed update retains the last confirmed periods with its explanation.
+An active confirmed period normally keeps its planned end. When remaining price
+intervals or rates change, a cheaper plan can pause charging if the target remains
+unmet, the original ready-by time is still ahead, and the replacement can meet
+that deadline while saving more than 1 cent on the remaining charge. Already
+delivered energy is credited. Charging runs for at least 15 minutes before an
+immediate price-driven pause, and each pause lasts at least 15 minutes.
+
+Repeated price data and publication metadata alone do not trigger this
+reconsideration, including after restart. Ordinary telemetry or setting updates
+do not themselves interrupt a final release. Future periods can still be revised
+using delivered energy, household forecast and peer schedules. The current
+readiness forecast evaluates retained execution periods, so a new proposal does
+not claim a finish that the installed instruction cannot deliver. A failed update
+retains the last confirmed periods with its explanation.
 
 When inputs are missing or time is insufficient, immediate charging is a
 temporary allowance and planning continues. Improved readings can still produce
-economical later periods. This is distinct from the unrestricted final release,
-which is never delayed again during the same connection. A confirmed disconnect
-relinquishes an owned future delay; new planning waits for connection.
+economical later periods. A final release can be delayed again only by the
+price-driven reconsideration above; reaching the target or deadline does not
+issue a final stop. A confirmed disconnect relinquishes an owned future delay;
+new planning waits for connection.
 
 Future command adapters can declare scheduling and current-control capabilities.
 The planner can propose simultaneous current allocations by remaining energy and
@@ -376,8 +386,7 @@ subsequent planning uses the next readiness cycle. An actual disabled or unautho
 charger must first be enabled/authorized in Easee; no such command is issued
 automatically. An observed immediate-charge instruction is respected until confirmed
 unplug or explicit resumption, including zero-power pauses and passed deadlines.
-The final automatic release is not stopped by later
-price changes.
+Price-driven replanning respects these manual instructions too.
 
 Turning automatic charging off removes only its confirmed native restriction.
 Problems identify the cause, the last confirmed instruction or uncertain command,

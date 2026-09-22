@@ -377,7 +377,8 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Current reference'], /details are not available yet/);
   assert.match(explanations['Current allocation'], /Equalizer controls/);
   assert.match(explanations['Period transitions'], /service and the Easee cloud/);
-  assert.match(explanations['Price planning'], /final period leaves charging enabled/);
+  assert.match(explanations['Price planning'], /New prices can pause automatic charging.*more than 1 cent/);
+  assert.match(explanations['Price planning'], /Reaching the target or ready-by time does not stop charging/);
   assert.match(explanations['Manual priority'], /complete window, including after ready-by/);
   assert.match(explanations['Manual priority'], /until unplugging/);
   assert(!JSON.stringify(result).includes('ST-MQ'));

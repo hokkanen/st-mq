@@ -17,8 +17,25 @@ import { updateSessionCost } from './session-cost.js';
 import { updateTargetState, targetSelection, selectTargetMode } from './target.js';
 
 const MINUTE = 60_000;
+const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 1;
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const priceSnapshot = prices => prices.map(row => [row.start, row.end,
+  row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price]);
+// Compare the remaining economic intervals, ignoring metadata, ordering, elapsed
+// prices and harmless changes in how adjacent equal-price rows are split.
+function priceWindow(rows, now, deadlineAt) {
+  const result = [];
+  for (const [from, to, price] of rows.filter(row => row.every(Number.isFinite))
+    .sort((a, b) => a[0] - b[0])) {
+    const start = Math.max(from, now), end = Math.min(to, deadlineAt);
+    if (end <= start) continue;
+    const previous = result.at(-1);
+    if (previous?.[1] === start && previous[2] === price) previous[1] = end;
+    else result.push([start, end, price]);
+  }
+  return JSON.stringify(result);
+}
 const planBasis = (view, prices, environment) => digest({ environment, deadlineAt: view.deadlineAt, efficiency: view.configuration.efficiency,
   readings: ['soc', 'minimumSoc', 'capacityKwh'].map(key => { const value = view.values[key];
     return [value.value, value.source, value.measuredAt, value.measuredAt === null ? value.receivedAt : null, value.readingId]; }),
@@ -420,7 +437,20 @@ export class ChargingRuntime {
         });
       }
     }
-    const result = planChargers({ now, chargers: views, prices: this.prices, household: this.household, supply });
+    const currentPrices = priceSnapshot(this.prices);
+    const priceReplans = new Set(views.filter(view => {
+      const item = this.charger(view.id), control = view.control;
+      item.priceRecheckAt = null;
+      if (!this.pricesInitialized || !this.historyReady || !view.settings.enabled || !view.capabilities.scheduling
+        || control?.manual || control?.pending || control?.provisional || !control?.execution?.planId
+        || !activePeriod(control, now) || item.newEpisode || !item.plan
+        || view.values.connected.value !== true || !(view.requiredGridKwh > 1e-7) || view.deadlineAt <= now) return false;
+      const priorPrices = item.plan.priceSnapshot ?? priceSnapshot(item.plan.intervals ?? []);
+      return priceWindow(priorPrices, now, view.deadlineAt) !== priceWindow(currentPrices, now, view.deadlineAt);
+    }).map(view => view.id));
+    const planningViews = views.map(view => priceReplans.has(view.id)
+      ? { ...view, control: { ...view.control, released: false, phase: null } } : view);
+    const result = planChargers({ now, chargers: planningViews, prices: this.prices, household: this.household, supply });
     this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
       currentLimitsAreProposals: true, warnings: result.warnings, assumptions: { ...result.assumptions,
         householdReference: { ...householdReferenceSummary(this.household),
@@ -454,12 +484,59 @@ export class ChargingRuntime {
       // A manual native instruction is separate from the automatic plan. Keep
       // the last automatic context until the controller verifies handback.
       if (control?.manual && !handbackDue && item.plan && !item.newEpisode) continue;
+      const execution = control?.execution;
+      const fixedForecast = () => forecastFixedPlan({ now, charger: view, periods: execution.periods,
+        chargers: views, prices: this.prices, household: this.household, supply });
+      const revisionPending = item.plan?.priceRevision && item.plan.priceRevision.previousPlanId === execution?.planId
+        && item.plan.id !== execution.planId;
+      const retainExecution = fixed => {
+        item.plan = { ...fixed.plan, id: execution.planId, periods: structuredClone(execution.periods),
+          startAt: execution.periods[0].startAt, finalStartAt: execution.finalStartAt,
+          replanReadyBy: item.plan.replanReadyBy, priceSnapshot: currentPrices,
+          basis: planBasis(view, this.prices, environment), creditedGridKwh: view.progress.creditedGridKwh };
+      };
+      if (priceReplans.has(view.id)) {
+        const next = result.plans[view.id], fixed = fixedForecast();
+        const running = execution.periods.find(period => period.startAt <= now && (period.endAt === null || now < period.endAt));
+        const pausesNow = next?.startAt > now;
+        const oldAccounting = fixed.forecast.accounting ?? [];
+        // Forecast-only gaps have a zero placeholder price. They cannot support
+        // a savings claim or authorize an interruption.
+        const priced = oldAccounting.every(row => currentPrices.some(([start, end, price]) =>
+          Number.isFinite(price) && start <= row.start && end >= row.end));
+        const oldCost = oldAccounting.reduce((sum, row) => sum + row.energyKwh * row.priceCtPerKwh, 0);
+        const worthwhile = next?.feasible === true && !next.provisional && fixed.forecast.feasible === true
+          && priced && Number.isFinite(next.costCents) && oldCost - next.costCents > MIN_PRICE_SAVINGS_CENTS;
+        if (worthwhile && pausesNow && now - running.startAt < MIN_PRICE_PAUSE_MS) {
+          item.priceRecheckAt = running.startAt + MIN_PRICE_PAUSE_MS;
+        } else {
+          item.plan = { ...item.plan, priceSnapshot: currentPrices };
+          if (worthwhile && (!pausesNow || next.startAt - now >= MIN_PRICE_PAUSE_MS)) {
+            item.plan = { ...next, id: randomUUID(), priceSnapshot: currentPrices,
+              replanReadyBy: item.plan.replanReadyBy,
+              priceRevision: { previousPlanId: execution.planId, at: now },
+              basis: planBasis(view, this.prices, environment), creditedGridKwh: view.progress.creditedGridKwh };
+            item.lastReconcileAt = null;
+          } else if (revisionPending) retainExecution(fixed);
+        }
+        // The installed execution remains the forecast until the controller
+        // confirms the replacement (including after failed writes or restart).
+        item.forecast = fixed.forecast;
+        continue;
+      }
+      if (!item.newEpisode && revisionPending) {
+        const fixed = fixedForecast();
+        if (!(view.requiredGridKwh > 1e-7) || view.deadlineAt <= now
+          || item.plan.startAt > item.plan.priceRevision.at && item.plan.startAt - now < MIN_PRICE_PAUSE_MS)
+          retainExecution(fixed);
+        if (this.historyReady) item.forecast = fixed.forecast;
+        continue;
+      }
       if ((control?.released || control?.phase === 'released') && !control?.provisional && !handbackDue && !item.newEpisode) {
         if (this.historyReady) item.forecast = forecastFixedPlan({ now, charger: view, periods: [{ startAt: now, endAt: null }],
           chargers: views, prices: this.prices, household: this.household, supply }).forecast;
         continue;
       }
-      const execution = control?.execution;
       const started = execution?.periods?.some(period => period.startAt <= now);
       const active = activePeriod(control, now);
       const basis = planBasis(view, this.prices, environment);
@@ -469,8 +546,8 @@ export class ChargingRuntime {
       const observedGap = precedingPeriod && Number.isSafeInteger(coverage.continuousSince)
         && coverage.continuousSince <= precedingPeriod.startAt && coverage.lastMeasuredAt >= precedingPeriod.endAt
         ? precedingPeriod.endAt : null;
-      // A running period keeps its confirmed end. In a planned gap, new SoC or
-      // attributable delivered energy may revise the remaining periods.
+      // Outside an economic price revision, a running period keeps its end.
+      // In a gap, new SoC or delivered energy may revise the remaining periods.
       if (started && !handbackDue && !item.newEpisode && item.plan
         && (active || item.plan.basis === basis && item.plan.creditedGridKwh === credit
           && (!observedGap || item.plan.replannedGapAt === observedGap))) {
@@ -479,7 +556,7 @@ export class ChargingRuntime {
         continue;
       }
       const next = result.plans?.[view.id];
-      if (next) item.plan = { ...next, basis, creditedGridKwh: credit, replannedGapAt: observedGap,
+      if (next) item.plan = { ...next, basis, priceSnapshot: currentPrices, creditedGridKwh: credit, replannedGapAt: observedGap,
         id: started && !active ? randomUUID() : item.plan?.id ?? randomUUID() };
     }
     for (const view of this.views(now)) {
@@ -492,7 +569,7 @@ export class ChargingRuntime {
     if (this.closed) return;
     const boundaries = Object.values(this.chargers).flatMap(item => {
       const control = item.controller?.status();
-      return [control?.manual?.resumeAt, control?.owned?.startAt,
+      return [item.priceRecheckAt, control?.manual?.resumeAt, control?.owned?.startAt,
         ...[...(control?.execution?.periods ?? []), ...(item.plan?.periods ?? [])].flatMap(period => [period.startAt, period.endAt])];
     }).filter(at => Number.isSafeInteger(at) && at > now);
     const next = boundaries.length ? Math.min(...boundaries) : null;

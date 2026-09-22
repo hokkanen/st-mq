@@ -69,7 +69,7 @@ function assign(object, path, value) {
 // first-use defaults and capabilities, including for chargers added later.
 export const chargingFields = [
   { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
-    help: 'Plan to reach the target by this time. The final charging period continues until the vehicle finishes.' },
+    help: 'Plan to reach the target by this time. New prices can move charging to cheaper periods. Reaching the target or this time does not stop charging.' },
   { key: 'manualSoc', reading: 'soc', label: 'Starting charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
     help: 'Saved starting charge for an unidentified vehicle or a missing vehicle reading. Update it for a visitor or after driving; delivered energy updates the estimate from here.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
@@ -293,7 +293,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   );
   if (supported) explanations.push(
     ['Ready-by time', 'The saved local time is the deadline for reaching the target. The estimated target time shows the current forecast; readiness compares that forecast with the deadline. Ready-by is not a scheduled stop.'],
-    ['Price planning', 'Charging may pause between cheaper periods when the saving is worthwhile. Planned pauses last at least 15 minutes. The final period leaves charging enabled until the vehicle finishes, including beyond the target and ready-by time. Estimates cover reaching the requested target.'],
+    ['Price planning', 'New prices can pause automatic charging for cheaper periods if the target is still unmet, ready-by can still be met, and the remaining charge saves more than 1 cent. Charging runs at least 15 minutes before such a pause, and planned pauses last at least 15 minutes. Manual charging instructions keep priority. Reaching the target or ready-by time does not stop charging. Estimates cover reaching the requested target.'],
     ['Period transitions', provider === 'easee'
       ? 'Installing planned pauses and next starts requires this service and the Easee cloud. Easee shows the current instruction; this page shows all planned periods. An installed one-off start can run independently. If contact is lost, the last instruction remains in effect and an open period may continue past a planned pause. A confirmed schedule does not by itself confirm a physical pause. Missed or unconfirmed transitions are reported when contact resumes.'
       : 'Proposed periods and confirmed charger instructions are kept separate. Unconfirmed updates do not replace the last known instruction. Actual charging activity is shown separately from schedule confirmation.'],

@@ -65,6 +65,143 @@ const prices = [20, 1, 1, 20].map((price, index) => ({ start: initialNow + index
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
 
+const priceOutlook = values => values.map((price, index) => ({ start: initialNow + index * HOUR,
+  end: initialNow + (index + 1) * HOUR, price }));
+async function activePriceFixture(t, values = [5, 50, 10, 50], elapsedMinutes = 30) {
+  const f = fixture({ 'charging:mqtt': { settings: preferences } }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices: priceOutlook(values) }); await runtime.reconcile();
+  const original = structuredClone(chargerView(runtime).control.execution);
+  f.setNow(initialNow + elapsedMinutes * 60_000);
+  adapter.setObservation({ mode: 3 });
+  runtime.readEnergy = () => ({ gridKwh: 5, coveredMs: f.clock() - initialNow,
+    continuousSince: initialNow, lastMeasuredAt: f.clock() });
+  await runtime.reconcile();
+  return { ...f, runtime, adapter, original };
+}
+
+test('new overnight prices pause an active period and replan only the remaining recorded energy', async t => {
+  const { runtime, adapter, original, clock } = await activePriceFixture(t, [5, 50, 10]);
+  assert.equal(original.periods.length, 2);
+  const before = chargerView(runtime);
+  runtime.tick({ prices: priceOutlook([5, 50, 10, 1]) }); await runtime.reconcile();
+  const after = chargerView(runtime);
+  assert.equal(after.control.phase, 'pause-unconfirmed');
+  assert.equal(after.control.owned.startAt, initialNow + 3 * HOUR);
+  assert.equal(after.plan.deadlineAt, original.deadlineAt);
+  assert.equal(after.plan.requiredGridKwh, before.requiredGridKwh);
+  assert.equal(after.plan.creditedGridKwh, 5);
+  assert.deepEqual(after.control.execution.periods[0], { startAt: initialNow, endAt: clock() });
+  assert.notEqual(after.control.execution.planId, original.planId);
+  adapter.setObservation({ mode: 2 }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'paused');
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+});
+
+test('new cheaper prices can pause the final automatic period before its target and deadline', async t => {
+  const { runtime, adapter, original } = await activePriceFixture(t, [5, 5, 50, 50]);
+  assert.equal(original.periods.length, 1);
+  assert.equal(chargerView(runtime).control.released, true);
+  runtime.tick({ prices: priceOutlook([5, 5, 50, 1]) }); await runtime.reconcile();
+  const after = chargerView(runtime);
+  assert.equal(after.control.released, false);
+  assert.equal(after.control.phase, 'pause-unconfirmed');
+  assert.equal(after.control.owned.startAt, initialNow + 3 * HOUR);
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+});
+
+test('unchanged economics, dearer slots and negligible savings do not interrupt active charging', async t => {
+  for (const change of ['metadata', 'elapsed', 'dearer', 'tiny-saving', 'missing', 'infeasible']) await t.test(change, async t => {
+    const { runtime, adapter, original } = await activePriceFixture(t, [5, 5, 50, 50]);
+    let next = priceOutlook([5, 5, 50, 50]);
+    if (change === 'metadata') next = next.flatMap(row => [
+      { ...row, end: row.start + HOUR / 2, fetchedAt: 123 },
+      { ...row, start: row.start + HOUR / 2, fetchedAt: 456 }]).reverse();
+    if (change === 'elapsed') next[0] = { ...next[0], start: initialNow + HOUR / 2 };
+    if (change === 'dearer') next[3].price = 100;
+    if (change === 'tiny-saving') next[3].price = 4.9999;
+    if (change === 'missing') next = [];
+    if (change === 'infeasible') next = [{ start: initialNow + 3 * HOUR, end: initialNow + 3 * HOUR + 60_000, price: 1 }];
+    runtime.tick({ prices: next }); await runtime.reconcile();
+    assert.equal(chargerView(runtime).control.execution.planId, original.planId);
+    assert.equal(chargerView(runtime).control.released, true);
+    assert.equal(adapter.calls.filter(call => call.kind !== 'read').length, 0);
+  });
+});
+
+test('price-driven pauses wait for a minimum running period without losing the new outlook', async t => {
+  const { runtime, adapter, setNow } = await activePriceFixture(t, [5, 5, 50, 50], 5);
+  runtime.tick({ prices: priceOutlook([5, 5, 50, 1]) }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.released, true);
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
+  assert.equal(runtime.boundaryAt, initialNow + 15 * 60_000);
+  setNow(initialNow + 15 * 60_000); runtime.tick(); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'pause-unconfirmed');
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+});
+
+test('failed price pauses are discarded when prices, completion or retry time invalidate them', async t => {
+  for (const reason of ['prices', 'target', 'short-gap', 'deadline']) await t.test(reason, async t => {
+    const { runtime, adapter, original, setNow } = await activePriceFixture(t, [5, 5, 50, 50]);
+    const install = adapter.installDelayed;
+    adapter.installDelayed = async () => { throw new Error('offline'); };
+    runtime.tick({ prices: priceOutlook([5, 5, 50, 1]) }); await runtime.reconcile();
+    assert.equal(chargerView(runtime).control.phase, 'unconfirmed');
+    assert.equal(chargerView(runtime).control.execution.planId, original.planId);
+    adapter.installDelayed = install;
+    if (reason === 'prices') runtime.tick({ prices: priceOutlook([5, 5, 50, 100]) });
+    if (reason === 'target') runtime.readEnergy = () => ({ gridKwh: 20 });
+    if (reason === 'short-gap') setNow(initialNow + 3 * HOUR - 5 * 60_000);
+    if (reason === 'deadline') setNow(initialNow + 4 * HOUR);
+    await runtime.reconcile();
+    assert.equal(chargerView(runtime).control.released, true);
+    assert.equal(chargerView(runtime).control.execution.planId, original.planId);
+    assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
+  });
+});
+
+test('a price pause preserves a ready-by edit deferred until the active period ends', async t => {
+  const { runtime } = await activePriceFixture(t);
+  await runtime.setChargerSettings('charger1', { readyBy: '07:00' });
+  assert.equal(chargerView(runtime).plan.replanReadyBy, '07:00');
+  runtime.tick({ prices: priceOutlook([5, 50, 10, 1]) }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.owned.startAt, initialNow + 3 * HOUR);
+  assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 5 * HOUR,
+    'After the new pause, ordinary gap planning applies the deferred deadline');
+});
+
+test('target completion, original deadline and manual priority prevent price-driven pauses', async t => {
+  for (const reason of ['target', 'deadline', 'manual']) await t.test(reason, async t => {
+    const { runtime, adapter, setNow } = await activePriceFixture(t, [5, 5, 50, 50]);
+    if (reason === 'target') runtime.readEnergy = () => ({ gridKwh: 20 });
+    if (reason === 'deadline') setNow(initialNow + 4 * HOUR);
+    if (reason === 'manual') {
+      adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '00:00', stopTime: '03:00', maximumAmps: 16 }] } });
+      await runtime.reconcile();
+    }
+    runtime.tick({ prices: priceOutlook([5, 5, 50, 1, 1, 1]) }); await runtime.reconcile();
+    assert.equal(adapter.calls.filter(call => call.kind !== 'read').length, 0);
+    if (reason === 'manual') assert.equal(chargerView(runtime).control.phase, 'yielded');
+    else assert.equal(chargerView(runtime).control.released, true);
+  });
+});
+
+test('a changed outlook after restart can revise saved active execution and unchanged prices do not rewrite it', async t => {
+  const { runtime, adapter, create, original } = await activePriceFixture(t, [5, 5, 50, 50]);
+  await runtime.close();
+  const restarted = create(); t.after(() => restarted.close());
+  restarted.readEnergy = () => ({ gridKwh: 5 });
+  await restarted.setAdapter('charger1', adapter);
+  restarted.tick({ prices: priceOutlook([5, 5, 50, 1]) }); await restarted.reconcile();
+  const revised = chargerView(restarted);
+  assert.notEqual(revised.control.execution.planId, original.planId);
+  adapter.setObservation({ mode: 2 });
+  restarted.tick({ prices: priceOutlook([5, 5, 50, 1]).reverse() }); await restarted.reconcile();
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+  assert.equal(chargerView(restarted).control.owned.startAt, initialNow + 3 * HOUR);
+});
+
 test('BMW live plug and charging evidence received before the first Easee poll identifies after the matching stop', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   const topic = runtime.configuration.vehicles.bmw.mqttTopic;

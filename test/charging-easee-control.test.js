@@ -640,6 +640,154 @@ test('replanning a gap updates future periods while preserving the active period
   assert.equal(result.phase, 'paused'); assert.equal(h.writes.length, 2);
 });
 
+const priceRevision = (plan, at, startAt, extra = {}) => ({
+  id: `${plan.id}-new-prices`, startAt, deadlineAt: plan.deadlineAt,
+  feasible: true, provisional: false, requiredGridKwh: 10,
+  periods: [{ startAt, endAt: null }],
+  priceRevision: { previousPlanId: plan.id, at }, ...extra,
+});
+
+test('new prices can pause an active period and retain its elapsed history across restart', async () => {
+  const h = harness(), plan = splitPlan(); await h.update({ plan });
+  h.now = plan.periods[0].startAt; h.mode = 3; h.schedules.enabled = 'none'; await h.update({ plan });
+  h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, NOW + 5 * 3600_000);
+  let result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'pause-unconfirmed'); assert.equal(result.released, false);
+  assert.equal(result.execution.planId, revised.id);
+  assert.deepEqual(result.execution.periods, [
+    { startAt: plan.startAt, endAt: h.now }, ...revised.periods,
+  ]);
+  assert.equal(result.owned.startAt, revised.startAt); assert.equal(h.writes.length, 2);
+  h.mode = 2; h.reason = 54; h.restart(); result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'paused'); assert.equal(result.manual, null);
+  assert.equal(result.execution.planId, revised.id); assert.equal(h.writes.length, 2);
+});
+
+test('new prices can pause an automatic final period, while ordinary final release remains open', async () => {
+  const h = harness(), plan = { id: 'automatic-final', startAt: NOW,
+    deadlineAt: NOW + 12 * 3600_000, periods: [{ startAt: NOW, endAt: null }] };
+  h.mode = 3;
+  assert.equal((await h.update({ plan })).phase, 'released');
+  h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, NOW + 5 * 3600_000);
+  let result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'pause-unconfirmed'); assert.equal(result.released, false);
+  assert.equal(result.execution.planId, revised.id); assert.equal(h.writes.length, 1);
+  h.mode = 2; h.reason = 54; result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'paused');
+  h.now = revised.startAt; h.mode = 3; h.reason = 0; h.schedules.enabled = 'none';
+  result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'released');
+  h.now = revised.deadlineAt + 3600_000;
+  result = await h.update({ plan: priceRevision(revised, h.now, h.now + 3600_000) });
+  assert.equal(result.phase, 'released'); assert.equal(h.writes.length, 1);
+});
+
+test('a price revision can keep charging and merge the elapsed prefix without inventing a pause', async () => {
+  const h = harness(), plan = splitPlan(); await h.update({ plan });
+  h.now = plan.startAt; h.mode = 3; h.schedules.enabled = 'none'; await h.update({ plan });
+  h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, h.now, { periods: [
+    { startAt: h.now, endAt: NOW + 3 * 3600_000 },
+    { startAt: NOW + 5 * 3600_000, endAt: null },
+  ] });
+  const result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'active'); assert.equal(result.execution.planId, revised.id);
+  assert.deepEqual(result.execution.periods, [
+    { startAt: plan.startAt, endAt: NOW + 3 * 3600_000 }, revised.periods[1],
+  ]);
+  assert.equal(result.lastMissedTransition, undefined); assert.equal(h.writes.length, 1);
+});
+
+test('a released session asks the planner for a price revision using the fresh guarded observation', async () => {
+  const h = harness(), plan = { id: 'automatic-final', startAt: NOW,
+    deadlineAt: NOW + 12 * 3600_000, periods: [{ startAt: NOW, endAt: null }] };
+  h.mode = 3; await h.update({ plan }); h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, NOW + 5 * 3600_000);
+  await h.controller.close();
+  let planned = false;
+  h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved,
+    clock: () => h.now, canControl: () => h.allowed,
+    getPlan: snapshot => { assert.equal(snapshot.readAt, h.now); planned = true; return revised; } });
+  const result = await h.update({ plan: null });
+  assert.equal(planned, true); assert.equal(result.phase, 'pause-unconfirmed');
+  assert.equal(result.execution.planId, revised.id); assert.equal(h.writes.length, 1);
+});
+
+test('preflight latency cannot install a price pause shorter than fifteen minutes', async t => {
+  for (const mode of [3, 2]) await t.test(mode === 3 ? 'charging' : 'Equalizer-limited', async () => {
+    const h = harness(), plan = { id: 'automatic-final', startAt: NOW,
+      deadlineAt: NOW + 12 * 3600_000, periods: [{ startAt: NOW, endAt: null }] };
+    h.mode = mode; h.reason = mode === 2 ? 52 : 0;
+    const initial = await h.update({ plan }); h.now += 30 * 60_000;
+    const revised = priceRevision(plan, h.now, h.now + 16 * 60_000);
+    await h.controller.close();
+    let plans = 0, scheduleReads = 0;
+    h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved,
+      clock: () => h.now, canControl: () => h.allowed,
+      saveState: value => { h.saved = structuredClone(value); },
+      getPlan: () => { plans++; return revised.startAt - h.now >= 15 * 60_000 ? revised : null; } });
+    h.readHook = url => { if (url.endsWith('/schedules') && ++scheduleReads === 2) h.now += 2 * 60_000; };
+    const result = await h.update({ plan: revised });
+    assert.equal(plans, 2, 'The guarded refusal refreshes planning with the later time');
+    assert.equal(result.phase, 'released'); assert.equal(result.released, true);
+    assert.deepEqual(result.execution, initial.execution);
+    assert.equal(result.pending, null); assert.equal(h.saved.pending, null);
+    assert.equal(h.writes.length, 0);
+  });
+});
+
+test('a failed price pause retains the confirmed final execution and recovers a lost response after restart', async () => {
+  const h = harness(), plan = { id: 'automatic-final', startAt: NOW,
+    deadlineAt: NOW + 12 * 3600_000, periods: [{ startAt: NOW, endAt: null }] };
+  h.mode = 3; const initial = await h.update({ plan }); h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, NOW + 5 * 3600_000), install = h.adapter.installDelayed;
+  h.adapter.installDelayed = async () => { throw new Error('request failed'); };
+  let result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'unconfirmed'); assert.equal(result.released, true);
+  assert.deepEqual(result.execution, initial.execution); assert.equal(result.pending.execution.planId, revised.id);
+  assert.equal(h.writes.length, 0);
+  h.adapter.installDelayed = async options => { await install(options); throw new Error('lost response'); };
+  result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'unconfirmed'); assert.equal(result.released, true);
+  assert.deepEqual(result.execution, initial.execution); assert.equal(h.writes.length, 1);
+  h.adapter.installDelayed = install; h.mode = 2; h.reason = 54; h.restart();
+  result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'paused'); assert.equal(result.released, false);
+  assert.equal(result.execution.planId, revised.id); assert.equal(result.manual, null);
+  assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+});
+
+test('stale or unsafe price revisions cannot interrupt final charging', async () => {
+  const h = harness(), plan = { id: 'automatic-final', startAt: NOW,
+    deadlineAt: NOW + 12 * 3600_000, periods: [{ startAt: NOW, endAt: null }] };
+  h.mode = 3; const initial = await h.update({ plan }); h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, NOW + 5 * 3600_000);
+  for (const extra of [
+    { priceRevision: { previousPlanId: 'obsolete', at: h.now } },
+    { priceRevision: { previousPlanId: plan.id, at: h.now + 1 } },
+    { id: plan.id }, { feasible: false }, { provisional: true }, { requiredGridKwh: 0 },
+    { deadlineAt: plan.deadlineAt + 3600_000 }, { deadlineAt: h.now },
+  ]) {
+    const result = await h.update({ plan: { ...revised, ...extra } });
+    assert.equal(result.phase, 'released'); assert.deepEqual(result.execution, initial.execution);
+  }
+  assert.equal(h.writes.length, 0);
+});
+
+test('manual schedule priority wins over a price revision, including a change during the guarded read', async () => {
+  const h = harness(), plan = { id: 'automatic-final', startAt: NOW,
+    deadlineAt: NOW + 12 * 3600_000, periods: [{ startAt: NOW, endAt: null }] };
+  h.mode = 3; await h.update({ plan }); h.now += 30 * 60_000;
+  const revised = priceRevision(plan, h.now, NOW + 5 * 3600_000);
+  let scheduleReads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules') && ++scheduleReads === 2) h.schedules = appWindow(); };
+  const result = await h.update({ plan: revised });
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window');
+  assert.equal(result.execution, null); assert.equal(h.writes.length, 0);
+});
+
 test('zero power from Equalizer does not itself confirm a requested schedule pause', async () => {
   const h = harness(), plan = splitPlan(); await h.update({ plan });
   h.now = plan.periods[0].startAt; h.mode = 3; h.schedules.enabled = 'none'; await h.update({ plan });
@@ -755,7 +903,7 @@ test('a provisional immediate allowance can recover to a cheaper future schedule
   assert.equal(result.owned.startAt, NOW + 3 * 3600_000);
 });
 
-test('a feasible final period clears provisional status and is never price-paused afterward', async () => {
+test('a feasible final period clears provisional status and ignores ordinary replanning afterward', async () => {
   const h = harness();
   await h.update({ plan: { id: 'uncertain', startAt: h.now, provisional: true } });
   const final = { id: 'final', startAt: h.now, feasible: true, periods: [{ startAt: h.now, endAt: null }] };

@@ -9,6 +9,7 @@ const activeFingerprint = effectiveScheduleFingerprint;
 const ownedFingerprint = owned => owned?.activeFingerprint ?? (owned?.schedule ? activeFingerprint(owned.schedule) : null);
 const STOP_REASON = 'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.';
 const RELEASE_REASON = 'Charging is released and may continue beyond the minimum and deadline.';
+const MIN_PRICE_PAUSE_MS = 15 * 60_000;
 const DIAGNOSTICS = {
   'read-failed': 'Easee could not be read. Automatic control will retry when the connection recovers.',
   'command-failed': 'Easee did not confirm the schedule command. Its current instruction will be checked before retrying.',
@@ -211,6 +212,29 @@ export function createChargingController({ adapter, initialState = null, saveSta
     return { planId: plan.id ?? plan.planId ?? null, periods,
       finalStartAt: periods.at(-1).startAt, deadlineAt: plan.deadlineAt ?? null };
   }
+  function priceRevisionExecution(plan, now) {
+    const prior = state.execution, revision = plan?.priceRevision, revised = executionFor(plan);
+    if (!prior || !revision || !revised || !revised.planId || revised.planId === prior.planId
+      || revision.previousPlanId !== prior.planId || !isTime(revision.at) || revision.at > now
+      || revision.at < prior.periods[0].startAt || plan.feasible !== true || plan.provisional === true
+      || !Number.isFinite(plan.requiredGridKwh) || plan.requiredGridKwh <= 0
+      || !isTime(plan.deadlineAt) || plan.deadlineAt <= now || plan.deadlineAt !== prior.deadlineAt
+      || revised.periods[0].startAt < revision.at) return null;
+    // Retain elapsed automatic history, including the part of a running period
+    // before this proposal. A continuous revision must not invent a pause.
+    const elapsed = prior.periods.filter(period => period.startAt < revision.at).map(period => ({
+      startAt: period.startAt, endAt: Math.min(period.endAt ?? revision.at, revision.at),
+    }));
+    const periods = [];
+    for (const period of [...elapsed, ...revised.periods]) {
+      const previous = periods.at(-1);
+      if (previous?.endAt === period.startAt) previous.endAt = period.endAt;
+      else periods.push({ ...period });
+    }
+    return { ...revised, periods,
+      finalStartAt: periods.at(-1).startAt,
+      pauseConfirmedThrough: prior.pauseConfirmedThrough <= revision.at ? prior.pauseConfirmedThrough ?? null : null };
+  }
   function recordMissedTransition(now) {
     const execution = state.execution;
     if (!execution) return;
@@ -269,7 +293,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
         const expected = state.pending.expectedActiveFingerprint;
         if (expected ? currentFingerprint() === expected : snapshot.fingerprint === state.pending.expectedFingerprint) {
           state.owned = confirmedOwned(now, state.pending);
-          if (state.pending.execution) state.execution = copy(state.pending.execution);
+          if (state.pending.execution) {
+            state.execution = copy(state.pending.execution);
+            state.released = now >= state.execution.finalStartAt;
+          }
           state.pending = null;
           // Own writes are never external session actions, including recovery.
           if (state.session) state.session.instruction = currentFingerprint();
@@ -370,7 +397,11 @@ export function createChargingController({ adapter, initialState = null, saveSta
           : snapshot.pluggedIn === false ? 'Connect a vehicle to plan automatic charging.'
             : 'Waiting for Easee to confirm whether a vehicle is connected.'); return status();
       }
-      if (state.released && !state.provisional) {
+      let plan = typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : desired.plan;
+      now = clock();
+      const priceExecution = priceRevisionExecution(plan, now);
+      if (plan?.priceRevision && !priceExecution) plan = null;
+      if (state.released && !state.provisional && !priceExecution) {
         // Take over a pre-existing stopping schedule without interrupting a
         // charge already underway. Only its restriction is removed.
         if (snapshot.schedule.enabled !== 'none' && !ownsCurrent()) {
@@ -378,15 +409,13 @@ export function createChargingController({ adapter, initialState = null, saveSta
         }
         await phase('released', RELEASE_REASON); return status();
       }
-      let plan = typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : desired.plan;
-      now = clock();
       if (plan?.state === 'identifying') {
         await phase('identifying', 'Identifying the connected vehicle from its initial charging telemetry. Automatic scheduling follows when identified or after the three-minute observation limit.');
         return status();
       }
-      let execution = state.execution && now >= state.execution.periods[0].startAt
-        ? state.execution : executionFor(plan);
-      if (execution && now >= execution.periods[0].startAt && now < execution.finalStartAt
+      let execution = priceExecution ?? (state.execution && now >= state.execution.periods[0].startAt
+        ? state.execution : executionFor(plan));
+      if (!priceExecution && execution && now >= execution.periods[0].startAt && now < execution.finalStartAt
         && !execution.periods.some(period => period.startAt <= now && now < period.endAt)
         && (plan?.id ?? plan?.planId) !== execution.planId) {
         const revised = executionFor(plan);
@@ -401,16 +430,17 @@ export function createChargingController({ adapter, initialState = null, saveSta
       }
       let plannedPause = false;
       if (execution && !plan?.provisional && now >= execution.periods[0].startAt) {
-        state.execution = copy(execution); state.provisional = false;
         if (now >= execution.finalStartAt) {
           if (snapshot.schedule.enabled !== 'none') { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
+          state.execution = copy(execution); state.provisional = false;
           state.released = true; await phase('released', RELEASE_REASON); return status();
         }
         const current = execution.periods.find(period => period.startAt <= now && now < period.endAt);
         if (current) {
-          // The current interval is allowed, even if Equalizer or the vehicle
-          // is temporarily drawing no power. Only its planned end may pause it.
+          // Equalizer or vehicle zero power does not shorten this interval. A
+          // verified price revision may move its end before the next period.
           if (snapshot.schedule.enabled !== 'none' && (!ownsCurrent() || state.owned.startAt > now)) { operation = 'command-failed'; await clearCurrent(snapshot.schedule.enabled, expectedGeneration); }
+          state.execution = copy(execution); state.provisional = false; state.released = false;
           await phase('active', 'This charging period is open. A planned pause follows before the next cheaper period.'); return status();
         }
         const next = execution.periods.find(period => period.startAt > now);
@@ -436,7 +466,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       const expectedFingerprint = scheduleFingerprint(expectedState), expectedActiveFingerprint = activeFingerprint(expectedState);
       if (state.owned && currentFingerprint() === expectedActiveFingerprint) {
         state.owned.planId = plan.id ?? plan.planId ?? null;
-        state.execution = execution ? copy(execution) : null;
+        state.execution = execution ? copy(execution) : null; state.released = false;
         await waitingPhase(plannedPause, pauseRequested); return status();
       }
       state.pending = { action: 'install', planId: plan.id ?? plan.planId ?? null, startAt: plan.startAt,
@@ -451,6 +481,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
         expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
         canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true,
         beforeWrite: async before => {
+          // API preflight may consume the minimum gap after runtime planning.
+          // Refresh before writing, including while Equalizer limits output.
+          if (priceExecution && plan.startAt - clock() < MIN_PRICE_PAUSE_MS)
+            throw Object.assign(new Error('The proposed price pause is now too short'), { code: 'state-changed' });
           if (before.mode !== 3) return;
           // The guarded read still saw charging. Persist the request-intent
           // boundary before POST, so a fast stop and lost readback can retain
@@ -462,7 +496,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
         } });
       state.lastReadAt = snapshot.readAt;
       if (currentFingerprint() !== expectedActiveFingerprint) throw Object.assign(new Error('Schedule readback mismatch'), { code: 'readback-mismatch' });
-      state.owned = confirmedOwned(clock(), pending); state.execution = execution ? copy(execution) : null; state.pending = null;
+      state.owned = confirmedOwned(clock(), pending); state.execution = execution ? copy(execution) : null;
+      state.released = false; state.pending = null;
       rememberOwnInstruction(clock());
       // OFF during POST still records the actual result for queued cleanup.
       if (expectedGeneration !== generation || desired.enabled !== true) { await persist(); return status(); }
