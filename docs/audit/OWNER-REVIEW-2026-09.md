@@ -11,6 +11,16 @@ format hid working activity reports. Current decoding now matches the publisher,
 and reviewed provisional diagnostic values can be recorded/charted without
 becoming control or learning evidence. See [garage adapter](../garage-adapter.md#electrical-accounting).
 
+Fold styling follow-up (2026-09-24): removed the blanket open-summary tint and
+inset stripes introduced in this review. Open disclosure arrows now use the theme
+accent; closed native markers use the same muted color as custom chevrons. Arrow
+direction, component borders, hover/focus treatment and fold behavior are retained.
+Validation: 118 theme/equipment/provider/Garage UI tests passed; the production
+build and `node scripts/browser-garage-learning-smoke.js` passed. Light/dark
+screenshots were reviewed at mobile and desktop widths; the browser check covers
+320, 390 and 1440 pixels. Its outdated Mitsubishi fallback wording assertion now
+checks the current inline status and the existing explanation in its popover.
+
 Reviewed the observations from `f017684f70` against the audited `ee74801` baseline.
 All implementation and validation uses offline fixtures; no household device,
 private configuration, export or broker was opened or operated.
@@ -30,7 +40,7 @@ private configuration, export or broker was opened or operated.
 | Caravan dehumidifier | BLU temperature hysteresis off at or below 1 °C / on at or above 2 °C. Fresh BLU/appliance temperature within 4 °C and humidity within 20 percentage points gate caravan history and automatic starts. Missing room evidence requests OFF only for an appliance previously managed in this runtime. Show temperature control and unknown/location states. |
 | Database export | Authenticated single-file SQLite download after Other recorded data. Online backup incorporates committed WAL contents; only the private copy switches to DELETE journal mode. Stream to a browser-selected file where supported. |
 | Caravan topics and order | Use `stmq/garage/caravan_air`, identify Shelly as the source and place the dehumidifier between air and energy. Update the generated BLU bridge contract together. |
-| Dashboard folds | Clicking Home Energy closes open folds; open summaries have visible styling. Saved settings and form drafts are unchanged. |
+| Dashboard folds | Clicking Home Energy closes open folds; open arrows use the theme accent. The added header tint and inset stripes were removed. Saved settings and form drafts are unchanged. |
 | Outdoor source | FMI first, Open-Meteo backup. Exclude H66 outdoor from selection, learning, recorder history and right-axis weather. |
 | Storage review | Retain original measurements, coverage, replay inputs, immutable corrections and original assessments for their different semantics. Derive chart curves, shading, coefficients, powers and comparisons on demand; add no chart-summary tables, duplicate polls, backfills or deletion passes. |
 | Floor valve guidance | MQTT inventory uses concise device state. Put thermostat topology, commissioning, local expiry/auto-off and restoration limitations with Home heating and the installation guide. |

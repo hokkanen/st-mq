@@ -186,7 +186,10 @@ try {
   await evaluate("globalThis.garageSmokePhase='waiting'; globalThis.refreshGarageSmoke()");
   await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · fallback'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
-  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"), /internal temperature sensor when the current permission expires/);
+  assert.equal(await evaluate("document.getElementById('garage-room-temperature-status').textContent"), 'Room setting 5 °C. External temperature control is unavailable.');
+  await evaluate("document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
+  assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /internal temperature sensor when the current permission expires/);
+  await evaluate("document.querySelector('.status-detail-close').click()");
   await evaluate("globalThis.garageSmokePhase='active'; globalThis.garageSmokeReadOnly=true; globalThis.refreshGarageSmoke()");
   await until("document.getElementById('garage-native-submit').disabled === true");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
