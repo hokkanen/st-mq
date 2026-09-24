@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { timingDisplay, timingExplanations, timingPercent } from '../chart/timing-model.js';
+import { timingDisplay, chargingTimingDisplay, timingExplanations, timingPercent } from '../chart/timing-model.js';
 
 const from = Date.parse('2026-09-08T00:00:00+03:00');
 const hour = 3_600_000;
@@ -264,4 +264,18 @@ test('coverage gap notes describe only missing inputs and disappear for complete
       'Some periods are excluded because daily prices are incomplete.');
     assert.equal(display({ elapsedMs: 0, includedMs: 0 }).coverageLabel, '0% of time included');
   }
+});
+
+test('charging scope selects each charger or combined comparison without substituting a missing meter', () => {
+  const data = { ...payload, timingBenefit: { charger1: { ...chargerResult, value: 1.2 },
+    charger2: { ...chargerResult, value: 2.4 }, charger: { ...chargerResult, value: 3.6,
+      coverageDetails: { ...chargerResult.coverageDetails, coverageBasis: 'charger-time' } } } };
+  for (const [scope, amount] of [['charger1', '€1.20'], ['charger2', '€2.40'], ['total', '€3.60']]) {
+    const display = chargingTimingDisplay(data, scope);
+    assert.equal(display.key, 'charger'); assert.equal(display.amount, amount);
+    assert.match(display.coverageLabel, scope === 'total' ? /charger-time/ : /of time/);
+  }
+  delete data.timingBenefit.charger2;
+  assert.equal(chargingTimingDisplay(data, 'charger2').available, false);
+  assert.throws(() => chargingTimingDisplay(data, 'unknown'), RangeError);
 });

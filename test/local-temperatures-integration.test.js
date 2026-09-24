@@ -78,13 +78,13 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
     }
     assert.equal(status.observations.indoor.value, 21);
     assert.equal(status.observations.indoor.source, 'indoor-average');
-    assert.equal(status.observations.outdoor.source, 'husdata-h66');
-    assert.equal(status.observations.outdoor.value, 5.2);
+    assert.equal(status.observations.outdoor.source, null);
+    assert.equal(status.observations.outdoor.value, null, 'H66 cannot supply outdoor control when weather is absent');
     assert.equal(status.providers.temperatures.status, 'not-configured');
     const grouped = dashboardProviders(status, { now: f.clock(), formatTime: at => new Date(at).toISOString() })
       .find(row => row.key === 'main-temperatures');
-    assert.equal(grouped.display.title, 'Main temperatures · MQTT, H66');
-    assert.equal(grouped.display.state, 'Available');
+    assert.equal(grouped.display.title, 'Main temperatures · MQTT');
+    assert.equal(grouped.display.state, 'Needs attention');
     const chart = getChartData({ store: f.store, now: f.clock(), startDate: '2026-09-09', endDate: '2026-09-09', input });
     for (const [signal, value] of [['indoor_temperature', 22], ['bedroom_temperature', 21],
       ['downstairs_temperature', 20], ['garage_temperature', 10]]) assert(chart.series[signal].some(point => point.y === value));

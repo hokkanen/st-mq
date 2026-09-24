@@ -1,6 +1,6 @@
 // Generate a Shelly Gen2 script. Hardware addresses belong in the installed
 // script/private configuration, never in a committed household example.
-export function bluHtEquipment({ id = 'blu_ht', label = 'Caravan air', area = 'garage', prefix = 'stmq/home/blu_ht',
+export function bluHtEquipment({ id = 'blu_ht', label = 'Caravan air', area = 'garage', prefix = 'stmq/garage/caravan_air',
   temperatureSignal = id === 'blu_ht' ? 'caravan_temperature' : `${id}_temperature`,
   humiditySignal = id === 'blu_ht' ? 'caravan_humidity' : `${id}_humidity` } = {}) {
   if (!/^[a-z][a-z0-9_]{0,79}$/.test(id) || !['home', 'garage'].includes(area)
@@ -8,7 +8,7 @@ export function bluHtEquipment({ id = 'blu_ht', label = 'Caravan air', area = 'g
   validatePrefix(prefix);
   if (![temperatureSignal, humiditySignal].every(value => typeof value === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(value))
     || temperatureSignal === humiditySignal) throw new Error('Invalid BLU sensor signals');
-  return { id, label, area, kind: 'temperature', signal: temperatureSignal, connection: `mqtt:${prefix}/state`,
+  return { id, label, area, kind: 'temperature', manufacturer: 'Shelly', signal: temperatureSignal, connection: `mqtt:${prefix}/state`,
     max_age_seconds: 180,
     mqtt: { state_path: 'temperature', timestamp_path: 'timestamp', request_topic: `${prefix}/get`, request_payload: 'status' },
     readings: [
@@ -21,7 +21,7 @@ function validatePrefix(prefix) {
   if (typeof prefix !== 'string' || !/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)+$/.test(prefix) || prefix.length > 200)
     throw new Error('BLU MQTT prefix must be an exact topic prefix');
 }
-export function bluHtScript({ address, prefix = 'stmq/home/blu_ht' }) {
+export function bluHtScript({ address, prefix = 'stmq/garage/caravan_air' }) {
   if (typeof address !== 'string' || !/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(address)) throw new Error('Invalid Bluetooth address');
   validatePrefix(prefix);
   return `// ST-MQ BLU H&T bridge: passive broadcasts, no relay operations.

@@ -13,6 +13,7 @@
 import { createHash } from 'node:crypto';
 import { CHARGING_OBSERVATION_IDS, createEaseeScheduleAdapter } from '../charging/easee.js';
 import { createEaseeStream } from './easee-stream.js';
+import { createEaseeOcpp } from './easee-ocpp.js';
 import { ProviderError, providerFailureCode } from './http.js';
 
 const CURRENT_DEVICES = [
@@ -229,7 +230,7 @@ function annotateElectricalCurrents(rows) {
  * configured devices. No provider is contacted until a returned method is invoked.
  */
 export function createDeviceProviders({ connections = {}, http, tokenStore, clock = Date.now, canControl = () => true,
-  streamFactory = createEaseeStream, onStreamDisconnect = () => {}, onChargerObservation = () => {}, retryState,
+  streamFactory = createEaseeStream, ocppFactory = createEaseeOcpp, ocppState, onStreamDisconnect = () => {}, onChargerObservation = () => {}, retryState,
   fallbackIntervalMs = 15_000 } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const easee = { ...connections.easee };
@@ -251,6 +252,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const lifetime = new AbortController();
   let closed = false, stream = null, streaming = false, electricityEpoch = 0;
   const streamedElectricity = new Set(), transports = new Map(), reconcileAt = new Map();
+  const local = ocppFactory({ config: easee.local_ocpp, chargerId: easee.charger_id, clock, canControl, state: ocppState,
+    onDisconnect: () => {
+      if (!closed && transports.get(easee.charger_id) === 'ocpp') {
+        electricityEpoch++; onStreamDisconnect([easee.charger_id]);
+      }
+    } });
   const electricalDevices = [['charger_id', 'ev1'], ['equalizer_id', 'property']]
     .filter(([key]) => supplied(easee[key])).map(([key, prefix]) => {
       const voltageIds = easee.charger_voltage_ids;
@@ -286,6 +293,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
 
   function startStreaming() {
+    if (!closed) void local.start();
     if (closed || streaming || !electricalDevices.length || typeof streamFactory !== 'function') return;
     streaming = true;
     stream = streamFactory({ clock, getAccessToken: streamAccessToken, onDisconnect: disconnectStream,
@@ -479,10 +487,13 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     startStreaming,
     electricityEpoch() { return electricityEpoch; },
     canSampleStream() {
-      return Boolean(stream && electricalDevices.length && electricalDevices.some(device =>
+      return Boolean(local.snapshot() || stream && electricalDevices.length && electricalDevices.some(device =>
         stream.snapshot(device.id, device.ids, { requiredIds: device.requiredIds }) !== null));
     },
     streamStatus() { return stream?.status() ?? null; },
+    localOcppStatus() { return local.status(); },
+    deviceTransports() { return Object.fromEntries(electricalDevices.map(device =>
+      [device.prefix === 'ev1' ? 'charger' : 'property', transports.get(device.id) ?? null])); },
     acquisitionTransport() {
       if (!streaming || !transports.size) return null;
       const sources = new Set(transports.values());
@@ -494,12 +505,19 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       closed = true;
       lifetime.abort();
       await stream?.close();
+      await local.close();
     },
     chargerScheduleControl() { return scheduleControl; },
     async electricity({ now = Date.now(), signal } = {}) {
       validNow(now);
       const results = await Promise.allSettled(electricalDevices.map(async ({ id, prefix, fields, verified, ids, requiredIds }) => {
         const epoch = electricityEpoch;
+        const direct = prefix === 'ev1' ? local.snapshot() : null;
+        if (direct) {
+          transports.set(id, 'ocpp'); streamedElectricity.delete(id);
+          return electricalObservations(direct, id, prefix, ELECTRICITY_FIELDS.ev1, now, true).map(row => ({ ...row,
+            quality: [...row.quality, 'local_ocpp'], raw: { ...row.raw, transport: 'ocpp' } }));
+        }
         const validate = payload => {
           const rows = electricalObservations(payload, id, prefix, fields, now, verified);
           if (stream?.snapshot(id, ids, { requiredIds }) && rows.some(row => row.value === null
@@ -512,7 +530,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         transports.set(id, transport);
         if (usesStream) streamedElectricity.add(id);
         else streamedElectricity.delete(id);
-        return rows;
+        return rows.map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud' } }));
       }));
       return annotateElectricalCurrents(results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : electricalDevices[index].fields.map(([id, name, unit]) => ({
         ...baseObservation({ source: 'easee', device: electricalDevices[index].id, signal: `${electricalDevices[index].prefix}_${name}`, unit, now,

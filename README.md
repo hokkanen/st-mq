@@ -22,7 +22,7 @@ is a physical Shelly EVSE with commissioning-gated MQTT control. Tesla and BMW a
 independent. See [charging controls and estimates](docs/charging.md).
 ENTSO-E has a direct Elering backup; FMI supplies temperature
 and solar forecasts, with Open-Meteo as backup. Current outdoor temperature uses
-the H66 sensor first, then FMI station observations, then Open-Meteo estimates. Offline
+FMI station observations, with Open-Meteo estimates as backup. Offline
 regressions and a separate opt-in live suite verify the provider paths. See the
 [progress log](docs/PROGRESS.md) for actual live-check results and remaining limits.
 Physical equipment control has not been commissioned.
@@ -191,15 +191,12 @@ Both buttons have tooltips and accessible labels. The chart is directly below
 the current readings.
 
 - **Dates:** the default is today, midnight to midnight in **Europe/Helsinki**.
-  Choose **Start date** to view a single day immediately; the greyed-out end date
-  follows it.
-  Check **End date** to select a range of inclusive Finnish calendar days, including
-  daylight-saving changes, then click **Show dates** to apply the selection.
-  **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation
-  and set the end-date checkbox accordingly. The small arrows outside these
-  shortcuts shift the shown window one calendar day back or forward without
-  changing its length. To see tomorrow alone, leave End date unchecked and choose
-  tomorrow as Start date.
+  The first date picker shows that day immediately and resets the end to match.
+  The second picker extends the inclusive range immediately; it cannot precede
+  the first date. Its subdued single-day appearance remains clickable.
+  **Yesterday – today**, **Today** and **Today – tomorrow** provide quick navigation.
+  The small arrows beside these shortcuts shift the window one calendar day
+  without changing its length. Both date pickers remain available in chart view.
   Forecasts and known electricity prices appear only
   inside the selected dates; they never extend the horizontal axis automatically.
 - **Left axis:** **Power** shows combined property power as a line, with estimated
@@ -208,8 +205,8 @@ the current readings.
   the three saved kWh increments for property import and Charger 1. Charger 2 has
   total energy only. The drawer groups all retained H66
   parameters, control, weather and learning series.
-  **All home temperatures** is the sole **Home temperatures** drawer option;
-  it shows Upstairs, Bedroom and Downstairs on the left with the two air-temperature
+  **Home and garage temperatures** is the sole **Room temperatures** drawer option;
+  it shows Upstairs, Bedroom, Downstairs and Garage front on the left with the two air-temperature
   scales synchronized. Garage remains available on the right axis. **Heating integral** selects the integral instead. Four **Learning** choices show profit after recovery, profit
   with observed auxiliary recovery, recovery cost prediction error and learned
   normal indoor temperature. **Solar radiation** shows archived and future FMI
@@ -224,7 +221,7 @@ the current readings.
   with equal contributions from Upstairs, Bedroom and Downstairs when all three
   are configured with default weights. Saved inputs retain their original sensor
   membership; imported learning keeps its original Upstairs measurement.
-  Select **All home temperatures** to compare the rooms. Outdoor stays blue,
+  Select **Home and garage temperatures** to compare the rooms. Outdoor stays blue,
   Average indoor green, Upstairs terracotta, Downstairs amber and Bedroom violet.
   The dashed outdoor continuation is forecast. All-in and **Spot price** start visible; spot excludes VAT and other
   charges. Explicit saved legend choices are preserved. All-in prices combine
@@ -235,9 +232,14 @@ the current readings.
   **Compressor · house** and blue **Compressor · hot water** require concurrent
   compressor/routing readbacks. Red **DHWR** marks requested circulation runs with their recorded duration
   in its own strip below the chart. A separate **Pump mode** strip shows categorical H66 readback.
+  Orange **Compressor · garage** uses native garage compressor reports and expires
+  at their recorded freshness deadline. The Garage heat-pump group offers pump
+  interpreted indoor temperature, acknowledged external-temperature feed, and
+  native compressor diagnostics. The feed has gaps when inactive or unconfirmed.
   Unknown or stale operation leaves gaps. Dated runtime counters cannot identify
   individual auxiliary episodes.
-- **Energy cost comparisons:** open this fold below the chart. Heating and Charging compare each device's cost of
+- **Energy cost comparisons:** open this fold below the chart. Charging has
+  **Charger 1**, **Charger 2** and **Total** selectors, each with its own coverage. Heating and Charging compare each device's cost of
   included energy at the recorded timestamps with the same daily energy at the
   whole Finnish day's average all-in price. Heat-pump electricity is reconstructed
   from recorded compressor activity and auxiliary output using the nominal powers
@@ -468,7 +470,7 @@ and plans; active mode can use a configured command transport.
 | --- | --- | --- |
 | Electricity prices | ENTSO-E → Elering's own public API | 1 hour; 15-minute retry when next-day horizon is missing |
 | Temperature and solar forecast | FMI HARMONIE → Open-Meteo ICON Seamless | 30 minutes |
-| Outdoor temperature | H66 outdoor sensor → FMI nearby station → Open-Meteo model estimate | H66 messages; weather every 5 minutes |
+| Outdoor temperature | FMI nearby station → Open-Meteo model estimate | Every 5 minutes |
 | Indoor temperatures | Configured local MQTT room sensors | 70-minute maximum reporting interval plus five minutes of grace |
 | Garage temperatures | One configured Shelly or MQTT connection | Shelly polled every 30 seconds; either connection expires after two minutes |
 | Property/charger electrical observations | Easee SignalR stream → REST backup | Complete cached snapshots sampled every 15 seconds; REST reconciliation every 15 minutes |
@@ -499,11 +501,10 @@ Solar radiation is global shortwave radiation on a horizontal surface in W/m²,
 including cloud effects. Open-Meteo's hourly radiation averages the preceding hour
 and is aligned to that interval rather than shifted into the next hour.
 
-Current outdoor temperature uses a fresh **H66 outdoor sensor** reading (register
-`0007`) first, then a fresh **FMI nearby station** reading, then an **Open-Meteo
-model estimate**. Source priority takes precedence over a slightly newer backup
-timestamp. Missing or stale H66 readings fall back automatically and fresh H66
-readings regain priority. FMI selects the nearest fresh station among up to three
+Current outdoor temperature uses a fresh **FMI nearby station** reading, with an
+**Open-Meteo model estimate** as backup. Source priority takes precedence over a
+slightly newer backup timestamp. H66 outdoor readings are excluded from outdoor
+control, learning and new recorded temperature history. FMI selects the nearest fresh station among up to three
 returned candidates within 50 km. The station and model estimate describe the
 surrounding area. Weather forecasts and current-temperature acquisition are
 independent; an unavailable station therefore does not discard a good FMI forecast.

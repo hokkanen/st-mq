@@ -9,6 +9,10 @@ and the owner's pre-v1.0.0 compatibility policy, rather than copied literally.
 See [final validation](VALIDATION.md) for executed suites, browser and container
 checks, runtime versions, reproduction commands and remaining operating limits.
 
+The subsequent [September owner review](OWNER-REVIEW-2026-09.md) records the
+dashboard, acquisition, recording and control refinements against this audited
+baseline, including validation and installation requirements.
+
 | Scope | Implementation and evidence |
 | --- | --- |
 | A01 charging | [Physical Charger 2, identity, energy, scheduling and controls](A01.md); [acceptance tracker](A01-tracker.json) |

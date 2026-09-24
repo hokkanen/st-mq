@@ -37,7 +37,9 @@ test('native indoor/outdoor, zero, negative, activity, unsupported and uncertain
   assert.equal(s.native.defrost, false);
   assert.equal(s.telemetry.outdoorTemperature.usable, true);
   assert.equal(f.energy.length, 0);
-  assert.equal(f.observations.length, 0, 'optional native context is journaled by the runtime, not new scalar histories');
+  assert.deepEqual(f.observations.map(row => row.signal), ['garage_native_indoor_temperature', 'garage_compressor_frequency', 'garage_compressor_active']);
+  assert.equal(f.observations.at(-1).value, 1);
+  assert.equal(f.observations.at(-1).unit, 'state');
   f.at(BASE + 1000); f.receive({ indoorTemperature: f.field(0, 'degC', { supported: false }),
     outdoorTemperature: f.field(4, 'raw') });
   s = f.adapter.status();

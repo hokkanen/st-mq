@@ -222,3 +222,76 @@ forced REST observation preflight/readback without weakening schedule ownership
 or device freshness checks. `test/easee-stream.test.js` also verifies individual
 short mode/pilot transitions, startup and reconnect suppression, REST isolation,
 source-clock bounds and callback failure handling.
+
+## Direct local OCPP telemetry (firmware 344 or later)
+
+ST-MQ prefers the charger's native OCPP electrical measurements when they are
+complete and fresh, then falls back to the existing Easee cloud stream/REST
+acquisition. **Data and settings** identifies **Easee local OCPP** or **Easee
+cloud** for the affected fields. This is a direct OCPP 1.6J central-system endpoint,
+not the cloud-emulated OCPP service and not an HTTP API on the charger.
+
+Native cloud schedules and their ownership/readback/restoration behavior remain
+the charging control path. OCPP charging profiles cannot be substituted for those
+schedules without defining how existing cloud/manual instructions are discovered,
+owned and restored. This implementation therefore does not silently replace the
+scheduler or claim that charging control works without the Easee cloud. Local
+OCPP currently supplies charger power, phase currents and explicitly identified
+phase-neutral voltages. Property/Equalizer readings, finalized cloud session checks,
+and native schedule state remain cloud data; connector 0 is never guessed to mean
+an Equalizer meter.
+
+Commissioning is installation work; the implementation and its tests do not alter
+an installed charger. In the existing private `easee` configuration, set
+`local_ocpp.password` (at least 16 characters) and `local_ocpp.authorization_tags`
+to the explicitly permitted OCPP tags used by the installation. Set
+`local_ocpp.charge_point_id` only if commissioning uses a different identity from
+`easee.charger_id`. The shared defaults prefer local data, listen on `0.0.0.0:9001`
+when configured, and contain no credentials or authorized tags. The listener does
+not start until its installation credentials and authorization are configured.
+Unknown tags are rejected; commissioning must verify the intended vehicle/tag
+can start, finish and reconnect before relying on this endpoint.
+
+Follow Easee's [user commissioning procedure](https://developer.easee.com/docs/ocpp-commissioning-easee-users)
+with Wi-Fi connected and Easee selected as the site operator. Save then apply a
+`DualProtocol` configuration whose base URL is
+`ws://<ST-MQ-LAN-host>:9001/ocpp` and whose `basicAuthPassword` matches the private
+setting. The charger appends its charge-point identity to that URL and authenticates
+with that identity as its Basic-auth username. For `wss`, use a TLS proxy and the
+certificate/domain configuration documented by Easee. Restrict this authenticated
+listener to the installation network; expose the chosen port when container
+networking requires it. Cloud credentials remain configured for fallback.
+
+On boot ST-MQ requests periodic and clock-aligned measurements, including power,
+current and voltage. Both the socket and the measured fields must remain current;
+heartbeats do not renew an old power/current sample. Missing or unsupported phases
+stay missing, and a local/cloud transition breaks energy integration rather than
+joining unrelated sample heads. Reconnection, malformed values, units, timestamps,
+authority revocation and authentication are exercised with a synthetic charger.
+No firmware/installation-specific local telemetry or cloud-control coexistence has
+been verified on the household charger.
+
+References checked for this implementation: Easee's
+[native OCPP overview](https://developer.easee.com/docs/ocpp-intro),
+[user commissioning](https://developer.easee.com/docs/ocpp-commissioning-easee-users),
+and [firmware 344 configuration keys](https://developer.easee.com/docs/supported-config-keys).
+
+Transaction acknowledgements are committed to the current SQLite state before
+authorization is returned. The compact ledger binds to the configured charger
+and charge-point identity, stores hashes instead of plaintext tags, and keeps
+up to 128 transaction records plus a start-time watermark. Retries after a socket
+reconnect, message-cache eviction or process restart receive the original
+transaction ID. Conflicting starts/stops, unknown stops and starts older than the
+retained watermark are rejected. A changed charger association or malformed
+ledger blocks the endpoint before mutation; inspect the installation and use
+a deliberate fresh setup rather than allowing another charger to inherit it.
+Storage failure blocks new Authorize and StartTransaction replies. This compact
+ledger is protocol identity state, not a duplicate session-energy series. A reset
+meter counter can still end its known transaction; the raw nonnegative start and
+stop values are retained without treating their difference as energy.
+
+The local OCPP status includes pending configuration keys and rejected/unsupported
+configuration replies. Check these during commissioning, especially
+`MeterValuesSampledData`, `MeterValuesAlignedData`, `MeterValueSampleInterval` and
+`ClockAlignedDataInterval`. A configuration request alone does not prove that the
+charger supplied the needed measurements.

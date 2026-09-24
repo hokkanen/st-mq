@@ -180,6 +180,11 @@ test('captured production runtime monitoring messages interoperate without fixtu
   assert.equal(status.native.mode, 'heat');
   assert.equal(status.telemetry.indoorTemperature.value, 22.5);
   assert.equal(status.telemetry.outdoorTemperature.value, -5.5);
+  assert.equal(status.telemetry.compressorActive.value, true, 'Production boolean fields have no physical unit');
+  assert.equal(status.telemetry.compressorFrequency.value, 35);
+  assert.equal(status.telemetry.compressorActive.usable, false, 'Unverified observations remain diagnostic');
+  assert.equal(f.observations.find(row => row.signal === 'garage_compressor_active').value, null,
+    'Unqualified diagnostic values cannot create chart activity');
   assert.equal(status.telemetry.power.usable, false);
   assert.equal(status.health.pumpCommunicating, true);
   assert.equal(status.automaticControl, false);

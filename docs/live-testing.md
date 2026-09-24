@@ -26,8 +26,8 @@ hide a broken primary. The live checks cover:
 
 Open-Meteo uses the configured latitude and longitude; no API key is needed.
 Its current temperature is a model estimate, while FMI current temperature comes
-from a nearby weather station. H66 outdoor temperature has first priority in the
-controller; these provider checks do not connect to or verify H66.
+from a nearby weather station. FMI has first priority in the controller, with
+Open-Meteo as backup. H66 is not an outdoor temperature source.
 
 Missing optional device IDs and missing optional API tokens are explicitly
 skipped. A configured provider returning an error, missing readings or invalid

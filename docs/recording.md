@@ -449,7 +449,7 @@ versions change for this presentation update.
 ## Chart exploration and fullscreen
 
 The chart icon button, immediately right of the left-axis selector,
-opens a view with zoom, pan, reset and a selected-period navigator. The normal
+opens a view with both date pickers, gesture navigation and a selected-period navigator. The normal
 chart is fixed to the entire selected period, with no zoom controls or navigator.
 **Exit** restores that fixed chart. Reopening chart view
 resumes its previous zoom and position while the selected dates remain the same.
@@ -464,9 +464,12 @@ again determines whether fullscreen is kept. The header's fullscreen icon follow
 page fullscreen changes from any control. Browser-level fullscreen such as F11
 is separate and cannot be tracked or controlled consistently by the page.
 
-On desktop, the chart view heading is one compact row with zoom controls centered
-and the axis selector and exit button on the right. Narrow phones use two compact
-rows; landscape phones keep the controls in one row.
+The chart view keeps its axis selector, Exit button and two compact date pickers
+visible. Selecting the first date immediately shows that day; the second extends
+the inclusive range. On phones, **Legend** opens a bounded scrollable area and
+**Close legend** restores the navigator and activity strips and returns space to the plot. Activity entries occupy the first
+legend row, with explicitly labeled left/right groups following. Thin left-axis
+curves use sparse square markers; forecast dashes and price styling are retained.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
 or use the navigator to move through the selection even at baseline zoom.
@@ -522,7 +525,8 @@ not establish a frame-rate guarantee for physical phones or slower servers.
 
 ## H66 dataset and model roles
 
-The dataset retains **29 H66 variables**. The unused indoor sensor (`0008`),
+The dataset retains **28 H66 variables**. Outdoor register `0007` remains a live
+pump diagnostic but is excluded from temperature history and learning. The unused indoor sensor (`0008`),
 `discharge_temperature` (`0012`) and
 `brine_pump_active` (`1A04`) are omitted from new acquisition. Existing historical
 rows are not deleted, and old installation verification metadata for those
@@ -531,7 +535,7 @@ are always recorded. A separate active-state measurement is not stored.
 
 | Group | Recorded H66 signals | Typical model role |
 | --- | --- | --- |
-| Temperatures | Outdoor | House input |
+| Temperatures | Outdoor register excluded | No weather or learning input |
 | Heating water | Supply, return, supply target | Equipment context |
 | Ground loop | Brine in, brine out, brine pump speed | History/diagnostics |
 | Hot water | DHW temperature, DHW routing, DHW start/stop settings | Separate hot-water context |
@@ -585,7 +589,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v12-passive-thermal`. Saved configuration retains
+The current algorithm is `committed-house-v13-scoped-sensor-changes`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
@@ -718,8 +722,8 @@ that unchanged genuine reports reach MQTT.
 
 The right axis has one **Average indoor** series: the same configured average
 used by the model, retaining its green colour alongside blue Outdoor readings.
-The **Home temperatures** drawer section contains only **All home temperatures**,
-which adds Upstairs, Bedroom and Downstairs to the left axis. Both axes use the
+The **Room temperatures** drawer section contains **Home and garage temperatures**,
+which adds Upstairs, Bedroom, Downstairs and Garage front to the left axis. Both axes use the
 same numeric range in that view, including visible prices, so equal temperatures
 align. Room colours are distinct: terracotta Upstairs, amber Downstairs and violet
 Bedroom. Garage remains a shared right-axis series with its existing colour and legend control.
@@ -727,8 +731,8 @@ Average indoor reads the resolved value already included in each existing
 15-minute learning journal record; it creates no additional temperature recorder
 channel or chart-history table. V8 additionally requires indoor report coverage
 through the window; other missing learning inputs do not hide a covered indoor
-average. Missing indoor coverage and missing windows remain gaps. Earlier
-algorithms retain their recorded chart interpretation. Changing
+average. Missing indoor coverage and missing windows remain gaps. Unsupported
+development algorithms are rejected; only the current journal contract is replayed. Changing
 configured weights does not recalculate historical inputs. The journal
 retains the original endpoints, weights and configuration needed for model replay.
 Historical CSV `temp_in` remains an Upstairs reading and is never presented as a
@@ -882,3 +886,54 @@ All measured increments are conserved when compacted. First reports establish a
 baseline; counter resets, excessive gaps and implausible jumps interrupt coverage.
 Pending increments are checkpointed with the counter and daily total. Caravan
 measurements do not enter either heating learner.
+
+
+## Chart and storage review (September 2026)
+
+The drawer separates everyday electricity, room, caravan and garage pump views
+from Home/Garage saved learning inputs, replayed coefficients and equipment
+diagnostics. Each choice states its unit and basis. A plot is not a promise of
+another database channel: power, phase-current estimates, indoor average,
+front–rear difference, coefficients, fireplace response and compressor shading
+are projections of existing observations, energy intervals or journal inputs.
+
+The retained data has distinct responsibilities:
+
+| Data | Why retained |
+| --- | --- |
+| Phase/total energy intervals | Original integration result; acquired current, voltage and power polls are not separately archived. |
+| Adaptive source measurements and compact coverage | Values, original measurement times and proven report continuity; freshness cannot be reconstructed from value changes alone. |
+| Learning journal, compact manual corrections and seeds | Frozen normalized inputs, source/configuration meaning and deterministic replay; a later query must not substitute today's input interpretation. |
+| Dated power assumptions and controller auxiliary estimates | Historical equipment interpretation and the estimate actually available to control; not separately measured heat-pump electricity. |
+| Learning outcome assessments and cycle events | Original assessment known at that time, kept distinct from corrected replay. |
+| Meter/session checks | Independent reference evidence for accuracy; not duplicate energy contributions. |
+| Native garage pump indoor/frequency/activity and external feed | Previously live-only evidence needed to distinguish room sensors, pump interpretation and accepted control feed. Compressed with explicit validity bounds; no per-minute derived shading rows. |
+
+Garage compressor shading comes from fresh native activity coverage and appears
+with every left-axis selection. Unknown periods are blank, never inferred off.
+The pump's interpreted indoor reading may incorporate its external feed; it is
+not relabeled as a physical indoor sensor. The feed curve is stepped and exists
+only while acknowledged and valid. Neither adds heat estimates or learning inputs.
+This review does not delete historical evidence, introduce a second schema, or
+backfill charts from current live readings.
+
+## Single-file database export
+
+Open **Recording details → Export database → Save database…**. ST-MQ uses the
+SQLite online backup API to copy the current committed database, including WAL
+pages, into one private temporary file. Recording can continue; the file represents
+a consistent snapshot, not a promise to include writes committed after that
+snapshot. There is no checkpoint or overwrite of the running database.
+
+Browsers with a save-file picker can stream the download to the selected location.
+Other browsers use their download settings (and buffer the response before saving).
+The destination is on the browser's computer; the web API does not accept arbitrary
+server filesystem paths. The temporary server copy is removed when the download
+finishes or disconnects. Only one export runs at a time. The normal web/ingress
+authentication applies and is checked again before the file is sent. Replica exports
+hold the verified snapshot they began with until streaming completes.
+
+An export includes private history and saved application state. Retain the matching
+software version for model replay; restore remains the existing offline operation
+into a new database path. The export does not contain the separate private
+configuration file or external token files.

@@ -11,5 +11,5 @@ export function isRecordedDataset({ source, signal }) {
     && !(signal?.startsWith('caravan_') && !CARAVAN_RECORDED.has(signal))
     && !signal?.startsWith('garage_heat_pump_')
     && source !== 'mqtt-temperature-ha'
-    && !(source === 'husdata-h66' && signal === 'indoor_temperature');
+    && !(source === 'husdata-h66' && ['indoor_temperature', 'outdoor_temperature'].includes(signal));
 }

@@ -13,8 +13,7 @@ import { checkProviderLayout } from './lib/dashboard-browser-checks.js';
 const directory = mkdtempSync(join(tmpdir(), 'stmq-sensors-ui-'));
 const now = Date.parse('2026-09-10T12:00:00Z');
 let app, socket, id = 0;
-let nextDialogAccept;
-const pending = new Map(), errors = [], dialogs = [];
+const pending = new Map(), errors = [];
 try {
   const configPath = join(directory, 'fixture.json');
   writeFileSync(configPath, '{}', { mode: 0o600 });
@@ -35,7 +34,9 @@ try {
       ]) seededStore.observation({ source, device: 'synthetic-sensor-chart', signal, value,
         unit: 'degC', sourceTime: at, receivedAt: at, quality: [] });
       if (i) appendLearningRecord(seededStore, 'providers', 'sample', {
-        timestamp: at, windowStart: at - step, windowEnd: at, indoorC: 21 + delta, quality: [],
+        timestamp: at, sensorInputVersion: 1, windowStart: at - step, windowEnd: at, indoorC: 21 + delta, quality: [],
+        indoorSensors: Object.fromEntries([['indoor_temperature', 21.2], ['bedroom_temperature', 21.6], ['downstairs_temperature', 20.2]]
+          .map(([signal, value]) => [signal, { value: value + delta, weight: 1 / 3, observedAt: at }])) ,
         inputSegments: [{ start: at - step, end: at, outdoorC: 10, solarRadiationWm2: 0,
           phase: 'normal', roomBoostC: 0, targetC: 21, thermalCompressorDuty: 0, thermalAuxKw: 0, quality: [] }],
       }, { config: control });
@@ -61,13 +62,7 @@ try {
       pending.delete(message.id); clearTimeout(task.timer);
       message.error ? task.reject(new Error(JSON.stringify(message.error))) : task.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text);
-    else if (message.method === 'Page.javascriptDialogOpening') {
-      dialogs.push(message.params);
-      const accept = nextDialogAccept;
-      nextDialogAccept = undefined;
-      if (accept === undefined) errors.push('Unexpected confirmation dialog');
-      void send('Page.handleJavaScriptDialog', { accept: accept === true }).catch(error => errors.push(error.message));
-    }
+
   };
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const requestId = ++id, timer = setTimeout(() => reject(new Error(`Timeout: ${method}`)), 20_000);
@@ -83,12 +78,12 @@ try {
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
   const confirmClick = async (selector, accept, message) => {
-    const before = dialogs.length;
-    nextDialogAccept = accept;
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-    assert.equal(dialogs.length, before + 1, 'The action opens its native confirmation dialog');
-    assert.equal(dialogs.at(-1).type, 'confirm');
-    assert.match(dialogs.at(-1).message, message);
+    await until("document.querySelector('dialog.confirmation-dialog')?.open");
+    assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), message);
+    assert.equal(await evaluate("document.activeElement.textContent"), 'Cancel');
+    await evaluate(`document.querySelector('.confirmation-actions button:${accept ? 'last-child' : 'first-child'}').click()`);
+    await until("!document.querySelector('dialog.confirmation-dialog')");
   };
   await send('Runtime.enable'); await send('Page.enable');
   // Expose the existing status poll to exercise its full render path without a 15-second wait.
@@ -104,8 +99,8 @@ try {
   await send('Page.navigate', { url: base });
   await until("document.getElementById('history')?.dataset.ready === 'true' && document.getElementById('indoor')?.textContent === '21.0 °C'");
   assert.equal(await evaluate("document.getElementById('indoor').textContent"), '21.0 °C');
-  assert.equal(await evaluate("document.querySelectorAll('#providers .provider-heading').length"), 4,
-    'The provider fixture covers all four data categories');
+  assert.equal(await evaluate("document.querySelectorAll('#providers .provider-heading').length"), 5,
+    'The provider fixture covers the five current data categories');
   const sensorParents = '#home-heat-pump-details, #learning-panel-details, #model-inputs-details, details[data-model-input=model_indoor_temperature]';
   assert.equal(await evaluate("document.querySelectorAll('#sensor-change-details').length"), 1);
   assert.equal(await evaluate("document.querySelector('#home-heat-pump-details > summary #sensor-change-details') === null"), true,
@@ -151,16 +146,16 @@ try {
     assert.equal(await evaluate(`document.querySelector('#chart-legend [data-chart-key="${signal}"]') === null`), true);
     assert.equal(await evaluate(`document.querySelector('#left-axis option[value="${signal}"]') === null`), true);
   }
-  assert.deepEqual(await evaluate("Array.from(document.querySelector('#left-axis optgroup[label=\"Home temperatures · Recorded\"]').children, node => node.textContent)"), ['All home temperatures']);
+  assert.deepEqual(await evaluate("Array.from(document.querySelector('#left-axis optgroup[label=\"Room temperatures\"]').children, node => node.textContent)"), ['Home and garage temperatures · °C · recorded']);
   assert.equal(await evaluate("document.querySelector('#left-axis option[value=\"garage_temperature\"]') === null"), true);
   assert.equal(await evaluate("document.querySelector('#left-axis optgroup[label=\"Other air temperatures · Recorded\"]') === null"), true);
   assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage rear');
   assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"model_indoor_temperature\"]').textContent"), 'Average indoor');
   await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
-  await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 5");
+  await until("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"indoor_temperature\"]') !== null");
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]'), node => node.textContent)"),
-    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage rear', 'Garage front']);
-  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage rear');
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage front']);
+  assert.equal(await evaluate("document.querySelector('#chart-legend [aria-label=\"Right axis\"] [data-chart-key=\"garage_temperature\"]').textContent"), 'Garage rear');
   mkdirSync('var', { recursive: true });
   for (const theme of ['dark', 'light']) {
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click()`);
@@ -190,7 +185,7 @@ try {
         swatches.garage_temperature, `${theme}: garage stays on the right and keeps its colour with ${selection}`);
     }
     await evaluate("document.getElementById('left-axis').value='temperatures'; document.getElementById('left-axis').dispatchEvent(new Event('change'))");
-    await until("document.querySelectorAll('#chart-legend [aria-label=\"Left axis\"] [data-chart-key]').length === 5");
+    await until("document.querySelector('#chart-legend [aria-label=\"Left axis\"] [data-chart-key=\"indoor_temperature\"]') !== null");
     await evaluate("document.querySelector('.history-panel').scrollIntoView({block:'start'})");
     writeFileSync(`var/home-temperatures-${theme}.png`, Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   }
@@ -244,7 +239,7 @@ try {
   const historicalReadings = () => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'outdoor_temperature']
     .map(signal => app.store.observations({ signal, from: now - 8 * 3600_000, to: now - 1, limit: 5000 }));
   const originalReadings = historicalReadings();
-  await confirmClick('#sensor-change-submit', false, /clears the learned normal indoor temperature/);
+  await confirmClick('#sensor-change-submit', false, /room comfort references are kept/);
   assert.equal((await fetch(`${base}/api/sensor-changes`).then(response => response.json())).events.length, 0,
     'Cancelling the confirmation does not record a sensor change');
   assert.equal(await evaluate('globalThis.sensorSmokeSavedRequest === undefined'), true);
@@ -327,13 +322,13 @@ try {
   assert.deepEqual(historicalReadings(), originalReadings, 'Recording and reverting leave historical raw temperatures intact');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'sensor-ui-smoke-passed', checks: ['room cards removed', 'raw room readings retained', 'weighted indoor average',
-    'one Average indoor chart legend', 'garage stays on right axis for power and joins home temperatures', 'garage and other air group removed from drawer', 'all home temperatures on left axis',
+    'one Average indoor chart legend', 'Garage rear stays on the right axis for power and temperature groups', 'garage and other air group removed from drawer', 'rooms and Garage front on the left axis',
     'MQTT temperature source', 'distinct room colours in both themes', 'average and outdoor preserve colours',
     'separate indoor and outdoor sensor maintenance folds', 'unchanged closed Home and Data card heights', 'keyboard disclosure access',
     'configured sensor choices and reason labels', 'selection, focus and open state survive status refresh', 'real sensor-change API submission',
     'server timestamp and single saved event', 'settling preserves raw readings', 'desktop and mobile layout',
     'reload reveals pending retry through all ancestor disclosures', 'retry remains idempotent',
-    'native confirmations accept and cancel both actions', 'visible Revert and relearn action',
+    'ST-MQ modal confirmations accept and cancel both actions', 'visible Revert and relearn action',
     'reverted entry retained', 'background relearning completes', 'temperature observations preserved'] }));
   await send('Page.close');
 } finally {

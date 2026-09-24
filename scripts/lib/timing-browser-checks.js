@@ -251,6 +251,19 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   assert.match(await text(detail('charger')), /100%.*of included charger-time/i);
   assert.match(await text(card('charger')), /2026/);
   assert.match(await text(detail('charger')), /100\s*W/i);
+  const chargingFigures = await text(`${card('charger')} .timing-figures`);
+  for (const scope of ['charger1', 'charger2']) {
+    await evaluate(`document.querySelector('[data-charging-scope="${scope}"]').click(); true`);
+    assert.equal(await evaluate(`document.querySelector('[data-charging-scope="${scope}"]').getAttribute('aria-pressed')`), 'true');
+    assert.match(await text(`${card('charger')} .timing-coverage`), /of time included/);
+  }
+  assert.match(await text(`${card('charger')} .timing-figures`), /Comparison unavailable/,
+    'Missing second-charger history is not replaced with the first charger or combined total');
+  await evaluate(`(() => { const button = document.querySelector('[data-charging-scope="charger2"]');
+    button.focus(); button.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return true; })()`);
+  assert.equal(await text(`${card('charger')} .timing-figures`), chargingFigures, 'Total restores its own complete comparison');
+  assert.equal(await evaluate("document.activeElement.dataset.chargingScope"), 'total');
+
   assert.match(await text('.timing-explanations'), /idle/i);
   assert.match(await text('.timing-explanations'), /missing readings|missing data/i);
   assert.match(await text('.timing-explanations'), /whole day|full.day|daily average/i);

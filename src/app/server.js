@@ -6,6 +6,7 @@ import { getChartData } from './chart-data.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
 import { chargingSessionCheckSummaries } from './charging-session-checks.js';
+import { createDatabaseExport } from './database-export.js';
 
 function authorized(req, token) {
   if (!token) return true;
@@ -52,6 +53,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
   const fixedAccess = { enabled: true, token, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
+  const exportDatabase = createDatabaseExport();
   const server = createServer(async (req, res) => {
     let acceptedAccess, completingReload = false, readContext;
     const json = (code, value) => {
@@ -144,6 +146,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified primary snapshot.' });
+        if (req.method === 'GET' && url.pathname === '/api/database-export')
+          return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
         if (req.method === 'GET' && url.pathname === '/api/fireplace') return json(200, engine.fireplaceStatus());
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')

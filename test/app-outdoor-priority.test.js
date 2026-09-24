@@ -39,69 +39,22 @@ async function setup(t, { input = 'mqtt', maxAgeMs = 5 * MINUTE } = {}) {
     setTime: value => { now = value; }, get now() { return now; } };
 }
 
-for (const input of ['mqtt', 'providers']) test(`${input} current temperature follows H66, FMI, then Open-Meteo across age and recovery`, async t => {
+for (const input of ['mqtt', 'providers']) test(`${input} outdoor selection uses only FMI then Open-Meteo`, async t => {
   const r = await setup(t, { input });
+  r.publish(3);
+  assert.equal(r.engine.status().observations.outdoor.stale, true, 'H66 cannot replace weather');
+  assert.equal(r.store.observations().filter(row => row.source === 'husdata-h66' && row.signal === 'outdoor_temperature').length, 0);
   r.weather('fmi', 4, beginning - MINUTE);
   r.weather('openmeteo', 5);
   assert.equal(r.engine.tick().observations.outdoor.source, 'fmi');
-  r.publish(3);
-  assert.equal(r.engine.status().observations.outdoor.source, 'husdata-h66');
-  assert.equal(r.engine.tick().observations.outdoor.value, 3);
-  r.setTime(beginning + MINUTE);
-  r.weather('fmi', 4.1);
-  r.setTime(beginning + 2 * MINUTE);
-  r.weather('openmeteo', 5.1);
-  assert.equal(r.engine.status().observations.outdoor.value, 3, 'newer weather cannot displace fresh H66');
-  r.setTime(beginning + 5 * MINUTE);
-  assert.equal(r.engine.status().observations.outdoor.source, 'husdata-h66');
-  r.setTime(beginning + 5 * MINUTE + 1);
-  assert.equal(r.engine.status().observations.outdoor.source, 'fmi', 'age expiry switches without another provider download');
-  assert.equal(r.engine.tick().observations.outdoor.value, 4.1);
-  r.setTime(beginning + 31 * MINUTE + 1);
+  r.publish(30);
+  assert.equal(r.engine.status().observations.outdoor.value, 4);
+  r.setTime(beginning + 29 * MINUTE + 1);
   assert.equal(r.engine.status().observations.outdoor.source, 'openmeteo');
-  assert.equal(r.engine.tick().observations.outdoor.value, 5.1);
-  r.weather('openmeteo', 5.2);
-  r.weather('fmi', 4.2, beginning + 30 * MINUTE);
-  assert.equal(r.engine.status().observations.outdoor.source, 'fmi', 'recovered primary can have an older timestamp');
-  r.publish(3.2);
-  assert.equal(r.engine.tick().observations.outdoor.source, 'husdata-h66');
-});
-
-test('retained, invalid and disconnected H66 readings use the current weather fallback until a fresh live reading arrives', async t => {
-  const r = await setup(t);
-  r.weather('fmi', 4);
-  for (const value of ['', 'NaN', 90]) {
-    r.publish(value);
-    assert.equal(r.engine.status().observations.outdoor.source, 'fmi');
-  }
-  r.publish(2, { retain: true });
+  r.weather('fmi', 4.2);
   assert.equal(r.engine.status().observations.outdoor.source, 'fmi');
-  r.publish(2);
-  assert.equal(r.engine.status().observations.outdoor.source, 'husdata-h66');
-  r.publish('NaN');
-  assert.equal(r.engine.status().observations.outdoor.source, 'fmi', 'a newly reported sensor error invalidates H66 immediately');
-  r.publish(2.1);
   r.client.emit('offline');
   assert.equal(r.engine.status().observations.outdoor.source, 'fmi');
-  r.client.emit('connect');
-  r.publish(31, {}, '0001');
-  r.publish(2.2, { retain: true });
-  assert.equal(r.engine.status().observations.outdoor.source, 'fmi', 'other live registers cannot revive an old outdoor reading');
-  r.publish(2.3);
-  assert.equal(r.engine.status().observations.outdoor.value, 2.3);
-});
-
-test('H66 configured freshness is enforced, and explicit unusable observations cannot acquire priority', async t => {
-  const r = await setup(t, { maxAgeMs: 2 * MINUTE });
-  r.weather('openmeteo', 5);
-  r.publish(2);
-  r.setTime(beginning + 2 * MINUTE);
-  assert.equal(r.engine.status().observations.outdoor.source, 'husdata-h66');
-  r.setTime(beginning + 2 * MINUTE + 1);
-  assert.equal(r.engine.status().observations.outdoor.source, 'openmeteo');
-  r.engine.ingest({ source: 'husdata-h66', device: 'synthetic-h66', signal: 'outdoor_temperature',
-    value: 1, unit: 'degC', sourceTime: r.now, receivedAt: r.now, quality: [], raw: { usableForControl: false } });
-  assert.equal(r.engine.tick().observations.outdoor.source, 'openmeteo');
 });
 
 test('weather caches preserve both fallback sources under H66 and restart does not replay H66 publications', async t => {

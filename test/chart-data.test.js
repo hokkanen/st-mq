@@ -426,7 +426,7 @@ test('historical outdoor readings identify sources without turning model estimat
     for (const [source, minutes] of [['mqtt-temperature', 4], ['husdata-h66', 3], ['fmi', 2], ['openmeteo', 1]])
       put(store, 'outdoor_temperature', -minutes, now - minutes * MINUTE, { source });
     const result = get(store);
-    assert.deepEqual(result.series.outdoor_temperature.map(point => point.source), ['mqtt-temperature', 'husdata-h66', 'fmi', 'openmeteo']);
+    assert.deepEqual(result.series.outdoor_temperature.map(point => point.source), ['mqtt-temperature', 'fmi', 'openmeteo']);
     assert.equal(historySeriesAt(result, now).outdoor_temperature.at(-1).source, 'openmeteo');
     put(store, 'outdoor_temperature', 0, now, { source: 'https://synthetic.invalid/?token=private-fixture' });
     assert.doesNotMatch(JSON.stringify(get(store)), /private-fixture|synthetic\.invalid/);

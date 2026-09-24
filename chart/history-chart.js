@@ -1,6 +1,6 @@
 import Chart from 'chart.js/auto';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, visible, leftTitles, operationModes, leftAxisAvailability } from './history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, dateSelection, visible, leftTitles, operationModes, leftAxisAvailability } from './history-model.js';
 import { historyTooltipCallbacks, historyTooltipsEnabled } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createTimingBenefit } from './timing-benefit.js';
@@ -27,6 +27,7 @@ const paletteVariables = {
 const shades = [
   { key: 'heatOff', label: 'Tariff reduction requested', detail: 'Requested tariff reduction; compressor activity is shown separately' },
   { key: 'compressorSpace', label: 'Compressor · house', detail: 'Compressor reported on, valve routed to house heating' },
+  { key: 'compressorGarage', label: 'Compressor · garage', color: 'garage', detail: 'Garage compressor reported running; blank intervals include stopped or unavailable readings' },
   { key: 'compressorDhw', label: 'Compressor · hot water', detail: 'Compressor reported on, valve routed to hot water' },
 ];
 const activityTracks = [
@@ -93,7 +94,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   let graph, payload, overview, detail, plottedSelection, fingerprint, status, initialized = false, closed = false;
   let palette = { ...defaultPalette }, lastContract, lastRecording, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), left: 'power', points: 800 };
-  let activePreset = 'today', rangeEnabled = false;
+  let activePreset = 'today';
   let detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
   const navigation = createChartNavigation({ canvas, getChart: () => graph, onSettle: () => {
     if (!overview || closed) return;
@@ -144,8 +145,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   function listen(node, event, handler) { node.addEventListener(event, handler); listeners.push(() => node.removeEventListener(event, handler)); }
   function updateControls() {
     $('date-start').value = selection.startDate; $('date-end').value = selection.endDate; $('left-axis').value = selection.left;
-    $('date-range-enabled').checked = rangeEnabled;
-    $('date-end').disabled = !rangeEnabled;
+    $('date-end').dataset.singleDay = String(selection.startDate === selection.endDate);
     $('date-end').min = selection.startDate;
     for (const preset of ['today', 'yesterday', 'tomorrow']) $(`range-${preset}`).setAttribute('aria-pressed', String(activePreset === preset));
   }
@@ -161,7 +161,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const view = navigation.view ?? payload.range;
     for (const shade of shades) {
       if (!visible(shade.key, preferences)) continue;
-      ctx.fillStyle = palette[shade.key];
+      ctx.fillStyle = palette[shade.color ?? shade.key];
       for (const interval of payload.shading?.[shade.key] ?? []) {
         const from = Math.max(interval.start, view.from), to = Math.min(interval.end, view.to);
         if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) continue;
@@ -189,11 +189,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   }
   function renderLegend(datasets) {
     const groups = [document.createElement('div'), document.createElement('div'), document.createElement('div')];
-    groups.forEach(group => { group.className = 'chart-legend-group'; });
+    groups.forEach((group, index) => { group.className = 'chart-legend-group'; group.dataset.axis = ['activity', 'left', 'right'][index]; });
+    for (const index of [1, 2]) {
+      const label = document.createElement('span'); label.className = 'chart-legend-axis'; label.textContent = index === 1 ? 'Left axis' : 'Right axis'; groups[index].append(label);
+    }
     groups[0].setAttribute('aria-label', 'Activity shading and strips'); groups[1].setAttribute('aria-label', 'Left axis'); groups[2].setAttribute('aria-label', 'Right axis');
     function add(group, key, label, detail, swatchColor, kind) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'chart-legend-button';
-      button.dataset.chartKey = key; button.setAttribute('aria-pressed', String(visible(key, preferences))); button.title = detail;
+      button.dataset.chartKey = key; button.dataset.axis = group.dataset.axis; button.setAttribute('aria-pressed', String(visible(key, preferences))); button.title = detail;
       const swatch = document.createElement('span'); swatch.className = 'chart-legend-swatch'; swatch.dataset.kind = kind;
       swatch.style.backgroundColor = kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
       swatch.style.borderColor = swatchColor; swatch.setAttribute('aria-hidden', 'true');
@@ -206,7 +209,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       });
       group.append(button);
     }
-    for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.key], shade.key === 'heatOff' ? 'pattern' : 'fill');
+    for (const shade of shades) add(groups[0], shade.key, shade.label, shade.detail, palette[shade.color ?? shade.key], shade.key === 'heatOff' ? 'pattern' : 'fill');
     for (const track of activityTracks) add(groups[0], track.key, track.label, `${track.detail} · Striped activity below the chart`, palette[track.color ?? track.key], 'strip');
     for (const dataset of datasets) {
       if (dataset.key === 'outdoor_forecast' && dataset.yAxisID !== 'left') continue;
@@ -347,7 +350,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const loading = selection.startDate !== plot.startDate || selection.endDate !== plot.endDate || selection.left !== plot.left;
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.left = plot.left; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
-    const notes = ['Learning eligibility is shown only for saved learning inputs: eligible means the original quality checks passed, not proof that a model update used the point. Unlabelled sensor readings, forecasts and model results do not imply inclusion. Meter checks and caravan readings do not train the model.', 'Temperature measurements and forecasts use monotone cubic curves between available values; gaps remain gaps. Setpoints and requested control settings retain their recorded steps.', 'Outdoor readings use H66, FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
+    const notes = ['Left-axis lines use small square markers; right-axis references keep their own legend group. Garage compressor shading uses recorded native activity; missing or expired readings do not imply that it was stopped.', 'Learning eligibility is shown only for saved learning inputs: eligible means the original quality checks passed, not proof that a model update used the point. Unlabelled sensor readings, forecasts and model results do not imply inclusion. Meter checks and caravan readings do not train the model.', 'Temperature measurements and forecasts use monotone cubic curves between available values; gaps remain gaps. Setpoints and requested control settings retain their recorded steps.', 'Outdoor readings use FMI stations or Open-Meteo model estimates. Dashed outdoor line: forecast. All values stay within the selected dates.'];
     if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
       ? 'Lines carry the last recorded readings forward to the snapshot time; these extensions are not new measurements.'
       : 'Lines carry the last recorded readings forward to now; these extensions are not new measurements.');
@@ -457,40 +460,31 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     }
   }
   function choosePreset(preset) {
-    rangeEnabled = preset !== 'today';
     activePreset = preset; selection = { ...selection, ...selectedRange(preset, status?.now ?? Date.now()) }; updateControls(); return refresh();
   }
   function shiftRange(days) {
-    // Navigate the applied window, leaving unsubmitted date edits out of it.
+    // Shift the last valid selected window, preserving its inclusive length.
     selection = { ...selection, startDate: shiftDate(selection.startDate, days), endDate: shiftDate(selection.endDate, days) };
     activePreset = null;
-    rangeEnabled = selection.startDate !== selection.endDate;
     updateControls(); return refresh();
   }
-  function applyDates() {
-    if (!$('chart-range-form').checkValidity()) return;
-    activePreset = null;
-    selection = { ...selection, startDate: $('date-start').value, endDate: rangeEnabled ? $('date-end').value : $('date-start').value };
+  function applyDate(field) {
+    const node = $(field === 'start' ? 'date-start' : 'date-end');
+    if (!node.checkValidity()) return;
+    const dates = dateSelection(selection, field, node.value);
+    if (!dates) return;
+    activePreset = null; selection = { ...selection, ...dates };
     updateControls(); refresh();
   }
-  listen($('date-start'), 'change', () => {
-    const start = $('date-start');
-    if (!start.checkValidity()) return;
-    const end = $('date-end');
-    end.min = start.value;
-    if (!rangeEnabled || !end.value || end.value < start.value) end.value = start.value;
-    if (!rangeEnabled) applyDates();
-  });
-  listen($('date-range-enabled'), 'change', () => {
-    rangeEnabled = $('date-range-enabled').checked;
-    $('date-end').disabled = !rangeEnabled;
-    $('date-end').min = $('date-start').value;
-    if (!rangeEnabled || !$('date-end').value || $('date-end').value < $('date-start').value) $('date-end').value = $('date-start').value;
-    if (rangeEnabled) $('date-end').focus();
-    else applyDates();
-  });
-  listen($('chart-range-form'), 'submit', event => {
-    event.preventDefault(); applyDates();
+  listen($('date-start'), 'change', () => applyDate('start'));
+  listen($('date-end'), 'change', () => applyDate('end'));
+  listen($('chart-range-form'), 'submit', event => event.preventDefault());
+  listen($('chart-legend-toggle'), 'click', () => {
+    const button = $('chart-legend-toggle');
+    const expanded = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', String(expanded));
+    button.textContent = expanded ? 'Close legend' : 'Legend';
+    canvas.closest('.history-panel').dataset.legendExpanded = String(expanded);
   });
   listen($('left-axis'), 'change', () => { selection = { ...selection, left: $('left-axis').value }; refresh(); });
   for (const preset of ['today', 'yesterday', 'tomorrow']) listen($(`range-${preset}`), 'click', () => choosePreset(preset));

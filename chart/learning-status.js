@@ -30,7 +30,7 @@ const coefficientInfo = {
 };
 const inputSources = {
   model_indoor_temperature: 'The configured sensors contribute according to their weights. Their latest genuine readings can be held between reports; freshness and report coverage determine whether the interval is usable. A missing contributing sensor or a gap in required reports excludes the average. The chart preserves the originally supplied average, including sensor-change settling gaps; corrected learning can use preserved readings behind those settling gaps.',
-  model_outdoor_temperature: 'H66 outdoor sensor, then FMI station, then Open-Meteo estimate when the preceding source is unavailable. Source validity is checked at each segment.',
+  model_outdoor_temperature: 'FMI station, with an Open-Meteo estimate when the station is unavailable. Source validity is checked at each segment.',
   model_solar_radiation: 'Archived FMI radiation forecast, with Open-Meteo as backup. Radiation is modeled, not measured at the house. It is expressed in W/m²; the model converts it to kW/m².',
   model_compressor_duty: 'Recorded compressor-active and DHW-routing states are intersected in time. Space-heating activity is 1, other known activity is 0; the chart expresses duty as a percentage.',
   model_hydronic_heat: 'Recorded space-heating compressor duty is multiplied by the fixed DHP-H 10 thermal-output estimate at the saved heating-water supply temperature, then estimated space-heating AUX kW is added. Supply fallback, routing and model assumptions remain explicit; electricity is costed separately.',

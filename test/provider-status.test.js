@@ -30,21 +30,21 @@ test('dashboard groups measured temperature channels under their actual sources 
 
 test('selected live temperatures take precedence over downloaded provider source without requiring a garage sensor', () => {
   const status = { input: 'mqtt', observations: {
-    indoor: temperature('mqtt-temperature'), outdoor: temperature('husdata-h66', 4), garage: { value: null, stale: true },
+    indoor: temperature('mqtt-temperature'), outdoor: temperature('fmi', 4), garage: { value: null, stale: true },
   }, providers: { temperatures: { status: 'disabled' }, outdoor: { source: 'openmeteo', status: 'fallback' } } };
   const [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.title, 'Main temperatures · MQTT, H66');
+  assert.equal(grouped.display.title, 'Main temperatures · MQTT, FMI');
   assert.equal(grouped.display.state, 'Available');
   assert.equal(grouped.display.attention, false);
   assert.equal(grouped.backup, false);
   assert.equal(grouped.series[1].source, null);
   assert.match(grouped.series[1].detail, /No current reading received/);
-  assert.equal(grouped.series[2].source, 'H66');
+  assert.equal(grouped.series[2].source, 'FMI');
   status.observations.garage = temperature('mqtt-temperature', 16, { stale: true });
   assert.equal(dashboardProviders(status, options)[0].display.state, 'Available');
 });
 
-test('failed downloads stay actionable for selected temperatures while unrelated H66 backup diagnostics stay scoped', () => {
+test('failed outdoor downloads remain actionable even with a recent selected reading', () => {
   const status = { input: 'providers', observations: {
     indoor: temperature('mqtt-temperature'), outdoor: temperature('fmi', 4),
   }, providers: { temperatures: { source: 'mqtt-temperature', status: 'degraded', qualityIssues: ['missing'] },
@@ -52,10 +52,10 @@ test('failed downloads stay actionable for selected temperatures while unrelated
   let [grouped] = dashboardProviders(status, options);
   assert.equal(grouped.display.state, 'Needs attention');
   assert.match(grouped.display.detail, /Outdoor downloads · FMI:.*Download failed \(HTTP 503\)/);
-  status.observations.outdoor = temperature('husdata-h66', 4);
+  status.observations.outdoor = temperature('fmi', 4);
   [grouped] = dashboardProviders(status, options);
-  assert.equal(grouped.display.state, 'Available');
-  assert.equal(grouped.series[2].source, 'H66');
+  assert.equal(grouped.display.state, 'Needs attention');
+  assert.equal(grouped.series[2].source, 'FMI');
   assert.match(grouped.display.detail, /Outdoor downloads · FMI:.*Download failed \(HTTP 503\)/);
   status.providers.temperatures.error = 'HTTP-401';
   assert.equal(dashboardProviders(status, options)[0].display.state, 'Needs attention');
@@ -140,7 +140,7 @@ test('temperature group retains outdoor fallback diagnostics without exposing un
   assert.equal(grouped.display.state, 'Using backup');
   assert.equal(grouped.backup, true);
   assert.match(grouped.display.detail, /FMI: rate limited \(HTTP 429\).*Next FMI try 10:05/);
-  assert.match(grouped.series[2].detail, /H66.*first.*FMI.*then.*Open-Meteo/);
+  assert.match(grouped.series[2].detail, /FMI nearby station.*Open-Meteo.*backup/);
   assert.doesNotMatch(JSON.stringify(grouped), /private-secret|provider\.example|https:/);
 });
 
@@ -193,7 +193,7 @@ test('Easee provider catalogue includes acquired fields and one Charger 1 sessio
   assert.ok(series.filter(row => row.signals.some(signal => signal.endsWith('_counter')))
     .every(row => /does not correct recorded energy or train/.test(row.detail)));
   assert.ok(series.filter(row => row.signals.some(signal => /_energy_l[123]$/.test(signal)))
-    .every(row => row.source === 'Calculated from Easee' && /derives power/.test(row.detail)));
+    .every(row => row.source === 'Calculated from Easee cloud' && /derives power/.test(row.detail)));
   assert.match(series.find(row => row.signals.includes('ev1_voltage_l1')).detail, /verified phase mapping/);
   assert(!signals.includes('ev1_lifetime_energy_counter'));
   assert.deepEqual(series.filter(row=>row.signals.includes('ev1_session_energy_check')).map(row=>row.label),['Charger 1 session check']);
@@ -211,7 +211,7 @@ test('provider catalogue preserves market fallback and the separate weather sola
   assert.match(weather[1].detail, /earlier forecast publications, not measured sunshine/);
   assert.equal(providerSeries('weather', { acquisition: { selected: 'fmi', solarSource: 'mixed' } })[1].source,
     'FMI + Open-Meteo');
-  assert.match(providerSeries('outdoor', { source: 'openmeteo' })[0].detail, /H66.*first.*FMI.*then.*Open-Meteo/);
+  assert.match(providerSeries('outdoor', { source: 'openmeteo' })[0].detail, /FMI nearby station.*Open-Meteo.*backup/);
 });
 
 test('temperature catalogue distinguishes the optional adapter and MQTT sensor history from live outdoor selection', () => {
@@ -220,7 +220,7 @@ test('temperature catalogue distinguishes the optional adapter and MQTT sensor h
   assert.equal(mqtt[0].source, 'MQTT');
   assert.deepEqual(mqtt.flatMap(row => row.signals), ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature']);
   assert.match(mqtt.find(row => row.signals.includes('outdoor_temperature')).detail,
-    /recorded for history.*Live outdoor control selects H66, FMI or Open-Meteo/);
+    /recorded for history.*Live outdoor control selects FMI or Open-Meteo/);
 });
 
 test('indoor provider rows show the three physical sensors separately from their model average', () => {
@@ -270,12 +270,10 @@ test('healthy backup is named and its primary retry respects both cooldown and p
   assert.match(result.detail, /Next ENTSO-E try 12:00/);
 });
 
-test('weather card descriptions distinguish H66 sensor, nearby station and model estimate', () => {
+test('weather card descriptions distinguish nearby station and model estimate', () => {
   const common = { status: 'ok', lastSuccessAt: now };
-  assert.equal(outdoorSourceLabel('husdata-h66'), 'H66 outdoor sensor');
   assert.equal(outdoorSourceLabel('fmi'), 'FMI nearby station');
   assert.equal(outdoorSourceLabel('openmeteo'), 'Open-Meteo model estimate');
-  assert.match(describeProvider('outdoor', { ...common, source: 'husdata-h66' }, options).detail, /Measured by the heat pump’s outdoor sensor/);
   assert.match(describeProvider('outdoor', { ...common, source: 'fmi' }, options).detail, /Observed at a nearby weather station/);
   const modeled = describeProvider('outdoor', { ...common, source: 'openmeteo' }, options);
   assert.equal(modeled.title, 'Outdoor temperature · Open-Meteo');
@@ -716,4 +714,16 @@ test('retired unscoped Easee health and lastSuccess fields do not become current
   assert.equal(display.state, 'Waiting for readings');
   assert.equal(display.detail, 'No successful download recorded. Current device reading status is unavailable.');
   assert.doesNotMatch(display.detail, /old source|Property current|Charger 1 current/);
+});
+
+test('Data and settings propagates the actual local/cloud source for each electrical device', () => {
+  const group = dashboardProviders({ providers: { easee: { status: 'ok', currentReadings: easeeReadings(),
+    deviceTransports: { charger: 'ocpp', property: 'stream' }, localOcpp: { configured: true, connected: true, available: true } } } }, options)
+    .find(row => row.key === 'electricity');
+  const rows = new Map(group.series.map(row => [row.signals[0], row]));
+  assert.equal(rows.get('ev1_active_power').source, 'Easee local OCPP');
+  assert.equal(rows.get('property_active_power').source, 'Easee cloud');
+  assert.equal(rows.get('ev1_energy_l1').source, 'Calculated from Easee local OCPP');
+  assert.match(rows.get('ev1_voltage_l1').detail, /phase-to-neutral/);
+  assert.match(group.display.detail, /Native charging schedules and property readings use Easee cloud/);
 });

@@ -104,6 +104,14 @@ A release obligation without a broker scope also blocks activation: matching top
 
 ## Commissioning
 
+The dashboard keeps these instructions under **Home → Heating control → Floor
+preheating setup**. Connection/MQTT entries describe device state and topics only.
+This is not an ordinary Shelly ON/OFF integration: the local floor-lease script
+must be installed and run at startup on both devices before commissioning can
+succeed. The native 900-second auto-off is an independent backup to the script;
+neither a working MQTT connection nor an ON readback establishes correct expiry.
+
+
 1. Have the installed wiring checked: each of the four OFF states must restore the thermostat path independently of the host, broker and device power. Confirm device/output-to-actuator mapping, including any output driving more than one water loop. Check actuator power and travel delays. Leave the other fixed valve settings unchanged.
 2. With control disabled and outputs disconnected from the override loads where needed for safe testing, identify the actual model/firmware. Verify that this Pro 2 v0 firmware supports scripting, KVS, MQTT script subscriptions and `Switch.Set` timers. The supplied code uses the documented Gen2 APIs; harness tests cannot certify firmware behavior.
 3. Configure both switch components with `initial_state: "off"`, `in_mode: "detached"`, `auto_on: false`, `auto_off: true`, `auto_off_delay: 900`. Confirm readback of those settings and absence of other relay control paths. The script checks these settings and refuses a lease if they are unsafe; it does not silently rewrite them.

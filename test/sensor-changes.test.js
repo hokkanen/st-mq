@@ -136,7 +136,7 @@ test('sensor status exposes logical labels and effective events without retry id
   assert.equal(affectsThermalLearning('garage_temperature', config), false);
 });
 
-test('a contributing sensor change retains house parameters but clears measurement baseline, state and validation before follow-up', t => {
+test('a contributing sensor change preserves learned evidence and comfort while isolating current propagation', t => {
   const { store, engine, initial } = fixture(t);
   const prefix = structuredClone(store.learningJournal({ input: 'providers' }));
   engine.pendingPlan = { id: 'invented-pending' }; store.setState('pending-plan:providers', engine.pendingPlan);
@@ -148,18 +148,16 @@ test('a contributing sensor change retains house parameters but clears measureme
   engine.tick = () => {
     ticks++;
     assert.deepEqual(store.getState('adaptive:providers'), engine.checkpoint, 'Follow-up sees a durably published complete checkpoint');
-    assert.equal(engine.checkpoint.baselineC, null);
+    assert.equal(engine.checkpoint.baselineC, initial.baselineC);
   };
   engine.changeSensor(change('invented-bedroom-change', 'bedroom_temperature'));
   const checkpoint = engine.checkpoint;
   assert.equal(ticks, 1);
-  assert.deepEqual(checkpoint.model.parameters, initial.model.parameters);
-  assert.equal(checkpoint.model.validation, null);
-  assert.equal(Boolean(checkpoint.model.forecastValidation), false);
-  assert.equal(checkpoint.baselineC, null); assert.equal(checkpoint.comfortReference, null); assert.equal(checkpoint.state, null);
-  assert.deepEqual(checkpoint.sensorComfortReferences, {});
-  assert.deepEqual(checkpoint.samples, []); assert.deepEqual(checkpoint.episodeArchive, []);
-  assert.equal(checkpoint.measurementEpochAt, now); assert.equal(checkpoint.sensorEpochs.bedroom_temperature, now);
+  assert.deepEqual(checkpoint.model, initial.model);
+  for (const key of ['baselineC', 'comfortReference', 'sensorComfortReferences', 'samples', 'episodeArchive'])
+    assert.deepEqual(checkpoint[key], initial[key], key);
+  assert.equal(checkpoint.state, null);
+  assert.equal(checkpoint.measurementEpochAt, undefined); assert.equal(checkpoint.sensorEpochs.bedroom_temperature, now);
   assert.equal(engine.pendingPlan, null); assert.equal(store.getState('pending-plan:providers'), null);
   assert.equal(engine.lastSample, null); assert.equal(engine.fireplaceReserveOverride, null);
   assert.deepEqual(store.observations(), observations, 'Source measurements are never rewritten');
@@ -184,7 +182,7 @@ test('failed checkpoint publication rolls back the sensor event and retry publis
   const { store, engine, initial } = fixture(t);
   const setState = store.setState.bind(store);
   store.setState = (key, value) => {
-    if (key === 'adaptive:providers' && value?.measurementEpochAt === now) throw new Error('invented-write-failure');
+    if (key === 'adaptive:providers' && value?.sensorEpochs?.indoor_temperature === now) throw new Error('invented-write-failure');
     return setState(key, value);
   };
   assert.throws(() => engine.changeSensor(change()), /invented-write-failure/);
@@ -194,7 +192,7 @@ test('failed checkpoint publication rolls back the sensor event and retry publis
   store.setState = setState;
   engine.changeSensor(change()); engine.changeSensor(change());
   assert.equal(sourceCount(store), 1);
-  assert.equal(engine.checkpoint.measurementEpochAt, now);
+  assert.equal(engine.checkpoint.sensorEpochs.indoor_temperature, now);
 });
 
 test('sensor changes end an active heating cycle as incomplete without rewriting observations or frozen forecasts', t => {

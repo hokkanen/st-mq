@@ -55,6 +55,10 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['garage_temperature_2', { label: 'Garage front temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded', detail: 'Front pipe-location sensor; separate exposure and garage learning input' }],
   ...[1, 2].map(index => [`garage_door${index}_open`, { label: `Garage door ${index}`, unit: 'state', group: 'Equipment states', role: 'History only', kind: 'Recorded', detail: 'Reported open or closed state; no age-based change is inferred for an event-only contact' }]),
   ['garage_temperature', { label: 'Garage rear temperature', unit: '°C', group: 'Home temperatures', role: 'Garage protection input', kind: 'Recorded' }],
+  ['garage_native_indoor_temperature', { label: 'Pump interpreted indoor temperature', unit: '°C', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Temperature reported by the pump; it may reflect its internal sensor or the supplied external value and native processing, not an independent room measurement' }],
+  ['garage_external_temperature', { label: 'External temperature feed', unit: '°C', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Acknowledged temperature supplied to the pump while its external-temperature permission is active; inactive, expired or unconfirmed periods remain gaps' }],
+  ['garage_compressor_frequency', { label: 'Compressor frequency', unit: 'Hz', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor frequency; not electrical power' }],
+  ['garage_compressor_active', { label: 'Compressor running', unit: 'state', group: 'Garage heat pump', role: 'History only', kind: 'Recorded', detail: 'Native compressor operation; also available as Garage compressor shading with every left-axis selection' }],
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Estimated energy over the recorded interval' }]),
   ['ev2_energy', { label: 'Charger 2 total energy per interval', unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: 'Native physical Charger 2 electricity counter differences; phase distribution is not recorded' }],
@@ -117,7 +121,7 @@ export const RIGHT_AXIS_SIGNALS = Object.freeze(['model_indoor_temperature', 'ga
 
 const basic = [
   ['power', 'Power', 'Electricity', ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'], 'kW', 'Calculated'],
-  ['temperatures', 'All home temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2'], '°C', 'Recorded'],
+  ['temperatures', 'Home and garage temperatures', 'Home temperatures', ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', 'garage_temperature', 'garage_temperature_2'], '°C', 'Recorded'],
   ['phases', 'Phase currents / interval estimates', 'Electricity', ['property_current_l1', 'property_current_l2', 'property_current_l3', 'ev1_current_l1', 'ev1_current_l2', 'ev1_current_l3'], 'A', 'Calculated'],
   ['phase_energy', 'Phase energy per interval', 'Electricity', PHASE_ENERGY_SIGNALS, 'kWh', 'Recorded'],
   ['solar_radiation', 'Solar radiation', 'Weather', ['solar_radiation', 'solar_forecast'], 'W/m²', 'Forecast'],
@@ -146,4 +150,4 @@ export const HISTORY_AXES = Object.freeze([
   ...Object.entries(MODEL_COEFFICIENT_INFO).map(([signal, info]) => ({ key: signal, ...info, signals: [signal] })),
 ]);
 export const HISTORY_AXIS_BY_KEY = Object.freeze(Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis])));
-export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);
+export const HISTORY_GROUPS = Object.freeze(['Electricity', 'Home temperatures', 'Caravan', 'Garage heat pump', 'Heating', 'Ground loop', 'Hot water', 'Equipment states', 'Settings', 'Runtime counters', 'Control', 'Weather', 'Model inputs', 'Model coefficients', 'Learning', 'Meter checks', 'Garage model inputs', 'Garage model coefficients']);

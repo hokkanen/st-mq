@@ -75,6 +75,19 @@ never automatically made writable.
 `enabled: false` keeps an entry inactive. Configured future equipment can remain
 enabled to await its first live report; unknown readings never create invented history.
 The [Caravan dehumidifier contract](caravan-dehumidifier.md) defines its planned bridge.
+Its `temperature_control.sensor_device_id` binds power hysteresis and recording
+location checks to the configured Caravan air sensor. The optional `manufacturer`
+label identifies equipment such as a Shelly BLU bridge independently of MQTT transport.
+
+Garage probe capture polls every 30 seconds and still expires each probe after
+120 seconds. A partial notification updates only its component; it cannot
+discard the other probe from a complete status reply already in flight. Source
+ordering prevents that reply from overwriting a newer measurement. Once native
+identity is confirmed, ST-MQ immediately requests an authenticated snapshot to
+recover a status reply that arrived before the identity reply. The partial
+component behavior follows the [Shelly notification contract](https://shelly-api-docs.shelly.cloud/gen2/General/Notifications/).
+Continued gaps after these host fixes need actual device/network diagnostics;
+offline tests alone do not establish that the Shelly hardware needs replacement.
 
 The garage addon uses external sensor 100 as the existing rear probe. Sensor 101
 is the front probe: its absence does not erase the rear reading, but both fresh

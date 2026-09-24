@@ -169,7 +169,7 @@ test('changing the H66 device starts with empty live readings and uses only the 
   first.emit('message', 'invented-first/HP/0001', Buffer.from('31'), { retain: false });
   first.emit('message', 'invented-first/HP/0007', Buffer.from('8'), { retain: false });
   assert.equal(app.engine.latest.return_temperature.value, 31);
-  assert.equal(app.engine.outdoorCandidates['husdata-h66'].value, 8);
+  assert.equal(app.engine.outdoorCandidates['husdata-h66'], undefined, 'H66 outdoor is excluded before and after reload');
   write({ ...options, controller: { input: 'mqtt', h66_device: 'invented-second' } });
   const response = await post();
   assert.equal(response.status, 200);

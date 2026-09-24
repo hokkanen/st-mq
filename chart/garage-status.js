@@ -1,3 +1,5 @@
+import { garageLearningCalculation } from './garage-learning-math.js';
+import { confirmAction } from './confirmation.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { mitsubishiReadings, mitsubishiRoomTemperature, renderMitsubishiReadings } from './mitsubishi.js';
 import { outdoorSourceLabel } from './provider-status.js';
@@ -6,7 +8,7 @@ import { setStatusDetail } from './status-details.js';
 import { renderCurrentPrice } from './current-price.js';
 import { garageHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
 import { finnishDateTime } from './home-controls.js';
-import { confirmPausedHeating, garageHeatingWarning } from './heating-warning.js';
+import { garageHeatingWarning } from './heating-warning.js';
 import { GARAGE_HEAT_TRANSFER_SAFETY_FACTOR } from '../src/garage/settings.js';
 import { renderLearningRows } from './learning-rows.js';
 const finite = Number.isFinite;
@@ -54,7 +56,7 @@ const opportunitySummary = reason => ({
 const coefficientNumber = (value, unit) => finite(value)
   ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 4 }).format(value)} ${unit}` : 'Unavailable';
 const learningRow = (key, title, value, group, provenance, detail, evidence) =>
-  ({ key, title, value, group, provenance, detail, ...(evidence ? { evidence } : {}), available: value !== 'Unavailable' });
+  ({ key, title, value, group, provenance, detail, calculation: garageLearningCalculation(key), ...(evidence ? { evidence } : {}), available: value !== 'Unavailable' });
 
 function garageCoefficientRows(learning) {
   const assumptions = learning.assumptions ?? {}, electricity = learning.electricity ?? {};
@@ -66,9 +68,6 @@ function garageCoefficientRows(learning) {
       !finite(row?.value) ? 'Unavailable' : fitted ? 'Learned' : 'Initial estimate',
       'Cooling per degree of local air-to-outdoor temperature difference while the pump is OFF. The two locations are learned independently; there is no hidden building-temperature state.',
       `${number(row?.evidence, 'h')} clean cooling observations. Door openings and charging exclude an interval from fitting. A fitted rate still needs episode validation.`);
-    result.calculation = { equations: [{ expression: 'T_next = T_out + (T_now − T_out) × exp(−k × hours)',
-      legend: 'k is this location’s cooling rate in 1/h. T_now and T_out are local and outdoor air temperatures in °C.' }],
-      paragraphs: ['The forecast is checked against complete OFF episodes. Extra prediction margins and the independent pipe model shorten a pause when evidence is uncertain.'] };
     return result;
   });
   details.push(
@@ -492,7 +491,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   const heat = async mode => {
     const controls = status?.garage?.heatingControls;
     if (!controls?.[`${mode}Available`] || busy || blocked() || closed) return;
-    if (status.garage.temporary?.pauseActive && !await confirmPausedHeating({ document,
+    if (status.garage.temporary?.pauseActive && !await confirmAction({ document,
       title: mode === 'off' ? 'Turn garage heating off during Pause?' : 'Change garage heating during Pause?',
       message: `${mode === 'off' ? 'Heating will stay off' : 'Normal heating will stay selected'} until ${clock(status.garage.temporary.pauseUntil)} or Resume now. ${mode === 'off'
         ? 'A cold garage can freeze pipes and stored equipment. Freeze protection may restore heating sooner.'

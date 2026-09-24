@@ -213,14 +213,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-axis-actions { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
 .axis-control { margin: 0; min-width: 172px; }
 .chart-range-controls { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 14px 24px; margin-top: 20px; }
-.date-range { display: flex; align-items: flex-end; gap: 10px; min-width: 0; }
-.date-range .date-field { display: flex; flex-direction: column; gap: 8px; margin: 0; flex: 1 1 140px; min-width: 0; font-size: 12px; }
-.date-range input[type="date"] { width: 100%; height: 44px; font-size: 12px; }
-.date-range .date-label { display: inline-flex; flex-direction: row; align-items: center; gap: 7px; min-height: 28px; margin: 0; font-size: 12px; }
-.end-date-toggle { cursor: pointer; align-self: flex-start; }
-.date-range input[type="checkbox"] { width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
-.date-range input:disabled { color: var(--muted); background: var(--surface-soft); opacity: .5; cursor: not-allowed; }
-.date-range button { margin: 0; white-space: nowrap; }
+.date-range { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; }
+.date-range input[type="date"] { width: 145px; min-width: 0; height: 40px; font-size: 12px; }
+.date-range > span { color: var(--muted); font-size: 11px; }
+.date-range #date-end[data-single-day="true"] { color: var(--muted); background: var(--surface-soft); }
+.date-range #date-end:focus { color: var(--text); }
 .range-shortcuts { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto minmax(0, 1fr) 32px; align-items: center; gap: 6px; }
 .range-shortcuts button { margin: 0; background: transparent; color: var(--muted); border-color: var(--border); padding: 10px 12px; font-size: 12px; }
 .range-shortcuts .range-step { display: flex; align-items: center; justify-content: center; width: 32px; min-height: 34px; height: 34px; padding: 0; }
@@ -229,14 +226,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-status { min-height: 20px; margin: 15px 0 7px; font-size: 11px; }
 .plot { position: relative; height: 480px; min-width: 0; }
 .plot canvas { max-width: 100%; }
-.chart-explorer-controls { display: none; align-items: center; gap: 5px; }
-.chart-explorer-controls button { margin: 0; min-height: 42px; padding: 7px 11px; background: var(--surface-soft); color: var(--text); border-color: var(--border); white-space: nowrap; }
 #chart-fullscreen { width: 42px; height: 42px; min-height: 42px; padding: 10px; }
 #chart-fullscreen span, #chart-fullscreen[data-chart-view="true"] svg { display: none; }
 #chart-fullscreen[data-chart-view="true"] { width: auto; padding: 7px 11px; color: var(--text); }
 #chart-fullscreen[data-chart-view="true"] span { display: block; }
-.chart-explorer-controls button:hover { background: var(--border); }
-.chart-explorer-controls button:disabled { cursor: default; opacity: .4; }
 .chart-gesture-preview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .chart-overview { display: none; margin-top: 8px; --view-start: 0%; --view-width: 100%; min-width: 0; }
 .chart-overview-labels, .chart-view-status { display: flex; justify-content: space-between; gap: 10px; font-size: 10px; color: var(--muted); }
@@ -249,10 +242,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .chart-gesture-help { display: none; }
 .mode-viewport { overflow: hidden; }
 .history-panel[data-fullscreen="true"] { position: fixed; inset: 0; z-index: 1000; width: 100%; height: 100dvh; max-width: none; margin: 0; border: 0; border-radius: 0; padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
-.history-panel[data-fullscreen="true"] .chart-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; flex: none; gap: 12px; margin-bottom: 6px; }
+.history-panel[data-fullscreen="true"] .chart-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; flex: none; gap: 12px; margin-bottom: 6px; }
 .history-panel[data-fullscreen="true"] .chart-heading h2 { font-size: 15px; }
 .history-panel[data-fullscreen="true"] .chart-heading p,
-.history-panel[data-fullscreen="true"] .chart-range-controls,
 .history-panel[data-fullscreen="true"] #chart-status,
 .history-panel[data-fullscreen="true"] .chart-notes,
 .history-panel[data-fullscreen="true"] > details,
@@ -260,10 +252,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .history-panel[data-fullscreen="true"] .chart-axis-actions { justify-self: end; align-items: center; max-width: 100%; }
 .history-panel[data-fullscreen="true"] .axis-control { font-size: 11px; flex-direction: row; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
 .history-panel[data-fullscreen="true"] .axis-control select { min-height: 36px; height: 36px; padding: 5px 7px; width: 180px; min-width: 0; }
-.history-panel[data-fullscreen="true"] .chart-explorer-controls { display: flex; justify-self: center; }
-.history-panel[data-fullscreen="true"] .chart-explorer-controls button,
 .history-panel[data-fullscreen="true"] #chart-fullscreen { min-height: 36px; height: 36px; }
-.history-panel[data-fullscreen="true"] .chart-explorer-controls button:not(#chart-zoom-reset) { min-width: 36px; }
 .history-panel[data-fullscreen="true"] .plot { flex: 1 1 0; height: auto; min-height: 80px; }
 .history-panel[data-fullscreen="true"] #history { touch-action: none; cursor: grab; user-select: none; }
 .history-panel[data-fullscreen="true"] #history:active { cursor: grabbing; }
@@ -271,13 +260,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .history-panel[data-fullscreen="true"] .mode-history p { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .history-panel[data-fullscreen="true"] .mode-track { height: 12px; }
 .history-panel[data-fullscreen="true"] .chart-overview { display: block; flex: none; margin: 0 0 6px; }
-.history-panel[data-fullscreen="true"] .chart-legend { flex: none; max-height: 74px; overflow: auto; padding: 3px 0 0; scrollbar-color: var(--muted) var(--surface); scrollbar-width: thin; }
+.history-panel[data-fullscreen="true"] .chart-range-controls { flex: none; margin: 0 0 5px; }
+.history-panel[data-fullscreen="true"] .range-shortcuts { display: none; }
+.history-panel[data-fullscreen="true"] .date-range input[type="date"] { height: 36px; min-height: 36px; }
+.history-panel[data-fullscreen="true"] .chart-legend-panel { flex: none; min-height: 0; }
+.history-panel[data-fullscreen="true"] .chart-legend { max-height: 92px; overflow: auto; padding: 3px 0 0; scrollbar-color: var(--muted) var(--surface); scrollbar-width: thin; }
 .history-panel[data-fullscreen="true"]:has(#history[data-ready="false"]) #chart-status { display: block; flex: none; margin: 3px 0; }
 @media (max-width: 1000px) and (orientation: landscape) {
   .history-panel[data-fullscreen="true"] .chart-heading { grid-template-columns: auto minmax(0, 1fr); gap: 10px; }
   .history-panel[data-fullscreen="true"] .chart-heading-copy { display: none; }
-  .history-panel[data-fullscreen="true"] .chart-explorer-controls button { min-height: 40px; height: 40px; padding: 5px 9px; }
-  .history-panel[data-fullscreen="true"] .chart-explorer-controls button:not(#chart-zoom-reset) { min-width: 40px; }
   .history-panel[data-fullscreen="true"] #chart-fullscreen,
   .history-panel[data-fullscreen="true"] .axis-control select { min-height: 40px; height: 40px; }
 }
@@ -287,11 +278,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .history-panel[data-fullscreen="true"] .chart-axis-actions { grid-row: 1; justify-self: stretch; }
   .history-panel[data-fullscreen="true"] .axis-control { flex: 1; max-width: none; }
   .history-panel[data-fullscreen="true"] .axis-control select { flex: 1; width: 0; }
-  .history-panel[data-fullscreen="true"] .chart-explorer-controls { grid-row: 2; gap: 6px; }
-  .history-panel[data-fullscreen="true"] .chart-explorer-controls button,
   .history-panel[data-fullscreen="true"] #chart-fullscreen,
   .history-panel[data-fullscreen="true"] .axis-control select { min-height: 44px; height: 44px; }
-  .history-panel[data-fullscreen="true"] .chart-explorer-controls button:not(#chart-zoom-reset) { min-width: 44px; }
 }
 @media (orientation: landscape) and (max-height: 550px) {
   .history-panel[data-fullscreen="true"] { padding-top: max(4px, env(safe-area-inset-top)); padding-bottom: max(4px, env(safe-area-inset-bottom)); }
@@ -301,6 +289,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 }
 .chart-legend { display: flex; justify-content: center; flex-wrap: wrap; align-items: center; column-gap: 18px; row-gap: 4px; padding-top: 12px; }
 .chart-legend-group { display: flex; justify-content: center; flex-wrap: wrap; gap: 2px 4px; min-width: 0; }
+.chart-legend-group[data-axis="activity"] { flex-basis: 100%; }
+.chart-legend-axis { align-self: center; color: var(--muted); font-size: 10px; margin-right: 3px; white-space: nowrap; }
+#chart-legend-toggle { display: none; }
+.chart-legend-button[data-axis="left"] .chart-legend-swatch:is([data-kind="line"], [data-kind="forecast"])::after { content: ''; display: block; width: 5px; height: 5px; background: inherit; margin: -1px auto 0; }
+@media (max-width: 640px), (max-height: 500px) {
+  .history-panel[data-fullscreen="true"] #chart-legend-toggle { display: block; margin: 2px auto 0; min-height: 36px; padding: 5px 18px; font-size: 12px; }
+  .history-panel[data-fullscreen="true"] .chart-legend { display: none; }
+  .history-panel[data-fullscreen="true"][data-legend-expanded="true"] .chart-legend { display: flex; max-height: 38dvh; padding-bottom: 5px; }
+  .history-panel[data-fullscreen="true"][data-legend-expanded="true"] .chart-overview,
+  .history-panel[data-fullscreen="true"][data-legend-expanded="true"] .mode-history { display: none; }
+  .history-panel[data-fullscreen="true"] .chart-range-controls { justify-content: center; }
+  .history-panel[data-fullscreen="true"] .chart-heading { margin-bottom: 3px; }
+}
 .chart-legend-button { display: inline-flex; align-items: center; gap: 7px; border: 0; padding: 7px 6px; margin: 0; min-height: 34px; background: transparent; color: var(--text); font-size: 11px; line-height: 1.3; }
 .chart-legend-button:hover { background: var(--surface-soft); }
 .chart-legend-button[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
@@ -747,10 +748,8 @@ details details { margin-inline-start: 24px; }
   .history-panel:not([data-fullscreen="true"]) .axis-control { flex: 1; min-width: 0; }
   .axis-control { min-width: 135px; font-size: 10px; gap: 4px; }
   .axis-control select { font-size: 12px; padding: 9px 7px; }
-  .date-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
-  .date-range .date-label { font-size: 11px; }
+  .date-range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; }
   .date-range input[type="date"] { width: 100%; font-size: 12px; padding: 10px 6px; }
-  .date-range button { grid-column: 1 / -1; min-height: 38px; padding: 8px 12px; font-size: 12px; }
   .range-shortcuts { gap: 4px; }
   .range-shortcuts button { font-size: 10px; padding: 8px 5px; min-height: 38px; }
   .plot { height: 365px; }
@@ -1175,13 +1174,13 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 .heating-hold-warning-strong { font-weight: 500; }
 .heating-hold-warning strong { font-weight: 650; }
 #heating-held-summary { margin: 18px 0 0; }
-.heating-warning-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 22px; border: 1px solid var(--border); border-top: 3px solid var(--stale); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
-.heating-warning-dialog::backdrop { background: #0007; }
-.heating-warning-dialog h2, .heating-warning-dialog h3 { margin: 0 0 10px; font-size: 18px; font-weight: 550; letter-spacing: -.2px; }
-.heating-warning-dialog p { margin: 8px 0; font-size: 13px; line-height: 1.65; white-space: pre-line; }
-.heating-warning-dialog strong { color: var(--stale); font-weight: 650; }
-.heating-warning-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.heating-warning-actions button { margin: 0; min-width: 100px; }
+.confirmation-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 22px; border: 1px solid var(--border); border-top: 3px solid var(--stale); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
+.confirmation-dialog::backdrop { background: #0007; }
+.confirmation-dialog h2, .confirmation-dialog h3 { margin: 0 0 10px; font-size: 18px; font-weight: 550; letter-spacing: -.2px; }
+.confirmation-dialog p { margin: 8px 0; font-size: 13px; line-height: 1.65; white-space: pre-line; }
+.confirmation-dialog strong { color: var(--stale); font-weight: 650; }
+.confirmation-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.confirmation-actions button { margin: 0; min-width: 100px; }
 .zone-connections { font-size: 11px; }
 .zone-connections a { color: var(--muted); text-decoration: none; }
 .zone-connections a:hover { color: var(--accent); text-decoration: underline; }
@@ -1362,3 +1361,9 @@ button.status-detail-close:hover { background: var(--surface-soft); color: var(-
 /* Mitsubishi uses the ground-source pump form and table layout. */
 .mitsubishi-table td > strong { display: block; font-weight: 500; }
 .mitsubishi-table .equipment-reading-qualifier { display: block; margin-top: 3px; font-size: 10px; color: var(--muted); }
+
+/* Open branches remain identifiable even among deeply nested learning details. */
+details[open] > summary { background-color: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 3px 0 var(--border); }
+.dashboard-disclosure.heating-zone[open] > summary { box-shadow: inset 3px 0 var(--accent); }
+#dashboard-reset { all: unset; font: inherit; color: inherit; cursor: default; }
+#dashboard-reset:focus-visible { outline: 2px solid var(--focus); outline-offset: 5px; border-radius: 2px; }

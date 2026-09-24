@@ -91,13 +91,13 @@ test('a durable sensor change survives follow-up failure and the same retry crea
   assert.equal(count(), 1);
   const saved = (await call()).body;
   assert.equal(saved.events[0].at, initial);
-  assert.equal(engine.checkpoint.measurementEpochAt, initial);
+  assert.equal(engine.checkpoint.sensorEpochs.indoor_temperature, initial);
   engine.onTemporaryChange = undefined;
   advance(60_000);
   const retried = await post();
   assert.equal(retried.status, 200); assert.equal(count(), 1);
   assert.deepEqual(retried.body.events, saved.events);
-  assert.equal(engine.checkpoint.measurementEpochAt, initial);
+  assert.equal(engine.checkpoint.sensorEpochs.indoor_temperature, initial);
 });
 
 test('offline, replica and protected controllers cannot record sensor changes through HTTP', async t => {
@@ -155,7 +155,7 @@ test('a durable HTTP reversal is retryable after follow-up failure without anoth
   const revision = sensorRevision(store, 'providers');
   assert.ok(revision > event.id);
   assert.equal(engine.checkpoint.sensorRevision ?? 0, 0, 'Saving the correction does not synchronously rebuild');
-  assert.equal(engine.checkpoint.measurementEpochAt, initial);
+  assert.equal(engine.checkpoint.sensorEpochs.indoor_temperature, initial);
   const saved = (await call()).body;
   assert.equal(saved.events[0].at, initial);
   assert.equal(saved.events[0].revertedAt, initial + 60_000);
@@ -186,7 +186,7 @@ test('failed sensor reconstruction can be retried without adding another source 
   assert.equal(reversed.body.rebuild.status, 'failed');
   const retained = engine.readAdaptive(engine.clock());
   assert.equal(retained.sensorRevision ?? 0, 0, 'A failed worker cannot trigger synchronous correction replay');
-  assert.equal(retained.measurementEpochAt, initial);
+  assert.equal(retained.sensorEpochs.indoor_temperature, initial);
   const revision = sensorRevision(store, 'providers');
   const journal = structuredClone(store.learningJournal({ input: 'providers' }));
   manager.workerFactory = workerFactory;

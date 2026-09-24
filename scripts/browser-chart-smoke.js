@@ -105,7 +105,10 @@ try {
   const evaluate = async expression => {
     const result = await command('script.evaluate', { expression, target: { context }, awaitPromise: true });
     if (result.type === 'exception') throw new Error(JSON.stringify(result.exceptionDetails));
-    return result.result.value;
+    const decode = result => result.type === 'array' ? result.value.map(decode)
+      : result.type === 'object' ? Object.fromEntries(result.value.map(([key, value]) => [key, decode(value)]))
+        : result.type === 'null' ? null : result.value;
+    return decode(result.result);
   };
   const browserTimeZone = await evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone');
   const until = async (expression, attempts = 150) => {
@@ -167,9 +170,8 @@ try {
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark');
   assert.equal(await evaluate("document.getElementById('date-start').value"), '2026-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').value"), '2026-09-07');
-  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   await checkDateAlignment();
-  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-back,range-yesterday,range-today,range-tomorrow,range-forward');
   await checkRangeSteps();
@@ -181,7 +183,7 @@ try {
   const meterChoices=JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks'))?.children
     ? [...[...document.querySelectorAll('#left-axis optgroup')].find(group=>group.label.startsWith('Meter checks')).children].map(option=>({key:option.value,label:option.textContent})) : [])`));
   assert.deepEqual(meterChoices.filter(row=>row.key!=='property_import_energy_counter'),[
-    {key:'ev1_session_energy_check',label:'Charger 1'},{key:'shelly_session_energy_check',label:'Charger 2'}]);
+    {key:'ev1_session_energy_check',label:'Charger 1 · kWh · recorded'},{key:'shelly_session_energy_check',label:'Charger 2 · kWh · recorded'}]);
   for(const key of ['ev1_lifetime_energy_counter','ev1_session_energy_counter','ev2_energy'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} has no separate drawer entry`);
   for(const key of ['brine_pump_speed','phase_energy','alarm_code', ...coefficientKeys])assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),true);
@@ -191,7 +193,7 @@ try {
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is compared in the combined home-temperatures view`);
   for(const key of ['model_indoor_temperature','garage_temperature','outdoor_temperature','outdoor_forecast','spot_price','all_in_price'])
     assert.equal(await evaluate(`Boolean(document.querySelector('#left-axis option[value="${key}"]'))`),false,`${key} is already shown on the right axis`);
-  assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify([...document.querySelector('#left-axis optgroup[label="Model coefficients · Calculated"]').children].map(option => option.value))`)),
+  assert.deepEqual(JSON.parse(await evaluate(`JSON.stringify([...document.querySelector('#left-axis optgroup[label="Home learning · coefficients"]').children].map(option => option.value))`)),
     coefficientKeys, 'Only the four fitted Home coefficients have chart choices');
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
@@ -214,7 +216,19 @@ try {
   assert.match(await evaluate("document.getElementById('recording-content').textContent"), /Garage rear temperature/);
   assert.match(await evaluate("document.getElementById('recording-content').textContent"), /Garage front temperature/);
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
-  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,energy-audit-details,recording-overview-details');
+  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,energy-audit-details,recording-overview-details,database-export-details');
+  await evaluate(`(() => {
+    window.exportFixture = { create: URL.createObjectURL, click: HTMLAnchorElement.prototype.click };
+    URL.createObjectURL = blob => { window.exportFixture.blob = blob; return window.exportFixture.create(blob); };
+    HTMLAnchorElement.prototype.click = function () { if (this.download) window.exportFixture.name = this.download; else window.exportFixture.click.call(this); };
+    document.getElementById('database-export-details').open = true;
+    document.getElementById('database-export').click(); return true;
+  })()`);
+  await until("Boolean(window.exportFixture.blob) && !document.getElementById('database-export').disabled");
+  assert.equal(await evaluate("window.exportFixture.blob.slice(0,16).text()"), 'SQLite format 3\0');
+  assert.match(await evaluate("window.exportFixture.name"), /^stmq-.*\.sqlite$/);
+  assert.match(await evaluate("document.getElementById('database-export-message').textContent"), /Download ready/);
+  await evaluate("URL.createObjectURL=window.exportFixture.create; HTMLAnchorElement.prototype.click=window.exportFixture.click; document.getElementById('database-export-details').open=false; true");
   await evaluate("document.querySelector('#recording-overview-details > summary').focus(); true");
   await command('input.performActions',{context,actions:[{type:'key',id:'recording-keyboard',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
   await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");
@@ -272,7 +286,7 @@ try {
     assert.match(checks[1].text,/2 compared · 0 excluded · 2 recorded sessions/);
     assert.match(checks[2].text,/20% energy-weighted difference/);
     assert.match(checks[2].text,/1 compared · 1 excluded · 2 recorded sessions/);
-    assert.match(checks[2].text,/Includes charging losses; not a meter-accuracy percentage/);
+    assert.match(checks[2].text,/Recorded power estimate minus Charger 2 electricity meter/);
     assert(!checks.slice(1).some(row=>row.text.includes('Lifetime energy meter')));
     await evaluate("document.getElementById('energy-audit-details').scrollIntoView({block:'start'}); true");
     const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
@@ -345,21 +359,19 @@ try {
       window.onlyCharger2Fixture.requests++;
       return new Response(JSON.stringify(payload),{status:200,headers:{'content-type':'application/json'}});
     };
-    document.getElementById('date-range-enabled').click();
     document.getElementById('date-end').value='2026-09-08';
     document.getElementById('date-end').dispatchEvent(new Event('change'));
-    document.querySelector('#chart-range-form button[type=submit]').click();
     return true;
   })()`);
   await until("window.onlyCharger2Fixture.requests>0 && document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-08'");
   await checkSeriesDrawn(['charger2_power'],'power');
-  await evaluate("window.fetch=window.onlyCharger2Fixture.fetch; document.getElementById('date-range-enabled').click(); document.getElementById('range-today').click(); true");
+  await evaluate("window.fetch=window.onlyCharger2Fixture.fetch; document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-07'");
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
   assert.equal(await legendState('dhwr'), 'true');
   assert.equal(await legendState('fireplace'), 'true');
-  assert.equal(await evaluate("document.querySelector('#left-axis option[value=firewood_load]').textContent"), 'Manually recorded firewood additions');
+  assert.equal(await evaluate("document.querySelector('#left-axis option[value=firewood_load]').textContent"), 'Manually recorded firewood additions · kg · saved input');
   await checkActivityTracks();
   for (const key of ['dhwr', 'fireplace']) {
     assert.equal(await evaluate(`(async () => {
@@ -402,60 +414,27 @@ try {
     };
     return true;
   })()`);
-  const checkDateDraft = async (edit, start, end = start) => {
-    const before = await evaluate('window.dateFixture.requests');
-    await evaluate(`${edit}; true`);
-    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
-    assert.equal(await evaluate('window.dateFixture.requests'), before, 'Editing an enabled range does not fetch a chart');
-    await checkRange(start, end);
-  };
-  // A single start-date change opens one old day; the disabled end follows it.
+  // Both native pickers apply immediately; the first always resets to one day.
   await evaluate("document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-07');
-  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-07');
-  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
-  // Clicking the label enables a range and places the cursor in the end picker.
-  await checkDateDraft("document.querySelector('.end-date-toggle').click()", '2024-09-07');
-  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
-  assert.equal(await evaluate('document.activeElement.id'), 'date-end');
-  await checkDateDraft("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change'))", '2024-09-07');
-  await checkDateDraft("document.getElementById('date-start').value='2024-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change'))", '2024-09-07');
-  await evaluate("document.querySelector('#chart-range-form button[type=submit]').click(); true");
-  await checkRange('2024-09-06', '2024-09-09');
-  // An end before the start is rejected without replacing the plotted range.
-  await checkDateDraft("document.getElementById('date-end').value='2024-09-05'; document.getElementById('date-end').dispatchEvent(new Event('change')); document.querySelector('#chart-range-form button[type=submit]').click()", '2024-09-06', '2024-09-09');
-  assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), false);
-  await evaluate("document.getElementById('date-range-enabled').click(); true");
+  await evaluate("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
+  await checkRange('2024-09-07', '2024-09-09');
+  await evaluate("document.getElementById('date-start').value='2024-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-06');
-  // Moving the start beyond an enabled end fixes the draft and still waits for Show dates.
-  await checkDateDraft("document.getElementById('date-range-enabled').click(); document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change'))", '2024-09-06');
-  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-12');
-  assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), true);
-  await evaluate("document.querySelector('#chart-range-form button[type=submit]').click(); true");
+  const beforeInvalid = await evaluate('window.dateFixture.requests');
+  await evaluate("document.getElementById('date-end').value='2024-09-05'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
+  assert.equal(await evaluate("document.getElementById('chart-range-form').checkValidity()"), false);
+  assert.equal(await evaluate('window.dateFixture.requests'), beforeInvalid);
+  await checkRange('2024-09-06');
+  await evaluate("document.getElementById('date-start').value='2024-09-12'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-12');
-  await evaluate("document.getElementById('date-end').value='2024-09-21'; document.getElementById('date-end').dispatchEvent(new Event('change')); document.querySelector('#chart-range-form button[type=submit]').click(); true");
+  await evaluate("document.getElementById('date-end').value='2024-09-21'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-12', '2024-09-21');
   await evaluate("document.getElementById('range-back').click(); true");
   await checkRange('2024-09-11', '2024-09-20');
   await evaluate("document.getElementById('range-forward').click(); true");
   await checkRange('2024-09-12', '2024-09-21');
-  // Navigation follows the applied ten-day window, replacing any unsent edits.
-  await checkDateDraft("document.getElementById('date-start').value='2024-08-01'; document.getElementById('date-start').dispatchEvent(new Event('change')); document.getElementById('date-end').value='2024-08-03'; document.getElementById('date-end').dispatchEvent(new Event('change'))", '2024-09-12', '2024-09-21');
-  await evaluate("document.getElementById('range-back').click(); true");
-  await checkRange('2024-09-11', '2024-09-20');
-  assert.equal(await evaluate("document.getElementById('date-start').value"), '2024-09-11');
-  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-20');
-  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
-  await evaluate("document.getElementById('range-forward').click(); document.getElementById('range-forward').click(); document.getElementById('range-back').click(); true");
-  await checkRange('2024-09-12', '2024-09-21');
-  await evaluate("document.getElementById('date-range-enabled').click(); true");
-  await checkRange('2024-09-12');
-  await evaluate("document.getElementById('range-back').click(); true");
-  await checkRange('2024-09-11');
-  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
-  await evaluate("document.getElementById('range-forward').click(); true");
-  await checkRange('2024-09-12');
   // Day stepping uses calendar dates through month/year, leap-day and DST boundaries,
   // including when the browser's own zone differs from the household zone.
   for (const [start, previous] of [
@@ -472,8 +451,7 @@ try {
   await evaluate("window.fetch=window.dateFixture.fetch; true");
   await evaluate("document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
-  assert.equal(await evaluate("document.getElementById('date-end').disabled"), true);
-  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), false);
+  assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   await evaluate("Array.from(document.querySelectorAll('#chart-legend button')).find(b => b.textContent.toLowerCase().includes('spot')).click(); true");
   for (const [left, expected, absent] of [['phases', 'property_current_l1', 'property_power'], ['integral', 'heating_integral', 'charger_power'],
@@ -519,8 +497,7 @@ try {
   await evaluate("document.getElementById('range-yesterday').click(); document.getElementById('range-tomorrow').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-08'");
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
-  assert.equal(await evaluate("document.getElementById('date-range-enabled').checked"), true);
-  await evaluate("document.getElementById('date-start').value='2026-09-08'; document.getElementById('date-end').value='2026-09-08'; document.getElementById('chart-range-form').requestSubmit(); true");
+  await evaluate("document.getElementById('date-start').value='2026-09-08'; document.getElementById('date-end').value='2026-09-08'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-08' && document.getElementById('history').dataset.rangeEnd === '2026-09-08'");
   const tomorrow = await fetch(`${base}/api/chart?start=2026-09-08&end=2026-09-08`).then(r => r.json());
   assert.ok(tomorrow.series.outdoor_forecast.length > 0);
@@ -605,9 +582,9 @@ try {
     await checkActivityTracks();
     await checkDateAlignment();
     await checkRangeSteps();
-    await evaluate("document.getElementById('date-range-enabled').click(); true");
+    await evaluate("true");
     await checkDateAlignment();
-    await evaluate("document.getElementById('date-range-enabled').click(); true");
+    await evaluate("true");
     await capture(`home-energy-dark-${viewport.width}`);
     await evaluate("document.getElementById('fireplace-details').scrollIntoView({block:'start'}); true");
     await capture(`home-energy-fireplace-${viewport.width}`);
@@ -732,8 +709,7 @@ try {
   // Supply capture health independently of the manual-command broker fixture.
   // No MQTT connection, household identifiers or raw TeslaMate fields are used.
   let charger2Status = { source: 'shelly-evse', enabled: true, status: 'ok', reason: 'physical-meter',
-    connected: true, charging: true, home: true, suppressed: null, recording: true,
-    sessionOpen: true, healthy: true, lastMessageAt: now };
+    connected: true, recording: true };
   const realProviderStatus = app.engine.providerStatus.bind(app.engine);
   app.engine.providerStatus = () => ({ ...realProviderStatus(), 'shelly-evse': { ...charger2Status } });
   seedChargingFixture(app.store,'shelly-evse');
@@ -789,7 +765,7 @@ try {
     'Upstairs,Downstairs,Bedroom,Garage rear temperature,Garage front temperature,Outdoor temperature');
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-heading > strong').textContent"),
     'Electricity consumption');
-  assert.equal(await evaluate("document.querySelectorAll('[data-provider=easee], [data-provider=teslamate]').length"), 0,
+  assert.equal(await evaluate("document.querySelectorAll('#providers > [data-provider=easee], #providers > [data-provider=shelly-evse]').length"), 0,
     'Both electricity acquisitions appear in one connection card');
   const electricitySeries = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll(
     '[data-provider=electricity] .provider-series > li > strong')].map(row => row.textContent))`));
@@ -838,21 +814,19 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'The combined electricity connection opens with the keyboard');
   await checkProviderColors(false);
-  charger2Status = { ...charger2Status, status: 'error', reason: 'mqtt-disconnected',
-    connected: false, recording: false, healthy: false };
+  charger2Status = { ...charger2Status, status: 'degraded', reason: 'commissioning-required' };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Needs attention'");
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
-    source: 'Easee, Shelly EVSE', state: 'Needs attention', attention: true }, 'Charger 2 errors reach the closed source overview');
+    source: 'Easee, Shelly EVSE', state: 'Needs attention', attention: true }, 'Charger 2 commissioning needs reach the closed source overview');
   await checkProviderColors(true);
   await evaluate("document.querySelector('[data-provider=electricity] .provider-health .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"),
-    /physical Charger 2 MQTT telemetry/i, 'The connection failure identifies Charger 2');
+    /Physical Charger 2 requires verified model, firmware/i, 'The commissioning requirement identifies Charger 2');
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'Updating capture health preserves the expanded connection');
-  charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter',
-    connected: true, recording: true, healthy: true };
+  charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter' };
   await evaluate("document.getElementById('auth').dispatchEvent(new Event('submit', { cancelable: true })); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'weather', 'Weather forecast is the final provider');
@@ -911,7 +885,7 @@ try {
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-total-series-and-session-check',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-latest-plus-charger-session-averages','session-counts-exclusions-and-energy-weighting'],
-    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'optional-end-date', 'range-drafts-require-show-dates', 'one-day-window-stepping', 'unsent-range-drafts-replaced-by-navigation', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'immediate-end-date', 'immediate-date-range', 'one-day-window-stepping', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
   if(ownsBrowser) { try {await command('browser.close',{});}catch{} }

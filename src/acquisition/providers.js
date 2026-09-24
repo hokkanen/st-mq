@@ -162,9 +162,10 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const location = configuredLocation(connections);
   const ownsDevices = !devices;
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
-  // selects a usable H66 reading before either weather source.
+  // uses only these weather sources for outdoor temperature.
   devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory,
     retryState: store.getState('providers:health')?.easee,
+    ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value) },
     fallbackIntervalMs: config.acquisition?.easeeIntervalMs ?? 15_000,
     onStreamDisconnect: ids => interruptElectricity(ids),
     onChargerObservation: observation => engine.charging?.receiveEaseeObservation(observation),
@@ -238,6 +239,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   const interruptedDevices = new Set();
 
   function streamHealth() {
+    health.easee.localOcpp = devices.localOcppStatus?.() ?? null;
+    health.easee.deviceTransports = devices.deviceTransports?.() ?? null;
     const stream = devices.streamStatus?.();
     if (stream) {
       health.easee.stream = stream;

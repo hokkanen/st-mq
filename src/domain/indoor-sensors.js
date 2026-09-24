@@ -43,7 +43,9 @@ export function indoorAverage(readings, config = {}) {
       ? readings[signal].availabilityReasons : [Number.isFinite(readings[signal]?.value)
         && (readings[signal].value <= 2 || readings[signal].value >= 40) ? 'out-of-range' : 'missing-reading'] }));
   const reportMissing = signals.some(signal => readings[signal]?.periodicReports && readings[signal].stale);
-  return { value: known && !reportMissing ? signals.reduce((sum, signal) => sum + readings[signal].value * weights[signal], 0) : null,
+  const measurementChanged = signals.some(signal => readings[signal]?.availabilityReasons
+    ?.some(reason => ['sensor-settling', 'before-sensor-change'].includes(reason)));
+  return { value: known && !reportMissing && !measurementChanged ? signals.reduce((sum, signal) => sum + readings[signal].value * weights[signal], 0) : null,
     observedAt: known ? Math.min(...signals.map(signal => readings[signal].observedAt)) : null,
     stale: !usable, source: signals.length === 1 ? readings[signals[0]]?.source ?? 'indoor-average' : 'indoor-average',
     quality: usable ? [...new Set(signals.flatMap(signal => readings[signal].quality ?? []))] : ['missing'], weights,

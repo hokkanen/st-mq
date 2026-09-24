@@ -271,8 +271,8 @@ test('a managed pause is restored before ordinary native settings can change', a
 
 test('all streamed optional values retain their own clocks and diagnostic qualification without electrical accounting', t => {
   const f = fixture(t);
-  const fields = { energyCounterRaw: [1234, 'count'], actualFan: [3, 'stage'], preheat: [false, 'boolean'],
-    standby: [true, 'boolean'], faultRaw: ['00000100', null] };
+  const fields = { energyCounterRaw: [1234, 'count'], actualFan: [3, 'stage'], preheat: [false, null],
+    standby: [true, null], faultRaw: ['00000100', null] };
   let sequence = 1;
   for (const [key, [value, unit]] of Object.entries(fields)) {
     f.adapter.receive(SETTINGS.telemetryTopic, JSON.stringify({ schema: SHELLY_CN105_CONTRACT,

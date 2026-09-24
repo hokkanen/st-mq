@@ -966,7 +966,7 @@ test('observed charger energy and cost use the same detail metrics with complete
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
   const item = charger('charger2'), finishAt = startAt + 2 * 3600_000;
   const observed = { ...item, values: { ...item.values, connected: reading(true), scheduledStartAt: reading(startAt) },
-    progress: { deliveredGridKwh: 4, remainingGridKwh: 32 }, forecast: { state: 'forecast', controlled: false, startAt, finishAt } };
+    sessionCost: { recordedGridKwh: 4 }, progress: { deliveredGridKwh: 4, remainingGridKwh: 32 }, forecast: { state: 'forecast', controlled: false, startAt, finishAt } };
   const snapshot = { ...status(active(), observed), prices: [
     { start: startAt, end: startAt + 3600_000, allInCentsPerKWh: 5 },
     { start: startAt + 3600_000, end: finishAt, allInCentsPerKWh: 15 },
@@ -1002,5 +1002,21 @@ test('compact operational facts keep their explanations and focus through the tr
   assert(refreshed.querySelector('.status-detail-trigger') === trigger, 'Adding a live-current row retains the existing explanation trigger');
   assert.equal(popup.hidden, false); assert.match(popup.textContent, /22 A per phase · received 21:01/);
   document.dispatch('keydown', { key: 'Escape' }); assert.equal(document.activeElement, trigger); assert(trigger.isConnected);
+  panel.close();
+});
+
+test('Added energy keeps the recorded connection total after a new battery reading and expired ready-by', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = active();
+  item.sessionCost = { recordedGridKwh: 18.4, deliveredGridKwh: 20 };
+  item.progress = { deliveredGridKwh: 0, remainingGridKwh: 0, estimatedSoc: 80 };
+  item.values = { ...item.values, connected: reading(true), charging: reading(false) };
+  item.control = { phase: 'released' };
+  item.plan = { deadlineAt: now - 3600_000, state: 'release' };
+  panel.update(status(item));
+  assert.equal($('charger1-delivered').textContent, '18.4 kWh', 'Cost-only estimated missing energy is not presented as measured energy');
+  panel.update(status({ ...item, values: { ...item.values, connected: reading(false) }, sessionCost: null }));
+  assert.equal($('charger1-delivered').textContent, '—');
   panel.close();
 });

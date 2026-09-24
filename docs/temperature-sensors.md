@@ -20,10 +20,10 @@ the subscription fields require exact topics, not a wildcard such as
 The chart shows one **Average indoor** series on the right axis, using the existing
 indoor temperature colour. This is the same fixed average of configured indoor
 sensors used by the thermal model: Upstairs, Bedroom and Downstairs each contribute
-one third when all three are configured with the default weights. The **Home
-temperatures · Recorded** section of the **Left axis** drawer contains one option,
-**All home temperatures**, which adds the room and configured garage probes on the left
-axis. Both air temperature axes then use the same scale. Garage remains a shared
+one third when all three are configured with the default weights. The **Room
+temperatures** section of the **Left axis** drawer contains one option,
+**Home and garage temperatures**, which adds the rooms and Garage front on the left
+axis. Both air temperature axes then use the same scale. Garage rear remains a shared
 right-axis series with its existing colour and legend control. Average indoor keeps
 its green colour, with terracotta for Upstairs, violet for Bedroom, amber for Downstairs and
 blue for Outdoor. The summary above the chart shows Average indoor and Outdoor;
@@ -110,7 +110,7 @@ not recorded instead of guessing.
 | Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, control falls back. Learning rejects a whole window containing a report gap. |
 | Garage | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. Garage is monitoring/history only. |
 | Legacy indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
-| H66 outdoor and equipment | Five-minute source validity, shared by live selection, recording, chart reconstruction and learning | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
+| H66 equipment (outdoor register excluded from weather selection/history) | Five-minute source validity for equipment diagnostics | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
 | FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
 
 H66 ordinarily supplies no sensor measurement timestamp. Messages explicitly
@@ -134,8 +134,9 @@ the display preserves that uncertainty. Synchronization age is reported
 separately from sensor age. Historical model tooltips evaluate age at the saved
 window, not the current time.
 
-These diagnostic changes preserve the current committed learning inputs,
-algorithm, seed and replay interpretation. Incompatible development algorithms
+Source timestamps, seeds and current committed inputs retain deterministic replay.
+The current v13 sensor-boundary and FMI/Open-Meteo selection semantics require
+a deliberate fresh development start for older algorithm checkpoints. Incompatible development algorithms
 are rejected; permitted v0.7.5 CSV imports retain their timestamp/quality meaning.
 
 The committed journal saves each contributing endpoint and weight, observation
@@ -168,9 +169,13 @@ same device identifier. It does not edit device configuration or backdate a chan
 For a participating indoor sensor or the outdoor temperature, the action:
 
 - Preserves raw readings and the old measurement history.
-- Clears affected model validation, accumulated fitting samples, temperature
-  state, aggregate and room comfort references. House coefficients remain
-  provisional starting estimates until new evidence validates them.
+- Retains model validation, fitting samples, completed episodes, fitted coefficients
+  and aggregate and room comfort references. New clean observations recalibrate
+  them gradually through the existing adaptation rules; no offset is guessed.
+- Resets only the current temperature propagation state. Fitting and prediction
+  never cross a sensor-change boundary, including a change between sparse samples.
+- Masks only the changed sensor during settling. An outdoor change does not erase
+  indoor observations, and one room change keeps the other rooms' readings.
 - Discards pending optimisation and marks an active cycle incomplete, preserving
   its original forecast and observations. Normal heating remains available.
 - Excludes the transition and a 30-minute settling period, then requires fresh
@@ -185,7 +190,7 @@ read-only replica; changes must be managed on the controlling instance.
 
 To undo a mistaken entry, choose **Revert and relearn** beside it and confirm.
 The original event remains in history with its reversal time. Relearning uses
-recorded observations as if that reset had not happened, including measurements
+recorded observations as if that measurement boundary had not been recorded, including measurements
 collected during its settling period. Other active sensor changes still apply.
 The corrected model is built in the background while heating control remains
 available; the complete, caught-up result replaces the previous model together.
@@ -202,7 +207,7 @@ confirmed after a connection failure, **Retry saving** reuses the original reque
 and cannot duplicate the entry or reversal, including after a page reload. If the
 background work fails, **Retry relearning** restarts it while the previous model
 remains active. Garage and nonparticipating indoor entries use **Revert change**
-because they did not reset house learning. Reversal applies only to the current
+because they did not change house learning eligibility. Reversal applies only to the current
 algorithm and source-event contract; unsupported development payloads are rejected.
 
 No offset is inferred from the jump at a change. Comparing replacement sensors

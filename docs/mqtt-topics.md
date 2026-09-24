@@ -29,8 +29,8 @@ usable capacity and the original measurement timestamps.
 
 ## Caravan devices
 
-Caravan air retains its installed Shelly BLU bridge topic `stmq/home/blu_ht/state`
-and read-only query `stmq/home/blu_ht/get`; its Garage label does not change that route.
+Caravan air uses the Shelly BLU bridge topic `stmq/garage/caravan_air/state`
+and read-only query `stmq/garage/caravan_air/get`. Reinstall the generated bridge with this prefix at cutover.
 The future dehumidifier uses the separate `stmq/garage/caravan_dehumidifier` prefix
 with `/state` snapshots, `/set` commands, `/get` readback queries and `/availability`.
 See the [payload and confirmation contract](caravan-dehumidifier.md). It does not

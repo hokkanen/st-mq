@@ -181,8 +181,8 @@ test('add and revert require an impact-specific confirmation, cancellation saves
   actions.update(view(1, [event()]));
   assert.equal(await actions.add('indoor_temperature', 'replacement'), false);
   assert.match(confirmations[0], /Upstairs.*replacement/);
-  assert.match(confirmations[0], /all room comfort references/);
-  assert.match(confirmations[0], /Thermal coefficients remain/);
+  assert.match(confirmations[0], /room comfort references are kept/);
+  assert.match(confirmations[0], /learned coefficients, validation evidence/);
   assert.equal(await actions.revert(1), false);
   assert.match(confirmations[1], /Revert the Upstairs sensor change/);
   assert.match(confirmations[1], /readings excluded while it settled/);

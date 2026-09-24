@@ -276,7 +276,7 @@ test('a failed observation-cache transaction restores both SQLite history and in
   } finally { await providers.close(); }
 });
 
-test('failed outdoor cache writes restore provider candidates while H66 remains the selected outdoor signal', async t => {
+test('failed outdoor cache writes restore provider candidates while FMI remains the selected outdoor signal', async t => {
   const f = fixture(t);
   f.config.connections = { geoloc: { latitude: 60, longitude: 25 } };
   delete f.options.temperatureProvider;
@@ -291,7 +291,7 @@ test('failed outdoor cache writes restore provider candidates while H66 remains 
   const setState = f.store.setState.bind(f.store);
   try {
     await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
     f.setTime(initial + 10 * MINUTE); f.engine.ingest(h66(initial + 10 * MINUTE));
     const before = {
       latest: structuredClone(f.engine.latest), candidates: structuredClone(f.engine.outdoorCandidates),
@@ -310,12 +310,12 @@ test('failed outdoor cache writes restore provider candidates while H66 remains 
     assert.deepEqual(f.engine.providerObservations(), before.providers);
     assert.deepEqual(f.store.getState('provider:observations'), before.cached);
     assert.deepEqual(f.store.observations({ signal: 'outdoor_temperature' }), before.history);
-    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
     f.store.setState = setState;
     const nextAt = f.store.getState('providers:health').outdoor.nextAttemptAt;
     f.setTime(nextAt); f.engine.ingest(h66(nextAt)); await providers.runDue();
     assert.equal(f.store.getState('providers:health').outdoor.status, 'ok');
-    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
     assert.equal(f.engine.outdoorCandidates.openmeteo.value, 7);
     assert.deepEqual(f.store.getState('provider:observations').map(row => row.source).sort(), ['fmi', 'openmeteo']);
   } finally { f.store.setState = setState; await providers.close(); }
@@ -337,8 +337,8 @@ test('weather candidates survive polling and restart while live H66 publications
     await providers.runDue();
     now = initial + 10 * MINUTE; f.setTime(now); source = 'openmeteo'; f.engine.ingest(h66());
     await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.source, 'husdata-h66');
-    assert.deepEqual(Object.keys(f.engine.outdoorCandidates).sort(), ['fmi', 'husdata-h66', 'openmeteo']);
+    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.deepEqual(Object.keys(f.engine.outdoorCandidates).sort(), ['fmi', 'openmeteo']);
     const cached = f.store.getState('provider:observations');
     assert.deepEqual(cached.map(row => row.source).sort(), ['fmi', 'openmeteo']);
     assert.deepEqual(f.engine.providerObservations(), cached);
@@ -351,9 +351,9 @@ test('weather candidates survive polling and restart while live H66 publications
     assert.equal(restored.status().observations.outdoor.source, 'fmi');
     assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).length, count, 'Restoring provider cache must not duplicate history');
     restored.ingest(h66());
-    assert.equal(restored.status().observations.outdoor.source, 'husdata-h66');
+    assert.equal(restored.status().observations.outdoor.source, 'fmi');
     now = initial + 31 * MINUTE;
-    assert.equal(restored.status().observations.outdoor.source, 'openmeteo', 'Persisted backup remains usable when H66 and FMI expire');
+    assert.equal(restored.status().observations.outdoor.source, 'openmeteo', 'Persisted backup remains usable when FMI expires');
     assert.equal(restored.status().observations.outdoor.stale, false);
   } finally { await providers.close(); }
 });

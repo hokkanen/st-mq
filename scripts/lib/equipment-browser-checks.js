@@ -282,7 +282,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until 
     assert.match(await evaluate(`document.querySelector('${appliance}').textContent`), /electriQ DESD8LW.*Awaiting first MQTT report/);
     assert.equal(await evaluate(`Array.from(document.querySelectorAll('${appliance} button, ${appliance} select')).every(node=>node.disabled)`), true);
     assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#equipment-connections [data-connection-area=garage] .equipment-connection-fold')).map(node=>node.dataset.deviceId)"),
-      ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan','door1','door2','caravan_dehumidifier']);
+      ['connection:garage-adapter:garage','garage-probes','blu_ht','caravan_dehumidifier','caravan','door1','door2']);
     assert.equal(await evaluate(`document.querySelector('${caravan}').open`), true, 'Adding Caravan devices preserves the open fold');
     for (const [width,height] of [[1440,1100],[390,1000],[320,900]]) {
       await command('browsingContext.setViewport',{context,viewport:{width,height},devicePixelRatio:1}); await settle();

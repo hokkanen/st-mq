@@ -25,11 +25,6 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
     const span = view.to - view.from, available = bounds.to - bounds.from - span;
     canvas.dataset.viewFrom = String(view.from); canvas.dataset.viewTo = String(view.to);
     canvas.dataset.selectedFrom = String(bounds.from); canvas.dataset.selectedTo = String(bounds.to); canvas.dataset.zoom = String(zoom);
-    $('chart-pan-back').disabled = !fullscreen || view.from <= bounds.from;
-    $('chart-pan-forward').disabled = !fullscreen || view.to >= bounds.to;
-    $('chart-zoom-out').disabled = !fullscreen || zoom <= 1.000001;
-    $('chart-zoom-in').disabled = !fullscreen || span <= Math.min(minimum, baseSpan());
-    $('chart-zoom-reset').disabled = !fullscreen;
     const navigator = $('chart-navigator');
     navigator.disabled = !fullscreen || available <= 1; navigator.value = String(available > 0 ? 1000 * (view.from - bounds.from) / available : 0);
     navigator.setAttribute('aria-valuetext', `${stamp.format(view.from)} to ${stamp.format(view.to)}`);
@@ -183,10 +178,6 @@ export function createChartNavigation({ canvas, getChart, onSettle }) {
   }
   listen($('chart-fullscreen'), 'click', enter);
   for (const shortcut of shortcuts) listen(shortcut, 'click', enter);
-  listen($('chart-zoom-in'), 'click', () => zoomBy(2)); listen($('chart-zoom-out'), 'click', () => zoomBy(0.5));
-  listen($('chart-zoom-reset'), 'click', reset);
-  listen($('chart-pan-back'), 'click', () => view && move(panView(view, bounds, -0.65)));
-  listen($('chart-pan-forward'), 'click', () => view && move(panView(view, bounds, 0.65)));
   listen($('chart-navigator'), 'input', event => {
     if (!fullscreen || !view) return;
     const span = view.to - view.from, from = bounds.from + Number(event.target.value) / 1000 * (bounds.to - bounds.from - span);

@@ -347,10 +347,11 @@ test('Garage separates validation, sources and planning with honest missing and 
   assert(display.evidenceDetails.some(row => row.key === 'rear-cooling-error'));
   assert(!display.outcomeDetails.some(row => row.key === 'rear-cooling-error'));
   assert(display.planningDetails.some(row => row.key === 'daily-pause-limit' && row.value === '1'));
-  assert.match(Object.fromEntries(display.rows)['Normal heating setting basis'], /5 °C saved · External sensor · active/);
+  assert.match(Object.fromEntries(display.rows)['Normal heating setting basis'], /5 °C saved · Garage rear · active/);
   for (const rows of [display.outcomeDetails, display.evidenceDetails, display.inputDetails, display.coefficientDetails, display.planningDetails]) {
     assert.equal(new Set(rows.map(row => row.key)).size, rows.length);
     assert(rows.every(row => row.title && row.value && row.provenance && row.detail));
+    assert(rows.every(row => row.calculation?.paragraphs?.length >= 1), 'Every Garage entry offers methodology and limits');
   }
   assert.deepEqual(garage, before);
   for (const [source, provenance] of [['fmi', 'Recorded'], ['husdata-h66', 'Recorded'], ['openmeteo', 'Modeled']])
@@ -406,7 +407,7 @@ test('saved external room setting identifies active and fallback control while n
   const document = { getElementById: id => nodes.get(id) };
   renderGarage(document, { now, garage });
   assert.equal(nodes.get('garage-native-target').textContent, '5 °C');
-  assert.equal(nodes.get('garage-native-target-basis').textContent, 'External sensor · active');
+  assert.equal(nodes.get('garage-native-target-basis').textContent, 'Garage rear · active');
   assert.equal(nodes.get('garage-native-target-basis').hidden, false);
   assert.equal(garage.adapter.native.targetC, 17);
   const rows = Object.fromEntries(garageDisplay(garage).rows);

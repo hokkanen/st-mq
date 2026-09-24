@@ -130,7 +130,7 @@ their paired normal-heating reference and separate electrical validation are
 explained in [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
 Only outdoor temperature and solar radiation are weather inputs. Current outdoor
-source priority remains H66, FMI station, then Open-Meteo. Solar remains an archived
+source priority is FMI station, then Open-Meteo. Solar remains an archived
 forecast from FMI with Open-Meteo backup, never a claimed radiation observation.
 The forecast available at the start of a completed interval supplies its solar
 input. Missing radiation remains unknown and adds uncertainty. No wind, cloud or

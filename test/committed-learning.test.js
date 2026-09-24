@@ -18,7 +18,7 @@ function knownContext(store, at = start, changes = {}, configuration = config) {
     roomBoostC: 0, ...changes }, at, { config: configuration });
 }
 function sourceFor(signal) {
-  return signal === 'indoor_temperature'
+  return signal === 'outdoor_temperature' ? { source: 'fmi', device: 'invented-weather' } : signal === 'indoor_temperature'
     ? { source: 'mqtt-temperature', device: 'invented-room' }
     : { source: 'husdata-h66', device: 'invented-gateway' };
 }
@@ -118,14 +118,16 @@ test('held indoor input outlives freshness while retaining its actual source tim
   assert.equal(held.outdoorC, null, 'Outdoor observations retain their own freshness requirement');
 });
 
-test('recorded outdoor windows preserve source priority and fall back only after the source expires', t => {
+test('recorded outdoor windows prefer FMI, fall back to Open-Meteo and ignore H66', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);
   for (const minute of [0, 5, 10, 15]) record(store, 'outdoor_temperature', 0, start + minute * MINUTE);
-  for (const minute of [2, 7, 12]) record(store, 'outdoor_temperature', 10, start + minute * MINUTE,
-    { source: 'fmi', raw: null });
+  for (let minute = 0; minute <= 60; minute += 5) record(store, 'outdoor_temperature', 10, start + minute * MINUTE,
+    { source: 'openmeteo', raw: null, quality: ['estimated'] });
+  record(store, 'outdoor_temperature', -40, start + 55 * MINUTE, { source: 'husdata-h66' });
   assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 15 * MINUTE, config }).outdoorC, 0);
-  assert.ok(Math.abs(committedLearningSample({ store, input: 'mqtt', at: start + 30 * MINUTE, config }).outdoorC - 20 / 3) < 1e-10);
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 45 * MINUTE, config }).outdoorC, 0);
+  assert.equal(committedLearningSample({ store, input: 'mqtt', at: start + 60 * MINUTE, config }).outdoorC, 10);
 });
 
 test('forecast provenance rejects stale issuance and solar fetched after the causal boundary', t => {
@@ -376,7 +378,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v12-passive-thermal');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v13-scoped-sensor-changes');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);

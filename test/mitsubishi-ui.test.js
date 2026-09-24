@@ -169,7 +169,7 @@ test('room setting permits 5°C only when advertised and preserves the saved tar
   assert.equal(f.nodes.get('garage-native-temperature').min, 5);
   assert.equal(f.nodes.get('garage-native-temperature').value, '5');
   assert.equal(f.nodes.get('garage-native-temperature-help').hidden, false);
-  assert.match(f.nodes.get('garage-room-temperature-status').textContent, /5 °C saved.*External temperature control is unavailable/);
+  assert.match(f.nodes.get('garage-room-temperature-status').textContent, /Room setting 5 °C.*External temperature control is unavailable/);
   for (const value of ['4.5', '31.5', '5.25']) { f.nodes.get('garage-native-temperature').value = value; await f.submit(); }
   assert.equal(f.calls.length, 0);
   f.nodes.get('garage-native-temperature').value = '5';
@@ -190,7 +190,7 @@ test('room control status distinguishes acknowledgement, preparation and fallbac
   garage.roomTemperature = { targetC: 5, phase: 'active', sourceC: 5.25, measuredAt: now,
     offsetC: 12, suppliedC: 17.25, nativeTargetC: 17, acknowledged: true };
   const before = structuredClone(garage), room = mitsubishiRoomTemperature(garage);
-  assert.equal(room.value, '5 °C'); assert.equal(room.basis, 'External sensor · active');
+  assert.equal(room.value, '5 °C'); assert.equal(room.basis, 'Garage rear · active');
   assert.match(room.detail, /native pump target of 17 °C/);
   assert.match(room.detail, /adds 12 °C/); assert.match(room.detail, /Garage rear: 5.25 °C/);
   assert.match(room.detail, /Supplied temperature: 17.25 °C/);
@@ -228,5 +228,5 @@ test('external room targets remain visible but cannot be submitted from read-onl
   assert.equal(f.calls.length, 0);
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   assert.doesNotMatch(html, /assume-isave|Assume i-save|Assumes i-save|controller’s assumption/);
-  assert.match(html, /Garage rear sensor.*pump set to 17 °C/);
+  assert.match(html, /room setting is maintained using Garage rear.*pump itself stays at 17 °C/);
 });

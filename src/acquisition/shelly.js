@@ -143,21 +143,24 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   }
   function temperatureStatus(device, status, at, full) {
     if (!hasTemperature(device) || !status && !full) return;
-    if (status && device.generation > 1 && status.id !== device.temperatureId) return;
+    if (status && device.generation > 1 && status.id !== undefined && status.id !== device.temperatureId) return;
     if (!full && status && !Object.hasOwn(status, 'tC') && !status.errors?.length) return;
     const good = valid(status?.tC, -60, 100) && !status.errors?.length;
     emit(device, tempName(device), good ? status.tC : null, 'degC', at, good ? [] : ['invalid-temperature']);
   }
-  function customStatus(device, result, at, full) {
+  function customStatus(device, result, at, full, temperaturesOnly = false) {
     let found = false;
     for (const mapping of device.customReadings) {
+      if (temperaturesOnly && !mapping.component?.startsWith('temperature:')) continue;
       const component = result[mapping.component];
       if (!component && !full) continue;
       if (!component && !mapping.required && !device.readings[mapping.signal]) continue;
       const defaultPath = mapping.component?.startsWith('temperature:') ? 'tC' : mapping.component?.startsWith('input:') ? 'state'
         : mapping.component?.startsWith('switch:') ? 'output' : mapping.component?.startsWith('humidity:') ? 'rh' : 'value';
       let value = property(component, mapping.path ?? defaultPath);
-      if (component && device.generation > 1 && component.id !== Number(mapping.component.split(':')[1])) continue;
+      // NotifyStatus identifies partial components by their object key and may
+      // omit the redundant id; an explicitly different id is still rejected.
+      if (component && device.generation > 1 && component.id !== undefined && component.id !== Number(mapping.component.split(':')[1])) continue;
       if (!full && value === undefined && !component?.errors?.length) continue;
       if (typeof value === 'boolean') value = Number(value);
       if (scalar(value)) value = value * (mapping.scale ?? 1) + (mapping.offset ?? 0);
@@ -167,10 +170,10 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     }
     return found;
   }
-  function fullStatus(device, result, at) {
-    if (stateName(device)) switchStatus(device, result[`${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`], at, { full: true });
+  function fullStatus(device, result, at, temperaturesOnly = false) {
+    if (stateName(device) && !temperaturesOnly) switchStatus(device, result[`${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`], at, { full: true });
     temperatureStatus(device, result[`temperature:${device.temperatureId}`], at, true);
-    customStatus(device, result, at, true);
+    customStatus(device, result, at, true, temperaturesOnly);
   }
   function gen1(device, suffix, payload, at) {
     const switchPath = `relay/${device.switchId}`;
@@ -274,19 +277,31 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
           const validIdentity = typeof result.id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{2,119}$/.test(result.id)
             && (result.gen === undefined || [2, 3, 4].includes(result.gen))
             && frame.src === result.id;
-          request.device.identity = validIdentity ? result.id : null; reception.afterCommit(() => request.complete?.(validIdentity ? 'received' : 'invalid')); return true;
+          request.device.identity = validIdentity ? result.id : null;
+          reception.afterCommit(() => {
+            request.complete?.(validIdentity ? 'received' : 'invalid');
+            // Initial status can win the identity RPC race and be rejected.
+            // Immediately obtain an authenticated snapshot after identification.
+            if (validIdentity) requestStatus(request.device).catch(() => {});
+          }); return true;
         }
         if (['Shelly.GetStatus', 'Switch.GetStatus'].includes(request.method)) {
-          if (frame.id < Math.max(request.device.writeOrder, request.device.observationOrder)) { reception.afterCommit(() => request.complete?.('superseded')); return true; }
+          // An unrelated partial notification must not discard this complete
+          // snapshot. emit() compares each component's own evidence clock.
+          if (frame.id < request.device.writeOrder || request.method === 'Switch.GetStatus'
+            && frame.id < request.device.observationOrder) { reception.afterCommit(() => request.complete?.('superseded')); return true; }
           if (request.method === 'Switch.GetStatus' && result.id !== request.device.switchId) { reception.afterCommit(() => request.complete?.('invalid')); return true; }
-          request.device.observationOrder = frame.id;
+          // Relay evidence retains its packet-order fence even when a probe
+          // from this complete snapshot can still supply newer source evidence.
         }
         request.device.lastAt = receivedAt; request.device.connected = request.device.available = true;
-        if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, request.at);
+        if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, request.at,
+          frame.id < request.device.observationOrder);
         else if (request.method === 'Switch.GetStatus') switchStatus(request.device, result, request.at,
           { full: true, readback: request.purpose === 'readback', commandId: request.commandId });
         else if (request.method === 'Switch.Set') reception.afterCommit(() => { send(request.device, 'Switch.GetStatus', { id: request.device.switchId },
           { purpose: 'readback', commandId: request.commandId }).catch(() => {}); });
+        request.device.observationOrder = Math.max(request.device.observationOrder, frame.id);
         reception.afterCommit(() => request.complete?.('received')); return true;
       }
       let at = receivedAt;

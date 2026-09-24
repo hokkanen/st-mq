@@ -162,3 +162,10 @@ export function timingDisplay(key, result = {}, payload = {}) {
     periodExplanation, smallDifferenceExplanation, availablePowerPeriod, auxiliaryNotes, evidenceExplanation,
     rateSummary, ratePeriod };
 }
+
+/** Stable card identity; values and coverage always come from the chosen meter scope. */
+export function chargingTimingDisplay(payload, scope = 'total') {
+  if (!['charger1', 'charger2', 'total'].includes(scope)) throw new RangeError('Choose Charger 1, Charger 2 or Total.');
+  const key = scope === 'total' ? 'charger' : scope;
+  return { ...timingDisplay(key, payload?.timingBenefit?.[key], payload), key: 'charger', name: 'Charging', scope };
+}

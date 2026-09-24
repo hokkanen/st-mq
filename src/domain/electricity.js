@@ -68,9 +68,10 @@ export class ElectricityAccumulator {
       // Reported power and VI inputs have independent clocks; changing the
       // estimation basis is not a reversal of the same source measurement.
       const sameBasis = previous?.quality.includes('reported_active_power') === snapshot.quality.includes('reported_active_power');
+      const sameTransport = previous?.quality.includes('local_ocpp') === snapshot.quality.includes('local_ocpp');
       const sourceRolledBack = previous && sameBasis && snapshot.sourceTime < previous.sourceTime;
       const previousMaxAge = previous?.quality.includes('device_telemetry_confirmed') ? this.maxTelemetryAgeMs : this.maxAgeMs;
-      if (previous && now > previous.at && now - previous.at <= this.maxGapMs && !sourceRolledBack
+      if (previous && sameTransport && now > previous.at && now - previous.at <= this.maxGapMs && !sourceRolledBack
         && now - (previous.telemetryAt ?? previous.sourceTime) <= previousMaxAge) {
         const hours = (now - previous.at) / HOUR;
         const energies = snapshot.powers.map((power, index) => (previous.powers[index] + power) * 0.5 * hours);
@@ -112,6 +113,7 @@ export class ElectricityAccumulator {
     const reportedPower = usable(power) || confirmed;
     let used, powers;
     const quality = ['estimated', 'phase_allocation_estimated'];
+    if (rows.some(row => row.raw?.transport === 'ocpp')) quality.push('local_ocpp');
     if (confirmed) quality.push('device_telemetry_confirmed');
     if (reportedPower && !usable(power)) quality.push('held_power_with_live_telemetry');
     if (reportedPower && power.value === 0) {

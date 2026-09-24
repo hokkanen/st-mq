@@ -1,3 +1,5 @@
+import { createDashboardReset } from './dashboard-reset.js';
+import { confirmAction } from './confirmation.js';
 import { renderLearningRows } from './learning-rows.js';
 import { renderGarage, createGarageControls } from './garage-status.js';
 import { createMitsubishiControls } from './mitsubishi.js';
@@ -7,6 +9,7 @@ import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, t
 import { activeRates, rateRows, temporaryValues, homePolicyValues } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
+import { bindDatabaseExport } from './database-export.js';
 import { learningOverview, garageLearningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
@@ -18,12 +21,13 @@ import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { setStatusDetail } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
-import { confirmPausedHeating, homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
+import { homeHeatingWarning, garageHeatingWarning } from './heating-warning.js';
 import { createDashboardLayout } from './dashboard-layout.js';
 import { createPageFullscreen } from './page-fullscreen.js';
 import { heatingRequestResult, h66RequestResult, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
+createDashboardReset({ document, button: $('dashboard-reset') });
 createPageFullscreen({ document, button: $('fullscreen-toggle') });
 createDashboardLayout(document.querySelector('.controller-panels'));
 for (const summary of document.querySelectorAll('.zone-summary')) {
@@ -749,7 +753,7 @@ async function testHeating(command) {
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !lastStatus?.heatingTests?.available) return;
   if (command === 'preheat' && lastStatus.heatingTests.preheatAvailable !== true) return;
   if (command !== 'circulation' && lastStatus.override?.expiresAt > lastStatus.now
-    && !await confirmPausedHeating({ document, title: 'Change heating while price control is paused?',
+    && !await confirmAction({ document, title: 'Change heating while price control is paused?',
       message: `${heatingCommandLabel(command)} will stay until ${time(lastStatus.override.expiresAt)} or Resume now. Room temperatures may change while automatic price control is paused. Previous settings return when the pause ends.`,
       action: `Apply ${heatingCommandLabel(command).toLowerCase()}` })) return;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
@@ -798,7 +802,7 @@ $('h66-test-form').addEventListener('submit', async event => {
   const register = $('h66-test-register').value;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !h66Control(lastStatus?.h66, register).available) return;
   if (lastStatus.override?.expiresAt > lastStatus.now
-    && !await confirmPausedHeating({ document, title: 'Change a parameter while price control is paused?',
+    && !await confirmAction({ document, title: 'Change a parameter while price control is paused?',
       message: `This parameter will stay until ${time(lastStatus.override.expiresAt)} or Resume now. It can affect heating and hot water while automatic price control is paused. The previous value returns when the pause ends.`,
       action: 'Apply parameter' })) return;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
@@ -821,6 +825,8 @@ $('h66-test-form').addEventListener('submit', async event => {
 });
 const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
   details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
+bindDatabaseExport({ button: $('database-export'), message: $('database-export-message'), window, document,
+  request: () => fetch(applicationUrl('/api/database-export'), { headers: token ? { Authorization: `Bearer ${token}` } : {} }) });
 $('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);

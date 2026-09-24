@@ -157,3 +157,13 @@ Electrical validation covers the complete OFF/recovery interval. Missing OFF
 power is unknown, measured zero is valid coverage, and measured standby power is
 included. Thermal validation remains available without electrical metering;
 assumed-zero economics does not become observed full-cycle validation.
+
+## Dashboard explanations
+
+Garage learning uses the Home learning structure: outcomes and validation,
+model inputs, coefficients, and planning/safeguards. Every Garage entry includes
+an expandable calculation or eligibility explanation. Cooling, recovery,
+electricity, observed validation duration and the reference-pipe heat balance
+show their equations and assumptions separately. Model reconstruction requires
+the complete committed journal, initial seed, configuration and matching software;
+it does not certify physical command delivery or measured savings.

@@ -416,6 +416,7 @@ test('Caravan groups air and pending dehumidifier with energy, preserving disclo
   assert.equal(fan.value, 'high'); assert.equal(fan.disabled, false);
   assert.match(appliance.querySelector('.equipment-control-result').textContent, /device reported/);
   liveDevice.dehumidifier.available = false;
+  liveDevice.dehumidifier.temperatureControl = { enabled: true, colocated: false, reason: 'air-unavailable' };
   panel.update({ ...next, role: 'replica' }); assert.equal(fan.disabled, true);
   assert.equal(fan.value, 'high', 'Read-only authority cannot hide healthy reported settings');
   assert.match(appliance.querySelector('.caravan-control-help').textContent, /primary computer/);

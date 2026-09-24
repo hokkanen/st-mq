@@ -10,7 +10,7 @@ export const mitsubishiSettings = Object.freeze({
   wideVane: { label: 'Horizontal vane', description: 'Left/right airflow setting.' },
 });
 const telemetryMetadata = {
-  indoorTemperature: ['Pump indoor temperature', 'Temperatures', '°C', 'Temperature measured by the indoor unit.'],
+  indoorTemperature: ['Pump control temperature', 'Temperatures', '°C', 'Temperature interpreted by the heat pump. It may use its internal sensor or the supplied external temperature, including the ST-MQ offset; it is not necessarily measured room air.'],
   outdoorTemperature: ['Pump outdoor temperature', 'Temperatures', '°C', 'Temperature reported by the outdoor unit.'],
   power: ['Electrical input', 'Electricity', 'W', 'Native electrical input; accuracy remains unverified unless checked.'],
   energy: ['Cumulative energy', 'Electricity', 'kWh', 'Decoded native cumulative electricity reading.'],
@@ -46,12 +46,12 @@ export function mitsubishiRoomTemperature(garage = {}) {
   const control = garage.roomTemperature;
   if (!Number.isFinite(control?.targetC)) return null;
   const active = control.phase === 'active' && control.acknowledged === true;
-  const basis = active ? 'External sensor · active'
+  const basis = active ? 'Garage rear · active'
     : control.phase === 'preparing' || control.phase === 'active' ? 'External sensor · preparing'
       : control.phase === 'clearing' ? 'External sensor · clearing' : 'External sensor · fallback';
   const nativeTarget = mitsubishiValue('targetC', control.nativeTargetC ?? 17);
-  const progress = active ? 'The driver has acknowledged the external temperature; the saved room setting is active.'
-    : control.phase === 'preparing' || control.phase === 'active' ? 'Preparing external temperature control; the saved room setting is not yet confirmed active.'
+  const progress = active ? 'Garage rear control is active.'
+    : control.phase === 'preparing' || control.phase === 'active' ? 'Waiting for the pump to confirm Garage rear control.'
       : control.phase === 'clearing' ? 'Clearing the supplied temperature and waiting for internal-sensor acknowledgement before the next control step.'
         : 'External temperature control is unavailable. Check the control status below; the driver returns to its internal temperature sensor when the current permission expires.';
   const detail = [`Saved room setting: ${mitsubishiValue('targetC', control.targetC)}. ${progress}`,
@@ -195,7 +195,7 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     if (fold) fold.hidden = !known.length;
     form.hidden = !known.length;
     const room = mitsubishiRoomTemperature(status?.garage), roomStatus = $('garage-room-temperature-status');
-    if (roomStatus) { roomStatus.hidden = !room; roomStatus.textContent = room ? `${room.value} saved. ${room.progress}` : ''; }
+    if (roomStatus) { roomStatus.hidden = !room; roomStatus.textContent = room ? `Room setting ${room.value}. ${room.progress}` : ''; }
     if (settingSignature !== JSON.stringify(known)) {
       const previous = setting.value;
       setting.replaceChildren();
@@ -228,7 +228,7 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     setStatusDetail($('garage-native-reported'), { key: `mitsubishi-selected-${key}`, title: mitsubishiSettings[key].label,
       label: reading?.value ?? 'Unavailable', detail: reading?.detail ?? 'Waiting for a current native readback.' });
     $('garage-native-status').textContent = control.available
-      ? numeric && control.min < 16 ? 'Saves the room setting permanently. Below 16 °C, wait for external temperature control to become active.'
+      ? numeric && control.min < 16 ? 'Saves your room setting. The status above confirms when Garage rear control is active.'
         : room ? 'Changing this setting ends external temperature control after the supplied temperature is cleared.'
           : 'Changes the selected pump setting. Wait for fresh pump confirmation. Automatic savings remain separate.'
       : /\s/.test(control.reason) ? control.reason : words(control.reason);

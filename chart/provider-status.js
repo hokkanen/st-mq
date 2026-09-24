@@ -38,8 +38,7 @@ const qualityLabels = Object.freeze({
 });
 
 export const providerName = source => Object.hasOwn(names, source) ? names[source] : null;
-export const outdoorSourceLabel = source => source === 'husdata-h66' ? 'H66 outdoor sensor'
-  : source === 'fmi' ? 'FMI nearby station'
+export const outdoorSourceLabel = source => source === 'fmi' ? 'FMI nearby station'
     : source === 'openmeteo' ? 'Open-Meteo model estimate' : providerName(source);
 
 const phaseSignals = prefix => [1, 2, 3].map(phase => `${prefix}_l${phase}`);
@@ -65,22 +64,26 @@ export function providerSeries(job, health = {}) {
     });
   }
   if (job === 'easee') {
-    return [['property', 'Property', 'Equalizer'], ['ev1', 'Charger 1', 'Charger 1']].flatMap(([prefix, label, device]) => [
+    return [['property', 'Property', 'Equalizer'], ['ev1', 'Charger 1', 'Charger 1']].flatMap(([prefix, label, device]) => {
+      const local = prefix === 'ev1' && health.deviceTransports?.charger === 'ocpp';
+      const source = local ? 'Easee local OCPP' : 'Easee cloud';
+      return [
       seriesRow(phaseSignals(`${prefix}_current`), `${label} phase currents L1–L3`, 'A',
-        `Latest ${device} readings; historical chart currents are interval estimates reconstructed from saved energy.`, 'Easee'),
+        `Latest ${device} readings; historical chart currents are interval estimates reconstructed from saved energy.`, source),
       seriesRow(phaseSignals(`${prefix}_voltage`), `${label} phase voltages L1–L3`, 'V',
-        prefix === 'ev1' ? 'Acquired for energy estimation; Charger 1 terminal voltages need a verified phase mapping before use.'
-          : 'Acquired for phase allocation and the voltage/current power fallback.', 'Easee'),
+        local ? 'Direct charger readings explicitly identified as phase-to-neutral voltages; missing phases remain unavailable.'
+          : prefix === 'ev1' ? 'Acquired for energy estimation; Charger 1 terminal voltages need a verified phase mapping before use.'
+          : 'Acquired for phase allocation and the voltage/current power fallback.', source),
       seriesRow([`${prefix}_active_power`], `${label} active power`, 'kW',
-        'Reported total power used to estimate phase energy over each recorded interval.', 'Easee'),
+        'Reported total power used to estimate phase energy over each recorded interval.', source),
       prefix === 'ev1'
         ? seriesRow(['ev1_session_energy_check'], 'Charger 1 session check', 'kWh',
-          'One finalized session reading for comparison; it does not correct recorded energy or train the model.', 'Easee')
+          'One finalized session reading for comparison; it does not correct recorded energy or train the model.', 'Easee cloud')
         : seriesRow(['property_import_energy_counter'], 'Property meter counter', 'kWh',
-          'Cumulative reading for meter checks; it does not correct recorded energy or train the model.', 'Easee'),
+          'Cumulative reading for meter checks; it does not correct recorded energy or train the model.', source),
       seriesRow(phaseSignals(`${prefix}_energy`), `${label} phase energy L1–L3`, 'kWh',
-        'Estimated from acquired electrical readings and saved per interval. The chart derives power and interval current estimates from these records.', 'Calculated from Easee'),
-    ]);
+        'Estimated from acquired electrical readings and saved per interval. The chart derives power and interval current estimates from these records.', `Calculated from ${source}`),
+    ]; });
   }
   if (job === 'teslamate') return [];
   if (job === 'shelly-evse') {
@@ -115,9 +118,9 @@ export function providerSeries(job, health = {}) {
     ];
   }
   if (job === 'outdoor') {
-    const source = selectedSource(health, ['husdata-h66', 'fmi', 'openmeteo'], 'H66 / FMI / Open-Meteo');
+    const source = selectedSource(health, ['fmi', 'openmeteo'], 'FMI / Open-Meteo');
     return [seriesRow(['outdoor_temperature'], 'Outdoor temperature', '°C',
-      'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.', source)];
+      'Uses an FMI nearby station, with an Open-Meteo model estimate as backup.', source)];
   }
   if (['temperatures', 'mqtt-temperature'].includes(job)) {
     const source = job === 'mqtt-temperature' ? 'MQTT'
@@ -125,7 +128,7 @@ export function providerSeries(job, health = {}) {
     return ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature'].map(signal =>
       seriesRow([signal], SIGNAL_INFO[signal].label, '°C', signal === 'garage_temperature'
         ? 'Rear garage protection sensor, recorded separately for garage learning.' : signal === 'outdoor_temperature'
-          ? 'Optional configured sensor, recorded for history. Live outdoor control selects H66, FMI or Open-Meteo.'
+          ? 'Optional configured sensor, recorded for history. Live outdoor control selects FMI or Open-Meteo.'
           : 'Individual indoor sensor, recorded separately and included in the home model average when configured and usable.', source));
   }
   return [];
@@ -133,7 +136,7 @@ export function providerSeries(job, health = {}) {
 
 const temperatureJobs = ['temperatures', 'mqtt-temperature', 'outdoor'];
 const indoorSources = ['husdata-h66', 'mqtt-temperature', 'shelly-mqtt'];
-const outdoorSources = ['husdata-h66', 'fmi', 'openmeteo'];
+const outdoorSources = ['fmi', 'openmeteo'];
 // Source labels describe the configured transport.
 const temperatureSourceLabel = providerName;
 
@@ -143,18 +146,17 @@ function temperatureDisplay(status, entries, options) {
     ...['downstairs', 'bedroom'].filter(key => Object.hasOwn(observations, key))];
   const rows = [...indoorKeys, 'garage', 'outdoor'].map(key => {
     const reading = observations[key], allowed = key === 'outdoor' ? outdoorSources : indoorSources;
-    // The selected observation is authoritative: H66 can take over while the
-    // weather provider's most recent successful download still names FMI.
+    // The selected observation identifies the current weather source.
     const source = reading?.source ?? (key === 'outdoor' ? outdoorHealth?.source ?? outdoorHealth?.acquisition?.selected : null);
     const label = allowed.includes(source) ? temperatureSourceLabel(source) : null;
     const readingStatus = temperatureReadingStatus(reading, { ...options, outdoor: key === 'outdoor' });
     const detail = indoorKeys.includes(key) ? 'Individual indoor temperature, recorded separately and included in the home model average when configured and usable.'
       : key === 'garage' ? 'Rear garage protection sensor. Its history supports garage learning; front protection is separate.'
-        : 'Uses a usable H66 outdoor sensor first, then an FMI nearby station, then an Open-Meteo model estimate.';
+        : 'Uses an FMI nearby station, with an Open-Meteo model estimate as backup.';
     const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
     const row = withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
       state: readingStatus.attention ? 'Needs attention' : readingStatus.usable
-        ? key === 'outdoor' && outdoorHealth?.status === 'fallback' && source !== 'husdata-h66' ? 'Using backup' : 'Available'
+        ? key === 'outdoor' && source === 'openmeteo' ? 'Using backup' : 'Available'
         : reading?.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
     });
     return { ...row, value: readingStatus.usable ? `${reading.value.toFixed(1)} °C`
@@ -165,13 +167,12 @@ function temperatureDisplay(status, entries, options) {
   const available = temperatureReadingStatus(observations.indoor, options).usable
     && temperatureReadingStatus(observations.outdoor, { ...options, outdoor: true }).usable;
   const downloadFailure = entries.some(([key, health]) => (health.error || health.status === 'error')
-    && (key === 'outdoor' ? observations.outdoor?.source !== 'husdata-h66'
-      : !health.source || [...required, ...indoorKeys.map(key => observations[key])].some(reading => reading?.source === health.source)));
+    && (key === 'outdoor' || !health.source || [...required, ...indoorKeys.map(key => observations[key])].some(reading => reading?.source === health.source)));
   const readingAttention = ['indoor', ...indoorKeys, 'garage', 'outdoor'].some(key =>
     temperatureReadingStatus(observations[key], { ...options, outdoor: key === 'outdoor' }).attention);
   const attention = Boolean(downloadFailure || readingAttention || !available && (required.some(reading => Number.isFinite(reading?.value))
     || entries.some(([key, health]) => describeProvider(key, health, options).attention)));
-  const backup = outdoorHealth?.status === 'fallback' && observations.outdoor?.source !== 'husdata-h66';
+  const backup = observations.outdoor?.source === 'openmeteo';
   const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
   const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage rear and front readings support independent garage protection and learning.'];
   const averageStatus = temperatureReadingStatus(observations.indoor, options);
@@ -184,7 +185,6 @@ function temperatureDisplay(status, entries, options) {
   const sourceStates = [...new Set(rows.map(row => row.source).filter(Boolean))].map(label => {
     const members = rows.filter(row => row.source === label);
     const failedDownload = entries.some(([key, health]) => (health.error || health.status === 'error')
-      && (key !== 'outdoor' || observations.outdoor?.source !== 'husdata-h66')
       && temperatureSourceLabel(health.source ?? health.acquisition?.selected) === label);
     if (failedDownload) return { label, state: 'Needs attention', tone: 'attention' };
     const worst = members.find(row => row.tone === 'attention') ?? members.find(row => row.tone === 'backup')
@@ -214,7 +214,7 @@ function electricityDisplay(entries, options) {
     sourceStates: electricityJobs.map((key, index) => sourceStatus(providerName(key), displays[index])),
     display: { title: 'Electricity consumption · Easee, Shelly EVSE', state, attention,
       detail: displays.map(display => `${display.title}: ${display.state}. ${display.detail}`).join(' ') },
-    series: electricityJobs.flatMap((key, index) => providerSeries(key).map(row => {
+    series: electricityJobs.flatMap((key, index) => providerSeries(key, entries.find(([job]) => job === key)?.[1]).map(row => {
       const health = entries.find(([job]) => job === key)?.[1];
       const scope = row.signals[0].startsWith('property_') ? 'property' : 'charger';
       const current = key === 'easee' && health?.currentReadings?.[scope];
@@ -386,11 +386,22 @@ function easeeStreamDetail(health) {
     retrying: 'Live stream reconnecting.', closed: 'Live stream stopped.',
   };
   const state = health.stream?.state;
-  if (typeof state !== 'string' || !Object.hasOwn(connection, state)) return null;
+  const local = health.localOcpp;
+  const localDetail = !local ? null : !local.configured ? 'Local OCPP awaits commissioning; cloud data is used.'
+    : local.error ? 'Local OCPP needs attention; cloud data is the backup.'
+      : local.available ? 'Charger electricity is available through local OCPP.'
+        : local.connected ? 'Local OCPP is connected but is waiting for complete fresh electricity readings.'
+          : 'Waiting for the charger to connect to local OCPP; cloud data is the backup.';
+  const configured = local?.configurationFailures?.length ? 'The charger did not accept all local telemetry settings; check OCPP commissioning.'
+    : local?.pendingConfiguration?.length ? 'Waiting for the charger to acknowledge local telemetry settings.' : null;
   const acquisition = health.transport === 'stream' ? 'Last acquisition used the live stream.'
     : health.transport === 'rest' ? 'Last acquisition used REST backup.'
-      : health.transport === 'mixed' ? 'Last acquisition combined live stream readings and REST backup.' : null;
-  return [connection[state], acquisition].filter(Boolean).join(' ');
+      : health.transport === 'ocpp' ? 'Last electricity acquisition used local OCPP.'
+        : health.transport === 'mixed' ? health.deviceTransports?.charger === 'ocpp'
+          ? 'Last acquisition combined local charger readings and cloud property readings.'
+          : 'Last acquisition combined live stream readings and REST backup.' : null;
+  return [Object.hasOwn(connection, state) ? connection[state] : null, acquisition, localDetail, configured,
+    local ? 'Native charging schedules and property readings use Easee cloud.' : null].filter(Boolean).join(' ') || null;
 }
 
 function describeEasee(health, { now, formatTime }) {
@@ -472,8 +483,7 @@ export function describeProvider(job, health, { now, formatTime }) {
   const title = selected && !base.startsWith(selected) ? `${base} · ${selected}` : base;
   const state = states[health.status] ?? 'Status pending';
   const sentences = [];
-  if (job === 'outdoor' && selected) sentences.push(source === 'husdata-h66'
-    ? 'Measured by the heat pump’s outdoor sensor.' : source === 'fmi'
+  if (job === 'outdoor' && selected) sentences.push(source === 'fmi'
       ? 'Observed at a nearby weather station.' : source === 'openmeteo' ? 'Model estimate for the area.' : '');
   const success = health.lastSuccessAt;
   sentences.push(Number.isFinite(success) ? `Last successful download ${formatTime(success)}.` : 'No successful download recorded.');

@@ -61,3 +61,9 @@ Price revisions are canonicalized by publication authority over their actual cov
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, configured firmware/profile or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
 Pre-1.0 native state is not migrated. The current charging state uses version 5; the physical adapter uses its own explicitly scoped current state. Old pseudo-C2 settings, charger-bound vehicle topics, efficiency overrides, unscoped verdicts and aliases are rejected. Only the v0.7.5 `easee.csv` and `st-mq.csv` import paths are supported legacy boundaries. Imported C1/property history retains its provenance and does not become a Shelly observation.
+
+The **Added energy** tile shows recorded grid energy for the whole plugged-in
+connection. A fresh vehicle battery reading can change the charge estimate's
+reference, but does not reset this tile. The recorded total remains after charging
+finishes, reaching the target, or passing ready-by; confirmed disconnection ends
+it. Energy inferred only for a cost estimate is not shown as recorded energy.

@@ -36,8 +36,6 @@ export function equipmentDevices(status = {}) {
     const enabled = floor.enabled === true, commissioned = floor.commissioned === true;
     const available = reported?.available === true;
     const label = group === 'storage' ? 'Storage area floor valves' : 'Living area floor valves';
-    const leaseMinutes = (floor.leaseSeconds ?? 900) / 60;
-    const renewMinutes = (floor.renewSeconds ?? 300) / 60;
     devices.set(`floor-override:${group}`, { id: `floor-override:${group}`, label,
       group, area: 'home', kind: 'floor_override', source: 'Shelly', model: 'Shelly Pro 2 v0',
       enabled, commissioned, available, topics: [], controls: { switch: false, tariff: false },
@@ -48,13 +46,7 @@ export function equipmentDevices(status = {}) {
             : !available ? { label: 'Awaiting local-script readback', state: 'attention' }
               : { label: floor.active ? 'Preheating' : 'Ready', state: 'available' },
       recent: !reported ? 'Device mapping not configured' : 'Waiting for a live script report',
-      connectionDetail: 'Each output (0 and 1) overrides one thermostat, so this device overrides two thermostats. '
-        + 'Both floor-valve devices preheat together, overriding four thermostats in total. '
-        + (!enabled ? 'Disabled until device mapping and commissioning are complete. '
-          : !commissioned ? 'Local expiry and native thermostat failback need commissioning. ' : '')
-        + `The override renews every ${renewMinutes} minutes and ends locally after at most ${leaseMinutes} minutes without renewal, or at the planned end. `
-        + 'OFF restores thermostat control. Relay readback does not prove valve movement or water flow. Local expiry does not restore the heat-pump ROOM setting. '
-        + [0, 1].map(id => {
+      connectionDetail: [0, 1].map(id => {
           const output = available ? reported?.channels?.find(channel => channel.id === id)?.output : null;
           return `Output ${id}: ${output === true ? 'override on' : output === false ? 'thermostat control' : 'unknown'}`;
         }).join('; ') + '.',
@@ -483,7 +475,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
 function garageEquipmentOrder(device) {
   return device.kind === 'heat_pump' ? 0 : device.id === 'blu_ht' ? 2 : device.kind === 'temperature' ? 1
     : device.id === 'caravan' ? 3 : device.kind === 'door' ? 4 + Number(device.id.match(/door([12])$/)?.[1] ?? 0) / 10
-      : device.kind === 'dehumidifier' ? 5 : 6;
+      : device.kind === 'dehumidifier' ? 2.5 : 6;
 }
 
 export function dhwrReadingSummary(status) {

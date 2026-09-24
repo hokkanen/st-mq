@@ -122,7 +122,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     state.dataset.state = live ? 'available' : 'pending';
     for (const [value, button] of buttons) {
       button.setAttribute('aria-pressed', live && reported.power === value ? 'true' : 'false');
-      button.disabled = !allowed || reported.power === value;
+      button.disabled = !allowed || device.temperatureControl?.enabled === true || reported.power === value;
     }
     for (const [setting, select] of selects) {
       select.value = live && dehumidifierValueAllowed(setting, reported[setting]) ? String(reported[setting]) : '';
@@ -134,6 +134,14 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
           : busy || blocked() ? 'Another request is in progress.'
             : !allowed ? 'Controls are unavailable. Check the device connection and control settings.'
             : 'Changes are sent immediately. Settings follow live device reports.';
+    if (device.temperatureControl?.enabled) {
+      const guard = device.temperatureControl;
+      const availability = allowed ? '' : `${help.textContent} `;
+      help.textContent = `${availability}Power follows Caravan air: off at 1 °C or below, on at 2 °C or above. ${guard.colocated
+        ? 'History is recorded while both air readings agree.' : 'Waiting for fresh, matching temperature and humidity; history is paused.'} ${guard.reason === 'appliance-unavailable'
+        ? 'Appliance unavailable; ST-MQ cannot confirm or change its power.' : guard.reason === 'air-unavailable'
+          ? 'Without fresh air readings, automatic control requests OFF when device control is available.' : ''}`;
+    }
     const scoped = actionKind === 'dehumidifier' && actionDeviceId === appliance.id;
     result.textContent = scoped && (busy || error) ? message : dehumidifierResult(appliance, status.now);
     result.hidden = !result.textContent;

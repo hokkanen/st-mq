@@ -67,7 +67,7 @@ try {
   };
   const until = async expression => {
     for (let attempt = 0; attempt < 200; attempt++) { if (await evaluate(expression)) return; await pause(30); }
-    throw new Error(`Garage UI did not settle: ${expression}`);
+    throw new Error(`Garage UI did not settle: ${expression}. ${errors.join("; ")}. State: ${await evaluate("JSON.stringify({ phase: globalThis.garageSmokePhase, basis: document.getElementById('garage-native-target-basis')?.textContent, error: document.getElementById('error')?.textContent })")}`);
   };
   const keyPress = async key => {
     const code = key === 'Enter' ? 'Enter' : key === 'Escape' ? 'Escape' : 'Space', virtualKey = key === 'Enter' ? 13 : key === 'Escape' ? 27 : 32;
@@ -175,7 +175,7 @@ try {
   await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · preparing'");
   assert.deepEqual(await evaluate('globalThis.garageSmokeCalls'), [{ setting: 'targetC', value: 5 }]);
   await evaluate("globalThis.garageSmokePhase='active'; globalThis.refreshGarageSmoke()");
-  await until("document.getElementById('garage-native-target-basis').textContent === 'External sensor · active'");
+  await until("document.getElementById('garage-native-target-basis').textContent === 'Garage rear · active'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"), '5 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-temperature').value"), '5');
   assert.match(await evaluate("document.querySelector('#garage-native-readings [data-reading=native-targetC]').textContent"), /17 °C/);
@@ -218,6 +218,9 @@ try {
     await capture(`heating-configuration-${width}-${theme}`);
     await evaluate("document.getElementById('garage-learning-details').open=true; document.getElementById('garage-settings-details').open=false");
   }
+  await evaluate("document.getElementById('dashboard-reset').click()");
+  assert.equal(await evaluate("document.querySelectorAll('details[open]').length"), 0);
+  assert.equal(await evaluate("document.activeElement.id"), 'dashboard-reset');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-learning-browser-smoke-passed', artifacts,
     checks: ['four matching Home/Garage learning sections', 'configuration before learning', 'keyboard entry and section controls',

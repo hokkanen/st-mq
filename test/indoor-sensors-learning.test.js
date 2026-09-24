@@ -192,7 +192,7 @@ test('sensor changes isolate replay, settling and pre-change measurements withou
     start + W, { config, seed: before });
   const reset = replayLearningJournal(store, 'providers', before);
   assert.equal(reset.state, null); assert.equal(reset.baselineC, null);
-  assert.equal(reset.model.validation, null); assert.deepEqual(reset.samples, []);
+  assert.deepEqual(reset.model, before.model); assert.deepEqual(reset.samples, before.samples);
   assert.deepEqual(reset.model.parameters, before.model.parameters);
   for (const at of [start + 2 * W, start + 3 * W]) {
     window(store, at, [24, 20, 20]);
@@ -207,7 +207,8 @@ test('sensor changes isolate replay, settling and pre-change measurements withou
   const live = replayLearningJournal(store, 'providers', reset);
   assert.deepEqual(replayLearningJournal(store, 'providers', null, { rebuild: true }), live);
   assert.deepEqual(store.db.prepare('SELECT * FROM observations WHERE id<=? ORDER BY id').all(raw.at(-1).id), raw);
-  assert(live.samples.filter(row => row.indoorC !== undefined).every(row => Date.parse(row.timestamp) >= start + 4 * W));
+  assert.deepEqual(live.samples[0], before.samples[0]);
+  assert.equal(live.samples.length, before.samples.length + 3);
 });
 
 test('membership changes create a measurement epoch and old CSV samples keep the original single sensor', t => {
@@ -239,7 +240,7 @@ test('changed sensors cannot regain obsolete validation from imported upstairs-o
   engine.changeSensor({ signal: 'bedroom_temperature', reason: 'moved', requestId: 'invented-move' });
   assert.equal(engine.checkpoint.model.validation, null);
   assert.equal(engine.checkpoint.baselineC, null);
-  assert.equal(engine.checkpoint.measurementEpochAt, start + W);
+  assert.equal(engine.checkpoint.sensorEpochs.bedroom_temperature, start + W);
   assert(engine.status().observations.indoor.stale);
 });
 

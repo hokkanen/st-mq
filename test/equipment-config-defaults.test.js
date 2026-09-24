@@ -35,14 +35,15 @@ test('public equipment defaults work with broker-only private settings and prese
   }
   const blu = devices.find(row => row.id === 'blu_ht');
   assert.equal(blu.enabled, true);
-  assert.equal(blu.topic, 'stmq/home/blu_ht/state');
+  assert.equal(blu.topic, 'stmq/garage/caravan_air/state');
   assert.equal(blu.temperatureSignal, 'caravan_temperature');
   assert.equal(blu.label, 'Caravan air');
   assert.equal(blu.area, 'garage');
+  assert.equal(blu.source, 'Shelly');
   assert.equal(devices.find(row => row.id === 'caravan').label, 'Caravan energy');
   assert.equal(blu.maxAgeMs, 180_000);
   assert.equal(blu.mqtt.timestampPath, 'timestamp');
-  assert.equal(blu.mqtt.requestTopic, 'stmq/home/blu_ht/get');
+  assert.equal(blu.mqtt.requestTopic, 'stmq/garage/caravan_air/get');
   assert.equal(blu.readings.find(row => row.key === 'humidity').required, true);
   assert.equal(blu.readings.find(row => row.key === 'rssi').record, false);
   assert.equal(blu.readings.find(row => row.key === 'battery').record, false);
@@ -50,6 +51,7 @@ test('public equipment defaults work with broker-only private settings and prese
   const dehumidifier = devices.find(row => row.id === 'caravan_dehumidifier');
   assert.equal(dehumidifier.kind, 'dehumidifier');
   assert.equal(dehumidifier.enabled, true);
+  assert.equal(dehumidifier.temperatureControl.sensorDeviceId, 'blu_ht');
   assert.equal(dehumidifier.stateSignal, 'caravan_dehumidifier_running_state');
   assert.equal(dehumidifier.mqtt.commandTopic, 'stmq/garage/caravan_dehumidifier/set');
   assert.equal(dehumidifier.maxAgeMs, 180_000);

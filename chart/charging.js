@@ -274,7 +274,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Vehicle identification', vehiclePresentation(charger).detail],
     ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, saved starting charge, target and capacity are used and remain editable. Update these for a visitor or after driving. Automatic readings do not erase saved values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
     ['Target & completion', 'The displayed target comes from the vehicle when available. A saved target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
-    ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy is counted since that reference, not necessarily since plugging in. A new vehicle reading updates the reference and starts that count again. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; a saved starting charge must be updated after driving when no vehicle reading is available.'],
+    ['Charging progress', 'Delivered charging energy raises the estimated charge from the starting value, allowing for charging losses and usable capacity. Added energy shows recorded grid energy since plugging in and stays until disconnection. A new vehicle reading updates only the battery estimate reference. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; a saved starting charge must be updated after driving when no vehicle reading is available.'],
     ['Energy estimate', `Three-phase charging is assumed; voltage comes from provider readings. ${energyAssumption}`],
   ];
   if (!supported) explanations.push(
@@ -639,7 +639,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         : 'This changes the plan for this connection only. For a full charge, also set 100% in the car.';
       device.completion.textContent = presentation.completion.value;
       const sourceDetail = !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
-        : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. Added energy is counted after the reference reading, which may be newer than plugging in.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
+        : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. The battery estimate advances from the latest charge reference; Added energy covers the whole connection.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
       metricDetail(device.chargeLabel, { label: 'Charge', title: 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
       metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Your saved fallback is in Charging preferences.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
       const completionDetail = presentation.completion.at !== null
@@ -654,10 +654,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.readiness.hidden = !device.readiness.textContent; device.readiness.dataset.state = view.risk ? 'attention' : 'normal';
       device.remaining.hidden = false;
       energyText(device.energyValue, view.showMetrics ? view.gridEnergy : '—');
-      const deliveredEnergy = charger.progress?.deliveredGridKwh ?? charger.progress?.creditedGridKwh;
+      const deliveredEnergy = charger.sessionCost?.recordedGridKwh;
       energyText(device.deliveredValue, view.showMetrics && finite(deliveredEnergy) ? number(deliveredEnergy, 'kWh') : '—');
-      metricDetail(device.deliveredLabel, { label: 'Added energy', title: 'Energy added since the charge reference',
-        detail: view.showMetrics && finite(deliveredEnergy) ? 'Measured grid energy since the last vehicle charge reading or manually set starting charge, including charging losses. A new vehicle reading resets this reference; this is not a total for the whole connection.' : 'No delivered-energy reading is available for the current charge reference.', key: `${charger.id}:delivered` });
+      metricDetail(device.deliveredLabel, { label: 'Added energy', title: 'Energy added since plugging in',
+        detail: view.showMetrics && finite(deliveredEnergy) ? 'Recorded grid energy since plugging in, including charging losses. It remains after charging ends and after the ready-by time, until the vehicle disconnects. New battery readings do not reset it; missing measurements are not estimated.' : 'No recorded energy total is available for this connection.', key: `${charger.id}:delivered` });
       metricDetail(device.energyLabel, { label: view.energyLabel === 'Grid remaining' ? 'Remaining' : 'To target', title: view.energyLabel,
         detail: `${view.energyNote}. ${explanation['Energy estimate'] ?? ''}`, key: `${charger.id}:energy` });
       const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });

@@ -20,18 +20,18 @@ function fixture(t) {
 
 test('stale source values preserve their historical reading and create an availability gap on the receipt clock',t=>{
   const {store,date,start,put}=fixture(t);
-  put('outdoor_temperature',20,start);
-  put('outdoor_temperature',20,start+6*MINUTE,{sourceTime:start});
-  put('outdoor_temperature',21,start+10*MINUTE);
+  put('outdoor_temperature',20,start,{source:'fmi'});
+  put('outdoor_temperature',20,start+31*MINUTE,{source:'fmi',sourceTime:start});
+  put('outdoor_temperature',21,start+35*MINUTE,{source:'fmi'});
   const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+HOUR,left:'outdoor_temperature'});
   const rows=result.series.outdoor_temperature;
   assert.ok(rows.some(row=>row.x===start&&row.y===20),'original point is not erased by a later stale poll');
-  assert.ok(rows.some(row=>row.x===start+6*MINUTE&&row.y===null));
-  assert.ok(rows.some(row=>row.x===start+10*MINUTE&&row.y===21));
+  assert.ok(rows.some(row=>row.x===start+31*MINUTE&&row.y===null));
+  assert.ok(rows.some(row=>row.x===start+35*MINUTE&&row.y===21));
   const long=getChartData({store,input:'mqtt',startDate:'2026-01-01',endDate:date,now:start+HOUR,left:'outdoor_temperature'});
   assert.ok(long.series.outdoor_temperature.some(row=>row.x===start&&row.y===20),'long views preserve the same original value');
   assert.equal(long.meta.historyBasis,'original-recorded-history');
-  assert.ok(long.series.outdoor_temperature.some(row=>row.x===start+6*MINUTE&&row.y===null));
+  assert.ok(long.series.outdoor_temperature.some(row=>row.x===start+31*MINUTE&&row.y===null));
 });
 
 test('unavailable equipment immediately ends compressor shading rather than using its remaining five-minute hold',t=>{

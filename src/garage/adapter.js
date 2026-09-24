@@ -70,7 +70,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   let externalCommand = persisted?.lastExternalCommand ? { ...persisted.lastExternalCommand,
     ...(NATIVE_PENDING.includes(persisted.lastExternalCommand.status) ? { status: 'uncertain', reason: 'host-restarted' } : {}) } : null;
   let externalNeedsClear = persisted?.externalNeedsClear === true;
-  let lastExternalSample = null, manualPermissionObserved = false;
+  let lastExternalSample = null, manualPermissionObserved = false, recordedExternal = null;
   let sequence = 0, telemetrySequence = -1, telemetryBoot = null, telemetryDevice = null;
   const usedChallenges = new Map();
   let lastTick = null, latest = {}, lastEvent = null;
@@ -370,6 +370,26 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       sourceEpoch: state ? createHash('sha256').update(JSON.stringify([state.deviceId, state.bootId, state.sessionId])).digest('hex') : null,
       expiresInMs: lifecycle ? Math.max(0, lifecycle.expiresInMs - Math.max(0, now - state.observedAt)) : 0 };
   }
+  function recordExternalTemperature(now = clock()) {
+    const feed = state?.externalTemperature;
+    const expiresAt = feed ? Math.min(state.observedAt + feed.expiresInMs, (feed.measuredAt ?? 0) + 90_000) : 0;
+    const active = connected && reconciled && feed?.phase === 'active' && feed.acknowledged
+      && feed.enabled && feed.restorationPending && !feed.rearmRequired && expiresAt > now
+      && finiteTime(feed.measuredAt) && feed.measuredAt <= now;
+    if (!active && !recordedExternal) return;
+    if (active && recordedExternal?.measuredAt === feed.measuredAt && recordedExternal?.expiresAt === expiresAt
+      && recordedExternal?.temperatureC === feed.temperatureC) return;
+    // The line starts at device acknowledgement; the original sensor clock
+    // remains provenance, and coverage ends at the device/source deadline.
+    const at = active ? state.observedAt : now;
+    onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: 'garage_external_temperature',
+      value: active ? feed.temperatureC : null, unit: 'degC', sourceTime: at, receivedAt: now,
+      quality: active ? [] : ['inactive'], raw: { usableForControl: false, contractVersion,
+        timeBasis: active ? 'device-acknowledged' : 'availability-transition',
+        measuredAt: active ? feed.measuredAt : null, expiresAt: active ? expiresAt : now,
+        reportIntervalMs: active ? Math.max(1, expiresAt - at) : 90_000, reportGraceMs: 0 } });
+    recordedExternal = active ? { measuredAt: feed.measuredAt, expiresAt, temperatureC: feed.temperatureC } : null;
+  }
   function processExternalResult(result, now) {
     if (!externalCommand || result?.action !== 'remote-temperature' || result.commandId !== externalCommand.commandId
       || result.ownerSession !== hostSession || result.sequence !== externalCommand.sequence
@@ -625,6 +645,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         faults = [];
       }
     }
+    recordExternalTemperature(now);
     changed();
     if (state.authority.ownerSession === hostSession || claimPending?.commandId === value.result?.commandId) claimPending = null;
     // Acquisition receives synchronously; publication errors are contained in
@@ -648,13 +669,17 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (previous?.usable && previous.sourceTime <= now && decoded.sourceTime !== null
         && decoded.sourceTime < previous.sourceTime) continue;
       latest[definition.signal] = decoded;
-      if (['garage_power', 'garage_native_energy'].includes(definition.signal)) {
+      if (['garage_power', 'garage_native_energy', 'garage_native_indoor_temperature',
+        'garage_compressor_frequency', 'garage_compressor_active'].includes(definition.signal)) {
         onObservation({ source: 'garage-adapter', device: 'garage-heat-pump', signal: decoded.signal,
-          value: decoded.value, unit: decoded.unit, sourceTime: decoded.sourceTime, receivedAt: now,
+          value: !['garage_power', 'garage_native_energy'].includes(definition.signal) && !decoded.usable ? null
+            : typeof decoded.value === 'boolean' ? Number(decoded.value) : decoded.value,
+          unit: definition.boolean ? 'state' : decoded.unit, sourceTime: decoded.sourceTime, receivedAt: now,
           quality: decoded.quality, raw: { usableForControl: false, contractVersion,
+            reportIntervalMs: settings.maxAgeMs, reportGraceMs: 0,
             supported: decoded.supported, timeBasis: decoded.timeBasis, retained: packet.retain === true,
             accuracyVerified: decoded.accuracyVerified, meterScope: decoded.meterScope, provisional: !production } });
-        electrical.receive(decoded);
+        if (['garage_power', 'garage_native_energy'].includes(definition.signal)) electrical.receive(decoded);
       }
     }
     telemetrySequence = value.sequence;
@@ -774,6 +799,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (stopped || connected === Boolean(value)) return;
       connected = Boolean(value); reconciled = false; claimPending = null;
       if (!connected) {
+        recordExternalTemperature(clock());
         invalidate('mqtt-disconnected', clock()); electrical.reset('mqtt-disconnected');
         if (nativeCommand && NATIVE_PENDING.includes(nativeCommand.status)) {
           nativeCommand.status = 'uncertain'; nativeCommand.reason = 'mqtt-disconnected';

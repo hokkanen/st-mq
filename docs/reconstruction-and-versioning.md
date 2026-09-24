@@ -74,7 +74,7 @@ the service or recording another correction retries it.
 
 ## Version discipline
 
-The Home learning algorithm is `committed-house-v12-passive-thermal`, with
+The Home learning algorithm is `committed-house-v13-scoped-sensor-changes`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
@@ -114,8 +114,13 @@ matches; it never creates a new temperature observation. Configuration and
 reporting-policy changes are recorded at their effective time.
 
 Sensor changes and reversals are compact immutable journal events. A sensor change
-clears the affected measurement evidence; retained coefficients are starting
-estimates until independently validated. Corrected replay uses the same pure
+masks only the changed sensor during its settling period and prevents thermal
+intervals crossing the boundary. Existing coefficients, validation, completed
+episodes and comfort references remain available for gradual recalibration.
+Outdoor changes keep unrelated indoor measurements. Current live and committed
+outdoor selection uses FMI with Open-Meteo fallback, excluding noisy H66 reports. These are the v13 semantics;
+old development learning checkpoints require a deliberate fresh start, not an
+old-algorithm interpreter or automatic migration. Corrected replay uses the same pure
 eligibility projection as live learning. It may recover preserved measurements
 behind a reversed settling period, but cannot erase actual reporting gaps or
 replace original frozen forecasts. Rebuilds pin correction revisions and the
@@ -185,7 +190,7 @@ for causal release/expiry/cancellation fences and firmware qualification.
 The current thermal solver uses a passive envelope/ground partition and a
 positivity-preserving second-order step bounded by every room, reserve and slab
 row. Integrated energy uses the same averaged fluxes as state evolution. Model
-version 4 and `committed-house-v12-passive-thermal` identify these semantics;
+version 4 and `committed-house-v13-scoped-sensor-changes` identify these semantics;
 version 3 fits are not reused or converted.
 
 `model.validation` describes the latest sufficiently supported current holdout,

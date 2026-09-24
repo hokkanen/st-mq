@@ -164,8 +164,8 @@ test('both floor Shellys are visible before device IDs are supplied and have no 
   assert(floor.every(device => device.area === 'home' && equipmentSource(device) === 'Shelly'));
   assert(floor.every(device => device.enabled === false && device.controls.switch === false && device.topics.length === 0));
   assert(floor.every(device => equipmentConnectionSummary(device).label === 'Not enabled'));
-  assert.match(floor[0].connectionDetail, /5 minutes.*15 minutes/);
-  assert.match(floor[0].connectionDetail, /OFF restores thermostat control/);
+  assert.equal(floor[0].connectionDetail, 'Output 0: unknown; Output 1: unknown.');
+  assert.doesNotMatch(floor[0].connectionDetail, /minutes|commissioning|water flow/);
 });
 
 test('floor MQTT cards distinguish commissioning, confirmed preheating, missing readback and pending release', () => {
@@ -211,5 +211,5 @@ test('Garage MQTT order puts heat pump and temperatures before Caravan air, ener
   const rows = equipmentConnections({ equipment: { devices, topicGroups: [{ id: 'garage-adapter',
     topics: [{ role: 'Status', topic: 'invented/pump/state', direction: 'subscribe' }] }] } });
   assert.deepEqual(rows.filter(device => device.area === 'garage').map(device => device.id),
-    ['connection:garage-adapter:garage', 'garage-probes', 'blu_ht', 'caravan', 'door1', 'door2', 'caravan_dehumidifier']);
+    ['connection:garage-adapter:garage', 'garage-probes', 'blu_ht', 'caravan_dehumidifier', 'caravan', 'door1', 'door2']);
 });

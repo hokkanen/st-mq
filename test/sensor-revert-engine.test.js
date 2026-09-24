@@ -72,12 +72,12 @@ function pureReplay(store) {
     .reduce((checkpoint, entry) => applyLearningRecord(checkpoint, entry, context), null);
 }
 
-test('sensor undo keeps the old model available, catches up and atomically restores the pre-reset knowledge',
+test('sensor undo keeps the old model available, catches up and atomically republishes corrected eligibility with retained knowledge',
   { timeout: 30_000 }, async t => {
     const f = fixture(t);
     const changed = f.engine.changeSensor({ requestId: 'invented-reset', signal: 'indoor_temperature', reason: 'replacement' });
-    assert.equal(f.engine.checkpoint.baselineC, null);
-    assert.deepEqual(f.engine.checkpoint.samples, []);
+    assert.equal(f.engine.checkpoint.baselineC, f.initial.baselineC);
+    assert.deepEqual(f.engine.checkpoint.samples, f.initial.samples);
     const old = structuredClone(f.engine.checkpoint);
     const prefix = structuredClone(f.store.learningJournal({ input: 'providers' }));
     f.now++;
@@ -89,12 +89,12 @@ test('sensor undo keeps the old model available, catches up and atomically resto
     assert.equal(f.engine.pendingPlan, null);
     const retained = f.engine.readAdaptive(f.now);
     assert.equal(retained.sensorRevision ?? 0, 0);
-    assert.equal(retained.baselineC, null);
+    assert.equal(retained.baselineC, f.initial.baselineC);
     await waitReady(f.engine);
     f.appendContext();
     const catchup = f.engine.readAdaptive(f.now);
     assert.equal(catchup.sensorRevision ?? 0, 0);
-    assert.equal(catchup.baselineC, null);
+    assert.equal(catchup.baselineC, f.initial.baselineC);
     assert.equal(f.engine.fireplaceManager().status().status, 'running');
     await waitReady(f.engine);
     const beforeSwap = structuredClone(f.store.getState('adaptive:providers'));
@@ -136,7 +136,7 @@ test('sensor reversal clears obsolete availability reasons when the corrected ch
     const changed = f.engine.changeSensor({ requestId: 'invented-status-reset', signal: 'indoor_temperature', reason: 'calibration' });
     const before = f.engine.temperatureObservations({}, f.now).indoor;
     assert.equal(before.stale, true);
-    assert.ok(before.availabilityReasons.includes('sensor-settling'));
+    assert.ok(before.missingMembers.some(member => member.reasons.includes('sensor-settling')));
     const recorded = f.store.observations();
     f.now++;
     f.engine.revertSensor({ id: changed.events[0].id, requestId: 'invented-status-revert' });
@@ -165,7 +165,7 @@ test('restart resumes a sensor reversal with both source revisions pinned until 
     const retained = f.engine.readAdaptive(f.now);
     assert.equal(retained.sensorRevision ?? 0, before.sensorRevision ?? 0);
     assert.equal(retained.fireplaceRevision ?? 0, before.fireplaceRevision ?? 0);
-    assert.equal(retained.baselineC, null);
+    assert.equal(retained.baselineC, f.initial.baselineC);
     await waitReady(f.engine);
     const current = f.engine.readAdaptive(f.now);
     assert.equal(current.sensorRevision, reversed.revision);

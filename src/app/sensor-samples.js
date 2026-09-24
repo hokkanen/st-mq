@@ -23,7 +23,8 @@ export function withSensorMeasurements(sample, checkpoint = {}, configuration = 
     .filter(([signal]) => signal === 'outdoor_temperature' || Object.hasOwn(weights, signal)).map(([, at]) => at));
   const settling = epoch > 0 && from < epoch + SENSOR_SETTLING_MS;
   const indoorSensors = Object.fromEntries(Object.entries(original.indoorSensors).map(([signal, sensor]) => {
-    const boundary = Math.max(epoch, epochs[signal] ?? 0);
+    const boundary = Math.max(checkpoint.measurementEpochAt ?? 0, epochs[signal] ?? 0);
+    const sensorSettling = boundary > 0 && from < boundary + SENSOR_SETTLING_MS;
     let value = sensor.value, coverage = null;
     if (boundary && Array.isArray(sensor.reportIntervals)) {
       let through = from, endpoint = false;
@@ -34,7 +35,7 @@ export function withSensorMeasurements(sample, checkpoint = {}, configuration = 
       coverage = { reportCoverageComplete: through >= original.windowEnd && endpoint, reportCoveredThrough: through };
       if (!coverage.reportCoverageComplete) value = null;
     }
-    if (settling || boundary && (!Number.isFinite(sensor.observedAt) || sensor.observedAt < boundary)) value = null;
+    if (sensorSettling || boundary && (!Number.isFinite(sensor.observedAt) || sensor.observedAt < boundary)) value = null;
     return [signal, { ...sensor, ...coverage, value }];
   }));
   const indoorC = Object.values(indoorSensors).every(sensor => Number.isFinite(sensor.value))

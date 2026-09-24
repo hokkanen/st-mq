@@ -77,7 +77,7 @@ larger sections without adding another configuration format.
 | Sections, in file order | Settings they own |
 | --- | --- |
 | `controller`, `garage`, `charging`, `electricity` | Home operation and heating, Garage policy/adapter, charger and vehicle sources, electricity tariffs. |
-| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. |
+| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |
 | `pairing`, `replication` | Instance pairing, failover and database replication. |

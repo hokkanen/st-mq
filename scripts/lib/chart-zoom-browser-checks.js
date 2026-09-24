@@ -8,6 +8,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   const fullscreen = "document.querySelector('.history-panel').dataset.fullscreen === 'true'";
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
   const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).click(); true`);
+  const key = value => evaluate(`(() => { const canvas = document.getElementById('history'); canvas.focus(); canvas.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(value)}, bubbles: true, cancelable: true })); return true; })()`);
   const state = async () => JSON.parse(await evaluate(`JSON.stringify((() => {
     const data = ${canvas}.dataset;
     return { from: Number(data.viewFrom), to: Number(data.viewTo),
@@ -42,24 +43,15 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
         && button.right <= innerWidth;
     })()`), true, `${description}: fullscreen button sits immediately to the right of the axis selector`);
   };
-  const checkToolbar = async (description, { portrait = false } = {}) => {
+  const checkToolbar = async description => {
     await checkAxisButton(description);
     assert.equal(await evaluate(`(() => {
       const heading = document.querySelector('.chart-heading').getBoundingClientRect();
-      const title = document.querySelector('.chart-heading h2').getBoundingClientRect();
-      const actions = document.querySelector('.chart-explorer-controls').getBoundingClientRect();
-      const axis = document.getElementById('left-axis').getBoundingClientRect();
-      const exit = document.getElementById('chart-fullscreen').getBoundingClientRect();
-      const buttons = [...document.querySelectorAll('.chart-explorer-controls button')].map(button => button.getBoundingClientRect());
-      const centered = rect => rect.top + rect.height / 2;
-      const oneActionRow = buttons.every(rect => Math.abs(centered(rect) - centered(buttons[0])) <= 2);
-      if (${portrait}) return oneActionRow && heading.height <= 108 && actions.left >= 0 && actions.right <= innerWidth
-        && actions.top >= Math.min(title.top, axis.top) && actions.bottom <= heading.bottom + 1;
-      const titleVisible = title.width > 0 && title.height > 0;
-      return oneActionRow && heading.height <= 56 && (!titleVisible || title.left < actions.left) && actions.right <= axis.left
-        && (!titleVisible || Math.abs(centered(title) - centered(exit)) <= 3) && Math.abs(centered(actions) - centered(exit)) <= 3
-        && (innerWidth <= 1000 || Math.abs(actions.left + actions.width / 2 - innerWidth / 2) <= 30);
-    })()`), true, `${description}: ${portrait ? 'compact toolbar uses at most two rows' : 'title, centered zoom actions and axis controls share one compact row'}`);
+      const dates = ['date-start', 'date-end'].map(id => document.getElementById(id).getBoundingClientRect());
+      return heading.height <= 70 && dates.every(rect => rect.width > 90 && rect.height >= 32
+        && rect.left >= 0 && rect.right <= innerWidth && rect.top >= heading.bottom - 1)
+        && !document.querySelector('.chart-explorer-controls');
+    })()`), true, `${description}: compact inspection controls keep both date pickers usable`);
   };
   const checkFits = async description => {
     assert.equal(await evaluate(`(() => {
@@ -110,7 +102,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     await checkAxisButton(description);
     assert.equal(await evaluate(`${canvas}.hasAttribute('tabindex') || ${canvas}.hasAttribute('aria-description')`), false,
       `${description}: the normal canvas has no fullscreen gesture keyboard instructions`);
-    assert.equal(await evaluate(`['.chart-explorer-controls', '#chart-overview', '.chart-gesture-help', '#chart-visible-range', '#chart-detail-status']
+    assert.equal(await evaluate(`['#chart-overview', '.chart-gesture-help', '#chart-visible-range', '#chart-detail-status']
       .every(selector => [...document.querySelectorAll(selector)].every(node => !node.checkVisibility() && node.getClientRects().length === 0))`), true,
     `${description}: zoom controls, navigator and help add no visible normal-chart layout`);
     await evaluate(`(() => {
@@ -120,9 +112,6 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
         if (url.pathname.endsWith('/api/chart') && url.searchParams.has('viewFrom')) window.chartNormalFixture.detailRequests++;
         return window.chartNormalFixture.fetch(...args);
       };
-      for (const id of ['chart-zoom-in', 'chart-zoom-in', 'chart-pan-forward', 'chart-zoom-out', 'chart-pan-back', 'chart-zoom-reset']) {
-        document.getElementById(id).click();
-      }
       const navigator = document.getElementById('chart-navigator');
       navigator.value = navigator.max; navigator.dispatchEvent(new Event('input', { bubbles: true }));
       ${canvas}.focus({ preventScroll: true });
@@ -185,7 +174,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
       }
       return fixture.fetch(...args);
     };
-    for (let i = 0; i < 4; i++) document.getElementById('chart-zoom-in').click();
+    document.getElementById('history').focus(); for (let i = 0; i < 4; i++) document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true }));
     return true;
   })()`);
   await until('window.chartZoomFixture.requests.length === 1');
@@ -220,15 +209,15 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   assert.equal(loadedDetail.end, initial.rangeEnd, 'Refinement retains the selected end date');
   checkSameView(await state(), movedWhileLoading, 'Publishing finer detail');
   await evaluate('window.fetch=window.chartZoomFixture.fetch; delete window.chartZoomFixture; true');
-  await click('chart-zoom-reset');
+  await key('Home');
   await settle();
   checkWholeSelection(await state(), 'Reset after asynchronous refinement');
 
-  await click('chart-zoom-in');
+  await key('+');
   await until(`Number(${canvas}.dataset.zoom) > 1`);
   const zoomed = await state();
-  assert.ok(zoomed.to - zoomed.from < initial.to - initial.from, 'Zoom button narrows the visible time interval');
-  checkBounds(zoomed, initial, 'Zoom button');
+  assert.ok(zoomed.to - zoomed.from < initial.to - initial.from, 'Keyboard zoom narrows the visible time interval');
+  checkBounds(zoomed, initial, 'Keyboard zoom');
   await click('theme-toggle');
   await settle();
   checkSameView(await state(), zoomed, 'Changing theme');
@@ -302,20 +291,29 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     checkBounds(view, initial, `Navigator ${value}`);
     assert.ok(Math.abs(view[edge] - initial[edge === 'from' ? 'selectedFrom' : 'selectedTo']) <= 2,
       `Navigator reaches the ${value === 'min' ? 'first' : 'last'} selected instant`);
-    await click(value === 'min' ? 'chart-pan-back' : 'chart-pan-forward');
+    await key(value === 'min' ? 'ArrowLeft' : 'ArrowRight');
     await settle();
     checkSameView(await state(), view, `Panning against the ${value} boundary`);
   }
-  await click('chart-zoom-reset');
+  await key('Home');
   await settle();
   checkWholeSelection(await state(), 'Desktop reset');
-  await click('chart-zoom-out');
+  await key('-');
   await settle();
   checkWholeSelection(await state(), 'Zooming out at the desktop limit');
 
   await viewport(390, 844);
   await until(`Number(${canvas}.dataset.viewTo) - Number(${canvas}.dataset.viewFrom) < Number(${canvas}.dataset.selectedTo) - Number(${canvas}.dataset.selectedFrom)`);
   const portrait = await state();
+  assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), false);
+  await click('chart-legend-toggle');
+  await settle();
+  assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), true);
+  await checkFits('Portrait with expanded legend');
+  await click('chart-legend-toggle');
+  await settle();
+  assert.equal(await evaluate("document.getElementById('chart-legend').checkVisibility()"), false);
+
   assert.ok(Math.abs(portrait.zoom - 1) < 0.001, 'Portrait starts at baseline magnification');
   checkBounds(portrait, initial, 'Portrait slice');
   await checkFits('Portrait fullscreen');
@@ -355,7 +353,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   assert.ok(Math.abs(rotated.zoom - beforeRotation.zoom) < 0.001, 'Rotation preserves magnification');
   checkBounds(rotated, initial, 'Zoomed landscape');
   await checkFits('Zoomed landscape fullscreen');
-  await click('chart-zoom-reset');
+  await key('Home');
   await settle();
   checkWholeSelection(await state(), 'Landscape reset');
   await checkFits('Landscape fullscreen');
@@ -363,7 +361,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   await capture('landscape');
 
   await viewport(1440, 1100);
-  await click('chart-zoom-in');
+  await key('+');
   await settle();
   const beforeExit = await state();
   await click('chart-fullscreen');
@@ -389,10 +387,9 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   // A multi-year selection uses the same fixed-domain interactions. The
   // synthetic store is deliberately sparse: this checks long-window behavior
   // without treating a desktop smoke run as a household loading benchmark.
-  await evaluate(`document.getElementById('date-range-enabled').click();
-    document.getElementById('date-start').value='2024-09-07';
+  await evaluate(`document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change'));
     document.getElementById('date-end').value='2026-09-07';
-    document.getElementById('chart-range-form').requestSubmit(); true`);
+    document.getElementById('date-end').dispatchEvent(new Event('change')); true`);
   await until(`${canvas}.dataset.ready === 'true' && ${canvas}.dataset.rangeStart === '2024-09-07'
     && ${canvas}.dataset.rangeEnd === '2026-09-07'`);
   const years = await state();
@@ -401,7 +398,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   await click('chart-fullscreen');
   await until(fullscreen);
   checkWholeSelection(await state(), 'Changed dates clear the remembered fullscreen zoom');
-  await evaluate("for(let i=0;i<8;i++)document.getElementById('chart-zoom-in').click(); true");
+  await evaluate("document.getElementById('history').focus(); for(let i=0;i<8;i++)document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown', { key: '+', bubbles: true })); true");
   await settle();
   const deep = await state();
   assert.ok(deep.to - deep.from < (years.selectedTo - years.selectedFrom) / 100,
@@ -412,14 +409,14 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   const lastDays = await state();
   assert.ok(Math.abs(lastDays.to - years.selectedTo) <= 2, 'Deep zoom can navigate to the end of a multi-year selection');
   checkBounds(lastDays, years, 'Multi-year pan');
-  await click('chart-zoom-reset');
+  await key('Home');
   await settle();
   checkWholeSelection(await state(), 'Multi-year reset');
   await click('chart-fullscreen');
   await until(`!(${fullscreen})`);
-  await evaluate(`document.getElementById('date-start').value=${JSON.stringify(initial.dates[0])};
+  await evaluate(`document.getElementById('date-start').value=${JSON.stringify(initial.dates[0])}; document.getElementById('date-start').dispatchEvent(new Event('change'));
     document.getElementById('date-end').value=${JSON.stringify(initial.dates[1])};
-    document.getElementById('date-range-enabled').click(); true`);
+    document.getElementById('date-end').dispatchEvent(new Event('change')); true`);
   await until(`${canvas}.dataset.ready === 'true' && ${canvas}.dataset.rangeStart === ${JSON.stringify(initial.rangeStart)}
     && ${canvas}.dataset.rangeEnd === ${JSON.stringify(initial.rangeEnd)}`);
   checkWholeSelection(await state(), 'Restored original selection');

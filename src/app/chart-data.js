@@ -391,7 +391,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   // Following samples close clipped scalar segments, including a viewport
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
-  const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
+  const shading = Object.fromEntries(['heatOff', 'compressorSpace', 'compressorDhw', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
   const firewoodRange = detail && FIREWOOD_OUTCOME_NAMES.includes(left) ? { ...range,
@@ -414,7 +414,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const learningMetadata = {};
   const requested = new Set(projecting ? _priceProjection ? ['spot_price']
     : left === 'power' ? [...PHASES, 'auxiliary_output', 'auxiliary_power', 'charger_power'] : PHASES
-    : [...TEMPERATURES, 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS,
+    : [...TEMPERATURES, 'garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS,
     ...(left === 'integral' ? [] : PHASES), ...leftNames.filter(name => !Object.hasOwn(GARAGE_INPUT_INFO, name) && !Object.hasOwn(GARAGE_COEFFICIENT_INFO, name) && !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'property_power', 'charger2_power', 'heat_pump_power', 'solar_forecast',...ENERGY_SIGNALS].includes(name))]);
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
@@ -513,6 +513,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
     flushTelemetry(time);
     for (const { row, value } of atRows.values()) {
       const signal = row.signal;
+      if (signal === 'garage_compressor_active' && value === 1 && row.periodicCoverage && Number.isFinite(row.reportExpiresAt))
+        shading.compressorGarage.add(time, Math.min(row.reportExpiresAt, now));
       if (signal === 'charger_power' && time >= energyStarts.ev1) continue;
       if (PHASES.includes(signal) && time >= energyStarts[signal.startsWith('ev1')?'ev1':'property']) continue;
       if (signal === 'requested_heat_mode' && row.import_id != null) addState(row, value, 'heat');

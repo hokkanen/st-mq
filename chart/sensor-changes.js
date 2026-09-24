@@ -1,3 +1,4 @@
+import { confirmAction } from './confirmation.js';
 const pendingKey = 'stmq-sensor-change-pending';
 const labels = Object.freeze({ indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs',
   bedroom_temperature: 'Bedroom', garage_temperature: 'Garage', outdoor_temperature: 'Outdoor' });
@@ -37,17 +38,17 @@ function confirmation(view, body) {
     const event = eventFor(view, body.id);
     return `Revert the ${labels[event.signal]} sensor change recorded ${dateFormat.format(event.at)}?\n\n${event.affectsLearning === false
       ? 'This marks the entry as reverted. It did not reset house learning.'
-      : 'The model will relearn from recorded history as if this reset had not happened, including the readings excluded while it settled. Other sensor changes still apply. Heating control stays available while relearning runs.'}\n\nUse this for a mistaken entry. If the sensor really changed its readings, combining the old and new measurements may make learning less accurate.`;
+      : 'The model will relearn from recorded history as if this measurement boundary had not been recorded, including the readings excluded while it settled. Other sensor changes still apply. Heating control stays available while relearning runs.'}\n\nUse this for a mistaken entry. If the sensor really changed its readings, combining the old and new measurements may make learning less accurate.`;
   }
   const sensor = view.sensors.find(sensor => sensor.signal === body.signal);
   return `Record ${labels[body.signal]} sensor ${reasons[body.reason].toLowerCase()} now?\n\n${sensor.affectsLearning === false
     ? 'This records a measurement change for this sensor. It does not reset house learning.'
-    : `This clears the learned normal indoor temperature, all room comfort references and accumulated fitting and validation evidence. Thermal coefficients remain as starting estimates. Learning pauses for ${view.settlingMinutes ?? 30} minutes while the sensor settles; comfort and validation need new evidence afterward.`}\n\nRecorded readings are kept. You can revert a mistaken entry and relearn from that history.`;
+    : `This excludes only the changed sensor for ${view.settlingMinutes ?? 30} minutes while it settles. Previous observations, learned coefficients, validation evidence and room comfort references are kept. Learning never fits across the measurement change; new readings gradually recalibrate the model.`}\n\nRecorded readings are kept. You can revert a mistaken entry and relearn from that history.`;
 }
 
 /** Keep an uncertain submission intact across refreshes and retries. */
 export function createSensorChangeActions({ request, storage, makeRequestId = requestId,
-  confirm = message => globalThis.confirm(message), onChange = () => {}, beforeMutation = () => {}, afterMutation = () => {} }) {
+  confirm = message => confirmAction({ document: globalThis.document, title: 'Record a sensor change', message, action: 'Confirm change' }), onChange = () => {}, beforeMutation = () => {}, afterMutation = () => {} }) {
   let view, busy = false, sending = false, loading = false, generation = 0, pending = restorePending(storage);
   let message = pending ? 'A previous save was not confirmed. Retry the same change without adding a duplicate.' : '', error = !!pending;
   const snapshot = () => ({ view, busy, loading, pending, message, error });

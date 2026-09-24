@@ -50,18 +50,22 @@ const change = (store, at, signal = 'bedroom_temperature', requestId = 'invented
 const revert = (store, id, at = start + 8 * W, requestId = 'invented-revert') =>
   revertSensorChange(store, 'mqtt', { id, requestId }, at, { config });
 
-for (const signal of ['bedroom_temperature', 'outdoor_temperature']) test(`${signal}: reversal recovers settling measurements and pre-reset knowledge from immutable inputs`, t => {
+for (const signal of ['bedroom_temperature', 'outdoor_temperature']) test(`${signal}: reversal recovers settling measurements and retained knowledge from immutable inputs`, t => {
   const store = setup(t);
   window(store, start + W); saveSample(store, start + W);
   const reset = change(store, start + W, signal);
   for (const index of [2, 3, 4, 5]) { window(store, start + index * W); saveSample(store, start + index * W); }
   const resetModel = replayLearningJournal(store, 'mqtt');
-  assert.equal(resetModel.baselineC, null);
-  assert.equal(resetModel.model.energy.episodes, 0);
+  assert.equal(resetModel.baselineC, 21);
+  assert.equal(resetModel.model.energy.episodes, 9);
+  assert.equal(resetModel.samples.length, 5);
+  assert.equal(resetModel.sensorComfortReferences.indoor_temperature.targetC, 22);
+  assert.equal(resetModel.sensorComfortReferences.bedroom_temperature.targetC, 20);
   const before = structuredClone(store.learningJournal({ input: 'mqtt' }));
   const raw = structuredClone(store.observations());
   const excluded = before.filter(row => row.kind === 'sample' && [start + 2 * W, start + 3 * W].includes(row.at));
-  assert(excluded.every(row => row.payload.value.indoorC === null));
+  assert(excluded.every(row => row.payload.value.indoorC === (signal === 'outdoor_temperature' ? 21 : null)));
+  assert(excluded.every(row => row.payload.value.indoorSensors.indoor_temperature.value === 22));
   assert(excluded.every(row => originalSensorSample(row.payload.value).indoorC === 21));
   if (signal === 'outdoor_temperature') assert(excluded.every(row => originalSensorSample(row.payload.value).outdoorC === 5));
   revert(store, reset.id);
@@ -93,7 +97,7 @@ test('reverting one change keeps a later real boundary, then reverting it restor
   revert(store, first.id);
   assert.deepEqual(sensorBoundaries(store, 'mqtt', start + 8 * W), { indoor_temperature: second.at });
   let cp = replayLearningJournal(store, 'mqtt', null, { rebuild: true });
-  assert.equal(cp.measurementEpochAt, second.at);
+  assert.equal(cp.sensorEpochs.indoor_temperature, second.at);
   assert.equal(cp.samples.at(-1).valid, false);
   revert(store, second.id, start + 9 * W, 'invented-revert-second');
   cp = replayLearningJournal(store, 'mqtt', null, { rebuild: true });
@@ -138,5 +142,5 @@ test('correction retries are idempotent, source-scoped and cannot reinterpret an
   const view = sensorChangesView(store, 'mqtt', { now: start + 10 * W, config });
   assert.equal(view.events.find(row => row.id === reset.id).revertedAt, first.revertedAt);
   assert.equal(view.events.find(row => row.id === archived).canRevert, false);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v12-passive-thermal');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v13-scoped-sensor-changes');
 });

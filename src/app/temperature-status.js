@@ -1,6 +1,6 @@
 import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
-import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorReadingUsable } from './indoor-readings.js';
 import { goodQuality } from '../control/learning.js';
 
@@ -103,15 +103,10 @@ export function indoorStatusMetadata(reading, now, { latest = reading, store, kn
   return metadata;
 }
 
-export function outdoorReadingStatus(observation, now, { maxAgeMs, h66 } = {}) {
-  maxAgeMs = observation?.source === 'husdata-h66' ? Math.min(H66_MAX_AGE_MS, maxAgeMs ?? H66_MAX_AGE_MS) : OUTDOOR_MAX_AGE_MS;
+export function outdoorReadingStatus(observation, now) {
+  const maxAgeMs = OUTDOOR_MAX_AGE_MS;
   const availabilityReasons = temperatureFailureReasons(observation, now);
   if (Number.isFinite(observation?.sourceTime) && now - observation.sourceTime > maxAgeMs) availabilityReasons.push('out-of-date');
-  if (observation?.source === 'husdata-h66' && h66 && h66.readings?.['0007']?.available !== true) {
-    if ((h66.brokerConnected ?? h66.connected) === false) availabilityReasons.push('disconnected');
-    else if (h66.readings?.['0007']?.unavailableReasons?.includes('awaiting-live-report') || !availabilityReasons.length)
-      availabilityReasons.push('awaiting-live-report');
-  }
   return { value: observation?.value ?? null, observedAt: observation?.sourceTime ?? null,
     quality: observation?.quality ?? [], source: observation?.source ?? null,
     ...temperatureTimeMetadata(observation, now), maxAgeMs,
@@ -141,7 +136,7 @@ const outdoorTrustworthy = (row, now) => Boolean(row && Number.isFinite(row.valu
 const transition = row => row?.value === null && row.raw?.timeBasis === 'availability-transition';
 
 /** The primary and replica apply the same source update rules: retained packets
- * cannot replace live H66; failed downloads preserve a still-valid weather
+ * cannot replace a live source; failed downloads preserve a still-valid weather
  * reading; explicit source outages require a subsequent genuine measurement. */
 export function rememberOutdoorReading(prior, observation, now) {
   if (!observation) return prior;
@@ -153,10 +148,8 @@ export function rememberOutdoorReading(prior, observation, now) {
     ? observation : prior;
   if (sameSource && transition(prior) && (retained || observation.sourceTime < prior.receivedAt
     || (observation.receivedAt ?? 0) < prior.receivedAt)) return prior;
-  let selected = !prior || incomingValid && (!priorValid || observation.sourceTime >= prior.sourceTime)
+  const selected = !prior || incomingValid && (!priorValid || observation.sourceTime >= prior.sourceTime)
     || !priorValid && !incomingValid && (observation.receivedAt ?? 0) >= (prior.receivedAt ?? 0) ? observation : prior;
-  if (observation.source === 'husdata-h66' && !retained && (observation.receivedAt ?? 0) >= (prior?.receivedAt ?? 0)
-    && (!incomingValid || observation.raw?.usableForControl !== true)) selected = observation;
   return selected;
 }
 
@@ -164,7 +157,7 @@ export function rememberOutdoorReading(prior, observation, now) {
  * can confirm a held outdoor value without inventing a new measurement. */
 export function recordedOutdoorObservation(store, now, { knownAt = now, input } = {}) {
   if (!store) return outdoorReadingStatus(null, now);
-  const sources = ['mqtt', 'providers'].includes(input) ? ['husdata-h66', 'fmi', 'openmeteo'] : null;
+  const sources = ['mqtt', 'providers'].includes(input) ? ['fmi', 'openmeteo'] : null;
   const candidates = [];
   const scopes = sources ?? [input === 'simulated' ? 'simulation' : null];
   for (const source of scopes) {

@@ -334,6 +334,9 @@ function sampleInputs(sample, targetC) {
 }
 
 function intervalSegments(a, b, targetC) {
+  // A measurement change can occur between sparse samples. Never fit or
+  // propagate a temperature jump across that boundary, even after settling.
+  if ((a.measurementEpochAt ?? null) !== (b.measurementEpochAt ?? null)) return [];
   const from = time(a.timestamp), to = time(b.timestamp);
   if (Array.isArray(b.inputSegments) && b.windowStart === from) {
     let cursor = from;

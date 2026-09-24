@@ -272,7 +272,7 @@ test('delayed and unrelated availability failures cannot invalidate the current 
 });
 
 
-test('explicit H66 outdoor outage falls back to FMI without accepting delayed failure or recovery', t => {
+test('H66 outdoor publications and outages cannot replace the selected FMI measurement', t => {
   const { engine, setTime } = setup(t, { input: 'mqtt' });
   const at = beginning + MINUTE;
   engine.ingest(reading({ source: 'fmi', signal: 'outdoor_temperature', value: 4 }));
@@ -283,15 +283,15 @@ test('explicit H66 outdoor outage falls back to FMI without accepting delayed fa
   const failure = { ...h66, value: null, sourceTime: null, receivedAt: at, quality: ['mqtt-disconnected'],
     raw: { timeBasis: 'availability-transition', usableForControl: false } };
   engine.rememberObservation({ ...failure, device: 'other-gateway' }, at);
-  assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+  assert.equal(engine.status().observations.outdoor.source, 'fmi');
   engine.rememberObservation(failure, at);
   assert.equal(engine.status().observations.outdoor.source, 'fmi');
   engine.ingest({ ...h66, receivedAt: at });
   assert.equal(engine.status().observations.outdoor.source, 'fmi');
   engine.ingest({ ...h66, sourceTime: at, receivedAt: at });
-  assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+  assert.equal(engine.status().observations.outdoor.source, 'fmi');
   engine.rememberObservation({ ...failure, receivedAt: beginning }, at);
-  assert.equal(engine.status().observations.outdoor.source, 'husdata-h66');
+  assert.equal(engine.status().observations.outdoor.source, 'fmi');
 });
 
 test('restart retains recorded room contributions through an outage without extending their observation times', t => {

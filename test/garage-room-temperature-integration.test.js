@@ -19,11 +19,12 @@ const INTERNAL = { enabled: true, phase: 'internal', temperatureC: null, measure
 function fixture(t) {
   let now = BASE, sequence = 0, external = { ...INTERNAL }, result = null, manualPending = false;
   const native = { power: 'on', mode: 'heat', targetC: 17, fan: 'auto', vane: 3, wideVane: 'center', vanes: 'fixed' };
-  const published = [], store = new Store(':memory:');
+  const published = [], observations = [], store = new Store(':memory:');
   const engine = { latest: {}, lastKnownTemperatures: {}, settings: { mode: 'shadow' } };
   const runtime = new GarageRuntime({ store, engine,
     config: { input: 'mqtt', garage: { enabled: false, baselineC: 16, adapter: SETTINGS } }, clock: () => now });
   const adapter = createGarageAdapter({ settings: SETTINGS, baselineC: 16, hostSession: 'invented-room-owner', clock: () => now,
+    onObservation: row => observations.push(row),
     onState: snapshot => runtime.adapterChanged(snapshot),
     productionTransport: createShellyCn105Transport({ settings: SETTINGS, publish: async (topic, payload, options) => {
       published.push({ topic, command: JSON.parse(payload), options });
@@ -104,9 +105,25 @@ function fixture(t) {
   }
   measure(); state();
   t.after(async () => { await runtime.close({ restore: false }); await adapter.close({ restore: false }); store.close(); });
-  return { runtime, adapter, engine, store, native, published, state, report, measure, settle, advanceReport, start,
+  return { runtime, adapter, engine, store, native, published, observations, state, report, measure, settle, advanceReport, start,
     now: () => now, advance(ms = 1000) { now += ms; } };
 }
+
+test('external temperature history begins only after device acknowledgement and ends at its actual deadline', async t => {
+  const f = fixture(t); await f.start();
+  const feed = f.observations.filter(row => row.signal === 'garage_external_temperature');
+  assert.equal(feed.length, 1);
+  assert.equal(feed[0].value, 17);
+  assert.equal(feed[0].sourceTime, f.now(), 'Do not draw a temperature feed before the acknowledgement');
+  assert.equal(feed[0].raw.measuredAt, f.published[2].command.measuredAt);
+  assert.equal(feed[0].raw.expiresAt, feed[0].raw.measuredAt + 90_000);
+  assert.equal(feed[0].sourceTime + feed[0].raw.reportIntervalMs, feed[0].raw.expiresAt);
+  f.advance(); f.state();
+  assert.equal(f.observations.length, 1, 'Republished state cannot extend the original sample');
+  f.adapter.setConnected(false);
+  assert.equal(f.observations.at(-1).value, null);
+  assert.equal(f.observations.at(-1).raw.timeBasis, 'availability-transition');
+});
 
 test('real runtime and Pill adapter select5 through clearACK, forced native17 confirmation and room+12', async t => {
   const f = fixture(t); await f.start();

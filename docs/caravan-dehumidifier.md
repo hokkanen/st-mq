@@ -36,6 +36,8 @@ Example full snapshot, with an illustrative timestamp:
   "targetHumidity": 55,
   "fanSpeed": "low",
   "swing": "fixed_90",
+  "temperature": 8.5,
+  "humidity": 52,
   "timestamp": 1789992000000
 }
 ```
@@ -68,6 +70,32 @@ is not confirmation: ST-MQ waits for fresh matching telemetry. It does not recor
 requested settings as actual observations or retry old commands after reconnect.
 Manual controls respect the existing primary-controller and replica restrictions.
 
+## Temperature control and location check
+
+The public equipment entry enables `temperature_control: { "sensor_device_id":
+"blu_ht" }`. ST-MQ controls appliance power from the Caravan air BLU reading:
+OFF at or below 1°C; ON at or above 2°C; retain the previous demand between
+those thresholds. Startup in the 1–2°C band starts with OFF demand. The power
+buttons are disabled while this policy is configured; other settings remain
+available. Removing `temperature_control` returns the generic equipment entry
+to manual control and its generic recording policy.
+
+Both devices must provide fresh live reports. The appliance snapshot must include
+its own measured `temperature` in °C and `humidity` in percent. Its temperature
+must differ from BLU by no more than 4°C and humidity by no more than 20 percentage
+points. These tolerances allow normal sensor offset and appliance warmth; they
+are a location plausibility check, not proof of physical location. Missing or
+disagreeing values prevent ON commands and pause caravan running-state history.
+The bridge must report actual appliance readings, never copy the BLU values.
+
+Loss of room evidence requests OFF for an appliance previously managed in this
+runtime. An appliance first seen elsewhere receives no temperature commands.
+Offline appliances cannot be switched or confirmed; the UI says so. Authority
+loss prevents all writes. Commands are never retained or replayed, require live
+feedback, and uncertain requests are retried only after a new current assessment
+and a 30-second minimum interval. This host policy does not replace the appliance's
+own low-temperature protection or shutdown sequence.
+
 ## Recording
 
 The single `caravan_dehumidifier_running_state` series uses stable numeric codes
@@ -87,6 +115,10 @@ when the appliance was enabled and at which fan setting. It does not prove that
 water was being removed: a humidity target, full tank, automatic fan selection or
 shutdown cycle can affect physical operation. Operating mode, humidity target and
 louvre setting remain live-only; commands do not generate history points.
+With temperature control enabled, every recorded state also requires the two
+fresh, plausibly colocated readings. Coverage ends at the earliest expiry of
+either device. Missing location evidence produces a gap instead of recording
+activity when the appliance may have been moved elsewhere.
 
 The same Caravan fold records `caravan_temperature` and `caravan_humidity` from
 the Shelly BLU H&T. Battery and Bluetooth signal strength are live-only.

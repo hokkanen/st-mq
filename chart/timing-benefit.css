@@ -1,5 +1,5 @@
-/* Scope and comparison form one calm control area above the heating result. */
-.timing-device[data-device="heatPump"] { container-type: inline-size; }
+/* Keep scope and comparison controls together above each result. */
+.timing-device:is([data-device="heatPump"], [data-device="charger"]) { container-type: inline-size; }
 .timing-card .heating-selection {
   display: grid;
   gap: 10px;

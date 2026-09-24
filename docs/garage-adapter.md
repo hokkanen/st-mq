@@ -244,6 +244,20 @@ requested room temperature.
 
 ## Electrical accounting
 
+Native indoor temperature, compressor frequency and compressor activity have
+independent compact chart histories. Each retains the actual source clock,
+qualification and two-minute report deadline; an unknown or unverified decoder
+produces a gap. The production contract's boolean indications use `unit:null`
+on the wire and numeric 0/1 state in recorded history. Fresh provisional values
+can still be inspected in the live readings without becoming learning evidence.
+Frequency remains a reported native quantity; missing firmware reports cannot
+be reconstructed from ON or inferred electrical power.
+
+The external temperature chart begins at acknowledged activation and carries
+the original sensor timestamp separately. Its coverage expires at the earlier
+device deadline or original sample plus 90 seconds. Internal-sensor handover and
+disconnect close the line; repeated cached state cannot extend it.
+
 Electrical scale and scope must be explicit. `accuracyVerified:false` preserves
 the distinction between correctly decoded units and unverified absolute meter
 accuracy. Only `meterScope:"garage-heat-pump-only"` contributes to dedicated

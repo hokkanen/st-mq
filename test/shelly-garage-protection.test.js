@@ -38,9 +38,9 @@ test('garage primary and custom probe mappings keep a fixed cadence without reti
     for (let elapsed = 5_000; elapsed <= 120_000; elapsed += 5_000) f.advance(elapsed);
     const polls = id => f.publications.filter(row => row.topic === `invented/${id}/rpc` && row.payload.method === 'Shelly.GetStatus')
       .map(row => row.at - start);
-    assert.deepEqual(polls('rear'), [0, 30_000, 60_000, 90_000, 120_000]);
+    assert.deepEqual(polls('rear'), [0, 0, 30_000, 60_000, 90_000, 120_000]);
     assert.deepEqual(polls('front'), polls('rear'));
-    assert.deepEqual(polls('home'), Array.from({ length: 120_000 / configured + 1 }, (_, i) => i * configured));
+    assert.deepEqual(polls('home'), [0, ...Array.from({ length: 120_000 / configured + 1 }, (_, i) => i * configured)]);
     for (const signal of ['garage_temperature', 'garage_temperature_2']) {
       const row = f.observations.find(row => row.signal === signal && row.value !== null);
       assert.equal(row.raw.reportIntervalMs, 30_000);

@@ -25,7 +25,7 @@ import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
-import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
 import { GarageRuntime } from '../garage/runtime.js';
 import { ChargingRuntime } from '../charging/runtime.js';
@@ -34,7 +34,7 @@ import { isGarageDoorSignal, confirmedGarageDoor, garageDoorContinuity } from '.
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 const pauseIdentity = override => override?.id ?? (Number.isFinite(override?.createdAt) ? String(override.createdAt) : null);
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
-const OUTDOOR_SOURCES = ['husdata-h66', ...WEATHER_SOURCES];
+const OUTDOOR_SOURCES = [...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
 
 function garageOwner(config, signal) {
@@ -502,28 +502,23 @@ export class Engine {
       }
     }
   }
-  outdoorUsable(observation, now, h66) {
-    const maxAgeMs = h66?.maxAgeMs ?? this.config.h66?.maxAgeMs ?? H66_MAX_AGE_MS;
-    return !outdoorReadingStatus(observation, now, { maxAgeMs, h66 }).stale;
+  outdoorUsable(observation, now) {
+    return !outdoorReadingStatus(observation, now).stale;
   }
   selectOutdoor(now) {
-    const h66 = this.h66Status?.();
     const candidates = OUTDOOR_SOURCES.map(source => this.outdoorCandidates[source]).filter(Boolean);
-    const selected = candidates.find(observation => this.outdoorUsable(observation, now, h66))
+    const selected = candidates.find(observation => this.outdoorUsable(observation, now))
       ?? candidates.filter(observation => trustworthy(observation, now)).sort((a, b) => b.sourceTime - a.sourceTime)[0]
       ?? candidates.sort((a, b) => (b.receivedAt ?? 0) - (a.receivedAt ?? 0))[0];
     if (selected) this.latest.outdoor_temperature = selected;
     else delete this.latest.outdoor_temperature;
-    return { observation: selected, stale: !this.outdoorUsable(selected, now, h66) };
+    return { observation: selected, stale: !this.outdoorUsable(selected, now) };
   }
   outdoorObservation(now) {
-    const { observation } = this.selectOutdoor(now), h66 = this.h66Status?.();
-    return outdoorReadingStatus(observation, now,
-      { maxAgeMs: h66?.maxAgeMs ?? this.config.h66?.maxAgeMs ?? H66_MAX_AGE_MS, h66 });
+    return outdoorReadingStatus(this.selectOutdoor(now).observation, now);
   }
   providerObservations() {
-    // Keep both weather providers available through H66 updates and restarts,
-    // without persisting H66 publications as if they were fresh after reconnect.
+    // Preserve both weather providers across source changes and restarts.
     return [...Object.values(this.latest).filter(row => row.signal !== 'outdoor_temperature'),
       ...Object.values(this.outdoorCandidates)].filter(row => PROVIDER_OBSERVATION_SOURCES.includes(row.source));
   }
@@ -911,7 +906,7 @@ export class Engine {
       let history;
       try { history = this.store.getState('adaptive:history'); } catch { /* Background reconstruction can retry. */ }
       const compatibleHistory=history?.algorithmVersion===LEARNING_ALGORITHM
-        && !checkpoint.measurementEpochAt && indoorWeights(this.control).indoor_temperature === 1;
+        && !checkpoint.measurementEpochAt && !Object.keys(checkpoint.sensorEpochs ?? {}).length && indoorWeights(this.control).indoor_temperature === 1;
       const modelReady = compatibleHistory && history?.model?.validation && !checkpoint.model.validation;
       const baselineReady = compatibleHistory && Number.isFinite(history?.baselineC) && !Number.isFinite(checkpoint.baselineC)
         && (!checkpoint.baselineResetAt || Date.parse(history.comfortReference?.windowStart) >= checkpoint.baselineResetAt);
@@ -1163,7 +1158,8 @@ export class Engine {
             this.recordDhwr(execution.pulseUntil,executorStatus.requested.at);
           }
         if (decision.plan && ['preheat','reduction'].includes(phase) && !this.cycles.active()
-          && (this.checkpoint?.measurementEpochAt ?? null) === (checkpoint.measurementEpochAt ?? null)) {
+          && (this.checkpoint?.measurementEpochAt ?? null) === (checkpoint.measurementEpochAt ?? null)
+          && JSON.stringify(this.checkpoint?.sensorEpochs ?? {}) === JSON.stringify(checkpoint.sensorEpochs ?? {})) {
           const effectiveAt=this.clock();
           const plan = structuredClone(decision.plan);
           plan.executionOwner = decision.owner;

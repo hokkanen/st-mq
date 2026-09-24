@@ -73,7 +73,7 @@ test('recording diagnostics expire report coverage without changing saved acquis
 
 test('recording diagnostics distinguish H66 expiry, held temperatures, and completed energy intervals',t=>{
   const {put,recorder}=fixture(t,{maxIntervalMs:1000});
-  put(20,1000,{source:'husdata-h66',signal:'outdoor_temperature'});
+  put(20,1000,{source:'husdata-h66',signal:'supply_temperature'});
   assert.equal(recorder.status(1000+5*MINUTE).parameters[0].freshness.status,'fresh');
   const stale=recorder.status(1001+5*MINUTE).parameters[0].freshness;
   assert.equal(stale.status,'stale');assert.equal(stale.maxAgeMs,5*MINUTE);
@@ -204,20 +204,20 @@ test('temperature report revision follows genuine confirmations and outages inde
   assert.notEqual(recorder.status().temperatureReportRevision,confirmed.temperatureReportRevision);
 });
 
-test('old outdoor source timestamps do not become fresh measurements; failures and recovery always persist',t=>{
+test('old H66 source timestamps do not become fresh measurements; failures and recovery always persist',t=>{
   const {store,recorder,put,setNow}=fixture(t);
-  const extra={source:'husdata-h66',signal:'outdoor_temperature'};
+  const extra={source:'husdata-h66',signal:'supply_temperature'};
   put(20,1000,extra);
   for(let i=1;i<=20;i++) put(20,1000+i*15000,{...extra,sourceTime:1000});
   assert.equal(store.observations().length,1);
   put(20,316000,{...extra,sourceTime:1000});
-  assert.equal(recorder.latestCommitted('outdoor_temperature').value,null);
+  assert.equal(recorder.latestCommitted('supply_temperature').value,null);
   assert.equal(recorder.status().parameters[0].status,'stale');
   setNow(330000);
-  recorder.recordFailure({source:'husdata-h66',device:'fixture-house',signal:'outdoor_temperature',unit:'degC',at:330000});
-  assert.equal(recorder.latestCommitted('outdoor_temperature').value,null);
+  recorder.recordFailure({source:'husdata-h66',device:'fixture-house',signal:'supply_temperature',unit:'degC',at:330000});
+  assert.equal(recorder.latestCommitted('supply_temperature').value,null);
   assert.equal(put(20,340000,extra).reason,'quality-or-availability');
-  assert.equal(recorder.latestCommitted('outdoor_temperature').value,20);
+  assert.equal(recorder.latestCommitted('supply_temperature').value,20);
 });
 
 test('room and garage recording accepts old source timestamps without inventing new measurements',t=>{
@@ -282,10 +282,10 @@ test('state changes and pump zero crossings bypass numeric deadband; excluded H6
 
 test('recording spacing cannot change source freshness or turn repeated old timestamps into new readings',t=>{
   const {recorder,put}=fixture(t,{maxIntervalMs:1000});
-  put(20,1000,{source:'husdata-h66',signal:'outdoor_temperature'});
-  assert.equal(put(20,31000,{source:'husdata-h66',signal:'outdoor_temperature',sourceTime:1000}).saved,false);
+  put(20,1000,{source:'husdata-h66',signal:'supply_temperature'});
+  assert.equal(put(20,31000,{source:'husdata-h66',signal:'supply_temperature',sourceTime:1000}).saved,false);
   assert.equal(recorder.status().parameters[0].status,'fresh','H66 source remains within its independent five-minute validity');
-  assert.equal(recorder.latestCommitted('outdoor_temperature').sourceTime,1000);
+  assert.equal(recorder.latestCommitted('supply_temperature').sourceTime,1000);
 });
 
 test('verification changes are recorded immediately even when value and numerical threshold are unchanged',t=>{

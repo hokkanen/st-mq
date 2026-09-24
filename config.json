@@ -223,7 +223,15 @@
       "pw": "",
       "charger_id": "",
       "equalizer_id": "",
-      "charger_voltage_ids": []
+      "charger_voltage_ids": [],
+      "local_ocpp": {
+        "enabled": true,
+        "host": "0.0.0.0",
+        "port": 9001,
+        "password": "",
+        "charge_point_id": "",
+        "authorization_tags": []
+      }
     },
 
     "teslamate": {
@@ -323,15 +331,16 @@
         {
           "id": "blu_ht",
           "label": "Caravan air",
+          "manufacturer": "Shelly",
           "area": "garage",
           "kind": "temperature",
-          "connection": "mqtt:stmq/home/blu_ht/state",
+          "connection": "mqtt:stmq/garage/caravan_air/state",
           "signal": "caravan_temperature",
           "max_age_seconds": 180,
           "mqtt": {
             "state_path": "temperature",
             "timestamp_path": "timestamp",
-            "request_topic": "stmq/home/blu_ht/get",
+            "request_topic": "stmq/garage/caravan_air/get",
             "request_payload": "status"
           },
           "readings": [
@@ -423,6 +432,9 @@
           "connection": "mqtt:stmq/garage/caravan_dehumidifier/state",
           "signal": "caravan_dehumidifier_running_state",
           "dehumidifier_control": true,
+          "temperature_control": {
+            "sensor_device_id": "blu_ht"
+          },
           "max_age_seconds": 180,
           "mqtt": {
             "command_topic": "stmq/garage/caravan_dehumidifier/set",
@@ -679,7 +691,15 @@
       "equalizer_id": "str?",
       "charger_voltage_ids": [
         "int(190,199)"
-      ]
+      ],
+      "local_ocpp": {
+        "enabled": "bool",
+        "host": "str",
+        "port": "int(1,65535)",
+        "password": "password?",
+        "charge_point_id": "str?",
+        "authorization_tags": ["str"]
+      }
     },
 
     "teslamate": {
@@ -710,6 +730,10 @@
           "reduction_on": "bool?",
           "cover_control": "bool?",
           "dehumidifier_control": "bool?",
+          "manufacturer": "str?",
+          "temperature_control": {
+            "sensor_device_id": "str"
+          },
           "max_age_seconds": "int(0,86400)?",
           "record": "bool?",
           "mqtt": {

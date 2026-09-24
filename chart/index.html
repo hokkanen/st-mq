@@ -14,7 +14,7 @@
   <header>
     <span id="instance-role" class="instance-role" role="status" hidden></span>
     <div id="connection" role="status">Connecting…</div>
-    <h1>Home Energy</h1>
+    <h1><button id="dashboard-reset" type="button" aria-label="Home Energy: close all sections">Home Energy</button></h1>
     <div class="header-actions">
       <button id="theme-toggle" class="theme-toggle header-icon-button" type="button" aria-label="Switch to light theme" title="Switch to light theme">
         <svg data-theme-light viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/></svg>
@@ -118,6 +118,15 @@
                     <div class="temporary-actions"><button id="temporary-submit" type="submit" disabled>Apply changes</button><p id="temporary-message" class="muted" role="status"></p></div>
                     <p id="override-scope" class="muted">Changes are recorded without sending equipment commands.</p>
                   </form>
+                </details>
+                <details id="floor-commissioning-details" class="equipment-fold">
+                  <summary><span>Floor preheating setup</span><small>Shelly commissioning</small></summary>
+                  <div class="home-preferences-body">
+                    <p>Living and Storage each override two thermostats; all four outputs preheat together. OFF must restore ordinary thermostat control. Relay readback confirms the contact only, not valve movement or water flow.</p>
+                    <p>Each Shelly requires the ST-MQ floor-lease script with startup execution enabled. Configure outputs 0 and 1 with power-on OFF, detached inputs, automatic ON disabled and automatic OFF after 900 seconds. The script checks these settings before accepting a lease.</p>
+                    <p>The controller renews an admitted override every 5 minutes. The local script and native switch timer end it at the planned deadline or within 15 minutes without renewal. Local expiry does not restore the heat-pump ROOM setting.</p>
+                    <p>Before enabling control, follow <strong>docs/floor-preheat.md → Commissioning</strong>: initialize the persistent boot counter once, verify mapping and clock, and test actual thermostat restoration after host, network, script and power failures. Keep control disabled until commissioning is complete.</p>
+                  </div>
                 </details>
                 <details id="home-preferences-details" class="equipment-fold home-preferences">
                   <summary><span>Comfort &amp; preferences</span><small id="home-comfort-limits">Configured limits</small></summary>
@@ -425,7 +434,7 @@
           </summary>
           <div class="zone-content equipment-area">
             <section id="garage-manual-controls" class="zone-section zone-configuration" aria-labelledby="garage-heating-configuration-title">
-              <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating configuration</h4></div>
+              <div class="zone-section-heading"><h4 id="garage-heating-configuration-title">Heating control</h4></div>
               <h5 id="garage-temporary-heating-title" class="home-control-subtitle">Temporary heating</h5>
               <p id="garage-heating-help" class="muted zone-control-help">Changes reset on the next controller update, normally within 1 minute. Pause price control to hold them longer.</p>
               <div id="garage-heating-buttons" class="heating-mode-buttons heating-mode-buttons-two" role="group" aria-labelledby="garage-temporary-heating-title" aria-describedby="garage-heating-help garage-hold-warning">
@@ -435,7 +444,7 @@
               <p id="garage-hold-warning" class="heating-hold-warning heating-hold-warning-strong" role="status" hidden></p>
               <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
               <details id="garage-pause-details" class="equipment-fold temporary-panel">
-                <summary><span>Pause savings</span><small id="garage-pause-overview">Savings active</small></summary>
+                <summary><span>Pause price control</span><small id="garage-pause-overview">Savings active</small></summary>
                 <form id="garage-pause-form" class="temporary-form">
                   <p class="muted form-timezone">All dates and times below are in Finland · Europe/Helsinki.</p>
                   <div class="temporary-field">
@@ -485,7 +494,13 @@
                   <div class="learning-section-body">
                     <p id="garage-learning-context" class="learning-intro"></p>
                     <div id="garage-learning-outcomes"></div>
-                    <details id="garage-validation-details" class="learning-support"><summary>Validation &amp; evidence</summary><div id="garage-learning-evidence"></div><p id="garage-learning-limitations" class="learning-note"></p></details>
+                    <details id="garage-validation-details" class="learning-support"><summary>Validation &amp; evidence</summary><div id="garage-learning-evidence"></div><p id="garage-learning-limitations" class="learning-note"></p>
+                      <details id="garage-reconstruction-details" class="learning-support"><summary>Reconstructing the model</summary>
+                        <p class="learning-note"><strong>Exactly reproducible:</strong> cooling coefficients, normal warmth references, learning evidence and state at a committed Garage learning point.</p>
+                        <p class="learning-note"><strong>Required:</strong> the complete Garage learning journal, its saved configuration and initial seed, selected current corrections and matching learning software. Keep a consistent full database backup; observation CSV files alone are insufficient.</p>
+                        <p class="learning-note"><strong>Outside this guarantee:</strong> missing measurements, physical command delivery, every historical control choice and actual savings. An observed return to ON and recovery of local warmth remain separate evidence.</p>
+                      </details>
+                    </details>
                   </div>
                 </details>
                 <details id="garage-inputs-details" class="learning-section section-fold">
@@ -540,10 +555,10 @@
                       </select></label>
                       <label id="garage-native-value-field">Value<select id="garage-native-value" required disabled><option value="">Select a value</option></select></label>
                       <label id="garage-native-temperature-field" hidden>Temperature · °C<input id="garage-native-temperature" type="number" required disabled aria-describedby="garage-native-temperature-help"></label>
-                      <p class="equipment-control-state"><span>Reported now</span><strong id="garage-native-reported">Unavailable</strong></p>
+                      <p class="equipment-control-state"><span>Reported pump setting</span><strong id="garage-native-reported">Unavailable</strong></p>
                       <button id="garage-native-submit" class="secondary-button" type="submit" disabled>Apply setting</button>
                     </form>
-                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, the permanent room setting uses the Garage rear sensor with the pump set to 17 °C. For 5 °C, ST-MQ supplies the rear temperature plus 12 °C. Each renewal requires fresh ON, HEAT and 17 °C readings. Missing or changed readings stop renewals; the pump returns to its internal sensor when the current permission expires. Setting 16 °C or higher returns to normal pump control.</p>
+                    <p id="garage-native-temperature-help" class="muted" hidden>Below 16 °C, your room setting is maintained using Garage rear. The pump itself stays at 17 °C, so its reported setting differs from your room setting. Select Reading details above for the current sensor, supplied temperature and safety checks. Settings of 16 °C or higher use normal pump control.</p>
                     <p id="garage-native-status" class="muted">Waiting for a supported native control connection.</p>
                     <p id="garage-native-message" class="temporary-status" role="status" aria-live="polite"></p>
                   </details>
@@ -579,13 +594,6 @@
     <section class="panel history-panel" aria-labelledby="history-title" data-snapshot-content>
       <div class="section-top chart-heading">
         <div class="chart-heading-copy"><h2 id="history-title">History &amp; outlook</h2><p class="muted">Finnish local time · Europe/Helsinki</p></div>
-        <div class="chart-explorer-controls" role="group" aria-label="Chart view controls">
-          <button id="chart-pan-back" type="button" aria-label="Pan chart earlier" title="Pan earlier">←</button>
-          <button id="chart-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">−</button>
-          <button id="chart-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
-          <button id="chart-pan-forward" type="button" aria-label="Pan chart later" title="Pan later">→</button>
-          <button id="chart-zoom-reset" type="button" title="Reset zoom within selected dates">Reset view</button>
-        </div>
         <div class="chart-axis-actions">
           <label class="axis-control">Left axis
             <select id="left-axis">
@@ -608,13 +616,10 @@
         </div>
       </div>
       <div class="chart-range-controls">
-        <form id="chart-range-form" class="date-range">
-          <label class="date-field"><span class="date-label">Start date</span><input id="date-start" type="date" required></label>
-          <div class="date-field">
-            <label class="date-label end-date-toggle"><input id="date-range-enabled" type="checkbox" aria-label="Use an end date" aria-controls="date-end">End date</label>
-            <input id="date-end" type="date" aria-label="End date" required disabled>
-          </div>
-          <button type="submit">Show dates</button>
+        <form id="chart-range-form" class="date-range" aria-label="Chart dates">
+          <input id="date-start" type="date" aria-label="Start date; selecting a date shows that day" title="Show this day" required>
+          <span aria-hidden="true">to</span>
+          <input id="date-end" type="date" aria-label="End date; extend the selected range" title="Extend the date range" required>
         </form>
         <div class="range-shortcuts" role="group" aria-label="Quick date ranges">
           <button id="range-back" class="range-step" type="button" aria-label="Move shown dates back one day" title="Move shown dates back one day"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg></button>
@@ -634,7 +639,10 @@
       <div id="operating-modes" class="mode-history" aria-label="Heat-pump operating mode history"></div>
       <div id="dhwr-history" class="mode-history" aria-label="Hot-water recirculation request history"></div>
       <div id="fireplace-history" class="mode-history" aria-label="Fireplace activity from manually recorded firewood"></div>
-      <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
+      <div class="chart-legend-panel">
+        <button id="chart-legend-toggle" class="secondary-button" type="button" aria-expanded="false" aria-controls="chart-legend">Legend</button>
+        <div id="chart-legend" class="chart-legend" aria-label="Chart series visibility"></div>
+      </div>
       <p id="chart-gesture-help" class="muted chart-gesture-help">Chart view: pinch or wheel to zoom, drag to move, tap for values. Keyboard: + / − to zoom, arrows to move, Home to reset.</p>
       <p id="chart-notes" class="muted chart-notes"></p>
       <details id="timing-details" class="timing-details dashboard-disclosure">
@@ -660,6 +668,12 @@
             <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh overview</button>
           </div>
           <div id="recording-overview-content"></div>
+        </details>
+        <details id="database-export-details">
+          <summary>Export database</summary>
+          <p class="muted">Save a complete SQLite snapshot, including committed changes still in the write-ahead log. Recording continues during export. This file contains the installation’s recorded history and saved state.</p>
+          <button id="database-export" type="button" class="secondary-button">Save database…</button>
+          <p id="database-export-message" class="muted" role="status" aria-live="polite">Choose a location when your browser supports it; otherwise its download settings apply.</p>
         </details>
       </details>
     </section>

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { Store } from '../src/storage/store.js';
 import { importCsv } from '../src/storage/history.js';
-import { initialAdaptiveModel, predictThermalStep, updateAdaptiveLearning, updateAdaptiveLearningBatch, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
+import { initialAdaptiveModel, predictThermalStep, updateAdaptiveLearning, updateAdaptiveLearningBatch, updateAdaptiveEpisode, thermalObservationIntervals } from '../src/control/adaptive-learning.js';
 
 const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
 const sample = (i, changes = {}) => ({ timestamp: start + i * HOUR, indoorC: 21, outdoorC: 0,
@@ -193,4 +193,21 @@ test('history worker reconstructs the current journal/checkpoint and resumes wit
   await run();
   assert.equal(store.getState('adaptive:history').health.acceptedFits, adaptive.health.acceptedFits);
   assert.equal(store.getState('learning:health').processed, 0);
+});
+
+
+test('a sparse sensor-change boundary retains samples but never fits or propagates their temperature jump', () => {
+  const before = sample(0, { indoorC: 21 });
+  const after = sample(1, { indoorC: 25, measurementEpochAt: start + HOUR / 4 });
+  const later = sample(2, { indoorC: 24.9, measurementEpochAt: after.measurementEpochAt });
+  const rows = thermalObservationIntervals([before, after, later]);
+  assert.equal(rows.length, 4);
+  assert.equal(rows[1].valid, false, 'The measurement boundary separates retained fitting blocks');
+  assert.equal(rows[2].indoorC, 25);
+  assert.equal(rows[3].windowStart, after.timestamp);
+  let cp = updateAdaptiveLearning(null, before, { now: before.timestamp });
+  cp.state.reserveC = 30;
+  cp = updateAdaptiveLearning(cp, after, { now: after.timestamp });
+  assert.equal(cp.samples.length, 2, 'Older evidence remains retained');
+  assert.equal(cp.state.reserveC, 25, 'No thermal propagation across the measurement jump');
 });

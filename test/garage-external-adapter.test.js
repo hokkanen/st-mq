@@ -13,6 +13,7 @@ function fixture(t, options = {}) {
   let now = BASE, sequence = 0;
   const published = [];
   const adapter = createGarageAdapter({ settings: SETTINGS, hostSession: 'owner', clock: () => now, persisted: options.persisted,
+    onObservation: options.onObservation,
     productionTransport: createShellyCn105Transport({ settings: SETTINGS, publish: async (topic, payload, options) => {
       published.push({ topic, command: JSON.parse(payload), options });
     } }) });
@@ -46,6 +47,24 @@ function fixture(t, options = {}) {
   return { adapter, published, state, result, now: () => now, advance(ms = 1000) { now += ms; },
     sample: (extra = {}) => ({ temperatureC: 21, measuredAt: now, requestedExpiryAt: now + 90_000, ...extra }) };
 }
+
+test('a failed external history write cannot suppress the next live acknowledged report', async t => {
+  let fail = true;
+  const rows = [];
+  const f = fixture(t, { onObservation: row => {
+    if (fail) throw new Error('synthetic recording failure');
+    rows.push(row);
+  } });
+  await f.adapter.setExternalTemperature(f.sample());
+  f.advance(); assert.throws(() => f.result('acknowledged'), /synthetic recording failure/);
+  assert.equal(rows.length, 0);
+  fail = false; f.advance(); f.result('acknowledged');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].value, 21);
+  assert.equal(rows[0].raw.expiresAt, BASE + 90_000);
+  f.advance(); f.result('acknowledged');
+  assert.equal(rows.length, 1, 'Only a successfully recorded sample is deduplicated');
+});
 
 test('external sample preserves source clock, shares the envelope, and requires correlated ACK lifecycle', async t => {
   const f = fixture(t);

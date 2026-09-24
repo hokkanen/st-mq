@@ -1,3 +1,4 @@
+import { confirmAction } from './confirmation.js';
 const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin'];
 const pendingKey = 'stmq-pairing-pending-v1';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -173,7 +174,7 @@ function restoredOperation(storage) {
 }
 
 /** An uncertain action is retried only by the user, with its original durable request ID. */
-export function createPairActions({ request, storage, confirm = message => globalThis.confirm(message),
+export function createPairActions({ request, storage, confirm = message => confirmAction({ document: globalThis.document, title: 'Confirm computer change', message, action: 'Confirm change' }),
   requestId = makeRequestId, onChange = () => {}, afterMutation = () => {} }) {
   let view = null, available = false, busy = false, pending = restoredOperation(storage), error = Boolean(pending);
   let message = pending ? 'A previous operation was not confirmed. Recheck the same request after this computer reconnects.' : '';

@@ -8,6 +8,7 @@ import { garageSettings } from '../garage/settings.js';
 import { garageAdapterSettings } from '../garage/contract.js';
 import { floorOverrideConfiguration } from '../control/floor-override.js';
 import { chargingConfiguration } from '../charging/config.js';
+import { localOcppConfiguration } from '../acquisition/easee-ocpp.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
@@ -241,6 +242,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     const { replication: _replication, pairing: _pairing, charging: _charging, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
       equipment };
+    if (options.easee) connections.easee = { ...options.easee, local_ocpp: localOcppConfiguration(options.easee.local_ocpp) };
     if (equipment.devices.some(device => device.enabled) && !mqtt.address) throw new Error('Equipment requires the existing MQTT broker connection');
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
     if (input === 'mqtt') {

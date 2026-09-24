@@ -7,8 +7,9 @@ Plus 1 receives Bluetooth; it is not a Zigbee coordinator.
 
 The public equipment configuration labels the Shelly BLU H&T **Caravan air** in
 Garage MQTT diagnostics and shows its temperature and humidity inside **Garage →
-Sensors & More equipment → Caravan**. Its established `stmq/home/blu_ht/state`
-topic is unchanged, so moving the sensor does not require reinstalling the bridge.
+Sensors & More equipment → Caravan**. Its topic prefix is `stmq/garage/caravan_air`, beside the other Caravan devices.
+Regenerate and reinstall the bridge script when adopting this current configuration;
+ST-MQ does not subscribe to the former Home topic.
 `caravan_temperature` (°C) and `caravan_humidity` (% RH) are recorded and available
 in chart history. Battery and Bluetooth signal strength are live diagnostics only.
 This sensor is not an input to Home learning, its indoor average, or Garage protection.
@@ -17,7 +18,7 @@ This sensor is not an input to Home learning, its indoor average, or Garage prot
 
 1. Enable Bluetooth and configure the gateway's MQTT connection to the same broker
    as ST-MQ. The script uses the gateway's existing broker credentials. Allow it
-   to publish `stmq/home/blu_ht/state` and subscribe to `stmq/home/blu_ht/get`.
+   to publish `stmq/garage/caravan_air/state` and subscribe to `stmq/garage/caravan_air/get`.
 2. Identify the sensor's Bluetooth address using a nearby BLE scanner. Match the
    H&T device, rather than selecting an arbitrary temperature advertisement.
    Unencrypted BTHome advertisements need no Bluetooth pairing. The bridge only
@@ -70,7 +71,7 @@ unavailable after 180 seconds without a new report. A stopped script, out-of-ran
 sensor, flat battery or gateway outage therefore cannot leave it healthy forever.
 
 To read the latest received sample, publish the literal string `status` to
-`stmq/home/blu_ht/get`. The bridge replies on `stmq/home/blu_ht/state` with the
+`stmq/garage/caravan_air/get`. The bridge replies on `stmq/garage/caravan_air/state` with the
 **original timestamp**. ST-MQ sends this query on startup/reconnection and when
 **Recheck** is used. No sample means no response until a Bluetooth report arrives.
 A stale cached reply stays stale; polling does not establish a new measurement.

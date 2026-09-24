@@ -87,7 +87,7 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
   } finally { await app.close(); }
 });
 
-test('H66 broker loss records all twenty-nine included signals once and preserves canonical units and recovery', async t => {
+test('H66 broker loss records all twenty-eight recorded signals once and preserves canonical units and recovery', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-mqtt-availability-'));
   const store = new Store(join(directory, 'test.sqlite'));
   let now = initial;
@@ -103,9 +103,9 @@ test('H66 broker loss records all twenty-nine included signals once and preserve
   now += 15_000;
   client.emit('offline'); client.emit('close'); client.emit('offline');
   const missing = store.db.prepare("SELECT * FROM observations WHERE source='husdata-h66' AND value IS NULL").all();
-  assert.equal(missing.length, 29);
+  assert.equal(missing.length, 28);
   assert.deepEqual(missing.map(row => row.signal).sort(), Object.values(H66_REGISTERS)
-    .map(row => row.signal === 'integral' ? 'heating_integral' : row.signal).sort());
+    .filter(row => row.signal !== 'outdoor_temperature').map(row => row.signal === 'integral' ? 'heating_integral' : row.signal).sort());
   for (const row of missing) {
     assert.equal(row.device, 'invented-h66'); assert.equal(row.source_time, null);
     assert(JSON.parse(row.quality).includes('mqtt-disconnected'));

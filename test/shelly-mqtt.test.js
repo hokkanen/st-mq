@@ -71,6 +71,28 @@ test('Garage add-on uses external temperature component, never the relay CPU tem
   assert.equal(f.observations.findLast(row => row.signal === 'garage_temperature').value, null);
 });
 
+test('garage partial notifications preserve other components in an overlapping complete status reply', t => {
+  const f = fixture(t, [{ id: 'garage', kind: 'temperature', connection: 'shelly:invented-garage',
+    signal: 'garage_temperature', temperature_id: 100, readings: [
+      { key: 'front', signal: 'garage_temperature_2', component: 'temperature:101', unit: 'degC', required: true }] }]);
+  f.capture.setConnected(true);
+  f.status({ 'temperature:100': { tC: 8 }, 'temperature:101': { tC: 9 } });
+  f.now(initial + 30_000); f.capture.tick();
+  const pending = f.publications.findLast(row => JSON.parse(row.payload).method === 'Shelly.GetStatus');
+  f.now(initial + 30_010);
+  f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyStatus',
+    params: { ts: (initial + 30_010) / 1000, 'temperature:100': { tC: 8.5 } } }));
+  f.now(initial + 30_020);
+  f.reply(pending, { 'temperature:100': { tC: 8.25 }, 'temperature:101': { tC: 9.5 } });
+  const readings = f.capture.status().devices[0].readings;
+  assert.equal(readings.garage_temperature.value, 8.5, 'Newer rear evidence survives a delayed poll');
+  assert.equal(readings.garage_temperature.observedAt, initial + 30_010);
+  assert.equal(readings.garage_temperature_2.value, 9.5, 'Unrelated rear notification does not discard front poll');
+  assert.equal(readings.garage_temperature_2.observedAt, initial + 30_000);
+  f.now(initial + 150_001);
+  assert.equal(f.capture.status().devices[0].readings.garage_temperature_2.stale, true, 'No freshness extension');
+});
+
 test('Direct heating requires a post-command Switch.GetStatus response and preserves configurable polarity', async t => {
   const f = fixture(t, [{ ...heat, reduction_on: false }]);
   f.capture.setConnected(true);

@@ -10,7 +10,7 @@ import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from 
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v12-passive-thermal';
+export const LEARNING_ALGORITHM = 'committed-house-v13-scoped-sensor-changes';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -64,7 +64,7 @@ function usable(row) {
 function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infinity) {
   const outdoor = signal === 'outdoor_temperature' && ['mqtt', 'providers'].includes(input);
   const scope = input === 'simulated' ? "source='simulation'" : outdoor
-    ? "source IN ('husdata-h66','fmi','openmeteo')" : "source<>'simulation'";
+    ? "source IN ('fmi','openmeteo')" : "source<>'simulation'";
   const decode = row => ({ id: row.id, source: row.source, device: row.device, signal: row.signal,
     value: row.value, unit: row.unit, sourceTime: row.source_time, receivedAt: row.received_at,
     quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null });
@@ -74,7 +74,7 @@ function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infin
     FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
     WHERE c.signal=? AND c.start_at<=? AND c.end_at>=? AND o.received_at<=?
     AND ${input === 'simulated' ? "o.source='simulation'" : outdoor
-      ? "o.source IN ('husdata-h66','fmi','openmeteo')" : "o.source<>'simulation'"}
+      ? "o.source IN ('fmi','openmeteo')" : "o.source<>'simulation'"}
     ORDER BY c.start_at,c.id`).all(signal, to, from - maxAge, to);
   for (const span of coverage) {
     if (span.coverage_source_time < minimumTime) continue;
@@ -215,7 +215,7 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const boundariesBySensor = sensorBoundaries(store, input, at);
   const get = (signal, age = OUTDOOR_MAX_AGE_MS) => {
     const priority = signal === 'outdoor_temperature' && ['mqtt', 'providers'].includes(input)
-      ? ['husdata-h66', 'fmi', 'openmeteo'] : null;
+      ? ['fmi', 'openmeteo'] : null;
     const value = windowValues(trajectory(store, signal, from, at, input, age), from, at, age, priority);
     lineage[signal] = { observations: value.ids, coverage: value.coverageIds };
     streams[signal] = value;
@@ -453,7 +453,10 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
   const sensorChange = entry.payload.value.sensorChange;
   if (sensorChange && !fireplaceContext.revertedSensorChanges?.includes(entry.id)) {
     initial = restoreAdaptiveCheckpoint(initial, configuration);
-    if (affectsThermalLearning(sensorChange.signal, configuration)) initial = resetMeasurement(initial, configuration, entry.at);
+    // Replacement changes measurement continuity, not the building or equipment.
+    // Keep fitted parameters, validation, episodes and comfort references; the
+    // scoped measurement mask and interval boundary prevent learning the jump.
+    if (affectsThermalLearning(sensorChange.signal, configuration)) initial.state = null;
     initial.sensorEpochs = { ...initial.sensorEpochs, [sensorChange.signal]: entry.at };
   }
   const historySeed = entry.payload.value.historySeed;

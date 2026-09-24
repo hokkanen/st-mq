@@ -28,6 +28,14 @@ export function selectedRange(preset, now) {
   return { startDate: today, endDate: today };
 }
 
+/** A new start shows one day immediately; the end may then extend it. */
+export function dateSelection(selection, field, value) {
+  if (!validDate(value)) return null;
+  if (field === 'start') return { startDate: value, endDate: value };
+  if (field === 'end' && value >= selection.startDate) return { startDate: selection.startDate, endDate: value };
+  return null;
+}
+
 function finnishMidnight(date) {
   const utcMidnight = Date.parse(`${date}T00:00:00Z`);
   // Finnish DST changes occur after local midnight. The UTC-midnight offset
@@ -52,7 +60,7 @@ export function calendarTicks(range, maxTicks = 9) {
   return ticks.map(value => ({ value }));
 }
 
-export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
+export const defaultVisibility = Object.freeze({ heatOff: true, compressorSpace: true, compressorDhw: true, compressorGarage: true, operatingMode: true, dhwr: true, fireplace: true, spot_price: true });
 export const leftGroups = Object.freeze({
   ...Object.fromEntries(HISTORY_AXES.map(axis => [axis.key, axis.signals])),
   power: ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'],
@@ -115,14 +123,14 @@ const seriesInfo = {
   bedroom_temperature: ['Bedroom', '°C', 'bedroom'],
   garage_temperature: ['Garage rear', '°C', 'garage'],
   garage_temperature_2: ['Garage front', '°C', 'garage'],
-  outdoor_temperature: ['Outdoor', '°C · H66 sensor, FMI station or Open-Meteo model estimate; dashed line is forecast', 'outdoor'],
+  outdoor_temperature: ['Outdoor', '°C · FMI station or Open-Meteo model estimate; dashed line is forecast', 'outdoor'],
   outdoor_forecast: ['Outdoor forecast', '°C · forecast', 'outdoor', 'forecast'],
   all_in_price: ['All-in price', 'c/kWh', 'price'],
   spot_price: ['Spot price', 'c/kWh · excludes VAT and other charges', 'spot'],
 };
 for (const [signal, info] of Object.entries(SIGNAL_INFO)) {
   seriesInfo[signal] ??= [info.label, `${info.unit} · ${info.detail ?? info.kind.toLowerCase()}`,
-    PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : 'integral',
+    PHASE_ENERGY_SIGNALS.includes(signal) ? `phase${signal.at(-1)}` : signal.startsWith('ev1') ? 'ev' : signal.startsWith('property') ? 'property' : info.group === 'Ground loop' ? 'outdoor' : info.group === 'Garage heat pump' ? 'garage' : 'integral',
     PHASE_ENERGY_SIGNALS.includes(signal) ? 'interval-energy' : 'line'];
 }
 Object.assign(seriesInfo, {
@@ -158,7 +166,7 @@ export function historyStateLabel(key, value) {
     return ['Normal', 'Preheat', 'Tariff reduction', 'Recovery'][value] ?? `Unknown phase (${value})`;
   if (key === 'dhw_routing') return value === 0 ? 'Space heating' : value === 1 ? 'Hot water' : `Unknown route (${value})`;
   if (key === 'garage_model_available') return value === 1 ? 'Available to native control' : value === 0 ? 'Reported off' : 'Unknown';
-  if (['compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
+  if (['compressor_active', 'garage_compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'model_valve_override') return ['Normal valve mode', 'Pooled override confirmed', 'Partial override', 'Unconfirmed override'][value] ?? 'Unknown valve mode';
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
   return null;
@@ -248,7 +256,7 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
   return keys.map(key => {
     const [label, unit, colorKey, kind = 'line'] = seriesInfo[key];
     const visibilityKey = key === 'outdoor_forecast' ? 'outdoor_temperature' : key;
-    const isLeft = leftGroups[left].includes(key);
+    const isLeft = leftGroups[left].includes(key) && !(left === 'temperatures' && RIGHT_AXIS_SIGNALS.includes(key));
     const isPrice = key.endsWith('_price');
     const temperature = isInterpolatedTemperature(key);
     const original = stackedData.get(key) ?? series[key] ?? [];
@@ -261,16 +269,17 @@ export function historyDatasets(series = {}, left = 'power', preferences = {}, p
       showLine: !['event', 'daily', 'session', 'interval-energy'].includes(kind),
       yAxisID: isLeft ? 'left' : 'right',
       borderColor: palette[colorKey], backgroundColor: palette[colorKey],
-      borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : 1.8,
+      borderWidth: kind === 'fill' ? 0 : isPrice ? 1 : isLeft ? 1.25 : 1.5,
       borderDash: kind === 'forecast' || PHASE_ENERGY_SIGNALS.includes(key) && key.startsWith('ev1') ? [5, 4] : isPrice ? [1, 3] : [],
       fill: stackBase ? keys.indexOf(stackBase) : kind === 'fill' ? 'origin' : false,
       order: powerKeys.includes(key) ? 4 - powerKeys.indexOf(key) : kind === 'fill' ? 2 : 1,
       pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? palette[colorKey] : 'transparent')
         : kind === 'session' ? data.map(point => point.comparisonEligible ? palette[colorKey] : 'transparent') : palette[colorKey], pointBorderColor: palette[colorKey],
-      pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : 'circle',
+      pointStyle: kind === 'event' ? 'triangle' : kind === 'daily' ? 'rectRot' : isLeft && !['session', 'interval-energy', 'fill'].includes(kind) ? 'rect' : 'circle',
       // A finite reading surrounded by gaps has no line segment to draw.
       pointRadius: kind === 'event' ? 5 : ['daily', 'session', 'interval-energy'].includes(kind) ? 4 : isPrice ? 1 : data.map((point, index) => Number.isFinite(point.y)
-        && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2 : 0),
+        && !Number.isFinite(data[index - 1]?.y) && !Number.isFinite(data[index + 1]?.y) ? 2
+        : isLeft && kind !== 'fill' && Number.isFinite(point.y) && index % Math.max(1, Math.ceil(data.length / 12)) === 0 ? 1.6 : 0),
       pointHoverRadius: kind === 'event' ? 7 : ['daily', 'session', 'interval-energy'].includes(kind) ? 6 : 3, pointHitRadius: 8,
       // Duplicate interval-edge points from the API retain exact price/forecast steps.
       stepped: temperature ? false : isPrice ? 'before' : kind === 'forecast' || isLeft && left !== 'integral' && !PHASE_ENERGY_SIGNALS.includes(key),

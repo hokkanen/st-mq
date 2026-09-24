@@ -450,7 +450,9 @@ test('sensor reversal rebuilds a cached earlier coefficient prefix and later rec
     requestId: 'coefficient-reset' }, start + 20 * MINUTE);
   const args = { now: start + 30 * MINUTE };
   const original = project(counted, args);
-  assert(values(original).some(point => point.x >= change.at && point.coefficientStatus === 'retained'));
+  assert(values(original).some(point => point.x >= change.at));
+  assert(values(original).every(point => point.y === 0.03 && point.coefficientStatus === 'fitted'),
+    'A sensor boundary preserves learned coefficients and evidence while propagation settles');
   assert.equal(readRows, 2);
   assert.deepEqual(project(counted, args), original);
   assert.equal(readRows, 2, 'An unchanged journal prefix reuses its cache');

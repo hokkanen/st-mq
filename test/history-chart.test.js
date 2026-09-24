@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries, sessionPointDetail } from '../chart/history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, dateSelection, shiftDate, validDate, visible, historyValueLabel, coefficientStatusLabel, stackedPowerSeries, sessionPointDetail } from '../chart/history-model.js';
 import { MODEL_COEFFICIENT_INFO, RIGHT_AXIS_SIGNALS } from '../src/domain/history-series.js';
 import { Envelope } from '../src/app/chart-data.js';
 
@@ -88,9 +88,9 @@ test('All home temperatures includes three rooms and both garage probes once, wh
   const series = Object.fromEntries(signals.map((key, index) => [key, [{ x: 1, y: 23 - index * 2 }]]));
   series.model_indoor_temperature = [{ x: 1, y: 21 }];
   const datasets = historyDatasets(series, 'temperatures');
-  assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.key), signals);
+  assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.key), [...rooms, 'garage_temperature_2']);
   assert.deepEqual(datasets.filter(row => row.yAxisID === 'left').map(row => row.label),
-    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage rear', 'Garage front']);
+    ['Upstairs', 'Bedroom', 'Downstairs', 'Garage front']);
   assert.equal(new Set(datasets.map(row => row.key)).size, datasets.length, 'The shared garage reading is not duplicated on the right axis');
   for (const key of signals) {
     assert.equal(datasets.filter(row => row.key === key).length, 1);
@@ -98,7 +98,7 @@ test('All home temperatures includes three rooms and both garage probes once, wh
   }
   assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
   assert.equal(datasets.find(row => row.key === 'outdoor_temperature').yAxisID, 'right');
-  assert.equal(datasets.find(row => row.key === 'garage_temperature').yAxisID, 'left');
+  assert.equal(datasets.find(row => row.key === 'garage_temperature').yAxisID, 'right');
   const roomAndAverage = datasets.filter(row => [...rooms, 'model_indoor_temperature'].includes(row.key));
   assert.equal(new Set(roomAndAverage.map(row => row.borderColor)).size, 4);
   const garage = historyDatasets({ garage_temperature: [{ x: 1, y: 12 }] }, 'power', { garage_temperature: false })
@@ -456,4 +456,23 @@ test('old readings can start a live day, while missing, historical and future re
   assert.equal(historySeriesAt(payload, to), payload.series, 'Past dates retain recorded historical gaps');
   assert.equal(historySeriesAt(payload, from - 1), payload.series, 'Future dates do not invent observations');
   assert.equal(historySeriesAt(payload, NaN), payload.series);
+});
+
+test('date picking immediately selects one day or extends it with a valid end', () => {
+  const selection = { startDate: '2026-09-08', endDate: '2026-09-15' };
+  assert.deepEqual(dateSelection(selection, 'start', '2026-09-02'), { startDate: '2026-09-02', endDate: '2026-09-02' });
+  assert.deepEqual(dateSelection(selection, 'end', '2026-09-08'), { startDate: '2026-09-08', endDate: '2026-09-08' });
+  assert.deepEqual(dateSelection(selection, 'end', '2026-09-20'), { startDate: '2026-09-08', endDate: '2026-09-20' });
+  for (const value of ['2026-09-07', '', '2026-02-30']) assert.equal(dateSelection(selection, 'end', value), null);
+});
+
+test('left curves have sparse square markers and thin strokes while price styling stays stable', () => {
+  const values = Array.from({ length: 200 }, (_, x) => ({ x, y: 20 + x / 10 }));
+  const datasets = historyDatasets({ indoor_temperature: values, garage_temperature: values }, 'temperatures');
+  const left = datasets.find(row => row.key === 'indoor_temperature');
+  const right = datasets.find(row => row.key === 'garage_temperature');
+  assert.equal(left.pointStyle, 'rect'); assert(left.pointRadius.filter(Boolean).length <= 12);
+  assert.equal(right.pointStyle, 'circle'); assert(right.pointRadius.every(radius => radius === 0));
+  assert(left.borderWidth < 1.8 && right.borderWidth < 1.8);
+  assert.equal(datasets.find(row => row.key === 'all_in_price').borderWidth, 1);
 });

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'power', 'dehumidifier'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
-  'switch_control', 'cover_control', 'dehumidifier_control', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
+  'switch_control', 'cover_control', 'dehumidifier_control', 'temperature_control', 'manufacturer', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
 const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic', 'bridge_availability_topic',
   'online_payload', 'offline_payload', 'heartbeat_topic', 'heartbeat_seconds', 'request_topic', 'request_payload',
   'open_payload', 'close_payload', 'stop_payload', 'cover_state_path'];
@@ -99,6 +99,13 @@ export function equipmentConfiguration(input = {}) {
     const controlsSwitch = bool(row.switch_control, false), controlsHeat = bool(row.tariff_control, false);
     const controlsCover = bool(row.cover_control, false);
     const controlsDehumidifier = bool(row.dehumidifier_control, false);
+    const manufacturer = row.manufacturer === undefined ? null : text(row.manufacturer, undefined, 60);
+    let temperatureControl = null;
+    if (row.temperature_control !== undefined) {
+      schema(row.temperature_control, ['sensor_device_id'], 'dehumidifier temperature control');
+      if (kind !== 'dehumidifier' || !controlsDehumidifier) throw new Error('Temperature control requires a controllable dehumidifier');
+      temperatureControl = { sensorDeviceId: signal(row.temperature_control.sensor_device_id) };
+    }
     if (controlsCover && (kind !== 'door' || protocol !== 'mqtt')) throw new Error('Cover control requires MQTT door equipment');
     if (kind === 'dehumidifier' && protocol !== 'mqtt' || controlsDehumidifier && kind !== 'dehumidifier')
       throw new Error('Dehumidifier control requires MQTT dehumidifier equipment');
@@ -183,13 +190,20 @@ export function equipmentConfiguration(input = {}) {
       mapping.required = true;
     }
     const ownedSignals = [...new Set([...defaultSignals, ...readings.map(value => value.signal)])];
-    return { id, role: id, label, area, kind, enabled, connection, protocol, source: protocol === 'shelly' ? 'Shelly' : 'MQTT',
+    return { id, role: id, label, area, kind, enabled, connection, protocol, manufacturer,
+      source: manufacturer ?? (protocol === 'shelly' ? 'Shelly' : 'MQTT'), temperatureControl,
       prefix: protocol === 'shelly' ? address : null, topic: protocol === 'mqtt' ? address : null,
       generation, switchId, temperatureId, controlsSwitch, controlsHeat, controlsCover, controlsDehumidifier, reductionOn, maxAgeMs: age, record,
       stateSignal, powerSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
   });
   if (new Set(devices.map(row => row.id)).size !== devices.length) throw new Error('Equipment IDs must be unique');
   const enabled = devices.filter(row => row.enabled), ownedSignals = enabled.flatMap(row => row.ownedSignals);
+  for (const device of enabled.filter(row => row.temperatureControl)) {
+    const sensor = enabled.find(row => row.id === device.temperatureControl.sensorDeviceId);
+    if (!sensor || sensor.protocol !== 'mqtt' || sensor.kind !== 'temperature' || sensor.area !== device.area
+      || !sensor.ownedSignals.includes('caravan_temperature') || !sensor.ownedSignals.includes('caravan_humidity'))
+      throw new Error('Temperature control requires the enabled caravan air temperature and humidity sensor in the same area');
+  }
   if (new Set(ownedSignals).size !== ownedSignals.length) throw new Error('Enabled equipment cannot own the same recorded signal');
   for (const [index, device] of enabled.entries()) for (const other of enabled.slice(index + 1)) {
     if (device.protocol === 'shelly' && other.protocol === 'shelly'

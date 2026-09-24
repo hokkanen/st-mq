@@ -69,14 +69,14 @@ test('replica outdoor selection matches live source priority, retained packets, 
     assert.equal(primary.source, source);
     for (const field of ['source', 'value', 'observedAt', 'stale', 'maxAgeMs']) assert.equal(replica[field], primary[field], field);
   };
-  publish('fmi', 4); publish('openmeteo', 5); publish('husdata-h66', 2); compare('husdata-h66');
+  publish('fmi', 4); publish('openmeteo', 5); publish('husdata-h66', 2); compare('fmi');
   now += MINUTE;
   publish('husdata-h66', 9, { quality: ['retained'], raw: { retained: true, usableForControl: false } });
-  compare('husdata-h66');
+  compare('fmi');
   publish('fmi', null, { sourceTime: null, quality: ['missing', 'provider_error'] });
-  now = at + 5 * MINUTE; compare('husdata-h66');
+  now = at + 5 * MINUTE; compare('fmi');
   now++; compare('fmi');
-  publish('husdata-h66', 2.1); compare('husdata-h66');
+  publish('husdata-h66', 2.1); compare('fmi');
   publish('husdata-h66', null, { quality: ['invalid-value'], raw: { usableForControl: false } });
   compare('fmi');
   publish('fmi', 7, { sourceTime: now + 10 * MINUTE, quality: ['future_source_time'] });
@@ -85,7 +85,7 @@ test('replica outdoor selection matches live source priority, retained packets, 
 
 test('replica uses compact outdoor report coverage and cannot read future source publications', t => {
   const store = fixture(t), recorder = new Recorder(store);
-  const weather = minute => ({ source: 'husdata-h66', device: 'invented-pump', signal: 'outdoor_temperature',
+  const weather = minute => ({ source: 'fmi', device: 'invented-station', signal: 'outdoor_temperature',
     value: 3, unit: 'degC', sourceTime: at + minute * MINUTE, receivedAt: at + minute * MINUTE,
     quality: [], raw: { usableForControl: true } });
   recorder.record(weather(0));
@@ -97,14 +97,9 @@ test('replica uses compact outdoor report coverage and cannot read future source
   assert.equal(reading.stale, false);
 });
 
-test('H66 expiry, broker disconnection and post-reconnect reports have distinct reasons', () => {
-  const observation = { source: 'husdata-h66', signal: 'outdoor_temperature', value: 3,
-    sourceTime: at, receivedAt: at, quality: [], raw: { usableForControl: true, timeBasis: 'mqtt-received' } };
-  const h66 = { connected: false, brokerConnected: true, readings: { '0007': { available: false } } };
-  assert.deepEqual(outdoorReadingStatus(observation, at + 6 * MINUTE, { h66 }).availabilityReasons, ['out-of-date']);
-  assert.equal(outdoorReadingStatus(observation, at, { h66 }).sourceTimeBasis, 'received-at');
-  h66.readings['0007'].unavailableReasons = ['awaiting-live-report'];
-  assert.deepEqual(outdoorReadingStatus(observation, at, { h66 }).availabilityReasons, ['awaiting-live-report']);
-  h66.brokerConnected = false;
-  assert.deepEqual(outdoorReadingStatus(observation, at, { h66 }).availabilityReasons, ['disconnected']);
+test('weather expiry uses the weather source deadline independently of H66 transport', () => {
+  const observation = { source: 'fmi', signal: 'outdoor_temperature', value: 3,
+    sourceTime: at, receivedAt: at, quality: [], raw: {} };
+  assert.deepEqual(outdoorReadingStatus(observation, at + 6 * MINUTE).availabilityReasons, []);
+  assert.deepEqual(outdoorReadingStatus(observation, at + 31 * MINUTE).availabilityReasons, ['out-of-date']);
 });

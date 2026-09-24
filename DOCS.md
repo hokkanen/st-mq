@@ -126,8 +126,8 @@ rate coverage. Day/night applies 07:00–22:00 versus other times; seasonal wint
 daytime applies November–March, Monday–Saturday 07:00–22:00.
 
 The main chart defaults to today's complete Finnish calendar day. Choose a start
-date to view one day immediately; check **End date** to enable an inclusive date
-range and click **Show dates** to apply it. **Yesterday – today**, **Today**,
+date to view one day immediately; the second date picker extends the inclusive
+range immediately. Both pickers remain available in chart inspection mode. **Yesterday – today**, **Today**,
 **Today – tomorrow** shortcuts keep both observations and forecasts within the
 selected dates. The small outer arrows move the shown window one calendar day
 back or forward while preserving its length. The **Left axis** drawer offers
@@ -137,8 +137,8 @@ available on the right with their existing colours. Average indoor is the config
 sensor average used by the house model, with equal weights for Upstairs, Bedroom
 and Downstairs when all three are configured with defaults. Missing contributing
 readings remain gaps; imported learning keeps its original Upstairs measurement.
-**All home temperatures** in the left drawer adds the three individual room
-readings with synchronized air-temperature scales. Garage remains available on
+**Home and garage temperatures** in the left drawer adds the three individual room
+readings and Garage front with synchronized air-temperature scales. Garage remains available on
 the right axis. For rare sensor replacements, moves or calibrations, open **Home →
 Heating configuration → Home learning → Model inputs → Average indoor → Sensor changes**. Its
 **Reason** field describes the saved history; it does not alter the learning effect.
